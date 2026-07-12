@@ -1,0 +1,47 @@
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+
+
+def generate_launch_description():
+    device_id = LaunchConfiguration("device_id")
+    device_name = LaunchConfiguration("device_name")
+    deadzone = LaunchConfiguration("deadzone")
+    autorepeat_rate = LaunchConfiguration("autorepeat_rate")
+    sticky_buttons = LaunchConfiguration("sticky_buttons")
+    coalesce_interval_ms = LaunchConfiguration("coalesce_interval_ms")
+
+    joy_node = Node(
+        package="joy",
+        executable="joy_node",
+        name="joy_node",
+        output="screen",
+        parameters=[
+            {
+                "device_id": ParameterValue(device_id, value_type=int),
+                "device_name": ParameterValue(device_name, value_type=str),
+                "deadzone": ParameterValue(deadzone, value_type=float),
+                "autorepeat_rate": ParameterValue(
+                    autorepeat_rate, value_type=float
+                ),
+                "sticky_buttons": ParameterValue(sticky_buttons, value_type=bool),
+                "coalesce_interval_ms": ParameterValue(
+                    coalesce_interval_ms, value_type=int
+                ),
+            }
+        ],
+    )
+
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument("device_id", default_value="0"),
+            DeclareLaunchArgument("device_name", default_value=""),
+            DeclareLaunchArgument("deadzone", default_value="0.05"),
+            DeclareLaunchArgument("autorepeat_rate", default_value="20.0"),
+            DeclareLaunchArgument("sticky_buttons", default_value="false"),
+            DeclareLaunchArgument("coalesce_interval_ms", default_value="1"),
+            joy_node,
+        ]
+    )

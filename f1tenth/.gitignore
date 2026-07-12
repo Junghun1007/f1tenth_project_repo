@@ -1,0 +1,19 @@
+# ROS/colcon build outputs
+autodrive_ws/build/
+autodrive_ws/install/
+autodrive_ws/log/
+
+# Python caches and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# IDE/local files
+.idea/
+.agents/
+.codex/
+
+# Runtime/editor noise
+*.log
+*.swp
+*~
