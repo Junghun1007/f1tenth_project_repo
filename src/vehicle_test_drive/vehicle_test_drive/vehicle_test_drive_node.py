@@ -6,10 +6,12 @@ from enum import Enum, auto
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32, Int32
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, Float32, Int32
 
 
 class TestPhase(Enum):
+    WAITING_FOR_VESC = auto()
     SERVO_SWEEP = auto()
     FORWARD_PAUSE = auto()
     FORWARD_RAMP = auto()
@@ -18,6 +20,7 @@ class TestPhase(Enum):
     REVERSE_RAMP = auto()
     REVERSE_HOLD = auto()
     FINISHED = auto()
+    ABORTED = auto()
 
 
 class VehicleTestDriveNode(Node):
@@ -26,6 +29,8 @@ class VehicleTestDriveNode(Node):
 
         self.declare_parameter("servo_position_topic", "/vesc/servo_position")
         self.declare_parameter("erpm_topic", "/vesc/erpm")
+        self.declare_parameter("connection_status_topic", "/vesc/connected")
+        self.declare_parameter("connection_timeout_sec", 5.0)
         self.declare_parameter("servo_step_interval_sec", 0.5)
         self.declare_parameter("erpm_ramp_duration_sec", 3.0)
         self.declare_parameter("target_hold_sec", 0.25)
@@ -37,6 +42,13 @@ class VehicleTestDriveNode(Node):
 
         servo_topic = str(self.get_parameter("servo_position_topic").value)
         erpm_topic = str(self.get_parameter("erpm_topic").value)
+        connection_status_topic = str(
+            self.get_parameter("connection_status_topic").value
+        )
+        self.connection_timeout_sec = max(
+            0.1,
+            float(self.get_parameter("connection_timeout_sec").value),
+        )
         self.servo_step_interval_sec = max(
             0.05,
             float(self.get_parameter("servo_step_interval_sec").value),
@@ -65,21 +77,36 @@ class VehicleTestDriveNode(Node):
 
         self.servo_pub = self.create_publisher(Float32, servo_topic, 10)
         self.erpm_pub = self.create_publisher(Int32, erpm_topic, 10)
+        connection_qos = QoSProfile(depth=1)
+        connection_qos.reliability = ReliabilityPolicy.RELIABLE
+        connection_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.connection_sub = self.create_subscription(
+            Bool,
+            connection_status_topic,
+            self._on_connection_status,
+            connection_qos,
+        )
 
         self._servo_positions = [
             *(value / 10.0 for value in range(5, 0, -1)),
             *(value / 10.0 for value in range(1, 10)),
         ]
         self._servo_index = 0
-        self._phase = TestPhase.SERVO_SWEEP
+        self._phase = TestPhase.WAITING_FOR_VESC
         self._phase_started_at = self._now_sec()
         self._next_servo_command_at = self._phase_started_at
+        self._next_wait_log_at = self._phase_started_at
+        self._connection_status_received = False
+        self._vesc_connected = False
+        self._test_started = False
         self.done = False
+        self.failed = False
 
         self._timer = self.create_timer(1.0 / update_rate_hz, self._on_timer)
 
         self.get_logger().info(
-            "Vehicle actuator test started. "
+            "Waiting for VESC connection before starting the actuator test. "
+            f"connection_status_topic={connection_status_topic}, "
             f"servo_topic={servo_topic}, erpm_topic={erpm_topic}"
         )
         self.get_logger().warn(
@@ -89,7 +116,9 @@ class VehicleTestDriveNode(Node):
     def _on_timer(self) -> None:
         now = self._now_sec()
 
-        if self._phase is TestPhase.SERVO_SWEEP:
+        if self._phase is TestPhase.WAITING_FOR_VESC:
+            self._wait_for_vesc(now)
+        elif self._phase is TestPhase.SERVO_SWEEP:
             self._run_servo_sweep(now)
         elif self._phase is TestPhase.FORWARD_PAUSE:
             self._publish_erpm(0)
@@ -127,6 +156,53 @@ class VehicleTestDriveNode(Node):
             self._publish_erpm(self.reverse_erpm)
             if self._phase_elapsed(now) >= self.target_hold_sec:
                 self._finish_test()
+
+    def _on_connection_status(self, msg: Bool) -> None:
+        self._connection_status_received = True
+        self._vesc_connected = bool(msg.data)
+
+        if self._test_started and not self._vesc_connected and not self.done:
+            self._abort_test("VESC serial connection was lost during the test.")
+
+    def _wait_for_vesc(self, now: float) -> None:
+        erpm_subscribers = self.erpm_pub.get_subscription_count()
+        servo_subscribers = self.servo_pub.get_subscription_count()
+
+        if (
+            self._vesc_connected
+            and erpm_subscribers > 0
+            and servo_subscribers > 0
+        ):
+            self._test_started = True
+            self._servo_index = 0
+            self._next_servo_command_at = now
+            self._start_phase(TestPhase.SERVO_SWEEP, now)
+            self.get_logger().info(
+                "VESC connected and command subscribers detected. Starting test."
+            )
+            return
+
+        if self._phase_elapsed(now) >= self.connection_timeout_sec:
+            status = (
+                "disconnected"
+                if self._connection_status_received
+                else "no connection status received"
+            )
+            self._abort_test(
+                "VESC connection check timed out: "
+                f"status={status}, erpm_subscribers={erpm_subscribers}, "
+                f"servo_subscribers={servo_subscribers}"
+            )
+            return
+
+        if now >= self._next_wait_log_at:
+            self.get_logger().info(
+                "Waiting for VESC: "
+                f"connected={self._vesc_connected}, "
+                f"erpm_subscribers={erpm_subscribers}, "
+                f"servo_subscribers={servo_subscribers}"
+            )
+            self._next_wait_log_at = now + 1.0
 
     def _run_servo_sweep(self, now: float) -> None:
         self._publish_erpm(0)
@@ -166,6 +242,14 @@ class VehicleTestDriveNode(Node):
             f"{self.final_servo_position:.1f}"
         )
 
+    def _abort_test(self, reason: str) -> None:
+        self.stop_actuators()
+        self._phase = TestPhase.ABORTED
+        self.failed = True
+        self.done = True
+        self._timer.cancel()
+        self.get_logger().error(f"Vehicle actuator test aborted: {reason}")
+
     def stop_actuators(self) -> None:
         self._publish_erpm(0)
         self._publish_servo(self.final_servo_position)
@@ -197,12 +281,16 @@ def main(args: list[str] | None = None) -> None:
     except KeyboardInterrupt:
         node.get_logger().info("Test interrupted by user.")
     finally:
+        failed = node.failed
         if rclpy.ok():
             node.stop_actuators()
             rclpy.spin_once(node, timeout_sec=0.1)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+    if failed:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

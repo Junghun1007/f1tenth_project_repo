@@ -18,6 +18,7 @@ class VescCommandIds:
     # 현재 활성화된 명령.
     set_erpm: int = 8
     set_servo_pos: int = 12
+    get_firmware_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -36,15 +37,17 @@ class VescDriverError(RuntimeError):
 
 
 class VescDriver:
-    """VESC 시리얼 포트에 명령 패킷을 쓰는 하위 드라이버.
+    """VESC 시리얼 포트의 패킷 송수신을 담당하는 하위 드라이버.
 
     이 클래스는 ROS2 의존성을 갖지 않는다. ROS 노드는 토픽을 구독한 뒤
     이 메서드들을 호출하고, 이 파일은 패킷 인코딩과 시리얼 쓰기만 맡는다.
     """
 
     START_BYTE = 2
+    LONG_START_BYTE = 3
     END_BYTE = 3
     MAX_SHORT_PAYLOAD_SIZE = 255
+    MAX_READ_PAYLOAD_SIZE = 4096
 
     def __init__(
         self,
@@ -154,6 +157,27 @@ class VescDriver:
         payload = bytes([self.command_ids.set_servo_pos]) + struct.pack(">h", value)
         self.write_payload(payload)
 
+    def get_firmware_version(self) -> tuple[int, int]:
+        """Verify that the serial device answers as a VESC."""
+        self.open()
+        if self._serial is None:
+            raise VescDriverError("VESC serial port is not open.")
+
+        reset_input_buffer = getattr(self._serial, "reset_input_buffer", None)
+        if callable(reset_input_buffer):
+            reset_input_buffer()
+
+        request_id = self.command_ids.get_firmware_version
+        self.write_payload(bytes([request_id]))
+        payload = self.read_payload()
+
+        if len(payload) < 3 or payload[0] != request_id:
+            raise VescDriverError(
+                "Invalid firmware-version response from the serial device."
+            )
+
+        return int(payload[1]), int(payload[2])
+
     def write_payload(self, payload: bytes) -> None:
         self.write_packet(self.make_packet(payload))
 
@@ -163,9 +187,65 @@ class VescDriver:
             raise VescDriverError("VESC serial port is not open.")
 
         try:
-            self._serial.write(packet)
+            bytes_written = self._serial.write(packet)
+            if bytes_written is not None and int(bytes_written) != len(packet):
+                raise VescDriverError(
+                    f"Incomplete VESC serial write: {bytes_written}/{len(packet)} bytes"
+                )
+        except VescDriverError:
+            raise
         except Exception as exc:
             raise VescDriverError(f"Failed to write VESC packet: {exc}") from exc
+
+    def read_payload(self) -> bytes:
+        if self._serial is None:
+            raise VescDriverError("VESC serial port is not open.")
+
+        start_byte = self._read_exact(1)[0]
+        if start_byte == self.START_BYTE:
+            payload_length = self._read_exact(1)[0]
+        elif start_byte == self.LONG_START_BYTE:
+            payload_length = struct.unpack(">H", self._read_exact(2))[0]
+        else:
+            raise VescDriverError(
+                f"Invalid VESC response start byte: {start_byte}"
+            )
+
+        if payload_length < 1 or payload_length > self.MAX_READ_PAYLOAD_SIZE:
+            raise VescDriverError(
+                f"Invalid VESC response payload length: {payload_length}"
+            )
+
+        payload = self._read_exact(payload_length)
+        received_crc = struct.unpack(">H", self._read_exact(2))[0]
+        end_byte = self._read_exact(1)[0]
+
+        if end_byte != self.END_BYTE:
+            raise VescDriverError(f"Invalid VESC response end byte: {end_byte}")
+
+        expected_crc = self.crc16_xmodem(payload)
+        if received_crc != expected_crc:
+            raise VescDriverError(
+                "Invalid VESC response CRC: "
+                f"received={received_crc}, expected={expected_crc}"
+            )
+
+        return payload
+
+    def _read_exact(self, size: int) -> bytes:
+        if self._serial is None:
+            raise VescDriverError("VESC serial port is not open.")
+
+        received = bytearray()
+        while len(received) < size:
+            chunk = self._serial.read(size - len(received))
+            if not chunk:
+                raise VescDriverError(
+                    f"Timed out waiting for VESC response ({len(received)}/{size} bytes)"
+                )
+            received.extend(chunk)
+
+        return bytes(received)
 
     @classmethod
     def make_packet(cls, payload: bytes) -> bytes:

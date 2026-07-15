@@ -6,19 +6,23 @@ vesc_initialize_node:
     write_timeout: 2.0        # 시리얼 쓰기 대기 시간(초)
     startup_delay: 0.2        # 포트 연결 후 안정화를 위해 기다리는 시간(초)
     connect_on_startup: true  # 노드 시작 시 VESC 포트를 먼저 열어본다.
+    verify_firmware_on_startup: true  # 펌웨어 응답을 받아 실제 VESC인지 확인한다.
 
     erpm_topic: "/vesc/erpm"                       # std_msgs/msg/Int32
     servo_position_topic: "/vesc/servo_position"   # std_msgs/msg/Float32
+    connection_status_topic: "/vesc/connected"     # std_msgs/msg/Bool
 
     min_erpm: -100000      # ERPM 명령 하한. 실제 제한값은 추후 차량에 맞게 조정한다.
     max_erpm: 100000       # ERPM 명령 상한. 실제 제한값은 추후 차량에 맞게 조정한다.
     servo_min: 0.0         # VESC servo position 하한
     servo_max: 1.0         # VESC servo position 상한
     command_timeout: 0.3   # 이 시간 동안 새 ERPM 명령이 없으면 ERPM 0을 보낸다.
+    log_commands: false    # true이면 시리얼로 전달된 명령을 로그에 표시한다.
 
     packet:
       start_byte: 2           # VESC short packet 시작 바이트
       end_byte: 3             # VESC packet 종료 바이트
+      comm_get_firmware_version: 0  # 연결 확인에 사용하는 펌웨어 버전 요청
       comm_set_duty: 5        # 현재 비활성화. 모터 속도는 ERPM 명령을 사용한다.
       comm_set_erpm: 8        # VESC set_rpm expects ERPM, not wheel RPM. ERPM is electrical RPM.
       comm_set_servo_pos: 12  # 서보 위치 명령 ID(COMM_SET_SERVO_POS)
