@@ -1,0 +1,97 @@
+F1TENTH Jetson 실행 명령어
+===========================
+
+[0. 모든 터미널에서 공통으로 먼저 실행]
+
+cd ~/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+
+[1. 조이스틱만 실행]
+
+ros2 launch joy_initializer joy.launch.py device_id:=0
+
+조이스틱 입력 확인용 별도 터미널:
+
+cd ~/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /joy
+
+
+[2. VESC 통신 노드만 실행]
+
+ros2 run vesc_initializer vesc_initialize_node --ros-args \
+  --params-file "$(ros2 pkg prefix vehicle_config)/share/vehicle_config/config/vesc_config.yaml"
+
+VESC 연결 상태 확인용 별도 터미널:
+
+cd ~/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /vesc/connected
+
+VESC가 /dev/ttyACM1에 연결된 경우:
+
+ros2 run vesc_initializer vesc_initialize_node --ros-args \
+  --params-file "$(ros2 pkg prefix vehicle_config)/share/vehicle_config/config/vesc_config.yaml" \
+  -p port:=/dev/ttyACM1
+
+주의: 이 명령은 VESC 통신 노드만 시작한다. 실제 주행 명령은 별도의
+/vesc/erpm 및 /vesc/servo_position publisher가 있어야 전달된다.
+
+
+[3. 조이스틱 수동 주행 전체 실행]
+
+ros2 launch vehicle_launcher manual_drive.launch.py
+
+이 launch에는 다음 노드가 모두 포함된다.
+
+- joy_node
+- joy_params_converter_node
+- actuator_commander_node
+- vesc_initialize_node
+
+따라서 [1] 조이스틱 노드나 [2] VESC 노드를 따로 실행하지 않는다.
+
+
+[4. 테스트 주행 실행]
+
+ros2 launch vehicle_test_drive vehicle_test_drive.launch.py
+
+VESC가 /dev/ttyACM1에 연결된 경우:
+
+ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyACM1
+
+테스트 주행 launch는 VESC 연결과 펌웨어 응답을 확인한 뒤 다음 순서로
+자동 실행한다.
+
+1. 조향 위치 0.5 -> 0.1 -> 0.9 스윕
+2. ERPM 0 -> 5000
+3. ERPM 0 정지
+4. ERPM 0 -> -5000
+5. ERPM 0 및 조향 위치 0.5로 복귀 후 종료
+
+테스트 주행 launch가 vesc_initialize_node를 직접 실행하므로 [2] VESC 노드,
+[3] 수동 주행 launch와 동시에 실행하지 않는다.
+
+
+[5. Git 반영 후 Jetson 업데이트 및 빌드]
+
+cd ~/f1tenth_project_repo
+git switch develop
+git pull --ff-only origin develop
+
+source /opt/ros/humble/setup.bash
+colcon build --packages-select \
+  joy_initializer vehicle_config vehicle_launcher manual_control \
+  vesc_initializer vehicle_test_drive
+source install/setup.bash
+
+
+[안전 주의]
+
+- 테스트 주행 전 차량 바퀴를 지면에서 띄운다.
+- VESC를 사용하는 launch 또는 노드를 두 개 이상 동시에 실행하지 않는다.
+- 실행 중 이상 동작이 발생하면 Ctrl+C로 종료한다.
