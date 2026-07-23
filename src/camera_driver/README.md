@@ -1,6 +1,65 @@
 # camera_driver
 
-Placeholder package for future camera driver launch files.
+OAK/DepthAI 카메라를 열고 원본 프레임 수신 여부를 확인하는 ROS 2
+패키지입니다.
 
-This package intentionally has no runtime nodes yet. Add camera driver launch
-files or camera connection checks here when the camera hardware is selected.
+이 노드는 카메라 파이프라인을 시작하고 받은 BGR 프레임을
+`sensor_msgs/msg/Image`로 발행합니다. 차선 검출 등의 호스트 영상 처리는
+하지 않습니다.
+
+`/camera/image_raw`의 형식은 JPG가 아닌 비압축 `bgr8` 픽셀 데이터입니다.
+메시지의 `encoding`은 `bgr8`, `step`은 `width * 3`이며 픽셀 바이트가
+`data` 필드에 들어갑니다. 여기서 `raw`는 비압축 ROS 이미지라는 의미이고,
+카메라 센서의 Bayer RAW 형식을 의미하지는 않습니다.
+
+## 준비
+
+Jetson의 ROS 2 환경에 DepthAI Python 패키지를 설치합니다.
+
+```bash
+python3 -m pip install depthai
+```
+
+카메라 구동 설정은
+`camera_driver/config/camera_config.yaml`에서 변경합니다. `enabled: true`이면
+노드 시작 시 `CAM_A`의 DepthAI 파이프라인을 시작하고, `false`이면 카메라를
+열지 않습니다.
+
+`normal_image.launch.py`로 전체 영상 입력을 실행할 때는
+`image_processor/config/normal_image.yaml`의 `undistort_enabled`가 DepthAI
+`Camera.requestOutput()`의 `enableUndistortion` 옵션에 직접 전달됩니다.
+
+- `false`: 렌즈 왜곡 보정 없이 출력
+- `true`: OAK 장치 내부 캘리브레이션을 사용하는 DepthAI 왜곡 보정 출력
+
+별도 NPZ 파일이나 OpenCV 카메라 행렬은 사용하지 않습니다.
+
+`sensor_fps`는 DepthAI 카메라가 프레임을 취득하는 FPS입니다. 카메라
+드라이버는 수신한 모든 프레임을 `/camera/image_raw`로 발행하며 별도의
+발행률 제한은 하지 않습니다. 최종 `/image/normal` 발행률은
+`normal_image_publisher_node`가 관리합니다.
+
+`camera_height_m`과 `camera_downward_angle_deg`는 임의 초기값으로
+YAML에 기록되어 있으며 시작 로그에 표시됩니다. 현재 영상 처리에는
+사용하지 않습니다.
+
+## 실행
+
+```bash
+colcon build --packages-select camera_driver
+source install/setup.bash
+ros2 launch camera_driver camera_driver.launch.py
+```
+
+정상적으로 프레임을 받으면 다음 로그가 출력됩니다.
+
+```text
+Camera frame reception verified: 640x480, encoding=bgr8, transport=uncompressed
+```
+
+발행 토픽 확인:
+
+```bash
+ros2 topic hz /camera/image_raw
+ros2 topic info /camera/image_raw
+```

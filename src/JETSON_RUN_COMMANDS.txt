@@ -77,7 +77,65 @@ ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyA
 [3] 수동 주행 launch와 동시에 실행하지 않는다.
 
 
-[5. Git 반영 후 Jetson 업데이트 및 빌드]
+[5. 카메라 일반 이미지 파이프라인 및 뷰어 실행]
+
+camera_driver_node와 normal_image_publisher_node를 함께 실행:
+
+cd ~/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch image_processor normal_image.launch.py
+
+이 launch가 카메라 드라이버도 시작하므로 camera_driver.launch.py를 별도로
+동시에 실행하지 않는다.
+
+일반 이미지 설정 파일:
+
+src/image_processor/config/normal_image.yaml
+
+  undistort_enabled: false  -> DepthAI 렌즈 보정 없이 카메라 출력
+  undistort_enabled: true   -> OAK 내부 캘리브레이션으로 DepthAI 렌즈 보정
+  publish_rate_hz: 15.0     -> /image/normal 최대 발행 Hz
+
+카메라 해상도와 센서 FPS 설정:
+
+src/camera_driver/config/camera_config.yaml
+
+이미지 뷰어용 별도 터미널:
+
+cd ~/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch image_viewer image_viewer.launch.py \
+  node_name:=viewer_1 \
+  image_topic:=/camera/image_raw \
+  preview_fps:=15.0 \
+  window_name:="camera raw" \
+  fit_to_image:=true \
+  max_window_width:=1280 \
+  max_window_height:=720
+
+viewer_1, viewer_2, viewer_3을 YAML 설정대로 동시에 실행:
+
+ros2 launch image_viewer image_viewers.launch.py
+
+다중 뷰어 설정 파일:
+
+src/image_viewer/config/image_viewers.yaml
+
+현재 viewer_1은 /camera/image_raw를 구독하고 viewer_2는
+normal_image_publisher_node의 /image/normal을 구독한다. viewer_3은 향후
+디버그 토픽용이므로 /image/debug 발행 전에는 프레임 대기 경고가 출력된다.
+
+fit_to_image:=true이면 입력 이미지 해상도에 맞춰 창 크기가 자동 조정된다.
+큰 이미지는 max_window_width와 max_window_height 안에서 종횡비를 유지한다.
+Q, ESC 또는 창 닫기로 해당 뷰어를 종료할 수 있다.
+
+주의: OpenCV 창을 사용하므로 Jetson 데스크톱 또는 X11 forwarding처럼
+DISPLAY/그래픽 화면을 사용할 수 있는 환경에서 실행한다.
+
+
+[6. Git 반영 후 Jetson 업데이트 및 빌드]
 
 cd ~/f1tenth_project_repo
 git switch develop
@@ -86,7 +144,8 @@ git pull --ff-only origin develop
 source /opt/ros/humble/setup.bash
 colcon build --packages-select \
   joy_initializer vehicle_config vehicle_launcher manual_control \
-  vesc_initializer vehicle_test_drive
+  vesc_initializer vehicle_test_drive camera_driver image_processor \
+  image_viewer
 source install/setup.bash
 
 

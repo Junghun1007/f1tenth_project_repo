@@ -1,0 +1,16 @@
+# normal_image.launch.py가 아래 두 노드를 함께 실행한다.
+camera_driver_node:
+  ros__parameters:
+    # DepthAI 장치의 내장 렌즈 왜곡 보정 사용 여부.
+    # false: 보정하지 않음
+    # true: OAK 내부 캘리브레이션으로 보정
+    undistort_enabled: false
+
+normal_image_publisher_node:
+  ros__parameters:
+    input_topic: "/camera/image_raw"
+    output_topic: "/image/normal"
+
+    # /image/normal의 최대 발행 주기. 입력보다 높아도 프레임은 복제하지 않는다.
+    publish_rate_hz: 30.0
+    status_log_interval_sec: 5.0

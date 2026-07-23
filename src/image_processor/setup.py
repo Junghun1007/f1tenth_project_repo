@@ -1,3 +1,6 @@
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
 
@@ -10,14 +13,19 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
+        (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="ohslo",
     maintainer_email="ohslo@example.com",
-    description="Image processing package for future AutoDrive vision nodes.",
+    description="Normal image passthrough publisher for AutoDrive.",
     license="TODO",
     entry_points={
-        "console_scripts": [],
+        "console_scripts": [
+            "normal_image_publisher_node = "
+            "image_processor.normal_image_publisher_node:main",
+        ],
     },
 )

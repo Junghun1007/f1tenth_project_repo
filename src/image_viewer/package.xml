@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schemapath="http://download.ros.org/schema/package_format3.xsd"?>
 <package format="3">
-  <name>camera_driver</name>
+  <name>image_viewer</name>
   <version>0.0.0</version>
-  <description>OAK camera connection and raw image publisher for AutoDrive.</description>
+  <description>Configurable ROS 2 image topic preview nodes.</description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>TODO</license>
 
@@ -11,6 +11,8 @@
 
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

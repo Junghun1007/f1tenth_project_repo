@@ -4,7 +4,7 @@ import os
 from setuptools import find_packages, setup
 
 
-package_name = "camera_driver"
+package_name = "image_viewer"
 
 setup(
     name=package_name,
@@ -20,11 +20,11 @@ setup(
     zip_safe=True,
     maintainer="ohslo",
     maintainer_email="ohslo@example.com",
-    description="OAK camera connection and raw image publisher for AutoDrive.",
+    description="Configurable ROS 2 image topic preview nodes.",
     license="TODO",
     entry_points={
         "console_scripts": [
-            "camera_driver_node = camera_driver.camera_driver_node:main",
+            "image_viewer_node = image_viewer.image_viewer_node:main",
         ],
     },
 )
