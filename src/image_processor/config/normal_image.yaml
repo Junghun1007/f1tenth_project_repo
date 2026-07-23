@@ -4,7 +4,7 @@ camera_driver_node:
     # DepthAI 장치의 내장 렌즈 왜곡 보정 사용 여부.
     # false: 보정하지 않음
     # true: OAK 내부 캘리브레이션으로 보정
-    undistort_enabled: false
+    undistort_enabled: true
 
 normal_image_publisher_node:
   ros__parameters:

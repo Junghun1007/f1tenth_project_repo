@@ -95,7 +95,7 @@ src/image_processor/config/normal_image.yaml
 
   undistort_enabled: false  -> DepthAI 렌즈 보정 없이 카메라 출력
   undistort_enabled: true   -> OAK 내부 캘리브레이션으로 DepthAI 렌즈 보정
-  publish_rate_hz: 15.0     -> /image/normal 최대 발행 Hz
+  publish_rate_hz: 30.0     -> /image/normal 최대 발행 Hz
 
 카메라 해상도와 센서 FPS 설정:
 
@@ -135,7 +135,41 @@ Q, ESC 또는 창 닫기로 해당 뷰어를 종료할 수 있다.
 DISPLAY/그래픽 화면을 사용할 수 있는 환경에서 실행한다.
 
 
-[6. Git 반영 후 Jetson 업데이트 및 빌드]
+[6. 단일 CAM_A BEV 파이프라인 실행]
+
+카메라, DepthAI 왜곡 보정, normal image publisher, BEV processor를 함께 실행:
+
+cd ~/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch bev_processor bev.launch.py
+
+BEV 입력:
+
+  /image/normal  (DepthAI 왜곡 보정 완료, bgr8 비압축)
+
+BEV 출력:
+
+  /image/bev     (bgr8 비압축)
+
+BEV 파라미터 설정:
+
+src/bev_processor/config/bev_config.yaml
+
+현재 K_rect, 카메라 장착 위치, 출력 범위는 임의 초기값이다.
+실측/캘리브레이션 후 YAML 값을 교체한다.
+
+BEV 출력 뷰어용 별도 터미널:
+
+ros2 launch image_viewer image_viewer.launch.py \
+  node_name:=bev_viewer \
+  image_topic:=/image/bev \
+  preview_fps:=15.0 \
+  window_name:="BEV" \
+  fit_to_image:=true
+
+
+[7. Git 반영 후 Jetson 업데이트 및 빌드]
 
 cd ~/f1tenth_project_repo
 git switch develop
@@ -145,7 +179,7 @@ source /opt/ros/humble/setup.bash
 colcon build --packages-select \
   joy_initializer vehicle_config vehicle_launcher manual_control \
   vesc_initializer vehicle_test_drive camera_driver image_processor \
-  image_viewer
+  image_viewer bev_processor
 source install/setup.bash
 
 
