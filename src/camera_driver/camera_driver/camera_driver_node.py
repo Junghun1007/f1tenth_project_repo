@@ -160,6 +160,7 @@ class CameraDriverNode(Node):
             )
             output = camera.requestOutput(
                 (self._width, self._height),
+                type=dai.ImgFrame.Type.BGR888i,
                 resizeMode=resize_mode,
                 fps=self._sensor_fps,
                 enableUndistortion=self._undistort_enabled,
