@@ -14,11 +14,11 @@ bev_processor_node:
     publish_rate_hz: 15.0
 
     # K_rect가 대응하는 최종 입력 영상 크기. 실제 메시지와 다르면 처리하지 않는다.
-    input_width: 640
-    input_height: 480
+    input_width: 960
+    input_height: 540
 
-    # 최종 640x480 rectified 영상의 내부 파라미터 K_rect.
-    # 현재 값은 실행 구조 확인용 임의값이며 실기에서 반드시 교체해야 한다.
+    # 최종 960x540 rectified 영상의 내부 파라미터 K_rect.
+    # 현재 값은 임의값이다. camera_driver 첫 프레임 로그의 값으로 교체한다.
     fx: 320.0
     fy: 320.0
     cx: 319.5
@@ -26,22 +26,24 @@ bev_processor_node:
 
     # 차량 좌표계:
     # 원점 = 전륜축 중앙의 지면점, +X = 전방, +Y = 좌측, +Z = 위.
-    # 카메라는 전륜축 중앙 바로 위에 있다고 가정한다.
+    # 2026-07-24 실측값. roll은 미측정이므로 0도로 가정한다.
     camera_x_m: 0.0
     camera_y_m: 0.0
-    camera_z_m: 0.25
+    camera_z_m: 0.20
     camera_roll_deg: 0.0
-    camera_downward_pitch_deg: 15.0
+    camera_downward_pitch_deg: 14.0
     camera_yaw_deg: 0.0
 
-    # 임시 BEV 출력 범위. 영상 위쪽이 차량 전방, 왼쪽이 차량 좌측이다.
-    x_min_m: 0.0
+    # 실측 최근접 가시거리 0.18m, 트랙 폭 0.60m에 좌우 0.05m
+    # 여유를 더한 범위다. x_max_m=5.0은 원거리 실측 전 임시값이다.
+    # 영상 위쪽이 차량 전방, 왼쪽이 차량 좌측이다.
+    x_min_m: 0.18
     x_max_m: 5.0
-    y_min_m: -2.0
-    y_max_m: 2.0
+    y_min_m: -0.35
+    y_max_m: 0.35
     meter_per_pixel: 0.01
-    output_width: 400
-    output_height: 500
+    output_width: 70
+    output_height: 482
 
     # 현재는 평탄한 노면에서 차량 roll/pitch가 0이라고 가정한다.
     # IMU가 준비되면 use_imu만 true로 바꾸면 구독하고 LUT를 갱신한다.

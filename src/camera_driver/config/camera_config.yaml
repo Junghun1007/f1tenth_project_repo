@@ -5,8 +5,8 @@ camera_driver:
     # Requested OAK sensor/output rate. The physical sensor and selected mode
     # must support 120 FPS; the node reports the measured rate at runtime.
     sensor_fps: 120.0
-    width: 640
-    height: 480
+    width: 960
+    height: 540
 
     camera_socket: "CAM_A"
     resize_mode: "STRETCH"

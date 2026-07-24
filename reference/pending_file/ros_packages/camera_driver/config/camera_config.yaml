@@ -30,9 +30,9 @@ camera_driver_node:
     preview_max_height: 720
 
     # 카메라 장착 정보(현재는 기록/로그 용도이며 영상 처리에는 사용하지 않음).
-    # 아래 값은 실제 측정 전 임의 초기값이다.
-    camera_height_m: 0.25
-    camera_downward_angle_deg: 15.0
+    # 2026-07-24 실측값.
+    camera_height_m: 0.20
+    camera_downward_angle_deg: 14.0
 
     # 프레임 수신 여부를 로그로 검증하기 위한 설정.
     startup_timeout_sec: 5.0

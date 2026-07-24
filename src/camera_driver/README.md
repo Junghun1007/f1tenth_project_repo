@@ -3,7 +3,7 @@
 OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패키지다.
 기본 설정은 다음과 같다.
 
-- 출력: `640x480`, `bgr8`
+- 출력: `960x540`, `bgr8`
 - 요청 센서 FPS: `120`
 - 렌즈 왜곡 보정: OAK 장치 내부에서 활성화
 - ROS 토픽: `/camera/image_rect`
@@ -15,6 +15,10 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 센서가 선택한 해상도에서 120 FPS를 지원해야 실제 수신 속도도 120 FPS가
 된다. 노드는 요청값과 별도로 측정된 캡처 FPS와 장치 sequence gap을
 주기적으로 출력한다.
+
+첫 프레임에는 최종 출력에 적용된 resize와 장치 내부 왜곡 보정을 모두
+반영한 `K_rect`의 `fx`, `fy`, `cx`, `cy`도 한 번 출력한다. BEV처럼
+투영 기하가 필요한 후속 처리에서는 원본 센서 행렬 대신 이 값을 사용한다.
 
 ## 성능 구조
 
@@ -197,7 +201,7 @@ ros2 topic info /camera/image_rect --verbose
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
 | `sensor_fps` | `120.0` | OAK 센서/출력 요청 FPS |
-| `width`, `height` | `640`, `480` | 출력 해상도 |
+| `width`, `height` | `960`, `540` | 출력 해상도 |
 | `undistort_enabled` | `true` | OAK 장치 내부 왜곡 보정 |
 | `queue_size` | `2` | DepthAI 호스트 큐 크기 |
 | `queue_blocking` | `false` | 큐가 찼을 때 캡처 차단 여부 |
@@ -206,7 +210,7 @@ ros2 topic info /camera/image_rect --verbose
 | `preview_enabled` | `true` | OpenCV 직접 프리뷰 |
 | `preview_fps` | `120.0` | 프리뷰 갱신 최대 FPS |
 
-120 FPS에서 `640x480 bgr8` 영상 데이터는 메시지 헤더와 DDS 오버헤드를
-제외하고도 약 105 MiB/s다. 외부 노드가 전체 이미지를 항상 필요로 하지
+120 FPS에서 `960x540 bgr8` 영상 데이터는 메시지 헤더와 DDS 오버헤드를
+제외하고도 약 178 MiB/s다. 외부 노드가 전체 이미지를 항상 필요로 하지
 않는다면 `publish_enabled: false`를 사용하거나 발행 FPS를 낮추고, 주 영상
 처리는 같은 프로세스의 C++ 컴포넌트로 구성하는 것이 좋다.

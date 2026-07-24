@@ -171,8 +171,8 @@ private:
     enabled_ = node_.declare_parameter<bool>("enabled", true);
     camera_socket_name_ =
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
-    width_ = node_.declare_parameter<int>("width", 640);
-    height_ = node_.declare_parameter<int>("height", 480);
+    width_ = node_.declare_parameter<int>("width", 960);
+    height_ = node_.declare_parameter<int>("height", 540);
     sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 120.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "STRETCH");
@@ -356,6 +356,26 @@ private:
             node_.get_logger(),
             "First frame received: %dx%d, sequence=%ld",
             width_, height_, static_cast<long>(device_sequence));
+
+          const auto & transformation = packet->getTransformation();
+          if (transformation.isValid()) {
+            const auto [intrinsics_width, intrinsics_height] =
+              transformation.getSize();
+            const auto k_rect = transformation.getIntrinsicMatrix();
+            RCLCPP_INFO(
+              node_.get_logger(),
+              "K_rect %zux%zu: fx=%.9f, fy=%.9f, cx=%.9f, cy=%.9f",
+              intrinsics_width, intrinsics_height,
+              static_cast<double>(k_rect[0][0]),
+              static_cast<double>(k_rect[1][1]),
+              static_cast<double>(k_rect[0][2]),
+              static_cast<double>(k_rect[1][2]));
+          } else {
+            RCLCPP_WARN(
+              node_.get_logger(),
+              "The first frame did not contain valid DepthAI image "
+              "transformation metadata; K_rect could not be reported.");
+          }
         }
       } catch (const std::exception & exception) {
         capture_errors_total_.fetch_add(1);
@@ -687,8 +707,8 @@ private:
 
   bool enabled_{true};
   std::string camera_socket_name_;
-  int width_{640};
-  int height_{480};
+  int width_{960};
+  int height_{540};
   double sensor_fps_{120.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
