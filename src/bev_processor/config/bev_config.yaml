@@ -1,0 +1,47 @@
+bev_processor:
+  ros__parameters:
+    # camera_driver와 독립 프로세스로 실행하며 rectified CAM_A 영상만 구독한다.
+    input_topic: "/camera/image_rect"
+    output_topic: "/camera/image_bev"
+    output_frame_id: "front_axle_bev"
+    expected_input_fps: 120.0
+
+    # BEV 변환은 입력 이벤트마다 실행한다. 발행은 기본적으로 모든 변환
+    # 프레임을 전달하고(0=제한 없음), 프리뷰만 30 FPS로 제한한다.
+    publish_enabled: true
+    publish_max_fps: 0.0
+    preview_enabled: true
+    preview_max_fps: 30.0
+    preview_window_name: "BEV image"
+    preview_max_width: 1280
+    preview_max_height: 900
+
+    # 최종 rectified 입력 크기와 해당 영상에서 측정한 K_rect.
+    input_width: 960
+    input_height: 540
+    fx: 421.050720215
+    fy: 378.767059326
+    cx: 482.274475098
+    cy: 265.019256592
+
+    # 차량 좌표계 원점=전륜축 중앙 지면점, +X=전방, +Y=좌측, +Z=위.
+    # roll은 미측정이므로 0도로 가정한다.
+    camera_x_m: 0.0
+    camera_y_m: 0.0
+    camera_z_m: 0.20
+    camera_roll_deg: 0.0
+    camera_downward_pitch_deg: 14.0
+    camera_yaw_deg: 0.0
+
+    # 화면 위쪽=전방, 화면 왼쪽=차량 좌측.
+    # 좌우 0.35m는 0.60m 트랙 폭에 양쪽 0.05m 여유를 더한 범위다.
+    x_min_m: 0.18
+    x_max_m: 5.0
+    y_min_m: -0.35
+    y_max_m: 0.35
+    meter_per_pixel: 0.01
+    output_width: 70
+    output_height: 482
+
+    status_log_interval_sec: 5.0
+    startup_timeout_sec: 5.0
