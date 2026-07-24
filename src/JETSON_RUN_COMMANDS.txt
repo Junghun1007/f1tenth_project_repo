@@ -3,7 +3,7 @@ F1TENTH Jetson 실행 명령어
 
 [0. 모든 터미널에서 공통으로 먼저 실행]
 
-cd ~/f1tenth_project_repo
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -14,7 +14,7 @@ ros2 launch joy_initializer joy.launch.py device_id:=0
 
 조이스틱 입력 확인용 별도 터미널:
 
-cd ~/f1tenth_project_repo
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 topic echo /joy
@@ -27,7 +27,7 @@ ros2 run vesc_initializer vesc_initialize_node --ros-args \
 
 VESC 연결 상태 확인용 별도 터미널:
 
-cd ~/f1tenth_project_repo
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 topic echo /vesc/connected
@@ -77,17 +77,21 @@ ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyA
 [3] 수동 주행 launch와 동시에 실행하지 않는다.
 
 
-[5. 카메라 일반 이미지 파이프라인 및 뷰어 실행]
+[5. 왜곡 보정 영상만 실행]
 
 camera_driver_node가 /image/normal을 직접 발행:
 
-cd ~/f1tenth_project_repo
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch image_processor normal_image.launch.py
 
 이 launch가 카메라 드라이버도 시작하므로 camera_driver.launch.py를 별도로
-동시에 실행하지 않는다.
+동시에 실행하지 않는다. 기본적으로 "Normal rectified image" 창만 열린다.
+
+창을 띄우지 않고 /image/normal만 발행:
+
+ros2 launch image_processor normal_image.launch.py preview_enabled:=false
 
 일반 이미지 설정 파일:
 
@@ -128,11 +132,11 @@ Q, ESC 또는 창 닫기로 해당 뷰어를 종료할 수 있다.
 DISPLAY/그래픽 화면을 사용할 수 있는 환경에서 실행한다.
 
 
-[6. 단일 CAM_A BEV 파이프라인 실행]
+[6. BEV 영상만 실행 또는 두 프리뷰 동시 실행]
 
 카메라, DepthAI 왜곡 보정, BEV processor를 함께 실행:
 
-cd ~/f1tenth_project_repo
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch bev_processor bev.launch.py
@@ -149,9 +153,24 @@ BEV 파라미터 설정:
 
 src/bev_processor/config/bev_config.yaml
 
-기본 설정에서는 "Normal rectified image"와 "BEV processed image" 창이
-동시에 열린다. BEV 처리, 직접 프리뷰, 디버그 토픽 주기는 각각
-processing_rate_hz, preview_fps, publish_rate_hz로 설정한다.
+기본 실행은 왜곡 보정 창을 숨기고 "BEV processed image" 창만 연다.
+
+왜곡 보정 창과 BEV 창을 동시에 표시:
+
+ros2 launch bev_processor bev.launch.py normal_preview_enabled:=true
+
+이미 다른 터미널에서 /image/normal을 발행 중이면 카메라를 다시 열지 않고
+BEV processor만 실행:
+
+ros2 launch bev_processor bev_processor_only.launch.py
+
+이때 /image/normal 발행 노드가 반드시 먼저 실행 중이어야 한다. BEV 처리,
+직접 프리뷰, 디버그 토픽 주기는 각각 processing_rate_hz, preview_fps,
+publish_rate_hz로 설정한다.
+
+주의: normal_image.launch.py와 bev.launch.py는 둘 다 카메라를 시작하므로
+동시에 실행하지 않는다. 카메라가 이미 실행 중이면 반드시
+bev_processor_only.launch.py를 사용한다.
 
 현재 K_rect, 카메라 장착 위치, 출력 범위는 임의 초기값이다.
 실측/캘리브레이션 후 YAML 값을 교체한다.
@@ -160,14 +179,12 @@ publish_enabled를 false로 설정해도 BEV 직접 프리뷰는 계속 동작�
 외부 노드나 rosbag에서 /image/bev가 필요한 경우에만 true로 둔다.
 
 
-[7. Git 반영 후 Jetson 업데이트 및 빌드]
+[7. Jetson 빌드]
 
-cd ~/f1tenth_project_repo
-git switch develop
-git pull --ff-only origin develop
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 
 source /opt/ros/humble/setup.bash
-colcon build --packages-select \
+colcon build --symlink-install --packages-select \
   joy_initializer vehicle_config vehicle_launcher manual_control \
   vesc_initializer vehicle_test_drive camera_driver image_processor \
   image_viewer bev_processor

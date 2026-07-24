@@ -547,15 +547,6 @@ class CameraDriverNode(Node):
     def _close_camera(self) -> None:
         self._stop_event.set()
         pipeline = self._pipeline
-        self._output_queue = None
-        self._pipeline = None
-        if pipeline is not None and hasattr(pipeline, "stop"):
-            try:
-                pipeline.stop()
-            except Exception as exc:
-                self.get_logger().warn(
-                    f"Failed to stop the camera pipeline cleanly: {exc}"
-                )
         for worker_thread in (
             self._capture_thread,
             self._publish_thread,
@@ -568,6 +559,15 @@ class CameraDriverNode(Node):
                 worker_thread.join(timeout=2.0)
         self._capture_thread = None
         self._publish_thread = None
+        self._output_queue = None
+        self._pipeline = None
+        if pipeline is not None and hasattr(pipeline, "stop"):
+            try:
+                pipeline.stop()
+            except Exception as exc:
+                self.get_logger().warn(
+                    f"Failed to stop the camera pipeline cleanly: {exc}"
+                )
 
     def _close_preview(self) -> None:
         if self._cv2 is not None and self._preview_window_created:

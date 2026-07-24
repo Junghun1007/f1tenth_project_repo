@@ -15,6 +15,13 @@ source install/setup.bash
 ros2 launch image_processor normal_image.launch.py
 ```
 
+이 명령은 카메라와 `Normal rectified image` 창만 실행합니다. 프리뷰 없이
+`/image/normal`만 발행하려면 다음처럼 실행합니다.
+
+```bash
+ros2 launch image_processor normal_image.launch.py preview_enabled:=false
+```
+
 `image_processor/config/normal_image.yaml`에서 다음 값을 설정합니다.
 
 - `undistort_enabled`: DepthAI 장치 내부 렌즈 보정 on/off

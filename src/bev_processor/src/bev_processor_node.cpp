@@ -444,6 +444,13 @@ private:
         preview_window_name_,
         bev_config_.output_width,
         bev_config_.output_height);
+      const cv::Mat waiting_image(
+        bev_config_.output_height,
+        bev_config_.output_width,
+        CV_8UC3,
+        cv::Scalar(0, 0, 0));
+      cv::imshow(preview_window_name_, waiting_image);
+      cv::waitKey(1);
       preview_window_created_ = true;
     } catch (const cv::Exception & exception) {
       preview_enabled_ = false;
@@ -466,6 +473,40 @@ private:
     } catch (const cv::Exception &) {
     }
     preview_window_created_ = false;
+    preview_window_was_visible_ = false;
+  }
+
+  void pumpPreviewEvents()
+  {
+    if (!preview_enabled_ || !preview_window_created_) {
+      return;
+    }
+
+    try {
+      const int key = cv::waitKey(1) & 0xff;
+      const double visible = cv::getWindowProperty(
+        preview_window_name_, cv::WND_PROP_VISIBLE);
+      if (visible >= 1.0) {
+        preview_window_was_visible_ = true;
+      }
+
+      const bool keyboard_close =
+        key == 'q' || key == 'Q' || key == 27;
+      const bool window_close =
+        preview_window_was_visible_ && visible < 1.0;
+      if (keyboard_close || window_close) {
+        RCLCPP_INFO(get_logger(), "BEV direct preview closed");
+        closePreview();
+        preview_enabled_ = false;
+      }
+    } catch (const cv::Exception & exception) {
+      RCLCPP_WARN(
+        get_logger(),
+        "BEV direct preview disabled after a window error: %s",
+        exception.what());
+      closePreview();
+      preview_enabled_ = false;
+    }
   }
 
   void onImage(const sensor_msgs::msg::Image::ConstSharedPtr message)
@@ -487,6 +528,8 @@ private:
 
   void processLatestFrame()
   {
+    pumpPreviewEvents();
+
     if (!new_image_available_ || !latest_image_ || !remap_ready_) {
       return;
     }
@@ -505,20 +548,11 @@ private:
         now >= next_preview_at_)
       {
         cv::imshow(preview_window_name_, bev);
-        const int key = cv::waitKey(1) & 0xff;
-        const double visible = cv::getWindowProperty(
-          preview_window_name_, cv::WND_PROP_VISIBLE);
         ++previewed_count_;
         ++previewed_status_count_;
         next_preview_at_ =
           now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(1.0 / preview_fps_));
-
-        if (key == 'q' || key == 'Q' || key == 27 || visible < 1.0) {
-          RCLCPP_INFO(get_logger(), "BEV direct preview closed");
-          closePreview();
-          preview_enabled_ = false;
-        }
       }
 
       if (
@@ -635,6 +669,7 @@ private:
   double preview_fps_{30.0};
   std::string preview_window_name_;
   bool preview_window_created_{false};
+  bool preview_window_was_visible_{false};
   int input_width_{640};
   int input_height_{480};
   double fx_{320.0};

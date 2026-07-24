@@ -15,14 +15,27 @@ DepthAI에서 렌즈 왜곡 보정된 단일 `CAM_A` 영상을 차량 지면 기
 ros2 launch bev_processor bev.launch.py
 ```
 
-위 launch는 왜곡 보정과 직접 프리뷰가 활성화된 카메라 드라이버도 함께
-시작한다. 입력은 `/image/normal`, 선택적 ROS 출력은 비압축 `bgr8`
-형식의 `/image/bev`다.
+위 launch는 왜곡 보정이 활성화된 카메라 드라이버도 함께 시작한다.
+기본값은 카메라 프리뷰를 숨기고 `BEV processed image` 창만 표시한다.
+입력은 `/image/normal`, 선택적 ROS 출력은 비압축 `bgr8` 형식의
+`/image/bev`다.
 
-기본 설정에서는 두 개의 직접 프리뷰 창이 열린다.
+프리뷰 실행 방법:
 
-- `Normal rectified image`: DepthAI 왜곡 보정 결과
-- `BEV processed image`: BEV 처리 결과
+```bash
+# BEV 프리뷰만
+ros2 launch bev_processor bev.launch.py
+
+# 왜곡 보정 프리뷰와 BEV 프리뷰를 동시에
+ros2 launch bev_processor bev.launch.py normal_preview_enabled:=true
+```
+
+이미 `/image/normal`을 발행하는 카메라 노드가 실행 중이라면 카메라를
+중복 실행하지 않고 BEV processor만 시작할 수 있다.
+
+```bash
+ros2 launch bev_processor bev_processor_only.launch.py
+```
 
 `processing_rate_hz`, `preview_fps`, `publish_rate_hz`는 각각 BEV 변환,
 직접 프리뷰, `/image/bev` 디버그 토픽 발행 주기다.
