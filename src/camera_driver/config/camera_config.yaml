@@ -9,7 +9,9 @@ camera_driver:
     height: 540
 
     camera_socket: "CAM_A"
-    resize_mode: "STRETCH"
+    # Preserve geometry when converting the OV9782 8:5 sensor image to 16:9.
+    # This crops the top and bottom instead of changing the aspect ratio.
+    resize_mode: "CROP"
 
     # Runs inside the OAK/DepthAI pipeline, not with host-side cv::remap().
     undistort_enabled: true

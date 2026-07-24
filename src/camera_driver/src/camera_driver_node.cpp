@@ -175,7 +175,7 @@ private:
     height_ = node_.declare_parameter<int>("height", 540);
     sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 120.0);
     resize_mode_name_ =
-      node_.declare_parameter<std::string>("resize_mode", "STRETCH");
+      node_.declare_parameter<std::string>("resize_mode", "CROP");
     undistort_enabled_ =
       node_.declare_parameter<bool>("undistort_enabled", true);
     queue_size_ = node_.declare_parameter<int>("queue_size", 2);
@@ -726,7 +726,7 @@ private:
   double startup_timeout_sec_{5.0};
   double status_log_interval_sec_{5.0};
   dai::CameraBoardSocket camera_socket_{dai::CameraBoardSocket::CAM_A};
-  dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::STRETCH};
+  dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::CROP};
 
   std::unique_ptr<dai::Pipeline> pipeline_;
   std::shared_ptr<dai::MessageQueue> output_queue_;
