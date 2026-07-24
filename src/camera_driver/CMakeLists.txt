@@ -16,7 +16,16 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
-find_package(depthai 3 CONFIG REQUIRED)
+find_package(depthai 3 CONFIG QUIET)
+if(NOT depthai_FOUND)
+  message(FATAL_ERROR
+    "DepthAI C++ 3.x was not found. The Python 'depthai' wheel is not "
+    "sufficient because this package links against depthai::core. Install "
+    "depthai-core as a shared C++ library, then pass "
+    "-Ddepthai_DIR=<prefix>/lib/cmake/depthai or add <prefix> to "
+    "CMAKE_PREFIX_PATH. See camera_driver/README.md."
+  )
+endif()
 find_package(Threads REQUIRED)
 
 add_library(camera_driver_component SHARED

@@ -119,13 +119,14 @@ public:
         image_topic_, qos);
     }
 
-    const auto status_period =
-      std::chrono::duration<double>(status_log_interval_sec_);
-    status_timer_ = node_.create_wall_timer(
-      status_period, std::bind(&Impl::report_status, this));
-
     try {
       start_pipeline();
+      started_at_ = std::chrono::steady_clock::now();
+      last_status_at_ = started_at_;
+      const auto status_period =
+        std::chrono::duration<double>(status_log_interval_sec_);
+      status_timer_ = node_.create_wall_timer(
+        status_period, std::bind(&Impl::report_status, this));
       capture_thread_ = std::thread(&Impl::capture_loop, this);
       if (publish_enabled_) {
         publish_thread_ = std::thread(&Impl::publish_loop, this);
@@ -260,11 +261,12 @@ private:
       queue_blocking_ ? "blocking" : "non-blocking");
     RCLCPP_INFO(
       node_.get_logger(),
-      "Outputs: ROS=%s%s%.1f Hz, preview=%s%s%.1f Hz",
-      publish_enabled_ ? "on " : "off",
+      "Outputs: ROS=%s (topic=%s, max=%.1f Hz), "
+      "preview=%s (window=%s, max=%.1f Hz)",
+      publish_enabled_ ? "on" : "off",
       publish_enabled_ ? image_topic_.c_str() : "",
       publish_enabled_ ? publish_fps_ : 0.0,
-      preview_enabled_ ? "on " : "off",
+      preview_enabled_ ? "on" : "off",
       preview_enabled_ ? preview_window_name_.c_str() : "",
       preview_enabled_ ? preview_fps_ : 0.0);
   }
@@ -308,7 +310,10 @@ private:
 
         const auto received_at = std::chrono::steady_clock::now();
         const auto sensor_timestamp = packet->getTimestamp();
-        auto bgr = packet->getCvFrame();
+        // BGR888i is already interleaved BGR. getFrame() returns a zero-copy
+        // cv::Mat view into the packet; FrameSnapshot retains the packet so
+        // the view stays valid for publishers and in-process processing.
+        auto bgr = packet->getFrame();
         if (bgr.empty() || bgr.type() != CV_8UC3) {
           invalid_frames_total_.fetch_add(1);
           RCLCPP_ERROR_THROTTLE(
@@ -388,6 +393,8 @@ private:
 
   void publish_loop()
   {
+    const bool publish_every_frame =
+      publish_fps_ >= sensor_fps_ * 0.999;
     const auto period = std::chrono::duration_cast<
       std::chrono::steady_clock::duration>(
       std::chrono::duration<double>(1.0 / publish_fps_));
@@ -395,18 +402,32 @@ private:
     std::uint64_t published_generation = 0;
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
-      {
+      if (publish_every_frame) {
+        std::unique_lock<std::mutex> lock(wait_mutex_);
+        frame_available_.wait(
+          lock,
+          [this, &published_generation]() {
+            if (stop_requested_.load(std::memory_order_relaxed)) {
+              return true;
+            }
+            auto latest = std::atomic_load_explicit(
+              &latest_frame_, std::memory_order_acquire);
+            return latest && latest->generation != published_generation;
+          });
+      } else {
         std::unique_lock<std::mutex> lock(wait_mutex_);
         frame_available_.wait_until(
           lock, next_deadline,
-          [this]() {return stop_requested_.load();});
+          [this]() {
+            return stop_requested_.load(std::memory_order_relaxed);
+          });
       }
-      if (stop_requested_.load()) {
+      if (stop_requested_.load(std::memory_order_relaxed)) {
         break;
       }
 
       const auto now = std::chrono::steady_clock::now();
-      if (now < next_deadline) {
+      if (!publish_every_frame && now < next_deadline) {
         continue;
       }
 
@@ -437,9 +458,11 @@ private:
         }
       }
 
-      next_deadline += period;
-      if (next_deadline < now - period) {
-        next_deadline = now + period;
+      if (!publish_every_frame) {
+        next_deadline += period;
+        if (next_deadline < now - period) {
+          next_deadline = now + period;
+        }
       }
     }
   }
@@ -488,6 +511,8 @@ private:
     const auto period = std::chrono::duration_cast<
       std::chrono::steady_clock::duration>(
       std::chrono::duration<double>(1.0 / preview_fps_));
+    const auto visibility_grace_deadline =
+      std::chrono::steady_clock::now() + 1s;
     auto next_deadline = std::chrono::steady_clock::now();
     std::uint64_t previewed_generation = 0;
 
@@ -521,7 +546,11 @@ private:
         const auto key = cv::waitKey(1) & 0xff;
         const auto visible = cv::getWindowProperty(
           preview_window_name_, cv::WND_PROP_VISIBLE);
-        if (key == 'q' || key == 'Q' || key == 27 || visible < 1.0) {
+        const auto visibility_check_enabled =
+          std::chrono::steady_clock::now() >= visibility_grace_deadline;
+        if (key == 'q' || key == 'Q' || key == 27 ||
+          (visibility_check_enabled && visible < 1.0))
+        {
           RCLCPP_INFO(
             node_.get_logger(),
             "Preview closed; camera capture and ROS publishing continue.");

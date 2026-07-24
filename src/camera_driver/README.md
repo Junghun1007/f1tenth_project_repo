@@ -23,6 +23,11 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 메시지 복사나 `imshow()`를 수행하지 않는다. 발행이나 프리뷰가 늦어지면
 오래된 프레임을 쌓지 않고 최신 프레임으로 건너뛴다.
 
+OAK가 전달한 `BGR888i` 버퍼는 캡처 스레드에서 다시 복사하지 않는다.
+`cv::Mat`은 패킷 메모리를 가리키는 zero-copy 뷰이고, 최신 프레임
+스냅샷이 DepthAI 패킷의 수명을 함께 유지한다. ROS 토픽 발행을 선택한
+경우에만 `sensor_msgs/Image` 데이터로 한 번 복사한다.
+
 왜곡 보정은 `Camera::requestOutput(..., enableUndistortion=true)`로 요청한다.
 따라서 호스트에서 `cv::remap()`을 수행하지 않는다.
 
@@ -31,6 +36,10 @@ ROS 발행은 `sensor_msgs/msg/Image`의 `UniquePtr`를 사용한다. 기본 lau
 컴포넌트를 같은 컨테이너에 적재하면 DDS 직렬화 없이 메시지 소유권을 넘길
 수 있다. 별도 프로세스의 구독자, `ros2 topic hz`, rosbag 등은 DDS 전송과
 추가 메모리 복사를 사용한다.
+
+`publish_fps`가 센서 FPS 이상이면 고정 주기의 타이머로 최신 영상을
+샘플링하지 않고 새 프레임 도착 알림에 맞춰 발행한다. 두 120 Hz 주기의
+미세한 위상 차이로 프레임을 건너뛰는 현상을 피하기 위한 동작이다.
 
 프리뷰 창의 실제 표시 속도는 모니터 주사율과 OpenCV GUI 성능의 제한을
 받는다. 60 Hz 모니터에서는 센서가 120 FPS로 동작해도 120개의 서로 다른
@@ -44,25 +53,88 @@ ROS 발행은 `sensor_msgs/msg/Image`의 `UniquePtr`를 사용한다. 기본 lau
 - OpenCV 4
 - OAK 장치와 USB 3 연결
 
-DepthAI를 별도 prefix에 설치했다면 빌드 전에 경로를 지정한다.
+Python의 `pip install depthai`만으로는 이 C++ 패키지를 빌드할 수 없다.
+`depthaiConfig.cmake`와 `depthai::core` 공유 라이브러리를 제공하는 DepthAI
+C++ 설치가 필요하다.
+
+### Jetson에 DepthAI C++ 설치
+
+ROS 2 Humble을 사용하는 Ubuntu/Jetson에서 필요한 기본 패키지를 설치한다.
 
 ```bash
-export CMAKE_PREFIX_PATH=/path/to/depthai-install:$CMAKE_PREFIX_PATH
+sudo apt update
+sudo apt install -y \
+  build-essential git cmake libudev-dev libopencv-dev
+```
+
+DepthAI C++ 3.x 소스를 받아 공유 라이브러리로 빌드한다. 메모리가 부족한
+Jetson을 고려해 병렬 빌드 수는 2로 제한한다.
+
+```bash
+cd ~/Desktop/f1tenth_test0724
+git clone \
+  --branch v3.6.1 \
+  --depth 1 \
+  --recurse-submodules \
+  https://github.com/luxonis/depthai-core.git
+
+cmake \
+  -S depthai-core \
+  -B depthai-core/build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_SHARED_LIBS=ON \
+  -DDEPTHAI_OPENCV_SUPPORT=ON \
+  -DCMAKE_INSTALL_PREFIX=/usr/local
+
+cmake --build depthai-core/build --parallel 2
+sudo cmake --install depthai-core/build
+sudo ldconfig
+```
+
+설치 결과를 확인한다.
+
+```bash
+find /usr/local -name depthaiConfig.cmake -print
+```
+
+일반적으로 다음 경로가 출력된다.
+
+```text
+/usr/local/lib/cmake/depthai/depthaiConfig.cmake
+```
+
+다른 prefix에 설치했다면 워크스페이스 빌드 시 해당 위치를 직접 전달한다.
+
+```bash
+colcon build \
+  --packages-select camera_driver \
+  --cmake-clean-cache \
+  --cmake-args \
+    -DCMAKE_BUILD_TYPE=Release \
+    -Ddepthai_DIR=/path/to/depthai-install/lib/cmake/depthai
 ```
 
 DepthAI는 OpenCV 지원을 켜고 빌드되어야 한다. 이 패키지는
-`ImgFrame::getCvFrame()`과 OpenCV 프리뷰를 사용한다.
+`ImgFrame::getFrame()`의 zero-copy OpenCV 뷰와 OpenCV 프리뷰를 사용한다.
 
 ## 빌드
 
 Jetson에서 워크스페이스 루트로 이동한 후 Release 모드로 빌드한다.
 
 ```bash
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+
 colcon build \
   --packages-select camera_driver \
+  --cmake-clean-cache \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
+
+`colcon build`는 `f1tenth_project_repo` 루트에서 실행한다. `src` 안에서
+실행하면 그 아래에 별도의 `build`, `install`, `log`가 생성되어 올바른
+워크스페이스의 설치 결과와 섞일 수 있다.
 
 ## 실행
 
