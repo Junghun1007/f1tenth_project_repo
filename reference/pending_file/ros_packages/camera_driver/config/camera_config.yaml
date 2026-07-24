@@ -1,0 +1,39 @@
+camera_driver_node:
+  ros__parameters:
+    # true일 때 노드 시작과 함께 OAK 카메라 파이프라인을 시작한다.
+    enabled: true
+
+    # OAK RGB 카메라 포트와 출력 해상도 설정.
+    camera_socket: "CAM_A"
+    width: 640
+    height: 480
+    resize_mode: "STRETCH"
+
+    # 카메라 센서가 영상을 취득하는 FPS.
+    sensor_fps: 100.0
+
+    # DepthAI 호스트 출력 큐 설정.
+    queue_size: 4
+    queue_blocking: false
+
+    # 받은 프레임은 JPG 압축 없이 bgr8 sensor_msgs/Image로 발행한다.
+    frame_id: "camera_optical_frame"
+    image_topic: "/camera/image_raw"
+    publish_enabled: true
+    publish_fps: 100.0
+
+    # DepthAI 프레임을 ROS 메시지로 왕복하지 않고 바로 표시한다.
+    preview_enabled: true
+    preview_fps: 100.0
+    preview_window_name: "OAK rectified image"
+    preview_max_width: 1280
+    preview_max_height: 720
+
+    # 카메라 장착 정보(현재는 기록/로그 용도이며 영상 처리에는 사용하지 않음).
+    # 아래 값은 실제 측정 전 임의 초기값이다.
+    camera_height_m: 0.25
+    camera_downward_angle_deg: 15.0
+
+    # 프레임 수신 여부를 로그로 검증하기 위한 설정.
+    startup_timeout_sec: 5.0
+    status_log_interval_sec: 5.0

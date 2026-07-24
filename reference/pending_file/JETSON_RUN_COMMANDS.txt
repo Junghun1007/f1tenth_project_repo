@@ -1,0 +1,198 @@
+F1TENTH Jetson 실행 명령어
+===========================
+
+[0. 모든 터미널에서 공통으로 먼저 실행]
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+
+[1. 조이스틱만 실행]
+
+ros2 launch joy_initializer joy.launch.py device_id:=0
+
+조이스틱 입력 확인용 별도 터미널:
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /joy
+
+
+[2. VESC 통신 노드만 실행]
+
+ros2 run vesc_initializer vesc_initialize_node --ros-args \
+  --params-file "$(ros2 pkg prefix vehicle_config)/share/vehicle_config/config/vesc_config.yaml"
+
+VESC 연결 상태 확인용 별도 터미널:
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /vesc/connected
+
+VESC가 /dev/ttyACM1에 연결된 경우:
+
+ros2 run vesc_initializer vesc_initialize_node --ros-args \
+  --params-file "$(ros2 pkg prefix vehicle_config)/share/vehicle_config/config/vesc_config.yaml" \
+  -p port:=/dev/ttyACM1
+
+주의: 이 명령은 VESC 통신 노드만 시작한다. 실제 주행 명령은 별도의
+/vesc/erpm 및 /vesc/servo_position publisher가 있어야 전달된다.
+
+
+[3. 조이스틱 수동 주행 전체 실행]
+
+ros2 launch vehicle_launcher manual_drive.launch.py
+
+이 launch에는 다음 노드가 모두 포함된다.
+
+- joy_node
+- joy_params_converter_node
+- actuator_commander_node
+- vesc_initialize_node
+
+따라서 [1] 조이스틱 노드나 [2] VESC 노드를 따로 실행하지 않는다.
+
+
+[4. 테스트 주행 실행]
+
+ros2 launch vehicle_test_drive vehicle_test_drive.launch.py
+
+VESC가 /dev/ttyACM1에 연결된 경우:
+
+ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyACM1
+
+테스트 주행 launch는 VESC 연결과 펌웨어 응답을 확인한 뒤 다음 순서로
+자동 실행한다.
+
+1. 조향 위치 0.5 -> 0.1 -> 0.9 스윕
+2. ERPM 0 -> 5000
+3. ERPM 0 정지
+4. ERPM 0 -> -5000
+5. ERPM 0 및 조향 위치 0.5로 복귀 후 종료
+
+테스트 주행 launch가 vesc_initialize_node를 직접 실행하므로 [2] VESC 노드,
+[3] 수동 주행 launch와 동시에 실행하지 않는다.
+
+
+[5. 왜곡 보정 영상만 실행]
+
+camera_driver_node가 /image/normal을 직접 발행:
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch image_processor normal_image.launch.py
+
+이 launch가 카메라 드라이버도 시작하므로 camera_driver.launch.py를 별도로
+동시에 실행하지 않는다. 기본적으로 "Normal rectified image" 창만 열린다.
+
+창을 띄우지 않고 /image/normal만 발행:
+
+ros2 launch image_processor normal_image.launch.py preview_enabled:=false
+
+일반 이미지 설정 파일:
+
+src/image_processor/config/normal_image.yaml
+
+  undistort_enabled: false  -> DepthAI 렌즈 보정 없이 카메라 출력
+  undistort_enabled: true   -> OAK 내부 캘리브레이션으로 DepthAI 렌즈 보정
+  image_topic: /image/normal -> 중간 재발행 없이 카메라가 직접 발행
+  preview_enabled: true     -> 왜곡 보정 영상을 노드에서 직접 표시
+  preview_fps: 100.0        -> 직접 프리뷰 목표 FPS
+
+카메라 해상도와 센서 FPS 설정:
+
+src/camera_driver/config/camera_config.yaml
+
+preview_enabled가 true이면 별도 image_viewer 없이 "Normal rectified image"
+창이 열린다. Q, ESC 또는 창 닫기는 직접 프리뷰만 끄고 카메라와 ROS 발행은
+계속 유지한다.
+
+viewer_1, viewer_2, viewer_3을 YAML 설정대로 동시에 실행:
+
+ros2 launch image_viewer image_viewers.launch.py
+
+다중 뷰어 설정 파일:
+
+src/image_viewer/config/image_viewers.yaml
+
+현재 viewer_1은 /camera/image_raw를 구독하고 viewer_2는
+camera_driver_node의 직접 출력인 /image/normal을 구독한다. viewer_3은
+향후 디버그 토픽용이므로 /image/debug 발행 전에는 프레임 대기 경고가
+출력된다.
+
+fit_to_image:=true이면 입력 이미지 해상도에 맞춰 창 크기가 자동 조정된다.
+큰 이미지는 max_window_width와 max_window_height 안에서 종횡비를 유지한다.
+Q, ESC 또는 창 닫기로 해당 뷰어를 종료할 수 있다.
+
+주의: OpenCV 창을 사용하므로 Jetson 데스크톱 또는 X11 forwarding처럼
+DISPLAY/그래픽 화면을 사용할 수 있는 환경에서 실행한다.
+
+
+[6. BEV 영상만 실행 또는 두 프리뷰 동시 실행]
+
+카메라, DepthAI 왜곡 보정, BEV processor를 함께 실행:
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch bev_processor bev.launch.py
+
+BEV 입력:
+
+  /image/normal  (DepthAI 왜곡 보정 완료, bgr8 비압축)
+
+BEV 출력:
+
+  /image/bev     (bgr8 비압축)
+
+BEV 파라미터 설정:
+
+src/bev_processor/config/bev_config.yaml
+
+기본 실행은 왜곡 보정 창을 숨기고 "BEV processed image" 창만 연다.
+
+왜곡 보정 창과 BEV 창을 동시에 표시:
+
+ros2 launch bev_processor bev.launch.py normal_preview_enabled:=true
+
+이미 다른 터미널에서 /image/normal을 발행 중이면 카메라를 다시 열지 않고
+BEV processor만 실행:
+
+ros2 launch bev_processor bev_processor_only.launch.py
+
+이때 /image/normal 발행 노드가 반드시 먼저 실행 중이어야 한다. BEV 처리,
+직접 프리뷰, 디버그 토픽 주기는 각각 processing_rate_hz, preview_fps,
+publish_rate_hz로 설정한다.
+
+주의: normal_image.launch.py와 bev.launch.py는 둘 다 카메라를 시작하므로
+동시에 실행하지 않는다. 카메라가 이미 실행 중이면 반드시
+bev_processor_only.launch.py를 사용한다.
+
+현재 K_rect, 카메라 장착 위치, 출력 범위는 임의 초기값이다.
+실측/캘리브레이션 후 YAML 값을 교체한다.
+
+publish_enabled를 false로 설정해도 BEV 직접 프리뷰는 계속 동작한다.
+외부 노드나 rosbag에서 /image/bev가 필요한 경우에만 true로 둔다.
+
+
+[7. Jetson 빌드]
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --cmake-clean-cache --packages-select \
+  joy_initializer vehicle_config vehicle_launcher manual_control \
+  vesc_initializer vehicle_test_drive camera_driver image_processor \
+  image_viewer bev_processor
+source install/setup.bash
+
+
+[안전 주의]
+
+- 테스트 주행 전 차량 바퀴를 지면에서 띄운다.
+- VESC를 사용하는 launch 또는 노드를 두 개 이상 동시에 실행하지 않는다.
+- 실행 중 이상 동작이 발생하면 Ctrl+C로 종료한다.

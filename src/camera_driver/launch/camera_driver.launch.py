@@ -1,20 +1,59 @@
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch_ros.actions import Node
-from launch_ros.substitutions import FindPackageShare
-from launch.substitutions import PathJoinSubstitution
+from launch.actions import DeclareLaunchArgument
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
 
 
 def generate_launch_description():
-    camera_config = PathJoinSubstitution(
-        [FindPackageShare("camera_driver"), "config", "camera_config.yaml"]
-    )
+    package_share = get_package_share_directory("camera_driver")
+    default_params = f"{package_share}/config/camera_config.yaml"
 
-    camera_driver_node = Node(
-        package="camera_driver",
-        executable="camera_driver_node",
-        name="camera_driver_node",
-        output="screen",
-        parameters=[camera_config],
-    )
+    params_file = LaunchConfiguration("params_file")
+    preview_enabled = LaunchConfiguration("preview_enabled")
+    publish_enabled = LaunchConfiguration("publish_enabled")
 
-    return LaunchDescription([camera_driver_node])
+    return LaunchDescription(
+        [
+            DeclareLaunchArgument(
+                "params_file",
+                default_value=default_params,
+                description="Camera driver parameter YAML file.",
+            ),
+            DeclareLaunchArgument(
+                "preview_enabled",
+                default_value="true",
+                description="Show the independent latest-frame preview.",
+            ),
+            DeclareLaunchArgument(
+                "publish_enabled",
+                default_value="true",
+                description="Publish sensor_msgs/Image frames.",
+            ),
+            ComposableNodeContainer(
+                name="camera_container",
+                namespace="",
+                package="rclcpp_components",
+                executable="component_container_mt",
+                output="screen",
+                composable_node_descriptions=[
+                    ComposableNode(
+                        package="camera_driver",
+                        plugin="camera_driver::CameraDriverNode",
+                        name="camera_driver",
+                        parameters=[
+                            params_file,
+                            {
+                                "preview_enabled": preview_enabled,
+                                "publish_enabled": publish_enabled,
+                            },
+                        ],
+                        extra_arguments=[
+                            {"use_intra_process_comms": True},
+                        ],
+                    )
+                ],
+            ),
+        ]
+    )
