@@ -27,7 +27,8 @@ python3 -m pip install depthai
 
 `normal_image.launch.py`로 전체 영상 입력을 실행할 때는
 `image_processor/config/normal_image.yaml`의 `undistort_enabled`가 DepthAI
-`Camera.requestOutput()`의 `enableUndistortion` 옵션에 직접 전달됩니다.
+`Camera.requestOutput()`의 `enableUndistortion` 옵션에 직접 전달되고,
+카메라 드라이버의 출력 토픽은 `/image/normal`로 변경됩니다.
 
 - `false`: 렌즈 왜곡 보정 없이 출력
 - `true`: OAK 장치 내부 캘리브레이션을 사용하는 DepthAI 왜곡 보정 출력
@@ -36,8 +37,8 @@ python3 -m pip install depthai
 
 `sensor_fps`는 DepthAI 카메라가 프레임을 취득하는 FPS입니다. 카메라
 드라이버는 수신한 모든 프레임을 `/camera/image_raw`로 발행하며 별도의
-발행률 제한은 하지 않습니다. 최종 `/image/normal` 발행률은
-`normal_image_publisher_node`가 관리합니다.
+발행률 제한은 하지 않습니다. `normal_image.launch.py`에서는 같은
+드라이버가 중간 재발행 노드 없이 `/image/normal`로 직접 발행합니다.
 
 `camera_height_m`과 `camera_downward_angle_deg`는 임의 초기값으로
 YAML에 기록되어 있으며 시작 로그에 표시됩니다. 현재 영상 처리에는

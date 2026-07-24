@@ -79,7 +79,7 @@ ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyA
 
 [5. 카메라 일반 이미지 파이프라인 및 뷰어 실행]
 
-camera_driver_node와 normal_image_publisher_node를 함께 실행:
+camera_driver_node가 /image/normal을 직접 발행:
 
 cd ~/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
@@ -95,7 +95,7 @@ src/image_processor/config/normal_image.yaml
 
   undistort_enabled: false  -> DepthAI 렌즈 보정 없이 카메라 출력
   undistort_enabled: true   -> OAK 내부 캘리브레이션으로 DepthAI 렌즈 보정
-  publish_rate_hz: 30.0     -> /image/normal 최대 발행 Hz
+  image_topic: /image/normal -> 중간 재발행 없이 카메라가 직접 발행
 
 카메라 해상도와 센서 FPS 설정:
 
@@ -107,10 +107,10 @@ cd ~/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch image_viewer image_viewer.launch.py \
-  node_name:=viewer_1 \
-  image_topic:=/camera/image_raw \
+  node_name:=normal_viewer \
+  image_topic:=/image/normal \
   preview_fps:=15.0 \
-  window_name:="camera raw" \
+  window_name:="normal image" \
   fit_to_image:=true \
   max_window_width:=1280 \
   max_window_height:=720
@@ -124,8 +124,9 @@ ros2 launch image_viewer image_viewers.launch.py
 src/image_viewer/config/image_viewers.yaml
 
 현재 viewer_1은 /camera/image_raw를 구독하고 viewer_2는
-normal_image_publisher_node의 /image/normal을 구독한다. viewer_3은 향후
-디버그 토픽용이므로 /image/debug 발행 전에는 프레임 대기 경고가 출력된다.
+camera_driver_node의 직접 출력인 /image/normal을 구독한다. viewer_3은
+향후 디버그 토픽용이므로 /image/debug 발행 전에는 프레임 대기 경고가
+출력된다.
 
 fit_to_image:=true이면 입력 이미지 해상도에 맞춰 창 크기가 자동 조정된다.
 큰 이미지는 max_window_width와 max_window_height 안에서 종횡비를 유지한다.
@@ -137,7 +138,7 @@ DISPLAY/그래픽 화면을 사용할 수 있는 환경에서 실행한다.
 
 [6. 단일 CAM_A BEV 파이프라인 실행]
 
-카메라, DepthAI 왜곡 보정, normal image publisher, BEV processor를 함께 실행:
+카메라, DepthAI 왜곡 보정, BEV processor를 함께 실행:
 
 cd ~/f1tenth_project_repo
 source /opt/ros/humble/setup.bash

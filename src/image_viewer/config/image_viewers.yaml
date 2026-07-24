@@ -14,7 +14,7 @@ viewer_1:
 
 viewer_2:
   ros__parameters:
-    # normal_image_publisher_node가 발행하는 일반/왜곡 보정 영상.
+    # camera_driver_node가 직접 발행하는 일반/왜곡 보정 영상.
     image_topic: "/image/normal"
     preview_fps: 10.0
     window_name: "viewer_2 - normal"

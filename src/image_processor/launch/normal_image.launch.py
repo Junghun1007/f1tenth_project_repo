@@ -18,21 +18,8 @@ def generate_launch_description():
         name="camera_driver_node",
         output="screen",
         # normal_image.yaml의 camera_driver_node 항목이 기본 카메라 설정을
-        # 덮어써서 DepthAI 왜곡 보정 on/off를 결정한다.
+        # 덮어써서 DepthAI 왜곡 보정과 /image/normal 직접 발행을 결정한다.
         parameters=[camera_config, normal_image_config],
     )
 
-    normal_image_publisher_node = Node(
-        package="image_processor",
-        executable="normal_image_publisher_node",
-        name="normal_image_publisher_node",
-        output="screen",
-        parameters=[normal_image_config],
-    )
-
-    return LaunchDescription(
-        [
-            camera_driver_node,
-            normal_image_publisher_node,
-        ]
-    )
+    return LaunchDescription([camera_driver_node])
