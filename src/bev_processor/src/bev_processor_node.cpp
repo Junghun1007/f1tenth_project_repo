@@ -3,12 +3,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
-#include <cv_bridge/cv_bridge.h>
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -182,6 +182,46 @@ cv::Mat convertToBEV(const cv::Mat & rectified_image, const RemapLut & lut)
     cv::BORDER_CONSTANT,
     cv::Scalar(0, 0, 0));
   return bev_image;
+}
+
+cv::Mat viewBgr8Image(const sensor_msgs::msg::Image & message)
+{
+  return cv::Mat(
+    static_cast<int>(message.height),
+    static_cast<int>(message.width),
+    CV_8UC3,
+    const_cast<std::uint8_t *>(message.data.data()),
+    static_cast<std::size_t>(message.step));
+}
+
+sensor_msgs::msg::Image makeBgr8ImageMessage(
+  const sensor_msgs::msg::Image & source,
+  const std::string & frame_id,
+  const cv::Mat & image)
+{
+  if (image.type() != CV_8UC3) {
+    throw std::invalid_argument("BEV output must be a three-channel BGR image");
+  }
+
+  sensor_msgs::msg::Image output;
+  output.header = source.header;
+  output.header.frame_id = frame_id;
+  output.height = static_cast<std::uint32_t>(image.rows);
+  output.width = static_cast<std::uint32_t>(image.cols);
+  output.encoding = "bgr8";
+  output.is_bigendian = false;
+  output.step = static_cast<std::uint32_t>(image.cols * 3);
+  output.data.resize(
+    static_cast<std::size_t>(output.step) *
+    static_cast<std::size_t>(output.height));
+
+  for (int row = 0; row < image.rows; ++row) {
+    std::memcpy(
+      output.data.data() + static_cast<std::size_t>(row) * output.step,
+      image.ptr(row),
+      output.step);
+  }
+  return output;
 }
 
 }  // namespace
@@ -522,6 +562,22 @@ private:
         message->width, message->height, input_width_, input_height_);
       return;
     }
+    const std::size_t minimum_step =
+      static_cast<std::size_t>(message->width) * 3U;
+    const std::size_t required_size =
+      static_cast<std::size_t>(message->step) *
+      static_cast<std::size_t>(message->height);
+    if (
+      message->encoding != "bgr8" ||
+      message->step < minimum_step ||
+      message->data.size() < required_size)
+    {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Expected valid bgr8 input; encoding=%s, step=%u, data_size=%zu",
+        message->encoding.c_str(), message->step, message->data.size());
+      return;
+    }
     latest_image_ = message;
     new_image_available_ = true;
   }
@@ -537,8 +593,8 @@ private:
     const auto message = latest_image_;
     new_image_available_ = false;
     try {
-      const auto cv_input = cv_bridge::toCvShare(message, "bgr8");
-      const cv::Mat bev = convertToBEV(cv_input->image, remap_lut_);
+      const cv::Mat cv_input = viewBgr8Image(*message);
+      const cv::Mat bev = convertToBEV(cv_input, remap_lut_);
       ++processed_count_;
       ++processed_status_count_;
 
@@ -559,24 +615,23 @@ private:
         publish_enabled_ && image_publisher_ &&
         now >= next_publish_at_)
       {
-        auto output =
-          cv_bridge::CvImage(message->header, "bgr8", bev).toImageMsg();
-        output->header.frame_id = output_frame_id_;
-        image_publisher_->publish(*output);
+        const auto output =
+          makeBgr8ImageMessage(*message, output_frame_id_, bev);
+        image_publisher_->publish(output);
         ++published_count_;
         ++published_status_count_;
         next_publish_at_ =
           now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
           std::chrono::duration<double>(1.0 / publish_rate_hz_));
       }
-    } catch (const cv_bridge::Exception & exception) {
-      RCLCPP_ERROR_THROTTLE(
-        get_logger(), *get_clock(), 2000,
-        "Image conversion failed: %s", exception.what());
     } catch (const cv::Exception & exception) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 2000,
         "BEV remap failed: %s", exception.what());
+    } catch (const std::exception & exception) {
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "BEV image message creation failed: %s", exception.what());
     }
   }
 

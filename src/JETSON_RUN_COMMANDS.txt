@@ -184,7 +184,7 @@ publish_enabled를 false로 설정해도 BEV 직접 프리뷰는 계속 동작�
 cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 
 source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select \
+colcon build --symlink-install --cmake-clean-cache --packages-select \
   joy_initializer vehicle_config vehicle_launcher manual_control \
   vesc_initializer vehicle_test_drive camera_driver image_processor \
   image_viewer bev_processor

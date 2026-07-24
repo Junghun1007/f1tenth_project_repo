@@ -6,7 +6,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(cv_bridge REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -16,7 +15,6 @@ target_compile_features(bev_processor_node PUBLIC cxx_std_17)
 target_include_directories(bev_processor_node PUBLIC ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(
   bev_processor_node
-  cv_bridge
   rclcpp
   sensor_msgs
 )
