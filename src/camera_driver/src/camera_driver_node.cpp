@@ -170,7 +170,6 @@ private:
   struct FrameSnapshot
   {
     std::shared_ptr<dai::ImgFrame> packet;
-    cv::Mat bgr;
     rclcpp::Time ros_stamp;
     std::chrono::steady_clock::time_point sensor_timestamp;
     std::chrono::steady_clock::time_point received_timestamp;
@@ -270,7 +269,9 @@ private:
       std::make_pair(
         static_cast<std::uint32_t>(width_),
         static_cast<std::uint32_t>(height_)),
-      dai::ImgFrame::Type::BGR888i,
+      // Keep the full-rate device/USB path compact. The CUDA BEV consumer
+      // samples NV12 directly, so no full-resolution host BGR frame is needed.
+      dai::ImgFrame::Type::NV12,
       resize_mode_,
       static_cast<float>(sensor_fps_),
       undistort_enabled_);
@@ -282,7 +283,7 @@ private:
     RCLCPP_INFO(
       node_.get_logger(),
       "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, "
-      "transport=BGR888i, XLink chunks=off",
+      "transport=NV12, XLink chunks=off",
       width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
     RCLCPP_INFO(
       node_.get_logger(),
@@ -349,15 +350,16 @@ private:
         received_interval_.fetch_add(1, std::memory_order_relaxed);
 
         if (publish_enabled_ || preview_enabled_) {
-          // BGR888i is already interleaved BGR. getFrame() returns a zero-copy
-          // cv::Mat view into the packet; FrameSnapshot retains the packet so
-          // the view remains valid for preview and ROS consumers.
-          auto bgr = packet->getFrame();
-          if (bgr.empty() || bgr.type() != CV_8UC3) {
+          const bool valid_nv12 =
+            packet->getType() == dai::ImgFrame::Type::NV12 &&
+            static_cast<int>(packet->getWidth()) == width_ &&
+            static_cast<int>(packet->getHeight()) == height_;
+          if (!valid_nv12) {
             invalid_frames_total_.fetch_add(1);
             RCLCPP_ERROR_THROTTLE(
               node_.get_logger(), *node_.get_clock(), 1000,
-              "Expected a non-empty CV_8UC3 frame from DepthAI.");
+              "Expected a %dx%d NV12 frame from DepthAI.",
+              width_, height_);
             continue;
           }
 
@@ -365,7 +367,6 @@ private:
             std::make_shared<FrameSnapshot>(
             FrameSnapshot{
               packet,
-              std::move(bgr),
               ros_timestamp_for(sensor_timestamp),
               sensor_timestamp,
               received_at,
@@ -412,28 +413,25 @@ private:
     }
   }
 
-  static void copy_to_message(
-    const cv::Mat & bgr,
+  static void copy_nv12_to_message(
+    dai::ImgFrame & packet,
     sensor_msgs::msg::Image & message)
   {
-    const auto row_bytes =
-      static_cast<std::size_t>(bgr.cols) * static_cast<std::size_t>(3);
-    const auto total_bytes =
-      row_bytes * static_cast<std::size_t>(bgr.rows);
-    message.data.resize(total_bytes);
-
-    if (bgr.isContinuous() &&
-      static_cast<std::size_t>(bgr.step) == row_bytes)
-    {
-      std::memcpy(message.data.data(), bgr.data, total_bytes);
-      return;
+    const auto & nv12 = packet.getData();
+    const auto stride =
+      packet.getStride() > 0U ? packet.getStride() : packet.getWidth();
+    const auto nv12_rows =
+      static_cast<std::size_t>(packet.getHeight()) * 3U / 2U;
+    const auto expected_bytes =
+      static_cast<std::size_t>(stride) * nv12_rows;
+    if (nv12.size() < expected_bytes) {
+      throw std::runtime_error(
+              "DepthAI returned an undersized NV12 frame");
     }
 
-    for (int row = 0; row < bgr.rows; ++row) {
-      std::memcpy(
-        message.data.data() + static_cast<std::size_t>(row) * row_bytes,
-        bgr.ptr(row), row_bytes);
-    }
+    message.step = stride;
+    message.data.resize(expected_bytes);
+    std::memcpy(message.data.data(), nv12.data(), expected_bytes);
   }
 
   void publish_loop()
@@ -483,13 +481,11 @@ private:
           auto message = std::make_unique<sensor_msgs::msg::Image>();
           message->header.stamp = snapshot->ros_stamp;
           message->header.frame_id = frame_id_;
-          message->height = static_cast<std::uint32_t>(snapshot->bgr.rows);
-          message->width = static_cast<std::uint32_t>(snapshot->bgr.cols);
-          message->encoding = "bgr8";
+          message->height = snapshot->packet->getHeight();
+          message->width = snapshot->packet->getWidth();
+          message->encoding = "nv12";
           message->is_bigendian = false;
-          message->step = static_cast<std::uint32_t>(
-            snapshot->bgr.cols * 3);
-          copy_to_message(snapshot->bgr, *message);
+          copy_nv12_to_message(*snapshot->packet, *message);
 
           publisher_->publish(std::move(message));
           published_generation = snapshot->generation;
@@ -580,8 +576,13 @@ private:
         auto snapshot = std::atomic_load_explicit(
           &latest_frame_, std::memory_order_acquire);
         if (snapshot && snapshot->generation != previewed_generation) {
-          resize_preview_window(snapshot->bgr);
-          cv::imshow(preview_window_name_, snapshot->bgr);
+          const auto bgr = snapshot->packet->getCvFrame();
+          if (bgr.empty() || bgr.type() != CV_8UC3) {
+            throw std::runtime_error(
+                    "DepthAI could not convert the NV12 preview to BGR");
+          }
+          resize_preview_window(bgr);
+          cv::imshow(preview_window_name_, bgr);
           previewed_generation = snapshot->generation;
           previewed_total_.fetch_add(1);
           previewed_interval_.fetch_add(1);

@@ -80,8 +80,8 @@ ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyA
 [5. OV9782 THE_720_P 143 FPS 왜곡 보정 카메라 실행]
 
 camera_driver는 OAK 장치 내부 왜곡 보정을 사용하고
-1280x720 bgr8 프리뷰를 표시한다. 성능 측정을 위해 ROS 이미지 발행은
-기본적으로 꺼져 있다.
+1280x720 NV12를 수신한다. 카메라 단독 프리뷰를 켜면 표시할 때만 CPU에서
+BGR로 변환한다. 성능 측정을 위해 ROS 이미지 발행은 기본적으로 꺼져 있다.
 
 cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
@@ -120,6 +120,27 @@ OpenCV 창을 사용하려면 Jetson 데스크톱 또는 X11 forwarding처럼
 DISPLAY/그래픽 화면을 사용할 수 있어야 한다.
 
 
+[6. NV12 카메라 + CUDA BEV 통합 실행]
+
+카메라와 BEV를 같은 컴포넌트 컨테이너에서 intra-process로 연결한다.
+카메라 원본 프리뷰는 끄고, GPU가 NV12를 바로 70x482 BGR BEV로 변환한다.
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch bev_processor camera_bev.launch.py
+
+창 없이 BEV 토픽만 발행:
+
+ros2 launch bev_processor camera_bev.launch.py \
+  preview_enabled:=false \
+  publish_enabled:=true
+
+CUDA Toolkit 확인:
+
+nvcc --version
+
+
 [7. Jetson 빌드]
 
 cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
@@ -127,7 +148,7 @@ cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 colcon build --cmake-clean-cache --packages-select \
   joy_initializer vehicle_config vehicle_launcher manual_control \
-  vesc_initializer vehicle_test_drive camera_driver \
+  vesc_initializer vehicle_test_drive camera_driver bev_processor \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 

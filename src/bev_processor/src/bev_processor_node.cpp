@@ -18,11 +18,13 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <std_msgs/msg/header.hpp>
 
 #include "bev_processor/bev_geometry.hpp"
+#include "bev_processor/cuda_bev_processor.hpp"
 
 namespace bev_processor
 {
@@ -51,16 +53,6 @@ bool graphicalDisplayAvailable()
     (display != nullptr && display[0] != '\0') ||
     (wayland_display != nullptr && wayland_display[0] != '\0');
 #endif
-}
-
-cv::Mat viewBgr8Image(const sensor_msgs::msg::Image & message)
-{
-  return cv::Mat(
-    static_cast<int>(message.height),
-    static_cast<int>(message.width),
-    CV_8UC3,
-    const_cast<std::uint8_t *>(message.data.data()),
-    static_cast<std::size_t>(message.step));
 }
 
 std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
@@ -98,19 +90,21 @@ std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
 class BevProcessorNode final : public rclcpp::Node
 {
 public:
-  BevProcessorNode()
-  : Node("bev_processor")
+  explicit BevProcessorNode(const rclcpp::NodeOptions & options)
+  : Node("bev_processor", options)
   {
     declareParameters();
     readParameters();
     validateParameters();
 
-    const auto lut = std::make_shared<const RemapLut>(
-      generateRemap(camera_model_, bev_config_));
-    std::atomic_store_explicit(
-      &remap_lut_, lut, std::memory_order_release);
+    const auto lut = generateRemap(camera_model_, bev_config_);
+    gpu_processor_ = std::make_unique<CudaBevProcessor>(
+      camera_model_.image_width,
+      camera_model_.image_height,
+      lut.map_x,
+      lut.map_y);
 
-    const int valid_pixels = cv::countNonZero(lut->valid_mask);
+    const int valid_pixels = cv::countNonZero(lut.valid_mask);
     const int output_pixels =
       bev_config_.output_width * bev_config_.output_height;
     valid_lut_percent_ =
@@ -152,10 +146,10 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
-      "BEV processor started: input=%s (%dx%d BGR8, expected=%.1fHz), "
+      "BEV processor started: input=%s (%dx%d NV12, expected=%.1fHz), "
       "output=%s (%dx%d), "
       "range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, %.3fm/px, "
-      "valid_lut=%.2f%%, processing=event-driven/latest-only, "
+      "valid_lut=%.2f%%, GPU=%s, processing=NV12-to-BEV/latest-only, "
       "ROS=%s (max=%.1fHz, 0=unlimited), preview=%s (max=%.1fHz)",
       input_topic_.c_str(),
       camera_model_.image_width,
@@ -170,6 +164,7 @@ public:
       bev_config_.y_max_m,
       bev_config_.meter_per_pixel,
       valid_lut_percent_,
+      gpu_processor_->deviceName().c_str(),
       publish_enabled_ ? "on" : "off",
       publish_max_fps_,
       preview_enabled_ ? "on" : "off",
@@ -199,7 +194,7 @@ private:
     declare_parameter<std::string>("input_topic", "/camera/image_rect");
     declare_parameter<std::string>("output_topic", "/camera/image_bev");
     declare_parameter<std::string>("output_frame_id", "front_axle_bev");
-    declare_parameter<double>("expected_input_fps", 120.0);
+    declare_parameter<double>("expected_input_fps", 143.0);
 
     declare_parameter<bool>("publish_enabled", true);
     declare_parameter<double>("publish_max_fps", 0.0);
@@ -209,12 +204,12 @@ private:
     declare_parameter<int>("preview_max_width", 1280);
     declare_parameter<int>("preview_max_height", 900);
 
-    declare_parameter<int>("input_width", 960);
-    declare_parameter<int>("input_height", 540);
-    declare_parameter<double>("fx", 421.050720215);
-    declare_parameter<double>("fy", 378.767059326);
-    declare_parameter<double>("cx", 482.274475098);
-    declare_parameter<double>("cy", 265.019256592);
+    declare_parameter<int>("input_width", 1280);
+    declare_parameter<int>("input_height", 720);
+    declare_parameter<double>("fx", 561.400939941);
+    declare_parameter<double>("fy", 561.136352539);
+    declare_parameter<double>("cx", 643.032653809);
+    declare_parameter<double>("cy", 352.621124268);
 
     declare_parameter<double>("camera_x_m", 0.0);
     declare_parameter<double>("camera_y_m", 0.0);
@@ -352,14 +347,16 @@ private:
       static_cast<int>(message->width) == camera_model_.image_width &&
       static_cast<int>(message->height) == camera_model_.image_height;
     const std::size_t minimum_step =
-      static_cast<std::size_t>(camera_model_.image_width) * 3U;
+      static_cast<std::size_t>(camera_model_.image_width);
+    const std::size_t nv12_rows =
+      static_cast<std::size_t>(camera_model_.image_height) * 3U / 2U;
     const bool memory_valid =
       message->step >= minimum_step &&
       message->data.size() >=
-      static_cast<std::size_t>(message->step) * message->height;
+      static_cast<std::size_t>(message->step) * nv12_rows;
     if (
       !dimensions_valid ||
-      message->encoding != sensor_msgs::image_encodings::BGR8 ||
+      message->encoding != "nv12" ||
       !memory_valid)
     {
       invalid_total_.fetch_add(1U, std::memory_order_relaxed);
@@ -367,7 +364,7 @@ private:
         get_logger(),
         *get_clock(),
         5000,
-        "Rejected image: expected %dx%d bgr8, got %ux%u %s "
+        "Rejected image: expected %dx%d nv12, got %ux%u %s "
         "(step=%u, data=%zu).",
         camera_model_.image_width,
         camera_model_.image_height,
@@ -426,10 +423,11 @@ private:
 
       try {
         const auto started_at = SteadyClock::now();
-        const auto lut = std::atomic_load_explicit(
-          &remap_lut_, std::memory_order_acquire);
         auto output = std::make_shared<BevFrame>();
-        output->image = convertToBev(viewBgr8Image(*input), *lut);
+        output->image = gpu_processor_->process(
+          input->data.data(),
+          input->data.size(),
+          static_cast<std::size_t>(input->step));
         output->header = input->header;
         output->input_received_at = input_received_at;
         output->generation = generation;
@@ -650,7 +648,7 @@ private:
       get_logger(),
       "BEV status: input=%.1fHz (%llu total), processed=%.1fHz "
       "(%llu total, skipped=%llu), ROS=%.1fHz, preview=%.1fHz, "
-      "remap=%.3f/%.3fms avg/max, latest_age=%.2fms, "
+      "gpu=%.3f/%.3fms avg/max, latest_age=%.2fms, "
       "errors(invalid/process/publish)=%llu/%llu/%llu",
       static_cast<double>(received) / elapsed_sec,
       static_cast<unsigned long long>(
@@ -682,7 +680,7 @@ private:
         *get_clock(),
         5000,
         "No valid input received on %s. Check that camera_driver publishing "
-        "is enabled and the image is 960x540 bgr8.",
+        "is enabled and the image is 1280x720 nv12.",
         input_topic_.c_str());
     }
   }
@@ -690,7 +688,7 @@ private:
   std::string input_topic_;
   std::string output_topic_;
   std::string output_frame_id_;
-  double expected_input_fps_{120.0};
+  double expected_input_fps_{143.0};
   bool publish_enabled_{true};
   double publish_max_fps_{0.0};
   bool preview_enabled_{true};
@@ -704,6 +702,7 @@ private:
   RectifiedCameraModel camera_model_{};
   BevConfig bev_config_{};
   double valid_lut_percent_{0.0};
+  std::unique_ptr<CudaBevProcessor> gpu_processor_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr input_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
@@ -718,7 +717,6 @@ private:
   std::mutex output_mutex_;
   std::condition_variable output_cv_;
   std::shared_ptr<const BevFrame> latest_output_;
-  std::shared_ptr<const RemapLut> remap_lut_;
 
   std::atomic<bool> stop_{false};
   std::thread processing_thread_;
@@ -750,11 +748,14 @@ private:
 
 }  // namespace bev_processor
 
+#ifdef BEV_PROCESSOR_STANDALONE
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
   try {
-    rclcpp::spin(std::make_shared<bev_processor::BevProcessorNode>());
+    rclcpp::spin(
+      std::make_shared<bev_processor::BevProcessorNode>(
+        rclcpp::NodeOptions{}));
   } catch (const std::exception & exception) {
     RCLCPP_FATAL(
       rclcpp::get_logger("bev_processor"),
@@ -766,3 +767,6 @@ int main(int argc, char ** argv)
   rclcpp::shutdown();
   return 0;
 }
+#else
+RCLCPP_COMPONENTS_REGISTER_NODE(bev_processor::BevProcessorNode)
+#endif

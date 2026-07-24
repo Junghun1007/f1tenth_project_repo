@@ -23,12 +23,12 @@ bool require(const bool condition, const char * message)
 int main()
 {
   bev_processor::RectifiedCameraModel camera{
-    421.050720215,
-    378.767059326,
-    482.274475098,
-    265.019256592,
-    960,
-    540,
+    561.400939941,
+    561.136352539,
+    643.032653809,
+    352.621124268,
+    1280,
+    720,
     cv::Vec3d(0.0, 0.0, 0.20),
     bev_processor::mountRotationVehicleFromCamera(
       0.0, bev_processor::degToRad(14.0), 0.0)};
@@ -64,7 +64,7 @@ int main()
     lut.map_y.at<float>(far_row, config.output_width / 2),
     "near ground must map lower in the camera image than far ground");
 
-  cv::Mat input(540, 960, CV_8UC3);
+  cv::Mat input(720, 1280, CV_8UC3);
   for (int row = 0; row < input.rows; ++row) {
     for (int column = 0; column < input.cols; ++column) {
       input.at<cv::Vec3b>(row, column) = cv::Vec3b(

@@ -1,18 +1,28 @@
-cmake_minimum_required(VERSION 3.8)
-project(bev_processor)
+cmake_minimum_required(VERSION 3.18)
+project(bev_processor LANGUAGES CXX CUDA)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_EXTENSIONS OFF)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+  )
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(Threads REQUIRED)
@@ -20,6 +30,7 @@ find_package(Threads REQUIRED)
 add_library(bev_geometry STATIC
   src/bev_geometry.cpp
 )
+set_target_properties(bev_geometry PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(bev_geometry
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -28,17 +39,58 @@ target_include_directories(bev_geometry
 )
 target_link_libraries(bev_geometry PUBLIC ${OpenCV_LIBS})
 
+add_library(bev_cuda STATIC
+  src/cuda_bev_processor.cu
+)
+set_target_properties(bev_cuda PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(bev_cuda
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_compile_options(bev_cuda PRIVATE
+  $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
+)
+target_link_libraries(bev_cuda PUBLIC CUDA::cudart ${OpenCV_LIBS})
+
+add_library(bev_processor_component SHARED
+  src/bev_processor_node.cpp
+)
+target_include_directories(
+  bev_processor_component PRIVATE ${OpenCV_INCLUDE_DIRS})
+ament_target_dependencies(bev_processor_component
+  rclcpp
+  rclcpp_components
+  sensor_msgs
+  std_msgs
+)
+target_link_libraries(bev_processor_component
+  bev_geometry
+  bev_cuda
+  ${OpenCV_LIBS}
+  Threads::Threads
+)
+rclcpp_components_register_nodes(
+  bev_processor_component
+  "bev_processor::BevProcessorNode"
+)
+
 add_executable(bev_processor_node
   src/bev_processor_node.cpp
 )
+target_compile_definitions(
+  bev_processor_node PRIVATE BEV_PROCESSOR_STANDALONE)
 target_include_directories(bev_processor_node PRIVATE ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(bev_processor_node
   rclcpp
+  rclcpp_components
   sensor_msgs
   std_msgs
 )
 target_link_libraries(bev_processor_node
   bev_geometry
+  bev_cuda
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -52,6 +104,7 @@ endif()
 
 install(TARGETS
   bev_geometry
+  bev_processor_component
   bev_processor_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -61,5 +114,5 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config launch DESTINATION share/${PROJECT_NAME})
 
 ament_export_include_directories(include)
-ament_export_dependencies(OpenCV)
+ament_export_dependencies(OpenCV rclcpp_components)
 ament_package()

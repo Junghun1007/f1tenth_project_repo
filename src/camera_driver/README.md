@@ -3,7 +3,7 @@
 OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패키지다.
 기본 설정은 다음과 같다.
 
-- 센서 모드/출력: OV9782 `THE_720_P`, `1280x720`, `bgr8`
+- 센서 모드/출력: OV9782 `THE_720_P`, `1280x720`, `NV12`
 - 요청 센서 FPS: `143`
 - USB 최대 속도 요청: `SUPER` (5 Gbps)
 - XLink 청크 분할: 비활성화 (`setXLinkChunkSize(0)`)
@@ -28,11 +28,16 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 메시지 복사나 `imshow()`를 수행하지 않는다. 발행이나 프리뷰가 늦어지면
 오래된 프레임을 쌓지 않고 최신 프레임으로 건너뛴다.
 
-OAK에서 `BGR888i`를 생성해 Jetson으로 직접 전송한다. 캡처 스레드의
-`ImgFrame::getFrame()`은 패킷 메모리를 가리키는 zero-copy `cv::Mat` 뷰를
-반환하며, 최신 프레임 스냅샷이 DepthAI 패킷의 수명을 함께 유지한다.
-따라서 Jetson에서 NV12를 BGR로 변환하지 않는다. ROS 토픽 발행을 선택한
-경우에만 `sensor_msgs/Image` 데이터로 추가 복사한다.
+OAK에서 `NV12`를 생성해 Jetson으로 전송한다. BGR888i보다 전송량이 절반
+이하이므로 USB/XLink 병목을 줄인다. 캡처 스레드는 `ImgFrame` 패킷만
+보관하며 색 변환을 하지 않는다. ROS 토픽 발행을 선택한 경우 원본 NV12를
+`sensor_msgs/Image` 데이터로 한 번 복사한다.
+
+NV12 메시지는 `encoding="nv12"`, `height=720`, `step=Y/UV plane stride`를
+사용하고, `data`에는 Y plane 720행 다음에 interleaved UV plane 360행이
+연속으로 들어간다. 일반 BGR8 구독자가 아니라 NV12를 이해하는 처리 노드가
+받아야 한다. `bev_processor`는 같은 컴포넌트 컨테이너 안에서 이 메시지를
+받아 CUDA로 바로 BEV를 생성한다.
 
 왜곡 보정은 `Camera::requestOutput(..., enableUndistortion=true)`로 요청한다.
 따라서 호스트에서 `cv::remap()`을 수행하지 않는다.
@@ -120,9 +125,9 @@ colcon build \
     -Ddepthai_DIR=/path/to/depthai-install/lib/cmake/depthai
 ```
 
-DepthAI는 OpenCV 지원을 켜고 빌드되어야 한다. 이 패키지는
-`ImgFrame::getFrame()`의 zero-copy BGR OpenCV 뷰와 OpenCV 프리뷰를
-사용한다.
+DepthAI는 OpenCV 지원을 켜고 빌드되어야 한다. 카메라 단독 프리뷰를 켠
+경우에만 `ImgFrame::getCvFrame()`으로 NV12를 CPU BGR로 변환해 OpenCV
+창에 표시한다. GPU BEV 통합 launch에서는 이 프리뷰를 끈다.
 
 ## 빌드
 
@@ -210,8 +215,7 @@ ros2 topic info /camera/image_rect --verbose
 | `preview_enabled` | `true` | OpenCV 직접 프리뷰 |
 | `preview_fps` | `143.0` | 프리뷰 갱신 최대 FPS |
 
-143 FPS에서 OAK가 전송하는 `1280x720 BGR888i` 영상은 USB 오버헤드를
-제외하고 약 377 MiB/s다. ROS 발행 시 메시지 헤더와 DDS 오버헤드가
-추가된다. 외부 노드가 전체 이미지를 항상 필요로 하지 않는다면
-`publish_enabled: false`를 사용하거나 발행 FPS를 낮추고, 주 영상 처리는
-같은 프로세스의 C++ 컴포넌트로 구성하는 것이 좋다.
+143 FPS에서 `1280x720 NV12`의 순수 영상 데이터는 약 189 MiB/s다.
+`BGR888i`의 약 377 MiB/s보다 작다. 외부 프로세스 구독자는 DDS 직렬화와
+추가 복사를 사용하므로, 주 영상 처리는 `camera_bev.launch.py`처럼 같은
+프로세스의 intra-process C++ 컴포넌트로 구성하는 것이 좋다.
