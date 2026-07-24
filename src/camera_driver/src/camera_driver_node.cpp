@@ -257,7 +257,7 @@ private:
   void start_pipeline()
   {
     auto device = std::make_shared<dai::Device>(
-      dai::UsbSpeed::SUPER_PLUS);
+      dai::UsbSpeed::SUPER);
     pipeline_ = std::make_unique<dai::Pipeline>(device);
 
     // Explicit OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS.
