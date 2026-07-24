@@ -19,7 +19,10 @@ ros2 launch image_processor normal_image.launch.py
 
 - `undistort_enabled`: DepthAI 장치 내부 렌즈 보정 on/off
 - `image_topic`: 카메라 드라이버의 직접 출력 토픽
+- `preview_enabled`: 왜곡 보정 영상 직접 프리뷰 on/off
+- `preview_fps`: 왜곡 보정 영상 직접 프리뷰 FPS
 
-발행 FPS는 `camera_driver/config/camera_config.yaml`의 `sensor_fps`로
-설정합니다. 카메라 드라이버는 수신한 프레임을 별도로 제한하지 않고
-`/image/normal`로 발행합니다.
+센서 취득 FPS와 ROS 발행 FPS는
+`camera_driver/config/camera_config.yaml`의 `sensor_fps`,
+`publish_fps`로 각각 설정합니다. 프리뷰는 `/image/normal`을 다시
+구독하지 않고 DepthAI의 왜곡 보정 결과를 카메라 노드에서 바로 표시합니다.

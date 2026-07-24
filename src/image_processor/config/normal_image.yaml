@@ -8,3 +8,8 @@ camera_driver_node:
 
     # 변경 없는 중간 재발행 노드 없이 카메라 드라이버가 직접 발행한다.
     image_topic: "/image/normal"
+
+    # 왜곡 보정된 프레임을 ROS 구독 없이 카메라 노드에서 직접 표시한다.
+    preview_enabled: true
+    preview_fps: 100.0
+    preview_window_name: "Normal rectified image"

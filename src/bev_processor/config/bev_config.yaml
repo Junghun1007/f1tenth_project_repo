@@ -4,6 +4,13 @@ bev_processor_node:
     input_topic: "/image/normal"
     output_topic: "/image/bev"
     output_frame_id: "front_axle_bev"
+
+    # BEV 변환, 직접 프리뷰, ROS 디버그 영상 발행 주기를 각각 분리한다.
+    processing_rate_hz: 50.0
+    preview_enabled: true
+    preview_fps: 50.0
+    preview_window_name: "BEV processed image"
+    publish_enabled: true
     publish_rate_hz: 15.0
 
     # K_rect가 대응하는 최종 입력 영상 크기. 실제 메시지와 다르면 처리하지 않는다.

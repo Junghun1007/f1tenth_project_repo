@@ -96,24 +96,16 @@ src/image_processor/config/normal_image.yaml
   undistort_enabled: false  -> DepthAI 렌즈 보정 없이 카메라 출력
   undistort_enabled: true   -> OAK 내부 캘리브레이션으로 DepthAI 렌즈 보정
   image_topic: /image/normal -> 중간 재발행 없이 카메라가 직접 발행
+  preview_enabled: true     -> 왜곡 보정 영상을 노드에서 직접 표시
+  preview_fps: 100.0        -> 직접 프리뷰 목표 FPS
 
 카메라 해상도와 센서 FPS 설정:
 
 src/camera_driver/config/camera_config.yaml
 
-이미지 뷰어용 별도 터미널:
-
-cd ~/f1tenth_project_repo
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch image_viewer image_viewer.launch.py \
-  node_name:=normal_viewer \
-  image_topic:=/image/normal \
-  preview_fps:=15.0 \
-  window_name:="normal image" \
-  fit_to_image:=true \
-  max_window_width:=1280 \
-  max_window_height:=720
+preview_enabled가 true이면 별도 image_viewer 없이 "Normal rectified image"
+창이 열린다. Q, ESC 또는 창 닫기는 직접 프리뷰만 끄고 카메라와 ROS 발행은
+계속 유지한다.
 
 viewer_1, viewer_2, viewer_3을 YAML 설정대로 동시에 실행:
 
@@ -157,17 +149,15 @@ BEV 파라미터 설정:
 
 src/bev_processor/config/bev_config.yaml
 
+기본 설정에서는 "Normal rectified image"와 "BEV processed image" 창이
+동시에 열린다. BEV 처리, 직접 프리뷰, 디버그 토픽 주기는 각각
+processing_rate_hz, preview_fps, publish_rate_hz로 설정한다.
+
 현재 K_rect, 카메라 장착 위치, 출력 범위는 임의 초기값이다.
 실측/캘리브레이션 후 YAML 값을 교체한다.
 
-BEV 출력 뷰어용 별도 터미널:
-
-ros2 launch image_viewer image_viewer.launch.py \
-  node_name:=bev_viewer \
-  image_topic:=/image/bev \
-  preview_fps:=15.0 \
-  window_name:="BEV" \
-  fit_to_image:=true
+publish_enabled를 false로 설정해도 BEV 직접 프리뷰는 계속 동작한다.
+외부 노드나 rosbag에서 /image/bev가 필요한 경우에만 true로 둔다.
 
 
 [7. Git 반영 후 Jetson 업데이트 및 빌드]

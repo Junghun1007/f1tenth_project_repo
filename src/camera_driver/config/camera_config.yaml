@@ -19,6 +19,15 @@ camera_driver_node:
     # 받은 프레임은 JPG 압축 없이 bgr8 sensor_msgs/Image로 발행한다.
     frame_id: "camera_optical_frame"
     image_topic: "/camera/image_raw"
+    publish_enabled: true
+    publish_fps: 100.0
+
+    # DepthAI 프레임을 ROS 메시지로 왕복하지 않고 바로 표시한다.
+    preview_enabled: true
+    preview_fps: 100.0
+    preview_window_name: "OAK rectified image"
+    preview_max_width: 1280
+    preview_max_height: 720
 
     # 카메라 장착 정보(현재는 기록/로그 용도이며 영상 처리에는 사용하지 않음).
     # 아래 값은 실제 측정 전 임의 초기값이다.

@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -9,6 +10,7 @@
 
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/core.hpp>
+#include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -199,8 +201,10 @@ public:
       input_topic_,
       image_qos,
       std::bind(&BevProcessorNode::onImage, this, std::placeholders::_1));
-    image_publisher_ = create_publisher<sensor_msgs::msg::Image>(
-      output_topic_, image_qos);
+    if (publish_enabled_) {
+      image_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+        output_topic_, image_qos);
+    }
 
     if (use_imu_) {
       imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
@@ -210,22 +214,35 @@ public:
     }
 
     rebuildRemap();
-    publish_timer_ = create_wall_timer(
-      std::chrono::duration<double>(1.0 / publish_rate_hz_),
-      std::bind(&BevProcessorNode::publishLatestFrame, this));
+    initializePreview();
+    process_timer_ = create_wall_timer(
+      std::chrono::duration<double>(1.0 / processing_rate_hz_),
+      std::bind(&BevProcessorNode::processLatestFrame, this));
     status_timer_ = create_wall_timer(
       std::chrono::duration<double>(status_log_interval_sec_),
       std::bind(&BevProcessorNode::logStatus, this));
+    status_started_at_ = std::chrono::steady_clock::now();
+    next_publish_at_ = status_started_at_;
+    next_preview_at_ = status_started_at_;
 
     RCLCPP_INFO(
       get_logger(),
-      "BEV processor started: %s -> %s, CAM_A rectified input, output=%dx%d, "
-      "range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, resolution=%.3fm/px, imu=%s",
+      "BEV processor started: input=%s, output=%s, CAM_A rectified input, "
+      "processing=%.1fHz, ROS_publish=%s@%.1fHz, direct_preview=%s@%.1fHz, "
+      "output_size=%dx%d, range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, "
+      "resolution=%.3fm/px, imu=%s",
       input_topic_.c_str(), output_topic_.c_str(),
+      processing_rate_hz_, publish_enabled_ ? "on" : "off", publish_rate_hz_,
+      preview_enabled_ ? "on" : "off", preview_fps_,
       bev_config_.output_width, bev_config_.output_height,
       bev_config_.x_min_m, bev_config_.x_max_m,
       bev_config_.y_min_m, bev_config_.y_max_m,
       bev_config_.meter_per_pixel, use_imu_ ? "on" : "off");
+  }
+
+  ~BevProcessorNode() override
+  {
+    closePreview();
   }
 
 private:
@@ -234,7 +251,12 @@ private:
     declare_parameter<std::string>("input_topic", "/image/normal");
     declare_parameter<std::string>("output_topic", "/image/bev");
     declare_parameter<std::string>("output_frame_id", "front_axle_bev");
+    declare_parameter<double>("processing_rate_hz", 30.0);
+    declare_parameter<bool>("publish_enabled", true);
     declare_parameter<double>("publish_rate_hz", 15.0);
+    declare_parameter<bool>("preview_enabled", false);
+    declare_parameter<double>("preview_fps", 30.0);
+    declare_parameter<std::string>("preview_window_name", "BEV processed image");
     declare_parameter<int>("input_width", 640);
     declare_parameter<int>("input_height", 480);
     declare_parameter<double>("fx", 320.0);
@@ -270,7 +292,12 @@ private:
     input_topic_ = get_parameter("input_topic").as_string();
     output_topic_ = get_parameter("output_topic").as_string();
     output_frame_id_ = get_parameter("output_frame_id").as_string();
+    processing_rate_hz_ = get_parameter("processing_rate_hz").as_double();
+    publish_enabled_ = get_parameter("publish_enabled").as_bool();
     publish_rate_hz_ = get_parameter("publish_rate_hz").as_double();
+    preview_enabled_ = get_parameter("preview_enabled").as_bool();
+    preview_fps_ = get_parameter("preview_fps").as_double();
+    preview_window_name_ = get_parameter("preview_window_name").as_string();
     input_width_ = static_cast<int>(get_parameter("input_width").as_int());
     input_height_ = static_cast<int>(get_parameter("input_height").as_int());
     fx_ = get_parameter("fx").as_double();
@@ -308,17 +335,26 @@ private:
 
   void validateParameters() const
   {
-    if (input_topic_.empty() || output_topic_.empty()) {
-      throw std::invalid_argument("image topics must not be empty");
+    if (input_topic_.empty()) {
+      throw std::invalid_argument("input_topic must not be empty");
     }
-    if (input_topic_ == output_topic_) {
+    if (publish_enabled_ && output_topic_.empty()) {
+      throw std::invalid_argument(
+              "output_topic must not be empty when publishing is enabled");
+    }
+    if (publish_enabled_ && input_topic_ == output_topic_) {
       throw std::invalid_argument("input_topic and output_topic must differ");
+    }
+    if (preview_enabled_ && preview_window_name_.empty()) {
+      throw std::invalid_argument(
+              "preview_window_name must not be empty when preview is enabled");
     }
     if (input_width_ <= 1 || input_height_ <= 1 || fx_ <= 0.0 || fy_ <= 0.0) {
       throw std::invalid_argument("input size and focal lengths must be positive");
     }
     if (
-      publish_rate_hz_ <= 0.0 || status_log_interval_sec_ <= 0.0 ||
+      processing_rate_hz_ <= 0.0 || publish_rate_hz_ <= 0.0 ||
+      preview_fps_ <= 0.0 || status_log_interval_sec_ <= 0.0 ||
       bev_config_.meter_per_pixel <= 0.0)
     {
       throw std::invalid_argument("rates and meter_per_pixel must be positive");
@@ -385,6 +421,53 @@ private:
     ++remap_update_count_;
   }
 
+  void initializePreview()
+  {
+    if (!preview_enabled_) {
+      return;
+    }
+
+    const bool display_available =
+      std::getenv("DISPLAY") != nullptr ||
+      std::getenv("WAYLAND_DISPLAY") != nullptr;
+    if (!display_available) {
+      preview_enabled_ = false;
+      RCLCPP_WARN(
+        get_logger(),
+        "BEV direct preview disabled because no graphical display is available");
+      return;
+    }
+
+    try {
+      cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
+      cv::resizeWindow(
+        preview_window_name_,
+        bev_config_.output_width,
+        bev_config_.output_height);
+      preview_window_created_ = true;
+    } catch (const cv::Exception & exception) {
+      preview_enabled_ = false;
+      preview_window_created_ = false;
+      RCLCPP_WARN(
+        get_logger(),
+        "BEV direct preview disabled because its window could not be created: %s",
+        exception.what());
+    }
+  }
+
+  void closePreview()
+  {
+    if (!preview_window_created_) {
+      return;
+    }
+    try {
+      cv::destroyWindow(preview_window_name_);
+      cv::waitKey(1);
+    } catch (const cv::Exception &) {
+    }
+    preview_window_created_ = false;
+  }
+
   void onImage(const sensor_msgs::msg::Image::ConstSharedPtr message)
   {
     ++received_count_;
@@ -402,7 +485,7 @@ private:
     new_image_available_ = true;
   }
 
-  void publishLatestFrame()
+  void processLatestFrame()
   {
     if (!new_image_available_ || !latest_image_ || !remap_ready_) {
       return;
@@ -413,10 +496,45 @@ private:
     try {
       const auto cv_input = cv_bridge::toCvShare(message, "bgr8");
       const cv::Mat bev = convertToBEV(cv_input->image, remap_lut_);
-      auto output = cv_bridge::CvImage(message->header, "bgr8", bev).toImageMsg();
-      output->header.frame_id = output_frame_id_;
-      image_publisher_->publish(*output);
-      ++published_count_;
+      ++processed_count_;
+      ++processed_status_count_;
+
+      const auto now = std::chrono::steady_clock::now();
+      if (
+        preview_enabled_ && preview_window_created_ &&
+        now >= next_preview_at_)
+      {
+        cv::imshow(preview_window_name_, bev);
+        const int key = cv::waitKey(1) & 0xff;
+        const double visible = cv::getWindowProperty(
+          preview_window_name_, cv::WND_PROP_VISIBLE);
+        ++previewed_count_;
+        ++previewed_status_count_;
+        next_preview_at_ =
+          now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(1.0 / preview_fps_));
+
+        if (key == 'q' || key == 'Q' || key == 27 || visible < 1.0) {
+          RCLCPP_INFO(get_logger(), "BEV direct preview closed");
+          closePreview();
+          preview_enabled_ = false;
+        }
+      }
+
+      if (
+        publish_enabled_ && image_publisher_ &&
+        now >= next_publish_at_)
+      {
+        auto output =
+          cv_bridge::CvImage(message->header, "bgr8", bev).toImageMsg();
+        output->header.frame_id = output_frame_id_;
+        image_publisher_->publish(*output);
+        ++published_count_;
+        ++published_status_count_;
+        next_publish_at_ =
+          now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+          std::chrono::duration<double>(1.0 / publish_rate_hz_));
+      }
     } catch (const cv_bridge::Exception & exception) {
       RCLCPP_ERROR_THROTTLE(
         get_logger(), *get_clock(), 2000,
@@ -475,6 +593,10 @@ private:
 
   void logStatus()
   {
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::max(
+      std::chrono::duration<double>(now - status_started_at_).count(),
+      1.0e-6);
     const int valid_pixels = remap_ready_ ?
       cv::countNonZero(remap_lut_.valid_mask) : 0;
     const int total_pixels =
@@ -483,18 +605,36 @@ private:
       total_pixels > 0 ? 100.0 * valid_pixels / total_pixels : 0.0;
     RCLCPP_INFO(
       get_logger(),
-      "BEV active: received=%llu, published=%llu, valid_area=%.1f%%, "
-      "LUT_updates=%llu",
+      "BEV active: received=%llu, processed=%.1fHz/%llu, "
+      "ROS_publish=%s/%.1fHz/%llu, direct_preview=%s/%.1fHz/%llu, "
+      "valid_area=%.1f%%, LUT_updates=%llu",
       static_cast<unsigned long long>(received_count_),
+      processed_status_count_ / elapsed,
+      static_cast<unsigned long long>(processed_count_),
+      publish_enabled_ ? "on" : "off",
+      published_status_count_ / elapsed,
       static_cast<unsigned long long>(published_count_),
+      preview_enabled_ ? "on" : "off",
+      previewed_status_count_ / elapsed,
+      static_cast<unsigned long long>(previewed_count_),
       valid_percent,
       static_cast<unsigned long long>(remap_update_count_));
+    processed_status_count_ = 0;
+    published_status_count_ = 0;
+    previewed_status_count_ = 0;
+    status_started_at_ = now;
   }
 
   std::string input_topic_;
   std::string output_topic_;
   std::string output_frame_id_;
+  double processing_rate_hz_{30.0};
+  bool publish_enabled_{true};
   double publish_rate_hz_{15.0};
+  bool preview_enabled_{false};
+  double preview_fps_{30.0};
+  std::string preview_window_name_;
+  bool preview_window_created_{false};
   int input_width_{640};
   int input_height_{480};
   double fx_{320.0};
@@ -526,12 +666,20 @@ private:
   sensor_msgs::msg::Image::ConstSharedPtr latest_image_;
   bool new_image_available_{false};
   std::uint64_t received_count_{0};
+  std::uint64_t processed_count_{0};
   std::uint64_t published_count_{0};
+  std::uint64_t previewed_count_{0};
+  std::uint64_t processed_status_count_{0};
+  std::uint64_t published_status_count_{0};
+  std::uint64_t previewed_status_count_{0};
+  std::chrono::steady_clock::time_point status_started_at_;
+  std::chrono::steady_clock::time_point next_publish_at_;
+  std::chrono::steady_clock::time_point next_preview_at_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr image_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
-  rclcpp::TimerBase::SharedPtr publish_timer_;
+  rclcpp::TimerBase::SharedPtr process_timer_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 };
 

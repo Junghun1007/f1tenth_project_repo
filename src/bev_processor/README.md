@@ -3,7 +3,8 @@
 DepthAI에서 렌즈 왜곡 보정된 단일 `CAM_A` 영상을 차량 지면 기준 BEV로
 변환하는 ROS 2 C++ 노드다. BEV 노드에서는 렌즈 왜곡 보정을 다시 하지
 않으며, 초기화 또는 자세 변경 시 역투영 LUT를 만든 뒤 프레임마다
-`cv::remap()`만 수행한다.
+`cv::remap()`만 수행한다. 처리 결과는 ROS 이미지로 다시 왕복하지 않고
+노드 내부의 `cv::Mat`을 OpenCV 창에 직접 표시할 수 있다.
 
 기본 좌표 원점은 전륜축 중앙의 지면점이다. `+X`는 차량 전방, `+Y`는
 차량 좌측, `+Z`는 위쪽이며 BEV 영상의 위쪽이 전방이다.
@@ -14,8 +15,19 @@ DepthAI에서 렌즈 왜곡 보정된 단일 `CAM_A` 영상을 차량 지면 기
 ros2 launch bev_processor bev.launch.py
 ```
 
-위 launch는 카메라 드라이버와 normal image publisher까지 함께 시작한다.
-입력은 `/image/normal`, 출력은 비압축 `bgr8` 형식의 `/image/bev`다.
+위 launch는 왜곡 보정과 직접 프리뷰가 활성화된 카메라 드라이버도 함께
+시작한다. 입력은 `/image/normal`, 선택적 ROS 출력은 비압축 `bgr8`
+형식의 `/image/bev`다.
+
+기본 설정에서는 두 개의 직접 프리뷰 창이 열린다.
+
+- `Normal rectified image`: DepthAI 왜곡 보정 결과
+- `BEV processed image`: BEV 처리 결과
+
+`processing_rate_hz`, `preview_fps`, `publish_rate_hz`는 각각 BEV 변환,
+직접 프리뷰, `/image/bev` 디버그 토픽 발행 주기다.
+`publish_enabled: false`로 두면 BEV 창은 유지하면서 대용량 디버그 영상
+토픽만 끌 수 있다.
 
 설정은 `config/bev_config.yaml`에 있다. 현재 내부 파라미터, 장착 위치,
 BEV 범위는 임시값이다. 특히 `fx`, `fy`, `cx`, `cy`는 DepthAI가 출력한
