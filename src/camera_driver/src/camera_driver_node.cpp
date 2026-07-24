@@ -269,7 +269,10 @@ private:
       std::make_pair(
         static_cast<std::uint32_t>(width_),
         static_cast<std::uint32_t>(height_)),
-      dai::ImgFrame::Type::BGR888i,
+      // Keep the high-rate device/USB path in NV12. Requesting full-resolution
+      // BGR888i makes the RVC2 allocate and transfer twice as much image data,
+      // which can make the device disconnect while applying the pipeline.
+      dai::ImgFrame::Type::NV12,
       resize_mode_,
       static_cast<float>(sensor_fps_),
       undistort_enabled_);
@@ -280,7 +283,7 @@ private:
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s",
+      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, transport=NV12",
       width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
     RCLCPP_INFO(
       node_.get_logger(),
@@ -331,18 +334,6 @@ private:
 
         const auto received_at = std::chrono::steady_clock::now();
         const auto sensor_timestamp = packet->getTimestamp();
-        // BGR888i is already interleaved BGR. getFrame() returns a zero-copy
-        // cv::Mat view into the packet; FrameSnapshot retains the packet so
-        // the view stays valid for publishers and in-process processing.
-        auto bgr = packet->getFrame();
-        if (bgr.empty() || bgr.type() != CV_8UC3) {
-          invalid_frames_total_.fetch_add(1);
-          RCLCPP_ERROR_THROTTLE(
-            node_.get_logger(), *node_.get_clock(), 1000,
-            "Expected a non-empty CV_8UC3 frame from DepthAI.");
-          continue;
-        }
-
         const auto device_sequence = packet->getSequenceNum();
         if (last_device_sequence_.has_value() &&
           device_sequence > *last_device_sequence_ + 1)
@@ -358,19 +349,33 @@ private:
           received_total_.fetch_add(1, std::memory_order_relaxed) + 1;
         received_interval_.fetch_add(1, std::memory_order_relaxed);
 
-        std::shared_ptr<const FrameSnapshot> snapshot =
-          std::make_shared<FrameSnapshot>(
-          FrameSnapshot{
-            packet,
-            std::move(bgr),
-            ros_timestamp_for(sensor_timestamp),
-            sensor_timestamp,
-            received_at,
-            generation,
-            device_sequence});
-        std::atomic_store_explicit(
-          &latest_frame_, std::move(snapshot), std::memory_order_release);
-        frame_available_.notify_all();
+        if (publish_enabled_ || preview_enabled_) {
+          // The OAK-to-host stream stays in NV12 to minimize device memory and
+          // USB bandwidth. Convert only when a BGR consumer is enabled, so a
+          // capture-only FPS test measures the camera/USB path itself.
+          auto bgr = packet->getCvFrame();
+          if (bgr.empty() || bgr.type() != CV_8UC3) {
+            invalid_frames_total_.fetch_add(1);
+            RCLCPP_ERROR_THROTTLE(
+              node_.get_logger(), *node_.get_clock(), 1000,
+              "Expected a non-empty CV_8UC3 frame from DepthAI.");
+            continue;
+          }
+
+          std::shared_ptr<const FrameSnapshot> snapshot =
+            std::make_shared<FrameSnapshot>(
+            FrameSnapshot{
+              packet,
+              std::move(bgr),
+              ros_timestamp_for(sensor_timestamp),
+              sensor_timestamp,
+              received_at,
+              generation,
+              device_sequence});
+          std::atomic_store_explicit(
+            &latest_frame_, std::move(snapshot), std::memory_order_release);
+          frame_available_.notify_all();
+        }
 
         if (!first_frame_received_.exchange(true)) {
           RCLCPP_INFO(
