@@ -6,6 +6,7 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 - 센서 모드/출력: OV9782 `THE_720_P`, `1280x720`, `bgr8`
 - 요청 센서 FPS: `143`
 - USB 최대 속도 요청: `SUPER` (5 Gbps)
+- XLink 청크 분할: 비활성화 (`setXLinkChunkSize(0)`)
 - 렌즈 왜곡 보정: OAK 장치 내부에서 활성화
 - ROS 이미지 발행: 기본 비활성화
 - QoS: sensor data, best effort, keep-last 1

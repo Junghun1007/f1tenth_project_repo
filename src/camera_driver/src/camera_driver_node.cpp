@@ -259,6 +259,7 @@ private:
     auto device = std::make_shared<dai::Device>(
       dai::UsbSpeed::SUPER);
     pipeline_ = std::make_unique<dai::Pipeline>(device);
+    pipeline_->setXLinkChunkSize(0);
 
     // Explicit OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS.
     auto camera = pipeline_->create<dai::node::Camera>()->build(
@@ -280,7 +281,8 @@ private:
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, transport=BGR888i",
+      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, "
+      "transport=BGR888i, XLink chunks=off",
       width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
     RCLCPP_INFO(
       node_.get_logger(),
