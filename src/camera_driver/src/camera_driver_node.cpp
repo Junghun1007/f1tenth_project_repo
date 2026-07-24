@@ -269,10 +269,7 @@ private:
       std::make_pair(
         static_cast<std::uint32_t>(width_),
         static_cast<std::uint32_t>(height_)),
-      // Keep the high-rate device/USB path in NV12. Requesting full-resolution
-      // BGR888i makes the RVC2 allocate and transfer twice as much image data,
-      // which can make the device disconnect while applying the pipeline.
-      dai::ImgFrame::Type::NV12,
+      dai::ImgFrame::Type::BGR888i,
       resize_mode_,
       static_cast<float>(sensor_fps_),
       undistort_enabled_);
@@ -283,7 +280,7 @@ private:
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, transport=NV12",
+      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, transport=BGR888i",
       width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
     RCLCPP_INFO(
       node_.get_logger(),
@@ -350,10 +347,10 @@ private:
         received_interval_.fetch_add(1, std::memory_order_relaxed);
 
         if (publish_enabled_ || preview_enabled_) {
-          // The OAK-to-host stream stays in NV12 to minimize device memory and
-          // USB bandwidth. Convert only when a BGR consumer is enabled, so a
-          // capture-only FPS test measures the camera/USB path itself.
-          auto bgr = packet->getCvFrame();
+          // BGR888i is already interleaved BGR. getFrame() returns a zero-copy
+          // cv::Mat view into the packet; FrameSnapshot retains the packet so
+          // the view remains valid for preview and ROS consumers.
+          auto bgr = packet->getFrame();
           if (bgr.empty() || bgr.type() != CV_8UC3) {
             invalid_frames_total_.fetch_add(1);
             RCLCPP_ERROR_THROTTLE(

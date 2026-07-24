@@ -27,12 +27,11 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 메시지 복사나 `imshow()`를 수행하지 않는다. 발행이나 프리뷰가 늦어지면
 오래된 프레임을 쌓지 않고 최신 프레임으로 건너뛴다.
 
-OAK와 Jetson 사이의 고속 전송은 `NV12`를 사용한다. `BGR888i`보다 장치
-메모리와 USB 전송량이 절반이므로 1280x720 고속 파이프라인을 안정적으로
-시작하는 데 유리하다. 캡처 스레드에서 `ImgFrame::getCvFrame()`으로 OpenCV
-프리뷰와 ROS가 사용하는 `CV_8UC3` BGR 영상으로 변환한다. ROS 토픽 발행을
-선택한 경우에는 `sensor_msgs/Image` 데이터로 추가 복사한다. 프리뷰와
-발행을 모두 끄면 BGR 변환도 생략하므로 카메라/USB 캡처 성능만 측정한다.
+OAK에서 `BGR888i`를 생성해 Jetson으로 직접 전송한다. 캡처 스레드의
+`ImgFrame::getFrame()`은 패킷 메모리를 가리키는 zero-copy `cv::Mat` 뷰를
+반환하며, 최신 프레임 스냅샷이 DepthAI 패킷의 수명을 함께 유지한다.
+따라서 Jetson에서 NV12를 BGR로 변환하지 않는다. ROS 토픽 발행을 선택한
+경우에만 `sensor_msgs/Image` 데이터로 추가 복사한다.
 
 왜곡 보정은 `Camera::requestOutput(..., enableUndistortion=true)`로 요청한다.
 따라서 호스트에서 `cv::remap()`을 수행하지 않는다.
@@ -121,7 +120,7 @@ colcon build \
 ```
 
 DepthAI는 OpenCV 지원을 켜고 빌드되어야 한다. 이 패키지는
-`ImgFrame::getCvFrame()`으로 NV12 영상을 BGR로 변환하고 OpenCV 프리뷰를
+`ImgFrame::getFrame()`의 zero-copy BGR OpenCV 뷰와 OpenCV 프리뷰를
 사용한다.
 
 ## 빌드
@@ -210,9 +209,8 @@ ros2 topic info /camera/image_rect --verbose
 | `preview_enabled` | `true` | OpenCV 직접 프리뷰 |
 | `preview_fps` | `143.0` | 프리뷰 갱신 최대 FPS |
 
-143 FPS에서 OAK가 전송하는 `1280x720 NV12` 영상은 USB 오버헤드를
-제외하고 약 189 MiB/s다. Jetson에서 변환된 `1280x720 bgr8` 영상은 약
-377 MiB/s이며, ROS 발행 시 메시지 헤더와 DDS 오버헤드가 추가된다. 외부
-노드가 전체 이미지를 항상 필요로 하지 않는다면 `publish_enabled: false`를
-사용하거나 발행 FPS를 낮추고, 주 영상 처리는 같은 프로세스의 C++
-컴포넌트로 구성하는 것이 좋다.
+143 FPS에서 OAK가 전송하는 `1280x720 BGR888i` 영상은 USB 오버헤드를
+제외하고 약 377 MiB/s다. ROS 발행 시 메시지 헤더와 DDS 오버헤드가
+추가된다. 외부 노드가 전체 이미지를 항상 필요로 하지 않는다면
+`publish_enabled: false`를 사용하거나 발행 FPS를 낮추고, 주 영상 처리는
+같은 프로세스의 C++ 컴포넌트로 구성하는 것이 좋다.
