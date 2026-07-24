@@ -9,7 +9,6 @@
 #include <cstring>
 #include <cstdlib>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -31,6 +30,9 @@ using namespace std::chrono_literals;
 
 namespace
 {
+
+constexpr std::uint32_t kOv9782The720PWidth = 1280U;
+constexpr std::uint32_t kOv9782The720PHeight = 720U;
 
 std::string uppercase(std::string value)
 {
@@ -75,6 +77,25 @@ dai::ImgResizeMode parse_resize_mode(const std::string & value)
   }
   throw std::invalid_argument(
           "resize_mode must be CROP, STRETCH, or LETTERBOX");
+}
+
+const char * usb_speed_name(dai::UsbSpeed speed)
+{
+  switch (speed) {
+    case dai::UsbSpeed::LOW:
+      return "LOW";
+    case dai::UsbSpeed::FULL:
+      return "FULL";
+    case dai::UsbSpeed::HIGH:
+      return "HIGH";
+    case dai::UsbSpeed::SUPER:
+      return "SUPER";
+    case dai::UsbSpeed::SUPER_PLUS:
+      return "SUPER_PLUS";
+    case dai::UsbSpeed::UNKNOWN:
+    default:
+      return "UNKNOWN";
+  }
 }
 
 bool graphical_display_available()
@@ -171,9 +192,9 @@ private:
     enabled_ = node_.declare_parameter<bool>("enabled", true);
     camera_socket_name_ =
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
-    width_ = node_.declare_parameter<int>("width", 960);
-    height_ = node_.declare_parameter<int>("height", 540);
-    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 120.0);
+    width_ = node_.declare_parameter<int>("width", 1280);
+    height_ = node_.declare_parameter<int>("height", 720);
+    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 143.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
     undistort_enabled_ =
@@ -186,13 +207,13 @@ private:
     image_topic_ = node_.declare_parameter<std::string>(
       "image_topic", "/camera/image_rect");
     publish_enabled_ =
-      node_.declare_parameter<bool>("publish_enabled", true);
+      node_.declare_parameter<bool>("publish_enabled", false);
     publish_fps_ =
-      node_.declare_parameter<double>("publish_fps", 120.0);
+      node_.declare_parameter<double>("publish_fps", 143.0);
     preview_enabled_ =
       node_.declare_parameter<bool>("preview_enabled", true);
     preview_fps_ =
-      node_.declare_parameter<double>("preview_fps", 120.0);
+      node_.declare_parameter<double>("preview_fps", 143.0);
     preview_window_name_ = node_.declare_parameter<std::string>(
       "preview_window_name", "OAK rectified image");
     preview_max_width_ =
@@ -235,10 +256,15 @@ private:
 
   void start_pipeline()
   {
-    pipeline_ = std::make_unique<dai::Pipeline>();
+    auto device = std::make_shared<dai::Device>(
+      dai::UsbSpeed::SUPER_PLUS);
+    pipeline_ = std::make_unique<dai::Pipeline>(device);
 
+    // Explicit OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS.
     auto camera = pipeline_->create<dai::node::Camera>()->build(
-      camera_socket_, std::nullopt, static_cast<float>(sensor_fps_));
+      camera_socket_,
+      std::make_pair(kOv9782The720PWidth, kOv9782The720PHeight),
+      static_cast<float>(sensor_fps_));
     auto * output = camera->requestOutput(
       std::make_pair(
         static_cast<std::uint32_t>(width_),
@@ -254,21 +280,16 @@ private:
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "OAK pipeline started: socket=%s, output=%dx%d BGR8, "
-      "requested_fps=%.1f, device_undistortion=%s, queue=%d/%s",
-      camera_socket_name_.c_str(), width_, height_, sensor_fps_,
-      undistort_enabled_ ? "true" : "false", queue_size_,
-      queue_blocking_ ? "blocking" : "non-blocking");
+      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s",
+      width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
     RCLCPP_INFO(
       node_.get_logger(),
-      "Outputs: ROS=%s (topic=%s, max=%.1f Hz), "
-      "preview=%s (window=%s, max=%.1f Hz)",
+      "Options: undistort=%s, publish=%s, preview=%s, queue=%d/%s",
+      undistort_enabled_ ? "on" : "off",
       publish_enabled_ ? "on" : "off",
-      publish_enabled_ ? image_topic_.c_str() : "",
-      publish_enabled_ ? publish_fps_ : 0.0,
       preview_enabled_ ? "on" : "off",
-      preview_enabled_ ? preview_window_name_.c_str() : "",
-      preview_enabled_ ? preview_fps_ : 0.0);
+      queue_size_,
+      queue_blocking_ ? "blocking" : "non-blocking");
   }
 
   rclcpp::Time ros_timestamp_for(
@@ -605,40 +626,17 @@ private:
     last_status_at_ = now;
 
     const auto capture_count = received_interval_.exchange(0);
-    const auto publish_count = published_interval_.exchange(0);
     const auto preview_count = previewed_interval_.exchange(0);
     const auto dropped_count = device_drops_interval_.exchange(0);
 
     const auto capture_hz = static_cast<double>(capture_count) / elapsed;
-    const auto publish_hz = static_cast<double>(publish_count) / elapsed;
     const auto preview_hz = static_cast<double>(preview_count) / elapsed;
-
-    double latest_age_ms = std::numeric_limits<double>::quiet_NaN();
-    auto snapshot = std::atomic_load_explicit(
-      &latest_frame_, std::memory_order_acquire);
-    if (snapshot) {
-      latest_age_ms = std::chrono::duration<double, std::milli>(
-        now - snapshot->sensor_timestamp).count();
-    }
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "Camera status: capture=%.1f/%.1f Hz (%lu total), "
-      "device_gap=%lu/%lu, ROS=%.1f Hz (%lu total), "
-      "preview=%.1f Hz (%lu total), latest_age=%.2f ms, "
-      "errors(capture/publish/invalid)=%lu/%lu/%lu",
-      capture_hz, sensor_fps_,
-      static_cast<unsigned long>(received_total_.load()),
-      static_cast<unsigned long>(dropped_count),
-      static_cast<unsigned long>(device_drops_total_.load()),
-      publish_hz,
-      static_cast<unsigned long>(published_total_.load()),
-      preview_hz,
-      static_cast<unsigned long>(previewed_total_.load()),
-      latest_age_ms,
-      static_cast<unsigned long>(capture_errors_total_.load()),
-      static_cast<unsigned long>(publish_errors_total_.load()),
-      static_cast<unsigned long>(invalid_frames_total_.load()));
+      "FPS: capture=%.1f/%.1f, preview=%.1f, dropped=%lu",
+      capture_hz, sensor_fps_, preview_hz,
+      static_cast<unsigned long>(dropped_count));
 
     const auto running_for =
       std::chrono::duration<double>(now - started_at_).count();
@@ -655,9 +653,8 @@ private:
     if (capture_count > 0 && capture_hz < sensor_fps_ * 0.90) {
       RCLCPP_WARN_THROTTLE(
         node_.get_logger(), *node_.get_clock(), 10000,
-        "Measured capture FPS is below 90%% of the requested rate. "
-        "Verify that the OAK sensor supports %.1f FPS at %dx%d and uses USB 3.",
-        sensor_fps_, width_, height_);
+        "Low capture FPS: %.1f/%.1f",
+        capture_hz, sensor_fps_);
     }
   }
 
@@ -707,19 +704,19 @@ private:
 
   bool enabled_{true};
   std::string camera_socket_name_;
-  int width_{960};
-  int height_{540};
-  double sensor_fps_{120.0};
+  int width_{1280};
+  int height_{720};
+  double sensor_fps_{143.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
   int queue_size_{2};
   bool queue_blocking_{false};
   std::string frame_id_;
   std::string image_topic_;
-  bool publish_enabled_{true};
-  double publish_fps_{120.0};
+  bool publish_enabled_{false};
+  double publish_fps_{143.0};
   bool preview_enabled_{true};
-  double preview_fps_{120.0};
+  double preview_fps_{143.0};
   std::string preview_window_name_;
   int preview_max_width_{1280};
   int preview_max_height_{720};

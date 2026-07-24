@@ -28,7 +28,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "publish_enabled",
-                default_value="true",
+                default_value="false",
                 description="Publish sensor_msgs/Image frames.",
             ),
             ComposableNodeContainer(

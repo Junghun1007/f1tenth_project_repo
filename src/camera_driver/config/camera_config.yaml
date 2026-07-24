@@ -2,15 +2,13 @@ camera_driver:
   ros__parameters:
     enabled: true
 
-    # Requested OAK sensor/output rate. The physical sensor and selected mode
-    # must support 120 FPS; the node reports the measured rate at runtime.
-    sensor_fps: 120.0
-    width: 960
-    height: 540
+    # OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS, 2 MIPI lanes.
+    sensor_fps: 143.0
+    width: 1280
+    height: 720
 
     camera_socket: "CAM_A"
-    # Preserve geometry when converting the OV9782 8:5 sensor image to 16:9.
-    # This crops the top and bottom instead of changing the aspect ratio.
+    # THE_720_P is already a 16:9 sensor crop, so no aspect-ratio change occurs.
     resize_mode: "CROP"
 
     # Runs inside the OAK/DepthAI pipeline, not with host-side cv::remap().
@@ -23,15 +21,14 @@ camera_driver:
     frame_id: "camera_optical_frame"
     image_topic: "/camera/image_rect"
 
-    # Full-rate publication is available for same-process components.
-    # Disable or lower publish_fps when only direct processing/preview is used.
-    publish_enabled: true
-    publish_fps: 120.0
+    # Disabled by default while measuring direct camera performance.
+    publish_enabled: false
+    publish_fps: 143.0
 
     # Preview is independent from capture. Its real rate is also limited by
     # the display refresh rate and OpenCV GUI performance.
     preview_enabled: true
-    preview_fps: 120.0
+    preview_fps: 143.0
     preview_window_name: "OAK rectified image"
     preview_max_width: 1280
     preview_max_height: 720

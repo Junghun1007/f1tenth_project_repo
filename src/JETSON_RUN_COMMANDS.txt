@@ -77,11 +77,11 @@ ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyA
 [3] 수동 주행 launch와 동시에 실행하지 않는다.
 
 
-[5. 120 FPS 왜곡 보정 카메라 실행]
+[5. OV9782 THE_720_P 143 FPS 왜곡 보정 카메라 실행]
 
 camera_driver는 OAK 장치 내부 왜곡 보정을 사용하고
-/camera/image_rect를 bgr8로 발행한다. 캡처, ROS 발행, 프리뷰는 서로
-다른 스레드에서 실행된다.
+1280x720 bgr8 프리뷰를 표시한다. 성능 측정을 위해 ROS 이미지 발행은
+기본적으로 꺼져 있다.
 
 cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
@@ -92,21 +92,24 @@ ros2 launch camera_driver camera_driver.launch.py
 
 ros2 launch camera_driver camera_driver.launch.py preview_enabled:=false
 
-ROS 이미지 발행 없이 캡처와 직접 프리뷰 성능만 측정:
+ROS 이미지 발행을 켜려면:
 
-ros2 launch camera_driver camera_driver.launch.py publish_enabled:=false
+ros2 launch camera_driver camera_driver.launch.py publish_enabled:=true
 
 설정 파일:
 
 src/camera_driver/config/camera_config.yaml
 
-  sensor_fps: 120.0         -> OAK 센서/출력 요청 FPS
+  sensor_fps: 143.0         -> OAK 센서/출력 요청 FPS
+  width: 1280
+  height: 720
   undistort_enabled: true   -> OAK 내부 캘리브레이션으로 왜곡 보정
   image_topic: /camera/image_rect
   queue_size: 2
   queue_blocking: false
-  publish_fps: 120.0
-  preview_fps: 120.0
+  publish_enabled: false
+  publish_fps: 143.0
+  preview_fps: 143.0
 
 상태 로그의 capture 값이 실제 센서 수신 FPS다. preview 값은 모니터
 주사율과 OpenCV GUI 성능의 제한을 받으므로 capture보다 낮을 수 있다.
