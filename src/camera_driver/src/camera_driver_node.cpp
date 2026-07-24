@@ -1,0 +1,729 @@
+#include "camera_driver/camera_driver_node.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <cctype>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstring>
+#include <cstdlib>
+#include <functional>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <utility>
+
+#include "depthai/depthai.hpp"
+#include "opencv2/core.hpp"
+#include "opencv2/highgui.hpp"
+#include "rclcpp_components/register_node_macro.hpp"
+#include "sensor_msgs/msg/image.hpp"
+
+namespace camera_driver
+{
+
+using namespace std::chrono_literals;
+
+namespace
+{
+
+std::string uppercase(std::string value)
+{
+  std::transform(
+    value.begin(), value.end(), value.begin(),
+    [](unsigned char character) {
+      return static_cast<char>(std::toupper(character));
+    });
+  return value;
+}
+
+dai::CameraBoardSocket parse_camera_socket(const std::string & value)
+{
+  const auto normalized = uppercase(value);
+  if (normalized == "CAM_A") {
+    return dai::CameraBoardSocket::CAM_A;
+  }
+  if (normalized == "CAM_B") {
+    return dai::CameraBoardSocket::CAM_B;
+  }
+  if (normalized == "CAM_C") {
+    return dai::CameraBoardSocket::CAM_C;
+  }
+  if (normalized == "CAM_D") {
+    return dai::CameraBoardSocket::CAM_D;
+  }
+  throw std::invalid_argument(
+          "camera_socket must be CAM_A, CAM_B, CAM_C, or CAM_D");
+}
+
+dai::ImgResizeMode parse_resize_mode(const std::string & value)
+{
+  const auto normalized = uppercase(value);
+  if (normalized == "CROP") {
+    return dai::ImgResizeMode::CROP;
+  }
+  if (normalized == "STRETCH") {
+    return dai::ImgResizeMode::STRETCH;
+  }
+  if (normalized == "LETTERBOX") {
+    return dai::ImgResizeMode::LETTERBOX;
+  }
+  throw std::invalid_argument(
+          "resize_mode must be CROP, STRETCH, or LETTERBOX");
+}
+
+bool graphical_display_available()
+{
+#if defined(__linux__)
+  return std::getenv("DISPLAY") != nullptr ||
+         std::getenv("WAYLAND_DISPLAY") != nullptr;
+#else
+  return true;
+#endif
+}
+
+}  // namespace
+
+class CameraDriverNode::Impl
+{
+public:
+  explicit Impl(CameraDriverNode & node)
+  : node_(node),
+    started_at_(std::chrono::steady_clock::now()),
+    last_status_at_(started_at_)
+  {
+    read_parameters();
+
+    if (!enabled_) {
+      RCLCPP_WARN(node_.get_logger(), "Camera is disabled by parameter.");
+      return;
+    }
+
+    if (preview_enabled_ && !graphical_display_available()) {
+      preview_enabled_ = false;
+      RCLCPP_WARN(
+        node_.get_logger(),
+        "Preview disabled because DISPLAY/WAYLAND_DISPLAY is not available.");
+    }
+    preview_active_.store(preview_enabled_);
+
+    if (publish_enabled_) {
+      auto qos = rclcpp::SensorDataQoS();
+      qos.keep_last(1);
+      publisher_ = node_.create_publisher<sensor_msgs::msg::Image>(
+        image_topic_, qos);
+    }
+
+    const auto status_period =
+      std::chrono::duration<double>(status_log_interval_sec_);
+    status_timer_ = node_.create_wall_timer(
+      status_period, std::bind(&Impl::report_status, this));
+
+    try {
+      start_pipeline();
+      capture_thread_ = std::thread(&Impl::capture_loop, this);
+      if (publish_enabled_) {
+        publish_thread_ = std::thread(&Impl::publish_loop, this);
+      }
+      if (preview_enabled_) {
+        preview_thread_ = std::thread(&Impl::preview_loop, this);
+      }
+    } catch (...) {
+      stop();
+      throw;
+    }
+  }
+
+  ~Impl()
+  {
+    stop();
+  }
+
+private:
+  struct FrameSnapshot
+  {
+    std::shared_ptr<dai::ImgFrame> packet;
+    cv::Mat bgr;
+    rclcpp::Time ros_stamp;
+    std::chrono::steady_clock::time_point sensor_timestamp;
+    std::chrono::steady_clock::time_point received_timestamp;
+    std::uint64_t generation;
+    std::int64_t device_sequence;
+  };
+
+  template<typename IntegerT>
+  static void require_positive(IntegerT value, const char * parameter_name)
+  {
+    if (value <= 0) {
+      throw std::invalid_argument(
+              std::string(parameter_name) + " must be greater than zero");
+    }
+  }
+
+  void read_parameters()
+  {
+    enabled_ = node_.declare_parameter<bool>("enabled", true);
+    camera_socket_name_ =
+      node_.declare_parameter<std::string>("camera_socket", "CAM_A");
+    width_ = node_.declare_parameter<int>("width", 640);
+    height_ = node_.declare_parameter<int>("height", 480);
+    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 120.0);
+    resize_mode_name_ =
+      node_.declare_parameter<std::string>("resize_mode", "STRETCH");
+    undistort_enabled_ =
+      node_.declare_parameter<bool>("undistort_enabled", true);
+    queue_size_ = node_.declare_parameter<int>("queue_size", 2);
+    queue_blocking_ =
+      node_.declare_parameter<bool>("queue_blocking", false);
+    frame_id_ = node_.declare_parameter<std::string>(
+      "frame_id", "camera_optical_frame");
+    image_topic_ = node_.declare_parameter<std::string>(
+      "image_topic", "/camera/image_rect");
+    publish_enabled_ =
+      node_.declare_parameter<bool>("publish_enabled", true);
+    publish_fps_ =
+      node_.declare_parameter<double>("publish_fps", 120.0);
+    preview_enabled_ =
+      node_.declare_parameter<bool>("preview_enabled", true);
+    preview_fps_ =
+      node_.declare_parameter<double>("preview_fps", 120.0);
+    preview_window_name_ = node_.declare_parameter<std::string>(
+      "preview_window_name", "OAK rectified image");
+    preview_max_width_ =
+      node_.declare_parameter<int>("preview_max_width", 1280);
+    preview_max_height_ =
+      node_.declare_parameter<int>("preview_max_height", 720);
+    startup_timeout_sec_ =
+      node_.declare_parameter<double>("startup_timeout_sec", 5.0);
+    status_log_interval_sec_ =
+      node_.declare_parameter<double>("status_log_interval_sec", 5.0);
+
+    require_positive(width_, "width");
+    require_positive(height_, "height");
+    require_positive(sensor_fps_, "sensor_fps");
+    require_positive(queue_size_, "queue_size");
+    require_positive(startup_timeout_sec_, "startup_timeout_sec");
+    require_positive(status_log_interval_sec_, "status_log_interval_sec");
+    if (publish_enabled_) {
+      require_positive(publish_fps_, "publish_fps");
+      if (image_topic_.empty()) {
+        throw std::invalid_argument(
+                "image_topic must not be empty when publishing is enabled");
+      }
+    }
+    if (preview_enabled_) {
+      require_positive(preview_fps_, "preview_fps");
+      if (preview_window_name_.empty()) {
+        throw std::invalid_argument(
+                "preview_window_name must not be empty when preview is enabled");
+      }
+    }
+    if (preview_max_width_ < 0 || preview_max_height_ < 0) {
+      throw std::invalid_argument(
+              "preview maximum dimensions must not be negative");
+    }
+
+    camera_socket_ = parse_camera_socket(camera_socket_name_);
+    resize_mode_ = parse_resize_mode(resize_mode_name_);
+  }
+
+  void start_pipeline()
+  {
+    pipeline_ = std::make_unique<dai::Pipeline>();
+
+    auto camera = pipeline_->create<dai::node::Camera>()->build(
+      camera_socket_, std::nullopt, static_cast<float>(sensor_fps_));
+    auto * output = camera->requestOutput(
+      std::make_pair(
+        static_cast<std::uint32_t>(width_),
+        static_cast<std::uint32_t>(height_)),
+      dai::ImgFrame::Type::BGR888i,
+      resize_mode_,
+      static_cast<float>(sensor_fps_),
+      undistort_enabled_);
+
+    output_queue_ = output->createOutputQueue(
+      static_cast<unsigned int>(queue_size_), queue_blocking_);
+    pipeline_->start();
+
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "OAK pipeline started: socket=%s, output=%dx%d BGR8, "
+      "requested_fps=%.1f, device_undistortion=%s, queue=%d/%s",
+      camera_socket_name_.c_str(), width_, height_, sensor_fps_,
+      undistort_enabled_ ? "true" : "false", queue_size_,
+      queue_blocking_ ? "blocking" : "non-blocking");
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "Outputs: ROS=%s%s%.1f Hz, preview=%s%s%.1f Hz",
+      publish_enabled_ ? "on " : "off",
+      publish_enabled_ ? image_topic_.c_str() : "",
+      publish_enabled_ ? publish_fps_ : 0.0,
+      preview_enabled_ ? "on " : "off",
+      preview_enabled_ ? preview_window_name_.c_str() : "",
+      preview_enabled_ ? preview_fps_ : 0.0);
+  }
+
+  rclcpp::Time ros_timestamp_for(
+    const std::chrono::steady_clock::time_point & sensor_timestamp)
+  {
+    const auto steady_now = std::chrono::steady_clock::now();
+    const auto ros_now = node_.get_clock()->now();
+    const auto offset_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      sensor_timestamp - steady_now).count();
+
+    constexpr std::int64_t max_past_offset_ns = -60LL * 1000LL * 1000LL * 1000LL;
+    constexpr std::int64_t max_future_offset_ns = 1000LL * 1000LL * 1000LL;
+    if (offset_ns < max_past_offset_ns || offset_ns > max_future_offset_ns) {
+      if (!timestamp_fallback_reported_.exchange(true)) {
+        RCLCPP_WARN(
+          node_.get_logger(),
+          "DepthAI host timestamp was outside the expected range; "
+          "using ROS receive time.");
+      }
+      return ros_now;
+    }
+
+    return ros_now + rclcpp::Duration::from_nanoseconds(offset_ns);
+  }
+
+  void capture_loop()
+  {
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+      try {
+        if (!pipeline_ || !pipeline_->isRunning()) {
+          break;
+        }
+
+        auto packet = output_queue_->tryGet<dai::ImgFrame>();
+        if (!packet) {
+          std::this_thread::sleep_for(100us);
+          continue;
+        }
+
+        const auto received_at = std::chrono::steady_clock::now();
+        const auto sensor_timestamp = packet->getTimestamp();
+        auto bgr = packet->getCvFrame();
+        if (bgr.empty() || bgr.type() != CV_8UC3) {
+          invalid_frames_total_.fetch_add(1);
+          RCLCPP_ERROR_THROTTLE(
+            node_.get_logger(), *node_.get_clock(), 1000,
+            "Expected a non-empty CV_8UC3 frame from DepthAI.");
+          continue;
+        }
+
+        const auto device_sequence = packet->getSequenceNum();
+        if (last_device_sequence_.has_value() &&
+          device_sequence > *last_device_sequence_ + 1)
+        {
+          const auto dropped = static_cast<std::uint64_t>(
+            device_sequence - *last_device_sequence_ - 1);
+          device_drops_total_.fetch_add(dropped);
+          device_drops_interval_.fetch_add(dropped);
+        }
+        last_device_sequence_ = device_sequence;
+
+        const auto generation =
+          received_total_.fetch_add(1, std::memory_order_relaxed) + 1;
+        received_interval_.fetch_add(1, std::memory_order_relaxed);
+
+        std::shared_ptr<const FrameSnapshot> snapshot =
+          std::make_shared<FrameSnapshot>(
+          FrameSnapshot{
+            packet,
+            std::move(bgr),
+            ros_timestamp_for(sensor_timestamp),
+            sensor_timestamp,
+            received_at,
+            generation,
+            device_sequence});
+        std::atomic_store_explicit(
+          &latest_frame_, std::move(snapshot), std::memory_order_release);
+        frame_available_.notify_all();
+
+        if (!first_frame_received_.exchange(true)) {
+          RCLCPP_INFO(
+            node_.get_logger(),
+            "First frame received: %dx%d, sequence=%ld",
+            width_, height_, static_cast<long>(device_sequence));
+        }
+      } catch (const std::exception & exception) {
+        capture_errors_total_.fetch_add(1);
+        RCLCPP_ERROR_THROTTLE(
+          node_.get_logger(), *node_.get_clock(), 1000,
+          "Camera capture error: %s", exception.what());
+        std::this_thread::sleep_for(1ms);
+      }
+    }
+  }
+
+  static void copy_to_message(
+    const cv::Mat & bgr,
+    sensor_msgs::msg::Image & message)
+  {
+    const auto row_bytes =
+      static_cast<std::size_t>(bgr.cols) * static_cast<std::size_t>(3);
+    const auto total_bytes =
+      row_bytes * static_cast<std::size_t>(bgr.rows);
+    message.data.resize(total_bytes);
+
+    if (bgr.isContinuous() &&
+      static_cast<std::size_t>(bgr.step) == row_bytes)
+    {
+      std::memcpy(message.data.data(), bgr.data, total_bytes);
+      return;
+    }
+
+    for (int row = 0; row < bgr.rows; ++row) {
+      std::memcpy(
+        message.data.data() + static_cast<std::size_t>(row) * row_bytes,
+        bgr.ptr(row), row_bytes);
+    }
+  }
+
+  void publish_loop()
+  {
+    const auto period = std::chrono::duration_cast<
+      std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / publish_fps_));
+    auto next_deadline = std::chrono::steady_clock::now();
+    std::uint64_t published_generation = 0;
+
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+      {
+        std::unique_lock<std::mutex> lock(wait_mutex_);
+        frame_available_.wait_until(
+          lock, next_deadline,
+          [this]() {return stop_requested_.load();});
+      }
+      if (stop_requested_.load()) {
+        break;
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      if (now < next_deadline) {
+        continue;
+      }
+
+      auto snapshot = std::atomic_load_explicit(
+        &latest_frame_, std::memory_order_acquire);
+      if (snapshot && snapshot->generation != published_generation) {
+        try {
+          auto message = std::make_unique<sensor_msgs::msg::Image>();
+          message->header.stamp = snapshot->ros_stamp;
+          message->header.frame_id = frame_id_;
+          message->height = static_cast<std::uint32_t>(snapshot->bgr.rows);
+          message->width = static_cast<std::uint32_t>(snapshot->bgr.cols);
+          message->encoding = "bgr8";
+          message->is_bigendian = false;
+          message->step = static_cast<std::uint32_t>(
+            snapshot->bgr.cols * 3);
+          copy_to_message(snapshot->bgr, *message);
+
+          publisher_->publish(std::move(message));
+          published_generation = snapshot->generation;
+          published_total_.fetch_add(1);
+          published_interval_.fetch_add(1);
+        } catch (const std::exception & exception) {
+          publish_errors_total_.fetch_add(1);
+          RCLCPP_ERROR_THROTTLE(
+            node_.get_logger(), *node_.get_clock(), 1000,
+            "Image publish error: %s", exception.what());
+        }
+      }
+
+      next_deadline += period;
+      if (next_deadline < now - period) {
+        next_deadline = now + period;
+      }
+    }
+  }
+
+  void resize_preview_window(const cv::Mat & frame)
+  {
+    if (preview_window_sized_) {
+      return;
+    }
+
+    double scale = 1.0;
+    if (preview_max_width_ > 0) {
+      scale = std::min(
+        scale,
+        static_cast<double>(preview_max_width_) /
+        static_cast<double>(frame.cols));
+    }
+    if (preview_max_height_ > 0) {
+      scale = std::min(
+        scale,
+        static_cast<double>(preview_max_height_) /
+        static_cast<double>(frame.rows));
+    }
+
+    const auto window_width =
+      std::max(1, static_cast<int>(frame.cols * scale));
+    const auto window_height =
+      std::max(1, static_cast<int>(frame.rows * scale));
+    cv::resizeWindow(
+      preview_window_name_, window_width, window_height);
+    preview_window_sized_ = true;
+  }
+
+  void preview_loop()
+  {
+    try {
+      cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
+    } catch (const std::exception & exception) {
+      preview_active_.store(false);
+      RCLCPP_ERROR(
+        node_.get_logger(), "Could not create preview window: %s",
+        exception.what());
+      return;
+    }
+
+    const auto period = std::chrono::duration_cast<
+      std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / preview_fps_));
+    auto next_deadline = std::chrono::steady_clock::now();
+    std::uint64_t previewed_generation = 0;
+
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+      {
+        std::unique_lock<std::mutex> lock(wait_mutex_);
+        frame_available_.wait_until(
+          lock, next_deadline,
+          [this]() {return stop_requested_.load();});
+      }
+      if (stop_requested_.load()) {
+        break;
+      }
+
+      const auto now = std::chrono::steady_clock::now();
+      if (now < next_deadline) {
+        continue;
+      }
+
+      try {
+        auto snapshot = std::atomic_load_explicit(
+          &latest_frame_, std::memory_order_acquire);
+        if (snapshot && snapshot->generation != previewed_generation) {
+          resize_preview_window(snapshot->bgr);
+          cv::imshow(preview_window_name_, snapshot->bgr);
+          previewed_generation = snapshot->generation;
+          previewed_total_.fetch_add(1);
+          previewed_interval_.fetch_add(1);
+        }
+
+        const auto key = cv::waitKey(1) & 0xff;
+        const auto visible = cv::getWindowProperty(
+          preview_window_name_, cv::WND_PROP_VISIBLE);
+        if (key == 'q' || key == 'Q' || key == 27 || visible < 1.0) {
+          RCLCPP_INFO(
+            node_.get_logger(),
+            "Preview closed; camera capture and ROS publishing continue.");
+          break;
+        }
+      } catch (const std::exception & exception) {
+        RCLCPP_ERROR(
+          node_.get_logger(), "Preview stopped: %s", exception.what());
+        break;
+      }
+
+      next_deadline += period;
+      if (next_deadline < now - period) {
+        next_deadline = now + period;
+      }
+    }
+
+    preview_active_.store(false);
+    try {
+      cv::destroyWindow(preview_window_name_);
+      cv::waitKey(1);
+    } catch (const std::exception &) {
+      // The GUI backend may already have destroyed the window.
+    }
+  }
+
+  void report_status()
+  {
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed =
+      std::chrono::duration<double>(now - last_status_at_).count();
+    last_status_at_ = now;
+
+    const auto capture_count = received_interval_.exchange(0);
+    const auto publish_count = published_interval_.exchange(0);
+    const auto preview_count = previewed_interval_.exchange(0);
+    const auto dropped_count = device_drops_interval_.exchange(0);
+
+    const auto capture_hz = static_cast<double>(capture_count) / elapsed;
+    const auto publish_hz = static_cast<double>(publish_count) / elapsed;
+    const auto preview_hz = static_cast<double>(preview_count) / elapsed;
+
+    double latest_age_ms = std::numeric_limits<double>::quiet_NaN();
+    auto snapshot = std::atomic_load_explicit(
+      &latest_frame_, std::memory_order_acquire);
+    if (snapshot) {
+      latest_age_ms = std::chrono::duration<double, std::milli>(
+        now - snapshot->sensor_timestamp).count();
+    }
+
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "Camera status: capture=%.1f/%.1f Hz (%lu total), "
+      "device_gap=%lu/%lu, ROS=%.1f Hz (%lu total), "
+      "preview=%.1f Hz (%lu total), latest_age=%.2f ms, "
+      "errors(capture/publish/invalid)=%lu/%lu/%lu",
+      capture_hz, sensor_fps_,
+      static_cast<unsigned long>(received_total_.load()),
+      static_cast<unsigned long>(dropped_count),
+      static_cast<unsigned long>(device_drops_total_.load()),
+      publish_hz,
+      static_cast<unsigned long>(published_total_.load()),
+      preview_hz,
+      static_cast<unsigned long>(previewed_total_.load()),
+      latest_age_ms,
+      static_cast<unsigned long>(capture_errors_total_.load()),
+      static_cast<unsigned long>(publish_errors_total_.load()),
+      static_cast<unsigned long>(invalid_frames_total_.load()));
+
+    const auto running_for =
+      std::chrono::duration<double>(now - started_at_).count();
+    if (!first_frame_received_.load() &&
+      running_for >= startup_timeout_sec_ &&
+      !startup_timeout_reported_.exchange(true))
+    {
+      RCLCPP_ERROR(
+        node_.get_logger(),
+        "No camera frame was received within %.1f seconds.",
+        startup_timeout_sec_);
+    }
+
+    if (capture_count > 0 && capture_hz < sensor_fps_ * 0.90) {
+      RCLCPP_WARN_THROTTLE(
+        node_.get_logger(), *node_.get_clock(), 10000,
+        "Measured capture FPS is below 90%% of the requested rate. "
+        "Verify that the OAK sensor supports %.1f FPS at %dx%d and uses USB 3.",
+        sensor_fps_, width_, height_);
+    }
+  }
+
+  void stop()
+  {
+    if (shutdown_started_.exchange(true)) {
+      return;
+    }
+
+    stop_requested_.store(true);
+    frame_available_.notify_all();
+
+    join_thread(publish_thread_);
+    join_thread(preview_thread_);
+    join_thread(capture_thread_);
+
+    if (status_timer_) {
+      status_timer_->cancel();
+      status_timer_.reset();
+    }
+
+    output_queue_.reset();
+    if (pipeline_) {
+      try {
+        if (pipeline_->isRunning()) {
+          pipeline_->stop();
+          pipeline_->wait();
+        }
+      } catch (const std::exception & exception) {
+        RCLCPP_WARN(
+          node_.get_logger(),
+          "DepthAI pipeline shutdown reported an error: %s",
+          exception.what());
+      }
+      pipeline_.reset();
+    }
+  }
+
+  static void join_thread(std::thread & thread)
+  {
+    if (thread.joinable() && thread.get_id() != std::this_thread::get_id()) {
+      thread.join();
+    }
+  }
+
+  CameraDriverNode & node_;
+
+  bool enabled_{true};
+  std::string camera_socket_name_;
+  int width_{640};
+  int height_{480};
+  double sensor_fps_{120.0};
+  std::string resize_mode_name_;
+  bool undistort_enabled_{true};
+  int queue_size_{2};
+  bool queue_blocking_{false};
+  std::string frame_id_;
+  std::string image_topic_;
+  bool publish_enabled_{true};
+  double publish_fps_{120.0};
+  bool preview_enabled_{true};
+  double preview_fps_{120.0};
+  std::string preview_window_name_;
+  int preview_max_width_{1280};
+  int preview_max_height_{720};
+  double startup_timeout_sec_{5.0};
+  double status_log_interval_sec_{5.0};
+  dai::CameraBoardSocket camera_socket_{dai::CameraBoardSocket::CAM_A};
+  dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::STRETCH};
+
+  std::unique_ptr<dai::Pipeline> pipeline_;
+  std::shared_ptr<dai::MessageQueue> output_queue_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
+  rclcpp::TimerBase::SharedPtr status_timer_;
+
+  std::thread capture_thread_;
+  std::thread publish_thread_;
+  std::thread preview_thread_;
+  std::atomic<bool> stop_requested_{false};
+  std::atomic<bool> shutdown_started_{false};
+  std::atomic<bool> preview_active_{false};
+  std::mutex wait_mutex_;
+  std::condition_variable frame_available_;
+
+  std::shared_ptr<const FrameSnapshot> latest_frame_;
+  std::optional<std::int64_t> last_device_sequence_;
+  bool preview_window_sized_{false};
+
+  std::atomic<bool> first_frame_received_{false};
+  std::atomic<bool> startup_timeout_reported_{false};
+  std::atomic<bool> timestamp_fallback_reported_{false};
+  std::atomic<std::uint64_t> received_total_{0};
+  std::atomic<std::uint64_t> received_interval_{0};
+  std::atomic<std::uint64_t> published_total_{0};
+  std::atomic<std::uint64_t> published_interval_{0};
+  std::atomic<std::uint64_t> previewed_total_{0};
+  std::atomic<std::uint64_t> previewed_interval_{0};
+  std::atomic<std::uint64_t> device_drops_total_{0};
+  std::atomic<std::uint64_t> device_drops_interval_{0};
+  std::atomic<std::uint64_t> capture_errors_total_{0};
+  std::atomic<std::uint64_t> publish_errors_total_{0};
+  std::atomic<std::uint64_t> invalid_frames_total_{0};
+
+  std::chrono::steady_clock::time_point started_at_;
+  std::chrono::steady_clock::time_point last_status_at_;
+};
+
+CameraDriverNode::CameraDriverNode(const rclcpp::NodeOptions & options)
+: Node("camera_driver", options),
+  impl_(std::make_unique<Impl>(*this))
+{
+}
+
+CameraDriverNode::~CameraDriverNode() = default;
+
+}  // namespace camera_driver
+
+RCLCPP_COMPONENTS_REGISTER_NODE(camera_driver::CameraDriverNode)

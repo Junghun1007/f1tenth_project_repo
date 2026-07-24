@@ -17,6 +17,7 @@ find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
 find_package(depthai 3 CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(camera_driver_component SHARED
   src/camera_driver_node.cpp
@@ -37,6 +38,7 @@ ament_target_dependencies(camera_driver_component
 target_link_libraries(camera_driver_component
   depthai::core
   ${OpenCV_LIBS}
+  Threads::Threads
 )
 
 rclcpp_components_register_nodes(
@@ -61,6 +63,8 @@ install(
 install(
   DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )
 install(
   TARGETS camera_driver_component camera_driver_node

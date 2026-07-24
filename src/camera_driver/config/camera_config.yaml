@@ -1,5 +1,7 @@
 camera_driver:
   ros__parameters:
+    enabled: true
+
     # Requested OAK sensor/output rate. The physical sensor and selected mode
     # must support 120 FPS; the node reports the measured rate at runtime.
     sensor_fps: 120.0
