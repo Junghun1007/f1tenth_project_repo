@@ -511,10 +511,9 @@ private:
     const auto period = std::chrono::duration_cast<
       std::chrono::steady_clock::duration>(
       std::chrono::duration<double>(1.0 / preview_fps_));
-    const auto visibility_grace_deadline =
-      std::chrono::steady_clock::now() + 1s;
     auto next_deadline = std::chrono::steady_clock::now();
     std::uint64_t previewed_generation = 0;
+    bool window_was_visible = false;
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
       {
@@ -546,10 +545,11 @@ private:
         const auto key = cv::waitKey(1) & 0xff;
         const auto visible = cv::getWindowProperty(
           preview_window_name_, cv::WND_PROP_VISIBLE);
-        const auto visibility_check_enabled =
-          std::chrono::steady_clock::now() >= visibility_grace_deadline;
+        if (visible >= 1.0) {
+          window_was_visible = true;
+        }
         if (key == 'q' || key == 'Q' || key == 27 ||
-          (visibility_check_enabled && visible < 1.0))
+          (window_was_visible && visible < 1.0))
         {
           RCLCPP_INFO(
             node_.get_logger(),
