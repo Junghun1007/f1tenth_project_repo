@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 import depthai as dai
 
-CALIB = "/home/autopilot03/f1tenth/oak_rgb_calibration.npz"
+CALIB = "oak_rgb_calibration.npz"
 W, H = 640, 480
 SOBEL_THRESH = 40
 N_WINDOWS, MARGIN, MINPIX = 12, 60, 25

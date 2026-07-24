@@ -18,8 +18,8 @@ SQUARE_SIZE_MM = 30.0
 
 # 캘리브레이션할 때 사용할 RGB 출력 해상도입니다.
 # 실제 주행/인식에 사용할 해상도와 같게 맞추는 것이 좋습니다.
-FRAME_SIZE = (1280, 800)
-TARGET_FPS = 30
+FRAME_SIZE = (960, 540)
+TARGET_FPS = 60
 
 CALIB_DIR = Path("calibration_images")
 CALIB_FILE = Path("oak_rgb_calibration.npz")
