@@ -62,7 +62,17 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "camera_z_m",
                 default_value="0.20",
-                description="Camera height above the ground in meters",
+                description="Fallback height until /camera/height arrives",
+            ),
+            DeclareLaunchArgument(
+                "height_from_topic_enabled",
+                default_value="true",
+                description="Fix camera height from one latched height message",
+            ),
+            DeclareLaunchArgument(
+                "height_topic",
+                default_value="/camera/height",
+                description="One-shot camera height topic in meters",
             ),
             DeclareLaunchArgument(
                 "camera_roll_deg",
@@ -95,7 +105,7 @@ def generate_launch_description():
                             {
                                 "preview_enabled": False,
                                 "publish_enabled": True,
-                                "imu_attitude_enabled": ParameterValue(
+                                "imu_bridge_enabled": ParameterValue(
                                     LaunchConfiguration(
                                         "imu_attitude_enabled"
                                     ),
@@ -140,6 +150,15 @@ def generate_launch_description():
                                 "camera_z_m": ParameterValue(
                                     LaunchConfiguration("camera_z_m"),
                                     value_type=float,
+                                ),
+                                "height_from_topic_enabled": ParameterValue(
+                                    LaunchConfiguration(
+                                        "height_from_topic_enabled"
+                                    ),
+                                    value_type=bool,
+                                ),
+                                "height_topic": LaunchConfiguration(
+                                    "height_topic"
                                 ),
                                 "camera_roll_deg": ParameterValue(
                                     LaunchConfiguration("camera_roll_deg"),

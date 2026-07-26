@@ -4,7 +4,6 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -14,7 +13,6 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     preview_enabled = LaunchConfiguration("preview_enabled")
     publish_enabled = LaunchConfiguration("publish_enabled")
-    imu_attitude_enabled = LaunchConfiguration("imu_attitude_enabled")
 
     return LaunchDescription(
         [
@@ -33,11 +31,6 @@ def generate_launch_description():
                 default_value="false",
                 description="Publish sensor_msgs/Image frames.",
             ),
-            DeclareLaunchArgument(
-                "imu_attitude_enabled",
-                default_value="true",
-                description="Publish factory-aligned OAK IMU acceleration.",
-            ),
             ComposableNodeContainer(
                 name="camera_container",
                 namespace="",
@@ -54,10 +47,9 @@ def generate_launch_description():
                             {
                                 "preview_enabled": preview_enabled,
                                 "publish_enabled": publish_enabled,
-                                "imu_attitude_enabled": ParameterValue(
-                                    imu_attitude_enabled,
-                                    value_type=bool,
-                                ),
+                                # A standalone camera/undistortion preview
+                                # never starts the OAK IMU stream.
+                                "imu_bridge_enabled": False,
                             },
                         ],
                         extra_arguments=[

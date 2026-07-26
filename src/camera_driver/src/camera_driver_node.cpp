@@ -142,7 +142,7 @@ public:
       publisher_ = node_.create_publisher<sensor_msgs::msg::Image>(
         image_topic_, qos);
     }
-    if (imu_attitude_enabled_) {
+    if (imu_bridge_enabled_) {
       auto qos = rclcpp::SensorDataQoS();
       qos.keep_last(5);
       imu_publisher_ = node_.create_publisher<sensor_msgs::msg::Imu>(
@@ -158,7 +158,7 @@ public:
       status_timer_ = node_.create_wall_timer(
         status_period, std::bind(&Impl::report_status, this));
       capture_thread_ = std::thread(&Impl::capture_loop, this);
-      if (imu_attitude_enabled_) {
+      if (imu_bridge_enabled_) {
         imu_thread_ = std::thread(&Impl::imu_loop, this);
       }
       if (publish_enabled_) {
@@ -217,8 +217,8 @@ private:
       "frame_id", "camera_optical_frame");
     image_topic_ = node_.declare_parameter<std::string>(
       "image_topic", "/camera/image_rect");
-    imu_attitude_enabled_ =
-      node_.declare_parameter<bool>("imu_attitude_enabled", true);
+    imu_bridge_enabled_ =
+      node_.declare_parameter<bool>("imu_bridge_enabled", false);
     imu_topic_ = node_.declare_parameter<std::string>(
       "imu_topic", "/camera/imu");
     imu_frame_id_ = node_.declare_parameter<std::string>(
@@ -250,13 +250,13 @@ private:
     require_positive(queue_size_, "queue_size");
     require_positive(startup_timeout_sec_, "startup_timeout_sec");
     require_positive(status_log_interval_sec_, "status_log_interval_sec");
-    if (imu_attitude_enabled_) {
+    if (imu_bridge_enabled_) {
       require_positive(imu_rate_hz_, "imu_rate_hz");
       require_positive(imu_queue_size_, "imu_queue_size");
       if (imu_topic_.empty() || imu_frame_id_.empty()) {
         throw std::invalid_argument(
                 "imu_topic and imu_frame_id must not be empty when "
-                "IMU attitude is enabled");
+                "the internal IMU bridge is enabled");
       }
     }
     if (publish_enabled_) {
@@ -308,7 +308,7 @@ private:
     output_queue_ = output->createOutputQueue(
       static_cast<unsigned int>(queue_size_), queue_blocking_);
 
-    if (imu_attitude_enabled_) {
+    if (imu_bridge_enabled_) {
       try {
         const auto imu_name = device->getConnectedIMU();
         if (imu_name.empty()) {
@@ -344,11 +344,11 @@ private:
           static_cast<unsigned int>(imu_queue_size_), false);
         imu_name_ = imu_name;
       } catch (const std::exception & exception) {
-        imu_attitude_enabled_ = false;
+        imu_bridge_enabled_ = false;
         imu_queue_.reset();
         RCLCPP_ERROR(
           node_.get_logger(),
-          "OAK IMU attitude disabled; BEV will keep its parameter fallback: %s",
+          "OAK IMU bridge disabled; BEV will keep its parameter fallback: %s",
           exception.what());
       }
     }
@@ -368,7 +368,7 @@ private:
       preview_enabled_ ? "on" : "off",
       queue_size_,
       queue_blocking_ ? "blocking" : "non-blocking");
-    if (imu_attitude_enabled_) {
+    if (imu_bridge_enabled_) {
       RCLCPP_INFO(
         node_.get_logger(),
         "IMU: %s raw accelerometer @ %.1f Hz -> %s, "
@@ -770,17 +770,23 @@ private:
     const auto capture_count = received_interval_.exchange(0);
     const auto preview_count = previewed_interval_.exchange(0);
     const auto dropped_count = device_drops_interval_.exchange(0);
-    const auto imu_count = imu_published_interval_.exchange(0);
-
     const auto capture_hz = static_cast<double>(capture_count) / elapsed;
     const auto preview_hz = static_cast<double>(preview_count) / elapsed;
-    const auto imu_hz = static_cast<double>(imu_count) / elapsed;
-
-    RCLCPP_INFO(
-      node_.get_logger(),
-      "FPS: capture=%.1f/%.1f, preview=%.1f, IMU=%.1f, dropped=%lu",
-      capture_hz, sensor_fps_, preview_hz, imu_hz,
-      static_cast<unsigned long>(dropped_count));
+    if (imu_bridge_enabled_) {
+      const auto imu_count = imu_published_interval_.exchange(0);
+      const auto imu_hz = static_cast<double>(imu_count) / elapsed;
+      RCLCPP_INFO(
+        node_.get_logger(),
+        "FPS: capture=%.1f/%.1f, preview=%.1f, IMU=%.1f, dropped=%lu",
+        capture_hz, sensor_fps_, preview_hz, imu_hz,
+        static_cast<unsigned long>(dropped_count));
+    } else {
+      RCLCPP_INFO(
+        node_.get_logger(),
+        "FPS: capture=%.1f/%.1f, preview=%.1f, dropped=%lu",
+        capture_hz, sensor_fps_, preview_hz,
+        static_cast<unsigned long>(dropped_count));
+    }
 
     const auto running_for =
       std::chrono::duration<double>(now - started_at_).count();
@@ -859,7 +865,7 @@ private:
   bool queue_blocking_{false};
   std::string frame_id_;
   std::string image_topic_;
-  bool imu_attitude_enabled_{true};
+  bool imu_bridge_enabled_{false};
   std::string imu_topic_;
   std::string imu_frame_id_;
   double imu_rate_hz_{100.0};

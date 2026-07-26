@@ -24,6 +24,7 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
+#include <std_msgs/msg/float64.hpp>
 #include <std_msgs/msg/header.hpp>
 
 #include "bev_processor/bev_geometry.hpp"
@@ -112,6 +113,23 @@ public:
       [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
         onImage(std::move(message));
       });
+    if (height_from_topic_enabled_) {
+      const auto height_qos =
+        rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+      rclcpp::SubscriptionOptions height_options;
+      // This component uses intra-process transport for 120 FPS images, but
+      // ROS 2 intra-process subscriptions only support volatile durability.
+      // Keep the one-shot height on DDS so transient-local delivery works.
+      height_options.use_intra_process_comm =
+        rclcpp::IntraProcessSetting::Disable;
+      height_subscription_ = create_subscription<std_msgs::msg::Float64>(
+        height_topic_,
+        height_qos,
+        [this](std_msgs::msg::Float64::ConstSharedPtr message) {
+          onHeight(std::move(message));
+        },
+        height_options);
+    }
     if (imu_attitude_enabled_) {
       const auto imu_qos = rclcpp::SensorDataQoS().keep_last(
         static_cast<std::size_t>(imu_attitude_sample_count_));
@@ -151,6 +169,10 @@ public:
       &gpu_processor_, std::memory_order_acquire);
     const std::string imu_startup_description =
       imu_attitude_enabled_ ? "on (" + imu_topic_ + ")" : "off";
+    const std::string height_startup_description =
+      height_from_topic_enabled_ ?
+      "waiting (" + height_topic_ + ")" :
+      "fallback parameter";
 
     RCLCPP_INFO(
       get_logger(),
@@ -197,6 +219,13 @@ public:
       fallback_roll_deg_,
       fallback_pitch_down_deg_,
       camera_yaw_deg_);
+    RCLCPP_INFO(
+      get_logger(),
+      "Camera height: source=%s, fallback=%.3fm, accepted=[%.3f, %.3f]m",
+      height_startup_description.c_str(),
+      fallback_camera_height_m_,
+      camera_height_min_m_,
+      camera_height_max_m_);
     RCLCPP_INFO(
       get_logger(),
       "============================================================");
@@ -248,6 +277,10 @@ private:
     declare_parameter<double>("camera_roll_deg", 0.0);
     declare_parameter<double>("camera_downward_pitch_deg", 14.0);
     declare_parameter<double>("camera_yaw_deg", 0.0);
+    declare_parameter<bool>("height_from_topic_enabled", true);
+    declare_parameter<std::string>("height_topic", "/camera/height");
+    declare_parameter<double>("camera_height_min_m", 0.10);
+    declare_parameter<double>("camera_height_max_m", 1.00);
     declare_parameter<bool>("imu_attitude_enabled", true);
     declare_parameter<std::string>("imu_topic", "/camera/imu");
     declare_parameter<int>("imu_attitude_sample_count", 10);
@@ -296,6 +329,9 @@ private:
       get_parameter("camera_x_m").as_double(),
       get_parameter("camera_y_m").as_double(),
       get_parameter("camera_z_m").as_double());
+    fallback_camera_height_m_ = camera_model_.position_vehicle_m[2];
+    applied_camera_height_m_.store(
+      fallback_camera_height_m_, std::memory_order_relaxed);
     fallback_roll_deg_ = get_parameter("camera_roll_deg").as_double();
     fallback_pitch_down_deg_ =
       get_parameter("camera_downward_pitch_deg").as_double();
@@ -306,6 +342,13 @@ private:
       degToRad(fallback_pitch_down_deg_),
       degToRad(camera_yaw_deg_));
 
+    height_from_topic_enabled_ =
+      get_parameter("height_from_topic_enabled").as_bool();
+    height_topic_ = get_parameter("height_topic").as_string();
+    camera_height_min_m_ =
+      get_parameter("camera_height_min_m").as_double();
+    camera_height_max_m_ =
+      get_parameter("camera_height_max_m").as_double();
     imu_attitude_enabled_ =
       get_parameter("imu_attitude_enabled").as_bool();
     imu_topic_ = get_parameter("imu_topic").as_string();
@@ -362,6 +405,16 @@ private:
       bev_config_.output_height <= 0)
     {
       throw std::invalid_argument("invalid camera pose or BEV bounds");
+    }
+    if (
+      height_from_topic_enabled_ &&
+      (height_topic_.empty() ||
+      !std::isfinite(camera_height_min_m_) ||
+      !std::isfinite(camera_height_max_m_) ||
+      camera_height_min_m_ <= 0.0 ||
+      camera_height_max_m_ <= camera_height_min_m_))
+    {
+      throw std::invalid_argument("invalid camera height topic parameter");
     }
     if (
       imu_attitude_enabled_ &&
@@ -432,13 +485,63 @@ private:
     applied_roll_deg_.store(roll_deg, std::memory_order_relaxed);
     applied_pitch_down_deg_.store(
       pitch_down_deg, std::memory_order_relaxed);
+    applied_camera_height_m_.store(
+      camera_model.position_vehicle_m[2], std::memory_order_relaxed);
 
     if (source != nullptr) {
       RCLCPP_INFO(
         get_logger(),
-        "BEV LUT installed from %s: roll=%.3f deg, "
+        "BEV LUT installed from %s: height=%.3fm, roll=%.3f deg, "
         "pitch_down=%.3f deg, fixed yaw=%.3f deg, valid=%.2f%%",
-        source, roll_deg, pitch_down_deg, camera_yaw_deg_, valid_percent);
+        source, camera_model.position_vehicle_m[2],
+        roll_deg, pitch_down_deg, camera_yaw_deg_, valid_percent);
+    }
+  }
+
+  void onHeight(std_msgs::msg::Float64::ConstSharedPtr message)
+  {
+    if (camera_height_finalized_.load(std::memory_order_acquire)) {
+      return;
+    }
+
+    const double height_m = message->data;
+    if (
+      !std::isfinite(height_m) ||
+      height_m < camera_height_min_m_ ||
+      height_m > camera_height_max_m_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Rejected camera height %.4fm from %s; allowed=[%.3f, %.3f]m",
+        height_m, height_topic_.c_str(),
+        camera_height_min_m_, camera_height_max_m_);
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(pose_update_mutex_);
+    if (camera_height_finalized_.load(std::memory_order_relaxed)) {
+      return;
+    }
+
+    const double previous_height_m = camera_model_.position_vehicle_m[2];
+    camera_model_.position_vehicle_m[2] = height_m;
+    try {
+      installProcessor(
+        applied_roll_deg_.load(std::memory_order_relaxed),
+        applied_pitch_down_deg_.load(std::memory_order_relaxed),
+        "height estimator");
+      camera_height_applied_.store(true, std::memory_order_release);
+      camera_height_finalized_.store(true, std::memory_order_release);
+      RCLCPP_INFO(
+        get_logger(),
+        "Camera height fixed for this run: %.4fm from %s",
+        height_m, height_topic_.c_str());
+    } catch (const std::exception & exception) {
+      camera_model_.position_vehicle_m[2] = previous_height_m;
+      RCLCPP_ERROR(
+        get_logger(),
+        "Could not install height-derived BEV LUT; keeping %.4fm fallback: %s",
+        previous_height_m, exception.what());
     }
   }
 
@@ -539,6 +642,10 @@ private:
     }
 
     try {
+      std::lock_guard<std::mutex> lock(pose_update_mutex_);
+      if (imu_attitude_finalized_.load(std::memory_order_relaxed)) {
+        return;
+      }
       installProcessor(roll_mean, pitch_mean, "OAK IMU");
       imu_attitude_applied_.store(true, std::memory_order_release);
       imu_attitude_finalized_.store(true, std::memory_order_release);
@@ -1046,6 +1153,8 @@ private:
       0.0;
     const bool imu_applied =
       imu_attitude_applied_.load(std::memory_order_acquire);
+    const bool height_applied =
+      camera_height_applied_.load(std::memory_order_acquire);
 
     RCLCPP_INFO(
       get_logger(),
@@ -1054,6 +1163,7 @@ private:
       "ROS=%.1fHz, preview=%.1fHz, "
       "gpu=%.3f/%.3fms avg/max, latest_age=%.2fms, "
       "attitude=%s(roll=%.2f,pitch_down=%.2fdeg), "
+      "height=%s(%.3fm), "
       "errors(invalid/process/publish)=%llu/%llu/%llu",
       static_cast<double>(received) / elapsed_sec,
       static_cast<unsigned long long>(
@@ -1072,6 +1182,8 @@ private:
       imu_applied ? "IMU" : "fallback",
       applied_roll_deg_.load(std::memory_order_relaxed),
       applied_pitch_down_deg_.load(std::memory_order_relaxed),
+      height_applied ? "estimator" : "fallback",
+      applied_camera_height_m_.load(std::memory_order_relaxed),
       static_cast<unsigned long long>(
         invalid_total_.load(std::memory_order_relaxed)),
       static_cast<unsigned long long>(
@@ -1108,6 +1220,21 @@ private:
         fallback_roll_deg_,
         fallback_pitch_down_deg_);
     }
+    if (
+      height_from_topic_enabled_ &&
+      !camera_height_finalized_.load(std::memory_order_acquire) &&
+      std::chrono::duration<double>(now - node_started_at_).count() >=
+      startup_timeout_sec_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "No valid one-shot camera height has been accepted on %s; "
+        "BEV is still using %.3fm fallback.",
+        height_topic_.c_str(),
+        fallback_camera_height_m_);
+    }
   }
 
   std::string input_topic_;
@@ -1132,21 +1259,31 @@ private:
   double fallback_roll_deg_{0.0};
   double fallback_pitch_down_deg_{14.0};
   double camera_yaw_deg_{0.0};
+  bool height_from_topic_enabled_{true};
+  std::string height_topic_{"/camera/height"};
+  double camera_height_min_m_{0.10};
+  double camera_height_max_m_{1.00};
+  double fallback_camera_height_m_{0.20};
 
   RectifiedCameraModel camera_model_{};
   BevConfig bev_config_{};
   std::atomic<double> valid_lut_percent_{0.0};
   std::atomic<double> applied_roll_deg_{0.0};
   std::atomic<double> applied_pitch_down_deg_{14.0};
+  std::atomic<double> applied_camera_height_m_{0.20};
   std::atomic<bool> imu_attitude_applied_{false};
   std::atomic<bool> imu_attitude_finalized_{false};
+  std::atomic<bool> camera_height_applied_{false};
+  std::atomic<bool> camera_height_finalized_{false};
   std::deque<std::pair<double, double>> imu_attitude_samples_;
   std::shared_ptr<CudaBevProcessor> gpu_processor_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr input_subscription_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr height_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
+  std::mutex pose_update_mutex_;
 
   std::mutex input_mutex_;
   std::condition_variable input_cv_;
