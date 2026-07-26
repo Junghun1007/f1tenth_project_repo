@@ -182,12 +182,13 @@ ros2 run camera_driver camera_driver_node \
 
 - `capture`: 실제 DepthAI 프레임 수신 FPS와 요청 FPS
 - `preview`: 실제 프리뷰 갱신 FPS
+- `IMU`: RGB 카메라 좌표계로 변환해 발행한 IMU FPS
 - `dropped`: 최근 상태 구간의 sequence 누락 프레임 수
 
 예:
 
 ```text
-FPS: capture=142.8/143.0, preview=59.9, dropped=0
+FPS: capture=120.0/120.0, preview=0.0, IMU=100.0, dropped=0
 ```
 
 ROS 이미지 발행을 명시적으로 켠 경우 외부 토픽을 다음과 같이 확인할 수
@@ -210,6 +211,9 @@ ros2 topic info /camera/image_rect --verbose
 | `undistort_enabled` | `true` | OAK 장치 내부 왜곡 보정 |
 | `queue_size` | `8` | DepthAI 호스트 큐 크기 |
 | `queue_blocking` | `false` | 큐가 찼을 때 캡처 차단 여부 |
+| `imu_attitude_enabled` | `true` | OAK IMU 중력 벡터 발행 |
+| `imu_topic` | `/camera/imu` | 카메라 좌표계 IMU 토픽 |
+| `imu_rate_hz` | `100.0` | IMU 가속도 요청 FPS |
 | `publish_enabled` | `false` | ROS 이미지 발행 |
 | `publish_fps` | `143.0` | ROS 발행 최대 FPS |
 | `preview_enabled` | `false` | OpenCV 직접 프리뷰 |

@@ -1,9 +1,11 @@
 #include "camera_driver/camera_driver_node.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +24,7 @@
 #include "opencv2/highgui.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "sensor_msgs/msg/imu.hpp"
 
 namespace camera_driver
 {
@@ -139,6 +142,12 @@ public:
       publisher_ = node_.create_publisher<sensor_msgs::msg::Image>(
         image_topic_, qos);
     }
+    if (imu_attitude_enabled_) {
+      auto qos = rclcpp::SensorDataQoS();
+      qos.keep_last(5);
+      imu_publisher_ = node_.create_publisher<sensor_msgs::msg::Imu>(
+        imu_topic_, qos);
+    }
 
     try {
       start_pipeline();
@@ -149,6 +158,9 @@ public:
       status_timer_ = node_.create_wall_timer(
         status_period, std::bind(&Impl::report_status, this));
       capture_thread_ = std::thread(&Impl::capture_loop, this);
+      if (imu_attitude_enabled_) {
+        imu_thread_ = std::thread(&Impl::imu_loop, this);
+      }
       if (publish_enabled_) {
         publish_thread_ = std::thread(&Impl::publish_loop, this);
       }
@@ -205,6 +217,14 @@ private:
       "frame_id", "camera_optical_frame");
     image_topic_ = node_.declare_parameter<std::string>(
       "image_topic", "/camera/image_rect");
+    imu_attitude_enabled_ =
+      node_.declare_parameter<bool>("imu_attitude_enabled", true);
+    imu_topic_ = node_.declare_parameter<std::string>(
+      "imu_topic", "/camera/imu");
+    imu_frame_id_ = node_.declare_parameter<std::string>(
+      "imu_frame_id", "camera_optical_frame");
+    imu_rate_hz_ = node_.declare_parameter<double>("imu_rate_hz", 100.0);
+    imu_queue_size_ = node_.declare_parameter<int>("imu_queue_size", 20);
     publish_enabled_ =
       node_.declare_parameter<bool>("publish_enabled", false);
     publish_fps_ =
@@ -230,6 +250,15 @@ private:
     require_positive(queue_size_, "queue_size");
     require_positive(startup_timeout_sec_, "startup_timeout_sec");
     require_positive(status_log_interval_sec_, "status_log_interval_sec");
+    if (imu_attitude_enabled_) {
+      require_positive(imu_rate_hz_, "imu_rate_hz");
+      require_positive(imu_queue_size_, "imu_queue_size");
+      if (imu_topic_.empty() || imu_frame_id_.empty()) {
+        throw std::invalid_argument(
+                "imu_topic and imu_frame_id must not be empty when "
+                "IMU attitude is enabled");
+      }
+    }
     if (publish_enabled_) {
       require_positive(publish_fps_, "publish_fps");
       if (image_topic_.empty()) {
@@ -278,6 +307,52 @@ private:
 
     output_queue_ = output->createOutputQueue(
       static_cast<unsigned int>(queue_size_), queue_blocking_);
+
+    if (imu_attitude_enabled_) {
+      try {
+        const auto imu_name = device->getConnectedIMU();
+        if (imu_name.empty()) {
+          throw std::runtime_error("the OAK device reported no connected IMU");
+        }
+
+        const auto calibration = device->readCalibration();
+        const auto imu_to_camera =
+          calibration.getImuToCameraExtrinsics(camera_socket_, false);
+        if (
+          imu_to_camera.size() < 3U ||
+          imu_to_camera[0].size() < 3U ||
+          imu_to_camera[1].size() < 3U ||
+          imu_to_camera[2].size() < 3U)
+        {
+          throw std::runtime_error(
+                  "calibration has no valid IMU-to-camera rotation matrix");
+        }
+        for (std::size_t row = 0; row < 3U; ++row) {
+          for (std::size_t column = 0; column < 3U; ++column) {
+            imu_to_camera_rotation_[row][column] =
+              static_cast<double>(imu_to_camera[row][column]);
+          }
+        }
+
+        auto imu = pipeline_->create<dai::node::IMU>();
+        imu->enableIMUSensor(
+          dai::IMUSensor::ACCELEROMETER_RAW,
+          static_cast<int>(std::lround(imu_rate_hz_)));
+        imu->setBatchReportThreshold(1);
+        imu->setMaxBatchReports(10);
+        imu_queue_ = imu->out.createOutputQueue(
+          static_cast<unsigned int>(imu_queue_size_), false);
+        imu_name_ = imu_name;
+      } catch (const std::exception & exception) {
+        imu_attitude_enabled_ = false;
+        imu_queue_.reset();
+        RCLCPP_ERROR(
+          node_.get_logger(),
+          "OAK IMU attitude disabled; BEV will keep its parameter fallback: %s",
+          exception.what());
+      }
+    }
+
     pipeline_->start();
 
     RCLCPP_INFO(
@@ -293,6 +368,14 @@ private:
       preview_enabled_ ? "on" : "off",
       queue_size_,
       queue_blocking_ ? "blocking" : "non-blocking");
+    if (imu_attitude_enabled_) {
+      RCLCPP_INFO(
+        node_.get_logger(),
+        "IMU: %s raw accelerometer @ %.1f Hz -> %s, "
+        "factory IMU-to-%s rotation applied",
+        imu_name_.c_str(), imu_rate_hz_, imu_topic_.c_str(),
+        camera_socket_name_.c_str());
+    }
   }
 
   rclcpp::Time ros_timestamp_for(
@@ -432,6 +515,60 @@ private:
     message.step = stride;
     message.data.resize(expected_bytes);
     std::memcpy(message.data.data(), nv12.data(), expected_bytes);
+  }
+
+  void imu_loop()
+  {
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+      try {
+        if (!pipeline_ || !pipeline_->isRunning()) {
+          break;
+        }
+
+        auto data = imu_queue_->tryGet<dai::IMUData>();
+        if (!data) {
+          std::this_thread::sleep_for(200us);
+          continue;
+        }
+
+        for (const auto & packet : data->packets) {
+          const auto & raw = packet.acceleroMeter;
+          const std::array<double, 3> acceleration_imu{
+            static_cast<double>(raw.x),
+            static_cast<double>(raw.y),
+            static_cast<double>(raw.z)};
+          std::array<double, 3> acceleration_camera{};
+          for (std::size_t row = 0; row < 3U; ++row) {
+            for (std::size_t column = 0; column < 3U; ++column) {
+              acceleration_camera[row] +=
+                imu_to_camera_rotation_[row][column] *
+                acceleration_imu[column];
+            }
+          }
+
+          auto message = std::make_unique<sensor_msgs::msg::Imu>();
+          message->header.stamp = ros_timestamp_for(raw.getTimestamp());
+          message->header.frame_id = imu_frame_id_;
+          // Only camera-frame linear acceleration is populated. BEV derives
+          // gravity-referenced roll/pitch; yaw intentionally stays a fixed
+          // camera mounting parameter.
+          message->orientation_covariance[0] = -1.0;
+          message->angular_velocity_covariance[0] = -1.0;
+          message->linear_acceleration.x = acceleration_camera[0];
+          message->linear_acceleration.y = acceleration_camera[1];
+          message->linear_acceleration.z = acceleration_camera[2];
+          imu_publisher_->publish(std::move(message));
+          imu_published_total_.fetch_add(1U, std::memory_order_relaxed);
+          imu_published_interval_.fetch_add(1U, std::memory_order_relaxed);
+        }
+      } catch (const std::exception & exception) {
+        imu_errors_total_.fetch_add(1U, std::memory_order_relaxed);
+        RCLCPP_ERROR_THROTTLE(
+          node_.get_logger(), *node_.get_clock(), 1000,
+          "IMU read error: %s", exception.what());
+        std::this_thread::sleep_for(1ms);
+      }
+    }
   }
 
   void publish_loop()
@@ -633,14 +770,16 @@ private:
     const auto capture_count = received_interval_.exchange(0);
     const auto preview_count = previewed_interval_.exchange(0);
     const auto dropped_count = device_drops_interval_.exchange(0);
+    const auto imu_count = imu_published_interval_.exchange(0);
 
     const auto capture_hz = static_cast<double>(capture_count) / elapsed;
     const auto preview_hz = static_cast<double>(preview_count) / elapsed;
+    const auto imu_hz = static_cast<double>(imu_count) / elapsed;
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "FPS: capture=%.1f/%.1f, preview=%.1f, dropped=%lu",
-      capture_hz, sensor_fps_, preview_hz,
+      "FPS: capture=%.1f/%.1f, preview=%.1f, IMU=%.1f, dropped=%lu",
+      capture_hz, sensor_fps_, preview_hz, imu_hz,
       static_cast<unsigned long>(dropped_count));
 
     const auto running_for =
@@ -674,6 +813,7 @@ private:
 
     join_thread(publish_thread_);
     join_thread(preview_thread_);
+    join_thread(imu_thread_);
     join_thread(capture_thread_);
 
     if (status_timer_) {
@@ -682,6 +822,7 @@ private:
     }
 
     output_queue_.reset();
+    imu_queue_.reset();
     if (pipeline_) {
       try {
         if (pipeline_->isRunning()) {
@@ -718,6 +859,11 @@ private:
   bool queue_blocking_{false};
   std::string frame_id_;
   std::string image_topic_;
+  bool imu_attitude_enabled_{true};
+  std::string imu_topic_;
+  std::string imu_frame_id_;
+  double imu_rate_hz_{100.0};
+  int imu_queue_size_{20};
   bool publish_enabled_{false};
   double publish_fps_{143.0};
   bool preview_enabled_{false};
@@ -732,10 +878,13 @@ private:
 
   std::unique_ptr<dai::Pipeline> pipeline_;
   std::shared_ptr<dai::MessageQueue> output_queue_;
+  std::shared_ptr<dai::MessageQueue> imu_queue_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 
   std::thread capture_thread_;
+  std::thread imu_thread_;
   std::thread publish_thread_;
   std::thread preview_thread_;
   std::atomic<bool> stop_requested_{false};
@@ -746,6 +895,11 @@ private:
 
   std::shared_ptr<const FrameSnapshot> latest_frame_;
   std::optional<std::int64_t> last_device_sequence_;
+  std::array<std::array<double, 3>, 3> imu_to_camera_rotation_{{
+    {{1.0, 0.0, 0.0}},
+    {{0.0, 1.0, 0.0}},
+    {{0.0, 0.0, 1.0}}}};
+  std::string imu_name_;
   bool preview_window_sized_{false};
 
   std::atomic<bool> first_frame_received_{false};
@@ -762,6 +916,9 @@ private:
   std::atomic<std::uint64_t> capture_errors_total_{0};
   std::atomic<std::uint64_t> publish_errors_total_{0};
   std::atomic<std::uint64_t> invalid_frames_total_{0};
+  std::atomic<std::uint64_t> imu_published_total_{0};
+  std::atomic<std::uint64_t> imu_published_interval_{0};
+  std::atomic<std::uint64_t> imu_errors_total_{0};
 
   std::chrono::steady_clock::time_point started_at_;
   std::chrono::steady_clock::time_point last_status_at_;

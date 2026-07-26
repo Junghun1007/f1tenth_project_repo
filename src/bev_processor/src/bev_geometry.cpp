@@ -1,6 +1,7 @@
 #include "bev_processor/bev_geometry.hpp"
 
 #include <cmath>
+#include <stdexcept>
 
 #include <opencv2/imgproc.hpp>
 
@@ -64,6 +65,31 @@ cv::Matx33d mountRotationVehicleFromCamera(
          rotationY(downward_pitch_rad) *
          rotationX(roll_rad) *
          optical_to_vehicle;
+}
+
+EulerAngles cameraAttitudeFromSpecificForce(
+  const cv::Vec3d & acceleration_camera_mps2)
+{
+  const double magnitude = cv::norm(acceleration_camera_mps2);
+  if (!std::isfinite(magnitude) || magnitude <= 1.0e-9) {
+    throw std::invalid_argument(
+            "camera-frame acceleration must be finite and non-zero");
+  }
+
+  // Camera optical coordinates are RDF: +X right, +Y down, +Z forward.
+  // At rest an accelerometer measures specific force opposite gravity, so a
+  // level camera reads approximately (0, -g, 0). These equations match the
+  // roll and positive-downward-pitch convention used by the BEV mount model.
+  return EulerAngles{
+    std::atan2(
+      -acceleration_camera_mps2[0],
+      -acceleration_camera_mps2[1]),
+    std::atan2(
+      -acceleration_camera_mps2[2],
+      std::hypot(
+        acceleration_camera_mps2[0],
+        acceleration_camera_mps2[1])),
+    0.0};
 }
 
 RemapLut generateRemap(

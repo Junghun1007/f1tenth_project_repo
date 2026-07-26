@@ -56,6 +56,9 @@ cv::Matx33d mountRotationVehicleFromCamera(
   double downward_pitch_rad,
   double yaw_rad);
 
+EulerAngles cameraAttitudeFromSpecificForce(
+  const cv::Vec3d & acceleration_camera_mps2);
+
 RemapLut generateRemap(
   const RectifiedCameraModel & camera,
   const BevConfig & bev);

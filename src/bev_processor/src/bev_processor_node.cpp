@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <memory>
@@ -13,6 +14,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -21,6 +23,7 @@
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/header.hpp>
 
 #include "bev_processor/bev_geometry.hpp"
@@ -33,6 +36,8 @@ namespace
 {
 
 using SteadyClock = std::chrono::steady_clock;
+constexpr double kRadiansToDegrees =
+  180.0 / 3.14159265358979323846;
 
 struct BevFrame
 {
@@ -97,19 +102,8 @@ public:
     readParameters();
     validateParameters();
 
-    const auto lut = generateRemap(camera_model_, bev_config_);
-    gpu_processor_ = std::make_unique<CudaBevProcessor>(
-      camera_model_.image_width,
-      camera_model_.image_height,
-      lut.map_x,
-      lut.map_y);
-
-    const int valid_pixels = cv::countNonZero(lut.valid_mask);
-    const int output_pixels =
-      bev_config_.output_width * bev_config_.output_height;
-    valid_lut_percent_ =
-      100.0 * static_cast<double>(valid_pixels) /
-      static_cast<double>(output_pixels);
+    installProcessor(
+      fallback_roll_deg_, fallback_pitch_down_deg_, nullptr);
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     input_subscription_ = create_subscription<sensor_msgs::msg::Image>(
@@ -118,6 +112,16 @@ public:
       [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
         onImage(std::move(message));
       });
+    if (imu_attitude_enabled_) {
+      const auto imu_qos = rclcpp::SensorDataQoS().keep_last(
+        static_cast<std::size_t>(imu_attitude_sample_count_));
+      imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
+        imu_topic_,
+        imu_qos,
+        [this](sensor_msgs::msg::Imu::ConstSharedPtr message) {
+          onImu(std::move(message));
+        });
+    }
 
     if (publish_enabled_) {
       output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
@@ -143,6 +147,10 @@ public:
     status_timer_ = create_wall_timer(
       std::chrono::duration<double>(status_log_interval_sec_),
       std::bind(&BevProcessorNode::logStatus, this));
+    const auto startup_processor = std::atomic_load_explicit(
+      &gpu_processor_, std::memory_order_acquire);
+    const std::string imu_startup_description =
+      imu_attitude_enabled_ ? "on (" + imu_topic_ + ")" : "off";
 
     RCLCPP_INFO(
       get_logger(),
@@ -174,12 +182,21 @@ public:
       get_parameter("camera_roll_deg").as_double(),
       get_parameter("camera_downward_pitch_deg").as_double(),
       get_parameter("camera_yaw_deg").as_double(),
-      valid_lut_percent_,
-      gpu_processor_->deviceName().c_str(),
+      valid_lut_percent_.load(std::memory_order_relaxed),
+      startup_processor->deviceName().c_str(),
       publish_enabled_ ? "on" : "off",
       publish_max_fps_,
       preview_enabled_ ? "on" : "off",
       preview_max_fps_);
+    RCLCPP_INFO(
+      get_logger(),
+      "Camera attitude: IMU=%s, startup samples=%d, "
+      "fallback roll=%.2f/pitch_down=%.2f deg, fixed yaw=%.2f deg",
+      imu_startup_description.c_str(),
+      imu_attitude_sample_count_,
+      fallback_roll_deg_,
+      fallback_pitch_down_deg_,
+      camera_yaw_deg_);
     RCLCPP_INFO(
       get_logger(),
       "============================================================");
@@ -231,6 +248,12 @@ private:
     declare_parameter<double>("camera_roll_deg", 0.0);
     declare_parameter<double>("camera_downward_pitch_deg", 14.0);
     declare_parameter<double>("camera_yaw_deg", 0.0);
+    declare_parameter<bool>("imu_attitude_enabled", true);
+    declare_parameter<std::string>("imu_topic", "/camera/imu");
+    declare_parameter<int>("imu_attitude_sample_count", 10);
+    declare_parameter<double>("imu_attitude_max_stddev_deg", 0.5);
+    declare_parameter<double>("imu_accel_min_mps2", 7.5);
+    declare_parameter<double>("imu_accel_max_mps2", 12.0);
 
     declare_parameter<double>("x_min_m", 0.18);
     declare_parameter<double>("x_max_m", 3.0);
@@ -273,11 +296,27 @@ private:
       get_parameter("camera_x_m").as_double(),
       get_parameter("camera_y_m").as_double(),
       get_parameter("camera_z_m").as_double());
+    fallback_roll_deg_ = get_parameter("camera_roll_deg").as_double();
+    fallback_pitch_down_deg_ =
+      get_parameter("camera_downward_pitch_deg").as_double();
+    camera_yaw_deg_ = get_parameter("camera_yaw_deg").as_double();
     camera_model_.rotation_vehicle_from_camera =
       mountRotationVehicleFromCamera(
-      degToRad(get_parameter("camera_roll_deg").as_double()),
-      degToRad(get_parameter("camera_downward_pitch_deg").as_double()),
-      degToRad(get_parameter("camera_yaw_deg").as_double()));
+      degToRad(fallback_roll_deg_),
+      degToRad(fallback_pitch_down_deg_),
+      degToRad(camera_yaw_deg_));
+
+    imu_attitude_enabled_ =
+      get_parameter("imu_attitude_enabled").as_bool();
+    imu_topic_ = get_parameter("imu_topic").as_string();
+    imu_attitude_sample_count_ = static_cast<int>(
+      get_parameter("imu_attitude_sample_count").as_int());
+    imu_attitude_max_stddev_deg_ =
+      get_parameter("imu_attitude_max_stddev_deg").as_double();
+    imu_accel_min_mps2_ =
+      get_parameter("imu_accel_min_mps2").as_double();
+    imu_accel_max_mps2_ =
+      get_parameter("imu_accel_max_mps2").as_double();
 
     bev_config_.x_min_m = get_parameter("x_min_m").as_double();
     bev_config_.x_max_m = get_parameter("x_max_m").as_double();
@@ -324,6 +363,16 @@ private:
     {
       throw std::invalid_argument("invalid camera pose or BEV bounds");
     }
+    if (
+      imu_attitude_enabled_ &&
+      (imu_topic_.empty() ||
+      imu_attitude_sample_count_ <= 0 ||
+      imu_attitude_max_stddev_deg_ <= 0.0 ||
+      imu_accel_min_mps2_ <= 0.0 ||
+      imu_accel_max_mps2_ <= imu_accel_min_mps2_))
+    {
+      throw std::invalid_argument("invalid IMU attitude parameter");
+    }
 
     const int expected_width = static_cast<int>(std::llround(
         (bev_config_.y_max_m - bev_config_.y_min_m) /
@@ -349,6 +398,166 @@ private:
       startup_timeout_sec_ <= 0.0)
     {
       throw std::invalid_argument("invalid rate, preview, or status parameter");
+    }
+  }
+
+  void installProcessor(
+    const double roll_deg,
+    const double pitch_down_deg,
+    const char * source)
+  {
+    auto camera_model = camera_model_;
+    camera_model.rotation_vehicle_from_camera =
+      mountRotationVehicleFromCamera(
+      degToRad(roll_deg),
+      degToRad(pitch_down_deg),
+      degToRad(camera_yaw_deg_));
+    const auto lut = generateRemap(camera_model, bev_config_);
+    auto processor = std::make_shared<CudaBevProcessor>(
+      camera_model.image_width,
+      camera_model.image_height,
+      lut.map_x,
+      lut.map_y);
+
+    const int valid_pixels = cv::countNonZero(lut.valid_mask);
+    const int output_pixels =
+      bev_config_.output_width * bev_config_.output_height;
+    const double valid_percent =
+      100.0 * static_cast<double>(valid_pixels) /
+      static_cast<double>(output_pixels);
+
+    std::atomic_store_explicit(
+      &gpu_processor_, std::move(processor), std::memory_order_release);
+    valid_lut_percent_.store(valid_percent, std::memory_order_relaxed);
+    applied_roll_deg_.store(roll_deg, std::memory_order_relaxed);
+    applied_pitch_down_deg_.store(
+      pitch_down_deg, std::memory_order_relaxed);
+
+    if (source != nullptr) {
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV LUT installed from %s: roll=%.3f deg, "
+        "pitch_down=%.3f deg, fixed yaw=%.3f deg, valid=%.2f%%",
+        source, roll_deg, pitch_down_deg, camera_yaw_deg_, valid_percent);
+    }
+  }
+
+  void onImu(sensor_msgs::msg::Imu::ConstSharedPtr message)
+  {
+    if (imu_attitude_finalized_.load(std::memory_order_acquire)) {
+      return;
+    }
+
+    const double acceleration_x = message->linear_acceleration.x;
+    const double acceleration_y = message->linear_acceleration.y;
+    const double acceleration_z = message->linear_acceleration.z;
+    const double magnitude = std::sqrt(
+      acceleration_x * acceleration_x +
+      acceleration_y * acceleration_y +
+      acceleration_z * acceleration_z);
+    if (
+      !std::isfinite(magnitude) ||
+      magnitude < imu_accel_min_mps2_ ||
+      magnitude > imu_accel_max_mps2_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Waiting for valid IMU gravity: |a|=%.3f m/s^2, "
+        "allowed=[%.3f, %.3f]",
+        magnitude, imu_accel_min_mps2_, imu_accel_max_mps2_);
+      return;
+    }
+
+    // The camera optical frame is RDF: +X right, +Y down, +Z forward.
+    // A stationary accelerometer measures specific force opposite gravity,
+    // hence an upright, level camera reads approximately (0, -g, 0).
+    if (-acceleration_y <= 1.0e-6) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "IMU acceleration does not describe an upright camera-frame pose: "
+        "a=[%.3f, %.3f, %.3f] m/s^2",
+        acceleration_x, acceleration_y, acceleration_z);
+      return;
+    }
+
+    const auto attitude = cameraAttitudeFromSpecificForce(
+      cv::Vec3d(acceleration_x, acceleration_y, acceleration_z));
+    const double roll_deg = attitude.roll * kRadiansToDegrees;
+    const double pitch_down_deg = attitude.pitch * kRadiansToDegrees;
+    if (!std::isfinite(roll_deg) || !std::isfinite(pitch_down_deg)) {
+      return;
+    }
+
+    imu_attitude_samples_.emplace_back(roll_deg, pitch_down_deg);
+    while (
+      static_cast<int>(imu_attitude_samples_.size()) >
+      imu_attitude_sample_count_)
+    {
+      imu_attitude_samples_.pop_front();
+    }
+    if (
+      static_cast<int>(imu_attitude_samples_.size()) <
+      imu_attitude_sample_count_)
+    {
+      return;
+    }
+
+    double roll_sum = 0.0;
+    double pitch_sum = 0.0;
+    for (const auto & sample : imu_attitude_samples_) {
+      roll_sum += sample.first;
+      pitch_sum += sample.second;
+    }
+    const double roll_mean =
+      roll_sum / static_cast<double>(imu_attitude_samples_.size());
+    const double pitch_mean =
+      pitch_sum / static_cast<double>(imu_attitude_samples_.size());
+    double roll_squared_error_sum = 0.0;
+    double pitch_squared_error_sum = 0.0;
+    for (const auto & sample : imu_attitude_samples_) {
+      const double roll_error = sample.first - roll_mean;
+      const double pitch_error = sample.second - pitch_mean;
+      roll_squared_error_sum += roll_error * roll_error;
+      pitch_squared_error_sum += pitch_error * pitch_error;
+    }
+    const double roll_stddev = std::sqrt(
+      roll_squared_error_sum /
+      static_cast<double>(imu_attitude_samples_.size()));
+    const double pitch_stddev = std::sqrt(
+      pitch_squared_error_sum /
+      static_cast<double>(imu_attitude_samples_.size()));
+    if (
+      roll_stddev > imu_attitude_max_stddev_deg_ ||
+      pitch_stddev > imu_attitude_max_stddev_deg_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "Waiting for stable IMU attitude: roll stddev=%.3f deg, "
+        "pitch stddev=%.3f deg, limit=%.3f deg",
+        roll_stddev, pitch_stddev, imu_attitude_max_stddev_deg_);
+      return;
+    }
+
+    try {
+      installProcessor(roll_mean, pitch_mean, "OAK IMU");
+      imu_attitude_applied_.store(true, std::memory_order_release);
+      imu_attitude_finalized_.store(true, std::memory_order_release);
+      RCLCPP_INFO(
+        get_logger(),
+        "OAK IMU attitude fixed for this run: samples=%d, "
+        "roll=%.3f deg (stddev=%.3f), "
+        "pitch_down=%.3f deg (stddev=%.3f). "
+        "Yaw remains the configured mounting value %.3f deg.",
+        imu_attitude_sample_count_,
+        roll_mean, roll_stddev,
+        pitch_mean, pitch_stddev,
+        camera_yaw_deg_);
+    } catch (const std::exception & exception) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Could not install IMU-derived BEV LUT; keeping parameter fallback: %s",
+        exception.what());
+      imu_attitude_finalized_.store(true, std::memory_order_release);
     }
   }
 
@@ -438,7 +647,9 @@ private:
       try {
         const auto started_at = SteadyClock::now();
         auto output = std::make_shared<BevFrame>();
-        output->image = gpu_processor_->process(
+        const auto processor = std::atomic_load_explicit(
+          &gpu_processor_, std::memory_order_acquire);
+        output->image = processor->process(
           input->data.data(),
           input->data.size(),
           static_cast<std::size_t>(input->step));
@@ -833,12 +1044,16 @@ private:
       static_cast<double>(process_ns) /
       static_cast<double>(processed) / 1.0e6 :
       0.0;
+    const bool imu_applied =
+      imu_attitude_applied_.load(std::memory_order_acquire);
 
     RCLCPP_INFO(
       get_logger(),
       "\nBEV status: input=%.1fHz (%llu total), processed=%.1fHz "
-      "(%llu total, skipped=%llu), ROS=%.1fHz, preview=%.1fHz, "
+      "(%llu total, skipped=%llu/%llu interval/total), "
+      "ROS=%.1fHz, preview=%.1fHz, "
       "gpu=%.3f/%.3fms avg/max, latest_age=%.2fms, "
+      "attitude=%s(roll=%.2f,pitch_down=%.2fdeg), "
       "errors(invalid/process/publish)=%llu/%llu/%llu",
       static_cast<double>(received) / elapsed_sec,
       static_cast<unsigned long long>(
@@ -846,6 +1061,7 @@ private:
       static_cast<double>(processed) / elapsed_sec,
       static_cast<unsigned long long>(
         processed_total_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long long>(skipped),
       static_cast<unsigned long long>(
         skipped_total_.load(std::memory_order_relaxed)),
       static_cast<double>(published) / elapsed_sec,
@@ -853,6 +1069,9 @@ private:
       average_process_ms,
       static_cast<double>(process_ns_max) / 1.0e6,
       latest_age_ms,
+      imu_applied ? "IMU" : "fallback",
+      applied_roll_deg_.load(std::memory_order_relaxed),
+      applied_pitch_down_deg_.load(std::memory_order_relaxed),
       static_cast<unsigned long long>(
         invalid_total_.load(std::memory_order_relaxed)),
       static_cast<unsigned long long>(
@@ -873,6 +1092,22 @@ private:
         "is enabled and the image is 1280x720 nv12.",
         input_topic_.c_str());
     }
+    if (
+      imu_attitude_enabled_ &&
+      !imu_attitude_finalized_.load(std::memory_order_acquire) &&
+      std::chrono::duration<double>(now - node_started_at_).count() >=
+      startup_timeout_sec_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "No stable OAK IMU attitude has been accepted on %s; "
+        "BEV is still using fallback roll=%.2f/pitch_down=%.2f deg.",
+        imu_topic_.c_str(),
+        fallback_roll_deg_,
+        fallback_pitch_down_deg_);
+    }
   }
 
   std::string input_topic_;
@@ -888,13 +1123,28 @@ private:
   int preview_max_height_{720};
   double status_log_interval_sec_{5.0};
   double startup_timeout_sec_{5.0};
+  bool imu_attitude_enabled_{true};
+  std::string imu_topic_{"/camera/imu"};
+  int imu_attitude_sample_count_{10};
+  double imu_attitude_max_stddev_deg_{0.5};
+  double imu_accel_min_mps2_{7.5};
+  double imu_accel_max_mps2_{12.0};
+  double fallback_roll_deg_{0.0};
+  double fallback_pitch_down_deg_{14.0};
+  double camera_yaw_deg_{0.0};
 
   RectifiedCameraModel camera_model_{};
   BevConfig bev_config_{};
-  double valid_lut_percent_{0.0};
-  std::unique_ptr<CudaBevProcessor> gpu_processor_;
+  std::atomic<double> valid_lut_percent_{0.0};
+  std::atomic<double> applied_roll_deg_{0.0};
+  std::atomic<double> applied_pitch_down_deg_{14.0};
+  std::atomic<bool> imu_attitude_applied_{false};
+  std::atomic<bool> imu_attitude_finalized_{false};
+  std::deque<std::pair<double, double>> imu_attitude_samples_;
+  std::shared_ptr<CudaBevProcessor> gpu_processor_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr input_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 

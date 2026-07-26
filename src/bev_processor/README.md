@@ -10,6 +10,8 @@
 - 카메라와 BEV를 동일한 `component_container_mt`에 적재하고
   intra-process 통신을 사용한다.
 - 시작할 때 지면 역투영 LUT를 한 번 계산해 GPU 메모리에 올린다.
+- OAK IMU의 중력 벡터가 안정되면 roll과 하향 pitch를 계산해 LUT를 한 번
+  교체하고, 주행 중에는 해당 LUT를 고정한다.
 - CUDA 커널 하나가 NV12 Y/UV 샘플링, 색 변환, BEV 워핑을 결합해 수행한다.
 - 전체 1280x720 BGR 프레임은 만들지 않고 200x282 BEV만 CPU로 내려받는다.
 - OpenCV 프리뷰 바깥 여백에 좌표 글자를 표시하고 영상에는 0.1 m
@@ -73,10 +75,13 @@ ros2 launch bev_processor camera_bev.launch.py \
 ```
 
 카메라 장착 위치와 각도는 launch 옵션으로 실행할 때마다 조정할 수 있다.
-이 값으로 시작 시 BEV LUT를 생성하므로 값을 바꾼 뒤 launch를 다시 실행한다.
+기본적으로 `camera_roll_deg`와 `camera_downward_pitch_deg`는 IMU 수신 실패 시
+사용하는 fallback 값이고, `camera_yaw_deg`는 항상 사용하는 차량 기준 고정
+장착값이다. IMU 자동 적용을 끄면 세 각도 모두 아래 launch 값을 사용한다.
 
 ```bash
 ros2 launch bev_processor camera_bev.launch.py \
+  imu_attitude_enabled:=false \
   camera_x_m:=0.0 \
   camera_y_m:=0.0 \
   camera_z_m:=0.20 \
@@ -93,6 +98,7 @@ ros2 launch bev_processor camera_bev.launch.py \
 - BEV `processed`: CUDA BEV 변환이 완료된 FPS
 - BEV `skipped`: 처리 중 최신 입력으로 교체된 오래된 프레임 수
 - BEV `gpu`: NV12 업로드, CUDA 커널, 작은 BEV 다운로드를 합친 시간
+- BEV `attitude`: `IMU` 또는 `fallback`과 실제 적용 중인 roll/pitch
 
 ## 독립 프로세스 실행
 
@@ -114,9 +120,9 @@ ros2 launch bev_processor bev_processor.launch.py
 - 입력/K_rect: 1280x720
 - `fx=561.400939941`, `fy=561.136352539`
 - `cx=643.032653809`, `cy=352.621124268`
-- 카메라 높이 0.20 m, 하향각 14도, yaw 0도
+- 카메라 높이 0.20 m, IMU fallback 하향각 14도, 고정 yaw 0도
 - 전방 0.18~3.0 m, 좌우 -1.0~1.0 m
 - 0.01 m/px, 출력 200x282
 
-카메라 위치나 각도가 바뀌면 `config/bev_config.yaml`의 외부 파라미터를
-다시 측정해야 한다.
+카메라 높이와 위치, 차량 기준 yaw가 바뀌면 `config/bev_config.yaml`을 다시
+조정해야 한다. roll과 하향 pitch는 기본적으로 OAK IMU에서 자동 결정한다.

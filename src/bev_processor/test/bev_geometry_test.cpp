@@ -22,6 +22,22 @@ bool require(const bool condition, const char * message)
 
 int main()
 {
+  constexpr double gravity_mps2 = 9.80665;
+  constexpr double expected_roll_deg = 3.0;
+  constexpr double expected_pitch_deg = 14.0;
+  const double expected_roll_rad =
+    bev_processor::degToRad(expected_roll_deg);
+  const double expected_pitch_rad =
+    bev_processor::degToRad(expected_pitch_deg);
+  const cv::Vec3d specific_force_camera(
+    -gravity_mps2 * std::sin(expected_roll_rad) *
+    std::cos(expected_pitch_rad),
+    -gravity_mps2 * std::cos(expected_roll_rad) *
+    std::cos(expected_pitch_rad),
+    -gravity_mps2 * std::sin(expected_pitch_rad));
+  const auto imu_attitude =
+    bev_processor::cameraAttitudeFromSpecificForce(specific_force_camera);
+
   bev_processor::RectifiedCameraModel camera{
     561.400939941,
     561.136352539,
@@ -38,6 +54,12 @@ int main()
   const auto lut = bev_processor::generateRemap(camera, config);
   bool passed = true;
   passed &= require(
+    std::abs(imu_attitude.roll - expected_roll_rad) < 1.0e-9,
+    "IMU specific force must recover camera roll");
+  passed &= require(
+    std::abs(imu_attitude.pitch - expected_pitch_rad) < 1.0e-9,
+    "IMU specific force must recover positive downward camera pitch");
+  passed &= require(
     lut.map_x.rows == 282 && lut.map_x.cols == 200,
     "remap dimensions must be 200x282");
   passed &= require(lut.map_x.type() == CV_32FC1, "map_x must be float32");
@@ -52,17 +74,30 @@ int main()
     "more than 90 percent of the configured BEV must project into the image");
 
   const int far_row = 0;
-  const int near_row = config.output_height - 1;
   const int left_column = 0;
   const int right_column = config.output_width - 1;
   passed &= require(
     lut.map_x.at<float>(far_row, left_column) <
     lut.map_x.at<float>(far_row, right_column),
     "vehicle-left BEV pixels must map left of vehicle-right pixels");
+  int nearest_valid_center_row = config.output_height - 1;
+  while (
+    nearest_valid_center_row > far_row &&
+    lut.valid_mask.at<std::uint8_t>(
+      nearest_valid_center_row, config.output_width / 2) == 0U)
+  {
+    --nearest_valid_center_row;
+  }
   passed &= require(
-    lut.map_y.at<float>(near_row, config.output_width / 2) >
-    lut.map_y.at<float>(far_row, config.output_width / 2),
-    "near ground must map lower in the camera image than far ground");
+    nearest_valid_center_row > far_row,
+    "the configured range must contain a valid near center pixel");
+  if (nearest_valid_center_row > far_row) {
+    passed &= require(
+      lut.map_y.at<float>(
+        nearest_valid_center_row, config.output_width / 2) >
+      lut.map_y.at<float>(far_row, config.output_width / 2),
+      "near ground must map lower in the camera image than far ground");
+  }
 
   cv::Mat input(720, 1280, CV_8UC3);
   for (int row = 0; row < input.rows; ++row) {

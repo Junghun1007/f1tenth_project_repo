@@ -45,6 +45,11 @@ def generate_launch_description():
                 description="Maximum BEV preview refresh rate",
             ),
             DeclareLaunchArgument(
+                "imu_attitude_enabled",
+                default_value="true",
+                description="Replace BEV roll/pitch once from the OAK IMU",
+            ),
+            DeclareLaunchArgument(
                 "camera_x_m",
                 default_value="0.0",
                 description="Camera X position from the front axle in meters",
@@ -90,6 +95,12 @@ def generate_launch_description():
                             {
                                 "preview_enabled": False,
                                 "publish_enabled": True,
+                                "imu_attitude_enabled": ParameterValue(
+                                    LaunchConfiguration(
+                                        "imu_attitude_enabled"
+                                    ),
+                                    value_type=bool,
+                                ),
                             },
                         ],
                         extra_arguments=[
@@ -111,6 +122,12 @@ def generate_launch_description():
                                 ),
                                 "preview_max_fps": LaunchConfiguration(
                                     "preview_max_fps"
+                                ),
+                                "imu_attitude_enabled": ParameterValue(
+                                    LaunchConfiguration(
+                                        "imu_attitude_enabled"
+                                    ),
+                                    value_type=bool,
                                 ),
                                 "camera_x_m": ParameterValue(
                                     LaunchConfiguration("camera_x_m"),

@@ -34,6 +34,11 @@ def generate_launch_description():
                 description="Maximum OpenCV preview FPS; BEV processing is unaffected",
             ),
             DeclareLaunchArgument(
+                "imu_attitude_enabled",
+                default_value="true",
+                description="Replace BEV roll/pitch once from /camera/imu",
+            ),
+            DeclareLaunchArgument(
                 "camera_x_m",
                 default_value="0.0",
                 description="Camera X position from the front axle in meters",
@@ -79,6 +84,10 @@ def generate_launch_description():
                         ),
                         "preview_max_fps": LaunchConfiguration(
                             "preview_max_fps"
+                        ),
+                        "imu_attitude_enabled": ParameterValue(
+                            LaunchConfiguration("imu_attitude_enabled"),
+                            value_type=bool,
                         ),
                         "camera_x_m": ParameterValue(
                             LaunchConfiguration("camera_x_m"),
