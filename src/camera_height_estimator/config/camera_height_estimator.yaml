@@ -18,7 +18,7 @@ camera_height_estimator:
     minimum_depth_m: 0.30
     maximum_depth_m: 3.00
     minimum_height_m: 0.10
-    maximum_height_m: 0.50
+    maximum_height_m: 1.00
 
     # Spatial consistency inside one 10x10 depth frame.
     maximum_height_mad_m: 0.015

@@ -30,7 +30,7 @@ struct HeightGeometryConfig
   double minimum_depth_m{0.30};
   double maximum_depth_m{3.00};
   double minimum_height_m{0.10};
-  double maximum_height_m{0.50};
+  double maximum_height_m{1.00};
   double maximum_height_mad_m{0.015};
   double minimum_downward_ray_component{0.05};
 };

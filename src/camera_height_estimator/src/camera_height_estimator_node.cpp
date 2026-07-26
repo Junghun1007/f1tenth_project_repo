@@ -131,7 +131,7 @@ private:
     minimum_height_m_ =
       declare_parameter<double>("minimum_height_m", 0.10);
     maximum_height_m_ =
-      declare_parameter<double>("maximum_height_m", 0.50);
+      declare_parameter<double>("maximum_height_m", 1.00);
     maximum_height_mad_m_ =
       declare_parameter<double>("maximum_height_mad_m", 0.015);
     minimum_downward_ray_component_ = declare_parameter<double>(
@@ -598,7 +598,7 @@ private:
   double minimum_depth_m_{0.30};
   double maximum_depth_m_{3.00};
   double minimum_height_m_{0.10};
-  double maximum_height_m_{0.50};
+  double maximum_height_m_{1.00};
   double maximum_height_mad_m_{0.015};
   double minimum_downward_ray_component_{0.05};
 
