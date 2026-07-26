@@ -3,7 +3,7 @@ camera_driver:
     enabled: true
 
     # OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS, 2 MIPI lanes.
-    sensor_fps: 143.0
+    sensor_fps: 120.0
     width: 1280
     height: 720
 
@@ -14,8 +14,8 @@ camera_driver:
     # Runs inside the OAK/DepthAI pipeline, not with host-side cv::remap().
     undistort_enabled: true
 
-    # A small non-blocking queue prevents slow consumers from stalling capture.
-    queue_size: 2
+    # Eight non-blocking slots sustain 120 FPS without stalling capture.
+    queue_size: 8
     queue_blocking: false
 
     frame_id: "camera_optical_frame"
@@ -28,7 +28,7 @@ camera_driver:
 
     # Standalone preview converts NV12 to BGR on the CPU. The combined
     # camera_bev launch disables it and previews only the small GPU BEV.
-    preview_enabled: true
+    preview_enabled: false
     preview_fps: 143.0
     preview_window_name: "OAK rectified image"
     preview_max_width: 1280

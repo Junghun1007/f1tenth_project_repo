@@ -193,12 +193,12 @@ private:
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
     width_ = node_.declare_parameter<int>("width", 1280);
     height_ = node_.declare_parameter<int>("height", 720);
-    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 143.0);
+    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 120.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
     undistort_enabled_ =
       node_.declare_parameter<bool>("undistort_enabled", true);
-    queue_size_ = node_.declare_parameter<int>("queue_size", 2);
+    queue_size_ = node_.declare_parameter<int>("queue_size", 8);
     queue_blocking_ =
       node_.declare_parameter<bool>("queue_blocking", false);
     frame_id_ = node_.declare_parameter<std::string>(
@@ -210,7 +210,7 @@ private:
     publish_fps_ =
       node_.declare_parameter<double>("publish_fps", 143.0);
     preview_enabled_ =
-      node_.declare_parameter<bool>("preview_enabled", true);
+      node_.declare_parameter<bool>("preview_enabled", false);
     preview_fps_ =
       node_.declare_parameter<double>("preview_fps", 143.0);
     preview_window_name_ = node_.declare_parameter<std::string>(
@@ -711,16 +711,16 @@ private:
   std::string camera_socket_name_;
   int width_{1280};
   int height_{720};
-  double sensor_fps_{143.0};
+  double sensor_fps_{120.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
-  int queue_size_{2};
+  int queue_size_{8};
   bool queue_blocking_{false};
   std::string frame_id_;
   std::string image_topic_;
   bool publish_enabled_{false};
   double publish_fps_{143.0};
-  bool preview_enabled_{true};
+  bool preview_enabled_{false};
   double preview_fps_{143.0};
   std::string preview_window_name_;
   int preview_max_width_{1280};

@@ -4,7 +4,7 @@ bev_processor:
     input_topic: "/camera/image_rect"
     output_topic: "/camera/image_bev"
     output_frame_id: "front_axle_bev"
-    expected_input_fps: 143.0
+    expected_input_fps: 120.0
 
     # Every accepted input is processed on CUDA. Publishing is unlimited by
     # default, while the independent OpenCV preview is limited to 30 FPS.
@@ -14,7 +14,7 @@ bev_processor:
     preview_max_fps: 30.0
     preview_window_name: "BEV image"
     preview_max_width: 1280
-    preview_max_height: 900
+    preview_max_height: 720
 
     # K_rect reported by camera_driver for the rectified 1280x720 output.
     input_width: 1280
@@ -36,10 +36,13 @@ bev_processor:
     # Image top is forward; image left is vehicle left.
     x_min_m: 0.18
     x_max_m: 5.0
-    y_min_m: -0.35
-    y_max_m: 0.35
+    y_min_m: -1.0
+    y_max_m: 1.0
     meter_per_pixel: 0.01
-    output_width: 70
+
+    # output_width = round((y_max_m - y_min_m) / meter_per_pixel)
+    # output_height = round((x_max_m - x_min_m) / meter_per_pixel)
+    output_width: 200
     output_height: 482
 
     status_log_interval_sec: 5.0

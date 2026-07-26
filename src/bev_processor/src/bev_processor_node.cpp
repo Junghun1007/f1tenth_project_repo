@@ -146,6 +146,9 @@ public:
 
     RCLCPP_INFO(
       get_logger(),
+      "==================== BEV PROCESSOR START ====================");
+    RCLCPP_INFO(
+      get_logger(),
       "BEV processor started: input=%s (%dx%d NV12, expected=%.1fHz), "
       "output=%s (%dx%d), "
       "range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, %.3fm/px, "
@@ -169,6 +172,9 @@ public:
       publish_max_fps_,
       preview_enabled_ ? "on" : "off",
       preview_max_fps_);
+    RCLCPP_INFO(
+      get_logger(),
+      "============================================================");
   }
 
   ~BevProcessorNode() override
@@ -194,7 +200,7 @@ private:
     declare_parameter<std::string>("input_topic", "/camera/image_rect");
     declare_parameter<std::string>("output_topic", "/camera/image_bev");
     declare_parameter<std::string>("output_frame_id", "front_axle_bev");
-    declare_parameter<double>("expected_input_fps", 143.0);
+    declare_parameter<double>("expected_input_fps", 120.0);
 
     declare_parameter<bool>("publish_enabled", true);
     declare_parameter<double>("publish_max_fps", 0.0);
@@ -202,7 +208,7 @@ private:
     declare_parameter<double>("preview_max_fps", 30.0);
     declare_parameter<std::string>("preview_window_name", "BEV image");
     declare_parameter<int>("preview_max_width", 1280);
-    declare_parameter<int>("preview_max_height", 900);
+    declare_parameter<int>("preview_max_height", 720);
 
     declare_parameter<int>("input_width", 1280);
     declare_parameter<int>("input_height", 720);
@@ -220,10 +226,10 @@ private:
 
     declare_parameter<double>("x_min_m", 0.18);
     declare_parameter<double>("x_max_m", 5.0);
-    declare_parameter<double>("y_min_m", -0.35);
-    declare_parameter<double>("y_max_m", 0.35);
+    declare_parameter<double>("y_min_m", -1.0);
+    declare_parameter<double>("y_max_m", 1.0);
     declare_parameter<double>("meter_per_pixel", 0.01);
-    declare_parameter<int>("output_width", 70);
+    declare_parameter<int>("output_width", 200);
     declare_parameter<int>("output_height", 482);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
@@ -646,7 +652,7 @@ private:
 
     RCLCPP_INFO(
       get_logger(),
-      "BEV status: input=%.1fHz (%llu total), processed=%.1fHz "
+      "\nBEV status: input=%.1fHz (%llu total), processed=%.1fHz "
       "(%llu total, skipped=%llu), ROS=%.1fHz, preview=%.1fHz, "
       "gpu=%.3f/%.3fms avg/max, latest_age=%.2fms, "
       "errors(invalid/process/publish)=%llu/%llu/%llu",
@@ -688,14 +694,14 @@ private:
   std::string input_topic_;
   std::string output_topic_;
   std::string output_frame_id_;
-  double expected_input_fps_{143.0};
+  double expected_input_fps_{120.0};
   bool publish_enabled_{true};
   double publish_max_fps_{0.0};
   bool preview_enabled_{true};
   double preview_max_fps_{30.0};
   std::string preview_window_name_;
   int preview_max_width_{1280};
-  int preview_max_height_{900};
+  int preview_max_height_{720};
   double status_log_interval_sec_{5.0};
   double startup_timeout_sec_{5.0};
 

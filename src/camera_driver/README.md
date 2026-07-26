@@ -205,14 +205,14 @@ ros2 topic info /camera/image_rect --verbose
 
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
-| `sensor_fps` | `143.0` | OAK 센서/출력 요청 FPS |
+| `sensor_fps` | `120.0` | OAK 센서/출력 요청 FPS |
 | `width`, `height` | `1280`, `720` | 출력 해상도 |
 | `undistort_enabled` | `true` | OAK 장치 내부 왜곡 보정 |
-| `queue_size` | `2` | DepthAI 호스트 큐 크기 |
+| `queue_size` | `8` | DepthAI 호스트 큐 크기 |
 | `queue_blocking` | `false` | 큐가 찼을 때 캡처 차단 여부 |
 | `publish_enabled` | `false` | ROS 이미지 발행 |
 | `publish_fps` | `143.0` | ROS 발행 최대 FPS |
-| `preview_enabled` | `true` | OpenCV 직접 프리뷰 |
+| `preview_enabled` | `false` | OpenCV 직접 프리뷰 |
 | `preview_fps` | `143.0` | 프리뷰 갱신 최대 FPS |
 
 143 FPS에서 `1280x720 NV12`의 순수 영상 데이터는 약 189 MiB/s다.

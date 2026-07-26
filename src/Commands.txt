@@ -1,0 +1,9 @@
+ros2 run camera_driver camera_driver_node --ros-args \
+  -p sensor_fps:=143.0 \
+  -p width:=960 \
+  -p height:=540 \
+  -p undistort_enabled:=true \
+  -p queue_size:=8 \
+  -p queue_blocking:=false \
+  -p preview_enabled:=false \
+  -p publish_enabled:=false

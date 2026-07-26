@@ -23,7 +23,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "preview_enabled",
-                default_value="true",
+                default_value="false",
                 description="Show the independent latest-frame preview.",
             ),
             DeclareLaunchArgument(

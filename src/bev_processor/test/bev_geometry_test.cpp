@@ -33,23 +33,23 @@ int main()
     bev_processor::mountRotationVehicleFromCamera(
       0.0, bev_processor::degToRad(14.0), 0.0)};
   const bev_processor::BevConfig config{
-    0.18, 5.0, -0.35, 0.35, 0.01, 70, 482};
+    0.18, 5.0, -1.0, 1.0, 0.01, 200, 482};
 
   const auto lut = bev_processor::generateRemap(camera, config);
   bool passed = true;
   passed &= require(
-    lut.map_x.rows == 482 && lut.map_x.cols == 70,
-    "remap dimensions must be 70x482");
+    lut.map_x.rows == 482 && lut.map_x.cols == 200,
+    "remap dimensions must be 200x482");
   passed &= require(lut.map_x.type() == CV_32FC1, "map_x must be float32");
   passed &= require(lut.map_y.type() == CV_32FC1, "map_y must be float32");
   passed &= require(
     lut.valid_mask.type() == CV_8UC1, "valid mask must be uint8");
 
   const int valid = cv::countNonZero(lut.valid_mask);
-  const double valid_ratio = static_cast<double>(valid) / (70.0 * 482.0);
+  const double valid_ratio = static_cast<double>(valid) / (200.0 * 482.0);
   passed &= require(
-    valid_ratio > 0.99,
-    "more than 99 percent of the configured BEV must project into the image");
+    valid_ratio > 0.94,
+    "more than 94 percent of the configured BEV must project into the image");
 
   const int far_row = 0;
   const int near_row = config.output_height - 1;
@@ -75,8 +75,8 @@ int main()
   }
   const cv::Mat output = bev_processor::convertToBev(input, lut);
   passed &= require(
-    output.rows == 482 && output.cols == 70 && output.type() == CV_8UC3,
-    "converted image must be 70x482 BGR8");
+    output.rows == 482 && output.cols == 200 && output.type() == CV_8UC3,
+    "converted image must be 200x482 BGR8");
   passed &= require(
     cv::countNonZero(output.reshape(1)) > 0,
     "converted image must contain projected source pixels");
