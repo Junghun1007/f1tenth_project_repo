@@ -510,13 +510,105 @@ private:
     }
   }
 
+  static void drawPreviewText(
+    cv::Mat & image,
+    const std::string & text,
+    const cv::Point & origin,
+    const cv::Scalar & color)
+  {
+    constexpr double font_scale = 0.32;
+    constexpr int font_face = cv::FONT_HERSHEY_SIMPLEX;
+    cv::putText(
+      image, text, origin, font_face, font_scale,
+      cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
+    cv::putText(
+      image, text, origin, font_face, font_scale,
+      color, 1, cv::LINE_AA);
+  }
+
+  void drawPreviewCoordinates(cv::Mat & image) const
+  {
+    constexpr double grid_step_m = 0.5;
+    constexpr double epsilon = 1.0e-9;
+    const cv::Scalar grid_color(96, 96, 96);
+    const cv::Scalar coordinate_color(0, 255, 255);
+    const cv::Scalar centerline_color(0, 255, 0);
+
+    const double first_x =
+      std::ceil(bev_config_.x_min_m / grid_step_m) * grid_step_m;
+    for (
+      double x_m = first_x;
+      x_m <= bev_config_.x_max_m + epsilon;
+      x_m += grid_step_m)
+    {
+      const int row = std::clamp(
+        static_cast<int>(std::lround(
+          (bev_config_.x_max_m - x_m) /
+          bev_config_.meter_per_pixel)),
+        0,
+        image.rows - 1);
+      cv::line(
+        image,
+        cv::Point(0, row),
+        cv::Point(image.cols - 1, row),
+        grid_color,
+        1,
+        cv::LINE_AA);
+      drawPreviewText(
+        image,
+        cv::format("X %.1fm", x_m),
+        cv::Point(3, std::clamp(row - 3, 11, image.rows - 3)),
+        coordinate_color);
+    }
+
+    const double first_y =
+      std::ceil(bev_config_.y_min_m / grid_step_m) * grid_step_m;
+    for (
+      double y_m = first_y;
+      y_m <= bev_config_.y_max_m + epsilon;
+      y_m += grid_step_m)
+    {
+      const int column = std::clamp(
+        static_cast<int>(std::lround(
+          (bev_config_.y_max_m - y_m) /
+          bev_config_.meter_per_pixel)),
+        0,
+        image.cols - 1);
+      const bool is_centerline = std::abs(y_m) < epsilon;
+      cv::line(
+        image,
+        cv::Point(column, 0),
+        cv::Point(column, image.rows - 1),
+        is_centerline ? centerline_color : grid_color,
+        is_centerline ? 2 : 1,
+        cv::LINE_AA);
+      const std::string label = cv::format("Y %+.1f", y_m);
+      int baseline = 0;
+      const cv::Size label_size = cv::getTextSize(
+        label, cv::FONT_HERSHEY_SIMPLEX, 0.32, 1, &baseline);
+      const int label_x = std::clamp(
+        column - label_size.width / 2,
+        1,
+        std::max(1, image.cols - label_size.width - 1));
+      drawPreviewText(
+        image,
+        label,
+        cv::Point(label_x, image.rows - 5),
+        is_centerline ? centerline_color : coordinate_color);
+    }
+
+    drawPreviewText(
+      image, "+X forward / +Y left", cv::Point(69, 11),
+      coordinate_color);
+  }
+
   void previewLoop()
   {
     try {
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
       cv::resizeWindow(
         preview_window_name_,
-        std::min(preview_max_width_, bev_config_.output_width * 4),
+        std::min(preview_max_width_, bev_config_.output_width),
         std::min(preview_max_height_, bev_config_.output_height));
 
       const auto preview_period =
@@ -542,7 +634,9 @@ private:
         const auto frame = std::atomic_load_explicit(
           &latest_output_, std::memory_order_acquire);
         if (frame) {
-          cv::imshow(preview_window_name_, frame->image);
+          cv::Mat preview_image = frame->image.clone();
+          drawPreviewCoordinates(preview_image);
+          cv::imshow(preview_window_name_, preview_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
           next_preview_at = now + preview_period;
