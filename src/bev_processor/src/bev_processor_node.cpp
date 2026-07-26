@@ -233,12 +233,12 @@ private:
     declare_parameter<double>("camera_yaw_deg", 0.0);
 
     declare_parameter<double>("x_min_m", 0.18);
-    declare_parameter<double>("x_max_m", 5.0);
+    declare_parameter<double>("x_max_m", 3.0);
     declare_parameter<double>("y_min_m", -1.0);
     declare_parameter<double>("y_max_m", 1.0);
     declare_parameter<double>("meter_per_pixel", 0.01);
     declare_parameter<int>("output_width", 200);
-    declare_parameter<int>("output_height", 482);
+    declare_parameter<int>("output_height", 282);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 5.0);
@@ -518,29 +518,46 @@ private:
     }
   }
 
+  static constexpr int kPreviewLeftMargin = 55;
+  static constexpr int kPreviewRightMargin = 35;
+  static constexpr int kPreviewTopMargin = 24;
+  static constexpr int kPreviewBottomMargin = 30;
+
   static void drawPreviewText(
     cv::Mat & image,
     const std::string & text,
-    const cv::Point & origin,
-    const cv::Scalar & color)
+    const cv::Point & origin)
   {
     constexpr double font_scale = 0.32;
     constexpr int font_face = cv::FONT_HERSHEY_SIMPLEX;
     cv::putText(
       image, text, origin, font_face, font_scale,
-      cv::Scalar(0, 0, 0), 3, cv::LINE_AA);
-    cv::putText(
-      image, text, origin, font_face, font_scale,
-      color, 1, cv::LINE_AA);
+      cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
   }
 
-  void drawPreviewCoordinates(cv::Mat & image) const
+  cv::Mat makeCoordinatePreview(const cv::Mat & bev_image) const
   {
-    constexpr double grid_step_m = 0.5;
+    constexpr double grid_step_m = 0.1;
+    constexpr double label_step_m = 0.5;
     constexpr double epsilon = 1.0e-9;
-    const cv::Scalar grid_color(96, 96, 96);
-    const cv::Scalar coordinate_color(0, 255, 255);
-    const cv::Scalar centerline_color(0, 255, 0);
+    const cv::Scalar margin_color(245, 245, 245);
+    const cv::Scalar grid_color(210, 210, 210);
+    const cv::Scalar border_color(180, 180, 180);
+    const cv::Scalar centerline_color(0, 200, 0);
+
+    cv::Mat preview(
+      bev_image.rows + kPreviewTopMargin + kPreviewBottomMargin,
+      bev_image.cols + kPreviewLeftMargin + kPreviewRightMargin,
+      CV_8UC3,
+      margin_color);
+    const cv::Rect bev_region(
+      kPreviewLeftMargin,
+      kPreviewTopMargin,
+      bev_image.cols,
+      bev_image.rows);
+    bev_image.copyTo(preview(bev_region));
+    cv::Mat displayed_bev = preview(bev_region);
+    cv::Mat grid_overlay = displayed_bev.clone();
 
     const double first_x =
       std::ceil(bev_config_.x_min_m / grid_step_m) * grid_step_m;
@@ -554,20 +571,51 @@ private:
           (bev_config_.x_max_m - x_m) /
           bev_config_.meter_per_pixel)),
         0,
-        image.rows - 1);
+        displayed_bev.rows - 1);
       cv::line(
-        image,
+        grid_overlay,
         cv::Point(0, row),
-        cv::Point(image.cols - 1, row),
+        cv::Point(displayed_bev.cols - 1, row),
         grid_color,
         1,
         cv::LINE_AA);
-      drawPreviewText(
-        image,
-        cv::format("X %.1fm", x_m),
-        cv::Point(3, std::clamp(row - 3, 11, image.rows - 3)),
-        coordinate_color);
+      const double label_units = x_m / label_step_m;
+      if (std::abs(label_units - std::round(label_units)) < epsilon) {
+        const std::string label = cv::format("X %.1f", x_m);
+        int baseline = 0;
+        const cv::Size label_size = cv::getTextSize(
+          label, cv::FONT_HERSHEY_SIMPLEX, 0.32, 1, &baseline);
+        drawPreviewText(
+          preview,
+          label,
+          cv::Point(
+            kPreviewLeftMargin - label_size.width - 5,
+            kPreviewTopMargin + row + label_size.height / 2));
+      }
     }
+
+    cv::line(
+      grid_overlay,
+      cv::Point(0, displayed_bev.rows - 1),
+      cv::Point(displayed_bev.cols - 1, displayed_bev.rows - 1),
+      grid_color,
+      1,
+      cv::LINE_AA);
+    const std::string minimum_x_label =
+      cv::format("X %.2f", bev_config_.x_min_m);
+    int minimum_x_baseline = 0;
+    const cv::Size minimum_x_label_size = cv::getTextSize(
+      minimum_x_label,
+      cv::FONT_HERSHEY_SIMPLEX,
+      0.32,
+      1,
+      &minimum_x_baseline);
+    drawPreviewText(
+      preview,
+      minimum_x_label,
+      cv::Point(
+        kPreviewLeftMargin - minimum_x_label_size.width - 5,
+        kPreviewTopMargin + displayed_bev.rows - 2));
 
     const double first_y =
       std::ceil(bev_config_.y_min_m / grid_step_m) * grid_step_m;
@@ -581,33 +629,62 @@ private:
           (bev_config_.y_max_m - y_m) /
           bev_config_.meter_per_pixel)),
         0,
-        image.cols - 1);
-      const bool is_centerline = std::abs(y_m) < epsilon;
+        displayed_bev.cols - 1);
       cv::line(
-        image,
+        grid_overlay,
         cv::Point(column, 0),
-        cv::Point(column, image.rows - 1),
-        is_centerline ? centerline_color : grid_color,
+        cv::Point(column, displayed_bev.rows - 1),
+        grid_color,
         1,
         cv::LINE_AA);
-      const std::string label = cv::format("Y %+.1f", y_m);
-      int baseline = 0;
-      const cv::Size label_size = cv::getTextSize(
-        label, cv::FONT_HERSHEY_SIMPLEX, 0.32, 1, &baseline);
-      const int label_x = std::clamp(
-        column - label_size.width / 2,
-        1,
-        std::max(1, image.cols - label_size.width - 1));
-      drawPreviewText(
-        image,
-        label,
-        cv::Point(label_x, image.rows - 5),
-        is_centerline ? centerline_color : coordinate_color);
+      const double label_units = y_m / label_step_m;
+      if (std::abs(label_units - std::round(label_units)) < epsilon) {
+        const std::string label = cv::format("Y %+.1f", y_m);
+        int baseline = 0;
+        const cv::Size label_size = cv::getTextSize(
+          label, cv::FONT_HERSHEY_SIMPLEX, 0.32, 1, &baseline);
+        drawPreviewText(
+          preview,
+          label,
+          cv::Point(
+            kPreviewLeftMargin + column - label_size.width / 2,
+            kPreviewTopMargin + displayed_bev.rows + 16));
+      }
     }
 
+    cv::addWeighted(
+      grid_overlay, 0.35, displayed_bev, 0.65, 0.0, displayed_bev);
+
+    const int center_column = std::clamp(
+      static_cast<int>(std::lround(
+        bev_config_.y_max_m / bev_config_.meter_per_pixel)),
+      0,
+      displayed_bev.cols - 1);
+    cv::line(
+      displayed_bev,
+      cv::Point(center_column, 0),
+      cv::Point(center_column, displayed_bev.rows - 1),
+      centerline_color,
+      1,
+      cv::LINE_AA);
+    cv::rectangle(preview, bev_region, border_color, 1, cv::LINE_AA);
+
+    const std::string direction_label = "+X forward / +Y left";
+    int direction_baseline = 0;
+    const cv::Size direction_size = cv::getTextSize(
+      direction_label,
+      cv::FONT_HERSHEY_SIMPLEX,
+      0.32,
+      1,
+      &direction_baseline);
     drawPreviewText(
-      image, "+X forward / +Y left", cv::Point(69, 11),
-      coordinate_color);
+      preview,
+      direction_label,
+      cv::Point(
+        kPreviewLeftMargin +
+        (displayed_bev.cols - direction_size.width) / 2,
+        15));
+    return preview;
   }
 
   void previewLoop()
@@ -616,8 +693,14 @@ private:
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
       cv::resizeWindow(
         preview_window_name_,
-        std::min(preview_max_width_, bev_config_.output_width),
-        std::min(preview_max_height_, bev_config_.output_height));
+        std::min(
+          preview_max_width_,
+          bev_config_.output_width +
+          kPreviewLeftMargin + kPreviewRightMargin),
+        std::min(
+          preview_max_height_,
+          bev_config_.output_height +
+          kPreviewTopMargin + kPreviewBottomMargin));
 
       const auto preview_period =
         std::chrono::duration_cast<SteadyClock::duration>(
@@ -642,8 +725,7 @@ private:
         const auto frame = std::atomic_load_explicit(
           &latest_output_, std::memory_order_acquire);
         if (frame) {
-          cv::Mat preview_image = frame->image.clone();
-          drawPreviewCoordinates(preview_image);
+          cv::Mat preview_image = makeCoordinatePreview(frame->image);
           cv::imshow(preview_window_name_, preview_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
