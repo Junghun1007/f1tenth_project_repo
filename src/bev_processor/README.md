@@ -71,6 +71,19 @@ ros2 launch bev_processor camera_bev.launch.py \
   publish_enabled:=true
 ```
 
+카메라 장착 위치와 각도는 launch 옵션으로 실행할 때마다 조정할 수 있다.
+이 값으로 시작 시 BEV LUT를 생성하므로 값을 바꾼 뒤 launch를 다시 실행한다.
+
+```bash
+ros2 launch bev_processor camera_bev.launch.py \
+  camera_x_m:=0.0 \
+  camera_y_m:=0.0 \
+  camera_z_m:=0.20 \
+  camera_roll_deg:=0.0 \
+  camera_downward_pitch_deg:=14.0 \
+  camera_yaw_deg:=0.0
+```
+
 시작 로그에는 `transport=NV12`와 사용 중인 CUDA GPU 이름이 표시된다.
 상태 로그의 의미는 다음과 같다.
 

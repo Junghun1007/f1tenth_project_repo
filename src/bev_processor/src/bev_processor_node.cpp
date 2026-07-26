@@ -152,6 +152,8 @@ public:
       "BEV processor started: input=%s (%dx%d NV12, expected=%.1fHz), "
       "output=%s (%dx%d), "
       "range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, %.3fm/px, "
+      "camera=(x=%.3f, y=%.3f, z=%.3fm, "
+      "roll=%.2f, pitch_down=%.2f, yaw=%.2fdeg), "
       "valid_lut=%.2f%%, GPU=%s, processing=NV12-to-BEV/latest-only, "
       "ROS=%s (max=%.1fHz, 0=unlimited), preview=%s (max=%.1fHz)",
       input_topic_.c_str(),
@@ -166,6 +168,12 @@ public:
       bev_config_.y_min_m,
       bev_config_.y_max_m,
       bev_config_.meter_per_pixel,
+      get_parameter("camera_x_m").as_double(),
+      get_parameter("camera_y_m").as_double(),
+      get_parameter("camera_z_m").as_double(),
+      get_parameter("camera_roll_deg").as_double(),
+      get_parameter("camera_downward_pitch_deg").as_double(),
+      get_parameter("camera_yaw_deg").as_double(),
       valid_lut_percent_,
       gpu_processor_->deviceName().c_str(),
       publish_enabled_ ? "on" : "off",
@@ -580,7 +588,7 @@ private:
         cv::Point(column, 0),
         cv::Point(column, image.rows - 1),
         is_centerline ? centerline_color : grid_color,
-        is_centerline ? 2 : 1,
+        1,
         cv::LINE_AA);
       const std::string label = cv::format("Y %+.1f", y_m);
       int baseline = 0;
