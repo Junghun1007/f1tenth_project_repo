@@ -101,7 +101,7 @@ public:
 
     double startup_roll_deg = configured_roll_deg_;
     double startup_pitch_down_deg = configured_pitch_down_deg_;
-    if (startup_measurement_enabled_) {
+    if (processor_mode_ == "auto") {
       RCLCPP_INFO(
         get_logger(),
         "Measuring startup camera height/roll/pitch with OAK stereo and IMU. "
@@ -136,7 +136,7 @@ public:
     installProcessor(
       startup_roll_deg,
       startup_pitch_down_deg,
-      measured_extrinsics_ ? "startup OAK measurement" : "config");
+      measured_extrinsics_ ? "startup OAK measurement" : "manual config");
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     input_subscription_ = create_subscription<sensor_msgs::msg::Image>(
@@ -176,13 +176,15 @@ public:
       "==================== BEV PROCESSOR START ====================");
     RCLCPP_INFO(
       get_logger(),
-      "BEV processor started: input=%s (%dx%d NV12, expected=%.1fHz), "
+      "BEV processor mode=%s started: input=%s "
+      "(%dx%d NV12, expected=%.1fHz), "
       "output=%s (%dx%d), "
       "range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, %.3fm/px, "
       "camera=(x=%.3f, y=%.3f, z=%.3fm, "
       "roll=%.2f, pitch_down=%.2f, yaw=%.2fdeg), "
       "valid_lut=%.2f%%, GPU=%s, processing=NV12-to-BEV/latest-only, "
       "ROS=%s (max=%.1fHz, 0=unlimited), preview=%s (max=%.1fHz)",
+      processor_mode_.c_str(),
       input_topic_.c_str(),
       camera_model_.image_width,
       camera_model_.image_height,
@@ -209,10 +211,12 @@ public:
       preview_max_fps_);
     RCLCPP_INFO(
       get_logger(),
-      "Startup extrinsics source=%s: height=%.4fm, roll=%.3fdeg, "
+      "Startup extrinsics mode=%s, source=%s: "
+      "height=%.4fm, roll=%.3fdeg, "
       "pitch=%.3fdeg, downward_pitch=%.3fdeg, fixed yaw=%.3fdeg. "
       "These values are fixed for this run.",
-      measured_extrinsics_ ? "OAK stereo+IMU" : "config",
+      processor_mode_.c_str(),
+      measured_extrinsics_ ? "OAK stereo+IMU" : "manual config",
       camera_model_.position_vehicle_m[2],
       applied_roll_deg_.load(std::memory_order_relaxed),
       -applied_pitch_down_deg_.load(std::memory_order_relaxed),
@@ -243,6 +247,10 @@ public:
 private:
   void declareParameters()
   {
+    // This required profile makes a missing or mismatched parameter file fail
+    // immediately instead of silently running with C++ defaults.
+    declare_parameter<std::string>("processor_mode", "");
+
     declare_parameter<std::string>("input_topic", "/camera/image_rect");
     declare_parameter<std::string>("output_topic", "/camera/image_bev");
     declare_parameter<std::string>("output_frame_id", "front_axle_bev");
@@ -269,7 +277,6 @@ private:
     declare_parameter<double>("camera_roll_deg", 0.0);
     declare_parameter<double>("camera_downward_pitch_deg", 14.0);
     declare_parameter<double>("camera_yaw_deg", 0.0);
-    declare_parameter<bool>("startup_measurement_enabled", true);
     declare_parameter<double>("measurement_stereo_fps", 30.0);
     declare_parameter<int>("measurement_stereo_width", 640);
     declare_parameter<int>("measurement_stereo_height", 400);
@@ -309,6 +316,8 @@ private:
 
   void readParameters()
   {
+    processor_mode_ = get_parameter("processor_mode").as_string();
+
     input_topic_ = get_parameter("input_topic").as_string();
     output_topic_ = get_parameter("output_topic").as_string();
     output_frame_id_ = get_parameter("output_frame_id").as_string();
@@ -346,8 +355,6 @@ private:
       degToRad(configured_pitch_down_deg_),
       degToRad(camera_yaw_deg_));
 
-    startup_measurement_enabled_ =
-      get_parameter("startup_measurement_enabled").as_bool();
     startup_measurement_config_.stereo_fps =
       get_parameter("measurement_stereo_fps").as_double();
     startup_measurement_config_.stereo_width = static_cast<int>(
@@ -414,6 +421,19 @@ private:
 
   void validateParameters() const
   {
+    if (processor_mode_ != "auto" && processor_mode_ != "manual") {
+      throw std::invalid_argument(
+              "processor_mode must be explicitly set to 'auto' or 'manual' "
+              "by the matching BEV parameter file");
+    }
+    const std::string expected_node_name =
+      "bev_processor_" + processor_mode_;
+    if (get_name() != expected_node_name) {
+      throw std::invalid_argument(
+              "processor_mode='" + processor_mode_ +
+              "' requires ROS node name '" + expected_node_name +
+              "', but the node name is '" + get_name() + "'");
+    }
     if (input_topic_.empty()) {
       throw std::invalid_argument("input_topic must not be empty");
     }
@@ -999,7 +1019,8 @@ private:
       "(%llu total, skipped=%llu/%llu interval/total), "
       "ROS=%.1fHz, preview=%.1fHz, "
       "gpu=%.3f/%.3fms avg/max, latest_age=%.2fms, "
-      "extrinsics=%s(height=%.3fm,roll=%.2f,pitch_down=%.2fdeg), "
+      "mode=%s, extrinsics=%s"
+      "(height=%.3fm,roll=%.2f,pitch_down=%.2fdeg), "
       "errors(invalid/process/publish)=%llu/%llu/%llu",
       static_cast<double>(received) / elapsed_sec,
       static_cast<unsigned long long>(
@@ -1015,6 +1036,7 @@ private:
       average_process_ms,
       static_cast<double>(process_ns_max) / 1.0e6,
       latest_age_ms,
+      processor_mode_.c_str(),
       measured_extrinsics_ ? "measured" : "config",
       camera_model_.position_vehicle_m[2],
       applied_roll_deg_.load(std::memory_order_relaxed),
@@ -1041,6 +1063,7 @@ private:
     }
   }
 
+  std::string processor_mode_;
   std::string input_topic_;
   std::string output_topic_;
   std::string output_frame_id_;
@@ -1054,7 +1077,6 @@ private:
   int preview_max_height_{720};
   double status_log_interval_sec_{5.0};
   double startup_timeout_sec_{5.0};
-  bool startup_measurement_enabled_{true};
   bool measured_extrinsics_{false};
   double configured_roll_deg_{0.0};
   double configured_pitch_down_deg_{14.0};
@@ -1112,25 +1134,4 @@ private:
 
 }  // namespace bev_processor
 
-#ifdef BEV_PROCESSOR_STANDALONE
-int main(int argc, char ** argv)
-{
-  rclcpp::init(argc, argv);
-  try {
-    rclcpp::spin(
-      std::make_shared<bev_processor::BevProcessorNode>(
-        rclcpp::NodeOptions{}));
-  } catch (const std::exception & exception) {
-    RCLCPP_FATAL(
-      rclcpp::get_logger("bev_processor"),
-      "Failed to start BEV processor: %s",
-      exception.what());
-    rclcpp::shutdown();
-    return 1;
-  }
-  rclcpp::shutdown();
-  return 0;
-}
-#else
 RCLCPP_COMPONENTS_REGISTER_NODE(bev_processor::BevProcessorNode)
-#endif

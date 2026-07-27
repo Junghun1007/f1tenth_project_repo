@@ -217,5 +217,6 @@ ros2 topic info /camera/image_rect --verbose
 
 143 FPS에서 `1280x720 NV12`의 순수 영상 데이터는 약 189 MiB/s다.
 `BGR888i`의 약 377 MiB/s보다 작다. 외부 프로세스 구독자는 DDS 직렬화와
-추가 복사를 사용하므로, 주 영상 처리는 `camera_bev.launch.py`처럼 같은
+추가 복사를 사용하므로, 주 영상 처리는
+`bev_processor_auto.launch.py`/`bev_processor_manual.launch.py`처럼 같은
 프로세스의 intra-process C++ 컴포넌트로 구성하는 것이 좋다.

@@ -27,7 +27,8 @@ camera_driver:
     publish_fps: 143.0
 
     # Standalone preview converts NV12 to BGR on the CPU. The combined
-    # camera_bev launch disables it and previews only the small GPU BEV.
+    # The combined auto/manual BEV launches disable it and preview only the
+    # small GPU BEV.
     preview_enabled: false
     preview_fps: 143.0
     preview_window_name: "OAK rectified image"

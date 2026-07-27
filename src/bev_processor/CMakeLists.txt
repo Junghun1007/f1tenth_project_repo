@@ -96,24 +96,10 @@ rclcpp_components_register_nodes(
   "bev_processor::BevProcessorNode"
 )
 
+# Overwrite a stale installed standalone binary with an explicit guard.
+# Supported execution always uses one of the two component launch files.
 add_executable(bev_processor_node
-  src/bev_processor_node.cpp
-)
-target_compile_definitions(
-  bev_processor_node PRIVATE BEV_PROCESSOR_STANDALONE)
-target_include_directories(bev_processor_node PRIVATE ${OpenCV_INCLUDE_DIRS})
-ament_target_dependencies(bev_processor_node
-  rclcpp
-  rclcpp_components
-  sensor_msgs
-  std_msgs
-)
-target_link_libraries(bev_processor_node
-  bev_geometry
-  bev_cuda
-  bev_startup_measurement
-  ${OpenCV_LIBS}
-  Threads::Threads
+  src/legacy_bev_processor_node.cpp
 )
 
 if(BUILD_TESTING)

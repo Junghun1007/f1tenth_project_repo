@@ -1,0 +1,80 @@
+bev_processor_auto:
+  ros__parameters:
+    # Required execution profile. The node rejects a missing/mismatched file.
+    processor_mode: "auto"
+
+    # camera_driver publishes rectified CAM_A frames in raw NV12 layout.
+    input_topic: "/camera/image_rect"
+    output_topic: "/camera/image_bev"
+    output_frame_id: "front_axle_bev"
+    expected_input_fps: 120.0
+
+    # Every accepted input is processed on CUDA. Publishing is unlimited by
+    # default, while the independent OpenCV preview is limited to 30 FPS.
+    publish_enabled: true
+    publish_max_fps: 0.0
+    preview_enabled: true
+    preview_max_fps: 30.0
+    preview_window_name: "BEV image"
+    preview_max_width: 1280
+    preview_max_height: 720
+
+    # K_rect reported by camera_driver for the rectified 1280x720 output.
+    input_width: 1280
+    input_height: 720
+    fx: 561.400939941
+    fy: 561.136352539
+    cx: 643.032653809
+    cy: 352.621124268
+
+    # Vehicle coordinates: origin=front-axle ground center,
+    # +X=forward, +Y=left, +Z=up.
+    # X/Y and yaw are fixed mounting values. Height/roll/downward pitch below
+    # are nominal validation values; auto mode replaces them with its one-shot
+    # OAK stereo+IMU measurement before building the BEV LUT.
+    camera_x_m: 0.0
+    camera_y_m: 0.0
+    camera_z_m: 0.17
+    camera_roll_deg: 0.0
+    camera_downward_pitch_deg: 13.0
+    camera_yaw_deg: 0.0
+
+    # One-shot startup measurement. The vehicle must remain stationary while
+    # the center stereo ROI observes flat ground.
+    measurement_stereo_fps: 30.0
+    measurement_stereo_width: 640
+    measurement_stereo_height: 400
+    measurement_depth_queue_size: 2
+    measurement_imu_rate_hz: 100.0
+    measurement_imu_queue_size: 20
+    measurement_roi_width: 10
+    measurement_roi_height: 10
+    measurement_minimum_valid_pixels: 25
+    measurement_minimum_depth_m: 0.30
+    measurement_maximum_depth_m: 3.00
+    measurement_minimum_height_m: 0.10
+    measurement_maximum_height_m: 1.00
+    measurement_maximum_height_mad_m: 0.015
+    measurement_minimum_downward_ray_component: 0.05
+    measurement_imu_sample_count: 10
+    measurement_imu_max_direction_rms_deg: 0.50
+    measurement_imu_accel_min_mps2: 7.50
+    measurement_imu_accel_max_mps2: 12.00
+    measurement_stable_depth_frame_count: 5
+    measurement_maximum_height_stddev_m: 0.010
+    measurement_timeout_sec: 10.0
+
+    # Image top is forward; image left is vehicle left.
+    x_min_m: 0.10
+    x_max_m: 2.5
+    y_min_m: -0.5
+    y_max_m: 0.5
+    meter_per_pixel: 0.01
+
+    # output_width = round((y_max_m - y_min_m) / meter_per_pixel)
+    # output_height = round((x_max_m - x_min_m) / meter_per_pixel)
+    output_width: 100
+    output_height: 240
+
+    status_log_interval_sec: 5.0
+    startup_timeout_sec: 5.0
