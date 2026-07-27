@@ -110,7 +110,7 @@ void validateConfig(const OakStartupMeasurementConfig & config)
 }
 
 std::optional<HeightCandidate> estimateHeight(
-  const dai::ImgFrame & packet,
+  dai::ImgFrame & packet,
   const std::array<double, 3> & specific_force_camera,
   const OakStartupMeasurementConfig & config,
   std::string * rejection)
