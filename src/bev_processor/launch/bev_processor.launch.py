@@ -34,9 +34,12 @@ def generate_launch_description():
                 description="Maximum OpenCV preview FPS; BEV processing is unaffected",
             ),
             DeclareLaunchArgument(
-                "imu_attitude_enabled",
+                "startup_measurement_enabled",
                 default_value="true",
-                description="Replace BEV roll/pitch once from /camera/imu",
+                description=(
+                    "Measure height/roll/pitch with OAK stereo+IMU at startup; "
+                    "false uses config values"
+                ),
             ),
             DeclareLaunchArgument(
                 "camera_x_m",
@@ -51,17 +54,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "camera_z_m",
                 default_value="0.20",
-                description="Fallback height until /camera/height arrives",
-            ),
-            DeclareLaunchArgument(
-                "height_from_topic_enabled",
-                default_value="true",
-                description="Fix camera height from one latched height message",
-            ),
-            DeclareLaunchArgument(
-                "height_topic",
-                default_value="/camera/height",
-                description="One-shot camera height topic in meters",
+                description="Config camera height used when measurement is off",
             ),
             DeclareLaunchArgument(
                 "camera_roll_deg",
@@ -95,8 +88,10 @@ def generate_launch_description():
                         "preview_max_fps": LaunchConfiguration(
                             "preview_max_fps"
                         ),
-                        "imu_attitude_enabled": ParameterValue(
-                            LaunchConfiguration("imu_attitude_enabled"),
+                        "startup_measurement_enabled": ParameterValue(
+                            LaunchConfiguration(
+                                "startup_measurement_enabled"
+                            ),
                             value_type=bool,
                         ),
                         "camera_x_m": ParameterValue(
@@ -111,13 +106,6 @@ def generate_launch_description():
                             LaunchConfiguration("camera_z_m"),
                             value_type=float,
                         ),
-                        "height_from_topic_enabled": ParameterValue(
-                            LaunchConfiguration(
-                                "height_from_topic_enabled"
-                            ),
-                            value_type=bool,
-                        ),
-                        "height_topic": LaunchConfiguration("height_topic"),
                         "camera_roll_deg": ParameterValue(
                             LaunchConfiguration("camera_roll_deg"),
                             value_type=float,

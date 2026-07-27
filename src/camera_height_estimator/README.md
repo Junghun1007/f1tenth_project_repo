@@ -6,7 +6,7 @@ OAK-D Pro W의 높이를 한 번 측정하는 독립 ROS 2 노드다. 기존
 
 ## 독립성
 
-이 패키지의 직접 의존성은 `rclcpp`, `std_msgs`, `depthai`뿐이다.
+이 패키지의 직접 의존성은 `rclcpp`, `depthai`뿐이다.
 실행할 때 자체 DepthAI 파이프라인으로 아래 기능만 잠깐 사용한다.
 
 - CAM_B/C 모노 카메라와 `StereoDepth`
@@ -14,9 +14,8 @@ OAK-D Pro W의 높이를 한 번 측정하는 독립 ROS 2 노드다. 기존
 - OAK 내부 IMU의 raw accelerometer
 
 CAM_A RGB 영상 스트림은 생성하지 않는다. 높이 측정이 끝나거나 제한
-시간을 넘기면 DepthAI 파이프라인과 USB 연결을 즉시 닫는다. 이후 노드는
-OAK를 사용하지 않는 유휴 상태로 남아 transient-local 높이 결과만
-보존한다.
+시간을 넘기면 DepthAI 파이프라인과 USB 연결을 즉시 닫는다. 결과는
+콘솔에만 출력하고 ROS 토픽으로 발행하지 않는다.
 
 OAK 장치는 한 프로세스가 배타적으로 연다. 따라서 측정하는 짧은 시간에는
 `camera_driver`나 `depthai_ros_driver`를 동시에 실행할 수 없다. 측정 완료
@@ -78,14 +77,6 @@ CAMERA_HEIGHT_RESULT_M=0.2031
 OAK pipeline and USB connection released.
 ```
 
-결과는 미터 단위 `std_msgs/msg/Float64`로 `/camera/height`에 한 번
-발행된다. 노드가 살아 있는 동안에는 나중에 실행한 구독자도 결과를 받을
-수 있다.
-
-```bash
-ros2 topic echo /camera/height --once \
-  --qos-durability transient_local
-```
-
 측정 후에는 OAK 연결이 해제되므로 별도 터미널에서 기존 카메라 노드를
-실행해도 된다. 높이 측정 노드는 `Ctrl+C`로 종료하면 된다.
+실행해도 된다. 출력된 값은 다른 노드로 전달되지 않는다. 높이 측정 노드는
+`Ctrl+C`로 종료하면 된다.

@@ -13,7 +13,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
 find_package(depthai 3 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR
@@ -37,7 +36,6 @@ add_executable(camera_height_estimator_node
 )
 ament_target_dependencies(camera_height_estimator_node
   rclcpp
-  std_msgs
 )
 target_link_libraries(camera_height_estimator_node
   camera_height_geometry

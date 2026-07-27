@@ -45,9 +45,12 @@ def generate_launch_description():
                 description="Maximum BEV preview refresh rate",
             ),
             DeclareLaunchArgument(
-                "imu_attitude_enabled",
+                "startup_measurement_enabled",
                 default_value="true",
-                description="Replace BEV roll/pitch once from the OAK IMU",
+                description=(
+                    "Measure height/roll/pitch with OAK stereo+IMU before "
+                    "starting camera streaming; false uses config values"
+                ),
             ),
             DeclareLaunchArgument(
                 "camera_x_m",
@@ -62,17 +65,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "camera_z_m",
                 default_value="0.20",
-                description="Fallback height until /camera/height arrives",
-            ),
-            DeclareLaunchArgument(
-                "height_from_topic_enabled",
-                default_value="true",
-                description="Fix camera height from one latched height message",
-            ),
-            DeclareLaunchArgument(
-                "height_topic",
-                default_value="/camera/height",
-                description="One-shot camera height topic in meters",
+                description="Config camera height used when measurement is off",
             ),
             DeclareLaunchArgument(
                 "camera_roll_deg",
@@ -96,27 +89,9 @@ def generate_launch_description():
                 executable="component_container_mt",
                 output="screen",
                 composable_node_descriptions=[
-                    ComposableNode(
-                        package="camera_driver",
-                        plugin="camera_driver::CameraDriverNode",
-                        name="camera_driver",
-                        parameters=[
-                            LaunchConfiguration("camera_params_file"),
-                            {
-                                "preview_enabled": False,
-                                "publish_enabled": True,
-                                "imu_bridge_enabled": ParameterValue(
-                                    LaunchConfiguration(
-                                        "imu_attitude_enabled"
-                                    ),
-                                    value_type=bool,
-                                ),
-                            },
-                        ],
-                        extra_arguments=[
-                            {"use_intra_process_comms": True},
-                        ],
-                    ),
+                    # Load BEV first: its constructor performs the short OAK
+                    # stereo+IMU measurement and releases OAK before the RGB
+                    # camera driver is constructed.
                     ComposableNode(
                         package="bev_processor",
                         plugin="bev_processor::BevProcessorNode",
@@ -133,9 +108,9 @@ def generate_launch_description():
                                 "preview_max_fps": LaunchConfiguration(
                                     "preview_max_fps"
                                 ),
-                                "imu_attitude_enabled": ParameterValue(
+                                "startup_measurement_enabled": ParameterValue(
                                     LaunchConfiguration(
-                                        "imu_attitude_enabled"
+                                        "startup_measurement_enabled"
                                     ),
                                     value_type=bool,
                                 ),
@@ -151,15 +126,6 @@ def generate_launch_description():
                                     LaunchConfiguration("camera_z_m"),
                                     value_type=float,
                                 ),
-                                "height_from_topic_enabled": ParameterValue(
-                                    LaunchConfiguration(
-                                        "height_from_topic_enabled"
-                                    ),
-                                    value_type=bool,
-                                ),
-                                "height_topic": LaunchConfiguration(
-                                    "height_topic"
-                                ),
                                 "camera_roll_deg": ParameterValue(
                                     LaunchConfiguration("camera_roll_deg"),
                                     value_type=float,
@@ -174,6 +140,22 @@ def generate_launch_description():
                                     LaunchConfiguration("camera_yaw_deg"),
                                     value_type=float,
                                 ),
+                            },
+                        ],
+                        extra_arguments=[
+                            {"use_intra_process_comms": True},
+                        ],
+                    ),
+                    ComposableNode(
+                        package="camera_driver",
+                        plugin="camera_driver::CameraDriverNode",
+                        name="camera_driver",
+                        parameters=[
+                            LaunchConfiguration("camera_params_file"),
+                            {
+                                "preview_enabled": False,
+                                "publish_enabled": True,
+                                "imu_bridge_enabled": False,
                             },
                         ],
                         extra_arguments=[

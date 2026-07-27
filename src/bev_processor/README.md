@@ -9,11 +9,13 @@
 - OAK에서 Jetson까지는 BGR888i 대신 NV12로 전송한다.
 - 카메라와 BEV를 동일한 `component_container_mt`에 적재하고
   intra-process 통신을 사용한다.
-- 시작할 때 지면 역투영 LUT를 한 번 계산해 GPU 메모리에 올린다.
-- OAK IMU의 중력 벡터가 안정되면 roll과 하향 pitch를 계산해 LUT를 한 번
-  교체하고, 주행 중에는 해당 LUT를 고정한다.
-- `camera_height_estimator`가 transient-local `/camera/height`로 발행한
-  높이를 한 번 받아 LUT에 적용하고 해당 실행 동안 고정한다.
+- 통합 launch는 BEV 컴포넌트를 먼저 로드한다. BEV가 OAK 스테레오와 내부
+  IMU로 카메라 높이, roll, 하향 pitch를 측정하고 OAK를 해제한 다음
+  `camera_driver`가 RGB 스트리밍을 시작한다.
+- 측정된 외부 파라미터로 지면 역투영 LUT를 한 번 계산해 GPU 메모리에
+  올리고 해당 실행 동안 고정한다.
+- 시작 측정을 끄면 `camera_z_m`, `camera_roll_deg`,
+  `camera_downward_pitch_deg` config 값을 그대로 사용한다.
 - CUDA 커널 하나가 NV12 Y/UV 샘플링, 색 변환, BEV 워핑을 결합해 수행한다.
 - 전체 1280x720 BGR 프레임은 만들지 않고 200x282 BEV만 CPU로 내려받는다.
 - OpenCV 프리뷰 바깥 여백에 좌표 글자를 표시하고 영상에는 0.1 m
@@ -60,20 +62,11 @@ colcon build \
 
 ## 권장 실행
 
-먼저 차량을 정지시키고 높이를 측정한다. 높이 로그가 확정되고 OAK USB가
-해제된 뒤에도 높이 노드는 종료하지 않아야 latched 결과가 유지된다.
+차량을 정지시키고 영상 중앙이 평평한 노면을 보도록 한 뒤 카메라와 GPU
+BEV를 같은 프로세스에서 실행한다. 시작 시 짧은 측정 파이프라인이 먼저
+실행되고, 측정 완료 로그를 출력한 뒤 RGB 카메라와 BEV 처리가 시작된다.
 
 ```bash
-# 터미널 1
-ros2 launch camera_height_estimator camera_height_estimator.launch.py
-```
-
-그다음 카메라와 GPU BEV를 같은 프로세스에서 실행한다. 단독 카메라
-프리뷰에서는 IMU를 시작하지 않으며, 아래 결합 launch에서만 동일 OAK
-파이프라인의 IMU 전달을 켠다.
-
-```bash
-# 터미널 2
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch bev_processor camera_bev.launch.py
@@ -87,15 +80,13 @@ ros2 launch bev_processor camera_bev.launch.py \
   publish_enabled:=true
 ```
 
-카메라 장착 위치와 각도는 launch 옵션으로 실행할 때마다 조정할 수 있다.
-`camera_z_m`은 `/camera/height`를 받기 전까지만 사용하는 fallback이다.
-기본적으로 `camera_roll_deg`와 `camera_downward_pitch_deg`는 IMU 수신 실패 시
-사용하는 fallback 값이고, `camera_yaw_deg`는 항상 사용하는 차량 기준 고정
-장착값이다. IMU 자동 적용을 끄면 세 각도 모두 아래 launch 값을 사용한다.
+측정을 사용하지 않고 config/launch 외부 파라미터를 직접 적용하려면
+`startup_measurement_enabled:=false`로 실행한다. X/Y 위치와 yaw는 시작
+측정으로 구할 수 없으므로 측정 모드에서도 항상 config 값을 사용한다.
 
 ```bash
 ros2 launch bev_processor camera_bev.launch.py \
-  imu_attitude_enabled:=false \
+  startup_measurement_enabled:=false \
   camera_x_m:=0.0 \
   camera_y_m:=0.0 \
   camera_z_m:=0.20 \
@@ -105,6 +96,13 @@ ros2 launch bev_processor camera_bev.launch.py \
 ```
 
 시작 로그에는 `transport=NV12`와 사용 중인 CUDA GPU 이름이 표시된다.
+측정 모드에서는 BEV 시작 전에 다음 형태의 로그가 먼저 표시된다.
+
+```text
+BEV_STARTUP_MEASUREMENT: height=0.2031m, roll=1.200deg,
+pitch=-14.100deg, downward_pitch=14.100deg
+```
+
 상태 로그의 의미는 다음과 같다.
 
 - 카메라 `capture`: DepthAI에서 Jetson으로 실제 수신한 FPS
@@ -112,25 +110,25 @@ ros2 launch bev_processor camera_bev.launch.py \
 - BEV `processed`: CUDA BEV 변환이 완료된 FPS
 - BEV `skipped`: 처리 중 최신 입력으로 교체된 오래된 프레임 수
 - BEV `gpu`: NV12 업로드, CUDA 커널, 작은 BEV 다운로드를 합친 시간
-- BEV `attitude`: `IMU` 또는 `fallback`과 실제 적용 중인 roll/pitch
-- BEV `height`: `estimator` 또는 `fallback`과 실제 적용 중인 높이
+- BEV `extrinsics`: `measured` 또는 `config`와 실제 적용 중인
+  높이/roll/하향 pitch
 
 ## 독립 프로세스 실행
 
 문제 분리용으로 카메라와 BEV를 별도 프로세스로 실행할 수도 있다. 이 경우
 전체 NV12 프레임이 DDS를 통과하므로 통합 launch보다 복사 비용이 크다.
-또한 단독 `camera_driver`는 역할 분리를 위해 OAK IMU를 실행하지 않으므로,
-이 방식에서 BEV 자세 입력을 사용하려면 별도의 `/camera/imu` 생산자가
-필요하다. OAK RGB와 OAK IMU를 함께 쓸 때는 결합 launch를 사용한다.
+시작 측정을 사용하려면 OAK를 점유한 카메라 프로세스가 없는 상태에서
+BEV를 먼저 실행해 측정을 끝낸 뒤 카메라를 실행해야 한다. 일반 사용에서는
+이 순서를 자동으로 보장하는 결합 launch를 사용한다.
 
 ```bash
 # 터미널 1
+ros2 launch bev_processor bev_processor.launch.py
+
+# BEV_STARTUP_MEASUREMENT 로그가 나온 뒤 터미널 2
 ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=false \
   publish_enabled:=true
-
-# 터미널 2
-ros2 launch bev_processor bev_processor.launch.py
 ```
 
 ## 현재 보정값
@@ -138,10 +136,10 @@ ros2 launch bev_processor bev_processor.launch.py
 - 입력/K_rect: 1280x720
 - `fx=561.400939941`, `fy=561.136352539`
 - `cx=643.032653809`, `cy=352.621124268`
-- 카메라 높이 fallback 0.20 m, IMU fallback 하향각 14도, 고정 yaw 0도
+- config 모드 카메라 높이 0.20 m, roll 0도, 하향각 14도, 고정 yaw 0도
 - 전방 0.18~3.0 m, 좌우 -1.0~1.0 m
 - 0.01 m/px, 출력 200x282
 
 카메라 X/Y 위치와 차량 기준 yaw가 바뀌면 `config/bev_config.yaml`을 다시
-조정해야 한다. 높이는 `/camera/height`에서 한 번 고정하고 roll과 하향
-pitch는 기본적으로 OAK IMU에서 자동 결정한다.
+조정해야 한다. 측정 모드에서는 높이와 roll/하향 pitch를 시작할 때
+OAK 스테레오+IMU로 결정하고 주행 중에는 고정한다.

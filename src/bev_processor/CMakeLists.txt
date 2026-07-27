@@ -25,6 +25,13 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(depthai 3 CONFIG QUIET)
+if(NOT depthai_FOUND)
+  message(FATAL_ERROR
+    "DepthAI C++ 3.x was not found. bev_processor performs an OAK stereo+IMU "
+    "startup measurement and therefore links directly against depthai::core."
+  )
+endif()
 find_package(Threads REQUIRED)
 
 add_library(bev_geometry STATIC
@@ -54,6 +61,18 @@ target_compile_options(bev_cuda PRIVATE
 )
 target_link_libraries(bev_cuda PUBLIC CUDA::cudart ${OpenCV_LIBS})
 
+add_library(bev_startup_measurement STATIC
+  src/oak_startup_measurement.cpp
+)
+set_target_properties(
+  bev_startup_measurement PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(bev_startup_measurement
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(bev_startup_measurement PUBLIC depthai::core)
+
 add_library(bev_processor_component SHARED
   src/bev_processor_node.cpp
 )
@@ -68,6 +87,7 @@ ament_target_dependencies(bev_processor_component
 target_link_libraries(bev_processor_component
   bev_geometry
   bev_cuda
+  bev_startup_measurement
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -91,6 +111,7 @@ ament_target_dependencies(bev_processor_node
 target_link_libraries(bev_processor_node
   bev_geometry
   bev_cuda
+  bev_startup_measurement
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -104,6 +125,7 @@ endif()
 
 install(TARGETS
   bev_geometry
+  bev_startup_measurement
   bev_processor_component
   bev_processor_node
   ARCHIVE DESTINATION lib

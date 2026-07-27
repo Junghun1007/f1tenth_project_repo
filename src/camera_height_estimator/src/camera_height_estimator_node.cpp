@@ -15,7 +15,6 @@
 #include "camera_height_estimator/camera_height_geometry.hpp"
 #include "depthai/depthai.hpp"
 #include "rclcpp/rclcpp.hpp"
-#include "std_msgs/msg/float64.hpp"
 
 namespace camera_height_estimator
 {
@@ -76,8 +75,6 @@ public:
   : Node("camera_height_estimator")
   {
     readParameters();
-    height_publisher_ = create_publisher<std_msgs::msg::Float64>(
-      output_topic_, rclcpp::QoS(1).reliable().transient_local());
 
     startOak();
     measurement_started_at_ = std::chrono::steady_clock::now();
@@ -87,9 +84,9 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "Independent height measurement started: stereo=%dx%d@%.1fHz, "
-      "center ROI=%dx%d, IMU=%.1fHz, output=%s",
+      "center ROI=%dx%d, IMU=%.1fHz, output=console-only",
       stereo_width_, stereo_height_, stereo_fps_,
-      roi_width_, roi_height_, imu_rate_hz_, output_topic_.c_str());
+      roi_width_, roi_height_, imu_rate_hz_);
     RCLCPP_INFO(
       get_logger(),
       "No ROS image/IMU input is used and no RGB image stream is started.");
@@ -111,8 +108,6 @@ private:
 
   void readParameters()
   {
-    output_topic_ = declare_parameter<std::string>(
-      "output_topic", "/camera/height");
     stereo_fps_ = declare_parameter<double>("stereo_fps", 30.0);
     stereo_width_ = declare_parameter<int>("stereo_width", 640);
     stereo_height_ = declare_parameter<int>("stereo_height", 400);
@@ -153,7 +148,6 @@ private:
       declare_parameter<double>("measurement_timeout_sec", 10.0);
 
     if (
-      output_topic_.empty() ||
       !std::isfinite(stereo_fps_) || stereo_fps_ <= 0.0 ||
       stereo_width_ <= 0 || stereo_height_ <= 0 ||
       depth_queue_size_ <= 0 ||
@@ -529,9 +523,6 @@ private:
       return;
     }
 
-    std_msgs::msg::Float64 output;
-    output.data = mean_height_m;
-    height_publisher_->publish(output);
     state_ = MeasurementState::COMPLETE;
 
     RCLCPP_INFO(
@@ -548,9 +539,8 @@ private:
     releaseOak();
     RCLCPP_INFO(
       get_logger(),
-      "OAK pipeline and USB connection released. The node is now idle and "
-      "only retains the latched %s result.",
-      output_topic_.c_str());
+      "OAK pipeline and USB connection released. The result was printed only; "
+      "no ROS result topic is published.");
   }
 
   void failAndRelease(const std::string & reason)
@@ -584,7 +574,6 @@ private:
     device_.reset();
   }
 
-  std::string output_topic_;
   double stereo_fps_{30.0};
   int stereo_width_{640};
   int stereo_height_{400};
@@ -612,7 +601,6 @@ private:
   double measurement_timeout_sec_{10.0};
   HeightGeometryConfig geometry_config_;
 
-  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr height_publisher_;
   rclcpp::TimerBase::SharedPtr poll_timer_;
 
   std::shared_ptr<dai::Device> device_;

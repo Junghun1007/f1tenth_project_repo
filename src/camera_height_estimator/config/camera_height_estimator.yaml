@@ -1,7 +1,5 @@
 camera_height_estimator:
   ros__parameters:
-    output_topic: "/camera/height"
-
     # This package opens OAK itself. It does not use camera_driver topics.
     stereo_fps: 30.0
     stereo_width: 640
