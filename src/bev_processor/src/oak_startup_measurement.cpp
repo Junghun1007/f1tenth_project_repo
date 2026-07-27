@@ -75,6 +75,7 @@ void validateConfig(const OakStartupMeasurementConfig & config)
     config.depth_queue_size <= 0 ||
     !std::isfinite(config.imu_rate_hz) || config.imu_rate_hz <= 0.0 ||
     config.imu_queue_size <= 0 ||
+    !std::isfinite(config.warmup_sec) || config.warmup_sec < 0.0 ||
     config.roi_width <= 0 || config.roi_height <= 0 ||
     config.roi_width > config.stereo_width ||
     config.roi_height > config.stereo_height ||
@@ -103,7 +104,8 @@ void validateConfig(const OakStartupMeasurementConfig & config)
     config.stable_depth_frame_count <= 0 ||
     !std::isfinite(config.maximum_height_stddev_m) ||
     config.maximum_height_stddev_m <= 0.0 ||
-    !std::isfinite(config.timeout_sec) || config.timeout_sec <= 0.0)
+    !std::isfinite(config.timeout_sec) || config.timeout_sec <= 0.0 ||
+    config.warmup_sec >= config.timeout_sec)
   {
     throw std::invalid_argument("invalid OAK startup measurement parameter");
   }
@@ -355,6 +357,20 @@ OakStartupMeasurement measureOakStartupExtrinsics(
       static_cast<unsigned int>(config.imu_queue_size), false);
 
     pipeline->start();
+    const auto measurement_started_at = std::chrono::steady_clock::now();
+    const auto deadline =
+      measurement_started_at +
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(config.timeout_sec));
+
+    if (config.warmup_sec > 0.0) {
+      std::this_thread::sleep_for(
+        std::chrono::duration<double>(config.warmup_sec));
+      while (imu_queue->tryGet<dai::IMUData>()) {
+      }
+      while (depth_queue->tryGet<dai::ImgFrame>()) {
+      }
+    }
 
     std::deque<std::array<double, 3>> imu_direction_samples;
     std::deque<HeightCandidate> stable_height_samples;
@@ -364,10 +380,6 @@ OakStartupMeasurement measureOakStartupExtrinsics(
     double imu_direction_rms_deg = 0.0;
     bool imu_fixed = false;
     std::string last_rejection = "waiting for stable IMU samples";
-    const auto deadline =
-      std::chrono::steady_clock::now() +
-      std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(config.timeout_sec));
 
     while (std::chrono::steady_clock::now() < deadline) {
       if (!pipeline->isRunning()) {
@@ -480,12 +492,16 @@ OakStartupMeasurement measureOakStartupExtrinsics(
           static_cast<int>(stable_height_samples.size()) >=
           config.stable_depth_frame_count)
         {
+          std::vector<double> height_values;
+          height_values.reserve(stable_height_samples.size());
           double mean_height_m = 0.0;
           for (const auto & sample : stable_height_samples) {
             mean_height_m += sample.height_m;
+            height_values.push_back(sample.height_m);
           }
           mean_height_m /=
             static_cast<double>(stable_height_samples.size());
+          const double median_height_m = median(std::move(height_values));
 
           double squared_error_sum = 0.0;
           for (const auto & sample : stable_height_samples) {
@@ -498,7 +514,7 @@ OakStartupMeasurement measureOakStartupExtrinsics(
           if (height_stddev_m <= config.maximum_height_stddev_m) {
             const auto & latest = stable_height_samples.back();
             const OakStartupMeasurement result{
-              mean_height_m,
+              median_height_m,
               roll_deg,
               pitch_down_deg,
               imu_direction_rms_deg,

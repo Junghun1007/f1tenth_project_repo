@@ -106,6 +106,16 @@ public:
         get_logger(),
         "Measuring startup camera height/roll/pitch with OAK stereo and IMU. "
         "Keep the vehicle stationary and the center view on flat ground.");
+      RCLCPP_INFO(
+        get_logger(),
+        "Measurement quality: warmup=%.1fs, IMU=%d samples, "
+        "depth ROI=%dx%d (%d valid minimum), stable depth=%d frames.",
+        startup_measurement_config_.warmup_sec,
+        startup_measurement_config_.imu_sample_count,
+        startup_measurement_config_.roi_width,
+        startup_measurement_config_.roi_height,
+        startup_measurement_config_.minimum_valid_pixels,
+        startup_measurement_config_.stable_depth_frame_count);
       const auto measurement =
         measureOakStartupExtrinsics(startup_measurement_config_);
       camera_model_.position_vehicle_m[2] = measurement.height_m;
@@ -282,25 +292,26 @@ private:
     declare_parameter<int>("measurement_stereo_height", 400);
     declare_parameter<int>("measurement_depth_queue_size", 2);
     declare_parameter<double>("measurement_imu_rate_hz", 100.0);
-    declare_parameter<int>("measurement_imu_queue_size", 20);
-    declare_parameter<int>("measurement_roi_width", 10);
-    declare_parameter<int>("measurement_roi_height", 10);
-    declare_parameter<int>("measurement_minimum_valid_pixels", 25);
+    declare_parameter<int>("measurement_imu_queue_size", 50);
+    declare_parameter<double>("measurement_warmup_sec", 1.0);
+    declare_parameter<int>("measurement_roi_width", 80);
+    declare_parameter<int>("measurement_roi_height", 40);
+    declare_parameter<int>("measurement_minimum_valid_pixels", 800);
     declare_parameter<double>("measurement_minimum_depth_m", 0.30);
     declare_parameter<double>("measurement_maximum_depth_m", 3.00);
     declare_parameter<double>("measurement_minimum_height_m", 0.10);
     declare_parameter<double>("measurement_maximum_height_m", 1.00);
-    declare_parameter<double>("measurement_maximum_height_mad_m", 0.015);
+    declare_parameter<double>("measurement_maximum_height_mad_m", 0.008);
     declare_parameter<double>(
       "measurement_minimum_downward_ray_component", 0.05);
-    declare_parameter<int>("measurement_imu_sample_count", 10);
+    declare_parameter<int>("measurement_imu_sample_count", 200);
     declare_parameter<double>(
-      "measurement_imu_max_direction_rms_deg", 0.50);
+      "measurement_imu_max_direction_rms_deg", 0.25);
     declare_parameter<double>("measurement_imu_accel_min_mps2", 7.50);
     declare_parameter<double>("measurement_imu_accel_max_mps2", 12.00);
-    declare_parameter<int>("measurement_stable_depth_frame_count", 5);
-    declare_parameter<double>("measurement_maximum_height_stddev_m", 0.010);
-    declare_parameter<double>("measurement_timeout_sec", 10.0);
+    declare_parameter<int>("measurement_stable_depth_frame_count", 30);
+    declare_parameter<double>("measurement_maximum_height_stddev_m", 0.004);
+    declare_parameter<double>("measurement_timeout_sec", 20.0);
 
     declare_parameter<double>("x_min_m", 0.18);
     declare_parameter<double>("x_max_m", 3.0);
@@ -367,6 +378,8 @@ private:
       get_parameter("measurement_imu_rate_hz").as_double();
     startup_measurement_config_.imu_queue_size = static_cast<int>(
       get_parameter("measurement_imu_queue_size").as_int());
+    startup_measurement_config_.warmup_sec =
+      get_parameter("measurement_warmup_sec").as_double();
     startup_measurement_config_.roi_width = static_cast<int>(
       get_parameter("measurement_roi_width").as_int());
     startup_measurement_config_.roi_height = static_cast<int>(
