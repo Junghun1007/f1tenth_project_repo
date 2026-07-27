@@ -16,24 +16,31 @@ struct OakStartupMeasurementConfig
   int imu_queue_size{50};
   double warmup_sec{1.0};
 
-  int roi_width{80};
-  int roi_height{40};
-  int minimum_valid_pixels{800};
+  int roi_width{320};
+  int roi_height{160};
+  int point_sample_step{2};
+  int minimum_valid_points{2500};
   double minimum_depth_m{0.30};
   double maximum_depth_m{3.00};
   double minimum_height_m{0.10};
   double maximum_height_m{1.00};
-  double maximum_height_mad_m{0.008};
-  double minimum_downward_ray_component{0.05};
+
+  int plane_ransac_iterations{200};
+  double plane_inlier_threshold_m{0.008};
+  int plane_minimum_inliers{1800};
+  double plane_minimum_inlier_ratio{0.70};
+  double plane_maximum_residual_mad_m{0.005};
+  double plane_maximum_imu_difference_deg{15.0};
 
   int imu_sample_count{200};
   double imu_max_direction_rms_deg{0.25};
   double imu_accel_min_mps2{7.50};
   double imu_accel_max_mps2{12.00};
 
-  int stable_depth_frame_count{30};
+  int stable_plane_frame_count{30};
   double maximum_height_stddev_m{0.004};
-  double timeout_sec{20.0};
+  double maximum_plane_normal_rms_deg{0.25};
+  double timeout_sec{30.0};
 };
 
 struct OakStartupMeasurement
@@ -41,11 +48,17 @@ struct OakStartupMeasurement
   double height_m{0.0};
   double roll_deg{0.0};
   double pitch_down_deg{0.0};
+  double imu_roll_deg{0.0};
+  double imu_pitch_down_deg{0.0};
   double imu_direction_rms_deg{0.0};
   double height_stddev_m{0.0};
+  double plane_normal_rms_deg{0.0};
   double median_depth_m{0.0};
-  double height_mad_m{0.0};
-  std::size_t valid_pixel_count{0U};
+  double plane_residual_mad_m{0.0};
+  double plane_inlier_ratio{0.0};
+  double plane_imu_difference_deg{0.0};
+  std::size_t valid_point_count{0U};
+  std::size_t plane_inlier_count{0U};
 };
 
 OakStartupMeasurement measureOakStartupExtrinsics(

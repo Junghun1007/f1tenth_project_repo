@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "depthai/depthai.hpp"
+#include "bev_processor/ground_plane_estimator.hpp"
 
 namespace bev_processor
 {
@@ -30,12 +31,10 @@ constexpr std::uint32_t kOv9282FullHeight = 800U;
 constexpr double kRadiansToDegrees =
   180.0 / 3.141592653589793238462643383279502884;
 
-struct HeightCandidate
+struct PlaneCandidate
 {
-  double height_m{0.0};
+  GroundPlaneEstimate plane;
   double median_depth_m{0.0};
-  double height_mad_m{0.0};
-  std::size_t valid_pixel_count{0U};
 };
 
 std::array<double, 3> normalized(
@@ -49,6 +48,15 @@ std::array<double, 3> normalized(
     throw std::invalid_argument("cannot normalize a zero/non-finite vector");
   }
   return {vector[0] / norm, vector[1] / norm, vector[2] / norm};
+}
+
+cv::Vec3d normalized(const cv::Vec3d & vector)
+{
+  const double norm = cv::norm(vector);
+  if (!std::isfinite(norm) || norm <= 1.0e-9) {
+    throw std::invalid_argument("cannot normalize a zero/non-finite vector");
+  }
+  return vector / norm;
 }
 
 double median(std::vector<double> values)
@@ -79,8 +87,8 @@ void validateConfig(const OakStartupMeasurementConfig & config)
     config.roi_width <= 0 || config.roi_height <= 0 ||
     config.roi_width > config.stereo_width ||
     config.roi_height > config.stereo_height ||
-    config.minimum_valid_pixels <= 0 ||
-    config.minimum_valid_pixels > config.roi_width * config.roi_height ||
+    config.point_sample_step <= 0 ||
+    config.minimum_valid_points <= 0 ||
     !std::isfinite(config.minimum_depth_m) ||
     config.minimum_depth_m <= 0.0 ||
     !std::isfinite(config.maximum_depth_m) ||
@@ -89,11 +97,18 @@ void validateConfig(const OakStartupMeasurementConfig & config)
     config.minimum_height_m <= 0.0 ||
     !std::isfinite(config.maximum_height_m) ||
     config.maximum_height_m <= config.minimum_height_m ||
-    !std::isfinite(config.maximum_height_mad_m) ||
-    config.maximum_height_mad_m <= 0.0 ||
-    !std::isfinite(config.minimum_downward_ray_component) ||
-    config.minimum_downward_ray_component <= 0.0 ||
-    config.minimum_downward_ray_component >= 1.0 ||
+    config.plane_ransac_iterations <= 0 ||
+    !std::isfinite(config.plane_inlier_threshold_m) ||
+    config.plane_inlier_threshold_m <= 0.0 ||
+    config.plane_minimum_inliers < 3 ||
+    !std::isfinite(config.plane_minimum_inlier_ratio) ||
+    config.plane_minimum_inlier_ratio <= 0.0 ||
+    config.plane_minimum_inlier_ratio > 1.0 ||
+    !std::isfinite(config.plane_maximum_residual_mad_m) ||
+    config.plane_maximum_residual_mad_m <= 0.0 ||
+    !std::isfinite(config.plane_maximum_imu_difference_deg) ||
+    config.plane_maximum_imu_difference_deg <= 0.0 ||
+    config.plane_maximum_imu_difference_deg >= 90.0 ||
     config.imu_sample_count <= 0 ||
     !std::isfinite(config.imu_max_direction_rms_deg) ||
     config.imu_max_direction_rms_deg <= 0.0 ||
@@ -101,17 +116,34 @@ void validateConfig(const OakStartupMeasurementConfig & config)
     config.imu_accel_min_mps2 <= 0.0 ||
     !std::isfinite(config.imu_accel_max_mps2) ||
     config.imu_accel_max_mps2 <= config.imu_accel_min_mps2 ||
-    config.stable_depth_frame_count <= 0 ||
+    config.stable_plane_frame_count <= 0 ||
     !std::isfinite(config.maximum_height_stddev_m) ||
     config.maximum_height_stddev_m <= 0.0 ||
+    !std::isfinite(config.maximum_plane_normal_rms_deg) ||
+    config.maximum_plane_normal_rms_deg <= 0.0 ||
     !std::isfinite(config.timeout_sec) || config.timeout_sec <= 0.0 ||
     config.warmup_sec >= config.timeout_sec)
   {
     throw std::invalid_argument("invalid OAK startup measurement parameter");
   }
+
+  const int sampled_width =
+    (config.roi_width + config.point_sample_step - 1) /
+    config.point_sample_step;
+  const int sampled_height =
+    (config.roi_height + config.point_sample_step - 1) /
+    config.point_sample_step;
+  const int maximum_sample_count = sampled_width * sampled_height;
+  if (
+    config.minimum_valid_points > maximum_sample_count ||
+    config.plane_minimum_inliers > maximum_sample_count)
+  {
+    throw std::invalid_argument(
+            "ground-plane minimum counts exceed the sampled ROI capacity");
+  }
 }
 
-std::optional<HeightCandidate> estimateHeight(
+std::optional<PlaneCandidate> estimateGroundPlane(
   dai::ImgFrame & packet,
   const std::array<double, 3> & specific_force_camera,
   const OakStartupMeasurementConfig & config,
@@ -144,17 +176,9 @@ std::optional<HeightCandidate> estimateHeight(
     throw std::runtime_error("aligned depth intrinsics are invalid");
   }
 
-  const auto up_camera = normalized(specific_force_camera);
-  const double downward_ray_component = -up_camera[2];
-  if (
-    !std::isfinite(downward_ray_component) ||
-    downward_ray_component < config.minimum_downward_ray_component)
-  {
-    if (rejection != nullptr) {
-      *rejection = "camera center ray is not sufficiently downward";
-    }
-    return std::nullopt;
-  }
+  const auto up_camera_array = normalized(specific_force_camera);
+  const cv::Vec3d up_camera(
+    up_camera_array[0], up_camera_array[1], up_camera_array[2]);
 
   const auto & bytes = packet.getData();
   const std::size_t minimum_stride =
@@ -170,15 +194,30 @@ std::optional<HeightCandidate> estimateHeight(
 
   const int start_u = (config.stereo_width - config.roi_width) / 2;
   const int start_v = (config.stereo_height - config.roi_height) / 2;
-  std::vector<double> heights;
+  const int sampled_width =
+    (config.roi_width + config.point_sample_step - 1) /
+    config.point_sample_step;
+  const int sampled_height =
+    (config.roi_height + config.point_sample_step - 1) /
+    config.point_sample_step;
+  const auto sample_capacity = static_cast<std::size_t>(
+    sampled_width * sampled_height);
+  std::vector<cv::Vec3d> points;
   std::vector<double> depths;
-  heights.reserve(
-    static_cast<std::size_t>(config.roi_width * config.roi_height));
-  depths.reserve(heights.capacity());
+  points.reserve(sample_capacity);
+  depths.reserve(sample_capacity);
 
-  for (int v = start_v; v < start_v + config.roi_height; ++v) {
+  for (
+    int v = start_v;
+    v < start_v + config.roi_height;
+    v += config.point_sample_step)
+  {
     const auto row_offset = static_cast<std::size_t>(v) * stride;
-    for (int u = start_u; u < start_u + config.roi_width; ++u) {
+    for (
+      int u = start_u;
+      u < start_u + config.roi_width;
+      u += config.point_sample_step)
+    {
       std::uint16_t depth_mm = 0U;
       std::memcpy(
         &depth_mm,
@@ -196,57 +235,40 @@ std::optional<HeightCandidate> estimateHeight(
 
       const double x_m = (static_cast<double>(u) - cx) * z_m / fx;
       const double y_m = (static_cast<double>(v) - cy) * z_m / fy;
-      const double height_m = -(
-        up_camera[0] * x_m +
-        up_camera[1] * y_m +
-        up_camera[2] * z_m);
-      if (std::isfinite(height_m) && height_m > 0.0) {
-        heights.push_back(height_m);
-        depths.push_back(z_m);
-      }
+      points.emplace_back(x_m, y_m, z_m);
+      depths.push_back(z_m);
     }
   }
 
   if (
-    heights.size() <
-    static_cast<std::size_t>(config.minimum_valid_pixels))
+    points.size() <
+    static_cast<std::size_t>(config.minimum_valid_points))
   {
     if (rejection != nullptr) {
-      *rejection = "insufficient valid center depth pixels";
+      *rejection =
+        "insufficient valid depth points for ground-plane fitting";
     }
     return std::nullopt;
   }
 
-  const double height_m = median(heights);
-  const double median_depth_m = median(depths);
-  std::vector<double> absolute_errors;
-  absolute_errors.reserve(heights.size());
-  for (const double value : heights) {
-    absolute_errors.push_back(std::abs(value - height_m));
-  }
-  const double height_mad_m = median(std::move(absolute_errors));
+  GroundPlaneFitConfig fit_config;
+  fit_config.ransac_iterations = config.plane_ransac_iterations;
+  fit_config.inlier_threshold_m = config.plane_inlier_threshold_m;
+  fit_config.minimum_inliers =
+    static_cast<std::size_t>(config.plane_minimum_inliers);
+  fit_config.minimum_inlier_ratio = config.plane_minimum_inlier_ratio;
+  fit_config.maximum_residual_mad_m =
+    config.plane_maximum_residual_mad_m;
+  fit_config.maximum_reference_angle_deg =
+    config.plane_maximum_imu_difference_deg;
+  fit_config.minimum_height_m = config.minimum_height_m;
+  fit_config.maximum_height_m = config.maximum_height_m;
 
-  if (
-    height_m < config.minimum_height_m ||
-    height_m > config.maximum_height_m)
-  {
-    if (rejection != nullptr) {
-      *rejection = "candidate height is outside the allowed range";
-    }
+  auto plane = fitGroundPlane(points, up_camera, fit_config, rejection);
+  if (!plane) {
     return std::nullopt;
   }
-  if (height_mad_m > config.maximum_height_mad_m) {
-    if (rejection != nullptr) {
-      *rejection = "center-pixel heights are spatially inconsistent";
-    }
-    return std::nullopt;
-  }
-
-  return HeightCandidate{
-    height_m,
-    median_depth_m,
-    height_mad_m,
-    heights.size()};
+  return PlaneCandidate{*plane, median(std::move(depths))};
 }
 
 void stopPipeline(
@@ -373,10 +395,10 @@ OakStartupMeasurement measureOakStartupExtrinsics(
     }
 
     std::deque<std::array<double, 3>> imu_direction_samples;
-    std::deque<HeightCandidate> stable_height_samples;
+    std::deque<PlaneCandidate> stable_plane_samples;
     std::array<double, 3> frozen_specific_force{0.0, -1.0, 0.0};
-    double roll_deg = 0.0;
-    double pitch_down_deg = 0.0;
+    double imu_roll_deg = 0.0;
+    double imu_pitch_down_deg = 0.0;
     double imu_direction_rms_deg = 0.0;
     bool imu_fixed = false;
     std::string last_rejection = "waiting for stable IMU samples";
@@ -459,13 +481,13 @@ OakStartupMeasurement measureOakStartupExtrinsics(
             config.imu_max_direction_rms_deg)
           {
             frozen_specific_force = mean;
-            roll_deg =
+            imu_roll_deg =
               std::atan2(-mean[0], -mean[1]) * kRadiansToDegrees;
-            pitch_down_deg = std::atan2(
+            imu_pitch_down_deg = std::atan2(
               -mean[2],
               std::hypot(mean[0], mean[1])) * kRadiansToDegrees;
             imu_fixed = true;
-            last_rejection = "waiting for valid stereo depth";
+            last_rejection = "waiting for a valid ground plane";
           } else {
             last_rejection = "IMU direction is not stable";
           }
@@ -473,60 +495,113 @@ OakStartupMeasurement measureOakStartupExtrinsics(
       } else {
         auto packet = depth_queue->tryGet<dai::ImgFrame>();
         if (packet) {
-          auto candidate = estimateHeight(
+          auto candidate = estimateGroundPlane(
             *packet, frozen_specific_force, config, &last_rejection);
           if (!candidate) {
-            stable_height_samples.clear();
+            stable_plane_samples.clear();
           } else {
-            stable_height_samples.push_back(*candidate);
+            stable_plane_samples.push_back(*candidate);
             while (
-              static_cast<int>(stable_height_samples.size()) >
-              config.stable_depth_frame_count)
+              static_cast<int>(stable_plane_samples.size()) >
+              config.stable_plane_frame_count)
             {
-              stable_height_samples.pop_front();
+              stable_plane_samples.pop_front();
             }
           }
         }
 
         if (
-          static_cast<int>(stable_height_samples.size()) >=
-          config.stable_depth_frame_count)
+          static_cast<int>(stable_plane_samples.size()) >=
+          config.stable_plane_frame_count)
         {
           std::vector<double> height_values;
-          height_values.reserve(stable_height_samples.size());
+          height_values.reserve(stable_plane_samples.size());
           double mean_height_m = 0.0;
-          for (const auto & sample : stable_height_samples) {
-            mean_height_m += sample.height_m;
-            height_values.push_back(sample.height_m);
+          cv::Vec3d mean_normal(0.0, 0.0, 0.0);
+          for (const auto & sample : stable_plane_samples) {
+            mean_height_m += sample.plane.height_m;
+            height_values.push_back(sample.plane.height_m);
+            mean_normal += sample.plane.up_camera;
           }
           mean_height_m /=
-            static_cast<double>(stable_height_samples.size());
+            static_cast<double>(stable_plane_samples.size());
+          mean_normal = normalized(mean_normal);
           const double median_height_m = median(std::move(height_values));
 
           double squared_error_sum = 0.0;
-          for (const auto & sample : stable_height_samples) {
-            const double error = sample.height_m - mean_height_m;
+          double squared_normal_angle_sum = 0.0;
+          for (const auto & sample : stable_plane_samples) {
+            const double error = sample.plane.height_m - mean_height_m;
             squared_error_sum += error * error;
+            const double cosine = std::clamp(
+              sample.plane.up_camera.dot(mean_normal), -1.0, 1.0);
+            const double angle_deg =
+              std::acos(cosine) * kRadiansToDegrees;
+            squared_normal_angle_sum += angle_deg * angle_deg;
           }
           const double height_stddev_m = std::sqrt(
             squared_error_sum /
-            static_cast<double>(stable_height_samples.size()));
-          if (height_stddev_m <= config.maximum_height_stddev_m) {
-            const auto & latest = stable_height_samples.back();
+            static_cast<double>(stable_plane_samples.size()));
+          const double plane_normal_rms_deg = std::sqrt(
+            squared_normal_angle_sum /
+            static_cast<double>(stable_plane_samples.size()));
+          if (
+            height_stddev_m <= config.maximum_height_stddev_m &&
+            plane_normal_rms_deg <=
+            config.maximum_plane_normal_rms_deg)
+          {
+            std::vector<double> median_depth_values;
+            std::vector<double> residual_values;
+            std::vector<double> inlier_ratio_values;
+            std::vector<double> imu_difference_values;
+            median_depth_values.reserve(stable_plane_samples.size());
+            residual_values.reserve(stable_plane_samples.size());
+            inlier_ratio_values.reserve(stable_plane_samples.size());
+            imu_difference_values.reserve(stable_plane_samples.size());
+            std::size_t minimum_point_count =
+              stable_plane_samples.front().plane.point_count;
+            std::size_t minimum_inlier_count =
+              stable_plane_samples.front().plane.inlier_count;
+            for (const auto & sample : stable_plane_samples) {
+              median_depth_values.push_back(sample.median_depth_m);
+              residual_values.push_back(sample.plane.residual_mad_m);
+              inlier_ratio_values.push_back(sample.plane.inlier_ratio);
+              imu_difference_values.push_back(
+                sample.plane.reference_angle_deg);
+              minimum_point_count = std::min(
+                minimum_point_count, sample.plane.point_count);
+              minimum_inlier_count = std::min(
+                minimum_inlier_count, sample.plane.inlier_count);
+            }
+            const double roll_deg =
+              std::atan2(
+              -mean_normal[0], -mean_normal[1]) * kRadiansToDegrees;
+            const double pitch_down_deg =
+              std::atan2(
+              -mean_normal[2],
+              std::hypot(mean_normal[0], mean_normal[1])) *
+              kRadiansToDegrees;
             const OakStartupMeasurement result{
               median_height_m,
               roll_deg,
               pitch_down_deg,
+              imu_roll_deg,
+              imu_pitch_down_deg,
               imu_direction_rms_deg,
               height_stddev_m,
-              latest.median_depth_m,
-              latest.height_mad_m,
-              latest.valid_pixel_count};
+              plane_normal_rms_deg,
+              median(std::move(median_depth_values)),
+              median(std::move(residual_values)),
+              median(std::move(inlier_ratio_values)),
+              median(std::move(imu_difference_values)),
+              minimum_point_count,
+              minimum_inlier_count};
             stopPipeline(depth_queue, imu_queue, pipeline, device);
             return result;
           }
-          stable_height_samples.clear();
-          last_rejection = "camera height is not temporally stable";
+          stable_plane_samples.clear();
+          last_rejection =
+            "ground-plane height or normal is not temporally stable";
         }
       }
 

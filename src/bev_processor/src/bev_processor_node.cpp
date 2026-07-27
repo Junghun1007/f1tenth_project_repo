@@ -104,18 +104,22 @@ public:
     if (processor_mode_ == "auto") {
       RCLCPP_INFO(
         get_logger(),
-        "Measuring startup camera height/roll/pitch with OAK stereo and IMU. "
+        "Measuring startup camera height/roll/pitch from the OAK stereo "
+        "ground plane. "
         "Keep the vehicle stationary and the center view on flat ground.");
       RCLCPP_INFO(
         get_logger(),
         "Measurement quality: warmup=%.1fs, IMU=%d samples, "
-        "depth ROI=%dx%d (%d valid minimum), stable depth=%d frames.",
+        "depth ROI=%dx%d step=%d (%d valid points minimum), "
+        "RANSAC=%d iterations, stable planes=%d frames.",
         startup_measurement_config_.warmup_sec,
         startup_measurement_config_.imu_sample_count,
         startup_measurement_config_.roi_width,
         startup_measurement_config_.roi_height,
-        startup_measurement_config_.minimum_valid_pixels,
-        startup_measurement_config_.stable_depth_frame_count);
+        startup_measurement_config_.point_sample_step,
+        startup_measurement_config_.minimum_valid_points,
+        startup_measurement_config_.plane_ransac_iterations,
+        startup_measurement_config_.stable_plane_frame_count);
       const auto measurement =
         measureOakStartupExtrinsics(startup_measurement_config_);
       camera_model_.position_vehicle_m[2] = measurement.height_m;
@@ -124,29 +128,39 @@ public:
       measured_extrinsics_ = true;
       RCLCPP_INFO(
         get_logger(),
-        "BEV_STARTUP_MEASUREMENT: height=%.4fm, roll=%.3fdeg, "
+        "BEV_STARTUP_MEASUREMENT: source=ground_plane, "
+        "height=%.4fm, roll=%.3fdeg, "
         "pitch=%.3fdeg, downward_pitch=%.3fdeg, "
-        "imu_RMS=%.3fdeg, height_stddev=%.4fm",
+        "height_stddev=%.4fm, plane_normal_RMS=%.3fdeg",
         measurement.height_m,
         measurement.roll_deg,
         -measurement.pitch_down_deg,
         measurement.pitch_down_deg,
-        measurement.imu_direction_rms_deg,
-        measurement.height_stddev_m);
+        measurement.height_stddev_m,
+        measurement.plane_normal_rms_deg);
       RCLCPP_INFO(
         get_logger(),
-        "Startup depth diagnostics: center_depth=%.3fm, valid=%zu/%d, "
-        "height_MAD=%.4fm",
+        "Startup IMU reference: roll=%.3fdeg, pitch_down=%.3fdeg, "
+        "direction_RMS=%.3fdeg, plane_difference=%.3fdeg",
+        measurement.imu_roll_deg,
+        measurement.imu_pitch_down_deg,
+        measurement.imu_direction_rms_deg,
+        measurement.plane_imu_difference_deg);
+      RCLCPP_INFO(
+        get_logger(),
+        "Startup ground-plane diagnostics: depth=%.3fm, "
+        "points=%zu, inliers=%zu (%.1f%%), residual_MAD=%.4fm",
         measurement.median_depth_m,
-        measurement.valid_pixel_count,
-        startup_measurement_config_.roi_width *
-        startup_measurement_config_.roi_height,
-        measurement.height_mad_m);
+        measurement.valid_point_count,
+        measurement.plane_inlier_count,
+        100.0 * measurement.plane_inlier_ratio,
+        measurement.plane_residual_mad_m);
     }
     installProcessor(
       startup_roll_deg,
       startup_pitch_down_deg,
-      measured_extrinsics_ ? "startup OAK measurement" : "manual config");
+      measured_extrinsics_ ?
+      "startup OAK ground plane" : "manual config");
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     input_subscription_ = create_subscription<sensor_msgs::msg::Image>(
@@ -226,7 +240,8 @@ public:
       "pitch=%.3fdeg, downward_pitch=%.3fdeg, fixed yaw=%.3fdeg. "
       "These values are fixed for this run.",
       processor_mode_.c_str(),
-      measured_extrinsics_ ? "OAK stereo+IMU" : "manual config",
+      measured_extrinsics_ ?
+      "OAK stereo ground plane (IMU-validated)" : "manual config",
       camera_model_.position_vehicle_m[2],
       applied_roll_deg_.load(std::memory_order_relaxed),
       -applied_pitch_down_deg_.load(std::memory_order_relaxed),
@@ -294,24 +309,34 @@ private:
     declare_parameter<double>("measurement_imu_rate_hz", 100.0);
     declare_parameter<int>("measurement_imu_queue_size", 50);
     declare_parameter<double>("measurement_warmup_sec", 1.0);
-    declare_parameter<int>("measurement_roi_width", 80);
-    declare_parameter<int>("measurement_roi_height", 40);
-    declare_parameter<int>("measurement_minimum_valid_pixels", 800);
+    declare_parameter<int>("measurement_roi_width", 320);
+    declare_parameter<int>("measurement_roi_height", 160);
+    declare_parameter<int>("measurement_point_sample_step", 2);
+    declare_parameter<int>("measurement_minimum_valid_points", 2500);
     declare_parameter<double>("measurement_minimum_depth_m", 0.30);
     declare_parameter<double>("measurement_maximum_depth_m", 3.00);
     declare_parameter<double>("measurement_minimum_height_m", 0.10);
     declare_parameter<double>("measurement_maximum_height_m", 1.00);
-    declare_parameter<double>("measurement_maximum_height_mad_m", 0.008);
+    declare_parameter<int>("measurement_plane_ransac_iterations", 200);
     declare_parameter<double>(
-      "measurement_minimum_downward_ray_component", 0.05);
+      "measurement_plane_inlier_threshold_m", 0.008);
+    declare_parameter<int>("measurement_plane_minimum_inliers", 1800);
+    declare_parameter<double>(
+      "measurement_plane_minimum_inlier_ratio", 0.70);
+    declare_parameter<double>(
+      "measurement_plane_maximum_residual_mad_m", 0.005);
+    declare_parameter<double>(
+      "measurement_plane_maximum_imu_difference_deg", 15.0);
     declare_parameter<int>("measurement_imu_sample_count", 200);
     declare_parameter<double>(
       "measurement_imu_max_direction_rms_deg", 0.25);
     declare_parameter<double>("measurement_imu_accel_min_mps2", 7.50);
     declare_parameter<double>("measurement_imu_accel_max_mps2", 12.00);
-    declare_parameter<int>("measurement_stable_depth_frame_count", 30);
+    declare_parameter<int>("measurement_stable_plane_frame_count", 30);
     declare_parameter<double>("measurement_maximum_height_stddev_m", 0.004);
-    declare_parameter<double>("measurement_timeout_sec", 20.0);
+    declare_parameter<double>(
+      "measurement_maximum_plane_normal_rms_deg", 0.25);
+    declare_parameter<double>("measurement_timeout_sec", 30.0);
 
     declare_parameter<double>("x_min_m", 0.18);
     declare_parameter<double>("x_max_m", 3.0);
@@ -384,8 +409,10 @@ private:
       get_parameter("measurement_roi_width").as_int());
     startup_measurement_config_.roi_height = static_cast<int>(
       get_parameter("measurement_roi_height").as_int());
-    startup_measurement_config_.minimum_valid_pixels = static_cast<int>(
-      get_parameter("measurement_minimum_valid_pixels").as_int());
+    startup_measurement_config_.point_sample_step = static_cast<int>(
+      get_parameter("measurement_point_sample_step").as_int());
+    startup_measurement_config_.minimum_valid_points = static_cast<int>(
+      get_parameter("measurement_minimum_valid_points").as_int());
     startup_measurement_config_.minimum_depth_m =
       get_parameter("measurement_minimum_depth_m").as_double();
     startup_measurement_config_.maximum_depth_m =
@@ -394,11 +421,20 @@ private:
       get_parameter("measurement_minimum_height_m").as_double();
     startup_measurement_config_.maximum_height_m =
       get_parameter("measurement_maximum_height_m").as_double();
-    startup_measurement_config_.maximum_height_mad_m =
-      get_parameter("measurement_maximum_height_mad_m").as_double();
-    startup_measurement_config_.minimum_downward_ray_component =
+    startup_measurement_config_.plane_ransac_iterations = static_cast<int>(
+      get_parameter("measurement_plane_ransac_iterations").as_int());
+    startup_measurement_config_.plane_inlier_threshold_m =
+      get_parameter("measurement_plane_inlier_threshold_m").as_double();
+    startup_measurement_config_.plane_minimum_inliers = static_cast<int>(
+      get_parameter("measurement_plane_minimum_inliers").as_int());
+    startup_measurement_config_.plane_minimum_inlier_ratio =
+      get_parameter("measurement_plane_minimum_inlier_ratio").as_double();
+    startup_measurement_config_.plane_maximum_residual_mad_m =
       get_parameter(
-      "measurement_minimum_downward_ray_component").as_double();
+      "measurement_plane_maximum_residual_mad_m").as_double();
+    startup_measurement_config_.plane_maximum_imu_difference_deg =
+      get_parameter(
+      "measurement_plane_maximum_imu_difference_deg").as_double();
     startup_measurement_config_.imu_sample_count = static_cast<int>(
       get_parameter("measurement_imu_sample_count").as_int());
     startup_measurement_config_.imu_max_direction_rms_deg =
@@ -408,11 +444,14 @@ private:
       get_parameter("measurement_imu_accel_min_mps2").as_double();
     startup_measurement_config_.imu_accel_max_mps2 =
       get_parameter("measurement_imu_accel_max_mps2").as_double();
-    startup_measurement_config_.stable_depth_frame_count = static_cast<int>(
-      get_parameter("measurement_stable_depth_frame_count").as_int());
+    startup_measurement_config_.stable_plane_frame_count = static_cast<int>(
+      get_parameter("measurement_stable_plane_frame_count").as_int());
     startup_measurement_config_.maximum_height_stddev_m =
       get_parameter(
       "measurement_maximum_height_stddev_m").as_double();
+    startup_measurement_config_.maximum_plane_normal_rms_deg =
+      get_parameter(
+      "measurement_maximum_plane_normal_rms_deg").as_double();
     startup_measurement_config_.timeout_sec =
       get_parameter("measurement_timeout_sec").as_double();
 

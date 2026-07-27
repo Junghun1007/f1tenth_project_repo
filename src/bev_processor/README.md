@@ -7,14 +7,17 @@ ROS 2 C++ 패키지다. 실행 진입점은 자동과 수동 두 개로 분리�
 
 ### `bev_processor_auto`
 
-시작할 때 OAK stereo와 IMU로 카메라 높이, roll, 하향 pitch를 한 번
-측정한다. 측정값으로 BEV LUT를 생성한 뒤 그 실행이 끝날 때까지 자세를
+시작할 때 OAK stereo depth의 노면 점들에 RANSAC과 PCA로 평면을 맞춰
+카메라 높이, roll, 하향 pitch를 한 번 측정한다. IMU는 정지 상태와 평면
+법선 방향의 타당성만 검증하며, BEV에 적용되는 자세값을 직접 결정하지
+않는다. 측정값으로 BEV LUT를 생성한 뒤 그 실행이 끝날 때까지 자세를
 고정한다. 주행 중 실시간 자세 추정은 하지 않는다.
 
 센서 시작 직후의 과도값을 버리기 위해 1초간 워밍업하고, 100 Hz IMU
-200개 샘플과 중앙 80x40 stereo ROI를 사용한다. 높이는 안정된 depth
-30프레임의 중앙값으로 결정한다. 따라서 기존 빠른 측정보다 시작은 몇 초
-느리지만 반복 측정 편차와 단일 프레임 이상치의 영향을 줄인다.
+200개 샘플과 중앙 320x160 stereo ROI를 사용한다. 2픽셀 간격으로 만든
+3D 점들 중 노면 평면 inlier만 사용하고, 안정된 평면 30프레임의 높이와
+평균 법선으로 최종값을 결정한다. 따라서 기존 빠른 측정보다 시작은 몇 초
+느리지만 장애물·깊이 이상치·IMU 장착 오차의 영향을 줄인다.
 
 ```bash
 ros2 launch bev_processor bev_processor_auto.launch.py
@@ -62,7 +65,7 @@ container에서 실행해 NV12 intra-process 경로를 사용한다. 카메라 �
 
 차이는 LUT 생성에 넣는 높이/roll/pitch의 출처뿐이다.
 
-- auto: 시작 시 OAK stereo+IMU 측정값
+- auto: 시작 시 OAK stereo 노면 평면 측정값(IMU 검증)
 - manual: `bev_config_manual.yaml`의 직접 측정값
 
 이전의 `startup_measurement_enabled` launch 옵션은 제거했다. 따라서
@@ -105,8 +108,10 @@ output_height = (2.5 - 0.10) / 0.01   = 240
 
 ```text
 [bev_processor_auto] Measuring startup camera height/roll/pitch ...
-[bev_processor_auto] BEV_STARTUP_MEASUREMENT: ...
-[bev_processor_auto] Startup extrinsics mode=auto, source=OAK stereo+IMU: ...
+[bev_processor_auto] BEV_STARTUP_MEASUREMENT: source=ground_plane, ...
+[bev_processor_auto] Startup IMU reference: ...
+[bev_processor_auto] Startup ground-plane diagnostics: ...
+[bev_processor_auto] Startup extrinsics mode=auto, source=OAK stereo ground plane (IMU-validated): ...
 ```
 
 수동 모드에서는 측정 로그가 나오면 안 되고 다음처럼 표시되어야 한다.

@@ -28,8 +28,9 @@ find_package(std_msgs REQUIRED)
 find_package(depthai 3 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR
-    "DepthAI C++ 3.x was not found. bev_processor performs an OAK stereo+IMU "
-    "startup measurement and therefore links directly against depthai::core."
+    "DepthAI C++ 3.x was not found. bev_processor performs an OAK stereo "
+    "ground-plane startup measurement with IMU validation and therefore "
+    "links directly against depthai::core."
   )
 endif()
 find_package(Threads REQUIRED)
@@ -45,6 +46,18 @@ target_include_directories(bev_geometry
     ${OpenCV_INCLUDE_DIRS}
 )
 target_link_libraries(bev_geometry PUBLIC ${OpenCV_LIBS})
+
+add_library(bev_ground_plane STATIC
+  src/ground_plane_estimator.cpp
+)
+set_target_properties(bev_ground_plane PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(bev_ground_plane
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(bev_ground_plane PUBLIC ${OpenCV_LIBS})
 
 add_library(bev_cuda STATIC
   src/cuda_bev_processor.cu
@@ -71,7 +84,8 @@ target_include_directories(bev_startup_measurement
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(bev_startup_measurement PUBLIC depthai::core)
+target_link_libraries(
+  bev_startup_measurement PUBLIC depthai::core bev_ground_plane)
 
 add_library(bev_processor_component SHARED
   src/bev_processor_node.cpp
@@ -107,10 +121,22 @@ if(BUILD_TESTING)
   add_executable(bev_geometry_test test/bev_geometry_test.cpp)
   target_link_libraries(bev_geometry_test bev_geometry ${OpenCV_LIBS})
   add_test(NAME bev_geometry_test COMMAND bev_geometry_test)
+
+  add_executable(
+    ground_plane_estimator_test test/ground_plane_estimator_test.cpp)
+  target_link_libraries(
+    ground_plane_estimator_test
+    bev_ground_plane
+    bev_geometry
+    ${OpenCV_LIBS}
+  )
+  add_test(
+    NAME ground_plane_estimator_test COMMAND ground_plane_estimator_test)
 endif()
 
 install(TARGETS
   bev_geometry
+  bev_ground_plane
   bev_startup_measurement
   bev_processor_component
   bev_processor_node
