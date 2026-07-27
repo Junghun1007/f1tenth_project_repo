@@ -102,6 +102,8 @@ public:
     double startup_roll_deg = configured_roll_deg_;
     double startup_pitch_down_deg = configured_pitch_down_deg_;
     if (processor_mode_ == "auto") {
+      const auto & fusion_config =
+        startup_measurement_config_.attitude_fusion;
       RCLCPP_INFO(
         get_logger(),
         "Measuring startup camera height/roll/pitch from the OAK stereo "
@@ -111,7 +113,8 @@ public:
         get_logger(),
         "Measurement quality: warmup=%.1fs, IMU=%d samples, "
         "depth ROI=%dx%d step=%d (%d valid points minimum), "
-        "RANSAC=%d iterations, stable planes=%d frames.",
+        "RANSAC=%d iterations, stable planes=%d frames, "
+        "fusion gate=%.1f sigma/[%.1f, %.1f]deg.",
         startup_measurement_config_.warmup_sec,
         startup_measurement_config_.imu_sample_count,
         startup_measurement_config_.roi_width,
@@ -119,7 +122,10 @@ public:
         startup_measurement_config_.point_sample_step,
         startup_measurement_config_.minimum_valid_points,
         startup_measurement_config_.plane_ransac_iterations,
-        startup_measurement_config_.stable_plane_frame_count);
+        startup_measurement_config_.stable_plane_frame_count,
+        fusion_config.agreement_gate_sigma,
+        fusion_config.minimum_agreement_gate_deg,
+        fusion_config.maximum_agreement_gate_deg);
       const auto measurement =
         measureOakStartupExtrinsics(startup_measurement_config_);
       camera_model_.position_vehicle_m[2] = measurement.height_m;
@@ -128,10 +134,11 @@ public:
       measured_extrinsics_ = true;
       RCLCPP_INFO(
         get_logger(),
-        "BEV_STARTUP_MEASUREMENT: source=ground_plane, "
+        "BEV_STARTUP_MEASUREMENT: source=%s, "
         "height=%.4fm, roll=%.3fdeg, "
         "pitch=%.3fdeg, downward_pitch=%.3fdeg, "
         "height_stddev=%.4fm, plane_normal_RMS=%.3fdeg",
+        measurement.attitude_source.c_str(),
         measurement.height_m,
         measurement.roll_deg,
         -measurement.pitch_down_deg,
@@ -140,12 +147,26 @@ public:
         measurement.plane_normal_rms_deg);
       RCLCPP_INFO(
         get_logger(),
-        "Startup IMU reference: roll=%.3fdeg, pitch_down=%.3fdeg, "
-        "direction_RMS=%.3fdeg, plane_difference=%.3fdeg",
+        "Startup IMU: raw=(roll=%.3f,pitch_down=%.3fdeg), "
+        "corrected=(roll=%.3f,pitch_down=%.3fdeg), "
+        "direction_RMS=%.3fdeg",
         measurement.imu_roll_deg,
         measurement.imu_pitch_down_deg,
-        measurement.imu_direction_rms_deg,
-        measurement.plane_imu_difference_deg);
+        measurement.corrected_imu_roll_deg,
+        measurement.corrected_imu_pitch_down_deg,
+        measurement.imu_direction_rms_deg);
+      RCLCPP_INFO(
+        get_logger(),
+        "Startup attitude fusion: difference=%.3fdeg, gate=%.3fdeg, "
+        "uncertainty(imu/depth)=%.3f/%.3fdeg, "
+        "weight(imu/depth)=%.1f/%.1f%%, selected=%s",
+        measurement.plane_imu_difference_deg,
+        measurement.fusion_agreement_gate_deg,
+        measurement.imu_uncertainty_deg,
+        measurement.depth_uncertainty_deg,
+        100.0 * measurement.fusion_imu_weight,
+        100.0 * measurement.fusion_depth_weight,
+        measurement.attitude_source.c_str());
       RCLCPP_INFO(
         get_logger(),
         "Startup ground-plane diagnostics: depth=%.3fm, "
@@ -160,7 +181,7 @@ public:
       startup_roll_deg,
       startup_pitch_down_deg,
       measured_extrinsics_ ?
-      "startup OAK ground plane" : "manual config");
+      "startup adaptive IMU+depth" : "manual config");
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     input_subscription_ = create_subscription<sensor_msgs::msg::Image>(
@@ -241,7 +262,7 @@ public:
       "These values are fixed for this run.",
       processor_mode_.c_str(),
       measured_extrinsics_ ?
-      "OAK stereo ground plane (IMU-validated)" : "manual config",
+      "OAK adaptive IMU+depth" : "manual config",
       camera_model_.position_vehicle_m[2],
       applied_roll_deg_.load(std::memory_order_relaxed),
       -applied_pitch_down_deg_.load(std::memory_order_relaxed),
@@ -327,6 +348,20 @@ private:
       "measurement_plane_maximum_residual_mad_m", 0.005);
     declare_parameter<double>(
       "measurement_plane_maximum_imu_difference_deg", 15.0);
+    declare_parameter<double>("measurement_imu_roll_bias_deg", 0.0);
+    declare_parameter<double>("measurement_imu_pitch_bias_deg", 0.0);
+    declare_parameter<double>(
+      "measurement_fusion_imu_uncertainty_floor_deg", 2.0);
+    declare_parameter<double>(
+      "measurement_fusion_depth_uncertainty_floor_deg", 0.25);
+    declare_parameter<double>(
+      "measurement_fusion_agreement_gate_sigma", 3.0);
+    declare_parameter<double>(
+      "measurement_fusion_minimum_agreement_gate_deg", 1.0);
+    declare_parameter<double>(
+      "measurement_fusion_maximum_agreement_gate_deg", 8.0);
+    declare_parameter<double>(
+      "measurement_fusion_minimum_dominance_ratio", 4.0);
     declare_parameter<int>("measurement_imu_sample_count", 200);
     declare_parameter<double>(
       "measurement_imu_max_direction_rms_deg", 0.25);
@@ -435,6 +470,25 @@ private:
     startup_measurement_config_.plane_maximum_imu_difference_deg =
       get_parameter(
       "measurement_plane_maximum_imu_difference_deg").as_double();
+    auto & fusion_config = startup_measurement_config_.attitude_fusion;
+    fusion_config.imu_roll_bias_deg =
+      get_parameter("measurement_imu_roll_bias_deg").as_double();
+    fusion_config.imu_pitch_bias_deg =
+      get_parameter("measurement_imu_pitch_bias_deg").as_double();
+    fusion_config.imu_uncertainty_floor_deg = get_parameter(
+      "measurement_fusion_imu_uncertainty_floor_deg").as_double();
+    fusion_config.depth_uncertainty_floor_deg = get_parameter(
+      "measurement_fusion_depth_uncertainty_floor_deg").as_double();
+    fusion_config.agreement_gate_sigma =
+      get_parameter(
+      "measurement_fusion_agreement_gate_sigma").as_double();
+    fusion_config.minimum_agreement_gate_deg = get_parameter(
+      "measurement_fusion_minimum_agreement_gate_deg").as_double();
+    fusion_config.maximum_agreement_gate_deg = get_parameter(
+      "measurement_fusion_maximum_agreement_gate_deg").as_double();
+    fusion_config.minimum_dominance_ratio =
+      get_parameter(
+      "measurement_fusion_minimum_dominance_ratio").as_double();
     startup_measurement_config_.imu_sample_count = static_cast<int>(
       get_parameter("measurement_imu_sample_count").as_int());
     startup_measurement_config_.imu_max_direction_rms_deg =

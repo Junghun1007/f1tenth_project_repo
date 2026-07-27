@@ -2,6 +2,9 @@
 #define BEV_PROCESSOR__OAK_STARTUP_MEASUREMENT_HPP_
 
 #include <cstddef>
+#include <string>
+
+#include "bev_processor/attitude_fusion.hpp"
 
 namespace bev_processor
 {
@@ -32,6 +35,8 @@ struct OakStartupMeasurementConfig
   double plane_maximum_residual_mad_m{0.005};
   double plane_maximum_imu_difference_deg{15.0};
 
+  AttitudeFusionConfig attitude_fusion{};
+
   int imu_sample_count{200};
   double imu_max_direction_rms_deg{0.25};
   double imu_accel_min_mps2{7.50};
@@ -48,9 +53,17 @@ struct OakStartupMeasurement
   double height_m{0.0};
   double roll_deg{0.0};
   double pitch_down_deg{0.0};
+  std::string attitude_source{"unknown"};
   double imu_roll_deg{0.0};
   double imu_pitch_down_deg{0.0};
+  double corrected_imu_roll_deg{0.0};
+  double corrected_imu_pitch_down_deg{0.0};
   double imu_direction_rms_deg{0.0};
+  double imu_uncertainty_deg{0.0};
+  double depth_uncertainty_deg{0.0};
+  double fusion_imu_weight{0.0};
+  double fusion_depth_weight{0.0};
+  double fusion_agreement_gate_deg{0.0};
   double height_stddev_m{0.0};
   double plane_normal_rms_deg{0.0};
   double median_depth_m{0.0};

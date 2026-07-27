@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "depthai/depthai.hpp"
+#include "bev_processor/attitude_fusion.hpp"
 #include "bev_processor/ground_plane_estimator.hpp"
 
 namespace bev_processor
@@ -109,6 +110,25 @@ void validateConfig(const OakStartupMeasurementConfig & config)
     !std::isfinite(config.plane_maximum_imu_difference_deg) ||
     config.plane_maximum_imu_difference_deg <= 0.0 ||
     config.plane_maximum_imu_difference_deg >= 90.0 ||
+    !std::isfinite(config.attitude_fusion.imu_roll_bias_deg) ||
+    !std::isfinite(config.attitude_fusion.imu_pitch_bias_deg) ||
+    !std::isfinite(config.attitude_fusion.imu_uncertainty_floor_deg) ||
+    config.attitude_fusion.imu_uncertainty_floor_deg <= 0.0 ||
+    !std::isfinite(config.attitude_fusion.depth_uncertainty_floor_deg) ||
+    config.attitude_fusion.depth_uncertainty_floor_deg <= 0.0 ||
+    !std::isfinite(config.attitude_fusion.agreement_gate_sigma) ||
+    config.attitude_fusion.agreement_gate_sigma <= 0.0 ||
+    !std::isfinite(
+      config.attitude_fusion.minimum_agreement_gate_deg) ||
+    config.attitude_fusion.minimum_agreement_gate_deg <= 0.0 ||
+    !std::isfinite(
+      config.attitude_fusion.maximum_agreement_gate_deg) ||
+    config.attitude_fusion.maximum_agreement_gate_deg <
+    config.attitude_fusion.minimum_agreement_gate_deg ||
+    config.attitude_fusion.maximum_agreement_gate_deg >
+    config.plane_maximum_imu_difference_deg ||
+    !std::isfinite(config.attitude_fusion.minimum_dominance_ratio) ||
+    config.attitude_fusion.minimum_dominance_ratio <= 1.0 ||
     config.imu_sample_count <= 0 ||
     !std::isfinite(config.imu_max_direction_rms_deg) ||
     config.imu_max_direction_rms_deg <= 0.0 ||
@@ -397,6 +417,7 @@ OakStartupMeasurement measureOakStartupExtrinsics(
     std::deque<std::array<double, 3>> imu_direction_samples;
     std::deque<PlaneCandidate> stable_plane_samples;
     std::array<double, 3> frozen_specific_force{0.0, -1.0, 0.0};
+    std::array<double, 3> corrected_specific_force{0.0, -1.0, 0.0};
     double imu_roll_deg = 0.0;
     double imu_pitch_down_deg = 0.0;
     double imu_direction_rms_deg = 0.0;
@@ -486,6 +507,13 @@ OakStartupMeasurement measureOakStartupExtrinsics(
             imu_pitch_down_deg = std::atan2(
               -mean[2],
               std::hypot(mean[0], mean[1])) * kRadiansToDegrees;
+            const cv::Vec3d corrected_up = attitudeUpVector(
+              imu_roll_deg -
+              config.attitude_fusion.imu_roll_bias_deg,
+              imu_pitch_down_deg -
+              config.attitude_fusion.imu_pitch_bias_deg);
+            corrected_specific_force = {
+              corrected_up[0], corrected_up[1], corrected_up[2]};
             imu_fixed = true;
             last_rejection = "waiting for a valid ground plane";
           } else {
@@ -496,7 +524,7 @@ OakStartupMeasurement measureOakStartupExtrinsics(
         auto packet = depth_queue->tryGet<dai::ImgFrame>();
         if (packet) {
           auto candidate = estimateGroundPlane(
-            *packet, frozen_specific_force, config, &last_rejection);
+            *packet, corrected_specific_force, config, &last_rejection);
           if (!candidate) {
             stable_plane_samples.clear();
           } else {
@@ -550,58 +578,79 @@ OakStartupMeasurement measureOakStartupExtrinsics(
             plane_normal_rms_deg <=
             config.maximum_plane_normal_rms_deg)
           {
-            std::vector<double> median_depth_values;
-            std::vector<double> residual_values;
-            std::vector<double> inlier_ratio_values;
-            std::vector<double> imu_difference_values;
-            median_depth_values.reserve(stable_plane_samples.size());
-            residual_values.reserve(stable_plane_samples.size());
-            inlier_ratio_values.reserve(stable_plane_samples.size());
-            imu_difference_values.reserve(stable_plane_samples.size());
-            std::size_t minimum_point_count =
-              stable_plane_samples.front().plane.point_count;
-            std::size_t minimum_inlier_count =
-              stable_plane_samples.front().plane.inlier_count;
-            for (const auto & sample : stable_plane_samples) {
-              median_depth_values.push_back(sample.median_depth_m);
-              residual_values.push_back(sample.plane.residual_mad_m);
-              inlier_ratio_values.push_back(sample.plane.inlier_ratio);
-              imu_difference_values.push_back(
-                sample.plane.reference_angle_deg);
-              minimum_point_count = std::min(
-                minimum_point_count, sample.plane.point_count);
-              minimum_inlier_count = std::min(
-                minimum_inlier_count, sample.plane.inlier_count);
-            }
-            const double roll_deg =
-              std::atan2(
-              -mean_normal[0], -mean_normal[1]) * kRadiansToDegrees;
-            const double pitch_down_deg =
-              std::atan2(
-              -mean_normal[2],
-              std::hypot(mean_normal[0], mean_normal[1])) *
-              kRadiansToDegrees;
-            const OakStartupMeasurement result{
-              median_height_m,
-              roll_deg,
-              pitch_down_deg,
-              imu_roll_deg,
-              imu_pitch_down_deg,
+            const cv::Vec3d raw_imu_up(
+              frozen_specific_force[0],
+              frozen_specific_force[1],
+              frozen_specific_force[2]);
+            const auto fusion = fuseAttitudeNormals(
+              raw_imu_up,
               imu_direction_rms_deg,
-              height_stddev_m,
+              mean_normal,
               plane_normal_rms_deg,
-              median(std::move(median_depth_values)),
-              median(std::move(residual_values)),
-              median(std::move(inlier_ratio_values)),
-              median(std::move(imu_difference_values)),
-              minimum_point_count,
-              minimum_inlier_count};
-            stopPipeline(depth_queue, imu_queue, pipeline, device);
-            return result;
+              config.attitude_fusion,
+              &last_rejection);
+            if (fusion) {
+              std::vector<double> median_depth_values;
+              std::vector<double> residual_values;
+              std::vector<double> inlier_ratio_values;
+              median_depth_values.reserve(stable_plane_samples.size());
+              residual_values.reserve(stable_plane_samples.size());
+              inlier_ratio_values.reserve(stable_plane_samples.size());
+              std::size_t minimum_point_count =
+                stable_plane_samples.front().plane.point_count;
+              std::size_t minimum_inlier_count =
+                stable_plane_samples.front().plane.inlier_count;
+              for (const auto & sample : stable_plane_samples) {
+                median_depth_values.push_back(sample.median_depth_m);
+                residual_values.push_back(sample.plane.residual_mad_m);
+                inlier_ratio_values.push_back(sample.plane.inlier_ratio);
+                minimum_point_count = std::min(
+                  minimum_point_count, sample.plane.point_count);
+                minimum_inlier_count = std::min(
+                  minimum_inlier_count, sample.plane.inlier_count);
+              }
+
+              OakStartupMeasurement result;
+              result.height_m = median_height_m;
+              result.roll_deg = fusion->roll_deg;
+              result.pitch_down_deg = fusion->pitch_down_deg;
+              result.attitude_source =
+                attitudeFusionSourceName(fusion->source);
+              result.imu_roll_deg = imu_roll_deg;
+              result.imu_pitch_down_deg = imu_pitch_down_deg;
+              result.corrected_imu_roll_deg =
+                fusion->corrected_imu_roll_deg;
+              result.corrected_imu_pitch_down_deg =
+                fusion->corrected_imu_pitch_down_deg;
+              result.imu_direction_rms_deg = imu_direction_rms_deg;
+              result.imu_uncertainty_deg = fusion->imu_uncertainty_deg;
+              result.depth_uncertainty_deg =
+                fusion->depth_uncertainty_deg;
+              result.fusion_imu_weight = fusion->imu_weight;
+              result.fusion_depth_weight = fusion->depth_weight;
+              result.fusion_agreement_gate_deg =
+                fusion->agreement_gate_deg;
+              result.height_stddev_m = height_stddev_m;
+              result.plane_normal_rms_deg = plane_normal_rms_deg;
+              result.median_depth_m =
+                median(std::move(median_depth_values));
+              result.plane_residual_mad_m =
+                median(std::move(residual_values));
+              result.plane_inlier_ratio =
+                median(std::move(inlier_ratio_values));
+              result.plane_imu_difference_deg =
+                fusion->disagreement_deg;
+              result.valid_point_count = minimum_point_count;
+              result.plane_inlier_count = minimum_inlier_count;
+              stopPipeline(depth_queue, imu_queue, pipeline, device);
+              return result;
+            }
+            stable_plane_samples.clear();
+          } else {
+            stable_plane_samples.clear();
+            last_rejection =
+              "ground-plane height or normal is not temporally stable";
           }
-          stable_plane_samples.clear();
-          last_rejection =
-            "ground-plane height or normal is not temporally stable";
         }
       }
 

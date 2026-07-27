@@ -29,7 +29,7 @@ find_package(depthai 3 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR
     "DepthAI C++ 3.x was not found. bev_processor performs an OAK stereo "
-    "ground-plane startup measurement with IMU validation and therefore "
+    "ground-plane and IMU startup fusion and therefore "
     "links directly against depthai::core."
   )
 endif()
@@ -59,6 +59,19 @@ target_include_directories(bev_ground_plane
 )
 target_link_libraries(bev_ground_plane PUBLIC ${OpenCV_LIBS})
 
+add_library(bev_attitude_fusion STATIC
+  src/attitude_fusion.cpp
+)
+set_target_properties(
+  bev_attitude_fusion PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(bev_attitude_fusion
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(bev_attitude_fusion PUBLIC ${OpenCV_LIBS})
+
 add_library(bev_cuda STATIC
   src/cuda_bev_processor.cu
 )
@@ -85,7 +98,8 @@ target_include_directories(bev_startup_measurement
     $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(
-  bev_startup_measurement PUBLIC depthai::core bev_ground_plane)
+  bev_startup_measurement
+  PUBLIC depthai::core bev_ground_plane bev_attitude_fusion)
 
 add_library(bev_processor_component SHARED
   src/bev_processor_node.cpp
@@ -132,11 +146,17 @@ if(BUILD_TESTING)
   )
   add_test(
     NAME ground_plane_estimator_test COMMAND ground_plane_estimator_test)
+
+  add_executable(attitude_fusion_test test/attitude_fusion_test.cpp)
+  target_link_libraries(
+    attitude_fusion_test bev_attitude_fusion ${OpenCV_LIBS})
+  add_test(NAME attitude_fusion_test COMMAND attitude_fusion_test)
 endif()
 
 install(TARGETS
   bev_geometry
   bev_ground_plane
+  bev_attitude_fusion
   bev_startup_measurement
   bev_processor_component
   bev_processor_node

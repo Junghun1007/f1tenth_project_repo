@@ -42,9 +42,8 @@ def generate_launch_description():
                 output="screen",
                 composable_node_descriptions=[
                     # Auto BEV must acquire the OAK first. Its constructor
-                    # completes the one-shot stereo ground-plane measurement
-                    # (with IMU validation) and releases the device before
-                    # camera_driver is loaded.
+                    # completes the one-shot adaptive IMU/depth measurement
+                    # and releases the device before camera_driver is loaded.
                     ComposableNode(
                         package="bev_processor",
                         plugin="bev_processor::BevProcessorNode",

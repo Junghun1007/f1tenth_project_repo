@@ -127,7 +127,8 @@ DISPLAY/그래픽 화면을 사용할 수 있어야 한다.
 카메라 원본 프리뷰는 끄고, GPU가 NV12를 바로 100x240 BGR BEV로
 변환한다.
 
-자동 측정 모드(OAK stereo+IMU로 시작 시 높이/roll/pitch 1회 측정):
+자동 측정 모드(OAK stereo 평면 높이와 IMU/Depth 융합 roll/pitch를
+시작 시 1회 측정):
 
 cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 source /opt/ros/humble/setup.bash

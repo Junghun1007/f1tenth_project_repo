@@ -8,16 +8,24 @@ ROS 2 C++ 패키지다. 실행 진입점은 자동과 수동 두 개로 분리�
 ### `bev_processor_auto`
 
 시작할 때 OAK stereo depth의 노면 점들에 RANSAC과 PCA로 평면을 맞춰
-카메라 높이, roll, 하향 pitch를 한 번 측정한다. IMU는 정지 상태와 평면
-법선 방향의 타당성만 검증하며, BEV에 적용되는 자세값을 직접 결정하지
-않는다. 측정값으로 BEV LUT를 생성한 뒤 그 실행이 끝날 때까지 자세를
-고정한다. 주행 중 실시간 자세 추정은 하지 않는다.
+카메라 높이와 노면 법선을 측정하고, 정지 상태에서 평균낸 IMU 중력
+법선과 신뢰도 기반으로 융합해 roll과 하향 pitch를 결정한다. 측정값으로
+BEV LUT를 생성한 뒤 그 실행이 끝날 때까지 자세를 고정한다. 주행 중
+실시간 자세 추정은 하지 않는다.
 
 센서 시작 직후의 과도값을 버리기 위해 1초간 워밍업하고, 100 Hz IMU
 200개 샘플과 중앙 320x160 stereo ROI를 사용한다. 2픽셀 간격으로 만든
 3D 점들 중 노면 평면 inlier만 사용하고, 안정된 평면 30프레임의 높이와
-평균 법선으로 최종값을 결정한다. 따라서 기존 빠른 측정보다 시작은 몇 초
-느리지만 장애물·깊이 이상치·IMU 장착 오차의 영향을 줄인다.
+평균 법선을 구한다. IMU와 Depth가 통계적 허용 범위 안에서 일치하면
+법선을 분산 역가중으로 융합한다. 충돌하면 신뢰도가 설정값 이상 우세한
+센서만 선택하고, 우세한 센서가 없으면 재측정한다.
+
+IMU 고정 장착 오차는 `measurement_imu_roll_bias_deg`와
+`measurement_imu_pitch_bias_deg`로 보정할 수 있다. bias는
+`IMU 측정값 - 신뢰하는 실제값`의 부호로 입력한다. 반복 측정으로
+확인하기 전에는 0을 유지한다. 높이는 항상 Depth 평면값을 사용한다.
+시작 로그의 `source`는 두 법선을 융합했으면 `imu_depth_fused`, 충돌 후
+한 센서를 선택했으면 `depth_selected` 또는 `imu_selected`로 표시된다.
 
 ```bash
 ros2 launch bev_processor bev_processor_auto.launch.py
@@ -65,7 +73,7 @@ container에서 실행해 NV12 intra-process 경로를 사용한다. 카메라 �
 
 차이는 LUT 생성에 넣는 높이/roll/pitch의 출처뿐이다.
 
-- auto: 시작 시 OAK stereo 노면 평면 측정값(IMU 검증)
+- auto: 시작 시 OAK IMU와 stereo 노면 평면의 적응형 융합값
 - manual: `bev_config_manual.yaml`의 직접 측정값
 
 이전의 `startup_measurement_enabled` launch 옵션은 제거했다. 따라서
@@ -108,10 +116,11 @@ output_height = (2.5 - 0.10) / 0.01   = 240
 
 ```text
 [bev_processor_auto] Measuring startup camera height/roll/pitch ...
-[bev_processor_auto] BEV_STARTUP_MEASUREMENT: source=ground_plane, ...
-[bev_processor_auto] Startup IMU reference: ...
+[bev_processor_auto] BEV_STARTUP_MEASUREMENT: source=imu_depth_fused, ...
+[bev_processor_auto] Startup IMU: raw=..., corrected=...
+[bev_processor_auto] Startup attitude fusion: ...
 [bev_processor_auto] Startup ground-plane diagnostics: ...
-[bev_processor_auto] Startup extrinsics mode=auto, source=OAK stereo ground plane (IMU-validated): ...
+[bev_processor_auto] Startup extrinsics mode=auto, source=OAK adaptive IMU+depth: ...
 ```
 
 수동 모드에서는 측정 로그가 나오면 안 되고 다음처럼 표시되어야 한다.

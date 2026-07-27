@@ -67,7 +67,25 @@ bev_processor_auto:
     measurement_plane_minimum_inliers: 1800
     measurement_plane_minimum_inlier_ratio: 0.70
     measurement_plane_maximum_residual_mad_m: 0.005
+    # Absolute safety bound used while finding a plausible ground plane.
     measurement_plane_maximum_imu_difference_deg: 15.0
+
+    # IMU reports minus true camera attitude. Leave at zero until a repeatable
+    # bias has been measured on known-flat ground. Example: IMU=18.8deg and
+    # trusted plane=13.0deg means pitch_bias=+5.8deg.
+    measurement_imu_roll_bias_deg: 0.0
+    measurement_imu_pitch_bias_deg: 0.0
+
+    # Adaptive normal fusion. Random RMS and these systematic uncertainty
+    # floors form inverse-variance weights. The larger default IMU floor keeps
+    # the road plane dominant until the IMU mounting bias is calibrated. Only
+    # after repeatable calibration should the IMU floor be reduced.
+    measurement_fusion_imu_uncertainty_floor_deg: 2.0
+    measurement_fusion_depth_uncertainty_floor_deg: 0.25
+    measurement_fusion_agreement_gate_sigma: 3.0
+    measurement_fusion_minimum_agreement_gate_deg: 1.0
+    measurement_fusion_maximum_agreement_gate_deg: 8.0
+    measurement_fusion_minimum_dominance_ratio: 4.0
 
     measurement_imu_sample_count: 200
     measurement_imu_max_direction_rms_deg: 0.25
