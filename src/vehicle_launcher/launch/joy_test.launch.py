@@ -27,7 +27,7 @@ def generate_launch_description():
             "device_id": "0",
             "device_name": "",
             "deadzone": "0.05",
-            "autorepeat_rate": "20.0",
+            "autorepeat_rate": "50.0",
             "sticky_buttons": "false",
             "coalesce_interval_ms": "1",
         }.items(),

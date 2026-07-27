@@ -19,6 +19,7 @@ class VescCommandIds:
     set_erpm: int = 8
     set_servo_pos: int = 12
     get_firmware_version: int = 0
+    get_values_selective: int = 50
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,8 @@ class VescDriver:
     END_BYTE = 3
     MAX_SHORT_PAYLOAD_SIZE = 255
     MAX_READ_PAYLOAD_SIZE = 4096
+    ERPM_VALUE_MASK = 1 << 7
+    VALUE_FIELD_SIZES_BEFORE_ERPM = (2, 2, 4, 4, 4, 4, 2)
 
     def __init__(
         self,
@@ -177,6 +180,38 @@ class VescDriver:
             )
 
         return int(payload[1]), int(payload[2])
+
+    def get_measured_erpm(self) -> int:
+        """Read the ERPM estimated by the VESC motor controller."""
+        self.open()
+        if self._serial is None:
+            raise VescDriverError("VESC serial port is not open.")
+
+        reset_input_buffer = getattr(self._serial, "reset_input_buffer", None)
+        if callable(reset_input_buffer):
+            reset_input_buffer()
+
+        request_id = self.command_ids.get_values_selective
+        request = bytes([request_id]) + struct.pack(">I", self.ERPM_VALUE_MASK)
+        self.write_payload(request)
+        payload = self.read_payload()
+
+        if len(payload) < 5 or payload[0] != request_id:
+            raise VescDriverError("Invalid VESC values response.")
+
+        returned_mask = struct.unpack(">I", payload[1:5])[0]
+        if not returned_mask & self.ERPM_VALUE_MASK:
+            raise VescDriverError("VESC values response does not contain ERPM.")
+
+        erpm_offset = 5 + sum(
+            field_size
+            for bit, field_size in enumerate(self.VALUE_FIELD_SIZES_BEFORE_ERPM)
+            if returned_mask & (1 << bit)
+        )
+        if len(payload) < erpm_offset + 4:
+            raise VescDriverError("VESC values response contains incomplete ERPM data.")
+
+        return struct.unpack(">i", payload[erpm_offset : erpm_offset + 4])[0]
 
     def write_payload(self, payload: bytes) -> None:
         self.write_packet(self.make_packet(payload))

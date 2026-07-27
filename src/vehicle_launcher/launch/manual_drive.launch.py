@@ -26,7 +26,7 @@ def generate_launch_description():
             "device_id": "0",
             "device_name": "",
             "deadzone": "0.05",
-            "autorepeat_rate": "20.0",
+            "autorepeat_rate": "50.0",
             "sticky_buttons": "false",
             "coalesce_interval_ms": "1",
         }.items(),
@@ -41,8 +41,10 @@ def generate_launch_description():
             {
                 "keymap_path": keymap_path,
                 "joy_topic": "/joy",
-                "throttle_topic": "/manual/throttle",
+                "accelerator_topic": "/manual/accelerator",
+                "brake_topic": "/manual/brake",
                 "steering_topic": "/manual/steering",
+                "gear_toggle_topic": "/manual/gear_toggle",
                 "debug_topic": "/manual/controller_debug",
                 "publish_debug": True,
             }

@@ -39,7 +39,7 @@ def generate_launch_description():
             DeclareLaunchArgument("device_id", default_value="0"),
             DeclareLaunchArgument("device_name", default_value=""),
             DeclareLaunchArgument("deadzone", default_value="0.05"),
-            DeclareLaunchArgument("autorepeat_rate", default_value="20.0"),
+            DeclareLaunchArgument("autorepeat_rate", default_value="50.0"),
             DeclareLaunchArgument("sticky_buttons", default_value="false"),
             DeclareLaunchArgument("coalesce_interval_ms", default_value="1"),
             joy_node,

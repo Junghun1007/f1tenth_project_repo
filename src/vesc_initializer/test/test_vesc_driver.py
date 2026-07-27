@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import struct
 import unittest
 
 from vesc_initializer.vesc_driver import VescDriver, VescDriverError
@@ -59,6 +60,40 @@ class VescDriverTest(unittest.TestCase):
 
         with self.assertRaisesRegex(VescDriverError, "Timed out"):
             driver.get_firmware_version()
+
+    def test_get_measured_erpm_requests_and_parses_selected_value(self) -> None:
+        response_payload = bytes([50]) + struct.pack(">Ii", 1 << 7, -4321)
+        fake_serial = FakeSerial(VescDriver.make_packet(response_payload))
+        driver = make_driver(fake_serial)
+
+        self.assertEqual(driver.get_measured_erpm(), -4321)
+        self.assertEqual(
+            fake_serial.writes,
+            [VescDriver.make_packet(bytes([50]) + struct.pack(">I", 1 << 7))],
+        )
+
+    def test_get_measured_erpm_handles_fields_before_erpm(self) -> None:
+        returned_mask = (1 << 0) | (1 << 7)
+        response_payload = (
+            bytes([50])
+            + struct.pack(">I", returned_mask)
+            + struct.pack(">h", 275)
+            + struct.pack(">i", 6789)
+        )
+        driver = make_driver(
+            FakeSerial(VescDriver.make_packet(response_payload))
+        )
+
+        self.assertEqual(driver.get_measured_erpm(), 6789)
+
+    def test_get_measured_erpm_rejects_response_without_erpm(self) -> None:
+        response_payload = bytes([50]) + struct.pack(">Ih", 1 << 0, 275)
+        driver = make_driver(
+            FakeSerial(VescDriver.make_packet(response_payload))
+        )
+
+        with self.assertRaisesRegex(VescDriverError, "does not contain ERPM"):
+            driver.get_measured_erpm()
 
 
 if __name__ == "__main__":

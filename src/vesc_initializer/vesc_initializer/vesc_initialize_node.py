@@ -29,6 +29,7 @@ class VescInitializeNode(Node):
         self.declare_parameter("verify_firmware_on_startup", True)
 
         self.declare_parameter("erpm_topic", "/vesc/erpm")
+        self.declare_parameter("measured_erpm_topic", "/vesc/measured_erpm")
         self.declare_parameter("servo_position_topic", "/vesc/servo_position")
         self.declare_parameter("connection_status_topic", "/vesc/connected")
         self.declare_parameter("min_erpm", -100000)
@@ -37,13 +38,19 @@ class VescInitializeNode(Node):
         self.declare_parameter("servo_max", 1.0)
         self.declare_parameter("command_timeout", 0.3)
         self.declare_parameter("log_commands", False)
+        self.declare_parameter("telemetry_rate_hz", 10.0)
+        self.declare_parameter("telemetry_log_rate_hz", 2.0)
 
         self.declare_parameter("packet.comm_get_firmware_version", 0)
+        self.declare_parameter("packet.comm_get_values_selective", 50)
         self.declare_parameter("packet.comm_set_erpm", 8)
         self.declare_parameter("packet.comm_set_servo_pos", 12)
         self.declare_parameter("packet.servo_scale", 1000)
 
         erpm_topic = str(self.get_parameter("erpm_topic").value)
+        measured_erpm_topic = str(
+            self.get_parameter("measured_erpm_topic").value
+        )
         servo_topic = str(self.get_parameter("servo_position_topic").value)
         connection_status_topic = str(
             self.get_parameter("connection_status_topic").value
@@ -55,12 +62,21 @@ class VescInitializeNode(Node):
         self.servo_max = float(self.get_parameter("servo_max").value)
         self.command_timeout = float(self.get_parameter("command_timeout").value)
         self.log_commands = bool(self.get_parameter("log_commands").value)
+        self.telemetry_rate_hz = max(
+            0.0,
+            float(self.get_parameter("telemetry_rate_hz").value),
+        )
+        self.telemetry_log_rate_hz = max(
+            0.0,
+            float(self.get_parameter("telemetry_log_rate_hz").value),
+        )
         self.verify_firmware_on_startup = bool(
             self.get_parameter("verify_firmware_on_startup").value
         )
 
         self._last_erpm_time: Time | None = None
         self._last_erpm_command = 0
+        self._last_telemetry_log_time: Time | None = None
         self._connection_status: bool | None = None
         self._connection_verified = False
 
@@ -72,6 +88,11 @@ class VescInitializeNode(Node):
             connection_status_topic,
             connection_qos,
         )
+        self.measured_erpm_pub = self.create_publisher(
+            Int32,
+            measured_erpm_topic,
+            10,
+        )
 
         self.driver = VescDriver(
             port=str(self.get_parameter("port").value),
@@ -82,6 +103,9 @@ class VescInitializeNode(Node):
             command_ids=VescCommandIds(
                 get_firmware_version=int(
                     self.get_parameter("packet.comm_get_firmware_version").value
+                ),
+                get_values_selective=int(
+                    self.get_parameter("packet.comm_get_values_selective").value
                 ),
                 set_erpm=int(self.get_parameter("packet.comm_set_erpm").value),
                 set_servo_pos=int(
@@ -112,9 +136,17 @@ class VescInitializeNode(Node):
             1.0,
             self._publish_connection_status,
         )
+        if self.telemetry_rate_hz > 0.0:
+            self.telemetry_timer = self.create_timer(
+                1.0 / self.telemetry_rate_hz,
+                self._poll_telemetry,
+            )
+        else:
+            self.telemetry_timer = None
 
         self.get_logger().info(
             f"VESC initializer ready. erpm_topic={erpm_topic}, "
+            f"measured_erpm_topic={measured_erpm_topic}, "
             f"servo_position_topic={servo_topic}, "
             f"connection_status_topic={connection_status_topic}"
         )
@@ -175,6 +207,39 @@ class VescInitializeNode(Node):
                 f"Servo position command failed: {exc}",
                 throttle_duration_sec=1.0,
             )
+
+    def _poll_telemetry(self) -> None:
+        try:
+            measured_erpm = self.driver.get_measured_erpm()
+        except VescDriverError as exc:
+            self._connection_verified = False
+            self._set_connection_status(False)
+            self.get_logger().warn(
+                f"Failed to read measured ERPM: {exc}",
+                throttle_duration_sec=1.0,
+            )
+            return
+
+        self._connection_verified = True
+        self._set_connection_status(True)
+        self.measured_erpm_pub.publish(Int32(data=measured_erpm))
+
+        if self.telemetry_log_rate_hz <= 0.0:
+            return
+
+        now = self.get_clock().now()
+        if self._last_telemetry_log_time is not None:
+            elapsed_sec = (
+                now - self._last_telemetry_log_time
+            ).nanoseconds / 1_000_000_000.0
+            if elapsed_sec < 1.0 / self.telemetry_log_rate_hz:
+                return
+
+        self._last_telemetry_log_time = now
+        self.get_logger().info(
+            f"VESC ERPM | target={self._last_erpm_command} | "
+            f"measured={measured_erpm}"
+        )
 
     def _check_command_timeout(self) -> None:
         if self._last_erpm_time is None or self._last_erpm_command == 0:

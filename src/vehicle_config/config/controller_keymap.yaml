@@ -141,14 +141,14 @@ manual_keymap:
     lt:
       axis:
         number: 5
-        released_value: -32767
-        pressed_value: 32767
+        released_value: 32767
+        pressed_value: -32767
         min_value: -32767
         center_value: 0
         max_value: 32767
-        normalized_released: -1.0
+        normalized_released: 1.0
         normalized_center: 0.0
-        normalized_pressed: 1.0
+        normalized_pressed: -1.0
       button:
         number: 8
         pressed_value: 1
@@ -157,14 +157,14 @@ manual_keymap:
     rt:
       axis:
         number: 4
-        released_value: -32767
-        pressed_value: 32767
+        released_value: 32767
+        pressed_value: -32767
         min_value: -32767
         center_value: 0
         max_value: 32767
-        normalized_released: -1.0
+        normalized_released: 1.0
         normalized_center: 0.0
-        normalized_pressed: 1.0
+        normalized_pressed: -1.0
       button:
         number: 9
         pressed_value: 1

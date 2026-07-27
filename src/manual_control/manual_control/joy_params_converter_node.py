@@ -9,7 +9,7 @@ import yaml
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Float32, String
+from std_msgs.msg import Bool, Float32, String
 
 
 class JoyParamsConverterNode(Node):
@@ -17,33 +17,56 @@ class JoyParamsConverterNode(Node):
         super().__init__("joy_params_converter_node")
 
         self.declare_parameter("joy_topic", "/joy")
-        self.declare_parameter("throttle_topic", "/manual/throttle")
+        self.declare_parameter("accelerator_topic", "/manual/accelerator")
+        self.declare_parameter("brake_topic", "/manual/brake")
         self.declare_parameter("steering_topic", "/manual/steering")
+        self.declare_parameter("gear_toggle_topic", "/manual/gear_toggle")
         self.declare_parameter("debug_topic", "/manual/controller_debug")
         self.declare_parameter("keymap_path", "")
         self.declare_parameter("publish_debug", True)
-        self.declare_parameter("throttle_deadzone", 0.03)
+        self.declare_parameter("trigger_deadzone", 0.03)
         self.declare_parameter("steering_deadzone", 0.05)
 
         self.keymap = self._load_keymap()
         self.publish_debug = bool(self.get_parameter("publish_debug").value)
-        self.throttle_deadzone = float(self.get_parameter("throttle_deadzone").value)
+        self.trigger_deadzone = float(
+            self.get_parameter("trigger_deadzone").value
+        )
         self.steering_deadzone = float(self.get_parameter("steering_deadzone").value)
         self._log_joystick_connection_status()
 
         joy_topic = str(self.get_parameter("joy_topic").value)
-        throttle_topic = str(self.get_parameter("throttle_topic").value)
+        accelerator_topic = str(self.get_parameter("accelerator_topic").value)
+        brake_topic = str(self.get_parameter("brake_topic").value)
         steering_topic = str(self.get_parameter("steering_topic").value)
+        gear_toggle_topic = str(self.get_parameter("gear_toggle_topic").value)
         debug_topic = str(self.get_parameter("debug_topic").value)
 
-        self.throttle_pub = self.create_publisher(Float32, throttle_topic, 10)
+        self.accelerator_pub = self.create_publisher(
+            Float32,
+            accelerator_topic,
+            10,
+        )
+        self.brake_pub = self.create_publisher(Float32, brake_topic, 10)
         self.steering_pub = self.create_publisher(Float32, steering_topic, 10)
+        self.gear_toggle_pub = self.create_publisher(
+            Bool,
+            gear_toggle_topic,
+            10,
+        )
         self.debug_pub = self.create_publisher(String, debug_topic, 10)
         self.joy_sub = self.create_subscription(Joy, joy_topic, self._on_joy, 10)
 
         self.get_logger().info(
-            "Subscribing to %s, publishing %s and %s"
-            % (joy_topic, throttle_topic, steering_topic)
+            "Subscribing to %s, publishing accelerator=%s, brake=%s, "
+            "steering=%s, gear_toggle=%s"
+            % (
+                joy_topic,
+                accelerator_topic,
+                brake_topic,
+                steering_topic,
+                gear_toggle_topic,
+            )
         )
 
     def _load_keymap(self) -> dict[str, Any]:
@@ -118,18 +141,20 @@ class JoyParamsConverterNode(Node):
     def _on_joy(self, msg: Joy) -> None:
         controller_state = self._controller_state(msg)
 
-        throttle = (
-            controller_state["triggers"]["rt"]["value"]
-            - controller_state["triggers"]["lt"]["value"]
-        )
-        throttle = self._clamp(throttle, -1.0, 1.0)
+        accelerator = controller_state["triggers"]["rt"]["value"]
+        brake = controller_state["triggers"]["lt"]["value"]
         steering = controller_state["axes"]["left_stick_x"]
+        gear_toggle = controller_state["buttons"].get("y", False)
 
-        self.throttle_pub.publish(Float32(data=throttle))
+        self.accelerator_pub.publish(Float32(data=accelerator))
+        self.brake_pub.publish(Float32(data=brake))
         self.steering_pub.publish(Float32(data=steering))
+        self.gear_toggle_pub.publish(Bool(data=gear_toggle))
 
         if self.publish_debug:
-            self.debug_pub.publish(String(data=json.dumps(controller_state, sort_keys=True)))
+            self.debug_pub.publish(
+                String(data=json.dumps(controller_state, sort_keys=True))
+            )
 
     def _controller_state(self, msg: Joy) -> dict[str, Any]:
         return {
@@ -171,7 +196,7 @@ class JoyParamsConverterNode(Node):
         released = float(axis_config.get("normalized_released", -1.0))
         pressed = float(axis_config.get("normalized_pressed", 1.0))
         value = self._normalize_range(raw_axis, released, pressed)
-        value = self._apply_deadzone(value, self.throttle_deadzone)
+        value = self._apply_deadzone(value, self.trigger_deadzone)
 
         button_pressed = self._button_pressed_from_config(msg, button_config)
         return {
