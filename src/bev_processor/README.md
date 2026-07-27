@@ -86,14 +86,11 @@ ros2 launch bev_processor camera_bev.launch.py \
 
 ```bash
 ros2 launch bev_processor camera_bev.launch.py \
-  startup_measurement_enabled:=false \
-  camera_x_m:=0.0 \
-  camera_y_m:=0.0 \
-  camera_z_m:=0.20 \
-  camera_roll_deg:=0.0 \
-  camera_downward_pitch_deg:=14.0 \
-  camera_yaw_deg:=0.0
+  startup_measurement_enabled:=false
 ```
+
+이때 높이, roll, 하향 pitch를 포함한 카메라 외부 파라미터는 launch의
+기본값으로 덮어쓰지 않고 `config/bev_config.yaml` 값을 그대로 사용한다.
 
 시작 로그에는 `transport=NV12`와 사용 중인 CUDA GPU 이름이 표시된다.
 측정 모드에서는 BEV 시작 전에 다음 형태의 로그가 먼저 표시된다.
