@@ -336,7 +336,10 @@ private:
 
         auto imu = pipeline_->create<dai::node::IMU>();
         imu->enableIMUSensor(
-          dai::IMUSensor::ACCELEROMETER_RAW,
+          {
+            dai::IMUSensor::ACCELEROMETER_RAW,
+            dai::IMUSensor::GYROSCOPE_RAW,
+          },
           static_cast<int>(std::lround(imu_rate_hz_)));
         imu->setBatchReportThreshold(1);
         imu->setMaxBatchReports(10);
@@ -371,7 +374,7 @@ private:
     if (imu_bridge_enabled_) {
       RCLCPP_INFO(
         node_.get_logger(),
-        "IMU: %s raw accelerometer @ %.1f Hz -> %s, "
+        "IMU: %s raw accelerometer+gyroscope @ %.1f Hz -> %s, "
         "factory IMU-to-%s rotation applied",
         imu_name_.c_str(), imu_rate_hz_, imu_topic_.c_str(),
         camera_socket_name_.c_str());
@@ -537,23 +540,34 @@ private:
             static_cast<double>(raw.x),
             static_cast<double>(raw.y),
             static_cast<double>(raw.z)};
+          const auto & raw_gyro = packet.gyroscope;
+          const std::array<double, 3> angular_velocity_imu{
+            static_cast<double>(raw_gyro.x),
+            static_cast<double>(raw_gyro.y),
+            static_cast<double>(raw_gyro.z)};
           std::array<double, 3> acceleration_camera{};
+          std::array<double, 3> angular_velocity_camera{};
           for (std::size_t row = 0; row < 3U; ++row) {
             for (std::size_t column = 0; column < 3U; ++column) {
               acceleration_camera[row] +=
                 imu_to_camera_rotation_[row][column] *
                 acceleration_imu[column];
+              angular_velocity_camera[row] +=
+                imu_to_camera_rotation_[row][column] *
+                angular_velocity_imu[column];
             }
           }
 
           auto message = std::make_unique<sensor_msgs::msg::Imu>();
           message->header.stamp = ros_timestamp_for(raw.getTimestamp());
           message->header.frame_id = imu_frame_id_;
-          // Only camera-frame linear acceleration is populated. BEV derives
-          // gravity-referenced roll/pitch; yaw intentionally stays a fixed
-          // camera mounting parameter.
+          // Orientation is intentionally left unset. BEV fuses these
+          // camera-frame acceleration and angular-velocity measurements to
+          // track roll/pitch while keeping yaw fixed.
           message->orientation_covariance[0] = -1.0;
-          message->angular_velocity_covariance[0] = -1.0;
+          message->angular_velocity.x = angular_velocity_camera[0];
+          message->angular_velocity.y = angular_velocity_camera[1];
+          message->angular_velocity.z = angular_velocity_camera[2];
           message->linear_acceleration.x = acceleration_camera[0];
           message->linear_acceleration.y = acceleration_camera[1];
           message->linear_acceleration.z = acceleration_camera[2];

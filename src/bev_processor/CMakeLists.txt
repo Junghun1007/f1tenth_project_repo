@@ -72,6 +72,19 @@ target_include_directories(bev_attitude_fusion
 )
 target_link_libraries(bev_attitude_fusion PUBLIC ${OpenCV_LIBS})
 
+add_library(bev_imu_attitude_tracker STATIC
+  src/imu_attitude_tracker.cpp
+)
+set_target_properties(
+  bev_imu_attitude_tracker PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(bev_imu_attitude_tracker
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(bev_imu_attitude_tracker PUBLIC ${OpenCV_LIBS})
+
 add_library(bev_cuda STATIC
   src/cuda_bev_processor.cu
 )
@@ -116,6 +129,7 @@ target_link_libraries(bev_processor_component
   bev_geometry
   bev_cuda
   bev_startup_measurement
+  bev_imu_attitude_tracker
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -151,12 +165,24 @@ if(BUILD_TESTING)
   target_link_libraries(
     attitude_fusion_test bev_attitude_fusion ${OpenCV_LIBS})
   add_test(NAME attitude_fusion_test COMMAND attitude_fusion_test)
+
+  add_executable(
+    imu_attitude_tracker_test test/imu_attitude_tracker_test.cpp)
+  target_link_libraries(
+    imu_attitude_tracker_test
+    bev_imu_attitude_tracker
+    bev_attitude_fusion
+    ${OpenCV_LIBS}
+  )
+  add_test(
+    NAME imu_attitude_tracker_test COMMAND imu_attitude_tracker_test)
 endif()
 
 install(TARGETS
   bev_geometry
   bev_ground_plane
   bev_attitude_fusion
+  bev_imu_attitude_tracker
   bev_startup_measurement
   bev_processor_component
   bev_processor_node

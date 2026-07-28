@@ -64,7 +64,7 @@ def generate_launch_description():
                             {
                                 "preview_enabled": False,
                                 "publish_enabled": True,
-                                "imu_bridge_enabled": False,
+                                "imu_bridge_enabled": True,
                             },
                         ],
                         extra_arguments=[

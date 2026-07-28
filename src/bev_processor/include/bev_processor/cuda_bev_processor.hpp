@@ -29,6 +29,10 @@ public:
     std::size_t data_size,
     std::size_t input_stride);
 
+  void updateRemap(
+    const cv::Mat & map_x,
+    const cv::Mat & map_y);
+
   const std::string & deviceName() const;
 
 private:

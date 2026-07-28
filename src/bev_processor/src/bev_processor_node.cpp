@@ -22,10 +22,12 @@
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <std_msgs/msg/header.hpp>
 
 #include "bev_processor/bev_geometry.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
+#include "bev_processor/imu_attitude_tracker.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
 
 namespace bev_processor
@@ -87,6 +89,11 @@ std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
   return message;
 }
 
+double angleDeltaDegrees(const double current, const double reference)
+{
+  return std::remainder(current - reference, 360.0);
+}
+
 }  // namespace
 
 class BevProcessorNode final : public rclcpp::Node
@@ -98,6 +105,10 @@ public:
     declareParameters();
     readParameters();
     validateParameters();
+    if (realtime_attitude_enabled_) {
+      imu_attitude_tracker_ =
+        std::make_unique<ImuAttitudeTracker>(imu_attitude_config_);
+    }
 
     double startup_roll_deg = configured_roll_deg_;
     double startup_pitch_down_deg = configured_pitch_down_deg_;
@@ -132,6 +143,9 @@ public:
       camera_model_.position_vehicle_m[2] = measurement.height_m;
       startup_roll_deg = measurement.roll_deg;
       startup_pitch_down_deg = measurement.pitch_down_deg;
+      imu_baseline_roll_deg_ = measurement.imu_roll_deg;
+      imu_baseline_pitch_down_deg_ = measurement.imu_pitch_down_deg;
+      imu_baseline_initialized_.store(true, std::memory_order_release);
       measured_extrinsics_ = true;
       RCLCPP_INFO(
         get_logger(),
@@ -178,6 +192,11 @@ public:
         100.0 * measurement.plane_inlier_ratio,
         measurement.plane_residual_mad_m);
     }
+    startup_roll_deg_ = startup_roll_deg;
+    startup_pitch_down_deg_ = startup_pitch_down_deg;
+    desired_roll_deg_.store(startup_roll_deg, std::memory_order_relaxed);
+    desired_pitch_down_deg_.store(
+      startup_pitch_down_deg, std::memory_order_relaxed);
     installProcessor(
       startup_roll_deg,
       startup_pitch_down_deg,
@@ -191,6 +210,19 @@ public:
       [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
         onImage(std::move(message));
       });
+    if (realtime_attitude_enabled_) {
+      const auto imu_qos = rclcpp::SensorDataQoS().keep_last(10);
+      imu_subscription_ = create_subscription<sensor_msgs::msg::Imu>(
+        realtime_imu_topic_,
+        imu_qos,
+        [this](sensor_msgs::msg::Imu::ConstSharedPtr message) {
+          onImu(std::move(message));
+        });
+      attitude_update_timer_ = create_wall_timer(
+        std::chrono::duration<double>(
+          1.0 / realtime_attitude_update_hz_),
+        std::bind(&BevProcessorNode::updateRealtimeAttitude, this));
+    }
     if (publish_enabled_) {
       output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
         output_topic_, image_qos);
@@ -260,7 +292,7 @@ public:
       "Startup extrinsics mode=%s, source=%s: "
       "height=%.4fm, roll=%.3fdeg, "
       "pitch=%.3fdeg, downward_pitch=%.3fdeg, fixed yaw=%.3fdeg. "
-      "These values are fixed for this run.",
+      "Height/yaw are fixed; roll/pitch tracking=%s.",
       processor_mode_.c_str(),
       measured_extrinsics_ ?
       "OAK adaptive IMU+depth" : "manual config",
@@ -268,7 +300,8 @@ public:
       applied_roll_deg_.load(std::memory_order_relaxed),
       -applied_pitch_down_deg_.load(std::memory_order_relaxed),
       applied_pitch_down_deg_.load(std::memory_order_relaxed),
-      camera_yaw_deg_);
+      camera_yaw_deg_,
+      realtime_attitude_enabled_ ? "OAK IMU delta at 100 Hz" : "off");
     RCLCPP_INFO(
       get_logger(),
       "============================================================");
@@ -324,6 +357,26 @@ private:
     declare_parameter<double>("camera_roll_deg", 0.0);
     declare_parameter<double>("camera_downward_pitch_deg", 14.0);
     declare_parameter<double>("camera_yaw_deg", 0.0);
+
+    declare_parameter<bool>("realtime_attitude_enabled", false);
+    declare_parameter<std::string>("realtime_imu_topic", "/camera/imu");
+    declare_parameter<double>("realtime_attitude_update_hz", 100.0);
+    declare_parameter<double>(
+      "realtime_imu_minimum_acceleration_mps2", 7.5);
+    declare_parameter<double>(
+      "realtime_imu_maximum_acceleration_mps2", 12.0);
+    declare_parameter<double>(
+      "realtime_imu_acceleration_correction_time_constant_sec", 1.5);
+    declare_parameter<double>(
+      "realtime_imu_acceleration_correction_gate_deg", 8.0);
+    declare_parameter<double>(
+      "realtime_imu_maximum_sample_interval_sec", 0.1);
+    declare_parameter<double>(
+      "realtime_attitude_maximum_delta_deg", 15.0);
+    declare_parameter<double>(
+      "realtime_attitude_minimum_update_deg", 0.02);
+    declare_parameter<double>("realtime_imu_stale_timeout_sec", 0.5);
+
     declare_parameter<double>("measurement_stereo_fps", 30.0);
     declare_parameter<int>("measurement_stereo_width", 640);
     declare_parameter<int>("measurement_stereo_height", 400);
@@ -428,6 +481,36 @@ private:
       degToRad(configured_roll_deg_),
       degToRad(configured_pitch_down_deg_),
       degToRad(camera_yaw_deg_));
+
+    realtime_attitude_enabled_ =
+      get_parameter("realtime_attitude_enabled").as_bool();
+    realtime_imu_topic_ =
+      get_parameter("realtime_imu_topic").as_string();
+    realtime_attitude_update_hz_ =
+      get_parameter("realtime_attitude_update_hz").as_double();
+    imu_attitude_config_.minimum_acceleration_mps2 =
+      get_parameter(
+      "realtime_imu_minimum_acceleration_mps2").as_double();
+    imu_attitude_config_.maximum_acceleration_mps2 =
+      get_parameter(
+      "realtime_imu_maximum_acceleration_mps2").as_double();
+    imu_attitude_config_.acceleration_correction_time_constant_sec =
+      get_parameter(
+      "realtime_imu_acceleration_correction_time_constant_sec").as_double();
+    imu_attitude_config_.acceleration_correction_gate_deg =
+      get_parameter(
+      "realtime_imu_acceleration_correction_gate_deg").as_double();
+    imu_attitude_config_.maximum_sample_interval_sec =
+      get_parameter(
+      "realtime_imu_maximum_sample_interval_sec").as_double();
+    realtime_attitude_maximum_delta_deg_ =
+      get_parameter(
+      "realtime_attitude_maximum_delta_deg").as_double();
+    realtime_attitude_minimum_update_deg_ =
+      get_parameter(
+      "realtime_attitude_minimum_update_deg").as_double();
+    realtime_imu_stale_timeout_sec_ =
+      get_parameter("realtime_imu_stale_timeout_sec").as_double();
 
     startup_measurement_config_.stereo_fps =
       get_parameter("measurement_stereo_fps").as_double();
@@ -553,6 +636,10 @@ private:
       throw std::invalid_argument(
               "output_topic must not be empty when publishing is enabled");
     }
+    if (realtime_attitude_enabled_ && realtime_imu_topic_.empty()) {
+      throw std::invalid_argument(
+              "realtime_imu_topic must not be empty when tracking is enabled");
+    }
     if (
       camera_model_.image_width <= 1 ||
       camera_model_.image_height <= 1 ||
@@ -598,6 +685,19 @@ private:
     {
       throw std::invalid_argument("invalid rate, preview, or status parameter");
     }
+    if (
+      !std::isfinite(realtime_attitude_update_hz_) ||
+      !std::isfinite(realtime_attitude_maximum_delta_deg_) ||
+      !std::isfinite(realtime_attitude_minimum_update_deg_) ||
+      !std::isfinite(realtime_imu_stale_timeout_sec_) ||
+      realtime_attitude_update_hz_ <= 0.0 ||
+      realtime_attitude_maximum_delta_deg_ <= 0.0 ||
+      realtime_attitude_maximum_delta_deg_ >= 90.0 ||
+      realtime_attitude_minimum_update_deg_ < 0.0 ||
+      realtime_imu_stale_timeout_sec_ <= 0.0)
+    {
+      throw std::invalid_argument("invalid real-time attitude parameter");
+    }
   }
 
   void installProcessor(
@@ -639,6 +739,156 @@ private:
         "pitch_down=%.3f deg, fixed yaw=%.3f deg, valid=%.2f%%",
         source, camera_model.position_vehicle_m[2],
         roll_deg, pitch_down_deg, camera_yaw_deg_, valid_percent);
+    }
+  }
+
+  static std::int64_t steadyNowNanoseconds()
+  {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      SteadyClock::now().time_since_epoch()).count();
+  }
+
+  void onImu(sensor_msgs::msg::Imu::ConstSharedPtr message)
+  {
+    imu_received_total_.fetch_add(1U, std::memory_order_relaxed);
+    imu_received_interval_.fetch_add(1U, std::memory_order_relaxed);
+    imu_last_received_ns_.store(
+      steadyNowNanoseconds(), std::memory_order_relaxed);
+
+    const cv::Vec3d acceleration_camera(
+      message->linear_acceleration.x,
+      message->linear_acceleration.y,
+      message->linear_acceleration.z);
+    const cv::Vec3d angular_velocity_camera(
+      message->angular_velocity.x,
+      message->angular_velocity.y,
+      message->angular_velocity.z);
+    const double timestamp_sec =
+      rclcpp::Time(message->header.stamp).seconds();
+
+    std::optional<ImuAttitudeEstimate> estimate;
+    {
+      std::lock_guard<std::mutex> lock(imu_tracker_mutex_);
+      estimate = imu_attitude_tracker_->update(
+        acceleration_camera, angular_velocity_camera, timestamp_sec);
+      if (
+        estimate &&
+        !imu_baseline_initialized_.load(std::memory_order_acquire))
+      {
+        imu_baseline_roll_deg_ = estimate->roll_deg;
+        imu_baseline_pitch_down_deg_ = estimate->pitch_down_deg;
+        imu_baseline_initialized_.store(
+          true, std::memory_order_release);
+      }
+    }
+
+    if (!estimate) {
+      imu_rejected_total_.fetch_add(1U, std::memory_order_relaxed);
+      return;
+    }
+    if (estimate->acceleration_correction_used) {
+      imu_accel_correction_total_.fetch_add(
+        1U, std::memory_order_relaxed);
+    }
+
+    const double roll_delta_deg = std::clamp(
+      angleDeltaDegrees(estimate->roll_deg, imu_baseline_roll_deg_),
+      -realtime_attitude_maximum_delta_deg_,
+      realtime_attitude_maximum_delta_deg_);
+    const double pitch_delta_deg = std::clamp(
+      angleDeltaDegrees(
+        estimate->pitch_down_deg, imu_baseline_pitch_down_deg_),
+      -realtime_attitude_maximum_delta_deg_,
+      realtime_attitude_maximum_delta_deg_);
+    desired_roll_deg_.store(
+      startup_roll_deg_ + roll_delta_deg, std::memory_order_relaxed);
+    desired_pitch_down_deg_.store(
+      startup_pitch_down_deg_ + pitch_delta_deg,
+      std::memory_order_relaxed);
+  }
+
+  void updateRealtimeAttitude()
+  {
+    const std::int64_t last_received_ns =
+      imu_last_received_ns_.load(std::memory_order_relaxed);
+    if (
+      !imu_baseline_initialized_.load(std::memory_order_acquire) ||
+      last_received_ns == 0)
+    {
+      return;
+    }
+
+    const double imu_age_sec =
+      static_cast<double>(steadyNowNanoseconds() - last_received_ns) / 1.0e9;
+    if (imu_age_sec > realtime_imu_stale_timeout_sec_) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "Real-time attitude is holding the last BEV LUT because IMU data "
+        "is %.3f seconds old.",
+        imu_age_sec);
+      return;
+    }
+
+    const double desired_roll_deg =
+      desired_roll_deg_.load(std::memory_order_relaxed);
+    const double desired_pitch_down_deg =
+      desired_pitch_down_deg_.load(std::memory_order_relaxed);
+    const double current_roll_deg =
+      applied_roll_deg_.load(std::memory_order_relaxed);
+    const double current_pitch_down_deg =
+      applied_pitch_down_deg_.load(std::memory_order_relaxed);
+    if (
+      std::abs(desired_roll_deg - current_roll_deg) <
+      realtime_attitude_minimum_update_deg_ &&
+      std::abs(desired_pitch_down_deg - current_pitch_down_deg) <
+      realtime_attitude_minimum_update_deg_)
+    {
+      return;
+    }
+
+    try {
+      auto camera_model = camera_model_;
+      camera_model.rotation_vehicle_from_camera =
+        mountRotationVehicleFromCamera(
+        degToRad(desired_roll_deg),
+        degToRad(desired_pitch_down_deg),
+        degToRad(camera_yaw_deg_));
+      const auto lut = generateRemap(camera_model, bev_config_);
+      const int valid_pixels = cv::countNonZero(lut.valid_mask);
+      if (valid_pixels <= 0) {
+        throw std::runtime_error(
+                "real-time attitude produced an empty BEV projection");
+      }
+
+      const auto processor = std::atomic_load_explicit(
+        &gpu_processor_, std::memory_order_acquire);
+      processor->updateRemap(lut.map_x, lut.map_y);
+
+      const int output_pixels =
+        bev_config_.output_width * bev_config_.output_height;
+      valid_lut_percent_.store(
+        100.0 * static_cast<double>(valid_pixels) /
+        static_cast<double>(output_pixels),
+        std::memory_order_relaxed);
+      applied_roll_deg_.store(
+        desired_roll_deg, std::memory_order_relaxed);
+      applied_pitch_down_deg_.store(
+        desired_pitch_down_deg, std::memory_order_relaxed);
+      attitude_lut_update_total_.fetch_add(
+        1U, std::memory_order_relaxed);
+      attitude_lut_update_interval_.fetch_add(
+        1U, std::memory_order_relaxed);
+    } catch (const std::exception & exception) {
+      attitude_update_error_total_.fetch_add(
+        1U, std::memory_order_relaxed);
+      RCLCPP_ERROR_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "Real-time BEV attitude update failed: %s",
+        exception.what());
     }
   }
 
@@ -1160,6 +1410,56 @@ private:
       static_cast<unsigned long long>(
         publish_error_total_.load(std::memory_order_relaxed)));
 
+    if (realtime_attitude_enabled_) {
+      const auto imu_received =
+        imu_received_interval_.exchange(0U, std::memory_order_relaxed);
+      const auto lut_updates =
+        attitude_lut_update_interval_.exchange(
+        0U, std::memory_order_relaxed);
+      const std::int64_t last_imu_ns =
+        imu_last_received_ns_.load(std::memory_order_relaxed);
+      const double imu_age_ms =
+        last_imu_ns > 0 ?
+        static_cast<double>(steadyNowNanoseconds() - last_imu_ns) / 1.0e6 :
+        -1.0;
+      RCLCPP_INFO(
+        get_logger(),
+        "Realtime attitude: IMU=%.1fHz (age=%.1fms,total=%llu), "
+        "LUT=%.1fHz (%llu total), "
+        "fixed_height=%.4fm, desired=(roll=%.2f,pitch_down=%.2fdeg), "
+        "accel_corrections=%llu, rejected=%llu, update_errors=%llu",
+        static_cast<double>(imu_received) / elapsed_sec,
+        imu_age_ms,
+        static_cast<unsigned long long>(
+          imu_received_total_.load(std::memory_order_relaxed)),
+        static_cast<double>(lut_updates) / elapsed_sec,
+        static_cast<unsigned long long>(
+          attitude_lut_update_total_.load(std::memory_order_relaxed)),
+        camera_model_.position_vehicle_m[2],
+        desired_roll_deg_.load(std::memory_order_relaxed),
+        desired_pitch_down_deg_.load(std::memory_order_relaxed),
+        static_cast<unsigned long long>(
+          imu_accel_correction_total_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(
+          imu_rejected_total_.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(
+          attitude_update_error_total_.load(std::memory_order_relaxed)));
+
+      if (
+        imu_received_total_.load(std::memory_order_relaxed) == 0U &&
+        std::chrono::duration<double>(now - node_started_at_).count() >=
+        startup_timeout_sec_)
+      {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(),
+          *get_clock(),
+          5000,
+          "No real-time IMU data received on %s; BEV is keeping the "
+          "startup roll/pitch.",
+          realtime_imu_topic_.c_str());
+      }
+    }
+
     if (
       accepted_total_.load(std::memory_order_relaxed) == 0U &&
       std::chrono::duration<double>(now - node_started_at_).count() >=
@@ -1193,18 +1493,38 @@ private:
   double configured_roll_deg_{0.0};
   double configured_pitch_down_deg_{14.0};
   double camera_yaw_deg_{0.0};
+  bool realtime_attitude_enabled_{false};
+  std::string realtime_imu_topic_{"/camera/imu"};
+  double realtime_attitude_update_hz_{100.0};
+  double realtime_attitude_maximum_delta_deg_{15.0};
+  double realtime_attitude_minimum_update_deg_{0.02};
+  double realtime_imu_stale_timeout_sec_{0.5};
+  ImuAttitudeTrackerConfig imu_attitude_config_{};
   OakStartupMeasurementConfig startup_measurement_config_{};
 
   RectifiedCameraModel camera_model_{};
   BevConfig bev_config_{};
+  double startup_roll_deg_{0.0};
+  double startup_pitch_down_deg_{14.0};
+  std::atomic<double> desired_roll_deg_{0.0};
+  std::atomic<double> desired_pitch_down_deg_{14.0};
   std::atomic<double> valid_lut_percent_{0.0};
   std::atomic<double> applied_roll_deg_{0.0};
   std::atomic<double> applied_pitch_down_deg_{14.0};
   std::shared_ptr<CudaBevProcessor> gpu_processor_;
 
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr input_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
+  rclcpp::TimerBase::SharedPtr attitude_update_timer_;
+
+  std::mutex imu_tracker_mutex_;
+  std::unique_ptr<ImuAttitudeTracker> imu_attitude_tracker_;
+  std::atomic<bool> imu_baseline_initialized_{false};
+  double imu_baseline_roll_deg_{0.0};
+  double imu_baseline_pitch_down_deg_{0.0};
+  std::atomic<std::int64_t> imu_last_received_ns_{0};
 
   std::mutex input_mutex_;
   std::condition_variable input_cv_;
@@ -1234,6 +1554,11 @@ private:
   std::atomic<std::uint64_t> invalid_total_{0U};
   std::atomic<std::uint64_t> processing_error_total_{0U};
   std::atomic<std::uint64_t> publish_error_total_{0U};
+  std::atomic<std::uint64_t> imu_received_total_{0U};
+  std::atomic<std::uint64_t> imu_rejected_total_{0U};
+  std::atomic<std::uint64_t> imu_accel_correction_total_{0U};
+  std::atomic<std::uint64_t> attitude_lut_update_total_{0U};
+  std::atomic<std::uint64_t> attitude_update_error_total_{0U};
 
   std::atomic<std::uint64_t> received_interval_{0U};
   std::atomic<std::uint64_t> processed_interval_{0U};
@@ -1242,6 +1567,8 @@ private:
   std::atomic<std::uint64_t> previewed_interval_{0U};
   std::atomic<std::uint64_t> process_ns_interval_{0U};
   std::atomic<std::uint64_t> process_ns_max_interval_{0U};
+  std::atomic<std::uint64_t> imu_received_interval_{0U};
+  std::atomic<std::uint64_t> attitude_lut_update_interval_{0U};
 };
 
 }  // namespace bev_processor

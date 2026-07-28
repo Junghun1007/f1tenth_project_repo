@@ -39,6 +39,25 @@ bev_processor_auto:
     camera_downward_pitch_deg: 13.0
     camera_yaw_deg: 0.0
 
+    # Height remains fixed at the startup stereo-plane measurement. OAK
+    # accelerometer+gyroscope changes update roll/pitch at the same 100 Hz as
+    # the IMU stream; yaw remains fixed.
+    #
+    # Current tuning assumes stationary, stable testing. Retune the
+    # acceleration gate/time constant with driving logs before acceleration,
+    # braking, and cornering tests.
+    realtime_attitude_enabled: true
+    realtime_imu_topic: "/camera/imu"
+    realtime_attitude_update_hz: 100.0
+    realtime_imu_minimum_acceleration_mps2: 7.5
+    realtime_imu_maximum_acceleration_mps2: 12.0
+    realtime_imu_acceleration_correction_time_constant_sec: 1.5
+    realtime_imu_acceleration_correction_gate_deg: 8.0
+    realtime_imu_maximum_sample_interval_sec: 0.1
+    realtime_attitude_maximum_delta_deg: 15.0
+    realtime_attitude_minimum_update_deg: 0.02
+    realtime_imu_stale_timeout_sec: 0.5
+
     # One-shot startup measurement. Depth road points determine height, roll,
     # and pitch. IMU is used only to verify that the vehicle is stationary and
     # that the fitted plane normal has a physically plausible direction.

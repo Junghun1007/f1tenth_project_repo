@@ -9,6 +9,8 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 - XLink 청크 분할: 비활성화 (`setXLinkChunkSize(0)`)
 - 렌즈 왜곡 보정: OAK 장치 내부에서 활성화
 - ROS 이미지 발행: 기본 비활성화
+- IMU 브리지: 기본 비활성화, 활성화 시 camera optical frame의
+  가속도+각속도 발행
 - QoS: sensor data, best effort, keep-last 1
 - 호스트 큐: 크기 2, non-blocking
 - 프리뷰: 캡처와 분리된 최신 프레임 방식
@@ -41,6 +43,11 @@ NV12 메시지는 `encoding="nv12"`, `height=720`, `step=Y/UV plane stride`를
 
 왜곡 보정은 `Camera::requestOutput(..., enableUndistortion=true)`로 요청한다.
 따라서 호스트에서 `cv::remap()`을 수행하지 않는다.
+
+IMU 브리지를 켜면 raw accelerometer와 raw gyroscope를 같은 100 Hz로
+요청하고, factory IMU-to-camera 회전행렬을 두 벡터에 모두 적용해
+`sensor_msgs/Imu`로 발행한다. orientation 자체는 채우지 않으며,
+`bev_processor_auto`가 두 벡터를 융합해 roll/pitch 변화량을 추정한다.
 
 ROS 발행은 `sensor_msgs/msg/Image`의 `UniquePtr`를 사용한다. 기본 launch는
 컴포넌트 컨테이너에서 intra-process 통신을 활성화한다. 향후 C++ 영상 처리
@@ -212,6 +219,9 @@ ros2 topic info /camera/image_rect --verbose
 | `queue_blocking` | `false` | 큐가 찼을 때 캡처 차단 여부 |
 | `publish_enabled` | `false` | ROS 이미지 발행 |
 | `publish_fps` | `143.0` | ROS 발행 최대 FPS |
+| `imu_bridge_enabled` | `false` | 가속도+자이로 ROS 발행 |
+| `imu_rate_hz` | `100.0` | IMU 요청/발행 rate |
+| `imu_topic` | `/camera/imu` | `sensor_msgs/Imu` 출력 |
 | `preview_enabled` | `false` | OpenCV 직접 프리뷰 |
 | `preview_fps` | `143.0` | 프리뷰 갱신 최대 FPS |
 

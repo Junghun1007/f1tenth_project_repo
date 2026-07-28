@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -284,6 +285,7 @@ public:
       throw std::invalid_argument("host NV12 buffer is smaller than expected");
     }
 
+    std::lock_guard<std::mutex> lock(stream_mutex_);
     checkCuda(
       cudaMemcpy2DAsync(
         device_nv12_,
@@ -327,6 +329,48 @@ public:
     return output;
   }
 
+  void updateRemap(const cv::Mat & map_x, const cv::Mat & map_y)
+  {
+    if (
+      map_x.empty() || map_y.empty() ||
+      map_x.rows != output_height_ ||
+      map_x.cols != output_width_ ||
+      map_x.size() != map_y.size() ||
+      map_x.type() != CV_32FC1 ||
+      map_y.type() != CV_32FC1)
+    {
+      throw std::invalid_argument(
+              "updated CUDA BEV maps must match the configured CV_32FC1 size");
+    }
+
+    const cv::Mat continuous_map_x =
+      map_x.isContinuous() ? map_x : map_x.clone();
+    const cv::Mat continuous_map_y =
+      map_y.isContinuous() ? map_y : map_y.clone();
+    const std::size_t map_bytes =
+      static_cast<std::size_t>(output_width_) *
+      static_cast<std::size_t>(output_height_) * sizeof(float);
+
+    std::lock_guard<std::mutex> lock(stream_mutex_);
+    checkCuda(
+      cudaMemcpyAsync(
+        device_map_x_,
+        continuous_map_x.ptr<float>(),
+        map_bytes,
+        cudaMemcpyHostToDevice,
+        stream_),
+      "update map_x");
+    checkCuda(
+      cudaMemcpyAsync(
+        device_map_y_,
+        continuous_map_y.ptr<float>(),
+        map_bytes,
+        cudaMemcpyHostToDevice,
+        stream_),
+      "update map_y");
+    checkCuda(cudaStreamSynchronize(stream_), "update BEV maps");
+  }
+
   const std::string & deviceName() const
   {
     return device_name_;
@@ -367,6 +411,7 @@ private:
   float * device_map_x_{nullptr};
   float * device_map_y_{nullptr};
   std::uint8_t * device_output_{nullptr};
+  std::mutex stream_mutex_;
 };
 
 CudaBevProcessor::CudaBevProcessor(
@@ -387,6 +432,13 @@ cv::Mat CudaBevProcessor::process(
   const std::size_t input_stride)
 {
   return impl_->process(nv12, data_size, input_stride);
+}
+
+void CudaBevProcessor::updateRemap(
+  const cv::Mat & map_x,
+  const cv::Mat & map_y)
+{
+  impl_->updateRemap(map_x, map_y);
 }
 
 const std::string & CudaBevProcessor::deviceName() const
