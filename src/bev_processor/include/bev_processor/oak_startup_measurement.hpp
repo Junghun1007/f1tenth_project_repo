@@ -18,6 +18,7 @@ struct OakStartupMeasurementConfig
   double imu_rate_hz{100.0};
   int imu_queue_size{50};
   double warmup_sec{1.0};
+  double ir_dot_projector_intensity{0.5};
 
   int roi_width{320};
   int roi_height{160};

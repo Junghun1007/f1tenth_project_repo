@@ -52,6 +52,9 @@ bev_processor_auto:
     # Discard initial sensor transients, then average two seconds of IMU data.
     measurement_imu_queue_size: 50
     measurement_warmup_sec: 1.0
+    # Pro-series IR dot projector adds texture to low-detail road surfaces.
+    # Range is 0.0-1.0; 0.0 disables it.
+    measurement_ir_dot_projector_intensity: 0.5
     measurement_roi_width: 320
     measurement_roi_height: 160
     measurement_point_sample_step: 2

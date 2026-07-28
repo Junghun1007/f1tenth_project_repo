@@ -20,6 +20,11 @@ BEV LUT를 생성한 뒤 그 실행이 끝날 때까지 자세를 고정한다. 
 법선을 분산 역가중으로 융합한다. 충돌하면 신뢰도가 설정값 이상 우세한
 센서만 선택하고, 우세한 센서가 없으면 재측정한다.
 
+자동 측정 중에는 Pro-series OAK의 IR dot projector를 기본 세기 0.5로
+켜서 무늬가 적은 노면의 stereo 대응점을 보강한다. 세기는
+`measurement_ir_dot_projector_intensity`로 설정하며, 활성화에 실패하면
+passive stereo로 조용히 진행하지 않고 측정을 중단한다.
+
 IMU 고정 장착 오차는 `measurement_imu_roll_bias_deg`와
 `measurement_imu_pitch_bias_deg`로 보정할 수 있다. bias는
 `IMU 측정값 - 신뢰하는 실제값`의 부호로 입력한다. 반복 측정으로

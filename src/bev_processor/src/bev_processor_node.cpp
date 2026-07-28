@@ -111,11 +111,12 @@ public:
         "Keep the vehicle stationary and the center view on flat ground.");
       RCLCPP_INFO(
         get_logger(),
-        "Measurement quality: warmup=%.1fs, IMU=%d samples, "
+        "Measurement quality: warmup=%.1fs, IR-dot=%.2f, IMU=%d samples, "
         "depth ROI=%dx%d step=%d (%d valid points minimum), "
         "RANSAC=%d iterations, stable planes=%d frames, "
         "fusion gate=%.1f sigma/[%.1f, %.1f]deg.",
         startup_measurement_config_.warmup_sec,
+        startup_measurement_config_.ir_dot_projector_intensity,
         startup_measurement_config_.imu_sample_count,
         startup_measurement_config_.roi_width,
         startup_measurement_config_.roi_height,
@@ -330,6 +331,8 @@ private:
     declare_parameter<double>("measurement_imu_rate_hz", 100.0);
     declare_parameter<int>("measurement_imu_queue_size", 50);
     declare_parameter<double>("measurement_warmup_sec", 1.0);
+    declare_parameter<double>(
+      "measurement_ir_dot_projector_intensity", 0.5);
     declare_parameter<int>("measurement_roi_width", 320);
     declare_parameter<int>("measurement_roi_height", 160);
     declare_parameter<int>("measurement_point_sample_step", 2);
@@ -440,6 +443,9 @@ private:
       get_parameter("measurement_imu_queue_size").as_int());
     startup_measurement_config_.warmup_sec =
       get_parameter("measurement_warmup_sec").as_double();
+    startup_measurement_config_.ir_dot_projector_intensity =
+      get_parameter(
+      "measurement_ir_dot_projector_intensity").as_double();
     startup_measurement_config_.roi_width = static_cast<int>(
       get_parameter("measurement_roi_width").as_int());
     startup_measurement_config_.roi_height = static_cast<int>(

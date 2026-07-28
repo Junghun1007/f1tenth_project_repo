@@ -85,6 +85,9 @@ void validateConfig(const OakStartupMeasurementConfig & config)
     !std::isfinite(config.imu_rate_hz) || config.imu_rate_hz <= 0.0 ||
     config.imu_queue_size <= 0 ||
     !std::isfinite(config.warmup_sec) || config.warmup_sec < 0.0 ||
+    !std::isfinite(config.ir_dot_projector_intensity) ||
+    config.ir_dot_projector_intensity < 0.0 ||
+    config.ir_dot_projector_intensity > 1.0 ||
     config.roi_width <= 0 || config.roi_height <= 0 ||
     config.roi_width > config.stereo_width ||
     config.roi_height > config.stereo_height ||
@@ -399,6 +402,15 @@ OakStartupMeasurement measureOakStartupExtrinsics(
       static_cast<unsigned int>(config.imu_queue_size), false);
 
     pipeline->start();
+    if (
+      config.ir_dot_projector_intensity > 0.0 &&
+      !device->setIrLaserDotProjectorIntensity(
+        static_cast<float>(config.ir_dot_projector_intensity)))
+    {
+      throw std::runtime_error(
+              "failed to enable the OAK IR dot projector; "
+              "startup measurement requires a Pro-series device");
+    }
     const auto measurement_started_at = std::chrono::steady_clock::now();
     const auto deadline =
       measurement_started_at +
