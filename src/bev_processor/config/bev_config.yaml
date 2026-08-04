@@ -158,22 +158,37 @@ bev_processor:
     # 검은 배경+흰 차선만 있는 mono8 결과를 lane_output_topic으로 추가 발행한다.
     lane_reconstruction_enabled: true
     lane_output_topic: "/camera/image_bev_lane"
-    # true면 기존 BEV 프리뷰 창에도 컬러 원본 대신 최종 흑백 차선을 표시한다.
+    # true면 프리뷰에서만 원본 컬러 BEV 위에 차선을 옅은 파란색으로 합성한다.
+    # false면 필터를 적용하지 않은 원본 BEV를 표시한다. 두 발행 토픽은 불변이다.
     lane_preview_enabled: true
+    # 0은 투명, 1은 불투명이다. 기본값은 형광펜처럼 원본이 비치는 값이다.
+    lane_preview_overlay_alpha: 0.35
 
     # 밝기(Y에 가까운 grayscale)를 기본으로 사용한다. 1.8m까지는 near
     # 임계값을 쓰고 그 이후에는 원거리 번진 픽셀을 잃지 않도록 far 값까지
-    # 선형으로 낮춘다. saturation=255는 채도 필터를 끈 값이다.
+    # 선형으로 낮춘다. 낮은 saturation은 흰색/회색만 남겨 컬러 풍경을 거른다.
     lane_minimum_brightness: 160
     lane_far_minimum_brightness: 110
-    lane_maximum_saturation: 255
+    lane_maximum_saturation: 100
     # 1은 추가 블러 없음. 원거리의 얇은 픽셀을 보존하는 기본값이다.
     lane_brightness_blur_kernel: 1
     lane_vertical_close_m: 0.05
     lane_minimum_mark_width_m: 0.01
-    # mark width는 가까운 곳의 최초 좌우 차선 seed를 고를 때만 사용한다.
-    # 원거리 추적은 넓게 번진 픽셀도 회전형 윈도우 안에서 중심을 측정한다.
-    lane_maximum_mark_width_m: 0.18
+    # 최초 seed는 어두운 배경 위의 10cm 이하 흰 선만 허용한다.
+    lane_maximum_mark_width_m: 0.10
+    # 선 중심과 양옆 5cm 배경의 밝기 차가 25 이상이어야 하며,
+    # 양옆 배경 평균이 170보다 밝으면 도로 밖 밝은 풍경으로 보고 제외한다.
+    lane_minimum_local_contrast: 25
+    lane_maximum_local_background_brightness: 170
+    lane_local_background_band_m: 0.05
+    # 추적 중에는 윈도우의 모든 밝은 픽셀을 평균하지 않는다. 가로 방향으로
+    # 분리한 밝은 덩어리 중 예측점에 가깝고 이 폭 이하인 하나만 실측한다.
+    # 먼 차선은 BEV 번짐을 고려하여 최대 20cm까지 점진적으로 허용한다.
+    lane_tracked_mark_width_near_m: 0.11
+    lane_tracked_mark_width_far_m: 0.20
+    # 갑자기 옆 풍경으로 이동하지 않도록 실측점의 횡방향 이동을 제한한다.
+    lane_measurement_lateral_gate_near_m: 0.08
+    lane_measurement_lateral_gate_far_m: 0.18
     lane_row_step_px: 2
 
     # 1.8m는 더 이상 관측 차단점이 아니다. 가까운 차선으로 추적을 시작하고
@@ -209,7 +224,8 @@ bev_processor:
     lane_minimum_points: 5
     lane_allow_single_lane: true
 
-    lane_output_line_thickness_m: 0.04
+    # 1cm/pixel인 기본 BEV에서 약 2pixel 두께다.
+    lane_output_line_thickness_m: 0.02
 
     status_log_interval_sec: 5.0
     startup_timeout_sec: 12.0

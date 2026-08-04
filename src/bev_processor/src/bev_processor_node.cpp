@@ -119,6 +119,27 @@ std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
   return message;
 }
 
+cv::Mat makeLaneOverlayPreview(
+  const cv::Mat & bev_bgr,
+  const cv::Mat & lane_mask,
+  const double alpha)
+{
+  if (
+    bev_bgr.type() != CV_8UC3 || lane_mask.type() != CV_8UC1 ||
+    bev_bgr.size() != lane_mask.size())
+  {
+    throw std::invalid_argument(
+            "lane preview overlay expects matching BGR8 and MONO8 images");
+  }
+  cv::Mat highlighted = bev_bgr.clone();
+  // OpenCV uses BGR. This becomes a pale cyan-blue highlighter after blending.
+  highlighted.setTo(cv::Scalar(255, 210, 100), lane_mask);
+  cv::Mat blended;
+  cv::addWeighted(
+    highlighted, alpha, bev_bgr, 1.0 - alpha, 0.0, blended);
+  return blended;
+}
+
 }  // namespace
 
 class BevProcessorNode final : public rclcpp::Node
@@ -338,6 +359,18 @@ public:
         lane_reconstructor_config_.sliding_window_measurement_weight,
         lane_reconstructor_config_.expected_lane_width_m,
         lane_reconstructor_config_.output_line_thickness_m);
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV lane appearance gate: saturation<=%d, local contrast>=%d, "
+        "background<=%d, tracked width near/far=%.2f/%.2fm, "
+        "preview overlay=%s alpha=%.2f",
+        lane_reconstructor_config_.maximum_saturation,
+        lane_reconstructor_config_.minimum_local_contrast,
+        lane_reconstructor_config_.maximum_local_background_brightness,
+        lane_reconstructor_config_.tracked_lane_mark_width_near_m,
+        lane_reconstructor_config_.tracked_lane_mark_width_far_m,
+        lane_preview_enabled_ ? "on" : "off",
+        lane_preview_overlay_alpha_);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -475,13 +508,26 @@ private:
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
+    declare_parameter<double>("lane_preview_overlay_alpha", 0.35);
     declare_parameter<int>("lane_minimum_brightness", 160);
     declare_parameter<int>("lane_far_minimum_brightness", 110);
-    declare_parameter<int>("lane_maximum_saturation", 255);
+    declare_parameter<int>("lane_maximum_saturation", 100);
     declare_parameter<int>("lane_brightness_blur_kernel", 1);
     declare_parameter<double>("lane_vertical_close_m", 0.05);
     declare_parameter<double>("lane_minimum_mark_width_m", 0.01);
-    declare_parameter<double>("lane_maximum_mark_width_m", 0.18);
+    declare_parameter<double>("lane_maximum_mark_width_m", 0.10);
+    declare_parameter<int>("lane_minimum_local_contrast", 25);
+    declare_parameter<int>(
+      "lane_maximum_local_background_brightness", 170);
+    declare_parameter<double>("lane_local_background_band_m", 0.05);
+    declare_parameter<double>(
+      "lane_tracked_mark_width_near_m", 0.11);
+    declare_parameter<double>(
+      "lane_tracked_mark_width_far_m", 0.20);
+    declare_parameter<double>(
+      "lane_measurement_lateral_gate_near_m", 0.08);
+    declare_parameter<double>(
+      "lane_measurement_lateral_gate_far_m", 0.18);
     declare_parameter<int>("lane_row_step_px", 2);
     declare_parameter<double>("lane_observation_minimum_x_m", 0.20);
     declare_parameter<double>("lane_observation_maximum_x_m", 1.80);
@@ -505,7 +551,7 @@ private:
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.20);
     declare_parameter<int>("lane_minimum_points", 5);
     declare_parameter<bool>("lane_allow_single_lane", true);
-    declare_parameter<double>("lane_output_line_thickness_m", 0.04);
+    declare_parameter<double>("lane_output_line_thickness_m", 0.02);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 12.0);
@@ -672,6 +718,8 @@ private:
     lane_output_topic_ = get_parameter("lane_output_topic").as_string();
     lane_preview_enabled_ =
       get_parameter("lane_preview_enabled").as_bool();
+    lane_preview_overlay_alpha_ =
+      get_parameter("lane_preview_overlay_alpha").as_double();
     lane_reconstructor_config_.x_min_m = bev_config_.x_min_m;
     lane_reconstructor_config_.x_max_m = bev_config_.x_max_m;
     lane_reconstructor_config_.y_min_m = bev_config_.y_min_m;
@@ -694,6 +742,21 @@ private:
       get_parameter("lane_minimum_mark_width_m").as_double();
     lane_reconstructor_config_.maximum_lane_mark_width_m =
       get_parameter("lane_maximum_mark_width_m").as_double();
+    lane_reconstructor_config_.minimum_local_contrast = static_cast<int>(
+      get_parameter("lane_minimum_local_contrast").as_int());
+    lane_reconstructor_config_.maximum_local_background_brightness =
+      static_cast<int>(get_parameter(
+        "lane_maximum_local_background_brightness").as_int());
+    lane_reconstructor_config_.local_background_band_m =
+      get_parameter("lane_local_background_band_m").as_double();
+    lane_reconstructor_config_.tracked_lane_mark_width_near_m =
+      get_parameter("lane_tracked_mark_width_near_m").as_double();
+    lane_reconstructor_config_.tracked_lane_mark_width_far_m =
+      get_parameter("lane_tracked_mark_width_far_m").as_double();
+    lane_reconstructor_config_.measurement_lateral_gate_near_m =
+      get_parameter("lane_measurement_lateral_gate_near_m").as_double();
+    lane_reconstructor_config_.measurement_lateral_gate_far_m =
+      get_parameter("lane_measurement_lateral_gate_far_m").as_double();
     lane_reconstructor_config_.row_step_px = static_cast<int>(
       get_parameter("lane_row_step_px").as_int());
     lane_reconstructor_config_.observation_minimum_x_m =
@@ -808,6 +871,9 @@ private:
       preview_max_fps_ <= 0.0 ||
       preview_max_width_ <= 0 ||
       preview_max_height_ <= 0 ||
+      !std::isfinite(lane_preview_overlay_alpha_) ||
+      lane_preview_overlay_alpha_ < 0.0 ||
+      lane_preview_overlay_alpha_ > 1.0 ||
       status_log_interval_sec_ <= 0.0 ||
       startup_timeout_sec_ <= 0.0 ||
       !std::isfinite(stabilization_settle_sec_) ||
@@ -1301,8 +1367,9 @@ private:
             lane_preview_enabled_ &&
             !frame->lane_mask.empty())
           {
-            cv::cvtColor(
-              frame->lane_mask, displayed_image, cv::COLOR_GRAY2BGR);
+            displayed_image = makeLaneOverlayPreview(
+              frame->image, frame->lane_mask,
+              lane_preview_overlay_alpha_);
           } else {
             displayed_image = frame->image;
           }
@@ -1626,6 +1693,7 @@ private:
   bool lane_reconstruction_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
+  double lane_preview_overlay_alpha_{0.35};
   BevLaneReconstructorConfig lane_reconstructor_config_{};
   double status_log_interval_sec_{5.0};
   double startup_timeout_sec_{12.0};

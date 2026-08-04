@@ -48,6 +48,18 @@ struct WindowMeasurement
   bool valid{false};
   cv::Point2d point;
   int pixel_count{0};
+  double selection_score_m{std::numeric_limits<double>::infinity()};
+  double local_contrast{0.0};
+};
+
+struct LateralBin
+{
+  int pixel_count{0};
+  double total_weight{0.0};
+  double total_brightness{0.0};
+  cv::Point2d weighted_sum{0.0, 0.0};
+  double minimum_lateral_m{std::numeric_limits<double>::infinity()};
+  double maximum_lateral_m{-std::numeric_limits<double>::infinity()};
 };
 
 struct LaneTracker
@@ -200,8 +212,72 @@ int brightnessThresholdAt(
     blend * static_cast<double>(config.far_minimum_brightness)));
 }
 
+double appearanceBlend(
+  const BevLaneReconstructorConfig & config,
+  const double x_m)
+{
+  const double range_m = std::max(
+    config.meter_per_pixel,
+    config.observation_maximum_x_m - config.observation_minimum_x_m);
+  return std::clamp(
+    (x_m - config.observation_minimum_x_m) / range_m,
+    0.0,
+    1.0);
+}
+
+bool hasDarkLocalBackground(
+  const cv::Mat & gray,
+  const int row,
+  const Run & run,
+  const BevLaneReconstructorConfig & config)
+{
+  double center_total = 0.0;
+  int center_count = 0;
+  const auto * brightness = gray.ptr<std::uint8_t>(row);
+  for (int column = run.first_column; column <= run.last_column; ++column) {
+    center_total += static_cast<double>(brightness[column]);
+    ++center_count;
+  }
+
+  const int band_width_px = std::max(
+    1, static_cast<int>(std::lround(
+      config.local_background_band_m / config.meter_per_pixel)));
+  constexpr int kBackgroundGapPx = 1;
+  double background_total = 0.0;
+  int background_count = 0;
+  const int left_first = std::max(
+    0, run.first_column - kBackgroundGapPx - band_width_px);
+  const int left_last = std::max(
+    -1, run.first_column - kBackgroundGapPx - 1);
+  for (int column = left_first; column <= left_last; ++column) {
+    background_total += static_cast<double>(brightness[column]);
+    ++background_count;
+  }
+  const int right_first = std::min(
+    gray.cols, run.last_column + kBackgroundGapPx + 1);
+  const int right_last = std::min(
+    gray.cols - 1,
+    run.last_column + kBackgroundGapPx + band_width_px);
+  for (int column = right_first; column <= right_last; ++column) {
+    background_total += static_cast<double>(brightness[column]);
+    ++background_count;
+  }
+  if (center_count == 0 || background_count == 0) {
+    return false;
+  }
+  const double center_mean = center_total / static_cast<double>(center_count);
+  const double background_mean =
+    background_total / static_cast<double>(background_count);
+  return
+    center_mean - background_mean >=
+    static_cast<double>(config.minimum_local_contrast) &&
+    background_mean <=
+    static_cast<double>(config.maximum_local_background_brightness);
+}
+
 Seed findSeed(
   const cv::Mat & candidate_mask,
+  const cv::Mat & gray,
   const BevLaneReconstructorConfig & config)
 {
   const int minimum_run_width_px = std::max(
@@ -235,12 +311,14 @@ Seed findSeed(
     row -= config.row_step_px)
   {
     const double x_m = xAtRow(config, row);
-    const auto runs = findRuns(
+    const auto raw_runs = findRuns(
       candidate_mask, row, minimum_run_width_px, maximum_run_width_px);
     std::vector<double> laterals_m;
-    laterals_m.reserve(runs.size());
-    for (const auto & run : runs) {
-      laterals_m.push_back(yAtColumn(config, run.centerColumn()));
+    laterals_m.reserve(raw_runs.size());
+    for (const auto & run : raw_runs) {
+      if (hasDarkLocalBackground(gray, row, run, config)) {
+        laterals_m.push_back(yAtColumn(config, run.centerColumn()));
+      }
     }
 
     for (std::size_t first = 0; first < laterals_m.size(); ++first) {
@@ -343,8 +421,13 @@ WindowMeasurement measureWindow(
     columnAtY(config, prediction.y - search_radius_m),
     0, config.image_width - 1);
   const cv::Point2d normal(-tangent.y, tangent.x);
-  double total_weight = 0.0;
-  cv::Point2d weighted_sum(0.0, 0.0);
+  const double minimum_longitudinal_m =
+    -0.25 * config.sliding_window_step_m;
+  const int lateral_bin_count = std::max(
+    1, static_cast<int>(std::ceil(
+      2.0 * expanded_half_width_m / config.meter_per_pixel)) + 1);
+  std::vector<LateralBin> bins(
+    static_cast<std::size_t>(lateral_bin_count));
   for (int row = minimum_row; row <= maximum_row; ++row) {
     const auto * candidate = candidate_mask.ptr<std::uint8_t>(row);
     const auto * brightness = gray.ptr<std::uint8_t>(row);
@@ -361,27 +444,162 @@ WindowMeasurement measureWindow(
       // window repeatedly re-measures the previous tape pixels and can stall
       // instead of advancing along the lane.
       if (
-        longitudinal_m < -0.25 * config.sliding_window_step_m ||
+        longitudinal_m < minimum_longitudinal_m ||
         longitudinal_m > half_length_m ||
         std::abs(lateral_m) > expanded_half_width_m)
       {
         continue;
       }
+      const int bin_index = std::clamp(
+        static_cast<int>(std::floor(
+          (lateral_m + expanded_half_width_m) /
+          config.meter_per_pixel)),
+        0, lateral_bin_count - 1);
+      auto & bin = bins[static_cast<std::size_t>(bin_index)];
       const double weight =
         1.0 + static_cast<double>(brightness[column]) / 255.0;
-      weighted_sum += point * weight;
-      total_weight += weight;
-      ++result.pixel_count;
+      bin.weighted_sum += point * weight;
+      bin.total_weight += weight;
+      bin.total_brightness += static_cast<double>(brightness[column]);
+      bin.minimum_lateral_m = std::min(
+        bin.minimum_lateral_m, lateral_m);
+      bin.maximum_lateral_m = std::max(
+        bin.maximum_lateral_m, lateral_m);
+      ++bin.pixel_count;
     }
   }
-  if (
-    result.pixel_count < config.minimum_window_pixel_count ||
-    total_weight <= 0.0)
-  {
-    return result;
+
+  const double distance_blend = appearanceBlend(config, prediction.x);
+  const double maximum_mark_width_m =
+    (1.0 - distance_blend) * config.tracked_lane_mark_width_near_m +
+    distance_blend * config.tracked_lane_mark_width_far_m;
+  const double lateral_gate_m =
+    ((1.0 - distance_blend) * config.measurement_lateral_gate_near_m +
+    distance_blend * config.measurement_lateral_gate_far_m) *
+    (1.0 + 0.25 * static_cast<double>(missing_windows));
+
+  int first_bin = 0;
+  while (first_bin < lateral_bin_count) {
+    while (
+      first_bin < lateral_bin_count &&
+      bins[static_cast<std::size_t>(first_bin)].pixel_count == 0)
+    {
+      ++first_bin;
+    }
+    if (first_bin >= lateral_bin_count) {
+      break;
+    }
+    int last_bin = first_bin;
+    while (
+      last_bin + 1 < lateral_bin_count &&
+      bins[static_cast<std::size_t>(last_bin + 1)].pixel_count > 0)
+    {
+      ++last_bin;
+    }
+
+    int pixel_count = 0;
+    double total_weight = 0.0;
+    double total_brightness = 0.0;
+    cv::Point2d weighted_sum(0.0, 0.0);
+    double minimum_lateral_m = std::numeric_limits<double>::infinity();
+    double maximum_lateral_m = -std::numeric_limits<double>::infinity();
+    for (int bin_index = first_bin; bin_index <= last_bin; ++bin_index) {
+      const auto & bin = bins[static_cast<std::size_t>(bin_index)];
+      pixel_count += bin.pixel_count;
+      total_weight += bin.total_weight;
+      total_brightness += bin.total_brightness;
+      weighted_sum += bin.weighted_sum;
+      minimum_lateral_m = std::min(
+        minimum_lateral_m, bin.minimum_lateral_m);
+      maximum_lateral_m = std::max(
+        maximum_lateral_m, bin.maximum_lateral_m);
+    }
+    first_bin = last_bin + 1;
+
+    if (
+      pixel_count < config.minimum_window_pixel_count ||
+      total_weight <= 0.0)
+    {
+      continue;
+    }
+    const double mark_width_m = std::max(
+      config.meter_per_pixel,
+      maximum_lateral_m - minimum_lateral_m + config.meter_per_pixel);
+    if (
+      mark_width_m < config.minimum_lane_mark_width_m ||
+      mark_width_m > maximum_mark_width_m)
+    {
+      continue;
+    }
+
+    const cv::Point2d measured_point = weighted_sum * (1.0 / total_weight);
+    const cv::Point2d prediction_error = measured_point - prediction;
+    const double lateral_error_m = std::abs(dot(prediction_error, normal));
+    if (lateral_error_m > lateral_gate_m) {
+      continue;
+    }
+
+    const double ridge_center_lateral_m = dot(prediction_error, normal);
+    const double background_inner_m =
+      0.5 * mark_width_m + config.meter_per_pixel;
+    const double background_outer_m =
+      background_inner_m + config.local_background_band_m;
+    double background_total = 0.0;
+    int background_count = 0;
+    for (int row = minimum_row; row <= maximum_row; ++row) {
+      const auto * brightness = gray.ptr<std::uint8_t>(row);
+      const double x_m = xAtRow(config, row);
+      for (int column = minimum_column; column <= maximum_column; ++column) {
+        const cv::Point2d point(x_m, yAtColumn(config, column));
+        const cv::Point2d delta = point - prediction;
+        const double longitudinal_m = dot(delta, tangent);
+        if (
+          longitudinal_m < minimum_longitudinal_m ||
+          longitudinal_m > half_length_m)
+        {
+          continue;
+        }
+        const double distance_from_ridge_m = std::abs(
+          dot(delta, normal) - ridge_center_lateral_m);
+        if (
+          distance_from_ridge_m >= background_inner_m &&
+          distance_from_ridge_m <= background_outer_m)
+        {
+          background_total += static_cast<double>(brightness[column]);
+          ++background_count;
+        }
+      }
+    }
+    if (background_count == 0) {
+      continue;
+    }
+    const double center_brightness =
+      total_brightness / static_cast<double>(pixel_count);
+    const double background_brightness =
+      background_total / static_cast<double>(background_count);
+    const double local_contrast = center_brightness - background_brightness;
+    if (
+      local_contrast < static_cast<double>(config.minimum_local_contrast) ||
+      background_brightness >
+      static_cast<double>(config.maximum_local_background_brightness))
+    {
+      continue;
+    }
+
+    const double longitudinal_error_m = std::abs(
+      dot(prediction_error, tangent));
+    const double selection_score_m =
+      lateral_error_m + 0.25 * longitudinal_error_m +
+      0.10 * mark_width_m -
+      0.0002 * std::min(local_contrast, 100.0);
+    if (selection_score_m < result.selection_score_m) {
+      result.valid = true;
+      result.point = measured_point;
+      result.pixel_count = pixel_count;
+      result.selection_score_m = selection_score_m;
+      result.local_contrast = local_contrast;
+    }
   }
-  result.point = weighted_sum * (1.0 / total_weight);
-  result.valid = true;
   return result;
 }
 
@@ -554,6 +772,18 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.vertical_close_m <= 0.0 ||
     config_.minimum_lane_mark_width_m <= 0.0 ||
     config_.maximum_lane_mark_width_m < config_.minimum_lane_mark_width_m ||
+    config_.minimum_local_contrast < 0 ||
+    config_.minimum_local_contrast > 255 ||
+    config_.maximum_local_background_brightness < 0 ||
+    config_.maximum_local_background_brightness > 255 ||
+    config_.local_background_band_m <= 0.0 ||
+    config_.tracked_lane_mark_width_near_m <
+    config_.minimum_lane_mark_width_m ||
+    config_.tracked_lane_mark_width_far_m <
+    config_.tracked_lane_mark_width_near_m ||
+    config_.measurement_lateral_gate_near_m <= 0.0 ||
+    config_.measurement_lateral_gate_far_m <
+    config_.measurement_lateral_gate_near_m ||
     config_.row_step_px <= 0 ||
     config_.observation_minimum_x_m < config_.x_min_m ||
     config_.observation_maximum_x_m <= config_.observation_minimum_x_m ||
@@ -657,7 +887,7 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
 
   result.reconstructed_mask = cv::Mat::zeros(
     config_.image_height, config_.image_width, CV_8UC1);
-  const Seed seed = findSeed(result.candidate_mask, config_);
+  const Seed seed = findSeed(result.candidate_mask, gray, config_);
   if (!seed.valid) {
     return result;
   }

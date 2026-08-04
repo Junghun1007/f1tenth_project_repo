@@ -133,18 +133,24 @@ Sobel, 미분 필터, 대비 강화, 밝기 임계값, morphology, 차선 추출
 - `/camera/image_bev` (`bgr8`): 변경하지 않은 원본 컬러 BEV
 - `/camera/image_bev_lane` (`mono8`): 검은 배경에 흰색 좌·우 차선만 다시 그린 결과
 
+GUI 프리뷰는 기본적으로 원본 BEV 위에 검출 차선을 옅은 파란색, 투명도
+`0.35`로만 합성한다. 이 오버레이는 위 두 발행 토픽에는 들어가지 않는다.
+`lane_preview_enabled:=false`로 실행하면 프리뷰도 원본 BEV만 표시한다.
+
 재구성 단계는 다음 순서로 동작한다.
 
 1. 컬러 BEV를 grayscale 밝기로 변환한다. 1.8m 이후에는 임계값을
    `lane_far_minimum_brightness`까지 점진적으로 낮춰 흐린 픽셀도 남긴다.
-2. 선택적으로 HSV saturation 상한을 적용한다. 기본값 255는 채도 필터를 끈다.
-3. `0.20~1.00m`의 가까운 행에서 좌·우 차선 시작점을 고른다.
-4. 이전 실제 측정점의 방향으로 회전형 슬라이딩 윈도우의 다음 위치만 예측한다.
-5. 윈도우 내부 실제 밝은 픽셀의 가중 중심으로 위치를 90% 보정한다.
-6. 1.8m 이후에는 윈도우 반폭을 12cm에서 최대 22cm까지 넓혀 번진 곡선의
+2. HSV saturation 100 이하인 흰색·회색 후보만 남겨 컬러 풍경을 제거한다.
+3. 후보 양옆 5cm가 어둡고 중심과 배경의 밝기 차가 25 이상인지 검사한다.
+4. `0.20~1.00m`의 가까운 행에서 폭 10cm 이하인 좌·우 시작점을 고른다.
+5. 이전 실제 측정점의 방향으로 회전형 슬라이딩 윈도우의 다음 위치만 예측한다.
+6. 윈도우의 밝은 픽셀을 횡방향 덩어리로 나누고, 예측점에 가장 가까우며
+   거리별 허용 폭 안에 있는 실제 덩어리 하나만 선택해 위치를 90% 보정한다.
+7. 1.8m 이후에는 윈도우 반폭을 12cm에서 최대 22cm까지 넓혀 번진 곡선의
    중앙을 계속 측정한다.
-7. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
-8. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 20cm만 연장한다.
+8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
+9. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 20cm만 연장한다.
 
 실제로 검출된 좌·우 차선은 고정 차선 폭 모델로 덮어쓰지 않는다. 한쪽 전체가
 검출되지 않았을 때만 실제로 검출된 반대쪽 차선의 법선 방향으로 누락된 쪽을
@@ -160,9 +166,11 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_maximum_extrapolation_m:=0.2 \
   lane_minimum_brightness:=160 \
   lane_far_minimum_brightness:=110 \
+  lane_minimum_local_contrast:=25 \
   lane_sliding_window_measurement_weight:=0.90 \
   lane_expected_width_m:=0.625 \
-  lane_output_line_thickness_m:=0.04
+  lane_output_line_thickness_m:=0.02 \
+  lane_preview_overlay_alpha:=0.35
 ```
 
 원거리 곡선을 놓치면 far 밝기 임계값과 원거리 윈도우 폭을 다음처럼 조절한다.
@@ -173,9 +181,11 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_sliding_window_half_width_far_m:=0.25
 ```
 
-다른 밝은 물체를 따라가면 `lane_far_minimum_brightness`를 높이고
-`lane_sliding_window_half_width_far_m`를 줄인다. 컬러 물체가 문제일 때만
-`lane_maximum_saturation:=80` 같은 저채도 조건을 추가한다.
+다른 밝은 물체를 따라가면 `lane_far_minimum_brightness` 또는
+`lane_minimum_local_contrast`를 높이고 `lane_sliding_window_half_width_far_m`나
+`lane_tracked_mark_width_far_m`를 줄인다. 컬러 물체가 남으면
+`lane_maximum_saturation:=80`처럼 더 엄격하게 설정한다. 실제 차선까지
+끊기면 이 값들을 반대 방향으로 한 단계씩 완화한다.
 
 모든 조절 가능한 차선 인자는 다음 명령으로 확인한다.
 
@@ -183,8 +193,8 @@ ros2 launch bev_processor bev_processor.launch.py \
 ros2 launch bev_processor bev_processor.launch.py --show-args
 ```
 
-기존 컬러 프리뷰를 보려면 `lane_preview_enabled:=false`, 차선 재구성을
-완전히 끄려면 `lane_reconstruction_enabled:=false`를 사용한다.
+필터 없는 원본 컬러 프리뷰를 보려면 `lane_preview_enabled:=false`, 차선
+재구성을 완전히 끄려면 `lane_reconstruction_enabled:=false`를 사용한다.
 
 ## 시작 측정
 

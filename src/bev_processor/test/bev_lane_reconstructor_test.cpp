@@ -87,7 +87,7 @@ bev_processor::BevLaneReconstructor makeReconstructor()
   bev_processor::BevLaneReconstructorConfig config;
   config.minimum_brightness = 160;
   config.far_minimum_brightness = 110;
-  config.maximum_saturation = 255;
+  config.maximum_saturation = 100;
   config.observation_minimum_x_m = 0.20;
   config.observation_maximum_x_m = 1.80;
   config.reconstruction_minimum_x_m = 0.20;
@@ -286,6 +286,52 @@ void testMissingPixelsStopLongPrediction()
     "prediction without pixels must stop after the short extrapolation limit");
 }
 
+void testBroadBrightSceneryDoesNotPullTracker()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&image, 0.30, 0.20, 1.80, farCurveCenter, 245, 5);
+  drawBoundary(&image, -0.30, 0.20, 1.80, farCurveCenter, 245, 5);
+  cv::rectangle(
+    image, metricPoint(1.55, 0.55), metricPoint(0.80, 0.37),
+    cv::Scalar(245, 245, 245), cv::FILLED);
+
+  const auto result = makeReconstructor().reconstruct(image);
+  require(result.valid, "actual lanes must survive a nearby bright region");
+  require(
+    maximumMeasuredX(result.left_measured_points) > 1.50,
+    "the thin actual lane must be preferred over the broad bright region");
+  for (const auto & point : result.left_measured_points) {
+    require(
+      std::abs(point.y - 0.30) < 0.07,
+      "broad scenery must not pull the measured lane sideways");
+  }
+}
+
+void testBrightBackgroundIsNotAcceptedAsRoadLane()
+{
+  cv::Mat image(300, 120, CV_8UC3, cv::Scalar(180, 180, 180));
+  drawBoundary(&image, 0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+  drawBoundary(&image, -0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+
+  require(
+    !makeReconstructor().reconstruct(image).valid,
+    "white lines without a dark local background must be rejected");
+}
+
+void testDefaultOutputLinesStayThin()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&image, 0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+  drawBoundary(&image, -0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+
+  const auto result = makeReconstructor().reconstruct(image);
+  const int white_pixels = cv::countNonZero(
+    result.reconstructed_mask.row(metricPoint(1.0, 0.0).y));
+  require(
+    white_pixels >= 2 && white_pixels <= 8,
+    "the 2cm output setting must render two thin lane lines");
+}
+
 void testLowSaturationGateRemainsOptional()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -318,6 +364,9 @@ int main()
   testRotatingWindowsFollowTightArc();
   testSingleBoundaryOnlyInfersMissingSide();
   testMissingPixelsStopLongPrediction();
+  testBroadBrightSceneryDoesNotPullTracker();
+  testBrightBackgroundIsNotAcceptedAsRoadLane();
+  testDefaultOutputLinesStayThin();
   testLowSaturationGateRemainsOptional();
   std::cout << "BEV sliding-window lane tests passed\n";
   return EXIT_SUCCESS;

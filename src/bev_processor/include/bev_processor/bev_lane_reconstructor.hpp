@@ -20,11 +20,18 @@ struct BevLaneReconstructorConfig
 
   int minimum_brightness{160};
   int far_minimum_brightness{110};
-  int maximum_saturation{255};
+  int maximum_saturation{100};
   int brightness_blur_kernel{1};
   double vertical_close_m{0.05};
   double minimum_lane_mark_width_m{0.01};
-  double maximum_lane_mark_width_m{0.18};
+  double maximum_lane_mark_width_m{0.10};
+  int minimum_local_contrast{25};
+  int maximum_local_background_brightness{170};
+  double local_background_band_m{0.05};
+  double tracked_lane_mark_width_near_m{0.11};
+  double tracked_lane_mark_width_far_m{0.20};
+  double measurement_lateral_gate_near_m{0.08};
+  double measurement_lateral_gate_far_m{0.18};
   int row_step_px{2};
 
   double observation_minimum_x_m{0.20};
@@ -54,7 +61,7 @@ struct BevLaneReconstructorConfig
   int minimum_points{5};
   bool allow_single_lane{true};
 
-  double output_line_thickness_m{0.04};
+  double output_line_thickness_m{0.02};
 };
 
 struct BevLaneReconstruction
