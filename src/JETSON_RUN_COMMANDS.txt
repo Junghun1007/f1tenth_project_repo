@@ -1,0 +1,165 @@
+F1TENTH Jetson 실행 명령어
+===========================
+
+[0. 모든 터미널에서 공통으로 먼저 실행]
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+
+
+[1. 조이스틱만 실행]
+
+ros2 launch joy_initializer joy.launch.py device_id:=0
+
+조이스틱 입력 확인용 별도 터미널:
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /joy
+
+
+[2. VESC 통신 노드만 실행]
+
+ros2 run vesc_initializer vesc_initialize_node --ros-args \
+  --params-file "$(ros2 pkg prefix vehicle_config)/share/vehicle_config/config/vesc_config.yaml"
+
+VESC 연결 상태 확인용 별도 터미널:
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 topic echo /vesc/connected
+
+VESC가 /dev/ttyACM1에 연결된 경우:
+
+ros2 run vesc_initializer vesc_initialize_node --ros-args \
+  --params-file "$(ros2 pkg prefix vehicle_config)/share/vehicle_config/config/vesc_config.yaml" \
+  -p port:=/dev/ttyACM1
+
+주의: 이 명령은 VESC 통신 노드만 시작한다. 실제 주행 명령은 별도의
+/vesc/erpm 및 /vesc/servo_position publisher가 있어야 전달된다.
+
+
+[3. 조이스틱 수동 주행 전체 실행]
+
+ros2 launch vehicle_launcher manual_drive.launch.py
+
+이 launch에는 다음 노드가 모두 포함된다.
+
+- joy_node
+- joy_params_converter_node
+- actuator_commander_node
+- vesc_initialize_node
+
+따라서 [1] 조이스틱 노드나 [2] VESC 노드를 따로 실행하지 않는다.
+
+
+[4. 테스트 주행 실행]
+
+ros2 launch vehicle_test_drive vehicle_test_drive.launch.py
+
+VESC가 /dev/ttyACM1에 연결된 경우:
+
+ros2 launch vehicle_test_drive vehicle_test_drive.launch.py vesc_port:=/dev/ttyACM1
+
+테스트 주행 launch는 VESC 연결과 펌웨어 응답을 확인한 뒤 다음 순서로
+자동 실행한다.
+
+1. 조향 위치 0.5 -> 0.1 -> 0.9 스윕
+2. ERPM 0 -> 5000
+3. ERPM 0 정지
+4. ERPM 0 -> -5000
+5. ERPM 0 및 조향 위치 0.5로 복귀 후 종료
+
+테스트 주행 launch가 vesc_initialize_node를 직접 실행하므로 [2] VESC 노드,
+[3] 수동 주행 launch와 동시에 실행하지 않는다.
+
+
+[5. OV9782 THE_720_P 143 FPS 왜곡 보정 카메라 실행]
+
+camera_driver는 OAK 장치 내부 왜곡 보정을 사용하고
+1280x720 NV12를 수신한다. 카메라 단독 프리뷰를 켜면 표시할 때만 CPU에서
+BGR로 변환한다. OAK IMU로 시작 pitch/roll 기준을 유지하며 실행 직후
+1초 폐기 + 4초 기준 측정 동안 차량과 카메라를 정지시켜야 한다.
+성능 측정을 위해 ROS 이미지 발행은 기본적으로 꺼져 있다.
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch camera_driver camera_driver.launch.py
+
+창을 띄우지 않고 실행:
+
+ros2 launch camera_driver camera_driver.launch.py preview_enabled:=false
+
+ROS 이미지 발행을 켜려면:
+
+ros2 launch camera_driver camera_driver.launch.py publish_enabled:=true
+
+설정 파일:
+
+src/camera_driver/config/camera_config.yaml
+
+  sensor_fps: 110.0         -> OAK 센서/출력 요청 FPS
+  width: 1280
+  height: 720
+  undistort_enabled: true   -> OAK 내부 캘리브레이션으로 왜곡 보정
+  image_topic: /camera/image_rect
+  queue_size: 1
+  queue_blocking: false
+  publish_enabled: false
+  publish_fps: 120.0
+  preview_fps: 60.0
+  imu_stabilization_enabled: true
+  fixed_view_zoom: 1.25
+
+상태 로그의 capture 값이 실제 센서 수신 FPS다. preview 값은 모니터
+주사율과 OpenCV GUI 성능의 제한을 받으므로 capture보다 낮을 수 있다.
+device_gap은 DepthAI sequence 번호로 확인한 누락 프레임 수다.
+
+Q, ESC 또는 창 닫기는 프리뷰만 끄며 카메라와 ROS 발행은 계속 유지한다.
+OpenCV 창을 사용하려면 Jetson 데스크톱 또는 X11 forwarding처럼
+DISPLAY/그래픽 화면을 사용할 수 있어야 한다.
+
+
+[6. Jetson 빌드]
+
+cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+
+source /opt/ros/humble/setup.bash
+colcon build --cmake-clean-cache --packages-select \
+  joy_initializer vehicle_config vehicle_launcher manual_control \
+  vesc_initializer vehicle_test_drive camera_driver \
+  camera_height_estimator bev_processor \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+
+
+[7. IMU 자세 + depth 높이 시작 측정과 BEV 실행]
+
+시작 측정과 camera_driver의 기존 안정화 기준 측정이 모두 끝날 때까지
+차량을 완전히 정지시키고 중앙 ROI에 장애물 없는 평평한 노면을 둔다.
+
+ros2 launch bev_processor bev_processor.launch.py
+
+이 launch는 다음 순서로 실행한다.
+
+1. IR dot projector 1.0, 1280x800 5-bit stereo, calibrated IMU로 시작 측정
+2. IMU roll/pitch와 depth 노면 inlier로 높이 확정
+3. 측정 파이프라인이 OAK를 반환한 뒤 camera_driver 시작
+4. 기존 1초 폐기 + 4초 초점 고정 자세 측정
+5. 안정화된 NV12를 고정 LUT로 `/camera/image_bev`에 발행
+
+GUI 없이 성능만 측정:
+
+ros2 launch bev_processor bev_processor.launch.py \
+  performance_measurement_enabled:=true
+
+
+[안전 주의]
+
+- 테스트 주행 전 차량 바퀴를 지면에서 띄운다.
+- VESC를 사용하는 launch 또는 노드를 두 개 이상 동시에 실행하지 않는다.
+- 실행 중 이상 동작이 발생하면 Ctrl+C로 종료한다.
