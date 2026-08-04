@@ -20,13 +20,13 @@ struct BevLaneReconstructorConfig
 
   int minimum_brightness{160};
   int far_minimum_brightness{110};
-  int maximum_saturation{100};
+  int maximum_saturation{80};
   int brightness_blur_kernel{1};
   double vertical_close_m{0.05};
   double minimum_lane_mark_width_m{0.01};
-  double maximum_lane_mark_width_m{0.10};
-  int minimum_local_contrast{25};
-  int maximum_local_background_brightness{170};
+  double maximum_lane_mark_width_m{0.08};
+  int minimum_local_contrast{35};
+  int maximum_local_background_brightness{140};
   double local_background_band_m{0.05};
   double tracked_lane_mark_width_near_m{0.11};
   double tracked_lane_mark_width_far_m{0.20};
@@ -54,12 +54,24 @@ struct BevLaneReconstructorConfig
   int minimum_window_pixel_count{6};
 
   double expected_lane_width_m{0.625};
-  double lane_width_tolerance_m{0.20};
+  double lane_width_tolerance_m{0.075};
   double initial_center_tolerance_m{0.30};
   double single_lane_initial_tolerance_m{0.20};
   double maximum_tracking_gap_m{0.20};
   int minimum_points{5};
   bool allow_single_lane{true};
+
+  double correspondence_minimum_width_m{0.55};
+  double correspondence_maximum_width_m{0.70};
+  double correspondence_longitudinal_tolerance_m{0.10};
+  bool infer_partially_missing_lane{true};
+
+  bool temporal_tracking_enabled{true};
+  double temporal_maximum_lateral_jump_near_m{0.06};
+  double temporal_maximum_lateral_jump_far_m{0.12};
+  double temporal_maximum_heading_jump_deg{15.0};
+  int temporal_confirmation_frames{2};
+  int temporal_hold_frames{2};
 
   double output_line_thickness_m{0.02};
 };
@@ -72,6 +84,8 @@ struct BevLaneReconstruction
   std::vector<cv::Point2d> right_measured_points;
   bool valid{false};
   int measured_point_count{0};
+  int inferred_point_count{0};
+  bool temporal_hold_used{false};
   double measured_lane_width_m{0.0};
   double reconstructed_maximum_x_m{0.0};
 };
@@ -86,6 +100,15 @@ public:
 
 private:
   BevLaneReconstructorConfig config_;
+  std::vector<cv::Point2d> accepted_left_points_;
+  std::vector<cv::Point2d> accepted_right_points_;
+  std::vector<cv::Point2d> pending_left_points_;
+  std::vector<cv::Point2d> pending_right_points_;
+  int pending_left_frames_{0};
+  int pending_right_frames_{0};
+  int held_left_frames_{0};
+  int held_right_frames_{0};
+  double accepted_lane_width_m_{0.0};
 };
 
 }  // namespace bev_processor

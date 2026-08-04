@@ -71,6 +71,19 @@ struct LaneTracker
   int missing_windows{0};
 };
 
+struct TemporalTrackResult
+{
+  std::vector<cv::Point2d> points;
+  bool from_current_frame{false};
+  bool held_previous_frame{false};
+};
+
+struct CorrespondingLaneResult
+{
+  std::vector<cv::Point2d> points;
+  int inferred_point_count{0};
+};
+
 int makeOdd(const int value)
 {
   const int positive = std::max(1, value);
@@ -661,6 +674,176 @@ std::vector<cv::Point2d> smoothMeasuredPoints(
   return smoothed;
 }
 
+std::optional<double> lateralAtX(
+  const std::vector<cv::Point2d> & points,
+  const double x_m)
+{
+  if (points.empty()) {
+    return std::nullopt;
+  }
+  for (std::size_t index = 1U; index < points.size(); ++index) {
+    const auto & first = points[index - 1U];
+    const auto & second = points[index];
+    if ((x_m - first.x) * (x_m - second.x) > 0.0) {
+      continue;
+    }
+    const double delta_x_m = second.x - first.x;
+    if (std::abs(delta_x_m) <= 1.0e-9) {
+      return 0.5 * (first.y + second.y);
+    }
+    const double blend = (x_m - first.x) / delta_x_m;
+    return (1.0 - blend) * first.y + blend * second.y;
+  }
+  return std::nullopt;
+}
+
+bool tracksAreTemporallyConsistent(
+  const std::vector<cv::Point2d> & current,
+  const std::vector<cv::Point2d> & previous,
+  const BevLaneReconstructorConfig & config)
+{
+  if (current.size() < 2U || previous.size() < 2U) {
+    return false;
+  }
+  const auto current_x = std::minmax_element(
+    current.begin(), current.end(),
+    [](const cv::Point2d & first, const cv::Point2d & second) {
+      return first.x < second.x;
+    });
+  const auto previous_x = std::minmax_element(
+    previous.begin(), previous.end(),
+    [](const cv::Point2d & first, const cv::Point2d & second) {
+      return first.x < second.x;
+    });
+  const double minimum_x_m = std::max({
+      config.observation_minimum_x_m,
+      current_x.first->x,
+      previous_x.first->x});
+  const double maximum_x_m = std::min({
+      config.observation_maximum_x_m,
+      current_x.second->x,
+      previous_x.second->x});
+  if (maximum_x_m - minimum_x_m < 0.12) {
+    return false;
+  }
+
+  constexpr int kComparisonSamples = 7;
+  std::vector<double> normalized_lateral_errors;
+  normalized_lateral_errors.reserve(kComparisonSamples);
+  for (int sample = 0; sample < kComparisonSamples; ++sample) {
+    const double blend = static_cast<double>(sample) /
+      static_cast<double>(kComparisonSamples - 1);
+    const double x_m =
+      (1.0 - blend) * minimum_x_m + blend * maximum_x_m;
+    const auto current_y = lateralAtX(current, x_m);
+    const auto previous_y = lateralAtX(previous, x_m);
+    if (!current_y.has_value() || !previous_y.has_value()) {
+      continue;
+    }
+    const double distance_blend = appearanceBlend(config, x_m);
+    const double maximum_jump_m =
+      (1.0 - distance_blend) *
+      config.temporal_maximum_lateral_jump_near_m +
+      distance_blend * config.temporal_maximum_lateral_jump_far_m;
+    normalized_lateral_errors.push_back(
+      std::abs(*current_y - *previous_y) / maximum_jump_m);
+  }
+  if (
+    normalized_lateral_errors.size() < 3U ||
+    median(normalized_lateral_errors) > 1.0)
+  {
+    return false;
+  }
+
+  const auto current_y_start = lateralAtX(current, minimum_x_m);
+  const auto current_y_end = lateralAtX(current, maximum_x_m);
+  const auto previous_y_start = lateralAtX(previous, minimum_x_m);
+  const auto previous_y_end = lateralAtX(previous, maximum_x_m);
+  if (
+    !current_y_start.has_value() || !current_y_end.has_value() ||
+    !previous_y_start.has_value() || !previous_y_end.has_value())
+  {
+    return false;
+  }
+  const cv::Point2d current_heading = normalized(cv::Point2d(
+      maximum_x_m - minimum_x_m,
+      *current_y_end - *current_y_start));
+  const cv::Point2d previous_heading = normalized(cv::Point2d(
+      maximum_x_m - minimum_x_m,
+      *previous_y_end - *previous_y_start));
+  constexpr double kRadiansToDegrees = 180.0 / 3.14159265358979323846;
+  const double heading_change_deg = std::acos(std::clamp(
+      dot(current_heading, previous_heading), -1.0, 1.0)) *
+    kRadiansToDegrees;
+  return heading_change_deg <= config.temporal_maximum_heading_jump_deg;
+}
+
+TemporalTrackResult stabilizeTrack(
+  const std::vector<cv::Point2d> & current,
+  std::vector<cv::Point2d> * accepted,
+  std::vector<cv::Point2d> * pending,
+  int * pending_frames,
+  int * held_frames,
+  const BevLaneReconstructorConfig & config)
+{
+  TemporalTrackResult result;
+  if (!config.temporal_tracking_enabled) {
+    *accepted = current;
+    pending->clear();
+    *pending_frames = 0;
+    *held_frames = 0;
+    result.points = current;
+    result.from_current_frame = !current.empty();
+    return result;
+  }
+
+  if (!current.empty()) {
+    if (
+      accepted->empty() ||
+      tracksAreTemporallyConsistent(current, *accepted, config))
+    {
+      *accepted = current;
+      pending->clear();
+      *pending_frames = 0;
+      *held_frames = 0;
+      result.points = current;
+      result.from_current_frame = true;
+      return result;
+    }
+
+    if (
+      !pending->empty() &&
+      tracksAreTemporallyConsistent(current, *pending, config))
+    {
+      ++(*pending_frames);
+    } else {
+      *pending = current;
+      *pending_frames = 1;
+    }
+    if (*pending_frames >= config.temporal_confirmation_frames) {
+      *accepted = current;
+      pending->clear();
+      *pending_frames = 0;
+      *held_frames = 0;
+      result.points = current;
+      result.from_current_frame = true;
+      return result;
+    }
+  } else {
+    pending->clear();
+    *pending_frames = 0;
+  }
+
+  ++(*held_frames);
+  if (!accepted->empty() && *held_frames <= config.temporal_hold_frames) {
+    result.points = *accepted;
+    result.held_previous_frame = true;
+    return result;
+  }
+  accepted->clear();
+  return result;
+}
+
 std::vector<cv::Point2d> extendByTangent(
   std::vector<cv::Point2d> points,
   const BevLaneReconstructorConfig & config)
@@ -711,6 +894,58 @@ std::vector<cv::Point2d> offsetLane(
     offset.push_back(reference[index] + offset_m * left_normal);
   }
   return offset;
+}
+
+CorrespondingLaneResult buildCorrespondingLane(
+  const std::vector<cv::Point2d> & reference,
+  const double offset_sign,
+  const double lane_width_m,
+  const cv::Mat & candidate_mask,
+  const cv::Mat & gray,
+  const BevLaneReconstructorConfig & config)
+{
+  CorrespondingLaneResult result;
+  result.points.reserve(reference.size());
+  const double correspondence_half_width_m = 0.5 *
+    (config.correspondence_maximum_width_m -
+    config.correspondence_minimum_width_m);
+  for (std::size_t index = 0; index < reference.size(); ++index) {
+    cv::Point2d tangent;
+    if (index == 0U && reference.size() > 1U) {
+      tangent = reference[1U] - reference[0U];
+    } else if (index + 1U == reference.size() && index > 0U) {
+      tangent = reference[index] - reference[index - 1U];
+    } else if (index > 0U && index + 1U < reference.size()) {
+      tangent = reference[index + 1U] - reference[index - 1U];
+    } else {
+      tangent = cv::Point2d(1.0, 0.0);
+    }
+    tangent = normalized(tangent);
+    const cv::Point2d left_normal(-tangent.y, tangent.x);
+    const cv::Point2d expected_point =
+      reference[index] + offset_sign * lane_width_m * left_normal;
+    const auto measurement = measureWindow(
+      candidate_mask, gray, config, expected_point, tangent,
+      correspondence_half_width_m, 0);
+    bool actual_pixel_found = false;
+    if (measurement.valid) {
+      const cv::Point2d delta = measurement.point - reference[index];
+      const double signed_width_m = offset_sign * dot(delta, left_normal);
+      const double longitudinal_error_m = std::abs(dot(delta, tangent));
+      actual_pixel_found =
+        signed_width_m >= config.correspondence_minimum_width_m &&
+        signed_width_m <= config.correspondence_maximum_width_m &&
+        longitudinal_error_m <=
+        config.correspondence_longitudinal_tolerance_m;
+    }
+    if (actual_pixel_found) {
+      result.points.push_back(measurement.point);
+    } else {
+      result.points.push_back(expected_point);
+      ++result.inferred_point_count;
+    }
+  }
+  return result;
 }
 
 double drawMeasuredLane(
@@ -812,6 +1047,19 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.initial_center_tolerance_m <= 0.0 ||
     config_.single_lane_initial_tolerance_m <= 0.0 ||
     config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 2 ||
+    config_.correspondence_minimum_width_m <= 0.0 ||
+    config_.correspondence_maximum_width_m <=
+    config_.correspondence_minimum_width_m ||
+    config_.expected_lane_width_m < config_.correspondence_minimum_width_m ||
+    config_.expected_lane_width_m > config_.correspondence_maximum_width_m ||
+    config_.correspondence_longitudinal_tolerance_m <= 0.0 ||
+    config_.temporal_maximum_lateral_jump_near_m <= 0.0 ||
+    config_.temporal_maximum_lateral_jump_far_m <
+    config_.temporal_maximum_lateral_jump_near_m ||
+    config_.temporal_maximum_heading_jump_deg <= 0.0 ||
+    config_.temporal_maximum_heading_jump_deg > 180.0 ||
+    config_.temporal_confirmation_frames <= 0 ||
+    config_.temporal_hold_frames < 0 ||
     config_.output_line_thickness_m <= 0.0)
   {
     throw std::invalid_argument(
@@ -888,18 +1136,15 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   result.reconstructed_mask = cv::Mat::zeros(
     config_.image_height, config_.image_width, CV_8UC1);
   const Seed seed = findSeed(result.candidate_mask, gray, config_);
-  if (!seed.valid) {
-    return result;
-  }
 
   LaneTracker left;
-  left.active = true;
+  left.active = seed.valid;
   left.position = seed.left;
   if (seed.left_measured) {
     left.measured_points.push_back(seed.left);
   }
   LaneTracker right;
-  right.active = true;
+  right.active = seed.valid;
   right.position = seed.right;
   if (seed.right_measured) {
     right.measured_points.push_back(seed.right);
@@ -996,13 +1241,47 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   result.right_measured_points = right.measured_points;
   result.measured_point_count = static_cast<int>(
     left.measured_points.size() + right.measured_points.size());
-  result.measured_lane_width_m = measured_widths_m.empty() ?
-    config_.expected_lane_width_m : median(measured_widths_m);
+  const bool current_left_valid =
+    static_cast<int>(left.measured_points.size()) >= config_.minimum_points;
+  const bool current_right_valid =
+    static_cast<int>(right.measured_points.size()) >= config_.minimum_points;
+  const std::vector<cv::Point2d> empty_points;
+  const TemporalTrackResult stable_left = stabilizeTrack(
+    current_left_valid ? left.measured_points : empty_points,
+    &accepted_left_points_, &pending_left_points_,
+    &pending_left_frames_, &held_left_frames_, config_);
+  const TemporalTrackResult stable_right = stabilizeTrack(
+    current_right_valid ? right.measured_points : empty_points,
+    &accepted_right_points_, &pending_right_points_,
+    &pending_right_frames_, &held_right_frames_, config_);
+  result.temporal_hold_used =
+    stable_left.held_previous_frame || stable_right.held_previous_frame;
+
+  if (
+    stable_left.from_current_frame && stable_right.from_current_frame &&
+    !measured_widths_m.empty())
+  {
+    const double current_width_m = median(measured_widths_m);
+    if (
+      current_width_m >= config_.correspondence_minimum_width_m &&
+      current_width_m <= config_.correspondence_maximum_width_m)
+    {
+      accepted_lane_width_m_ = accepted_lane_width_m_ > 0.0 ?
+        0.80 * accepted_lane_width_m_ + 0.20 * current_width_m :
+        current_width_m;
+    }
+  }
+  const double lane_width_m = std::clamp(
+    accepted_lane_width_m_ > 0.0 ?
+    accepted_lane_width_m_ : config_.expected_lane_width_m,
+    config_.correspondence_minimum_width_m,
+    config_.correspondence_maximum_width_m);
+  result.measured_lane_width_m = lane_width_m;
 
   const bool left_valid =
-    static_cast<int>(left.measured_points.size()) >= config_.minimum_points;
+    static_cast<int>(stable_left.points.size()) >= config_.minimum_points;
   const bool right_valid =
-    static_cast<int>(right.measured_points.size()) >= config_.minimum_points;
+    static_cast<int>(stable_right.points.size()) >= config_.minimum_points;
   if (!left_valid && !right_valid) {
     return result;
   }
@@ -1011,16 +1290,48 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   std::vector<cv::Point2d> right_output;
   if (left_valid) {
     left_output = smoothMeasuredPoints(
-      left.measured_points, config_.measured_point_smoothing_weight);
+      stable_left.points, config_.measured_point_smoothing_weight);
   }
   if (right_valid) {
     right_output = smoothMeasuredPoints(
-      right.measured_points, config_.measured_point_smoothing_weight);
+      stable_right.points, config_.measured_point_smoothing_weight);
   }
-  if (left_valid && !right_valid && config_.allow_single_lane) {
-    right_output = offsetLane(left_output, -config_.expected_lane_width_m);
+
+  if (
+    config_.infer_partially_missing_lane &&
+    ((left_valid && right_valid) || config_.allow_single_lane))
+  {
+    const auto maximumX = [](const std::vector<cv::Point2d> & points) {
+        double maximum_x_m = 0.0;
+        for (const auto & point : points) {
+          maximum_x_m = std::max(maximum_x_m, point.x);
+        }
+        return maximum_x_m;
+      };
+    const bool use_left_reference = left_valid &&
+      (!right_valid ||
+      (stable_left.from_current_frame && !stable_right.from_current_frame) ||
+      (stable_left.from_current_frame == stable_right.from_current_frame &&
+      maximumX(left_output) >= maximumX(right_output)));
+    if (use_left_reference) {
+      auto corresponding = buildCorrespondingLane(
+        left_output, -1.0, lane_width_m,
+        result.candidate_mask, gray, config_);
+      right_output = std::move(corresponding.points);
+      result.inferred_point_count += corresponding.inferred_point_count;
+    } else if (right_valid) {
+      auto corresponding = buildCorrespondingLane(
+        right_output, 1.0, lane_width_m,
+        result.candidate_mask, gray, config_);
+      left_output = std::move(corresponding.points);
+      result.inferred_point_count += corresponding.inferred_point_count;
+    }
+  } else if (left_valid && !right_valid && config_.allow_single_lane) {
+    right_output = offsetLane(left_output, -lane_width_m);
+    result.inferred_point_count += static_cast<int>(right_output.size());
   } else if (right_valid && !left_valid && config_.allow_single_lane) {
-    left_output = offsetLane(right_output, config_.expected_lane_width_m);
+    left_output = offsetLane(right_output, lane_width_m);
+    result.inferred_point_count += static_cast<int>(left_output.size());
   }
 
   left_output = extendByTangent(std::move(left_output), config_);
@@ -1034,8 +1345,15 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
 
 void BevLaneReconstructor::reset()
 {
-  // The pixel-first sliding-window tracker intentionally keeps no temporal
-  // curve state. Every frame is re-anchored to the current BEV pixels.
+  accepted_left_points_.clear();
+  accepted_right_points_.clear();
+  pending_left_points_.clear();
+  pending_right_points_.clear();
+  pending_left_frames_ = 0;
+  pending_right_frames_ = 0;
+  held_left_frames_ = 0;
+  held_right_frames_ = 0;
+  accepted_lane_width_m_ = 0.0;
 }
 
 }  // namespace bev_processor

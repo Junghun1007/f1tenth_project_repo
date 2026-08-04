@@ -87,14 +87,14 @@ bev_processor::BevLaneReconstructor makeReconstructor()
   bev_processor::BevLaneReconstructorConfig config;
   config.minimum_brightness = 160;
   config.far_minimum_brightness = 110;
-  config.maximum_saturation = 100;
+  config.maximum_saturation = 80;
   config.observation_minimum_x_m = 0.20;
   config.observation_maximum_x_m = 1.80;
   config.reconstruction_minimum_x_m = 0.20;
   config.reconstruction_maximum_x_m = 2.70;
   config.maximum_extrapolation_m = 0.20;
   config.expected_lane_width_m = 0.60;
-  config.lane_width_tolerance_m = 0.14;
+  config.lane_width_tolerance_m = 0.075;
   config.minimum_points = 5;
   config.sliding_window_step_m = 0.06;
   config.sliding_window_length_m = 0.18;
@@ -183,6 +183,21 @@ double meanDistanceToReference(
     total_distance_m += best_distance_m;
   }
   return total_distance_m / static_cast<double>(measured.size());
+}
+
+bool maskHasWhiteNear(
+  const cv::Mat & mask,
+  const double x_m,
+  const double y_m,
+  const int radius_px = 3)
+{
+  const cv::Point center = metricPoint(x_m, y_m);
+  const int first_row = std::max(0, center.y - radius_px);
+  const int last_row = std::min(mask.rows - 1, center.y + radius_px);
+  const int first_column = std::max(0, center.x - radius_px);
+  const int last_column = std::min(mask.cols - 1, center.x + radius_px);
+  return cv::countNonZero(mask(cv::Range(first_row, last_row + 1),
+      cv::Range(first_column, last_column + 1))) > 0;
 }
 
 void testFarCurveIsReacquiredFromActualPixels()
@@ -332,6 +347,71 @@ void testDefaultOutputLinesStayThin()
     "the 2cm output setting must render two thin lane lines");
 }
 
+void testTemporalGateRequiresRepeatedLargeChange()
+{
+  auto reconstructor = makeReconstructor();
+  cv::Mat baseline = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&baseline, 0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+  drawBoundary(&baseline, -0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+  require(reconstructor.reconstruct(baseline).valid, "baseline must be valid");
+
+  cv::Mat shifted = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&shifted, 0.48, 0.20, 1.70, farCurveCenter, 245, 5);
+  drawBoundary(&shifted, -0.12, 0.20, 1.70, farCurveCenter, 245, 5);
+  const auto first_shift = reconstructor.reconstruct(shifted);
+  require(
+    first_shift.temporal_hold_used,
+    "one large frame-to-frame jump must hold the accepted lane");
+  require(
+    maskHasWhiteNear(first_shift.reconstructed_mask, 1.0, 0.30) &&
+    !maskHasWhiteNear(first_shift.reconstructed_mask, 1.0, 0.48),
+    "the first isolated jump must not move the rendered lane");
+
+  const auto confirmed_shift = reconstructor.reconstruct(shifted);
+  require(
+    !confirmed_shift.temporal_hold_used &&
+    maskHasWhiteNear(confirmed_shift.reconstructed_mask, 1.0, 0.48),
+    "the same large change in two frames must be accepted");
+}
+
+void testTemporalHoldExpiresAfterTwoFrames()
+{
+  auto reconstructor = makeReconstructor();
+  cv::Mat baseline = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&baseline, 0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+  drawBoundary(&baseline, -0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+  require(reconstructor.reconstruct(baseline).valid, "baseline must be valid");
+
+  const cv::Mat blank = cv::Mat::zeros(300, 120, CV_8UC3);
+  const auto first_missing = reconstructor.reconstruct(blank);
+  const auto second_missing = reconstructor.reconstruct(blank);
+  const auto third_missing = reconstructor.reconstruct(blank);
+  require(
+    first_missing.valid && first_missing.temporal_hold_used &&
+    second_missing.valid && second_missing.temporal_hold_used,
+    "the accepted lane may be held for only two missing frames");
+  require(
+    !third_missing.valid,
+    "stale lanes must disappear after the configured hold duration");
+}
+
+void testPartialOcclusionUsesNormalLaneWidth()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&image, 0.30, 0.20, 2.00, farCurveCenter, 245, 5);
+  drawBoundary(&image, -0.30, 0.20, 0.85, farCurveCenter, 245, 5);
+
+  const auto result = makeReconstructor().reconstruct(image);
+  require(result.valid, "a partially occluded lane pair must remain valid");
+  require(
+    maximumMeasuredX(result.right_measured_points) < 1.20 &&
+    result.inferred_point_count > 0,
+    "the hidden portion must be identified as inferred, not measured");
+  require(
+    maskHasWhiteNear(result.reconstructed_mask, 1.50, -0.30),
+    "the hidden boundary must continue along the visible lane normal");
+}
+
 void testLowSaturationGateRemainsOptional()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -367,6 +447,9 @@ int main()
   testBroadBrightSceneryDoesNotPullTracker();
   testBrightBackgroundIsNotAcceptedAsRoadLane();
   testDefaultOutputLinesStayThin();
+  testTemporalGateRequiresRepeatedLargeChange();
+  testTemporalHoldExpiresAfterTwoFrames();
+  testPartialOcclusionUsesNormalLaneWidth();
   testLowSaturationGateRemainsOptional();
   std::cout << "BEV sliding-window lane tests passed\n";
   return EXIT_SUCCESS;

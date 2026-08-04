@@ -371,6 +371,19 @@ public:
         lane_reconstructor_config_.tracked_lane_mark_width_far_m,
         lane_preview_enabled_ ? "on" : "off",
         lane_preview_overlay_alpha_);
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV lane continuity: temporal=%s, lateral jump near/far="
+        "%.2f/%.2fm, heading jump=%.1fdeg, confirm/hold=%d/%d frames, "
+        "normal correspondence=%.2f..%.2fm",
+        lane_reconstructor_config_.temporal_tracking_enabled ? "on" : "off",
+        lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m,
+        lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m,
+        lane_reconstructor_config_.temporal_maximum_heading_jump_deg,
+        lane_reconstructor_config_.temporal_confirmation_frames,
+        lane_reconstructor_config_.temporal_hold_frames,
+        lane_reconstructor_config_.correspondence_minimum_width_m,
+        lane_reconstructor_config_.correspondence_maximum_width_m);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -511,14 +524,14 @@ private:
     declare_parameter<double>("lane_preview_overlay_alpha", 0.35);
     declare_parameter<int>("lane_minimum_brightness", 160);
     declare_parameter<int>("lane_far_minimum_brightness", 110);
-    declare_parameter<int>("lane_maximum_saturation", 100);
+    declare_parameter<int>("lane_maximum_saturation", 80);
     declare_parameter<int>("lane_brightness_blur_kernel", 1);
     declare_parameter<double>("lane_vertical_close_m", 0.05);
     declare_parameter<double>("lane_minimum_mark_width_m", 0.01);
-    declare_parameter<double>("lane_maximum_mark_width_m", 0.10);
-    declare_parameter<int>("lane_minimum_local_contrast", 25);
+    declare_parameter<double>("lane_maximum_mark_width_m", 0.08);
+    declare_parameter<int>("lane_minimum_local_contrast", 35);
     declare_parameter<int>(
-      "lane_maximum_local_background_brightness", 170);
+      "lane_maximum_local_background_brightness", 140);
     declare_parameter<double>("lane_local_background_band_m", 0.05);
     declare_parameter<double>(
       "lane_tracked_mark_width_near_m", 0.11);
@@ -545,12 +558,28 @@ private:
     declare_parameter<double>("lane_measured_point_smoothing_weight", 0.85);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
     declare_parameter<double>("lane_expected_width_m", 0.625);
-    declare_parameter<double>("lane_width_tolerance_m", 0.20);
+    declare_parameter<double>("lane_width_tolerance_m", 0.075);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.30);
     declare_parameter<double>("lane_single_initial_tolerance_m", 0.20);
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.20);
     declare_parameter<int>("lane_minimum_points", 5);
     declare_parameter<bool>("lane_allow_single_lane", true);
+    declare_parameter<double>(
+      "lane_correspondence_minimum_width_m", 0.55);
+    declare_parameter<double>(
+      "lane_correspondence_maximum_width_m", 0.70);
+    declare_parameter<double>(
+      "lane_correspondence_longitudinal_tolerance_m", 0.10);
+    declare_parameter<bool>("lane_infer_partially_missing_lane", true);
+    declare_parameter<bool>("lane_temporal_tracking_enabled", true);
+    declare_parameter<double>(
+      "lane_temporal_maximum_lateral_jump_near_m", 0.06);
+    declare_parameter<double>(
+      "lane_temporal_maximum_lateral_jump_far_m", 0.12);
+    declare_parameter<double>(
+      "lane_temporal_maximum_heading_jump_deg", 15.0);
+    declare_parameter<int>("lane_temporal_confirmation_frames", 2);
+    declare_parameter<int>("lane_temporal_hold_frames", 2);
     declare_parameter<double>("lane_output_line_thickness_m", 0.02);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
@@ -803,6 +832,30 @@ private:
       get_parameter("lane_minimum_points").as_int());
     lane_reconstructor_config_.allow_single_lane =
       get_parameter("lane_allow_single_lane").as_bool();
+    lane_reconstructor_config_.correspondence_minimum_width_m =
+      get_parameter("lane_correspondence_minimum_width_m").as_double();
+    lane_reconstructor_config_.correspondence_maximum_width_m =
+      get_parameter("lane_correspondence_maximum_width_m").as_double();
+    lane_reconstructor_config_.correspondence_longitudinal_tolerance_m =
+      get_parameter(
+        "lane_correspondence_longitudinal_tolerance_m").as_double();
+    lane_reconstructor_config_.infer_partially_missing_lane =
+      get_parameter("lane_infer_partially_missing_lane").as_bool();
+    lane_reconstructor_config_.temporal_tracking_enabled =
+      get_parameter("lane_temporal_tracking_enabled").as_bool();
+    lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m =
+      get_parameter(
+        "lane_temporal_maximum_lateral_jump_near_m").as_double();
+    lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m =
+      get_parameter(
+        "lane_temporal_maximum_lateral_jump_far_m").as_double();
+    lane_reconstructor_config_.temporal_maximum_heading_jump_deg =
+      get_parameter("lane_temporal_maximum_heading_jump_deg").as_double();
+    lane_reconstructor_config_.temporal_confirmation_frames =
+      static_cast<int>(
+        get_parameter("lane_temporal_confirmation_frames").as_int());
+    lane_reconstructor_config_.temporal_hold_frames = static_cast<int>(
+      get_parameter("lane_temporal_hold_frames").as_int());
     lane_reconstructor_config_.output_line_thickness_m =
       get_parameter("lane_output_line_thickness_m").as_double();
 
@@ -1042,10 +1095,24 @@ private:
           input->data.size(),
           static_cast<std::size_t>(input->step));
         if (lane_reconstructor_) {
+          const auto lane_started_at = SteadyClock::now();
           const auto lane = lane_reconstructor_->reconstruct(output->image);
+          const auto lane_finished_at = SteadyClock::now();
+          const auto lane_process_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+              lane_finished_at - lane_started_at).count());
+          lane_process_samples_interval_.fetch_add(
+            1U, std::memory_order_relaxed);
+          lane_process_ns_interval_.fetch_add(
+            lane_process_ns, std::memory_order_relaxed);
+          updateMaximum(lane_process_ns_max_interval_, lane_process_ns);
           output->lane_mask = lane.reconstructed_mask;
           latest_lane_points_.store(
             lane.measured_point_count, std::memory_order_relaxed);
+          latest_lane_inferred_points_.store(
+            lane.inferred_point_count, std::memory_order_relaxed);
+          latest_lane_temporal_hold_.store(
+            lane.temporal_hold_used, std::memory_order_relaxed);
           latest_lane_width_mm_.store(
             static_cast<int>(std::lround(
               1000.0 * lane.measured_lane_width_m)),
@@ -1520,6 +1587,12 @@ private:
       lane_valid_interval_.exchange(0U, std::memory_order_relaxed);
     const auto lane_invalid =
       lane_invalid_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto lane_process_samples =
+      lane_process_samples_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto lane_process_ns =
+      lane_process_ns_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto lane_process_ns_max =
+      lane_process_ns_max_interval_.exchange(0U, std::memory_order_relaxed);
     const auto process_ns =
       process_ns_interval_.exchange(0U, std::memory_order_relaxed);
     const auto process_ns_max =
@@ -1561,6 +1634,11 @@ private:
       processed > 0U ?
       static_cast<double>(process_ns) /
       static_cast<double>(processed) / 1.0e6 :
+      0.0;
+    const double average_lane_process_ms =
+      lane_process_samples > 0U ?
+      static_cast<double>(lane_process_ns) /
+      static_cast<double>(lane_process_samples) / 1.0e6 :
       0.0;
     const double average_stabilized_latency_ms =
       stabilized_latency_samples > 0U ?
@@ -1644,8 +1722,9 @@ private:
       RCLCPP_INFO(
         get_logger(),
         "BEV lane: valid/invalid=%.1f/%.1fHz "
-        "(%llu/%llu total), points=%d, width=%.3fm, "
-        "reconstructed_to=%.2fm, output=%s",
+        "(%llu/%llu total), measured/inferred=%d/%d, hold=%s, "
+        "width=%.3fm, reconstructed_to=%.2fm, "
+        "lane_compute_ms(avg/max)=%.3f/%.3f, output=%s",
         static_cast<double>(lane_valid) / elapsed_sec,
         static_cast<double>(lane_invalid) / elapsed_sec,
         static_cast<unsigned long long>(
@@ -1653,10 +1732,15 @@ private:
         static_cast<unsigned long long>(
           lane_invalid_total_.load(std::memory_order_relaxed)),
         latest_lane_points_.load(std::memory_order_relaxed),
+        latest_lane_inferred_points_.load(std::memory_order_relaxed),
+        latest_lane_temporal_hold_.load(std::memory_order_relaxed) ?
+        "yes" : "no",
         static_cast<double>(
           latest_lane_width_mm_.load(std::memory_order_relaxed)) / 1000.0,
         static_cast<double>(latest_lane_reconstructed_maximum_x_mm_.load(
           std::memory_order_relaxed)) / 1000.0,
+        average_lane_process_ms,
+        static_cast<double>(lane_process_ns_max) / 1.0e6,
         lane_output_topic_.c_str());
     }
 
@@ -1750,6 +1834,8 @@ private:
   std::atomic<std::uint64_t> lane_valid_total_{0U};
   std::atomic<std::uint64_t> lane_invalid_total_{0U};
   std::atomic<int> latest_lane_points_{0};
+  std::atomic<int> latest_lane_inferred_points_{0};
+  std::atomic<bool> latest_lane_temporal_hold_{false};
   std::atomic<int> latest_lane_width_mm_{0};
   std::atomic<int> latest_lane_reconstructed_maximum_x_mm_{0};
   std::atomic<std::uint64_t> received_interval_{0U};
@@ -1760,6 +1846,9 @@ private:
   std::atomic<std::uint64_t> previewed_interval_{0U};
   std::atomic<std::uint64_t> lane_valid_interval_{0U};
   std::atomic<std::uint64_t> lane_invalid_interval_{0U};
+  std::atomic<std::uint64_t> lane_process_samples_interval_{0U};
+  std::atomic<std::uint64_t> lane_process_ns_interval_{0U};
+  std::atomic<std::uint64_t> lane_process_ns_max_interval_{0U};
   std::atomic<std::uint64_t> process_ns_interval_{0U};
   std::atomic<std::uint64_t> process_ns_max_interval_{0U};
   std::atomic<std::uint64_t> stabilized_latency_samples_interval_{0U};

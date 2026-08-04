@@ -169,17 +169,17 @@ bev_processor:
     # 선형으로 낮춘다. 낮은 saturation은 흰색/회색만 남겨 컬러 풍경을 거른다.
     lane_minimum_brightness: 160
     lane_far_minimum_brightness: 110
-    lane_maximum_saturation: 100
+    lane_maximum_saturation: 80
     # 1은 추가 블러 없음. 원거리의 얇은 픽셀을 보존하는 기본값이다.
     lane_brightness_blur_kernel: 1
     lane_vertical_close_m: 0.05
     lane_minimum_mark_width_m: 0.01
-    # 최초 seed는 어두운 배경 위의 10cm 이하 흰 선만 허용한다.
-    lane_maximum_mark_width_m: 0.10
-    # 선 중심과 양옆 5cm 배경의 밝기 차가 25 이상이어야 하며,
-    # 양옆 배경 평균이 170보다 밝으면 도로 밖 밝은 풍경으로 보고 제외한다.
-    lane_minimum_local_contrast: 25
-    lane_maximum_local_background_brightness: 170
+    # 최초 seed는 어두운 배경 위의 8cm 이하 흰 선만 허용한다.
+    lane_maximum_mark_width_m: 0.08
+    # 선 중심과 양옆 5cm 배경의 밝기 차가 35 이상이어야 하며,
+    # 양옆 배경 평균이 140보다 밝으면 도로 밖 밝은 풍경으로 보고 제외한다.
+    lane_minimum_local_contrast: 35
+    lane_maximum_local_background_brightness: 140
     lane_local_background_band_m: 0.05
     # 추적 중에는 윈도우의 모든 밝은 픽셀을 평균하지 않는다. 가로 방향으로
     # 분리한 밝은 덩어리 중 예측점에 가깝고 이 폭 이하인 하나만 실측한다.
@@ -218,11 +218,30 @@ bev_processor:
     lane_minimum_window_pixel_count: 6
 
     lane_expected_width_m: 0.625
-    lane_width_tolerance_m: 0.20
+    # 62.5cm ± 7.5cm, 즉 55~70cm만 정상 좌우 차선 쌍으로 본다.
+    lane_width_tolerance_m: 0.075
     lane_initial_center_tolerance_m: 0.30
     lane_single_initial_tolerance_m: 0.20
     lane_minimum_points: 5
     lane_allow_single_lane: true
+
+    # 한쪽 차선을 기준으로 국소 접선의 법선 방향 55~70cm를 검색한다.
+    # 반대쪽 실제 픽셀이 있으면 그 픽셀을 쓰고, 가려진 구간만 62.5cm
+    # 위치에 보완한다. 단순 Y 이동이 아니므로 곡선에서도 평행 폭을 유지한다.
+    lane_correspondence_minimum_width_m: 0.55
+    lane_correspondence_maximum_width_m: 0.70
+    lane_correspondence_longitudinal_tolerance_m: 0.10
+    lane_infer_partially_missing_lane: true
+
+    # Odometry 없이 이전 승인 라인과 현재 라인을 같은 X에서 비교한다.
+    # 큰 이동/방향 변화는 2프레임 연속일 때만 승인하고, 픽셀이 사라진
+    # 경우에는 이전 라인을 최대 2프레임만 유지한 뒤 제거한다.
+    lane_temporal_tracking_enabled: true
+    lane_temporal_maximum_lateral_jump_near_m: 0.06
+    lane_temporal_maximum_lateral_jump_far_m: 0.12
+    lane_temporal_maximum_heading_jump_deg: 15.0
+    lane_temporal_confirmation_frames: 2
+    lane_temporal_hold_frames: 2
 
     # 1cm/pixel인 기본 BEV에서 약 2pixel 두께다.
     lane_output_line_thickness_m: 0.02
