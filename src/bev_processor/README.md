@@ -135,37 +135,47 @@ Sobel, 미분 필터, 대비 강화, 밝기 임계값, morphology, 차선 추출
 
 재구성 단계는 다음 순서로 동작한다.
 
-1. 컬러 BEV를 grayscale 밝기로 변환하고 `lane_minimum_brightness`로 이진화한다.
+1. 컬러 BEV를 grayscale 밝기로 변환한다. 1.8m 이후에는 임계값을
+   `lane_far_minimum_brightness`까지 점진적으로 낮춰 흐린 픽셀도 남긴다.
 2. 선택적으로 HSV saturation 상한을 적용한다. 기본값 255는 채도 필터를 끈다.
-3. 행별로 실제 테이프 폭에 맞는 밝은 run만 남긴다.
-4. `0.20~1.80m`의 관측 신뢰 구간만 가까운 곳부터 추적한다.
-5. 좌·우 차선의 중점을 robust 2차 곡선으로 피팅한다.
-6. 실제 마지막 관측점에서 최대 `0.50m`, 전체로는 최대 `2.30m`까지만 연장한다.
-7. 중심 곡선의 법선 방향으로 차선 폭의 절반씩 떨어진 두 경계를 4cm 폭으로 그린다.
+3. `0.20~1.00m`의 가까운 행에서 좌·우 차선 시작점을 고른다.
+4. 이전 실제 측정점의 방향으로 회전형 슬라이딩 윈도우의 다음 위치만 예측한다.
+5. 윈도우 내부 실제 밝은 픽셀의 가중 중심으로 위치를 90% 보정한다.
+6. 1.8m 이후에는 윈도우 반폭을 12cm에서 최대 22cm까지 넓혀 번진 곡선의
+   중앙을 계속 측정한다.
+7. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
+8. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 20cm만 연장한다.
 
-한쪽 경계만 검출돼도 설정된 차선 폭으로 중심을 추정해 두 경계를 출력한다.
-피팅에 실패한 프레임은 잘못된 원거리 선을 만들지 않고 빈 검은 마스크를
-발행한다. 기본 `lane_temporal_smoothing_alpha=1.0`은 시간 평활화를 끈 값이다.
+실제로 검출된 좌·우 차선은 고정 차선 폭 모델로 덮어쓰지 않는다. 한쪽 전체가
+검출되지 않았을 때만 실제로 검출된 반대쪽 차선의 법선 방향으로 누락된 쪽을
+생성한다. 두세 개 창에서 픽셀이 연속으로 없으면 추적을 종료하므로 원거리까지
+차선을 임의로 만들어 내지 않는다.
 
 실행하면서 값을 바꾸는 예시는 다음과 같다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
   lane_observation_maximum_x_m:=1.8 \
-  lane_reconstruction_maximum_x_m:=2.3 \
-  lane_maximum_extrapolation_m:=0.5 \
+  lane_reconstruction_maximum_x_m:=2.7 \
+  lane_maximum_extrapolation_m:=0.2 \
   lane_minimum_brightness:=160 \
+  lane_far_minimum_brightness:=110 \
+  lane_sliding_window_measurement_weight:=0.90 \
   lane_expected_width_m:=0.625 \
   lane_output_line_thickness_m:=0.04
 ```
 
-노이즈가 많을 때 채도 조건과 시간 평활화를 시험하는 예시는 다음과 같다.
+원거리 곡선을 놓치면 far 밝기 임계값과 원거리 윈도우 폭을 다음처럼 조절한다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
-  lane_maximum_saturation:=80 \
-  lane_temporal_smoothing_alpha:=0.5
+  lane_far_minimum_brightness:=95 \
+  lane_sliding_window_half_width_far_m:=0.25
 ```
+
+다른 밝은 물체를 따라가면 `lane_far_minimum_brightness`를 높이고
+`lane_sliding_window_half_width_far_m`를 줄인다. 컬러 물체가 문제일 때만
+`lane_maximum_saturation:=80` 같은 저채도 조건을 추가한다.
 
 모든 조절 가능한 차선 인자는 다음 명령으로 확인한다.
 

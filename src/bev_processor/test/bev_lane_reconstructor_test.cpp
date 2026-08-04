@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
@@ -32,100 +33,235 @@ cv::Point metricPoint(const double x_m, const double y_m)
       (kXMaxM - x_m) / kMeterPerPixel - 0.5)));
 }
 
-double expectedCenter(const double x_m)
+double farCurveCenter(const double x_m)
 {
-  return 0.055 * x_m * x_m + 0.01 * x_m;
+  if (x_m <= 1.75) {
+    return 0.0;
+  }
+  const double distance_m = x_m - 1.75;
+  return 0.30 * distance_m * distance_m;
+}
+
+double closeCurveCenter(const double x_m)
+{
+  return 0.16 * std::sin(1.8 * (x_m - 0.25));
 }
 
 std::vector<cv::Point> makeBoundary(
   const double lateral_offset_m,
-  const double maximum_x_m)
+  const double minimum_x_m,
+  const double maximum_x_m,
+  double (*center_function)(double))
 {
   std::vector<cv::Point> points;
-  for (double x_m = 0.20; x_m <= maximum_x_m; x_m += 0.01) {
+  for (
+    double x_m = minimum_x_m;
+    x_m <= maximum_x_m + 1.0e-9;
+    x_m += 0.01)
+  {
     points.push_back(metricPoint(
-      x_m, expectedCenter(x_m) + lateral_offset_m));
+      x_m, center_function(x_m) + lateral_offset_m));
   }
   return points;
+}
+
+void drawBoundary(
+  cv::Mat * image,
+  const double lateral_offset_m,
+  const double minimum_x_m,
+  const double maximum_x_m,
+  double (*center_function)(double),
+  const int brightness,
+  const int thickness)
+{
+  const std::vector<std::vector<cv::Point>> boundary{
+    makeBoundary(
+      lateral_offset_m, minimum_x_m, maximum_x_m, center_function)};
+  cv::polylines(
+    *image, boundary, false,
+    cv::Scalar(brightness, brightness, brightness), thickness);
 }
 
 bev_processor::BevLaneReconstructor makeReconstructor()
 {
   bev_processor::BevLaneReconstructorConfig config;
-  config.minimum_brightness = 150;
+  config.minimum_brightness = 160;
+  config.far_minimum_brightness = 110;
   config.maximum_saturation = 255;
   config.observation_minimum_x_m = 0.20;
   config.observation_maximum_x_m = 1.80;
   config.reconstruction_minimum_x_m = 0.20;
-  config.reconstruction_maximum_x_m = 2.30;
-  config.maximum_extrapolation_m = 0.50;
+  config.reconstruction_maximum_x_m = 2.70;
+  config.maximum_extrapolation_m = 0.20;
   config.expected_lane_width_m = 0.60;
-  config.lane_width_tolerance_m = 0.12;
-  config.minimum_points = 15;
-  config.maximum_fit_residual_m = 0.04;
-  config.temporal_smoothing_alpha = 1.0;
+  config.lane_width_tolerance_m = 0.14;
+  config.minimum_points = 5;
+  config.sliding_window_step_m = 0.06;
+  config.sliding_window_length_m = 0.18;
+  config.sliding_window_half_width_near_m = 0.12;
+  config.sliding_window_half_width_far_m = 0.22;
+  config.sliding_window_measurement_weight = 0.90;
+  config.sliding_window_heading_weight = 0.80;
+  config.minimum_window_pixel_count = 6;
+  config.maximum_tracking_gap_m = 0.20;
+  config.maximum_gap_fill_m = 0.26;
+  config.measured_point_smoothing_weight = 0.85;
   return bev_processor::BevLaneReconstructor(config);
 }
 
-void testCurvesAreReconstructedPastTrustedRange()
+double maximumMeasuredX(const std::vector<cv::Point2d> & points)
 {
-  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
-  const std::vector<std::vector<cv::Point>> left{
-    makeBoundary(0.30, 1.80)};
-  const std::vector<std::vector<cv::Point>> right{
-    makeBoundary(-0.30, 1.80)};
-  cv::polylines(image, left, false, cv::Scalar(240, 240, 240), 5);
-  cv::polylines(image, right, false, cv::Scalar(240, 240, 240), 5);
-
-  // This wide far-distance smear must not influence the trusted fit.
-  cv::line(
-    image,
-    metricPoint(1.90, -0.45),
-    metricPoint(2.70, 0.45),
-    cv::Scalar(255, 255, 255),
-    24);
-
-  const auto result = makeReconstructor().reconstruct(image);
-  require(result.valid, "curved lane pair must produce a clean mask");
-  require(
-    result.center_curve.valid,
-    "trusted near/mid-distance points must produce a center curve");
-  require(
-    result.center_curve.maximum_observed_x_m <= 1.81,
-    "points beyond the 1.8m trust limit must not enter the fit");
-  require(
-    result.reconstructed_maximum_x_m > 2.20 &&
-    result.reconstructed_maximum_x_m <= 2.31,
-    "the fitted curve must be extrapolated by at most 0.5m");
-  require(
-    std::abs(result.center_curve.lateralAt(2.20) - expectedCenter(2.20)) <
-    0.04,
-    "limited extrapolation must follow the synthetic curve");
-
-  const int reconstructed_row = metricPoint(2.20, 0.0).y;
-  require(
-    cv::countNonZero(result.reconstructed_mask.row(reconstructed_row)) > 0,
-    "the clean mask must contain white lanes at 2.2m");
-  const int outside_row = metricPoint(2.60, 0.0).y;
-  require(
-    cv::countNonZero(result.reconstructed_mask.row(outside_row)) == 0,
-    "the clean mask must not extrapolate past the configured limit");
+  double maximum_x_m = 0.0;
+  for (const auto & point : points) {
+    maximum_x_m = std::max(maximum_x_m, point.x);
+  }
+  return maximum_x_m;
 }
 
-void testSingleBoundaryStillReconstructsBothLanes()
+double meanCenterError(
+  const std::vector<cv::Point2d> & left,
+  const std::vector<cv::Point2d> & right,
+  double (*center_function)(double))
+{
+  const std::size_t count = std::min(left.size(), right.size());
+  if (count == 0U) {
+    return 1.0;
+  }
+  double total_error_m = 0.0;
+  for (std::size_t index = 0; index < count; ++index) {
+    const double x_m = 0.5 * (left[index].x + right[index].x);
+    const double center_m = 0.5 * (left[index].y + right[index].y);
+    total_error_m += std::abs(center_m - center_function(x_m));
+  }
+  return total_error_m / static_cast<double>(count);
+}
+
+std::vector<cv::Point2d> makeArcBoundaryMetric(const double side_sign)
+{
+  constexpr double radius_m = 0.80;
+  constexpr double half_width_m = 0.30;
+  std::vector<cv::Point2d> points;
+  for (double arc_m = 0.0; arc_m <= 1.10; arc_m += 0.01) {
+    const double heading = arc_m / radius_m;
+    const cv::Point2d center(
+      0.20 + radius_m * std::sin(heading),
+      -0.20 + radius_m * (1.0 - std::cos(heading)));
+    const cv::Point2d left_normal(-std::sin(heading), std::cos(heading));
+    points.push_back(center + side_sign * half_width_m * left_normal);
+  }
+  return points;
+}
+
+void drawMetricPolyline(
+  cv::Mat * image,
+  const std::vector<cv::Point2d> & metric_points)
+{
+  std::vector<cv::Point> pixels;
+  pixels.reserve(metric_points.size());
+  for (const auto & point : metric_points) {
+    pixels.push_back(metricPoint(point.x, point.y));
+  }
+  cv::polylines(
+    *image, std::vector<std::vector<cv::Point>>{pixels}, false,
+    cv::Scalar(245, 245, 245), 5);
+}
+
+double meanDistanceToReference(
+  const std::vector<cv::Point2d> & measured,
+  const std::vector<cv::Point2d> & reference)
+{
+  if (measured.empty()) {
+    return 1.0;
+  }
+  double total_distance_m = 0.0;
+  for (const auto & point : measured) {
+    double best_distance_m = 1.0;
+    for (const auto & expected : reference) {
+      best_distance_m = std::min(
+        best_distance_m, cv::norm(point - expected));
+    }
+    total_distance_m += best_distance_m;
+  }
+  return total_distance_m / static_cast<double>(measured.size());
+}
+
+void testFarCurveIsReacquiredFromActualPixels()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
-  const std::vector<std::vector<cv::Point>> left{
-    makeBoundary(0.30, 1.70)};
-  cv::polylines(image, left, false, cv::Scalar(245, 245, 245), 5);
+  drawBoundary(&image, 0.30, 0.20, 1.82, farCurveCenter, 245, 5);
+  drawBoundary(&image, -0.30, 0.20, 1.82, farCurveCenter, 245, 5);
+  // The curve begins past the 1.8m confidence boundary. It is deliberately
+  // dimmer and wider to mimic distant BEV blur.
+  drawBoundary(&image, 0.30, 1.78, 2.55, farCurveCenter, 150, 15);
+  drawBoundary(&image, -0.30, 1.78, 2.55, farCurveCenter, 150, 15);
 
   const auto result = makeReconstructor().reconstruct(image);
-  require(result.valid, "one trusted boundary must produce a reconstruction");
-  const int near_row = metricPoint(1.0, 0.0).y;
+  require(result.valid, "distant blurred curves must produce a clean mask");
+  require(
+    maximumMeasuredX(result.left_measured_points) > 2.40,
+    "left sliding window must reacquire actual pixels beyond 1.8m");
+  require(
+    maximumMeasuredX(result.right_measured_points) > 2.40,
+    "right sliding window must reacquire actual pixels beyond 1.8m");
+  require(
+    meanCenterError(
+      result.left_measured_points,
+      result.right_measured_points,
+      farCurveCenter) < 0.055,
+    "far tracking must follow measured pixels instead of a straight guess");
+}
 
+void testCloseNonQuadraticCurveKeepsPixelShape()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&image, 0.30, 0.20, 2.20, closeCurveCenter, 245, 5);
+  drawBoundary(&image, -0.30, 0.20, 2.20, closeCurveCenter, 245, 5);
+
+  const auto result = makeReconstructor().reconstruct(image);
+  require(result.valid, "close non-quadratic curve must be tracked");
+  require(
+    meanCenterError(
+      result.left_measured_points,
+      result.right_measured_points,
+      closeCurveCenter) < 0.035,
+    "measured points must remain close to the actual non-quadratic pixels");
+}
+
+void testRotatingWindowsFollowTightArc()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  const auto left = makeArcBoundaryMetric(1.0);
+  const auto right = makeArcBoundaryMetric(-1.0);
+  drawMetricPolyline(&image, left);
+  drawMetricPolyline(&image, right);
+
+  auto reconstructor = makeReconstructor();
+  const auto result = reconstructor.reconstruct(image);
+  require(result.valid, "rotated sliding windows must follow a tight arc");
+  require(
+    result.left_measured_points.size() >= 8U &&
+    result.right_measured_points.size() >= 8U,
+    "both rotating windows must keep measuring the tight arc");
+  require(
+    meanDistanceToReference(result.left_measured_points, left) < 0.045 &&
+    meanDistanceToReference(result.right_measured_points, right) < 0.045,
+    "tight-arc measurements must remain on the actual pixels");
+}
+
+void testSingleBoundaryOnlyInfersMissingSide()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&image, 0.30, 0.20, 1.80, closeCurveCenter, 245, 5);
+
+  const auto result = makeReconstructor().reconstruct(image);
+  require(result.valid, "one actual boundary must still produce an output");
+  require(
+    result.left_measured_points.size() >= 5U,
+    "the visible boundary must be represented by actual measurements");
+  const int row = metricPoint(1.0, 0.0).y;
   int run_count = 0;
   bool inside_run = false;
-  const auto * pixels = result.reconstructed_mask.ptr<std::uint8_t>(near_row);
+  const auto * pixels = result.reconstructed_mask.ptr<std::uint8_t>(row);
   for (int column = 0; column < result.reconstructed_mask.cols; ++column) {
     if (pixels[column] != 0U && !inside_run) {
       ++run_count;
@@ -134,14 +270,27 @@ void testSingleBoundaryStillReconstructsBothLanes()
       inside_run = false;
     }
   }
-  require(run_count == 2, "one detected boundary must yield two clean lanes");
+  require(run_count == 2, "only the missing side must be inferred");
 }
 
-void testLowSaturationGateIsOptional()
+void testMissingPixelsStopLongPrediction()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
-  const auto left = makeBoundary(0.30, 1.70);
-  const auto right = makeBoundary(-0.30, 1.70);
+  drawBoundary(&image, 0.30, 0.20, 1.55, farCurveCenter, 245, 5);
+  drawBoundary(&image, -0.30, 0.20, 1.55, farCurveCenter, 245, 5);
+
+  const auto result = makeReconstructor().reconstruct(image);
+  require(result.valid, "the observed lane segment must remain available");
+  require(
+    result.reconstructed_maximum_x_m < 1.85,
+    "prediction without pixels must stop after the short extrapolation limit");
+}
+
+void testLowSaturationGateRemainsOptional()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  const auto left = makeBoundary(0.30, 0.20, 1.70, farCurveCenter);
+  const auto right = makeBoundary(-0.30, 0.20, 1.70, farCurveCenter);
   cv::polylines(
     image, std::vector<std::vector<cv::Point>>{left}, false,
     cv::Scalar(0, 0, 255), 5);
@@ -153,11 +302,10 @@ void testLowSaturationGateIsOptional()
   config.minimum_brightness = 70;
   config.maximum_saturation = 80;
   config.expected_lane_width_m = 0.60;
-  config.lane_width_tolerance_m = 0.12;
+  config.lane_width_tolerance_m = 0.14;
   bev_processor::BevLaneReconstructor reconstructor(config);
-  const auto result = reconstructor.reconstruct(image);
   require(
-    !result.valid,
+    !reconstructor.reconstruct(image).valid,
     "the optional saturation gate must reject strongly colored markings");
 }
 
@@ -165,9 +313,12 @@ void testLowSaturationGateIsOptional()
 
 int main()
 {
-  testCurvesAreReconstructedPastTrustedRange();
-  testSingleBoundaryStillReconstructsBothLanes();
-  testLowSaturationGateIsOptional();
-  std::cout << "BEV lane reconstructor tests passed\n";
+  testFarCurveIsReacquiredFromActualPixels();
+  testCloseNonQuadraticCurveKeepsPixelShape();
+  testRotatingWindowsFollowTightArc();
+  testSingleBoundaryOnlyInfersMissingSide();
+  testMissingPixelsStopLongPrediction();
+  testLowSaturationGateRemainsOptional();
+  std::cout << "BEV sliding-window lane tests passed\n";
   return EXIT_SUCCESS;
 }

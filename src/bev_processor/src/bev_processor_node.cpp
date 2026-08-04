@@ -322,20 +322,22 @@ public:
       RCLCPP_INFO(
         get_logger(),
         "BEV lane reconstruction: output=%s mono8, "
-        "observe X=[%.2f, %.2f]m, reconstruct X=[%.2f, %.2f]m, "
-        "maximum extrapolation=%.2fm, brightness>=%d, saturation<=%d, "
-        "expected width=%.3fm, line=%.3fm, temporal alpha=%.2f",
+        "seed/trusted X=[%.2f, %.2f]m, track to %.2fm, "
+        "maximum extrapolation=%.2fm, brightness near/far=%d/%d, "
+        "window near/far=%.2f/%.2fm, pixel weight=%.2f, "
+        "expected width=%.3fm, line=%.3fm",
         lane_output_topic_.c_str(),
         lane_reconstructor_config_.observation_minimum_x_m,
         lane_reconstructor_config_.observation_maximum_x_m,
-        lane_reconstructor_config_.reconstruction_minimum_x_m,
         lane_reconstructor_config_.reconstruction_maximum_x_m,
         lane_reconstructor_config_.maximum_extrapolation_m,
         lane_reconstructor_config_.minimum_brightness,
-        lane_reconstructor_config_.maximum_saturation,
+        lane_reconstructor_config_.far_minimum_brightness,
+        lane_reconstructor_config_.sliding_window_half_width_near_m,
+        lane_reconstructor_config_.sliding_window_half_width_far_m,
+        lane_reconstructor_config_.sliding_window_measurement_weight,
         lane_reconstructor_config_.expected_lane_width_m,
-        lane_reconstructor_config_.output_line_thickness_m,
-        lane_reconstructor_config_.temporal_smoothing_alpha);
+        lane_reconstructor_config_.output_line_thickness_m);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -474,6 +476,7 @@ private:
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
     declare_parameter<int>("lane_minimum_brightness", 160);
+    declare_parameter<int>("lane_far_minimum_brightness", 110);
     declare_parameter<int>("lane_maximum_saturation", 255);
     declare_parameter<int>("lane_brightness_blur_kernel", 1);
     declare_parameter<double>("lane_vertical_close_m", 0.05);
@@ -483,20 +486,26 @@ private:
     declare_parameter<double>("lane_observation_minimum_x_m", 0.20);
     declare_parameter<double>("lane_observation_maximum_x_m", 1.80);
     declare_parameter<double>("lane_reconstruction_minimum_x_m", 0.20);
-    declare_parameter<double>("lane_reconstruction_maximum_x_m", 2.30);
-    declare_parameter<double>("lane_maximum_extrapolation_m", 0.50);
+    declare_parameter<double>("lane_reconstruction_maximum_x_m", 2.70);
+    declare_parameter<double>("lane_maximum_extrapolation_m", 0.20);
+    declare_parameter<double>("lane_sliding_window_step_m", 0.06);
+    declare_parameter<double>("lane_sliding_window_length_m", 0.18);
+    declare_parameter<double>("lane_sliding_window_half_width_near_m", 0.12);
+    declare_parameter<double>("lane_sliding_window_half_width_far_m", 0.22);
+    declare_parameter<double>("lane_sliding_window_measurement_weight", 0.90);
+    declare_parameter<double>("lane_sliding_window_heading_weight", 0.80);
+    declare_parameter<double>("lane_maximum_tracking_arc_length_m", 3.20);
+    declare_parameter<double>("lane_maximum_gap_fill_m", 0.26);
+    declare_parameter<double>("lane_measured_point_smoothing_weight", 0.85);
+    declare_parameter<int>("lane_minimum_window_pixel_count", 6);
     declare_parameter<double>("lane_expected_width_m", 0.625);
     declare_parameter<double>("lane_width_tolerance_m", 0.20);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.30);
     declare_parameter<double>("lane_single_initial_tolerance_m", 0.20);
-    declare_parameter<double>("lane_maximum_lateral_step_m", 0.08);
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.20);
-    declare_parameter<int>("lane_minimum_points", 15);
-    declare_parameter<double>("lane_maximum_fit_residual_m", 0.06);
+    declare_parameter<int>("lane_minimum_points", 5);
     declare_parameter<bool>("lane_allow_single_lane", true);
     declare_parameter<double>("lane_output_line_thickness_m", 0.04);
-    declare_parameter<double>("lane_temporal_smoothing_alpha", 1.0);
-    declare_parameter<double>("lane_maximum_temporal_jump_m", 0.20);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 12.0);
@@ -673,6 +682,8 @@ private:
     lane_reconstructor_config_.image_height = bev_config_.output_height;
     lane_reconstructor_config_.minimum_brightness = static_cast<int>(
       get_parameter("lane_minimum_brightness").as_int());
+    lane_reconstructor_config_.far_minimum_brightness = static_cast<int>(
+      get_parameter("lane_far_minimum_brightness").as_int());
     lane_reconstructor_config_.maximum_saturation = static_cast<int>(
       get_parameter("lane_maximum_saturation").as_int());
     lane_reconstructor_config_.brightness_blur_kernel = static_cast<int>(
@@ -695,6 +706,26 @@ private:
       get_parameter("lane_reconstruction_maximum_x_m").as_double();
     lane_reconstructor_config_.maximum_extrapolation_m =
       get_parameter("lane_maximum_extrapolation_m").as_double();
+    lane_reconstructor_config_.sliding_window_step_m =
+      get_parameter("lane_sliding_window_step_m").as_double();
+    lane_reconstructor_config_.sliding_window_length_m =
+      get_parameter("lane_sliding_window_length_m").as_double();
+    lane_reconstructor_config_.sliding_window_half_width_near_m =
+      get_parameter("lane_sliding_window_half_width_near_m").as_double();
+    lane_reconstructor_config_.sliding_window_half_width_far_m =
+      get_parameter("lane_sliding_window_half_width_far_m").as_double();
+    lane_reconstructor_config_.sliding_window_measurement_weight =
+      get_parameter("lane_sliding_window_measurement_weight").as_double();
+    lane_reconstructor_config_.sliding_window_heading_weight =
+      get_parameter("lane_sliding_window_heading_weight").as_double();
+    lane_reconstructor_config_.maximum_tracking_arc_length_m =
+      get_parameter("lane_maximum_tracking_arc_length_m").as_double();
+    lane_reconstructor_config_.maximum_gap_fill_m =
+      get_parameter("lane_maximum_gap_fill_m").as_double();
+    lane_reconstructor_config_.measured_point_smoothing_weight =
+      get_parameter("lane_measured_point_smoothing_weight").as_double();
+    lane_reconstructor_config_.minimum_window_pixel_count = static_cast<int>(
+      get_parameter("lane_minimum_window_pixel_count").as_int());
     lane_reconstructor_config_.expected_lane_width_m =
       get_parameter("lane_expected_width_m").as_double();
     lane_reconstructor_config_.lane_width_tolerance_m =
@@ -703,22 +734,14 @@ private:
       get_parameter("lane_initial_center_tolerance_m").as_double();
     lane_reconstructor_config_.single_lane_initial_tolerance_m =
       get_parameter("lane_single_initial_tolerance_m").as_double();
-    lane_reconstructor_config_.maximum_lateral_step_m =
-      get_parameter("lane_maximum_lateral_step_m").as_double();
     lane_reconstructor_config_.maximum_tracking_gap_m =
       get_parameter("lane_maximum_tracking_gap_m").as_double();
     lane_reconstructor_config_.minimum_points = static_cast<int>(
       get_parameter("lane_minimum_points").as_int());
-    lane_reconstructor_config_.maximum_fit_residual_m =
-      get_parameter("lane_maximum_fit_residual_m").as_double();
     lane_reconstructor_config_.allow_single_lane =
       get_parameter("lane_allow_single_lane").as_bool();
     lane_reconstructor_config_.output_line_thickness_m =
       get_parameter("lane_output_line_thickness_m").as_double();
-    lane_reconstructor_config_.temporal_smoothing_alpha =
-      get_parameter("lane_temporal_smoothing_alpha").as_double();
-    lane_reconstructor_config_.maximum_temporal_jump_m =
-      get_parameter("lane_maximum_temporal_jump_m").as_double();
 
     status_log_interval_sec_ =
       get_parameter("status_log_interval_sec").as_double();
@@ -956,7 +979,7 @@ private:
           const auto lane = lane_reconstructor_->reconstruct(output->image);
           output->lane_mask = lane.reconstructed_mask;
           latest_lane_points_.store(
-            lane.center_point_count, std::memory_order_relaxed);
+            lane.measured_point_count, std::memory_order_relaxed);
           latest_lane_width_mm_.store(
             static_cast<int>(std::lround(
               1000.0 * lane.measured_lane_width_m)),

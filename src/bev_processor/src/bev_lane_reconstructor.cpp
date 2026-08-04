@@ -33,33 +33,54 @@ struct Run
   }
 };
 
-struct Candidate
+struct Seed
 {
-  double lateral_m{0.0};
+  bool valid{false};
+  double x_m{0.0};
+  cv::Point2d left;
+  cv::Point2d right;
+  bool left_measured{false};
+  bool right_measured{false};
 };
 
-struct TrackSegment
+struct WindowMeasurement
 {
-  std::vector<cv::Point2d> center_points;
-  std::vector<double> pair_widths_m;
-  bool initialized{false};
-  double tracked_left_m{0.0};
-  double tracked_right_m{0.0};
-  int last_observed_row{0};
-  double missing_distance_m{0.0};
+  bool valid{false};
+  cv::Point2d point;
+  int pixel_count{0};
+};
 
-  int score() const
-  {
-    return
-      static_cast<int>(center_points.size()) +
-      2 * static_cast<int>(pair_widths_m.size());
-  }
+struct LaneTracker
+{
+  bool active{false};
+  cv::Point2d position;
+  cv::Point2d tangent{1.0, 0.0};
+  std::vector<cv::Point2d> measured_points;
+  int missing_windows{0};
 };
 
 int makeOdd(const int value)
 {
   const int positive = std::max(1, value);
   return positive % 2 == 0 ? positive + 1 : positive;
+}
+
+double norm(const cv::Point2d & vector)
+{
+  return std::hypot(vector.x, vector.y);
+}
+
+cv::Point2d normalized(
+  const cv::Point2d & vector,
+  const cv::Point2d & fallback = cv::Point2d(1.0, 0.0))
+{
+  const double length = norm(vector);
+  return length > 1.0e-9 ? vector * (1.0 / length) : fallback;
+}
+
+double dot(const cv::Point2d & first, const cv::Point2d & second)
+{
+  return first.x * second.x + first.y * second.y;
 }
 
 double median(std::vector<double> values)
@@ -108,315 +129,414 @@ std::vector<Run> findRuns(
   return runs;
 }
 
-LaneCurve fitCurve(
-  const std::vector<cv::Point2d> & input_points,
-  const int minimum_points,
-  const double maximum_residual_m)
+double xAtRow(
+  const BevLaneReconstructorConfig & config,
+  const double row)
 {
-  LaneCurve result;
-  if (static_cast<int>(input_points.size()) < minimum_points) {
-    return result;
-  }
+  return config.x_max_m - (row + 0.5) * config.meter_per_pixel;
+}
 
-  std::vector<cv::Point2d> points = input_points;
-  cv::Vec3d coefficients(0.0, 0.0, 0.0);
-  for (int iteration = 0; iteration < 3; ++iteration) {
-    if (static_cast<int>(points.size()) < minimum_points) {
-      return result;
+double yAtColumn(
+  const BevLaneReconstructorConfig & config,
+  const double column)
+{
+  return config.y_max_m - (column + 0.5) * config.meter_per_pixel;
+}
+
+int rowAtX(
+  const BevLaneReconstructorConfig & config,
+  const double x_m)
+{
+  return static_cast<int>(std::lround(
+    (config.x_max_m - x_m) / config.meter_per_pixel - 0.5));
+}
+
+int columnAtY(
+  const BevLaneReconstructorConfig & config,
+  const double y_m)
+{
+  return static_cast<int>(std::lround(
+    (config.y_max_m - y_m) / config.meter_per_pixel - 0.5));
+}
+
+cv::Point imagePoint(
+  const BevLaneReconstructorConfig & config,
+  const cv::Point2d & metric_point)
+{
+  return cv::Point(
+    columnAtY(config, metric_point.y),
+    rowAtX(config, metric_point.x));
+}
+
+bool imagePointInside(
+  const BevLaneReconstructorConfig & config,
+  const cv::Point & point)
+{
+  return
+    point.x >= 0 && point.x < config.image_width &&
+    point.y >= 0 && point.y < config.image_height;
+}
+
+double farBlend(
+  const BevLaneReconstructorConfig & config,
+  const double x_m)
+{
+  const double denominator = std::max(
+    config.meter_per_pixel,
+    config.reconstruction_maximum_x_m - config.observation_maximum_x_m);
+  return std::clamp(
+    (x_m - config.observation_maximum_x_m) / denominator,
+    0.0,
+    1.0);
+}
+
+int brightnessThresholdAt(
+  const BevLaneReconstructorConfig & config,
+  const double x_m)
+{
+  const double blend = farBlend(config, x_m);
+  return static_cast<int>(std::lround(
+    (1.0 - blend) * static_cast<double>(config.minimum_brightness) +
+    blend * static_cast<double>(config.far_minimum_brightness)));
+}
+
+Seed findSeed(
+  const cv::Mat & candidate_mask,
+  const BevLaneReconstructorConfig & config)
+{
+  const int minimum_run_width_px = std::max(
+    1, static_cast<int>(std::lround(
+      config.minimum_lane_mark_width_m / config.meter_per_pixel)));
+  const int maximum_run_width_px = std::max(
+    minimum_run_width_px,
+    static_cast<int>(std::lround(
+      config.maximum_lane_mark_width_m / config.meter_per_pixel)));
+  const double initialization_maximum_x_m = std::min(
+    config.observation_maximum_x_m,
+    config.observation_minimum_x_m + 0.80);
+  const int near_row = std::clamp(
+    rowAtX(config, config.observation_minimum_x_m),
+    0, config.image_height - 1);
+  const int far_row = std::clamp(
+    rowAtX(config, initialization_maximum_x_m),
+    0, config.image_height - 1);
+  const double minimum_lane_width_m =
+    config.expected_lane_width_m - config.lane_width_tolerance_m;
+  const double maximum_lane_width_m =
+    config.expected_lane_width_m + config.lane_width_tolerance_m;
+
+  Seed best_pair;
+  double best_pair_score = std::numeric_limits<double>::infinity();
+  Seed best_single;
+  double best_single_score = std::numeric_limits<double>::infinity();
+  for (
+    int row = near_row;
+    row >= far_row;
+    row -= config.row_step_px)
+  {
+    const double x_m = xAtRow(config, row);
+    const auto runs = findRuns(
+      candidate_mask, row, minimum_run_width_px, maximum_run_width_px);
+    std::vector<double> laterals_m;
+    laterals_m.reserve(runs.size());
+    for (const auto & run : runs) {
+      laterals_m.push_back(yAtColumn(config, run.centerColumn()));
     }
 
-    cv::Mat design(static_cast<int>(points.size()), 3, CV_64F);
-    cv::Mat observations(static_cast<int>(points.size()), 1, CV_64F);
-    for (std::size_t index = 0; index < points.size(); ++index) {
-      const double x_m = points[index].x;
-      design.at<double>(static_cast<int>(index), 0) = x_m * x_m;
-      design.at<double>(static_cast<int>(index), 1) = x_m;
-      design.at<double>(static_cast<int>(index), 2) = 1.0;
-      observations.at<double>(static_cast<int>(index), 0) = points[index].y;
-    }
-
-    cv::Mat solved;
-    if (!cv::solve(design, observations, solved, cv::DECOMP_SVD)) {
-      return result;
-    }
-    coefficients = cv::Vec3d(
-      solved.at<double>(0, 0),
-      solved.at<double>(1, 0),
-      solved.at<double>(2, 0));
-
-    if (iteration == 2) {
-      break;
-    }
-
-    std::vector<double> residuals;
-    residuals.reserve(points.size());
-    for (const auto & point : points) {
-      const double predicted =
-        coefficients[0] * point.x * point.x +
-        coefficients[1] * point.x + coefficients[2];
-      residuals.push_back(std::abs(point.y - predicted));
-    }
-    const double robust_scale = std::max(
-      0.005, 1.4826 * median(residuals));
-    const double cutoff = std::min(
-      2.0 * maximum_residual_m,
-      std::max(maximum_residual_m, 2.5 * robust_scale));
-    std::vector<cv::Point2d> inliers;
-    inliers.reserve(points.size());
-    for (std::size_t index = 0; index < points.size(); ++index) {
-      if (residuals[index] <= cutoff) {
-        inliers.push_back(points[index]);
+    for (std::size_t first = 0; first < laterals_m.size(); ++first) {
+      for (
+        std::size_t second = first + 1U;
+        second < laterals_m.size();
+        ++second)
+      {
+        const double left_m = std::max(
+          laterals_m[first], laterals_m[second]);
+        const double right_m = std::min(
+          laterals_m[first], laterals_m[second]);
+        const double width_m = left_m - right_m;
+        const double center_m = 0.5 * (left_m + right_m);
+        if (
+          width_m < minimum_lane_width_m ||
+          width_m > maximum_lane_width_m ||
+          std::abs(center_m) > config.initial_center_tolerance_m)
+        {
+          continue;
+        }
+        const double score =
+          std::abs(center_m) +
+          0.5 * std::abs(width_m - config.expected_lane_width_m) +
+          (x_m - config.observation_minimum_x_m);
+        if (score < best_pair_score) {
+          best_pair_score = score;
+          best_pair.valid = true;
+          best_pair.x_m = x_m;
+          best_pair.left = cv::Point2d(x_m, left_m);
+          best_pair.right = cv::Point2d(x_m, right_m);
+          best_pair.left_measured = true;
+          best_pair.right_measured = true;
+        }
       }
     }
-    if (inliers.size() == points.size()) {
-      break;
-    }
-    points = std::move(inliers);
-  }
 
-  double squared_error = 0.0;
-  double minimum_x_m = std::numeric_limits<double>::infinity();
-  double maximum_x_m = -std::numeric_limits<double>::infinity();
-  for (const auto & point : points) {
-    const double error = point.y -
-      (coefficients[0] * point.x * point.x +
-      coefficients[1] * point.x + coefficients[2]);
-    squared_error += error * error;
-    minimum_x_m = std::min(minimum_x_m, point.x);
-    maximum_x_m = std::max(maximum_x_m, point.x);
+    if (config.allow_single_lane) {
+      const double expected_left_m = 0.5 * config.expected_lane_width_m;
+      const double expected_right_m = -0.5 * config.expected_lane_width_m;
+      for (const double lateral_m : laterals_m) {
+        const double left_error_m = std::abs(lateral_m - expected_left_m);
+        const double right_error_m = std::abs(lateral_m - expected_right_m);
+        const double lateral_error_m = std::min(
+          left_error_m, right_error_m);
+        const double score = lateral_error_m +
+          (x_m - config.observation_minimum_x_m);
+        if (
+          lateral_error_m > config.single_lane_initial_tolerance_m ||
+          score >= best_single_score)
+        {
+          continue;
+        }
+        best_single_score = score;
+        best_single.valid = true;
+        best_single.x_m = x_m;
+        if (left_error_m <= right_error_m) {
+          best_single.left = cv::Point2d(x_m, lateral_m);
+          best_single.right = cv::Point2d(
+            x_m, lateral_m - config.expected_lane_width_m);
+          best_single.left_measured = true;
+          best_single.right_measured = false;
+        } else {
+          best_single.right = cv::Point2d(x_m, lateral_m);
+          best_single.left = cv::Point2d(
+            x_m, lateral_m + config.expected_lane_width_m);
+          best_single.left_measured = false;
+          best_single.right_measured = true;
+        }
+      }
+    }
   }
-  const double rms_error_m = std::sqrt(
-    squared_error / static_cast<double>(points.size()));
+  return best_pair.valid ? best_pair : best_single;
+}
+
+WindowMeasurement measureWindow(
+  const cv::Mat & candidate_mask,
+  const cv::Mat & gray,
+  const BevLaneReconstructorConfig & config,
+  const cv::Point2d & prediction,
+  const cv::Point2d & tangent,
+  const double half_width_m,
+  const int missing_windows)
+{
+  WindowMeasurement result;
+  const double half_length_m = 0.5 * config.sliding_window_length_m;
+  const double expanded_half_width_m = half_width_m *
+    (1.0 + 0.25 * static_cast<double>(missing_windows));
+  const double search_radius_m = half_length_m + expanded_half_width_m;
+  const int minimum_row = std::clamp(
+    rowAtX(config, prediction.x + search_radius_m),
+    0, config.image_height - 1);
+  const int maximum_row = std::clamp(
+    rowAtX(config, prediction.x - search_radius_m),
+    0, config.image_height - 1);
+  const int minimum_column = std::clamp(
+    columnAtY(config, prediction.y + search_radius_m),
+    0, config.image_width - 1);
+  const int maximum_column = std::clamp(
+    columnAtY(config, prediction.y - search_radius_m),
+    0, config.image_width - 1);
+  const cv::Point2d normal(-tangent.y, tangent.x);
+  double total_weight = 0.0;
+  cv::Point2d weighted_sum(0.0, 0.0);
+  for (int row = minimum_row; row <= maximum_row; ++row) {
+    const auto * candidate = candidate_mask.ptr<std::uint8_t>(row);
+    const auto * brightness = gray.ptr<std::uint8_t>(row);
+    const double x_m = xAtRow(config, row);
+    for (int column = minimum_column; column <= maximum_column; ++column) {
+      if (candidate[column] == 0U) {
+        continue;
+      }
+      const cv::Point2d point(x_m, yAtColumn(config, column));
+      const cv::Point2d delta = point - prediction;
+      const double longitudinal_m = dot(delta, tangent);
+      const double lateral_m = dot(delta, normal);
+      // Keep only a small overlap behind the predicted center. A symmetric
+      // window repeatedly re-measures the previous tape pixels and can stall
+      // instead of advancing along the lane.
+      if (
+        longitudinal_m < -0.25 * config.sliding_window_step_m ||
+        longitudinal_m > half_length_m ||
+        std::abs(lateral_m) > expanded_half_width_m)
+      {
+        continue;
+      }
+      const double weight =
+        1.0 + static_cast<double>(brightness[column]) / 255.0;
+      weighted_sum += point * weight;
+      total_weight += weight;
+      ++result.pixel_count;
+    }
+  }
   if (
-    !std::isfinite(rms_error_m) ||
-    rms_error_m > maximum_residual_m)
+    result.pixel_count < config.minimum_window_pixel_count ||
+    total_weight <= 0.0)
   {
     return result;
   }
-
+  result.point = weighted_sum * (1.0 / total_weight);
   result.valid = true;
-  result.coefficients = coefficients;
-  result.point_count = static_cast<int>(points.size());
-  result.minimum_observed_x_m = minimum_x_m;
-  result.maximum_observed_x_m = maximum_x_m;
-  result.rms_error_m = rms_error_m;
   return result;
 }
 
-void keepBetterSegment(TrackSegment segment, TrackSegment * best)
+void updateTracker(
+  LaneTracker * tracker,
+  const cv::Point2d & prediction,
+  const WindowMeasurement & measurement,
+  const BevLaneReconstructorConfig & config)
 {
-  if (
-    segment.score() > best->score() ||
-    (segment.score() == best->score() &&
-    segment.center_points.size() > best->center_points.size()))
+  if (!tracker->active) {
+    return;
+  }
+  if (!measurement.valid) {
+    tracker->position = prediction;
+    ++tracker->missing_windows;
+    const int maximum_missing_windows = std::max(
+      1, static_cast<int>(std::ceil(
+        config.maximum_tracking_gap_m / config.sliding_window_step_m)));
+    if (tracker->missing_windows > maximum_missing_windows) {
+      tracker->active = false;
+    }
+    return;
+  }
+
+  const cv::Point2d previous_position = tracker->position;
+  const double measurement_weight = config.sliding_window_measurement_weight;
+  tracker->position =
+    measurement_weight * measurement.point +
+    (1.0 - measurement_weight) * prediction;
+  cv::Point2d measured_direction = normalized(
+    measurement.point - previous_position, tracker->tangent);
+  if (dot(measured_direction, tracker->tangent) < 0.0) {
+    measured_direction *= -1.0;
+  }
+  const double heading_weight = config.sliding_window_heading_weight;
+  tracker->tangent = normalized(
+    heading_weight * measured_direction +
+    (1.0 - heading_weight) * tracker->tangent,
+    tracker->tangent);
+  tracker->measured_points.push_back(measurement.point);
+  tracker->missing_windows = 0;
+}
+
+std::vector<cv::Point2d> smoothMeasuredPoints(
+  const std::vector<cv::Point2d> & points,
+  const double measured_weight)
+{
+  if (points.size() < 3U) {
+    return points;
+  }
+  std::vector<cv::Point2d> smoothed = points;
+  const double neighbor_weight = 0.5 * (1.0 - measured_weight);
+  for (std::size_t index = 1; index + 1U < points.size(); ++index) {
+    smoothed[index] =
+      measured_weight * points[index] +
+      neighbor_weight * points[index - 1U] +
+      neighbor_weight * points[index + 1U];
+  }
+  return smoothed;
+}
+
+std::vector<cv::Point2d> extendByTangent(
+  std::vector<cv::Point2d> points,
+  const BevLaneReconstructorConfig & config)
+{
+  if (points.size() < 2U || config.maximum_extrapolation_m <= 0.0) {
+    return points;
+  }
+  const cv::Point2d tangent = normalized(
+    points.back() - points[points.size() - 2U]);
+  const cv::Point2d start = points.back();
+  for (
+    double distance_m = config.meter_per_pixel;
+    distance_m <= config.maximum_extrapolation_m + 1.0e-9;
+    distance_m += config.meter_per_pixel)
   {
-    *best = std::move(segment);
+    const cv::Point2d point = start + distance_m * tangent;
+    if (
+      point.x < config.reconstruction_minimum_x_m ||
+      point.x > config.reconstruction_maximum_x_m ||
+      point.y < config.y_min_m || point.y > config.y_max_m)
+    {
+      break;
+    }
+    points.push_back(point);
   }
+  return points;
 }
 
-bool initializeTrack(
-  const std::vector<Candidate> & candidates,
-  const BevLaneReconstructorConfig & config,
-  TrackSegment * segment)
+std::vector<cv::Point2d> offsetLane(
+  const std::vector<cv::Point2d> & reference,
+  const double offset_m)
 {
-  const double minimum_width_m =
-    config.expected_lane_width_m - config.lane_width_tolerance_m;
-  const double maximum_width_m =
-    config.expected_lane_width_m + config.lane_width_tolerance_m;
-  double best_score = std::numeric_limits<double>::infinity();
-  bool found_pair = false;
-  for (std::size_t first = 0; first < candidates.size(); ++first) {
-    for (std::size_t second = first + 1U; second < candidates.size(); ++second) {
-      const double left_m = std::max(
-        candidates[first].lateral_m, candidates[second].lateral_m);
-      const double right_m = std::min(
-        candidates[first].lateral_m, candidates[second].lateral_m);
-      const double width_m = left_m - right_m;
-      const double center_m = 0.5 * (left_m + right_m);
-      if (
-        width_m < minimum_width_m || width_m > maximum_width_m ||
-        std::abs(center_m) > config.initial_center_tolerance_m)
-      {
-        continue;
-      }
-      const double score =
-        std::abs(center_m) +
-        0.5 * std::abs(width_m - config.expected_lane_width_m);
-      if (score < best_score) {
-        best_score = score;
-        segment->tracked_left_m = left_m;
-        segment->tracked_right_m = right_m;
-        found_pair = true;
-      }
+  std::vector<cv::Point2d> offset;
+  offset.reserve(reference.size());
+  for (std::size_t index = 0; index < reference.size(); ++index) {
+    cv::Point2d tangent;
+    if (index == 0U && reference.size() > 1U) {
+      tangent = reference[1U] - reference[0U];
+    } else if (index + 1U == reference.size() && index > 0U) {
+      tangent = reference[index] - reference[index - 1U];
+    } else if (index > 0U && index + 1U < reference.size()) {
+      tangent = reference[index + 1U] - reference[index - 1U];
+    } else {
+      tangent = cv::Point2d(1.0, 0.0);
     }
+    tangent = normalized(tangent);
+    const cv::Point2d left_normal(-tangent.y, tangent.x);
+    offset.push_back(reference[index] + offset_m * left_normal);
   }
-  if (found_pair) {
-    segment->initialized = true;
-    return true;
-  }
-
-  if (!config.allow_single_lane) {
-    return false;
-  }
-  const double expected_left_m = 0.5 * config.expected_lane_width_m;
-  const double expected_right_m = -0.5 * config.expected_lane_width_m;
-  double best_error_m = std::numeric_limits<double>::infinity();
-  bool single_is_left = false;
-  double best_lateral_m = 0.0;
-  for (const auto & candidate : candidates) {
-    const double left_error_m =
-      std::abs(candidate.lateral_m - expected_left_m);
-    const double right_error_m =
-      std::abs(candidate.lateral_m - expected_right_m);
-    if (left_error_m < best_error_m) {
-      best_error_m = left_error_m;
-      best_lateral_m = candidate.lateral_m;
-      single_is_left = true;
-    }
-    if (right_error_m < best_error_m) {
-      best_error_m = right_error_m;
-      best_lateral_m = candidate.lateral_m;
-      single_is_left = false;
-    }
-  }
-  if (best_error_m > config.single_lane_initial_tolerance_m) {
-    return false;
-  }
-
-  segment->initialized = true;
-  if (single_is_left) {
-    segment->tracked_left_m = best_lateral_m;
-    segment->tracked_right_m = best_lateral_m - config.expected_lane_width_m;
-  } else {
-    segment->tracked_right_m = best_lateral_m;
-    segment->tracked_left_m = best_lateral_m + config.expected_lane_width_m;
-  }
-  return true;
+  return offset;
 }
 
-bool updateWithPair(
-  const std::vector<Candidate> & candidates,
-  const double x_m,
-  const int row,
+double drawMeasuredLane(
+  const std::vector<cv::Point2d> & points,
   const BevLaneReconstructorConfig & config,
-  TrackSegment * segment)
+  cv::Mat * mask)
 {
-  const double minimum_width_m =
-    config.expected_lane_width_m - config.lane_width_tolerance_m;
-  const double maximum_width_m =
-    config.expected_lane_width_m + config.lane_width_tolerance_m;
-  const double row_factor = std::max(
-    1.0,
-    static_cast<double>(std::abs(segment->last_observed_row - row)) /
-    static_cast<double>(std::max(1, config.row_step_px)));
-  const double movement_limit_m = config.maximum_lateral_step_m * row_factor;
-  double best_score = std::numeric_limits<double>::infinity();
-  std::optional<std::pair<double, double>> best_pair;
-  for (std::size_t first = 0; first < candidates.size(); ++first) {
-    for (std::size_t second = first + 1U; second < candidates.size(); ++second) {
-      const double left_m = std::max(
-        candidates[first].lateral_m, candidates[second].lateral_m);
-      const double right_m = std::min(
-        candidates[first].lateral_m, candidates[second].lateral_m);
-      const double width_m = left_m - right_m;
-      if (
-        width_m < minimum_width_m || width_m > maximum_width_m ||
-        std::abs(left_m - segment->tracked_left_m) > movement_limit_m ||
-        std::abs(right_m - segment->tracked_right_m) > movement_limit_m)
-      {
-        continue;
-      }
-      const double score =
-        std::abs(left_m - segment->tracked_left_m) +
-        std::abs(right_m - segment->tracked_right_m) +
-        0.5 * std::abs(width_m - config.expected_lane_width_m);
-      if (score < best_score) {
-        best_score = score;
-        best_pair = std::make_pair(left_m, right_m);
-      }
+  if (points.empty()) {
+    return 0.0;
+  }
+  const int thickness_px = std::max(
+    1, static_cast<int>(std::lround(
+      config.output_line_thickness_m / config.meter_per_pixel)));
+  std::optional<cv::Point> previous_image_point;
+  std::optional<cv::Point2d> previous_metric_point;
+  double maximum_x_m = 0.0;
+  for (const auto & point : points) {
+    const cv::Point pixel = imagePoint(config, point);
+    if (!imagePointInside(config, pixel)) {
+      previous_image_point.reset();
+      previous_metric_point.reset();
+      continue;
     }
-  }
-  if (!best_pair.has_value()) {
-    return false;
-  }
-
-  segment->tracked_left_m = best_pair->first;
-  segment->tracked_right_m = best_pair->second;
-  segment->center_points.emplace_back(
-    x_m, 0.5 * (best_pair->first + best_pair->second));
-  segment->pair_widths_m.push_back(best_pair->first - best_pair->second);
-  segment->last_observed_row = row;
-  segment->missing_distance_m = 0.0;
-  return true;
-}
-
-bool updateWithSingle(
-  const std::vector<Candidate> & candidates,
-  const double x_m,
-  const int row,
-  const BevLaneReconstructorConfig & config,
-  TrackSegment * segment)
-{
-  if (!config.allow_single_lane || candidates.empty()) {
-    return false;
-  }
-  const double row_factor = std::max(
-    1.0,
-    static_cast<double>(std::abs(segment->last_observed_row - row)) /
-    static_cast<double>(std::max(1, config.row_step_px)));
-  const double movement_limit_m = config.maximum_lateral_step_m * row_factor;
-  double best_error_m = std::numeric_limits<double>::infinity();
-  double best_lateral_m = 0.0;
-  bool is_left = false;
-  for (const auto & candidate : candidates) {
-    const double left_error_m =
-      std::abs(candidate.lateral_m - segment->tracked_left_m);
-    const double right_error_m =
-      std::abs(candidate.lateral_m - segment->tracked_right_m);
-    if (left_error_m <= movement_limit_m && left_error_m < best_error_m) {
-      best_error_m = left_error_m;
-      best_lateral_m = candidate.lateral_m;
-      is_left = true;
+    maximum_x_m = std::max(maximum_x_m, point.x);
+    if (
+      previous_image_point.has_value() &&
+      previous_metric_point.has_value() &&
+      norm(point - *previous_metric_point) <= config.maximum_gap_fill_m)
+    {
+      cv::line(
+        *mask, *previous_image_point, pixel,
+        cv::Scalar(255), thickness_px, cv::LINE_8);
+    } else {
+      cv::circle(
+        *mask, pixel, std::max(1, thickness_px / 2),
+        cv::Scalar(255), cv::FILLED, cv::LINE_8);
     }
-    if (right_error_m <= movement_limit_m && right_error_m < best_error_m) {
-      best_error_m = right_error_m;
-      best_lateral_m = candidate.lateral_m;
-      is_left = false;
-    }
+    previous_image_point = pixel;
+    previous_metric_point = point;
   }
-  if (!std::isfinite(best_error_m)) {
-    return false;
-  }
-
-  if (is_left) {
-    const double shift_m = best_lateral_m - segment->tracked_left_m;
-    segment->tracked_left_m = best_lateral_m;
-    segment->tracked_right_m += shift_m;
-  } else {
-    const double shift_m = best_lateral_m - segment->tracked_right_m;
-    segment->tracked_right_m = best_lateral_m;
-    segment->tracked_left_m += shift_m;
-  }
-  segment->center_points.emplace_back(
-    x_m, 0.5 * (segment->tracked_left_m + segment->tracked_right_m));
-  segment->last_observed_row = row;
-  segment->missing_distance_m = 0.0;
-  return true;
+  return maximum_x_m;
 }
 
 }  // namespace
-
-double LaneCurve::lateralAt(const double x_m) const
-{
-  return
-    coefficients[0] * x_m * x_m +
-    coefficients[1] * x_m + coefficients[2];
-}
-
-double LaneCurve::derivativeAt(const double x_m) const
-{
-  return 2.0 * coefficients[0] * x_m + coefficients[1];
-}
 
 BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
 : config_(std::move(config))
@@ -426,6 +546,8 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.y_max_m <= config_.y_min_m || config_.meter_per_pixel <= 0.0 ||
     config_.image_width <= 0 || config_.image_height <= 0 ||
     config_.minimum_brightness < 0 || config_.minimum_brightness > 255 ||
+    config_.far_minimum_brightness < 0 ||
+    config_.far_minimum_brightness > 255 ||
     config_.maximum_saturation < 0 || config_.maximum_saturation > 255 ||
     config_.brightness_blur_kernel <= 0 ||
     config_.brightness_blur_kernel % 2 == 0 ||
@@ -437,23 +559,33 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.observation_maximum_x_m <= config_.observation_minimum_x_m ||
     config_.observation_maximum_x_m > config_.x_max_m ||
     config_.reconstruction_minimum_x_m < config_.x_min_m ||
-    config_.reconstruction_maximum_x_m <= config_.reconstruction_minimum_x_m ||
+    config_.reconstruction_maximum_x_m <= config_.observation_maximum_x_m ||
     config_.reconstruction_maximum_x_m > config_.x_max_m ||
     config_.maximum_extrapolation_m < 0.0 ||
+    config_.sliding_window_step_m <= 0.0 ||
+    config_.sliding_window_length_m <= 0.0 ||
+    config_.sliding_window_half_width_near_m <= 0.0 ||
+    config_.sliding_window_half_width_far_m <
+    config_.sliding_window_half_width_near_m ||
+    config_.sliding_window_measurement_weight <= 0.0 ||
+    config_.sliding_window_measurement_weight > 1.0 ||
+    config_.sliding_window_heading_weight <= 0.0 ||
+    config_.sliding_window_heading_weight > 1.0 ||
+    config_.maximum_tracking_arc_length_m <= 0.0 ||
+    config_.maximum_gap_fill_m <= 0.0 ||
+    config_.measured_point_smoothing_weight <= 0.0 ||
+    config_.measured_point_smoothing_weight > 1.0 ||
+    config_.minimum_window_pixel_count <= 0 ||
     config_.expected_lane_width_m <= 0.0 ||
     config_.lane_width_tolerance_m <= 0.0 ||
     config_.lane_width_tolerance_m >= config_.expected_lane_width_m ||
     config_.initial_center_tolerance_m <= 0.0 ||
     config_.single_lane_initial_tolerance_m <= 0.0 ||
-    config_.maximum_lateral_step_m <= 0.0 ||
-    config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 3 ||
-    config_.maximum_fit_residual_m <= 0.0 ||
-    config_.output_line_thickness_m <= 0.0 ||
-    config_.temporal_smoothing_alpha <= 0.0 ||
-    config_.temporal_smoothing_alpha > 1.0 ||
-    config_.maximum_temporal_jump_m <= 0.0)
+    config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 2 ||
+    config_.output_line_thickness_m <= 0.0)
   {
-    throw std::invalid_argument("invalid BEV lane reconstruction configuration");
+    throw std::invalid_argument(
+            "invalid BEV sliding-window lane configuration");
   }
   const int expected_width = static_cast<int>(std::llround(
       (config_.y_max_m - config_.y_min_m) / config_.meter_per_pixel));
@@ -487,23 +619,32 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
       gray, gray,
       {config_.brightness_blur_kernel, config_.brightness_blur_kernel}, 0.0);
   }
-  cv::threshold(
-    gray, result.candidate_mask, config_.minimum_brightness, 255,
-    cv::THRESH_BINARY);
 
+  cv::Mat saturation;
   if (config_.maximum_saturation < 255) {
     cv::Mat hsv;
     cv::cvtColor(bev_bgr, hsv, cv::COLOR_BGR2HSV);
     std::vector<cv::Mat> channels;
     cv::split(hsv, channels);
-    cv::Mat low_saturation;
-    cv::threshold(
-      channels[1], low_saturation, config_.maximum_saturation, 255,
-      cv::THRESH_BINARY_INV);
-    cv::bitwise_and(
-      result.candidate_mask, low_saturation, result.candidate_mask);
+    saturation = channels[1];
   }
-
+  result.candidate_mask = cv::Mat::zeros(
+    config_.image_height, config_.image_width, CV_8UC1);
+  for (int row = 0; row < config_.image_height; ++row) {
+    const double x_m = xAtRow(config_, row);
+    const int brightness_threshold = brightnessThresholdAt(config_, x_m);
+    const auto * brightness = gray.ptr<std::uint8_t>(row);
+    const auto * saturation_row = saturation.empty() ?
+      nullptr : saturation.ptr<std::uint8_t>(row);
+    auto * candidate = result.candidate_mask.ptr<std::uint8_t>(row);
+    for (int column = 0; column < config_.image_width; ++column) {
+      const bool bright_enough = brightness[column] > brightness_threshold;
+      const bool saturation_ok =
+        saturation_row == nullptr ||
+        saturation_row[column] <= config_.maximum_saturation;
+      candidate[column] = bright_enough && saturation_ok ? 255U : 0U;
+    }
+  }
   const int vertical_close_px = makeOdd(static_cast<int>(std::lround(
       config_.vertical_close_m / config_.meter_per_pixel)));
   if (vertical_close_px > 1) {
@@ -514,182 +655,157 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
       cv::MORPH_CLOSE, close_kernel);
   }
 
-  const int minimum_run_width_px = std::max(
-    1, static_cast<int>(std::lround(
-      config_.minimum_lane_mark_width_m / config_.meter_per_pixel)));
-  const int maximum_run_width_px = std::max(
-    minimum_run_width_px,
-    static_cast<int>(std::lround(
-      config_.maximum_lane_mark_width_m / config_.meter_per_pixel)));
-  const auto xAtRow = [this](const int row) {
-      return config_.x_max_m -
-             (static_cast<double>(row) + 0.5) * config_.meter_per_pixel;
-    };
-  const auto yAtColumn = [this](const double column) {
-      return config_.y_max_m -
-             (column + 0.5) * config_.meter_per_pixel;
-    };
-  const auto rowAtX = [this](const double x_m) {
-      return static_cast<int>(std::lround(
-        (config_.x_max_m - x_m) / config_.meter_per_pixel - 0.5));
-    };
-
-  const int near_row = std::clamp(
-    rowAtX(config_.observation_minimum_x_m), 0, config_.image_height - 1);
-  const int far_row = std::clamp(
-    rowAtX(config_.observation_maximum_x_m), 0, config_.image_height - 1);
-  TrackSegment current;
-  TrackSegment best;
-  for (
-    int row = near_row;
-    row >= far_row;
-    row -= config_.row_step_px)
-  {
-    std::vector<Candidate> candidates;
-    for (const auto & run : findRuns(
-        result.candidate_mask, row,
-        minimum_run_width_px, maximum_run_width_px))
-    {
-      candidates.push_back(Candidate{yAtColumn(run.centerColumn())});
-    }
-
-    if (!current.initialized) {
-      if (!initializeTrack(candidates, config_, &current)) {
-        continue;
-      }
-      current.last_observed_row = row;
-    }
-
-    const double x_m = xAtRow(row);
-    if (
-      updateWithPair(candidates, x_m, row, config_, &current) ||
-      updateWithSingle(candidates, x_m, row, config_, &current))
-    {
-      continue;
-    }
-
-    current.missing_distance_m +=
-      static_cast<double>(config_.row_step_px) * config_.meter_per_pixel;
-    if (current.missing_distance_m > config_.maximum_tracking_gap_m) {
-      keepBetterSegment(std::move(current), &best);
-      current = TrackSegment{};
-    }
-  }
-  keepBetterSegment(std::move(current), &best);
-
-  result.center_point_count = static_cast<int>(best.center_points.size());
-  result.measured_lane_width_m = best.pair_widths_m.empty() ?
-    config_.expected_lane_width_m : median(best.pair_widths_m);
-  result.center_curve = fitCurve(
-    best.center_points, config_.minimum_points,
-    config_.maximum_fit_residual_m);
   result.reconstructed_mask = cv::Mat::zeros(
     config_.image_height, config_.image_width, CV_8UC1);
-  if (!result.center_curve.valid) {
+  const Seed seed = findSeed(result.candidate_mask, config_);
+  if (!seed.valid) {
     return result;
   }
 
-  if (
-    previous_center_curve_.valid &&
-    config_.temporal_smoothing_alpha < 1.0)
-  {
-    const double check_near_x_m = result.center_curve.minimum_observed_x_m;
-    const double check_far_x_m = result.center_curve.maximum_observed_x_m;
-    const double maximum_jump_m = std::max(
-      std::abs(
-        result.center_curve.lateralAt(check_near_x_m) -
-        previous_center_curve_.lateralAt(check_near_x_m)),
-      std::abs(
-        result.center_curve.lateralAt(check_far_x_m) -
-        previous_center_curve_.lateralAt(check_far_x_m)));
-    if (maximum_jump_m <= config_.maximum_temporal_jump_m) {
-      result.center_curve.coefficients =
-        config_.temporal_smoothing_alpha * result.center_curve.coefficients +
-        (1.0 - config_.temporal_smoothing_alpha) *
-        previous_center_curve_.coefficients;
+  LaneTracker left;
+  left.active = true;
+  left.position = seed.left;
+  if (seed.left_measured) {
+    left.measured_points.push_back(seed.left);
+  }
+  LaneTracker right;
+  right.active = true;
+  right.position = seed.right;
+  if (seed.right_measured) {
+    right.measured_points.push_back(seed.right);
+  }
+  std::vector<double> measured_widths_m;
+  if (seed.left_measured && seed.right_measured) {
+    measured_widths_m.push_back(norm(seed.left - seed.right));
+  }
+
+  const int maximum_steps = std::max(
+    1, static_cast<int>(std::ceil(
+      config_.maximum_tracking_arc_length_m /
+      config_.sliding_window_step_m)));
+  for (int step = 0; step < maximum_steps; ++step) {
+    if (!left.active && !right.active) {
+      break;
+    }
+
+    const cv::Point2d left_prediction =
+      left.position + config_.sliding_window_step_m * left.tangent;
+    const cv::Point2d right_prediction =
+      right.position + config_.sliding_window_step_m * right.tangent;
+    const double left_half_width_m =
+      (1.0 - farBlend(config_, left_prediction.x)) *
+      config_.sliding_window_half_width_near_m +
+      farBlend(config_, left_prediction.x) *
+      config_.sliding_window_half_width_far_m;
+    const double right_half_width_m =
+      (1.0 - farBlend(config_, right_prediction.x)) *
+      config_.sliding_window_half_width_near_m +
+      farBlend(config_, right_prediction.x) *
+      config_.sliding_window_half_width_far_m;
+
+    WindowMeasurement left_measurement;
+    if (left.active) {
+      left_measurement = measureWindow(
+        result.candidate_mask, gray, config_,
+        left_prediction, left.tangent,
+        left_half_width_m, left.missing_windows);
+    }
+    WindowMeasurement right_measurement;
+    if (right.active) {
+      right_measurement = measureWindow(
+        result.candidate_mask, gray, config_,
+        right_prediction, right.tangent,
+        right_half_width_m, right.missing_windows);
+    }
+
+    if (left_measurement.valid && right_measurement.valid) {
+      const double measured_width_m = norm(
+        left_measurement.point - right_measurement.point);
+      const double minimum_width_m =
+        config_.expected_lane_width_m - config_.lane_width_tolerance_m;
+      const double maximum_width_m =
+        config_.expected_lane_width_m + config_.lane_width_tolerance_m;
+      if (
+        measured_width_m >= minimum_width_m &&
+        measured_width_m <= maximum_width_m)
+      {
+        measured_widths_m.push_back(measured_width_m);
+      }
+    }
+
+    updateTracker(
+      &left, left_prediction, left_measurement, config_);
+    updateTracker(
+      &right, right_prediction, right_measurement, config_);
+    if (left_measurement.valid && !right_measurement.valid && right.active) {
+      right.tangent = normalized(
+        0.5 * right.tangent + 0.5 * left.tangent, right.tangent);
+    } else if (
+      right_measurement.valid && !left_measurement.valid && left.active)
+    {
+      left.tangent = normalized(
+        0.5 * left.tangent + 0.5 * right.tangent, left.tangent);
+    }
+
+    const auto outsideTrackingArea = [this](const LaneTracker & tracker) {
+        return
+          tracker.position.x > config_.reconstruction_maximum_x_m ||
+          tracker.position.x < config_.reconstruction_minimum_x_m - 0.10 ||
+          tracker.position.y > config_.y_max_m + 0.10 ||
+          tracker.position.y < config_.y_min_m - 0.10;
+      };
+    if (left.active && outsideTrackingArea(left)) {
+      left.active = false;
+    }
+    if (right.active && outsideTrackingArea(right)) {
+      right.active = false;
     }
   }
-  previous_center_curve_ = result.center_curve;
 
-  const double reconstruction_start_x_m = std::max(
-    config_.reconstruction_minimum_x_m,
-    result.center_curve.minimum_observed_x_m);
-  const double reconstruction_end_x_m = std::min(
-    config_.reconstruction_maximum_x_m,
-    result.center_curve.maximum_observed_x_m +
-    config_.maximum_extrapolation_m);
-  if (reconstruction_end_x_m <= reconstruction_start_x_m) {
+  result.left_measured_points = left.measured_points;
+  result.right_measured_points = right.measured_points;
+  result.measured_point_count = static_cast<int>(
+    left.measured_points.size() + right.measured_points.size());
+  result.measured_lane_width_m = measured_widths_m.empty() ?
+    config_.expected_lane_width_m : median(measured_widths_m);
+
+  const bool left_valid =
+    static_cast<int>(left.measured_points.size()) >= config_.minimum_points;
+  const bool right_valid =
+    static_cast<int>(right.measured_points.size()) >= config_.minimum_points;
+  if (!left_valid && !right_valid) {
     return result;
   }
 
-  const auto pointAtMetric = [this](const double x_m, const double y_m) {
-      const int row = static_cast<int>(std::lround(
-        (config_.x_max_m - x_m) / config_.meter_per_pixel - 0.5));
-      const int column = static_cast<int>(std::lround(
-        (config_.y_max_m - y_m) / config_.meter_per_pixel - 0.5));
-      return cv::Point(column, row);
-    };
-  const auto pointInside = [this](const cv::Point & point) {
-      return
-        point.x >= 0 && point.x < config_.image_width &&
-        point.y >= 0 && point.y < config_.image_height;
-    };
-  const int thickness_px = std::max(
-    1, static_cast<int>(std::lround(
-      config_.output_line_thickness_m / config_.meter_per_pixel)));
-  // Same-X separation grows slightly on a curve, so use the known physical
-  // track width for the normal offset and keep the measured width for
-  // diagnostics only.
-  const double half_lane_width_m = 0.5 * config_.expected_lane_width_m;
-  std::optional<cv::Point> previous_left;
-  std::optional<cv::Point> previous_right;
-  for (
-    double x_m = reconstruction_start_x_m;
-    x_m <= reconstruction_end_x_m + 0.5 * config_.meter_per_pixel;
-    x_m += config_.meter_per_pixel)
-  {
-    const double center_y_m = result.center_curve.lateralAt(x_m);
-    const double derivative = result.center_curve.derivativeAt(x_m);
-    const double normal_length = std::sqrt(1.0 + derivative * derivative);
-    const double normal_x_m = -derivative / normal_length;
-    const double normal_y_m = 1.0 / normal_length;
-    const cv::Point left = pointAtMetric(
-      x_m + half_lane_width_m * normal_x_m,
-      center_y_m + half_lane_width_m * normal_y_m);
-    const cv::Point right = pointAtMetric(
-      x_m - half_lane_width_m * normal_x_m,
-      center_y_m - half_lane_width_m * normal_y_m);
-
-    if (pointInside(left)) {
-      if (previous_left.has_value()) {
-        cv::line(
-          result.reconstructed_mask, *previous_left, left,
-          cv::Scalar(255), thickness_px, cv::LINE_8);
-      }
-      previous_left = left;
-    } else {
-      previous_left.reset();
-    }
-    if (pointInside(right)) {
-      if (previous_right.has_value()) {
-        cv::line(
-          result.reconstructed_mask, *previous_right, right,
-          cv::Scalar(255), thickness_px, cv::LINE_8);
-      }
-      previous_right = right;
-    } else {
-      previous_right.reset();
-    }
+  std::vector<cv::Point2d> left_output;
+  std::vector<cv::Point2d> right_output;
+  if (left_valid) {
+    left_output = smoothMeasuredPoints(
+      left.measured_points, config_.measured_point_smoothing_weight);
+  }
+  if (right_valid) {
+    right_output = smoothMeasuredPoints(
+      right.measured_points, config_.measured_point_smoothing_weight);
+  }
+  if (left_valid && !right_valid && config_.allow_single_lane) {
+    right_output = offsetLane(left_output, -config_.expected_lane_width_m);
+  } else if (right_valid && !left_valid && config_.allow_single_lane) {
+    left_output = offsetLane(right_output, config_.expected_lane_width_m);
   }
 
+  left_output = extendByTangent(std::move(left_output), config_);
+  right_output = extendByTangent(std::move(right_output), config_);
+  result.reconstructed_maximum_x_m = std::max(
+    drawMeasuredLane(left_output, config_, &result.reconstructed_mask),
+    drawMeasuredLane(right_output, config_, &result.reconstructed_mask));
   result.valid = cv::countNonZero(result.reconstructed_mask) > 0;
-  result.reconstructed_maximum_x_m = reconstruction_end_x_m;
   return result;
 }
 
 void BevLaneReconstructor::reset()
 {
-  previous_center_curve_ = LaneCurve{};
+  // The pixel-first sliding-window tracker intentionally keeps no temporal
+  // curve state. Every frame is re-anchored to the current BEV pixels.
 }
 
 }  // namespace bev_processor

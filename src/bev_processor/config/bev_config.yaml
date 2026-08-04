@@ -161,41 +161,55 @@ bev_processor:
     # true면 기존 BEV 프리뷰 창에도 컬러 원본 대신 최종 흑백 차선을 표시한다.
     lane_preview_enabled: true
 
-    # 밝기(Y에 가까운 grayscale)를 기본으로 사용한다. saturation=255는
-    # 채도 필터를 끈 값이고, 컬러 오검출이 있을 때만 60~100부터 시험한다.
+    # 밝기(Y에 가까운 grayscale)를 기본으로 사용한다. 1.8m까지는 near
+    # 임계값을 쓰고 그 이후에는 원거리 번진 픽셀을 잃지 않도록 far 값까지
+    # 선형으로 낮춘다. saturation=255는 채도 필터를 끈 값이다.
     lane_minimum_brightness: 160
+    lane_far_minimum_brightness: 110
     lane_maximum_saturation: 255
     # 1은 추가 블러 없음. 원거리의 얇은 픽셀을 보존하는 기본값이다.
     lane_brightness_blur_kernel: 1
     lane_vertical_close_m: 0.05
     lane_minimum_mark_width_m: 0.01
-    # 이보다 넓은 행 방향 밝은 덩어리는 번짐/바닥 경계로 보고 피팅에서 제외한다.
+    # mark width는 가까운 곳의 최초 좌우 차선 seed를 고를 때만 사용한다.
+    # 원거리 추적은 넓게 번진 픽셀도 회전형 윈도우 안에서 중심을 측정한다.
     lane_maximum_mark_width_m: 0.18
     lane_row_step_px: 2
 
-    # 0.20~1.80m 안의 픽셀만 곡선 피팅에 사용한다. BEV 자체는 3m를 유지하므로
-    # 1.8m 이후 공간에는 관측 픽셀이 아니라 제한적으로 외삽한 곡선을 그린다.
+    # 1.8m는 더 이상 관측 차단점이 아니다. 가까운 차선으로 추적을 시작하고
+    # 1.8m 이후에는 더 낮은 밝기 임계값과 넓은 윈도우로 실제 픽셀을 계속 찾는다.
     lane_observation_minimum_x_m: 0.20
     lane_observation_maximum_x_m: 1.80
     lane_reconstruction_minimum_x_m: 0.20
-    lane_reconstruction_maximum_x_m: 2.30
-    # 실제 마지막 관측점에서 최대 0.50m까지만 연장한다.
-    lane_maximum_extrapolation_m: 0.50
+    lane_reconstruction_maximum_x_m: 2.70
+    # 실제 마지막 측정점 이후에는 마지막 진행 방향으로 20cm만 연장한다.
+    lane_maximum_extrapolation_m: 0.20
+
+    # 회전형 슬라이딩 윈도우. 예측은 다음 검색 위치에만 사용하고, 픽셀이
+    # 있으면 측정값 90%로 위치를 즉시 보정한다. 먼 곳의 창은 번짐을
+    # 포함하도록 넓어지지만 좌우 차선 사이보다 작게 유지한다.
+    lane_sliding_window_step_m: 0.06
+    lane_sliding_window_length_m: 0.18
+    lane_sliding_window_half_width_near_m: 0.12
+    lane_sliding_window_half_width_far_m: 0.22
+    lane_sliding_window_measurement_weight: 0.90
+    lane_sliding_window_heading_weight: 0.80
+    lane_maximum_tracking_arc_length_m: 3.20
+    # 1~2개 창이 비어도 다시 픽셀을 찾으면 이 거리 안에서만 연결한다.
+    lane_maximum_tracking_gap_m: 0.20
+    lane_maximum_gap_fill_m: 0.26
+    # 0.85면 현재 실측점 85%, 앞뒤 실측점 각각 7.5%로 국소 평활화한다.
+    lane_measured_point_smoothing_weight: 0.85
+    lane_minimum_window_pixel_count: 6
 
     lane_expected_width_m: 0.625
     lane_width_tolerance_m: 0.20
     lane_initial_center_tolerance_m: 0.30
     lane_single_initial_tolerance_m: 0.20
-    lane_maximum_lateral_step_m: 0.08
-    lane_maximum_tracking_gap_m: 0.20
-    lane_minimum_points: 15
-    lane_maximum_fit_residual_m: 0.06
+    lane_minimum_points: 5
     lane_allow_single_lane: true
 
     lane_output_line_thickness_m: 0.04
-    # 1.0은 시간 평활화 없음. 떨림이 확인되면 0.3~0.7을 시험한다.
-    lane_temporal_smoothing_alpha: 1.0
-    lane_maximum_temporal_jump_m: 0.20
 
     status_log_interval_sec: 5.0
     startup_timeout_sec: 12.0
