@@ -20,8 +20,15 @@ def generate_launch_description():
     performance_measurement_enabled = LaunchConfiguration(
         "performance_measurement_enabled"
     )
+    imu_stabilization_enabled = LaunchConfiguration(
+        "imu_stabilization_enabled"
+    )
     performance_measurement_parameter = ParameterValue(
         performance_measurement_enabled,
+        value_type=bool,
+    )
+    imu_stabilization_parameter = ParameterValue(
+        imu_stabilization_enabled,
         value_type=bool,
     )
 
@@ -117,6 +124,14 @@ def generate_launch_description():
                     "performance measurements."
                 ),
             ),
+            DeclareLaunchArgument(
+                "imu_stabilization_enabled",
+                default_value="true",
+                description=(
+                    "Apply OAK IMU pitch/roll stabilization. The camera's "
+                    "fixed_view_zoom remains active when this is disabled."
+                ),
+            ),
             *lane_launch_arguments,
             ComposableNodeContainer(
                 name="bev_processor_container",
@@ -156,7 +171,9 @@ def generate_launch_description():
                                 "preview_enabled": False,
                                 "publish_enabled": True,
                                 "imu_bridge_enabled": False,
-                                "imu_stabilization_enabled": True,
+                                "imu_stabilization_enabled": (
+                                    imu_stabilization_parameter
+                                ),
                                 "output_crop_top_px": 0,
                                 "performance_measurement_enabled": (
                                     performance_measurement_parameter

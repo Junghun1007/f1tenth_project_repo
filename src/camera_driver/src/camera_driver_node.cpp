@@ -812,7 +812,11 @@ private:
     dai::ImgFrame & packet,
     const std::chrono::steady_clock::time_point & sensor_timestamp)
   {
-    if (!imu_stabilization_enabled_ || !imu_stabilizer_) {
+    const bool fixed_view_zoom_enabled = fixed_view_zoom_ > 1.0;
+    if (
+      !fixed_view_zoom_enabled &&
+      (!imu_stabilization_enabled_ || !imu_stabilizer_))
+    {
       return StabilizationTransform{};
     }
 
@@ -833,6 +837,15 @@ private:
       0.0, 0.0, 1.0);
     const cv::Matx33d fixed_view_zoom_homography =
       makeFixedViewZoomHomography(camera_matrix, fixed_view_zoom_);
+
+    // The fixed crop is independent of IMU stabilization. This keeps the
+    // calibrated 1.25x camera view when pitch/roll correction is disabled.
+    if (!imu_stabilization_enabled_ || !imu_stabilizer_) {
+      return StabilizationTransform{
+        fixed_view_zoom_enabled ?
+        std::optional<cv::Matx33d>(fixed_view_zoom_homography) : std::nullopt,
+        true};
+    }
 
     // Match stabilized_preview: calibration frames keep the same fixed FOV,
     // then initialized frames must have a timestamp-valid absolute attitude.
