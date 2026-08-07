@@ -1,5 +1,18 @@
 # camera_driver
 
+## BEV startup reference 연동
+
+`bev_processor`와 함께 실행하면 `/camera/startup_ground_normal`의
+`geometry_msgs/Vector3Stamped`를 transient-local QoS로 구독한다. 이 벡터는
+BEV 고정 LUT에 사용된 시작 지면 법선이며 `camera_optical_frame` 좌표계로
+표현된다. 통합 launch는 이 기준을 필수로 설정하므로, 수신 전에는 IMU 중력
+방향을 대신 기준으로 확정하지 않는다.
+
+IMU 시작 평균 중력 방향은 별도로 보존해 정지 판정에만 사용한다. 따라서
+Depth 법선과 IMU 중력 방향 사이에 고정 오차가 있어도 정지 후 복구 목표는
+BEV와 공유한 기준이다. 단독 camera_driver launch에서는 BEV publisher가
+없으므로 외부 기준이 optional이며 기존 IMU 시작 기준으로 fallback한다.
+
 OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패키지다.
 기본 설정은 다음과 같다.
 
@@ -192,20 +205,25 @@ ros2 launch camera_driver camera_driver.launch.py \
 방향과 자이로 bias를 시작 기준으로 측정한다. 이 5초 동안 차량과 카메라를
 움직이면 기준 측정이 다시 시작된다.
 
-이후 400 Hz calibrated IMU를 quaternion으로 적분한다. 각 RGB 노출 중심을
-둘러싼 자세를 SLERP하고, 미래 IMU가 늦으면 마지막 각속도로 최대 15 ms만
-예측한다. 중력축 주위 yaw와 평행이동은 보정하지 않고 시작 기준에 대한
-pitch/roll 차이만 회전 homography로 되돌린다. 최근 궤적을 따라가는
-평활화가 아니므로 카메라가 천천히 기울어도 초점 방향은 시작 자세에
-고정된다.
+이후 400 Hz calibrated gyro로 카메라 좌표의 시작 노면/중력 법선 벡터만
+적분한다. yaw 상태를 별도로 누적하지 않으므로 법선축 주위 U턴은 roll/pitch에
+섞이지 않는다. 각 RGB 노출 중심을 둘러싼 법선 방향을 보간하고, 미래 IMU가
+늦으면 마지막 각속도로 최대 15 ms만 예측한다. 시작 기준과 현재 법선 사이의
+최소 회전만 homography로 되돌리므로 출력 시점은 시작 자세에 고정된다.
 
-주행 중 횡가속을 실제 roll로 오인하지 않도록 roll 가속도 방향 gate는
-4.3도로 제한한다. 강한 중력 기반 roll 복원은 1초 관측 창에서 정지가
-확정된 경우에만 허용한다.
+가감속과 코너링 가속도를 자세로 오인하지 않도록 기본 설정에서는 주행 중
+가속도 자세 보정을 하지 않는다. 1초 관측 창의 가속도 크기·방향 안정성과
+gyro 평균·분산이 모두 시작 정지 상태와 일치할 때만 자세를 빠르게 복구하고
+gyro bias를 카메라 3축 모두 갱신한다. 정지 판정은 drift가 포함될 수 있는
+현재 자세 추정값이 아니라 변경되지 않는 시작 기준과 비교한다. 평지에서
+서스펜션이 원래 자세로 복귀한다는 전제는 8초 시정수의 약한 시작 기준
+leak으로 반영해, 주행 중 gyro drift가 무한히 누적되지 않게 한다.
 
 결과 FOV는 광학 중심 기준 1.25배 고정 줌으로 유지한다. 줌 영역으로 원본
-경계를 모두 채울 수 없는 자세, 동기화할 IMU가 없는 프레임, 12도 보정
-한계를 넘은 프레임은 검은 경계를 출력에 섞지 않고 폐기한다.
+경계를 모두 채울 수 없는 자세, 동기화할 IMU가 없는 프레임, 3도 보정
+한계를 넘은 불확실한 자세에는 동적 회전을 적용하지 않고 zoom-only 원본을
+전달한다. 잘못된 큰 보정이나 프레임 폐기보다 작은 무보정 오차를 우선하는
+BEV 안전 정책이다.
 워핑은 현재 CPU OpenCV 경로이므로 활성화 후 상태 로그의 실제 capture
 FPS와 누락 프레임 수를 Jetson에서 확인해야 한다.
 
@@ -233,8 +251,10 @@ ros2 run camera_driver camera_driver_node \
 - `preview`: 실제 프리뷰 갱신 FPS
 - `IMU`: 안정화/ROS 브리지에서 실제 처리한 IMU 샘플 rate
 - `stabilizer`: `off`, `discarding-startup-imu`,
-  `stationary-calibration`, `fixed-reference-ready` 상태와 누적
+  `stationary-calibration`, `virtual-gimbal-ready` 상태와 누적
   warp/miss/drop 수
+- `Virtual gimbal`: 현재 roll/pitch 오차, 적용 회전각, 정지 판정,
+  3축 gyro bias와 온라인 bias 갱신 횟수
 - `dropped`: 최근 상태 구간의 sequence 누락 프레임 수
 
 예:
@@ -273,7 +293,12 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_enabled` | `true` | 시작 기준 pitch/roll 안정화 |
 | `imu_stabilization_startup_discard_duration_sec` | `1.0` | 전원 직후 IMU 과도값 폐기 시간 |
 | `imu_stabilization_reference_calibration_duration_sec` | `4.0` | 정지 기준 자세 측정 시간 |
-| `imu_stabilization_maximum_correction_deg` | `12.0` | 축별 최대 영상 보정각 |
+| `imu_stabilization_external_reference_topic` | `/camera/startup_ground_normal` | BEV 시작 지면 법선 토픽 |
+| `imu_stabilization_external_reference_required` | `false` | 외부 기준 필수 여부; 통합 BEV launch에서는 `true` |
+| `imu_stabilization_accelerometer_stationary_only` | `true` | 정지 확인 시에만 가속도 기반 tilt 복구 |
+| `imu_stabilization_reference_tilt_leak_time_constant_sec` | `8.0` | 주행 중 시작 tilt 기준으로 복귀하는 약한 시정수 |
+| `imu_stabilization_stationary_tilt_recovery_time_constant_sec` | `0.35` | 정지 후 시작 시점 복귀 시정수 |
+| `imu_stabilization_maximum_correction_deg` | `3.0` | 축별 최대 동적 보정각; 초과 시 zoom-only fallback |
 | `imu_stabilization_maximum_prediction_sec` | `0.015` | 마지막 gyro 기반 최대 예측 시간 |
 | `fixed_view_zoom` | `1.25` | 고정 출력 FOV 줌 배율 |
 | `fixed_view_border_margin_px` | `1.5` | 원본 경계 bilinear 안전 여백 |

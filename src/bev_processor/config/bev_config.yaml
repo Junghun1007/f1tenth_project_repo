@@ -11,6 +11,9 @@ bev_processor:
     input_topic: "/camera/image_rect"
     output_topic: "/camera/image_bev"
     output_frame_id: "front_axle_bev"
+    # Latched startup ground normal shared with camera_driver.
+    startup_ground_reference_topic: "/camera/startup_ground_normal"
+    startup_ground_reference_frame_id: "camera_optical_frame"
     expected_input_fps: 110.0
 
     # publish_max_fps가 0이면 처리된 프레임을 별도 속도 제한 없이 발행한다.

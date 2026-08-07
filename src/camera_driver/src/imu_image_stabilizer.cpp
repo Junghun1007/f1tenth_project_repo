@@ -85,13 +85,6 @@ Quaternion multiply(const Quaternion & first, const Quaternion & second)
     first.y * second.x + first.z * second.w};
 }
 
-double quaternionDot(const Quaternion & first, const Quaternion & second)
-{
-  return
-    first.w * second.w + first.x * second.x +
-    first.y * second.y + first.z * second.z;
-}
-
 Quaternion negated(const Quaternion & value)
 {
   return Quaternion{-value.w, -value.x, -value.y, -value.z};
@@ -130,40 +123,6 @@ cv::Vec3d rotationVector(const Quaternion & input)
   }
   const double angle = 2.0 * std::atan2(vector_norm, value.w);
   return cv::Vec3d(value.x, value.y, value.z) * (angle / vector_norm);
-}
-
-Quaternion slerp(
-  const Quaternion & first_input,
-  const Quaternion & second_input,
-  const double amount)
-{
-  const Quaternion first = normalized(first_input);
-  Quaternion second = normalized(second_input);
-  double dot = quaternionDot(first, second);
-  if (dot < 0.0) {
-    second = negated(second);
-    dot = -dot;
-  }
-  dot = std::clamp(dot, -1.0, 1.0);
-  const double clamped_amount = std::clamp(amount, 0.0, 1.0);
-  if (dot > 0.9995) {
-    return normalized(Quaternion{
-      first.w + (second.w - first.w) * clamped_amount,
-      first.x + (second.x - first.x) * clamped_amount,
-      first.y + (second.y - first.y) * clamped_amount,
-      first.z + (second.z - first.z) * clamped_amount});
-  }
-  const double angle = std::acos(dot);
-  const double inverse_sine = 1.0 / std::sin(angle);
-  const double first_scale =
-    std::sin((1.0 - clamped_amount) * angle) * inverse_sine;
-  const double second_scale =
-    std::sin(clamped_amount * angle) * inverse_sine;
-  return normalized(Quaternion{
-    first_scale * first.w + second_scale * second.w,
-    first_scale * first.x + second_scale * second.x,
-    first_scale * first.y + second_scale * second.y,
-    first_scale * first.z + second_scale * second.z});
 }
 
 cv::Vec3d rotateVector(
@@ -246,6 +205,17 @@ cv::Vec3d upVectorFromRollPitchDegrees(
     -std::sin(pitch_rad));
 }
 
+cv::Vec3d interpolateDirection(
+  const cv::Vec3d & first,
+  const cv::Vec3d & second,
+  const double amount)
+{
+  const Quaternion first_to_second = quaternionFromTwoVectors(first, second);
+  const Quaternion partial = quaternionFromRotationVector(
+    rotationVector(first_to_second) * std::clamp(amount, 0.0, 1.0));
+  return normalized(rotateVector(partial, first));
+}
+
 double wrapDegrees(double value)
 {
   while (value > 180.0) {
@@ -288,6 +258,8 @@ bool validConfig(const ImuImageStabilizerConfig & config)
     positive_finite(config.roll_acceleration_correction_time_constant_sec) &&
     positive_finite(config.roll_acceleration_direction_gate_deg) &&
     config.roll_acceleration_direction_gate_deg < 90.0 &&
+    positive_finite(config.reference_tilt_leak_time_constant_sec) &&
+    positive_finite(config.stationary_tilt_recovery_time_constant_sec) &&
     positive_finite(config.online_gyroscope_tilt_bias_time_constant_sec) &&
     positive_finite(config.stationary_detection_window_sec) &&
     config.stationary_detection_window_sec <= 10.0 &&
@@ -411,7 +383,23 @@ public:
         return;
       }
 
-      world_up_reference_ = normalized(warmup_acceleration_sum_);
+      if (
+        config_.external_reference_required &&
+        !external_reference_up_camera_.has_value())
+      {
+        resetCalibrationLocked("waiting for BEV startup ground reference");
+        return;
+      }
+
+      // The accelerometer baseline and the geometric reference deliberately
+      // remain separate. The former identifies the physical startup pose for
+      // stationary detection; the latter is the depth-plane normal used by
+      // the fixed BEV LUT. This prevents an IMU/depth mounting offset from
+      // blocking drift recovery.
+      stationary_acceleration_reference_up_camera_ =
+        normalized(warmup_acceleration_sum_);
+      reference_up_camera_ = external_reference_up_camera_.value_or(
+        stationary_acceleration_reference_up_camera_);
       double acceleration_norm_sum = 0.0;
       for (const StationarySample & sample : calibration_samples_) {
         acceleration_norm_sum += cv::norm(sample.acceleration_camera_mps2);
@@ -421,16 +409,14 @@ public:
       gyroscope_bias_radps_ = config_.gyroscope_bias_enabled ?
         warmup_gyroscope_sum_ / static_cast<double>(calibration_count_) :
         cv::Vec3d(0.0, 0.0, 0.0);
-      camera_to_world_ = Quaternion{};
-      reference_up_camera_ = world_up_reference_;
+      current_up_camera_ = reference_up_camera_;
       last_timestamp_sec_ = timestamp_sec;
       calibration_samples_.clear();
       stationary_samples_.clear();
       stationary_confirmed_ = false;
       initialized_ = true;
-      history_.push_back(TimedOrientation{
-        timestamp_sec, camera_to_world_,
-        acceleration_confidence, acceleration_confidence,
+      history_.push_back(TimedTilt{
+        timestamp_sec, current_up_camera_,
         cv::Vec3d(0.0, 0.0, 0.0)});
       history_condition_.notify_all();
       return;
@@ -459,10 +445,8 @@ public:
       {
         stationary_samples_.pop_front();
       }
-      const cv::Vec3d predicted_up_before_sample = normalized(rotateVector(
-        conjugate(camera_to_world_), world_up_reference_));
       const StationaryWindowAssessment stationary =
-        assessStationaryWindowLocked(predicted_up_before_sample);
+        assessStationaryWindowLocked();
       stationary_confirmed_ = stationary.confirmed;
       stationary_gyroscope_mean = stationary.mean_gyroscope_radps;
     } else {
@@ -475,7 +459,10 @@ public:
     {
       const double bias_gain = 1.0 - std::exp(
         -dt_sec / config_.online_gyroscope_tilt_bias_time_constant_sec);
-      for (const int axis : {0, 2}) {
+      // Once the vehicle is confirmed stationary, every camera-frame gyro
+      // axis measures bias. Updating all three axes prevents a residual
+      // camera-Y bias from leaking into tilt on a downward-mounted camera.
+      for (int axis = 0; axis < 3; ++axis) {
         gyroscope_bias_radps_[axis] += bias_gain *
           (stationary_gyroscope_mean[axis] - gyroscope_bias_radps_[axis]);
       }
@@ -484,20 +471,35 @@ public:
 
     const cv::Vec3d corrected_angular_velocity =
       angular_velocity_camera_radps - gyroscope_bias_radps_;
-    camera_to_world_ = normalized(multiply(
-      camera_to_world_,
-      quaternionFromRotationVector(corrected_angular_velocity * dt_sec)));
+    // Track only the reference-plane normal in camera coordinates. A pure
+    // yaw/U-turn rate is parallel to this vector and therefore cannot leak
+    // into roll or pitch through a drifting yaw state.
+    current_up_camera_ = normalized(rotateVector(
+      conjugate(quaternionFromRotationVector(
+        corrected_angular_velocity * dt_sec)),
+      current_up_camera_));
+    // The flat-road suspension model says long-term tilt returns to the
+    // startup pose. A deliberately weak leak supplies that low-frequency
+    // prior without trusting vehicle acceleration as gravity while driving.
+    const double reference_leak_gain = 1.0 - std::exp(
+      -dt_sec / config_.reference_tilt_leak_time_constant_sec);
+    current_up_camera_ = interpolateDirection(
+      current_up_camera_, reference_up_camera_, reference_leak_gain);
 
     double roll_acceleration_confidence = 0.0;
     double pitch_acceleration_confidence = 0.0;
-    if (acceleration_available && acceleration_confidence > 0.0) {
+    if (
+      acceleration_available && acceleration_confidence > 0.0 &&
+      (!config_.acceleration_correction_stationary_only ||
+      stationary_confirmed_))
+    {
       const cv::Vec3d measured_up =
         *acceleration_camera_mps2 / acceleration_magnitude;
-      const cv::Vec3d predicted_up = normalized(rotateVector(
-        conjugate(camera_to_world_), world_up_reference_));
+      const cv::Vec3d predicted_up = current_up_camera_;
       const double direction_error_deg = angleDegrees(
         predicted_up, measured_up);
-      const double pitch_direction_confidence = std::clamp(
+      const double pitch_direction_confidence = stationary_confirmed_ ? 1.0 :
+        std::clamp(
         1.0 - direction_error_deg /
         config_.acceleration_correction_gate_deg,
         0.0, 1.0);
@@ -505,8 +507,6 @@ public:
       const double predicted_pitch_deg = pitchDegrees(predicted_up);
       const double roll_error_deg = wrapDegrees(
         rollDegrees(measured_up) - predicted_roll_deg);
-      const double pitch_error_deg = wrapDegrees(
-        pitchDegrees(measured_up) - predicted_pitch_deg);
       const double roll_direction_confidence = stationary_confirmed_ ? 1.0 :
         std::clamp(
         1.0 - std::abs(roll_error_deg) /
@@ -520,26 +520,36 @@ public:
         roll_acceleration_confidence > 0.0 ||
         pitch_acceleration_confidence > 0.0)
       {
+        const double roll_time_constant = stationary_confirmed_ ?
+          config_.stationary_tilt_recovery_time_constant_sec :
+          config_.roll_acceleration_correction_time_constant_sec;
+        const double pitch_time_constant = stationary_confirmed_ ?
+          config_.stationary_tilt_recovery_time_constant_sec :
+          config_.acceleration_correction_time_constant_sec;
         const double roll_gain =
           roll_acceleration_confidence * (1.0 - std::exp(
-          -dt_sec /
-          config_.roll_acceleration_correction_time_constant_sec));
+          -dt_sec / roll_time_constant));
         const double pitch_gain =
           pitch_acceleration_confidence * (1.0 - std::exp(
-          -dt_sec / config_.acceleration_correction_time_constant_sec));
+          -dt_sec / pitch_time_constant));
+        // The stationary detector already verified that the physical camera
+        // returned to the startup pose. Recover to that immutable view rather
+        // than following accelerometer noise or a new drifting reference.
+        const cv::Vec3d correction_target = stationary_confirmed_ ?
+          reference_up_camera_ : measured_up;
+        const double target_roll_deg = rollDegrees(correction_target);
+        const double target_pitch_deg = pitchDegrees(correction_target);
         const cv::Vec3d corrected_up = upVectorFromRollPitchDegrees(
-          predicted_roll_deg + roll_gain * roll_error_deg,
-          predicted_pitch_deg + pitch_gain * pitch_error_deg);
-        const Quaternion corrected_to_predicted =
-          quaternionFromTwoVectors(corrected_up, predicted_up);
-        camera_to_world_ = normalized(multiply(
-          camera_to_world_, corrected_to_predicted));
+          predicted_roll_deg + roll_gain * wrapDegrees(
+            target_roll_deg - predicted_roll_deg),
+          predicted_pitch_deg + pitch_gain * wrapDegrees(
+            target_pitch_deg - predicted_pitch_deg));
+        current_up_camera_ = normalized(corrected_up);
       }
     }
 
-    history_.push_back(TimedOrientation{
-      timestamp_sec, camera_to_world_,
-      roll_acceleration_confidence, pitch_acceleration_confidence,
+    history_.push_back(TimedTilt{
+      timestamp_sec, current_up_camera_,
       corrected_angular_velocity});
     while (
       history_.size() > 2U &&
@@ -549,6 +559,25 @@ public:
       history_.pop_front();
     }
     history_condition_.notify_all();
+  }
+
+  bool setExternalReferenceUpCamera(const cv::Vec3d & up_camera)
+  {
+    if (!finiteVector(up_camera) || cv::norm(up_camera) <= 1.0e-9) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (initialized_) {
+      return false;
+    }
+    external_reference_up_camera_ = normalized(up_camera);
+    if (
+      calibration_last_rejection_reason_ ==
+      "waiting for BEV startup ground reference")
+    {
+      calibration_last_rejection_reason_.clear();
+    }
+    return true;
   }
 
   std::optional<ImageStabilizationCorrection> correctionAt(
@@ -578,14 +607,14 @@ public:
         target_is_bracketed);
     }
 
-    Quaternion camera_to_world;
+    cv::Vec3d current_up_camera;
     double nearest_timestamp = 0.0;
     bool predicted = false;
     double prediction_horizon_sec = 0.0;
     if (target_is_bracketed()) {
       const auto next = std::lower_bound(
         history_.begin(), history_.end(), timestamp_sec,
-        [](const TimedOrientation & sample, const double time) {
+        [](const TimedTilt & sample, const double time) {
           return sample.timestamp_sec < time;
         });
       if (next == history_.end()) {
@@ -609,7 +638,7 @@ public:
         return std::nullopt;
       }
 
-      camera_to_world = next->camera_to_world;
+      current_up_camera = next->up_camera;
       if (previous != next) {
         const double interval_sec =
           next->timestamp_sec - previous->timestamp_sec;
@@ -619,14 +648,14 @@ public:
         const double amount = std::clamp(
           (timestamp_sec - previous->timestamp_sec) / interval_sec,
           0.0, 1.0);
-        camera_to_world = slerp(
-          previous->camera_to_world, next->camera_to_world, amount);
+        current_up_camera = interpolateDirection(
+          previous->up_camera, next->up_camera, amount);
       }
       nearest_timestamp =
         std::abs(previous_age_sec) <= std::abs(next_age_sec) ?
         previous->timestamp_sec : next->timestamp_sec;
     } else {
-      const TimedOrientation & latest = history_.back();
+      const TimedTilt & latest = history_.back();
       prediction_horizon_sec = timestamp_sec - latest.timestamp_sec;
       if (
         !std::isfinite(prediction_horizon_sec) ||
@@ -635,16 +664,14 @@ public:
       {
         return std::nullopt;
       }
-      camera_to_world = normalized(multiply(
-        latest.camera_to_world,
-        quaternionFromRotationVector(
-          latest.angular_velocity_camera_radps * prediction_horizon_sec)));
+      current_up_camera = normalized(rotateVector(
+        conjugate(quaternionFromRotationVector(
+          latest.angular_velocity_camera_radps * prediction_horizon_sec)),
+        latest.up_camera));
       nearest_timestamp = latest.timestamp_sec;
       predicted = true;
     }
 
-    const cv::Vec3d current_up_camera = normalized(rotateVector(
-      conjugate(camera_to_world), world_up_reference_));
     Quaternion correction = quaternionFromTwoVectors(
       current_up_camera, reference_up_camera_);
     if (
@@ -728,6 +755,12 @@ public:
     return stationary_confirmed_;
   }
 
+  bool externalReferenceReceived() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return external_reference_up_camera_.has_value();
+  }
+
   std::uint64_t onlineTiltBiasUpdateCount() const
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -735,12 +768,10 @@ public:
   }
 
 private:
-  struct TimedOrientation
+  struct TimedTilt
   {
     double timestamp_sec;
-    Quaternion camera_to_world;
-    double roll_accelerometer_confidence;
-    double accelerometer_confidence;
+    cv::Vec3d up_camera;
     cv::Vec3d angular_velocity_camera_radps;
   };
 
@@ -833,8 +864,7 @@ private:
     return {};
   }
 
-  StationaryWindowAssessment assessStationaryWindowLocked(
-    const cv::Vec3d & predicted_up_camera) const
+  StationaryWindowAssessment assessStationaryWindowLocked() const
   {
     StationaryWindowAssessment result;
     if (
@@ -887,7 +917,13 @@ private:
 
     const cv::Vec3d mean_acceleration_direction = normalized(acceleration_sum);
     if (
-      angleDegrees(mean_acceleration_direction, predicted_up_camera) >
+      // Stationarity is judged against the immutable startup pose, not the
+      // possibly drifted estimator state. This lets a stopped vehicle recover
+      // from a large tilt error while still rejecting constant lateral or
+      // longitudinal acceleration as motion.
+      angleDegrees(
+        mean_acceleration_direction,
+        stationary_acceleration_reference_up_camera_) >
       config_.stationary_accelerometer_direction_error_deg ||
       angleDegrees(
         normalized(first_half_acceleration_sum),
@@ -984,14 +1020,16 @@ private:
   double gravity_magnitude_reference_mps2_{9.80665};
   std::uint64_t online_tilt_bias_update_count_{0U};
   bool stationary_confirmed_{false};
-  cv::Vec3d world_up_reference_{0.0, -1.0, 0.0};
+  std::optional<cv::Vec3d> external_reference_up_camera_;
+  cv::Vec3d stationary_acceleration_reference_up_camera_{
+    0.0, -1.0, 0.0};
   cv::Vec3d reference_up_camera_{0.0, -1.0, 0.0};
-  Quaternion camera_to_world_{};
+  cv::Vec3d current_up_camera_{0.0, -1.0, 0.0};
   double last_timestamp_sec_{0.0};
   bool initialized_{false};
   std::deque<StationarySample> calibration_samples_;
   std::deque<StationarySample> stationary_samples_;
-  std::deque<TimedOrientation> history_;
+  std::deque<TimedTilt> history_;
 };
 
 ImuImageStabilizer::ImuImageStabilizer(
@@ -1009,6 +1047,12 @@ void ImuImageStabilizer::update(
 {
   impl_->update(
     acceleration_camera_mps2, angular_velocity_camera_radps, timestamp_sec);
+}
+
+bool ImuImageStabilizer::setExternalReferenceUpCamera(
+  const cv::Vec3d & up_camera)
+{
+  return impl_->setExternalReferenceUpCamera(up_camera);
 }
 
 std::optional<ImageStabilizationCorrection>
@@ -1036,6 +1080,11 @@ cv::Vec3d ImuImageStabilizer::gyroscopeBiasRadps() const
 bool ImuImageStabilizer::stationaryConfirmed() const
 {
   return impl_->stationaryConfirmed();
+}
+
+bool ImuImageStabilizer::externalReferenceReceived() const
+{
+  return impl_->externalReferenceReceived();
 }
 
 std::uint64_t ImuImageStabilizer::onlineTiltBiasUpdateCount() const

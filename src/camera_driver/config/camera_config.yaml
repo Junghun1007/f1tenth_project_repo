@@ -50,6 +50,17 @@ camera_driver:
     imu_stabilization_accelerometer_direction_gate_deg: 4.3 # 4.3
     imu_stabilization_roll_accelerometer_time_constant_sec: 6.0 # 6.0
     imu_stabilization_roll_accelerometer_direction_gate_deg: 4.3 # 4.3
+    imu_stabilization_external_reference_topic: "/camera/startup_ground_normal"
+    # The combined BEV launch overrides this to true. Keep false for the
+    # standalone camera launch, where no BEV reference publisher exists.
+    imu_stabilization_external_reference_required: false
+    # 주행 가속도를 자세로 오인하지 않도록 가속도 tilt 복구는 정지 확인 후에만 수행한다.
+    imu_stabilization_accelerometer_stationary_only: true
+    # 평지/서스펜션 복귀 가정에 따라 gyro tilt를 시작 기준으로 매우 천천히 누설한다.
+    # 작을수록 drift는 줄지만 오래 지속되는 실제 자세 변화를 덜 보정할 수 있다.
+    imu_stabilization_reference_tilt_leak_time_constant_sec: 8.0
+    # 1초 정지 확인 후 약 1초(약 3 tau) 안에 시작 시점으로 복귀하는 시정수다.
+    imu_stabilization_stationary_tilt_recovery_time_constant_sec: 0.35
     imu_stabilization_online_gyroscope_tilt_bias_enabled: true
     imu_stabilization_online_gyroscope_tilt_bias_time_constant_sec: 10.0
     imu_stabilization_stationary_detection_window_sec: 1.0
@@ -61,7 +72,8 @@ camera_driver:
     imu_stabilization_stationary_gyroscope_stddev_maximum_degps: 0.8
     imu_stabilization_pitch_correction_enabled: true
     imu_stabilization_roll_correction_enabled: true
-    imu_stabilization_maximum_correction_deg: 12.0
+    # 이 범위를 벗어난 불확실한 보정은 적용하지 않고 zoom-only 원본으로 통과시킨다.
+    imu_stabilization_maximum_correction_deg: 3.0
     imu_stabilization_maximum_frame_imu_wait_sec: 0.001
     imu_stabilization_maximum_frame_imu_age_sec: 0.006
     imu_stabilization_maximum_prediction_sec: 0.015

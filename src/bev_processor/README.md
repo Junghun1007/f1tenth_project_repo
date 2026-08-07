@@ -1,5 +1,18 @@
 # bev_processor
 
+## camera_driver 기준 자세 공유
+
+시작 측정이 끝나면 BEV 고정 LUT에 실제로 사용한 roll/pitch를
+`camera_optical_frame`의 단위 지면 법선으로 변환해
+`/camera/startup_ground_normal`에 한 번 발행한다. QoS는 reliable +
+transient-local이므로 같은 launch에서 뒤에 생성되는 `camera_driver`도 값을
+수신한다. 기본 자동 설정(`measurement_attitude_source: depth`)에서는 이
+벡터가 Depth 평면 법선이며 BEV와 가상 짐벌이 동일한 수치 기준을 사용한다.
+
+통합 launch는 camera_driver의 외부 기준을 필수로 지정한다. 메시지가 없으면
+자체 IMU 방향으로 다른 기준을 확정하지 않고 대기하며, 안정화 준비 전 프레임은
+기존 zoom-only 정책으로 처리된다.
+
 `camera_driver`가 IMU로 안정화해 발행하는 전체 1280x720 NV12 영상을
 CUDA에서 컬러 BEV로 변환하는 ROS 2 C++ 패키지다. 실행 모드는 하나이며,
 시작할 때 카메라 높이·roll·하향 pitch를 반드시 측정한다.

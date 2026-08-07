@@ -25,6 +25,10 @@ struct ImuImageStabilizerConfig
   double acceleration_correction_gate_deg{4.3};
   double roll_acceleration_correction_time_constant_sec{6.0};
   double roll_acceleration_direction_gate_deg{4.3};
+  bool acceleration_correction_stationary_only{true};
+  bool external_reference_required{false};
+  double reference_tilt_leak_time_constant_sec{8.0};
+  double stationary_tilt_recovery_time_constant_sec{0.35};
   bool online_gyroscope_tilt_bias_enabled{true};
   double online_gyroscope_tilt_bias_time_constant_sec{10.0};
   double stationary_detection_window_sec{1.0};
@@ -36,7 +40,7 @@ struct ImuImageStabilizerConfig
   double stationary_gyroscope_stddev_maximum_degps{0.8};
   bool pitch_correction_enabled{true};
   bool roll_correction_enabled{true};
-  double maximum_correction_deg{12.0};
+  double maximum_correction_deg{3.0};
   double maximum_sample_interval_sec{0.1};
   double maximum_history_sec{2.0};
   double maximum_frame_imu_wait_sec{0.001};
@@ -87,6 +91,11 @@ public:
     const cv::Vec3d & angular_velocity_camera_radps,
     double timestamp_sec);
 
+  // Supplies the immutable ground-plane normal used by the static BEV LUT.
+  // It must be expressed in camera optical coordinates and is accepted only
+  // before the startup stationary calibration has completed.
+  bool setExternalReferenceUpCamera(const cv::Vec3d & up_camera);
+
   std::optional<ImageStabilizationCorrection> correctionAt(
     double timestamp_sec) const;
 
@@ -94,6 +103,7 @@ public:
   ImageStabilizerCalibrationProgress calibrationProgress() const;
   cv::Vec3d gyroscopeBiasRadps() const;
   bool stationaryConfirmed() const;
+  bool externalReferenceReceived() const;
   std::uint64_t onlineTiltBiasUpdateCount() const;
 
 private:

@@ -18,6 +18,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
@@ -265,6 +266,13 @@ public:
       "depth-plane attitude + depth-plane offset height" :
       "IMU attitude + depth-plane offset height");
 
+    auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+    reference_qos.reliable().transient_local();
+    startup_ground_reference_publisher_ =
+      create_publisher<geometry_msgs::msg::Vector3Stamped>(
+      startup_ground_reference_topic_, reference_qos);
+    publishStartupGroundReference(measurement.attitude_source);
+
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     input_subscription_ = create_subscription<sensor_msgs::msg::Image>(
       input_topic_,
@@ -432,6 +440,10 @@ private:
     declare_parameter<std::string>("input_topic", "/camera/image_rect");
     declare_parameter<std::string>("output_topic", "/camera/image_bev");
     declare_parameter<std::string>("output_frame_id", "front_axle_bev");
+    declare_parameter<std::string>(
+      "startup_ground_reference_topic", "/camera/startup_ground_normal");
+    declare_parameter<std::string>(
+      "startup_ground_reference_frame_id", "camera_optical_frame");
     declare_parameter<double>("expected_input_fps", 110.0);
 
     declare_parameter<bool>("publish_enabled", true);
@@ -597,6 +609,10 @@ private:
     input_topic_ = get_parameter("input_topic").as_string();
     output_topic_ = get_parameter("output_topic").as_string();
     output_frame_id_ = get_parameter("output_frame_id").as_string();
+    startup_ground_reference_topic_ =
+      get_parameter("startup_ground_reference_topic").as_string();
+    startup_ground_reference_frame_id_ =
+      get_parameter("startup_ground_reference_frame_id").as_string();
     expected_input_fps_ = get_parameter("expected_input_fps").as_double();
 
     publish_enabled_ = get_parameter("publish_enabled").as_bool();
@@ -876,6 +892,13 @@ private:
     if (input_topic_.empty()) {
       throw std::invalid_argument("input_topic must not be empty");
     }
+    if (
+      startup_ground_reference_topic_.empty() ||
+      startup_ground_reference_frame_id_.empty())
+    {
+      throw std::invalid_argument(
+              "startup ground reference topic and frame_id must not be empty");
+    }
     if (publish_enabled_ && output_topic_.empty()) {
       throw std::invalid_argument(
               "output_topic must not be empty when publishing is enabled");
@@ -934,6 +957,27 @@ private:
     {
       throw std::invalid_argument("invalid rate, preview, or status parameter");
     }
+  }
+
+  void publishStartupGroundReference(const std::string & attitude_source)
+  {
+    const cv::Vec3d up_camera = attitudeUpVector(
+      startup_roll_deg_, startup_pitch_down_deg_);
+    geometry_msgs::msg::Vector3Stamped message;
+    message.header.stamp = get_clock()->now();
+    message.header.frame_id = startup_ground_reference_frame_id_;
+    message.vector.x = up_camera[0];
+    message.vector.y = up_camera[1];
+    message.vector.z = up_camera[2];
+    startup_ground_reference_publisher_->publish(message);
+    RCLCPP_INFO(
+      get_logger(),
+      "Published startup ground reference for camera stabilization: "
+      "topic=%s frame=%s source=%s normal=(%.6f, %.6f, %.6f).",
+      startup_ground_reference_topic_.c_str(),
+      startup_ground_reference_frame_id_.c_str(),
+      attitude_source.c_str(),
+      up_camera[0], up_camera[1], up_camera[2]);
   }
 
   void installProcessor(
@@ -1766,6 +1810,8 @@ private:
   std::string input_topic_;
   std::string output_topic_;
   std::string output_frame_id_;
+  std::string startup_ground_reference_topic_;
+  std::string startup_ground_reference_frame_id_;
   double expected_input_fps_{110.0};
   bool publish_enabled_{true};
   double publish_max_fps_{0.0};
@@ -1798,6 +1844,8 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr input_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr lane_output_publisher_;
+  rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr
+    startup_ground_reference_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 
   std::mutex input_mutex_;

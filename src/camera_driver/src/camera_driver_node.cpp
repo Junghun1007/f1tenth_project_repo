@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "depthai/depthai.hpp"
+#include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "opencv2/core.hpp"
 #include "opencv2/highgui.hpp"
 #include "opencv2/imgproc.hpp"
@@ -210,6 +211,15 @@ public:
     if (imu_stabilization_enabled_) {
       imu_stabilizer_ =
         std::make_unique<ImuImageStabilizer>(imu_stabilizer_config_);
+      auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
+      reference_qos.reliable().transient_local();
+      startup_ground_reference_subscription_ =
+        node_.create_subscription<geometry_msgs::msg::Vector3Stamped>(
+        startup_ground_reference_topic_,
+        reference_qos,
+        [this](geometry_msgs::msg::Vector3Stamped::ConstSharedPtr message) {
+          on_startup_ground_reference(*message);
+        });
     }
 
     if (!enabled_) {
@@ -370,6 +380,21 @@ private:
     imu_stabilizer_config_.roll_acceleration_direction_gate_deg =
       node_.declare_parameter<double>(
       "imu_stabilization_roll_accelerometer_direction_gate_deg", 4.3);
+    imu_stabilizer_config_.acceleration_correction_stationary_only =
+      node_.declare_parameter<bool>(
+      "imu_stabilization_accelerometer_stationary_only", true);
+    startup_ground_reference_topic_ = node_.declare_parameter<std::string>(
+      "imu_stabilization_external_reference_topic",
+      "/camera/startup_ground_normal");
+    imu_stabilizer_config_.external_reference_required =
+      node_.declare_parameter<bool>(
+      "imu_stabilization_external_reference_required", false);
+    imu_stabilizer_config_.reference_tilt_leak_time_constant_sec =
+      node_.declare_parameter<double>(
+      "imu_stabilization_reference_tilt_leak_time_constant_sec", 8.0);
+    imu_stabilizer_config_.stationary_tilt_recovery_time_constant_sec =
+      node_.declare_parameter<double>(
+      "imu_stabilization_stationary_tilt_recovery_time_constant_sec", 0.35);
     imu_stabilizer_config_.online_gyroscope_tilt_bias_enabled =
       node_.declare_parameter<bool>(
       "imu_stabilization_online_gyroscope_tilt_bias_enabled", true);
@@ -405,7 +430,7 @@ private:
       "imu_stabilization_roll_correction_enabled", true);
     imu_stabilizer_config_.maximum_correction_deg =
       node_.declare_parameter<double>(
-      "imu_stabilization_maximum_correction_deg", 12.0);
+      "imu_stabilization_maximum_correction_deg", 3.0);
     imu_stabilizer_config_.maximum_frame_imu_wait_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_maximum_frame_imu_wait_sec", 0.001);
@@ -490,6 +515,14 @@ private:
                 "imu_topic and imu_frame_id must not be empty when "
                 "the internal IMU bridge is enabled");
       }
+      if (
+        imu_stabilization_enabled_ &&
+        startup_ground_reference_topic_.empty())
+      {
+        throw std::invalid_argument(
+                "imu_stabilization_external_reference_topic must not be "
+                "empty when stabilization is enabled");
+      }
     }
     if (
       !std::isfinite(fixed_view_zoom_) ||
@@ -524,6 +557,40 @@ private:
 
     camera_socket_ = parse_camera_socket(camera_socket_name_);
     resize_mode_ = parse_resize_mode(resize_mode_name_);
+  }
+
+  void on_startup_ground_reference(
+    const geometry_msgs::msg::Vector3Stamped & message)
+  {
+    if (!imu_stabilizer_) {
+      return;
+    }
+    if (
+      !message.header.frame_id.empty() &&
+      message.header.frame_id != frame_id_)
+    {
+      RCLCPP_ERROR(
+        node_.get_logger(),
+        "Rejected BEV startup ground reference in frame '%s'; expected '%s'.",
+        message.header.frame_id.c_str(), frame_id_.c_str());
+      return;
+    }
+    const cv::Vec3d up_camera(
+      message.vector.x, message.vector.y, message.vector.z);
+    if (!imu_stabilizer_->setExternalReferenceUpCamera(up_camera)) {
+      if (!late_external_reference_reported_.exchange(true)) {
+        RCLCPP_WARN(
+          node_.get_logger(),
+          "Ignored invalid or late BEV startup ground reference; the virtual "
+          "gimbal reference is immutable after calibration.");
+      }
+      return;
+    }
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "Accepted BEV startup ground reference in %s: "
+      "normal=(%.6f, %.6f, %.6f).",
+      frame_id_.c_str(), up_camera[0], up_camera[1], up_camera[2]);
   }
 
   void start_pipeline()
@@ -655,11 +722,16 @@ private:
     if (imu_stabilization_enabled_) {
       RCLCPP_INFO(
         node_.get_logger(),
-        "Fixed-reference stabilization: keep camera still for %.1f s "
-        "startup discard + %.1f s stationary calibration; pitch/roll limit "
-        "%.1f deg, crop overflow policy=drop frame",
+        "Virtual-gimbal stabilization: keep camera still for %.1f s "
+        "startup discard + %.1f s stationary calibration; yaw-free tilt, "
+        "BEV reference=%s on %s, stationary-only accel recovery, "
+        "pitch/roll limit %.1f deg, "
+        "invalid correction policy=zoom-only fallback",
         imu_stabilizer_config_.startup_discard_duration_sec,
         imu_stabilizer_config_.reference_calibration_duration_sec,
+        imu_stabilizer_config_.external_reference_required ?
+        "required" : "optional",
+        startup_ground_reference_topic_.c_str(),
         imu_stabilizer_config_.maximum_correction_deg);
     }
   }
@@ -826,6 +898,8 @@ private:
       RCLCPP_WARN_THROTTLE(
         node_.get_logger(), *node_.get_clock(), 5000,
         "IMU stabilization skipped because frame intrinsics are unavailable.");
+      // The BEV input model includes the fixed zoom, so an unzoomed raw frame
+      // would be geometrically wrong. This is the one case that must drop.
       return StabilizationTransform{std::nullopt, false};
     }
     const auto intrinsics = transformation.getIntrinsicMatrix();
@@ -837,23 +911,24 @@ private:
       0.0, 0.0, 1.0);
     const cv::Matx33d fixed_view_zoom_homography =
       makeFixedViewZoomHomography(camera_matrix, fixed_view_zoom_);
+    const auto zoom_only = [&]() {
+        return StabilizationTransform{
+          fixed_view_zoom_enabled ?
+          std::optional<cv::Matx33d>(fixed_view_zoom_homography) :
+          std::nullopt,
+          true};
+      };
 
     // The fixed crop is independent of IMU stabilization. This keeps the
     // calibrated 1.25x camera view when pitch/roll correction is disabled.
     if (!imu_stabilization_enabled_ || !imu_stabilizer_) {
-      return StabilizationTransform{
-        fixed_view_zoom_enabled ?
-        std::optional<cv::Matx33d>(fixed_view_zoom_homography) : std::nullopt,
-        true};
+      return zoom_only();
     }
 
-    // Match stabilized_preview: calibration frames keep the same fixed FOV,
-    // then initialized frames must have a timestamp-valid absolute attitude.
+    // Calibration frames keep the same fixed FOV. Initialized frames use a
+    // timestamp-valid relative tilt from the immutable startup view.
     if (!imu_stabilizer_->initialized()) {
-      return StabilizationTransform{
-        fixed_view_zoom_ > 1.0 ?
-        std::optional<cv::Matx33d>(fixed_view_zoom_homography) : std::nullopt,
-        true};
+      return zoom_only();
     }
 
     const double frame_timestamp_sec = timestampSeconds(sensor_timestamp);
@@ -868,18 +943,24 @@ private:
       RCLCPP_ERROR_THROTTLE(
         node_.get_logger(), *node_.get_clock(), 5000,
         "RGB/IMU timestamps are not in the same clock domain.");
-      return StabilizationTransform{std::nullopt, false};
+      return zoom_only();
     }
 
     const auto correction = imu_stabilizer_->correctionAt(
       frame_timestamp_sec);
     if (!correction) {
       stabilization_missed_total_.fetch_add(1U);
-      return StabilizationTransform{std::nullopt, false};
+      return zoom_only();
     }
+    latest_stabilization_roll_error_deg_.store(
+      correction->roll_error_deg, std::memory_order_relaxed);
+    latest_stabilization_pitch_error_deg_.store(
+      correction->pitch_error_deg, std::memory_order_relaxed);
+    latest_stabilization_correction_angle_deg_.store(
+      correction->correction_angle_deg, std::memory_order_relaxed);
     if (!correction->within_correction_limit) {
       stabilization_angle_rejections_total_.fetch_add(1U);
-      return StabilizationTransform{std::nullopt, false};
+      return zoom_only();
     }
 
     const cv::Matx33d stabilization_homography =
@@ -895,7 +976,7 @@ private:
         fixed_view_border_margin_px_))
     {
       stabilization_crop_rejections_total_.fetch_add(1U);
-      return StabilizationTransform{std::nullopt, false};
+      return zoom_only();
     }
     if (correction->predicted) {
       stabilization_predictions_total_.fetch_add(1U);
@@ -1453,11 +1534,16 @@ private:
       std::optional<ImageStabilizerCalibrationProgress> stabilization_progress;
       if (imu_stabilization_enabled_) {
         if (imu_stabilizer_ && imu_stabilizer_->initialized()) {
-          stabilization_state = "fixed-reference-ready";
+          stabilization_state = "virtual-gimbal-ready";
         } else if (imu_stabilizer_) {
           const auto progress = imu_stabilizer_->calibrationProgress();
           stabilization_progress = progress;
-          if (progress.discarding_startup_samples) {
+          if (
+            imu_stabilizer_config_.external_reference_required &&
+            !imu_stabilizer_->externalReferenceReceived())
+          {
+            stabilization_state = "waiting-bev-reference";
+          } else if (progress.discarding_startup_samples) {
             stabilization_state = "discarding-startup-imu";
           } else {
             stabilization_state = "stationary-calibration";
@@ -1548,6 +1634,27 @@ private:
           static_cast<unsigned long>(stabilization_missed_total_.load()),
           static_cast<unsigned long>(stabilization_output_drops_total_.load()),
           static_cast<unsigned long>(dropped_count));
+      }
+      if (imu_stabilizer_ && imu_stabilizer_->initialized()) {
+        constexpr double radians_to_degrees =
+          180.0 / 3.141592653589793238462643383279502884;
+        const cv::Vec3d bias_degps =
+          imu_stabilizer_->gyroscopeBiasRadps() * radians_to_degrees;
+        RCLCPP_INFO(
+          node_.get_logger(),
+          "Virtual gimbal: tilt_error(roll/pitch)=%.3f/%.3fdeg, "
+          "correction=%.3fdeg, stationary=%s, "
+          "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
+          latest_stabilization_roll_error_deg_.load(
+            std::memory_order_relaxed),
+          latest_stabilization_pitch_error_deg_.load(
+            std::memory_order_relaxed),
+          latest_stabilization_correction_angle_deg_.load(
+            std::memory_order_relaxed),
+          imu_stabilizer_->stationaryConfirmed() ? "yes" : "no",
+          bias_degps[0], bias_degps[1], bias_degps[2],
+          static_cast<unsigned long>(
+            imu_stabilizer_->onlineTiltBiasUpdateCount()));
       }
     } else {
       if (performance_measurement_enabled_) {
@@ -1658,6 +1765,7 @@ private:
   double maximum_timestamp_domain_delta_sec_{1.0};
   bool imu_stabilization_enabled_{true};
   ImuImageStabilizerConfig imu_stabilizer_config_{};
+  std::string startup_ground_reference_topic_;
   double fixed_view_zoom_{1.25};
   double fixed_view_border_margin_px_{1.5};
   int output_crop_top_px_{0};
@@ -1681,6 +1789,8 @@ private:
   std::unique_ptr<ImuImageStabilizer> imu_stabilizer_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
+  rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr
+    startup_ground_reference_subscription_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 
   std::thread capture_thread_;
@@ -1703,6 +1813,7 @@ private:
   std::atomic<bool> first_frame_received_{false};
   std::atomic<bool> startup_timeout_reported_{false};
   std::atomic<bool> timestamp_fallback_reported_{false};
+  std::atomic<bool> late_external_reference_reported_{false};
   std::atomic<std::uint64_t> received_total_{0};
   std::atomic<std::uint64_t> received_interval_{0};
   std::atomic<std::uint64_t> published_total_{0};
@@ -1726,6 +1837,9 @@ private:
   std::atomic<std::uint64_t> stabilization_predictions_total_{0};
   std::atomic<std::uint64_t> stabilization_output_drops_total_{0};
   std::atomic<std::uint64_t> rejected_acceleration_samples_total_{0};
+  std::atomic<double> latest_stabilization_roll_error_deg_{0.0};
+  std::atomic<double> latest_stabilization_pitch_error_deg_{0.0};
+  std::atomic<double> latest_stabilization_correction_angle_deg_{0.0};
   std::atomic<std::uint64_t> maximum_imu_pair_skew_ns_{0};
   std::atomic<double> latest_imu_timestamp_sec_{
     std::numeric_limits<double>::quiet_NaN()};

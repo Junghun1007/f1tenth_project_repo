@@ -174,6 +174,9 @@ def generate_launch_description():
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_parameter
                                 ),
+                                (
+                                    "imu_stabilization_external_reference_required"
+                                ): True,
                                 "output_crop_top_px": 0,
                                 "performance_measurement_enabled": (
                                     performance_measurement_parameter

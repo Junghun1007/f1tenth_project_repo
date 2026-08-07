@@ -35,13 +35,27 @@ camera_driver::ImuImageStabilizerConfig fastConfig()
 
 void calibrate(camera_driver::ImuImageStabilizer & stabilizer)
 {
+  const cv::Vec3d startup_acceleration(0.0, -9.80665, 0.0);
   for (int index = 0; index <= 4; ++index) {
     stabilizer.update(
-      cv::Vec3d(0.0, -9.80665, 0.0),
+      startup_acceleration,
       cv::Vec3d(0.0, 0.0, 0.0),
       0.0025 * static_cast<double>(index));
   }
   require(stabilizer.initialized(), "stationary calibration did not finish");
+}
+
+void calibrateAtTilt(
+  camera_driver::ImuImageStabilizer & stabilizer,
+  const cv::Vec3d & startup_acceleration)
+{
+  for (int index = 0; index <= 4; ++index) {
+    stabilizer.update(
+      startup_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      0.0025 * static_cast<double>(index));
+  }
+  require(stabilizer.initialized(), "tilted calibration did not finish");
 }
 
 void verifyStartupSamplesAreDiscarded()
@@ -97,12 +111,174 @@ void verifyLateralAccelerationDoesNotCreateRoll()
     "lateral acceleration was incorrectly accumulated as roll");
 }
 
+void verifyPitchedUturnDoesNotCreateTilt()
+{
+  const auto config = fastConfig();
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  constexpr double pitch_rad = 13.0 * kDegreesToRadians;
+  const cv::Vec3d startup_acceleration(
+    0.0,
+    -9.80665 * std::cos(pitch_rad),
+    -9.80665 * std::sin(pitch_rad));
+  calibrateAtTilt(stabilizer, startup_acceleration);
+
+  const cv::Vec3d yaw_axis = startup_acceleration / 9.80665;
+  double timestamp_sec = 0.01;
+  for (int index = 1; index <= 1260; ++index) {
+    timestamp_sec = 0.01 + 0.0025 * static_cast<double>(index);
+    stabilizer.update(std::nullopt, yaw_axis, timestamp_sec);
+  }
+  const auto correction = stabilizer.correctionAt(timestamp_sec);
+  require(correction.has_value(), "pitched U-turn lookup failed");
+  require(
+    correction->correction_angle_deg < 1.0e-6,
+    "gravity-axis U-turn leaked yaw into tilt");
+}
+
+void verifyStationaryRecoveryAndThreeAxisBiasUpdate()
+{
+  auto config = fastConfig();
+  config.stationary_tilt_recovery_time_constant_sec = 0.02;
+  config.online_gyroscope_tilt_bias_time_constant_sec = 0.02;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  calibrate(stabilizer);
+
+  double timestamp_sec = 0.01;
+  for (int index = 1; index <= 40; ++index) {
+    timestamp_sec = 0.01 + 0.0025 * static_cast<double>(index);
+    stabilizer.update(
+      std::nullopt,
+      cv::Vec3d(0.0, 0.0, 1.0),
+      timestamp_sec);
+  }
+  const auto drifted = stabilizer.correctionAt(timestamp_sec);
+  require(drifted.has_value(), "drifted tilt lookup failed");
+  require(
+    std::abs(drifted->roll_error_deg) > 3.0,
+    "synthetic gyro drift did not create the expected tilt error");
+
+  const cv::Vec3d stationary_gyro_bias(0.0, 0.001, 0.0);
+  for (int index = 1; index <= 200; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      cv::Vec3d(0.0, -9.80665, 0.0),
+      stationary_gyro_bias,
+      timestamp_sec);
+  }
+  const auto recovered = stabilizer.correctionAt(timestamp_sec);
+  require(recovered.has_value(), "stationary recovery lookup failed");
+  require(
+    std::abs(recovered->roll_error_deg) < 0.1,
+    "stationary recovery did not restore the startup view");
+  require(
+    stabilizer.gyroscopeBiasRadps()[1] > 0.0005,
+    "stationary online bias update did not include camera Y");
+  require(
+    stabilizer.onlineTiltBiasUpdateCount() > 0U,
+    "stationary online bias update was never activated");
+}
+
+void verifyReferenceLeakBoundsGyroDrift()
+{
+  auto config = fastConfig();
+  config.reference_tilt_leak_time_constant_sec = 0.02;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  calibrate(stabilizer);
+
+  double timestamp_sec = 0.01;
+  for (int index = 1; index <= 800; ++index) {
+    timestamp_sec = 0.01 + 0.0025 * static_cast<double>(index);
+    stabilizer.update(
+      std::nullopt,
+      cv::Vec3d(0.0, 0.0, 0.01),
+      timestamp_sec);
+  }
+  const auto correction = stabilizer.correctionAt(timestamp_sec);
+  require(correction.has_value(), "reference-leak lookup failed");
+  require(
+    std::abs(correction->roll_error_deg) < 0.05,
+    "startup-reference leak did not bound accumulated gyro drift");
+}
+
+void verifyExternalBevReferenceIsSharedWithoutChangingStationarySignature()
+{
+  auto config = fastConfig();
+  config.external_reference_required = true;
+  config.stationary_tilt_recovery_time_constant_sec = 0.02;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  const cv::Vec3d startup_acceleration(0.0, -9.80665, 0.0);
+
+  for (int index = 0; index <= 4; ++index) {
+    stabilizer.update(
+      startup_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      0.0025 * static_cast<double>(index));
+  }
+  require(
+    !stabilizer.initialized(),
+    "required BEV reference was silently replaced by the IMU reference");
+
+  constexpr double depth_roll_rad = 5.0 * kDegreesToRadians;
+  const cv::Vec3d depth_up_camera(
+    -std::sin(depth_roll_rad),
+    -std::cos(depth_roll_rad),
+    0.0);
+  require(
+    stabilizer.setExternalReferenceUpCamera(depth_up_camera),
+    "valid BEV ground reference was rejected");
+  require(
+    stabilizer.externalReferenceReceived(),
+    "BEV ground reference receipt was not recorded");
+
+  for (int index = 1; index <= 5; ++index) {
+    stabilizer.update(
+      startup_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      0.01 + 0.0025 * static_cast<double>(index));
+  }
+  require(
+    stabilizer.initialized(),
+    "calibration did not finish after the BEV reference arrived");
+
+  double timestamp_sec = 0.0225;
+  const auto startup_correction = stabilizer.correctionAt(timestamp_sec);
+  require(
+    startup_correction.has_value() &&
+    startup_correction->correction_angle_deg < 1.0e-9,
+    "shared BEV startup reference produced a non-identity startup warp");
+
+  for (int index = 0; index < 40; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      std::nullopt, cv::Vec3d(0.0, 0.0, 1.0), timestamp_sec);
+  }
+  for (int index = 0; index < 200; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      startup_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec);
+  }
+  const auto recovered = stabilizer.correctionAt(timestamp_sec);
+  require(
+    stabilizer.stationaryConfirmed(),
+    "IMU startup signature did not confirm stationary with a different "
+    "depth reference");
+  require(
+    recovered.has_value() && std::abs(recovered->roll_error_deg) < 0.1,
+    "stationary recovery did not return to the shared BEV reference");
+}
+
 }  // namespace
 
 int main()
 {
   verifyStartupSamplesAreDiscarded();
   verifyLateralAccelerationDoesNotCreateRoll();
+  verifyPitchedUturnDoesNotCreateTilt();
+  verifyStationaryRecoveryAndThreeAxisBiasUpdate();
+  verifyReferenceLeakBoundsGyroDrift();
+  verifyExternalBevReferenceIsSharedWithoutChangingStationarySignature();
 
   const auto config = fastConfig();
   camera_driver::ImuImageStabilizer stabilizer(config);

@@ -23,6 +23,7 @@ find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(depthai 3.6 CONFIG QUIET)
@@ -122,6 +123,7 @@ target_include_directories(
 ament_target_dependencies(bev_processor_component
   rclcpp
   rclcpp_components
+  geometry_msgs
   sensor_msgs
   std_msgs
 )
@@ -188,5 +190,5 @@ install(
 )
 
 ament_export_include_directories(include)
-ament_export_dependencies(OpenCV rclcpp_components)
+ament_export_dependencies(OpenCV rclcpp_components geometry_msgs)
 ament_package()
