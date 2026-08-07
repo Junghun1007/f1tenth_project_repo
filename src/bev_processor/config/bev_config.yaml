@@ -162,30 +162,30 @@ bev_processor:
     # false면 필터를 적용하지 않은 원본 BEV를 표시한다. 두 발행 토픽은 불변이다.
     lane_preview_enabled: true
     # 0은 투명, 1은 불투명이다. 기본값은 형광펜처럼 원본이 비치는 값이다.
-    lane_preview_overlay_alpha: 0.35
+    lane_preview_overlay_alpha: 1.0
 
     # 밝기(Y에 가까운 grayscale)를 기본으로 사용한다. 1.8m까지는 near
     # 임계값을 쓰고 그 이후에는 원거리 번진 픽셀을 잃지 않도록 far 값까지
     # 선형으로 낮춘다. 낮은 saturation은 흰색/회색만 남겨 컬러 풍경을 거른다.
     lane_minimum_brightness: 160
-    lane_far_minimum_brightness: 110
+    lane_far_minimum_brightness: 105
     lane_maximum_saturation: 80
     # 1은 추가 블러 없음. 원거리의 얇은 픽셀을 보존하는 기본값이다.
     lane_brightness_blur_kernel: 1
     lane_vertical_close_m: 0.05
-    lane_minimum_mark_width_m: 0.01
+    lane_minimum_mark_width_m: 0.015 # 0.01
     # 최초 seed는 어두운 배경 위의 8cm 이하 흰 선만 허용한다.
-    lane_maximum_mark_width_m: 0.08
+    lane_maximum_mark_width_m: 0.030
     # 선 중심과 양옆 5cm 배경의 밝기 차가 35 이상이어야 하며,
     # 양옆 배경 평균이 140보다 밝으면 도로 밖 밝은 풍경으로 보고 제외한다.
-    lane_minimum_local_contrast: 35
+    lane_minimum_local_contrast: 40 # 35
     lane_maximum_local_background_brightness: 140
-    lane_local_background_band_m: 0.05
+    lane_local_background_band_m: 0.04 # 0.05
     # 추적 중에는 윈도우의 모든 밝은 픽셀을 평균하지 않는다. 가로 방향으로
     # 분리한 밝은 덩어리 중 예측점에 가깝고 이 폭 이하인 하나만 실측한다.
     # 먼 차선은 BEV 번짐을 고려하여 최대 20cm까지 점진적으로 허용한다.
     lane_tracked_mark_width_near_m: 0.11
-    lane_tracked_mark_width_far_m: 0.20
+    lane_tracked_mark_width_far_m: 0.22
     # 갑자기 옆 풍경으로 이동하지 않도록 실측점의 횡방향 이동을 제한한다.
     lane_measurement_lateral_gate_near_m: 0.08
     lane_measurement_lateral_gate_far_m: 0.18
@@ -193,22 +193,22 @@ bev_processor:
 
     # 1.8m는 더 이상 관측 차단점이 아니다. 가까운 차선으로 추적을 시작하고
     # 1.8m 이후에는 더 낮은 밝기 임계값과 넓은 윈도우로 실제 픽셀을 계속 찾는다.
-    lane_observation_minimum_x_m: 0.20
-    lane_observation_maximum_x_m: 1.80
-    lane_reconstruction_minimum_x_m: 0.20
-    lane_reconstruction_maximum_x_m: 2.70
+    lane_observation_minimum_x_m: 0.20 # 0.20
+    lane_observation_maximum_x_m: 1.50
+    lane_reconstruction_minimum_x_m: 0.10 # 0.20
+    lane_reconstruction_maximum_x_m: 3.0 # 2.70
     # 실제 마지막 측정점 이후에는 마지막 진행 방향으로 20cm만 연장한다.
-    lane_maximum_extrapolation_m: 0.20
+    lane_maximum_extrapolation_m: 0.10 # 0.30
 
     # 회전형 슬라이딩 윈도우. 예측은 다음 검색 위치에만 사용하고, 픽셀이
     # 있으면 측정값 90%로 위치를 즉시 보정한다. 먼 곳의 창은 번짐을
     # 포함하도록 넓어지지만 좌우 차선 사이보다 작게 유지한다.
-    lane_sliding_window_step_m: 0.06
+    lane_sliding_window_step_m: 0.04 # 0.06
     lane_sliding_window_length_m: 0.18
     lane_sliding_window_half_width_near_m: 0.12
-    lane_sliding_window_half_width_far_m: 0.22
-    lane_sliding_window_measurement_weight: 0.90
-    lane_sliding_window_heading_weight: 0.80
+    lane_sliding_window_half_width_far_m: 0.22 # 0.20
+    lane_sliding_window_measurement_weight: 0.95 # 0.90
+    lane_sliding_window_heading_weight: 0.85 # 0.80
     lane_maximum_tracking_arc_length_m: 3.20
     # 1~2개 창이 비어도 다시 픽셀을 찾으면 이 거리 안에서만 연결한다.
     lane_maximum_tracking_gap_m: 0.20
@@ -219,7 +219,7 @@ bev_processor:
 
     lane_expected_width_m: 0.625
     # 62.5cm ± 7.5cm, 즉 55~70cm만 정상 좌우 차선 쌍으로 본다.
-    lane_width_tolerance_m: 0.075
+    lane_width_tolerance_m: 0.07 # 0.20
     lane_initial_center_tolerance_m: 0.30
     lane_single_initial_tolerance_m: 0.20
     lane_minimum_points: 5
