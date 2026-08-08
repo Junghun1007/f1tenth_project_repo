@@ -29,6 +29,7 @@
 #include "bev_processor/bev_lane_reconstructor.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
+#include "camera_driver/msg/bev_input.hpp"
 
 namespace bev_processor
 {
@@ -133,8 +134,8 @@ cv::Mat makeLaneOverlayPreview(
             "lane preview overlay expects matching BGR8 and MONO8 images");
   }
   cv::Mat highlighted = bev_bgr.clone();
-  // OpenCV uses BGR. This becomes a pale cyan-blue highlighter after blending.
-  highlighted.setTo(cv::Scalar(255, 210, 100), lane_mask);
+  // OpenCV uses BGR, so this is pure green before alpha blending.
+  highlighted.setTo(cv::Scalar(0, 255, 0), lane_mask);
   cv::Mat blended;
   cv::addWeighted(
     highlighted, alpha, bev_bgr, 1.0 - alpha, 0.0, blended);
@@ -152,6 +153,7 @@ public:
     declareParameters();
     readParameters();
     validateParameters();
+    initializeInputCropGeometry();
     if (lane_reconstruction_enabled_) {
       lane_reconstructor_ = std::make_unique<BevLaneReconstructor>(
         lane_reconstructor_config_);
@@ -280,11 +282,11 @@ public:
     publishStartupGroundReference(measurement.attitude_source);
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
-    input_subscription_ = create_subscription<sensor_msgs::msg::Image>(
+    input_subscription_ = create_subscription<camera_driver::msg::BevInput>(
       input_topic_,
       image_qos,
-      [this](sensor_msgs::msg::Image::ConstSharedPtr message) {
-        onImage(std::move(message));
+      [this](camera_driver::msg::BevInput::ConstSharedPtr message) {
+        onBevInput(std::move(message));
       });
     if (publish_enabled_) {
       output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
@@ -322,7 +324,7 @@ public:
     RCLCPP_INFO(
       get_logger(),
       "BEV processor started: input=%s "
-      "(%dx%d NV12, expected=%.1fHz), "
+      "(%dx%d bottom crop of %dx%d, top=%dpx, expected=%.1fHz), "
       "output=%s (%dx%d), "
       "range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, %.3fm/px, "
       "camera=(x=%.3f, y=%.3f, z=%.3fm, "
@@ -330,8 +332,11 @@ public:
       "valid_lut=%.2f%%, GPU=%s, processing=NV12-to-BEV/latest-only, "
       "ROS=%s (max=%.1fHz, 0=unlimited), preview=%s (max=%.1fHz)",
       input_topic_.c_str(),
+      input_crop_width_,
+      input_crop_height_,
       camera_model_.image_width,
       camera_model_.image_height,
+      input_crop_top_,
       expected_input_fps_,
       output_topic_.c_str(),
       bev_config_.output_width,
@@ -443,19 +448,20 @@ private:
     declare_parameter<int>("configuration_version", 0);
     declare_parameter<bool>("performance_measurement_enabled", false);
 
-    declare_parameter<std::string>("input_topic", "/camera/image_rect");
+    declare_parameter<std::string>("input_topic", "/camera/bev_input");
     declare_parameter<std::string>("output_topic", "/camera/image_bev");
     declare_parameter<std::string>("output_frame_id", "front_axle_bev");
     declare_parameter<std::string>(
       "startup_ground_reference_topic", "/camera/startup_ground_normal");
     declare_parameter<std::string>(
       "startup_ground_reference_frame_id", "camera_optical_frame");
-    declare_parameter<double>("expected_input_fps", 110.0);
+    declare_parameter<double>("expected_input_fps", 80.0);
+    declare_parameter<double>("input_bottom_fraction", 0.70);
 
     declare_parameter<bool>("publish_enabled", true);
     declare_parameter<double>("publish_max_fps", 0.0);
     declare_parameter<bool>("preview_enabled", true);
-    declare_parameter<double>("preview_max_fps", 30.0);
+    declare_parameter<double>("preview_max_fps", 60.0);
     declare_parameter<std::string>("preview_window_name", "BEV image");
     declare_parameter<int>("preview_max_width", 1280);
     declare_parameter<int>("preview_max_height", 720);
@@ -539,44 +545,44 @@ private:
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
-    declare_parameter<double>("lane_preview_overlay_alpha", 0.35);
+    declare_parameter<double>("lane_preview_overlay_alpha", 0.8);
     declare_parameter<int>("lane_minimum_brightness", 160);
-    declare_parameter<int>("lane_far_minimum_brightness", 110);
+    declare_parameter<int>("lane_far_minimum_brightness", 105);
     declare_parameter<int>("lane_maximum_saturation", 80);
     declare_parameter<int>("lane_brightness_blur_kernel", 1);
     declare_parameter<double>("lane_vertical_close_m", 0.05);
-    declare_parameter<double>("lane_minimum_mark_width_m", 0.01);
-    declare_parameter<double>("lane_maximum_mark_width_m", 0.08);
-    declare_parameter<int>("lane_minimum_local_contrast", 35);
+    declare_parameter<double>("lane_minimum_mark_width_m", 0.015);
+    declare_parameter<double>("lane_maximum_mark_width_m", 0.030);
+    declare_parameter<int>("lane_minimum_local_contrast", 40);
     declare_parameter<int>(
       "lane_maximum_local_background_brightness", 140);
-    declare_parameter<double>("lane_local_background_band_m", 0.05);
+    declare_parameter<double>("lane_local_background_band_m", 0.04);
     declare_parameter<double>(
       "lane_tracked_mark_width_near_m", 0.11);
     declare_parameter<double>(
-      "lane_tracked_mark_width_far_m", 0.20);
+      "lane_tracked_mark_width_far_m", 0.22);
     declare_parameter<double>(
       "lane_measurement_lateral_gate_near_m", 0.08);
     declare_parameter<double>(
       "lane_measurement_lateral_gate_far_m", 0.18);
     declare_parameter<int>("lane_row_step_px", 2);
     declare_parameter<double>("lane_observation_minimum_x_m", 0.20);
-    declare_parameter<double>("lane_observation_maximum_x_m", 1.80);
-    declare_parameter<double>("lane_reconstruction_minimum_x_m", 0.20);
-    declare_parameter<double>("lane_reconstruction_maximum_x_m", 2.70);
-    declare_parameter<double>("lane_maximum_extrapolation_m", 0.20);
-    declare_parameter<double>("lane_sliding_window_step_m", 0.06);
+    declare_parameter<double>("lane_observation_maximum_x_m", 1.50);
+    declare_parameter<double>("lane_reconstruction_minimum_x_m", 0.10);
+    declare_parameter<double>("lane_reconstruction_maximum_x_m", 3.0);
+    declare_parameter<double>("lane_maximum_extrapolation_m", 0.10);
+    declare_parameter<double>("lane_sliding_window_step_m", 0.04);
     declare_parameter<double>("lane_sliding_window_length_m", 0.18);
     declare_parameter<double>("lane_sliding_window_half_width_near_m", 0.12);
     declare_parameter<double>("lane_sliding_window_half_width_far_m", 0.22);
-    declare_parameter<double>("lane_sliding_window_measurement_weight", 0.90);
-    declare_parameter<double>("lane_sliding_window_heading_weight", 0.80);
+    declare_parameter<double>("lane_sliding_window_measurement_weight", 0.95);
+    declare_parameter<double>("lane_sliding_window_heading_weight", 0.85);
     declare_parameter<double>("lane_maximum_tracking_arc_length_m", 3.20);
     declare_parameter<double>("lane_maximum_gap_fill_m", 0.26);
     declare_parameter<double>("lane_measured_point_smoothing_weight", 0.85);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
     declare_parameter<double>("lane_expected_width_m", 0.625);
-    declare_parameter<double>("lane_width_tolerance_m", 0.075);
+    declare_parameter<double>("lane_width_tolerance_m", 0.07);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.30);
     declare_parameter<double>("lane_single_initial_tolerance_m", 0.20);
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.20);
@@ -620,6 +626,8 @@ private:
     startup_ground_reference_frame_id_ =
       get_parameter("startup_ground_reference_frame_id").as_string();
     expected_input_fps_ = get_parameter("expected_input_fps").as_double();
+    input_bottom_fraction_ =
+      get_parameter("input_bottom_fraction").as_double();
 
     publish_enabled_ = get_parameter("publish_enabled").as_bool();
     publish_max_fps_ = get_parameter("publish_max_fps").as_double();
@@ -949,6 +957,9 @@ private:
     }
     if (
       expected_input_fps_ <= 0.0 ||
+      !std::isfinite(input_bottom_fraction_) ||
+      input_bottom_fraction_ <= 0.0 ||
+      input_bottom_fraction_ > 1.0 ||
       publish_max_fps_ < 0.0 ||
       preview_max_fps_ <= 0.0 ||
       preview_max_width_ <= 0 ||
@@ -963,6 +974,17 @@ private:
     {
       throw std::invalid_argument("invalid rate, preview, or status parameter");
     }
+  }
+
+  void initializeInputCropGeometry()
+  {
+    input_crop_width_ = camera_model_.image_width;
+    input_crop_height_ = static_cast<int>(2 * std::llround(
+        static_cast<double>(camera_model_.image_height) *
+        input_bottom_fraction_ / 2.0));
+    input_crop_height_ = std::clamp(
+      input_crop_height_, 2, camera_model_.image_height);
+    input_crop_top_ = camera_model_.image_height - input_crop_height_;
   }
 
   void publishStartupGroundReference(const std::string & attitude_source)
@@ -999,8 +1021,8 @@ private:
       degToRad(camera_yaw_deg_));
     const auto lut = generateRemap(camera_model, bev_config_);
     auto processor = std::make_shared<CudaBevProcessor>(
-      camera_model.image_width,
-      camera_model.image_height,
+      input_crop_width_,
+      input_crop_height_,
       lut.map_x,
       lut.map_y);
 
@@ -1011,6 +1033,8 @@ private:
       100.0 * static_cast<double>(valid_pixels) /
       static_cast<double>(output_pixels);
 
+    bev_lut_ = lut;
+    fused_coverage_reported_ = false;
     std::atomic_store_explicit(
       &gpu_processor_, std::move(processor), std::memory_order_release);
     valid_lut_percent_.store(valid_percent, std::memory_order_relaxed);
@@ -1028,41 +1052,46 @@ private:
     }
   }
 
-  void onImage(sensor_msgs::msg::Image::ConstSharedPtr message)
+  void onBevInput(camera_driver::msg::BevInput::ConstSharedPtr message)
   {
     received_total_.fetch_add(1U, std::memory_order_relaxed);
     received_interval_.fetch_add(1U, std::memory_order_relaxed);
 
     const bool dimensions_valid =
-      static_cast<int>(message->width) == camera_model_.image_width &&
-      static_cast<int>(message->height) == camera_model_.image_height;
+      static_cast<int>(message->source_width) == camera_model_.image_width &&
+      static_cast<int>(message->source_height) == camera_model_.image_height &&
+      static_cast<int>(message->source_crop_top) == input_crop_top_ &&
+      static_cast<int>(message->cropped_width) == input_crop_width_ &&
+      static_cast<int>(message->cropped_height) == input_crop_height_;
     const std::size_t minimum_step =
-      static_cast<std::size_t>(camera_model_.image_width);
+      static_cast<std::size_t>(input_crop_width_);
     const std::size_t nv12_rows =
-      static_cast<std::size_t>(camera_model_.image_height) * 3U / 2U;
+      static_cast<std::size_t>(input_crop_height_) * 3U / 2U;
     const bool memory_valid =
       message->step >= minimum_step &&
-      message->data.size() >=
+      message->nv12.size() >=
       static_cast<std::size_t>(message->step) * nv12_rows;
-    if (
-      !dimensions_valid ||
-      message->encoding != "nv12" ||
-      !memory_valid)
+    if (!dimensions_valid || !memory_valid)
     {
       invalid_total_.fetch_add(1U, std::memory_order_relaxed);
       RCLCPP_WARN_THROTTLE(
         get_logger(),
         *get_clock(),
         5000,
-        "Rejected image: expected %dx%d nv12, got %ux%u %s "
-        "(step=%u, data=%zu).",
+        "Rejected fused BEV input: expected source=%dx%d crop=top %dpx/%dx%d, "
+        "got source=%ux%u crop=top %u/%ux%u (step=%u, data=%zu).",
         camera_model_.image_width,
         camera_model_.image_height,
-        message->width,
-        message->height,
-        message->encoding.c_str(),
+        input_crop_top_,
+        input_crop_width_,
+        input_crop_height_,
+        message->source_width,
+        message->source_height,
+        message->source_crop_top,
+        message->cropped_width,
+        message->cropped_height,
         message->step,
-        message->data.size());
+        message->nv12.size());
       return;
     }
 
@@ -1105,7 +1134,7 @@ private:
     std::uint64_t processed_input_generation = 0U;
 
     while (!stop_.load(std::memory_order_acquire)) {
-      sensor_msgs::msg::Image::ConstSharedPtr input;
+      camera_driver::msg::BevInput::ConstSharedPtr input;
       SteadyClock::time_point input_received_at;
       std::uint64_t generation = 0U;
       {
@@ -1140,10 +1169,58 @@ private:
         auto output = std::make_shared<BevFrame>();
         const auto processor = std::atomic_load_explicit(
           &gpu_processor_, std::memory_order_acquire);
+        cv::Matx33d source_to_stabilized;
+        for (int row = 0; row < 3; ++row) {
+          for (int column = 0; column < 3; ++column) {
+            source_to_stabilized(row, column) =
+              input->source_to_stabilized_homography[
+              static_cast<std::size_t>(row * 3 + column)];
+          }
+        }
+        const double determinant = cv::determinant(
+          cv::Mat(source_to_stabilized));
+        if (
+          !cv::checkRange(cv::Mat(source_to_stabilized)) ||
+          !std::isfinite(determinant) || std::abs(determinant) < 1.0e-9)
+        {
+          throw std::runtime_error(
+                  "camera supplied an invalid stabilization homography");
+        }
+        const cv::Matx33d stabilized_to_source =
+          source_to_stabilized.inv(cv::DECOMP_LU);
+        if (!fused_coverage_reported_) {
+          const auto coverage = assessFusedRemapCoverage(
+            bev_lut_,
+            source_to_stabilized,
+            static_cast<int>(input->source_width),
+            static_cast<int>(input->source_height),
+            static_cast<int>(input->source_crop_top));
+          const double coverage_percent = 100.0 * coverage.coverage_ratio;
+          if (coverage.coverage_ratio < 0.995) {
+            RCLCPP_WARN(
+              get_logger(),
+              "Fused bottom-crop coverage is %.2f%% (%d/%d static LUT "
+              "pixels). Increase bev_input_bottom_fraction if the far BEV "
+              "edge is black.",
+              coverage_percent,
+              coverage.covered_pixels,
+              coverage.valid_lut_pixels);
+          } else {
+            RCLCPP_INFO(
+              get_logger(),
+              "Fused bottom-crop coverage: %.2f%% (%d/%d static LUT pixels).",
+              coverage_percent,
+              coverage.covered_pixels,
+              coverage.valid_lut_pixels);
+          }
+          fused_coverage_reported_ = true;
+        }
         output->image = processor->process(
-          input->data.data(),
-          input->data.size(),
-          static_cast<std::size_t>(input->step));
+          input->nv12.data(),
+          input->nv12.size(),
+          static_cast<std::size_t>(input->step),
+          stabilized_to_source,
+          static_cast<int>(input->source_crop_top));
         if (lane_reconstructor_) {
           const auto lane_started_at = SteadyClock::now();
           const auto lane = lane_reconstructor_->reconstruct(output->image);
@@ -1803,11 +1880,11 @@ private:
         get_logger(),
         *get_clock(),
         5000,
-        "No camera input received on %s. Check that camera_driver publishing "
-        "is enabled and the image is %dx%d nv12.",
+        "No fused camera input received on %s. Check that camera_driver "
+        "fused_bev_output_enabled is true and its crop is %dx%d.",
         input_topic_.c_str(),
-        camera_model_.image_width,
-        camera_model_.image_height);
+        input_crop_width_,
+        input_crop_height_);
     }
   }
 
@@ -1818,18 +1895,22 @@ private:
   std::string output_frame_id_;
   std::string startup_ground_reference_topic_;
   std::string startup_ground_reference_frame_id_;
-  double expected_input_fps_{110.0};
+  double expected_input_fps_{80.0};
+  double input_bottom_fraction_{0.70};
+  int input_crop_width_{1280};
+  int input_crop_height_{504};
+  int input_crop_top_{216};
   bool publish_enabled_{true};
   double publish_max_fps_{0.0};
   bool preview_enabled_{true};
-  double preview_max_fps_{30.0};
+  double preview_max_fps_{60.0};
   std::string preview_window_name_;
   int preview_max_width_{1280};
   int preview_max_height_{720};
   bool lane_reconstruction_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
-  double lane_preview_overlay_alpha_{0.35};
+  double lane_preview_overlay_alpha_{0.8};
   BevLaneReconstructorConfig lane_reconstructor_config_{};
   double status_log_interval_sec_{5.0};
   double startup_timeout_sec_{12.0};
@@ -1839,6 +1920,8 @@ private:
 
   RectifiedCameraModel camera_model_{};
   BevConfig bev_config_{};
+  RemapLut bev_lut_{};
+  bool fused_coverage_reported_{false};
   double startup_roll_deg_{0.0};
   double startup_pitch_down_deg_{14.0};
   std::atomic<double> valid_lut_percent_{0.0};
@@ -1847,7 +1930,8 @@ private:
   std::shared_ptr<CudaBevProcessor> gpu_processor_;
   std::unique_ptr<BevLaneReconstructor> lane_reconstructor_;
 
-  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr input_subscription_;
+  rclcpp::Subscription<camera_driver::msg::BevInput>::SharedPtr
+    input_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr lane_output_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr
@@ -1856,7 +1940,7 @@ private:
 
   std::mutex input_mutex_;
   std::condition_variable input_cv_;
-  sensor_msgs::msg::Image::ConstSharedPtr latest_input_;
+  camera_driver::msg::BevInput::ConstSharedPtr latest_input_;
   SteadyClock::time_point latest_input_received_at_;
   std::uint64_t input_generation_{0U};
   bool first_camera_input_seen_{false};

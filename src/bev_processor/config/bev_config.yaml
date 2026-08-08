@@ -7,26 +7,30 @@ bev_processor:
     # FPS·지연·CUDA 처리 시간을 상태 로그 주기마다 출력한다.
     performance_measurement_enabled: false
 
-    # camera_driver가 발행하는 안정화된 1280x720 NV12 영상을 입력으로 사용한다.
-    input_topic: "/camera/image_rect"
+    # camera_driver가 하단 crop NV12와 같은 프레임의 보정 행렬을 함께 보낸다.
+    # CUDA가 이 보정과 고정 BEV LUT를 한 번의 sampling으로 합성한다.
+    input_topic: "/camera/bev_input"
     output_topic: "/camera/image_bev"
     output_frame_id: "front_axle_bev"
     # Latched startup ground normal shared with camera_driver.
     startup_ground_reference_topic: "/camera/startup_ground_normal"
     startup_ground_reference_frame_id: "camera_optical_frame"
-    expected_input_fps: 110.0
+    expected_input_fps: 80.0
+    # 0.70이면 1280x720의 하단 504행. 통합 launch에서 카메라와 같이 바뀐다.
+    input_bottom_fraction: 0.70
 
     # publish_max_fps가 0이면 처리된 프레임을 별도 속도 제한 없이 발행한다.
     publish_enabled: true
     publish_max_fps: 0.0
     preview_enabled: true
-    preview_max_fps: 30.0
+    preview_max_fps: 60.0
     preview_window_name: "BEV image"
     preview_max_width: 1280
     preview_max_height: 720
 
-    # camera_driver가 발행하는 왜곡 보정·안정화 영상의 유효 내부 파라미터다.
-    # camera_config.yaml의 fixed_view_zoom=1.25가 fx/fy에 반영된 값이다.
+    # 고정 BEV LUT가 가정하는 가상 안정화 영상의 유효 내부 파라미터다.
+    # camera_config.yaml의 fixed_view_zoom=1.25가 fx/fy에 반영된 값이며,
+    # 프레임별 역행렬이 이 좌표를 하단 raw crop 좌표로 다시 매핑한다.
     input_width: 1280
     input_height: 720
     fx: 701.751174926
@@ -161,13 +165,13 @@ bev_processor:
     # 검은 배경+흰 차선만 있는 mono8 결과를 lane_output_topic으로 추가 발행한다.
     lane_reconstruction_enabled: true
     lane_output_topic: "/camera/image_bev_lane"
-    # true면 프리뷰에서만 원본 컬러 BEV 위에 차선을 옅은 파란색으로 합성한다.
+    # true면 프리뷰에서만 원본 컬러 BEV 위에 차선을 초록색으로 합성한다.
     # false면 필터를 적용하지 않은 원본 BEV를 표시한다. 두 발행 토픽은 불변이다.
     lane_preview_enabled: true
     # 0은 투명, 1은 불투명이다. 기본값은 형광펜처럼 원본이 비치는 값이다.
-    lane_preview_overlay_alpha: 1.0
+    lane_preview_overlay_alpha: 0.8
 
-    # 밝기(Y에 가까운 grayscale)를 기본으로 사용한다. 1.8m까지는 near
+    # 밝기(Y에 가까운 grayscale)를 기본으로 사용한다. 1.5m까지는 near
     # 임계값을 쓰고 그 이후에는 원거리 번진 픽셀을 잃지 않도록 far 값까지
     # 선형으로 낮춘다. 낮은 saturation은 흰색/회색만 남겨 컬러 풍경을 거른다.
     lane_minimum_brightness: 160
@@ -177,16 +181,16 @@ bev_processor:
     lane_brightness_blur_kernel: 1
     lane_vertical_close_m: 0.05
     lane_minimum_mark_width_m: 0.015 # 0.01
-    # 최초 seed는 어두운 배경 위의 8cm 이하 흰 선만 허용한다.
+    # 최초 seed는 어두운 배경 위의 3cm 이하 흰 선만 허용한다.
     lane_maximum_mark_width_m: 0.030
-    # 선 중심과 양옆 5cm 배경의 밝기 차가 35 이상이어야 하며,
+    # 선 중심과 양옆 4cm 배경의 밝기 차가 40 이상이어야 하며,
     # 양옆 배경 평균이 140보다 밝으면 도로 밖 밝은 풍경으로 보고 제외한다.
     lane_minimum_local_contrast: 40 # 35
     lane_maximum_local_background_brightness: 140
     lane_local_background_band_m: 0.04 # 0.05
     # 추적 중에는 윈도우의 모든 밝은 픽셀을 평균하지 않는다. 가로 방향으로
     # 분리한 밝은 덩어리 중 예측점에 가깝고 이 폭 이하인 하나만 실측한다.
-    # 먼 차선은 BEV 번짐을 고려하여 최대 20cm까지 점진적으로 허용한다.
+    # 먼 차선은 BEV 번짐을 고려하여 최대 22cm까지 점진적으로 허용한다.
     lane_tracked_mark_width_near_m: 0.11
     lane_tracked_mark_width_far_m: 0.22
     # 갑자기 옆 풍경으로 이동하지 않도록 실측점의 횡방향 이동을 제한한다.
@@ -194,17 +198,17 @@ bev_processor:
     lane_measurement_lateral_gate_far_m: 0.18
     lane_row_step_px: 2
 
-    # 1.8m는 더 이상 관측 차단점이 아니다. 가까운 차선으로 추적을 시작하고
-    # 1.8m 이후에는 더 낮은 밝기 임계값과 넓은 윈도우로 실제 픽셀을 계속 찾는다.
+    # 1.5m는 더 이상 관측 차단점이 아니다. 가까운 차선으로 추적을 시작하고
+    # 1.5m 이후에는 더 낮은 밝기 임계값과 넓은 윈도우로 실제 픽셀을 계속 찾는다.
     lane_observation_minimum_x_m: 0.20 # 0.20
     lane_observation_maximum_x_m: 1.50
     lane_reconstruction_minimum_x_m: 0.10 # 0.20
     lane_reconstruction_maximum_x_m: 3.0 # 2.70
-    # 실제 마지막 측정점 이후에는 마지막 진행 방향으로 20cm만 연장한다.
+    # 실제 마지막 측정점 이후에는 마지막 진행 방향으로 10cm만 연장한다.
     lane_maximum_extrapolation_m: 0.10 # 0.30
 
     # 회전형 슬라이딩 윈도우. 예측은 다음 검색 위치에만 사용하고, 픽셀이
-    # 있으면 측정값 90%로 위치를 즉시 보정한다. 먼 곳의 창은 번짐을
+    # 있으면 측정값 95%로 위치를 즉시 보정한다. 먼 곳의 창은 번짐을
     # 포함하도록 넓어지지만 좌우 차선 사이보다 작게 유지한다.
     lane_sliding_window_step_m: 0.04 # 0.06
     lane_sliding_window_length_m: 0.18

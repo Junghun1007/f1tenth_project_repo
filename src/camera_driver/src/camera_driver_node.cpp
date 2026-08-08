@@ -1,5 +1,6 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
+#include "camera_driver/msg/bev_input.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -267,6 +268,12 @@ public:
       publisher_ = node_.create_publisher<sensor_msgs::msg::Image>(
         image_topic_, qos);
     }
+    if (fused_bev_output_enabled_) {
+      auto qos = rclcpp::SensorDataQoS();
+      qos.keep_last(1);
+      fused_bev_publisher_ = node_.create_publisher<
+        camera_driver::msg::BevInput>(fused_bev_topic_, qos);
+    }
     if (imu_bridge_enabled_) {
       auto qos = rclcpp::SensorDataQoS();
       qos.keep_last(5);
@@ -286,7 +293,7 @@ public:
       if (imu_stream_enabled_) {
         imu_thread_ = std::thread(&Impl::imu_loop, this);
       }
-      if (publish_enabled_) {
+      if (publish_enabled_ || fused_bev_output_enabled_) {
         publish_thread_ = std::thread(&Impl::publish_loop, this);
       }
       if (preview_enabled_) {
@@ -318,6 +325,7 @@ private:
   {
     std::optional<cv::Matx33d> homography;
     bool frame_usable{true};
+    bool dynamic_correction_applied{false};
   };
 
   template<typename IntegerT>
@@ -338,7 +346,7 @@ private:
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
     width_ = node_.declare_parameter<int>("width", 1280);
     height_ = node_.declare_parameter<int>("height", 720);
-    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 120.0);
+    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 80.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
     undistort_enabled_ =
@@ -413,7 +421,7 @@ private:
     stationary_erpm_enter_threshold_ = node_.declare_parameter<int>(
       "imu_stabilization_stationary_erpm_enter_threshold", 100);
     stationary_erpm_exit_threshold_ = node_.declare_parameter<int>(
-      "imu_stabilization_stationary_erpm_exit_threshold", 200);
+      "imu_stabilization_stationary_erpm_exit_threshold", 500);
     stationary_erpm_filter_time_constant_sec_ = node_.declare_parameter<double>(
       "imu_stabilization_stationary_erpm_filter_time_constant_sec", 0.15);
     stationary_erpm_enter_duration_sec_ = node_.declare_parameter<double>(
@@ -464,10 +472,10 @@ private:
       "imu_stabilization_maximum_correction_deg", 3.0);
     imu_stabilizer_config_.maximum_frame_imu_wait_sec =
       node_.declare_parameter<double>(
-      "imu_stabilization_maximum_frame_imu_wait_sec", 0.001);
+      "imu_stabilization_maximum_frame_imu_wait_sec", 0.005);
     imu_stabilizer_config_.maximum_frame_imu_age_sec =
       node_.declare_parameter<double>(
-      "imu_stabilization_maximum_frame_imu_age_sec", 0.006);
+      "imu_stabilization_maximum_frame_imu_age_sec", 0.012);
     imu_stabilizer_config_.maximum_frame_imu_prediction_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_maximum_prediction_sec", 0.015);
@@ -480,7 +488,13 @@ private:
     publish_enabled_ =
       node_.declare_parameter<bool>("publish_enabled", false);
     publish_fps_ =
-      node_.declare_parameter<double>("publish_fps", 120.0);
+      node_.declare_parameter<double>("publish_fps", 80.0);
+    fused_bev_output_enabled_ =
+      node_.declare_parameter<bool>("fused_bev_output_enabled", false);
+    fused_bev_topic_ = node_.declare_parameter<std::string>(
+      "fused_bev_topic", "/camera/bev_input");
+    bev_input_bottom_fraction_ = node_.declare_parameter<double>(
+      "bev_input_bottom_fraction", 0.70);
     preview_enabled_ =
       node_.declare_parameter<bool>("preview_enabled", false);
     preview_fps_ =
@@ -518,6 +532,19 @@ private:
       throw std::invalid_argument(
               "output_crop_top_px must be an even value in [0, height)");
     }
+    if (
+      !std::isfinite(bev_input_bottom_fraction_) ||
+      bev_input_bottom_fraction_ <= 0.0 ||
+      bev_input_bottom_fraction_ > 1.0)
+    {
+      throw std::invalid_argument(
+              "bev_input_bottom_fraction must be in (0, 1]");
+    }
+    fused_bev_crop_height_ = static_cast<int>(2 * std::llround(
+        static_cast<double>(height_) * bev_input_bottom_fraction_ / 2.0));
+    fused_bev_crop_height_ = std::clamp(
+      fused_bev_crop_height_, 2, height_);
+    fused_bev_crop_top_ = height_ - fused_bev_crop_height_;
     require_positive(sensor_fps_, "sensor_fps");
     require_positive(queue_size_, "queue_size");
     require_positive(startup_timeout_sec_, "startup_timeout_sec");
@@ -582,11 +609,15 @@ private:
       throw std::invalid_argument(
               "invalid fixed-view zoom or source border margin");
     }
-    if (publish_enabled_) {
+    if (publish_enabled_ || fused_bev_output_enabled_) {
       require_positive(publish_fps_, "publish_fps");
-      if (image_topic_.empty()) {
+      if (publish_enabled_ && image_topic_.empty()) {
         throw std::invalid_argument(
                 "image_topic must not be empty when publishing is enabled");
+      }
+      if (fused_bev_output_enabled_ && fused_bev_topic_.empty()) {
+        throw std::invalid_argument(
+                "fused_bev_topic must not be empty when fused BEV output is enabled");
       }
     }
     if (preview_enabled_) {
@@ -834,11 +865,14 @@ private:
       width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
     RCLCPP_INFO(
       node_.get_logger(),
-      "Options: undistort=%s, publish=%s, preview=%s, "
+      "Options: undistort=%s, image_publish=%s, fused_bev_publish=%s, "
+      "preview=%s, "
       "preview_grid=%s/%dpx, imu_stabilization=%s, "
-      "fixed_view_zoom=%.2fx, output_crop=top %dpx -> %dx%d, queue=%d/%s",
+      "fixed_view_zoom=%.2fx, output_crop=top %dpx -> %dx%d, "
+      "BEV_input=bottom %.1f%%/top %dpx -> %dx%d on %s, queue=%d/%s",
       undistort_enabled_ ? "on" : "off",
       publish_enabled_ ? "on" : "off",
+      fused_bev_output_enabled_ ? "on" : "off",
       preview_enabled_ ? "on" : "off",
       preview_grid_enabled_ ? "on" : "off",
       preview_grid_spacing_px_,
@@ -847,6 +881,12 @@ private:
       output_crop_top_px_,
       width_,
       height_ - output_crop_top_px_,
+      100.0 * static_cast<double>(fused_bev_crop_height_) /
+      static_cast<double>(height_),
+      fused_bev_crop_top_,
+      width_,
+      fused_bev_crop_height_,
+      fused_bev_topic_.c_str(),
       queue_size_,
       queue_blocking_ ? "blocking" : "non-blocking");
     if (imu_stream_enabled_) {
@@ -946,7 +986,7 @@ private:
           received_total_.fetch_add(1, std::memory_order_relaxed) + 1;
         received_interval_.fetch_add(1, std::memory_order_relaxed);
 
-        if (publish_enabled_ || preview_enabled_) {
+        if (publish_enabled_ || fused_bev_output_enabled_ || preview_enabled_) {
           const bool valid_nv12 =
             packet->getType() == dai::ImgFrame::Type::NV12 &&
             static_cast<int>(packet->getWidth()) == width_ &&
@@ -1046,7 +1086,7 @@ private:
         "IMU stabilization skipped because frame intrinsics are unavailable.");
       // The BEV input model includes the fixed zoom, so an unzoomed raw frame
       // would be geometrically wrong. This is the one case that must drop.
-      return StabilizationTransform{std::nullopt, false};
+      return StabilizationTransform{std::nullopt, false, false};
     }
     const auto intrinsics = transformation.getIntrinsicMatrix();
     const cv::Matx33d camera_matrix(
@@ -1062,7 +1102,8 @@ private:
           fixed_view_zoom_enabled ?
           std::optional<cv::Matx33d>(fixed_view_zoom_homography) :
           std::nullopt,
-          true};
+          true,
+          false};
       };
 
     // The fixed crop is independent of IMU stabilization. This keeps the
@@ -1127,12 +1168,12 @@ private:
     if (correction->predicted) {
       stabilization_predictions_total_.fetch_add(1U);
     }
-    return StabilizationTransform{output_homography, true};
+    return StabilizationTransform{output_homography, true, true};
   }
 
   bool copy_nv12_to_message(
     dai::ImgFrame & packet,
-    const std::chrono::steady_clock::time_point & sensor_timestamp,
+    const StabilizationTransform & transform,
     sensor_msgs::msg::Image & message)
   {
     const auto & nv12 = packet.getData();
@@ -1167,12 +1208,6 @@ private:
     cv::Mat processed_y = input_y;
     cv::Mat processed_uv = input_uv;
 
-    const auto transform = stabilizationTransform(
-      packet, sensor_timestamp);
-    if (!transform.frame_usable) {
-      stabilization_output_drops_total_.fetch_add(1U);
-      return false;
-    }
     if (transform.homography) {
       stabilized_y.create(frame_height, frame_width, CV_8UC1);
       stabilized_uv.create(frame_height / 2, frame_width / 2, CV_8UC2);
@@ -1241,6 +1276,74 @@ private:
         static_cast<std::size_t>(frame_width),
         cropped_uv.ptr(row),
         static_cast<std::size_t>(frame_width));
+    }
+    return true;
+  }
+
+  bool copy_nv12_to_bev_input(
+    dai::ImgFrame & packet,
+    const StabilizationTransform & transform,
+    camera_driver::msg::BevInput & message)
+  {
+    const auto & nv12 = packet.getData();
+    const auto source_stride =
+      packet.getStride() > 0U ? packet.getStride() : packet.getWidth();
+    const int frame_width = static_cast<int>(packet.getWidth());
+    const int frame_height = static_cast<int>(packet.getHeight());
+    const std::size_t source_rows =
+      static_cast<std::size_t>(frame_height) * 3U / 2U;
+    if (nv12.size() < static_cast<std::size_t>(source_stride) * source_rows) {
+      throw std::runtime_error(
+              "DepthAI returned an undersized NV12 frame");
+    }
+
+    message.source_width = static_cast<std::uint32_t>(frame_width);
+    message.source_height = static_cast<std::uint32_t>(frame_height);
+    message.source_crop_top = static_cast<std::uint32_t>(fused_bev_crop_top_);
+    message.cropped_width = static_cast<std::uint32_t>(frame_width);
+    message.cropped_height = static_cast<std::uint32_t>(
+      fused_bev_crop_height_);
+    message.step = static_cast<std::uint32_t>(frame_width);
+
+    const cv::Matx33d source_to_stabilized =
+      transform.homography.value_or(cv::Matx33d::eye());
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        message.source_to_stabilized_homography[
+          static_cast<std::size_t>(row * 3 + column)] =
+          source_to_stabilized(row, column);
+      }
+    }
+    message.dynamic_correction_applied =
+      transform.dynamic_correction_applied;
+
+    const std::size_t output_y_bytes =
+      static_cast<std::size_t>(frame_width) *
+      static_cast<std::size_t>(fused_bev_crop_height_);
+    message.nv12.resize(output_y_bytes + output_y_bytes / 2U);
+    const std::uint8_t * source_y =
+      nv12.data() +
+      static_cast<std::size_t>(fused_bev_crop_top_) * source_stride;
+    const std::uint8_t * source_uv =
+      nv12.data() +
+      static_cast<std::size_t>(frame_height) * source_stride +
+      static_cast<std::size_t>(fused_bev_crop_top_ / 2) * source_stride;
+    for (int row = 0; row < fused_bev_crop_height_; ++row) {
+      std::memcpy(
+        message.nv12.data() +
+        static_cast<std::size_t>(row) * static_cast<std::size_t>(frame_width),
+        source_y + static_cast<std::size_t>(row) * source_stride,
+        static_cast<std::size_t>(frame_width));
+    }
+    for (int row = 0; row < fused_bev_crop_height_ / 2; ++row) {
+      std::memcpy(
+        message.nv12.data() + output_y_bytes +
+        static_cast<std::size_t>(row) * static_cast<std::size_t>(frame_width),
+        source_uv + static_cast<std::size_t>(row) * source_stride,
+        static_cast<std::size_t>(frame_width));
+    }
+    if (transform.homography) {
+      stabilized_frames_total_.fetch_add(1U);
     }
     return true;
   }
@@ -1381,20 +1484,46 @@ private:
         &latest_frame_, std::memory_order_acquire);
       if (snapshot && snapshot->generation != published_generation) {
         try {
-          auto message = std::make_unique<sensor_msgs::msg::Image>();
-          message->header.stamp = snapshot->ros_stamp;
-          message->header.frame_id = frame_id_;
-          message->height = snapshot->packet->getHeight();
-          message->width = snapshot->packet->getWidth();
-          message->encoding = "nv12";
-          message->is_bigendian = false;
           const auto stabilization_started_at =
             std::chrono::steady_clock::now();
-          const bool output_available = copy_nv12_to_message(
+          const auto transform = stabilizationTransform(
             *snapshot->packet,
-            snapshot->sensor_timestamp,
-            *message);
+            snapshot->sensor_timestamp);
           published_generation = snapshot->generation;
+
+          if (!transform.frame_usable) {
+            stabilization_output_drops_total_.fetch_add(1U);
+            if (!publish_every_frame) {
+              next_deadline = now + period;
+            }
+            continue;
+          }
+
+          bool output_available = false;
+          std::unique_ptr<sensor_msgs::msg::Image> image_message;
+          if (publish_enabled_) {
+            image_message = std::make_unique<sensor_msgs::msg::Image>();
+            image_message->header.stamp = snapshot->ros_stamp;
+            image_message->header.frame_id = frame_id_;
+            image_message->height = snapshot->packet->getHeight();
+            image_message->width = snapshot->packet->getWidth();
+            image_message->encoding = "nv12";
+            image_message->is_bigendian = false;
+            output_available = copy_nv12_to_message(
+              *snapshot->packet, transform, *image_message) ||
+              output_available;
+          }
+
+          std::unique_ptr<camera_driver::msg::BevInput> bev_message;
+          if (fused_bev_output_enabled_) {
+            bev_message = std::make_unique<camera_driver::msg::BevInput>();
+            bev_message->header.stamp = snapshot->ros_stamp;
+            bev_message->header.frame_id = frame_id_;
+            output_available = copy_nv12_to_bev_input(
+              *snapshot->packet, transform, *bev_message) ||
+              output_available;
+          }
+
           if (output_available && performance_measurement_enabled_) {
             const auto stabilization_finished_at =
               std::chrono::steady_clock::now();
@@ -1420,7 +1549,12 @@ private:
           }
 
           if (output_available) {
-            publisher_->publish(std::move(message));
+            if (image_message) {
+              publisher_->publish(std::move(image_message));
+            }
+            if (bev_message) {
+              fused_bev_publisher_->publish(std::move(bev_message));
+            }
             published_total_.fetch_add(1);
             published_interval_.fetch_add(1);
           }
@@ -1739,7 +1873,7 @@ private:
           "latency_ms(depthai_to_host_avg/max=%.2f/%.2f,"
           "host_to_stabilized_avg/max=%.2f/%.2f,"
           "depthai_to_stabilized_avg/max=%.2f/%.2f) "
-          "imu_fps=%.1f stabilizer=%s warps=%lu misses=%lu predicted=%lu "
+          "imu_fps=%.1f stabilizer=%s mapped_frames=%lu misses=%lu predicted=%lu "
           "reject(angle/crop/output/accel)=%lu/%lu/%lu/%lu "
           "max_imu_pair_skew_ms=%.3f dropped=%lu "
           "errors(capture/publish)=%lu/%lu",
@@ -1773,7 +1907,7 @@ private:
         RCLCPP_INFO(
           node_.get_logger(),
           "FPS: capture=%.1f/%.1f, preview=%.1f, IMU=%.1f, "
-          "stabilizer=%s (warps=%lu, misses=%lu, output_drops=%lu), "
+          "stabilizer=%s (mapped_frames=%lu, misses=%lu, output_drops=%lu), "
           "dropped=%lu",
           capture_hz, sensor_fps_, preview_hz, imu_hz,
           stabilization_state.c_str(),
@@ -1900,7 +2034,7 @@ private:
   std::string camera_socket_name_;
   int width_{1280};
   int height_{720};
-  double sensor_fps_{120.0};
+  double sensor_fps_{80.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
   int queue_size_{8};
@@ -1921,7 +2055,7 @@ private:
   std::string startup_ground_reference_topic_;
   std::string measured_erpm_topic_;
   int stationary_erpm_enter_threshold_{100};
-  int stationary_erpm_exit_threshold_{200};
+  int stationary_erpm_exit_threshold_{500};
   double stationary_erpm_filter_time_constant_sec_{0.15};
   double stationary_erpm_enter_duration_sec_{1.0};
   double measured_erpm_timeout_sec_{1.0};
@@ -1929,7 +2063,12 @@ private:
   double fixed_view_border_margin_px_{1.5};
   int output_crop_top_px_{0};
   bool publish_enabled_{false};
-  double publish_fps_{120.0};
+  double publish_fps_{80.0};
+  bool fused_bev_output_enabled_{false};
+  std::string fused_bev_topic_{"/camera/bev_input"};
+  double bev_input_bottom_fraction_{0.70};
+  int fused_bev_crop_top_{216};
+  int fused_bev_crop_height_{504};
   bool preview_enabled_{false};
   double preview_fps_{60.0};
   std::string preview_window_name_;
@@ -1947,6 +2086,8 @@ private:
   std::shared_ptr<dai::MessageQueue> imu_queue_;
   std::unique_ptr<ImuImageStabilizer> imu_stabilizer_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
+  rclcpp::Publisher<camera_driver::msg::BevInput>::SharedPtr
+    fused_bev_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr
     startup_ground_reference_subscription_;

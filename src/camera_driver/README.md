@@ -18,7 +18,7 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 
 - 센서 모드: OV9782 `THE_720_P`, `1280x720`, `NV12`
 - 기본 프리뷰/ROS 출력: 안정화된 전체 `1280x720` 프레임
-- 요청 센서 FPS: `110`
+- 요청 센서 FPS: `80`
 - USB 최대 속도 요청: `SUPER` (5 Gbps)
 - XLink 청크 분할: 비활성화 (`setXLinkChunkSize(0)`)
 - 렌즈 왜곡 보정: OAK 장치 내부에서 활성화
@@ -70,6 +70,13 @@ ROS 발행은 `sensor_msgs/msg/Image`의 `UniquePtr`를 사용한다. 기본 lau
 컴포넌트를 같은 컨테이너에 적재하면 DDS 직렬화 없이 메시지 소유권을 넘길
 수 있다. 별도 프로세스의 구독자, `ros2 topic hz`, rosbag 등은 DDS 전송과
 추가 메모리 복사를 사용한다.
+
+통합 BEV launch에서는 일반 `sensor_msgs/Image` 발행을 끄고
+`camera_driver/msg/BevInput`을 사용한다. 원본 rectified NV12의 하단 70%
+(1280x504)만 복사하고, 같은 노출 시점의 원본→안정화 homography를 함께
+보낸다. 이 경로는 CPU Y/UV `warpPerspective()`를 수행하지 않으며, 고정 줌과
+동적 roll/pitch 보정은 BEV의 CUDA sampling에 합쳐진다. 단독 프리뷰와 일반
+이미지 토픽의 기존 CPU 안정화 경로는 호환성을 위해 유지한다.
 
 `publish_fps`가 센서 FPS 이상이면 고정 주기의 타이머로 최신 영상을
 샘플링하지 않고 새 프레임 도착 알림에 맞춰 발행한다. 두 143 Hz 주기의
@@ -224,8 +231,10 @@ leak으로 반영해, 주행 중 gyro drift가 무한히 누적되지 않게 한
 한계를 넘은 불확실한 자세에는 동적 회전을 적용하지 않고 zoom-only 원본을
 전달한다. 잘못된 큰 보정이나 프레임 폐기보다 작은 무보정 오차를 우선하는
 BEV 안전 정책이다.
-워핑은 현재 CPU OpenCV 경로이므로 활성화 후 상태 로그의 실제 capture
-FPS와 누락 프레임 수를 Jetson에서 확인해야 한다.
+단독 프리뷰와 일반 이미지 발행은 CPU OpenCV 워프를 유지한다. 통합 BEV
+launch는 프레임별 행렬만 계산하고 CUDA BEV 변환에 합치므로 CPU 워프를
+건너뛴다. 활성화 후 상태 로그의 실제 capture FPS와 누락 프레임 수는
+Jetson에서 확인한다.
 
 ROS 이미지 발행 없이 캡처와 직접 프리뷰만 측정:
 
@@ -252,7 +261,7 @@ ros2 run camera_driver camera_driver_node \
 - `IMU`: 안정화/ROS 브리지에서 실제 처리한 IMU 샘플 rate
 - `stabilizer`: `off`, `discarding-startup-imu`,
   `stationary-calibration`, `virtual-gimbal-ready` 상태와 누적
-  warp/miss/drop 수
+  mapping/miss/drop 수
 - `Virtual gimbal`: 현재 roll/pitch 오차, 적용 회전각, 정지 판정,
   3축 gyro bias와 온라인 bias 갱신 횟수
 - `dropped`: 최근 상태 구간의 sequence 누락 프레임 수
@@ -279,13 +288,16 @@ ros2 topic info /camera/image_rect --verbose
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
 | `performance_measurement_enabled` | `false` | GUI 프리뷰 강제 비활성화 및 연산 FPS 로그 |
-| `sensor_fps` | `120.0` | OAK 센서/출력 요청 FPS |
+| `sensor_fps` | `80.0` | OAK 센서/출력 요청 FPS |
 | `width`, `height` | `1280`, `720` | OAK 입력 및 기본 출력 해상도 |
 | `undistort_enabled` | `true` | OAK 장치 내부 왜곡 보정 |
 | `queue_size` | `8` | DepthAI 호스트 큐 크기 |
 | `queue_blocking` | `false` | 큐가 찼을 때 캡처 차단 여부 |
 | `publish_enabled` | `false` | ROS 이미지 발행 |
-| `publish_fps` | `120.0` | ROS 발행 목표 최대 FPS |
+| `publish_fps` | `80.0` | ROS 발행 목표 최대 FPS |
+| `fused_bev_output_enabled` | `false` | 하단 NV12+보정 행렬 BEV 전용 출력; 통합 launch에서 `true` |
+| `fused_bev_topic` | `/camera/bev_input` | `camera_driver/msg/BevInput` 출력 |
+| `bev_input_bottom_fraction` | `0.70` | BEV 변환 전에 유지할 원본 영상 하단 비율 |
 | `imu_bridge_enabled` | `false` | 가속도+자이로 ROS 발행 |
 | `imu_rate_hz` | `400.0` | calibrated accel+gyro 요청/발행 rate |
 | `imu_max_batch_reports` | `5` | 장치측 IMU 묶음 전송 상한 |
@@ -297,7 +309,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_external_reference_required` | `false` | 외부 기준 필수 여부; 통합 BEV launch에서는 `true` |
 | `imu_stabilization_measured_erpm_topic` | `/vesc/measured_erpm` | 주행 중 정지 판정에 쓰는 VESC 실측 ERPM |
 | `imu_stabilization_stationary_erpm_enter_threshold` | `100` | 필터링된 ERPM 절댓값이 이하로 유지되면 정지 후보 |
-| `imu_stabilization_stationary_erpm_exit_threshold` | `200` | raw ERPM 절댓값이 이상이면 즉시 주행 판정 |
+| `imu_stabilization_stationary_erpm_exit_threshold` | `500` | raw ERPM 절댓값이 이상이면 즉시 주행 판정 |
 | `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |

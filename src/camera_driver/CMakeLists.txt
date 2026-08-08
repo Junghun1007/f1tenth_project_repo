@@ -15,6 +15,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
@@ -29,6 +30,11 @@ if(NOT depthai_FOUND)
   )
 endif()
 find_package(Threads REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/BevInput.msg"
+  DEPENDENCIES std_msgs
+)
 
 add_library(camera_imu_stabilizer STATIC
   src/imu_image_stabilizer.cpp
@@ -67,6 +73,10 @@ target_link_libraries(camera_driver_component
   ${OpenCV_LIBS}
   Threads::Threads
 )
+rosidl_get_typesupport_target(
+  camera_driver_typesupport_target ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(
+  camera_driver_component "${camera_driver_typesupport_target}")
 
 rclcpp_components_register_nodes(
   camera_driver_component
@@ -116,6 +126,7 @@ install(
 
 ament_export_targets(export_camera_driver HAS_LIBRARY_TARGET)
 ament_export_dependencies(
-  OpenCV rclcpp rclcpp_components geometry_msgs sensor_msgs std_msgs)
+  OpenCV rclcpp rclcpp_components geometry_msgs rosidl_default_runtime
+  sensor_msgs std_msgs)
 
 ament_package()

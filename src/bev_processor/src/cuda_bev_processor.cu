@@ -3,6 +3,8 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -94,6 +96,8 @@ __global__ void nv12ToBevKernel(
   const int input_height,
   const float * map_x,
   const float * map_y,
+  const float * stabilized_to_source_homography,
+  const int source_crop_top,
   const int output_width,
   const int output_height,
   std::uint8_t * output_bgr)
@@ -105,10 +109,39 @@ __global__ void nv12ToBevKernel(
   }
 
   const int output_index = output_y * output_width + output_x;
-  const float source_x = map_x[output_index];
-  const float source_y = map_y[output_index];
+  const float stabilized_x = map_x[output_index];
+  const float stabilized_y = map_y[output_index];
   std::uint8_t * destination = output_bgr + output_index * 3;
   if (
+    stabilized_x < 0.0F || stabilized_y < 0.0F)
+  {
+    destination[0] = 0U;
+    destination[1] = 0U;
+    destination[2] = 0U;
+    return;
+  }
+
+  const float denominator =
+    stabilized_to_source_homography[6] * stabilized_x +
+    stabilized_to_source_homography[7] * stabilized_y +
+    stabilized_to_source_homography[8];
+  if (!isfinite(denominator) || fabsf(denominator) < 1.0e-6F) {
+    destination[0] = 0U;
+    destination[1] = 0U;
+    destination[2] = 0U;
+    return;
+  }
+  const float source_x =
+    (stabilized_to_source_homography[0] * stabilized_x +
+    stabilized_to_source_homography[1] * stabilized_y +
+    stabilized_to_source_homography[2]) / denominator;
+  const float source_y_full =
+    (stabilized_to_source_homography[3] * stabilized_x +
+    stabilized_to_source_homography[4] * stabilized_y +
+    stabilized_to_source_homography[5]) / denominator;
+  const float source_y = source_y_full - source_crop_top;
+  if (
+    !isfinite(source_x) || !isfinite(source_y) ||
     source_x < 0.0F || source_y < 0.0F ||
     source_x >= input_width - 1.0F ||
     source_y >= input_height - 1.0F)
@@ -233,6 +266,11 @@ public:
         "cudaMalloc map_y");
       checkCuda(
         cudaMalloc(
+          reinterpret_cast<void **>(&device_stabilized_to_source_),
+          9U * sizeof(float)),
+        "cudaMalloc stabilized-to-source homography");
+      checkCuda(
+        cudaMalloc(
           reinterpret_cast<void **>(&device_output_),
           output_bytes),
         "cudaMalloc BEV output");
@@ -272,7 +310,9 @@ public:
   cv::Mat process(
     const std::uint8_t * nv12,
     const std::size_t data_size,
-    const std::size_t input_stride)
+    const std::size_t input_stride,
+    const cv::Matx33d & stabilized_to_source_homography,
+    const int source_crop_top)
   {
     if (nv12 == nullptr || input_stride <
       static_cast<std::size_t>(input_width_))
@@ -283,6 +323,22 @@ public:
       static_cast<std::size_t>(input_height_) * 3U / 2U;
     if (data_size < input_stride * input_rows) {
       throw std::invalid_argument("host NV12 buffer is smaller than expected");
+    }
+    if (
+      source_crop_top < 0 || source_crop_top % 2 != 0 ||
+      !cv::checkRange(cv::Mat(stabilized_to_source_homography)))
+    {
+      throw std::invalid_argument(
+              "invalid source crop or stabilized-to-source homography");
+    }
+
+    std::array<float, 9> homography{};
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        homography[static_cast<std::size_t>(row * 3 + column)] =
+          static_cast<float>(
+          stabilized_to_source_homography(row, column));
+      }
     }
 
     std::lock_guard<std::mutex> lock(stream_mutex_);
@@ -295,8 +351,16 @@ public:
         static_cast<std::size_t>(input_width_),
         input_rows,
         cudaMemcpyHostToDevice,
-        stream_),
+      stream_),
       "upload NV12 frame");
+    checkCuda(
+      cudaMemcpyAsync(
+        device_stabilized_to_source_,
+        homography.data(),
+        homography.size() * sizeof(float),
+        cudaMemcpyHostToDevice,
+        stream_),
+      "upload stabilized-to-source homography");
 
     const dim3 block(16U, 16U);
     const dim3 grid(
@@ -308,6 +372,8 @@ public:
       input_height_,
       device_map_x_,
       device_map_y_,
+      device_stabilized_to_source_,
+      source_crop_top,
       output_width_,
       output_height_,
       device_output_);
@@ -345,6 +411,10 @@ private:
       cudaFree(device_map_y_);
       device_map_y_ = nullptr;
     }
+    if (device_stabilized_to_source_ != nullptr) {
+      cudaFree(device_stabilized_to_source_);
+      device_stabilized_to_source_ = nullptr;
+    }
     if (device_map_x_ != nullptr) {
       cudaFree(device_map_x_);
       device_map_x_ = nullptr;
@@ -368,6 +438,7 @@ private:
   std::uint8_t * device_nv12_{nullptr};
   float * device_map_x_{nullptr};
   float * device_map_y_{nullptr};
+  float * device_stabilized_to_source_{nullptr};
   std::uint8_t * device_output_{nullptr};
   std::mutex stream_mutex_;
 };
@@ -387,9 +458,16 @@ CudaBevProcessor::~CudaBevProcessor() = default;
 cv::Mat CudaBevProcessor::process(
   const std::uint8_t * nv12,
   const std::size_t data_size,
-  const std::size_t input_stride)
+  const std::size_t input_stride,
+  const cv::Matx33d & stabilized_to_source_homography,
+  const int source_crop_top)
 {
-  return impl_->process(nv12, data_size, input_stride);
+  return impl_->process(
+    nv12,
+    data_size,
+    input_stride,
+    stabilized_to_source_homography,
+    source_crop_top);
 }
 
 const std::string & CudaBevProcessor::deviceName() const

@@ -23,6 +23,9 @@ def generate_launch_description():
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
+    bev_input_bottom_fraction = LaunchConfiguration(
+        "bev_input_bottom_fraction"
+    )
     performance_measurement_parameter = ParameterValue(
         performance_measurement_enabled,
         value_type=bool,
@@ -39,39 +42,39 @@ def generate_launch_description():
         ("lane_reconstruction_enabled", "true", bool),
         ("lane_output_topic", "/camera/image_bev_lane", str),
         ("lane_preview_enabled", "true", bool),
-        ("lane_preview_overlay_alpha", "0.35", float),
+        ("lane_preview_overlay_alpha", "0.8", float),
         ("lane_minimum_brightness", "160", int),
-        ("lane_far_minimum_brightness", "110", int),
+        ("lane_far_minimum_brightness", "105", int),
         ("lane_maximum_saturation", "80", int),
         ("lane_brightness_blur_kernel", "1", int),
         ("lane_vertical_close_m", "0.05", float),
-        ("lane_minimum_mark_width_m", "0.01", float),
-        ("lane_maximum_mark_width_m", "0.08", float),
-        ("lane_minimum_local_contrast", "35", int),
+        ("lane_minimum_mark_width_m", "0.015", float),
+        ("lane_maximum_mark_width_m", "0.030", float),
+        ("lane_minimum_local_contrast", "40", int),
         ("lane_maximum_local_background_brightness", "140", int),
-        ("lane_local_background_band_m", "0.05", float),
+        ("lane_local_background_band_m", "0.04", float),
         ("lane_tracked_mark_width_near_m", "0.11", float),
-        ("lane_tracked_mark_width_far_m", "0.20", float),
+        ("lane_tracked_mark_width_far_m", "0.22", float),
         ("lane_measurement_lateral_gate_near_m", "0.08", float),
         ("lane_measurement_lateral_gate_far_m", "0.18", float),
         ("lane_row_step_px", "2", int),
         ("lane_observation_minimum_x_m", "0.20", float),
-        ("lane_observation_maximum_x_m", "1.80", float),
-        ("lane_reconstruction_minimum_x_m", "0.20", float),
-        ("lane_reconstruction_maximum_x_m", "2.70", float),
-        ("lane_maximum_extrapolation_m", "0.20", float),
-        ("lane_sliding_window_step_m", "0.06", float),
+        ("lane_observation_maximum_x_m", "1.50", float),
+        ("lane_reconstruction_minimum_x_m", "0.10", float),
+        ("lane_reconstruction_maximum_x_m", "3.0", float),
+        ("lane_maximum_extrapolation_m", "0.10", float),
+        ("lane_sliding_window_step_m", "0.04", float),
         ("lane_sliding_window_length_m", "0.18", float),
         ("lane_sliding_window_half_width_near_m", "0.12", float),
         ("lane_sliding_window_half_width_far_m", "0.22", float),
-        ("lane_sliding_window_measurement_weight", "0.90", float),
-        ("lane_sliding_window_heading_weight", "0.80", float),
+        ("lane_sliding_window_measurement_weight", "0.95", float),
+        ("lane_sliding_window_heading_weight", "0.85", float),
         ("lane_maximum_tracking_arc_length_m", "3.20", float),
         ("lane_maximum_gap_fill_m", "0.26", float),
         ("lane_measured_point_smoothing_weight", "0.85", float),
         ("lane_minimum_window_pixel_count", "6", int),
         ("lane_expected_width_m", "0.625", float),
-        ("lane_width_tolerance_m", "0.075", float),
+        ("lane_width_tolerance_m", "0.07", float),
         ("lane_initial_center_tolerance_m", "0.30", float),
         ("lane_single_initial_tolerance_m", "0.20", float),
         ("lane_maximum_tracking_gap_m", "0.20", float),
@@ -132,6 +135,14 @@ def generate_launch_description():
                     "fixed_view_zoom remains active when this is disabled."
                 ),
             ),
+            DeclareLaunchArgument(
+                "bev_input_bottom_fraction",
+                default_value="0.70",
+                description=(
+                    "Bottom fraction of the rectified camera frame sent to "
+                    "the fused CUDA stabilization/BEV path."
+                ),
+            ),
             *lane_launch_arguments,
             ComposableNodeContainer(
                 name="bev_processor_container",
@@ -152,6 +163,10 @@ def generate_launch_description():
                                 "performance_measurement_enabled": (
                                     performance_measurement_parameter
                                 ),
+                                "input_bottom_fraction": ParameterValue(
+                                    bev_input_bottom_fraction,
+                                    value_type=float,
+                                ),
                             },
                             lane_parameter_overrides,
                         ],
@@ -159,8 +174,8 @@ def generate_launch_description():
                             {"use_intra_process_comms": True},
                         ],
                     ),
-                    # 안정화된 전체 NV12 영상을 BEV에 전달한다. BEV는
-                    # 시작 측정 LUT를 유지하므로 IMU 토픽 발행은 필요 없다.
+                    # 하단 raw NV12와 보정 행렬을 전달한다. CUDA가 안정화와
+                    # BEV를 한 번에 수행하므로 전체 CPU warp는 실행하지 않는다.
                     ComposableNode(
                         package="camera_driver",
                         plugin="camera_driver::CameraDriverNode",
@@ -169,7 +184,12 @@ def generate_launch_description():
                             LaunchConfiguration("camera_params_file"),
                             {
                                 "preview_enabled": False,
-                                "publish_enabled": True,
+                                "publish_enabled": False,
+                                "fused_bev_output_enabled": True,
+                                "bev_input_bottom_fraction": ParameterValue(
+                                    bev_input_bottom_fraction,
+                                    value_type=float,
+                                ),
                                 "imu_bridge_enabled": False,
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_parameter

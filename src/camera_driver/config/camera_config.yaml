@@ -6,7 +6,7 @@ camera_driver:
     performance_measurement_enabled: false
 
     # OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS, 2 MIPI lanes.
-    sensor_fps: 110.0
+    sensor_fps: 80.0
     width: 1280
     height: 720
 
@@ -59,7 +59,7 @@ camera_driver:
     # 출발은 raw ERPM으로 즉시 해제한다.
     imu_stabilization_measured_erpm_topic: "/vesc/measured_erpm"
     imu_stabilization_stationary_erpm_enter_threshold: 100
-    imu_stabilization_stationary_erpm_exit_threshold: 200
+    imu_stabilization_stationary_erpm_exit_threshold: 500
     imu_stabilization_stationary_erpm_filter_time_constant_sec: 0.15
     imu_stabilization_stationary_erpm_enter_duration_sec: 1.0
     # 텔레메트리가 끊기면 정지로 고정하지 않고 주행 상태로 안전하게 복귀한다.
@@ -85,8 +85,8 @@ camera_driver:
     imu_stabilization_roll_correction_enabled: true
     # 이 범위를 벗어난 불확실한 보정은 적용하지 않고 zoom-only 원본으로 통과시킨다.
     imu_stabilization_maximum_correction_deg: 3.0
-    imu_stabilization_maximum_frame_imu_wait_sec: 0.001
-    imu_stabilization_maximum_frame_imu_age_sec: 0.006
+    imu_stabilization_maximum_frame_imu_wait_sec: 0.005
+    imu_stabilization_maximum_frame_imu_age_sec: 0.012
     imu_stabilization_maximum_prediction_sec: 0.015
 
     # 광학 중심 기준 고정 FOV. 이 crop으로 원본 경계를 채울 수 없는 자세의
@@ -100,7 +100,14 @@ camera_driver:
 
     # Disabled by default while measuring direct camera performance.
     publish_enabled: false
-    publish_fps: 120.0
+    publish_fps: 80.0
+
+    # 통합 BEV launch에서만 켠다. 전체 영상을 CPU warp하지 않고, 원본
+    # rectified NV12의 아래쪽만 보정 행렬과 함께 CUDA BEV 단계로 전달한다.
+    fused_bev_output_enabled: false
+    fused_bev_topic: "/camera/bev_input"
+    # 0.70이면 1280x720 중 하단 504행을 사용한다. 실행 시 변경 가능하다.
+    bev_input_bottom_fraction: 0.70
 
     # 독립 프리뷰는 표시할 최신 NV12 프레임만 CPU에서 BGR로 바꾼다.
     preview_enabled: false

@@ -144,6 +144,43 @@ int main()
     driving_lut.map_y.at<float>(0, 60) < 240.0F,
     "the 3 meter projection must use the zoom-adjusted intrinsic matrix");
 
+  constexpr double fixed_zoom = 1.25;
+  const cv::Matx33d source_to_stabilized_zoom(
+    fixed_zoom, 0.0, (1.0 - fixed_zoom) * driving_camera.cx,
+    0.0, fixed_zoom, (1.0 - fixed_zoom) * driving_camera.cy,
+    0.0, 0.0, 1.0);
+  const auto fused_coverage = bev_processor::assessFusedRemapCoverage(
+    driving_lut,
+    source_to_stabilized_zoom,
+    1280,
+    720,
+    216);
+  passed &= require(
+    fused_coverage.valid_lut_pixels == driving_valid,
+    "fused coverage must assess every valid static LUT pixel");
+  passed &= require(
+    fused_coverage.coverage_ratio > 0.995,
+    "the bottom 70 percent crop must preserve the fixed-zoom driving BEV");
+  const cv::Matx33d raw_camera_matrix(
+    driving_camera.fx / fixed_zoom, 0.0, driving_camera.cx,
+    0.0, driving_camera.fy / fixed_zoom, driving_camera.cy,
+    0.0, 0.0, 1.0);
+  const cv::Matx33d maximum_tilt_source_to_stabilized =
+    source_to_stabilized_zoom * raw_camera_matrix *
+    bev_processor::rotationX(bev_processor::degToRad(-3.0)) *
+    bev_processor::rotationZ(bev_processor::degToRad(-3.0)) *
+    raw_camera_matrix.inv();
+  const auto tilted_fused_coverage =
+    bev_processor::assessFusedRemapCoverage(
+    driving_lut,
+    maximum_tilt_source_to_stabilized,
+    1280,
+    720,
+    216);
+  passed &= require(
+    tilted_fused_coverage.coverage_ratio > 0.995,
+    "the bottom 70 percent crop must cover a 3 degree pitch/roll correction");
+
   if (!passed) {
     return EXIT_FAILURE;
   }

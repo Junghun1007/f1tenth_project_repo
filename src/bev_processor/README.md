@@ -13,9 +13,10 @@ transient-local이므로 같은 launch에서 뒤에 생성되는 `camera_driver`
 자체 IMU 방향으로 다른 기준을 확정하지 않고 대기하며, 안정화 준비 전 프레임은
 기존 zoom-only 정책으로 처리된다.
 
-`camera_driver`가 IMU로 안정화해 발행하는 전체 1280x720 NV12 영상을
-CUDA에서 컬러 BEV로 변환하는 ROS 2 C++ 패키지다. 실행 모드는 하나이며,
-시작할 때 카메라 높이·roll·하향 pitch를 반드시 측정한다.
+`camera_driver`가 발행하는 하단 70%의 rectified NV12와 프레임별 IMU 보정
+행렬을 받아 CUDA에서 컬러 BEV로 변환하는 ROS 2 C++ 패키지다. 기본 입력은
+1280x720의 하단 504행이며, 시작할 때 카메라 높이·roll·하향 pitch를 반드시
+측정한다.
 
 ## 작동 순서
 
@@ -27,8 +28,9 @@ CUDA에서 컬러 BEV로 변환하는 ROS 2 C++ 패키지다. 실행 모드는 �
    중앙값으로 카메라 높이를 구한다.
 5. 측정한 높이·roll·pitch와 설정 파일의 X/Y/yaw로 BEV LUT를 한 번 만든다.
 6. OAK 측정 파이프라인을 닫고 `camera_driver`를 시작한다.
-7. 카메라 드라이버가 roll/pitch 흔들림을 영상에서 보정하고,
-   `bev_processor`는 시작 LUT를 바꾸지 않은 채 컬러 BEV 변환만 수행한다.
+7. 카메라 드라이버가 하단 crop과 roll/pitch 보정 행렬을 전달한다.
+   `bev_processor`는 시작 LUT, 고정 줌, 동적 보정을 CUDA sampling 한 번으로
+   합성해 컬러 BEV를 만든다.
 
 높이와 roll/pitch는 origin과 동일하게 depth 노면 평면의 offset과 법선으로
 구한다. IMU는 평면 후보 검증과 정지 상태 판정에 사용한다. 시작 측정에 실패하면 임의의
@@ -62,22 +64,22 @@ ros2 launch bev_processor bev_processor.launch.py \
 터미널에 출력된다.
 
 ```text
-[PERF][CAMERA] capture_fps=110.0 stabilized_fps=109.8 \
+[PERF][CAMERA] capture_fps=80.0 stabilized_fps=79.8 \
 stabilized_compute_ms(avg/max)=.../... \
 latency_ms(depthai_to_host_avg/max=.../...,\
 host_to_stabilized_avg/max=.../...,\
 depthai_to_stabilized_avg/max=.../...) ...
-[PERF][PIPELINE] stabilized_fps=109.8 bev_ready_fps=109.6 \
-processed_fps=109.6 \
+[PERF][PIPELINE] stabilized_fps=79.8 bev_ready_fps=79.7 \
+processed_fps=79.7 \
 latency_ms(depthai_to_bev_input_avg/max=.../...,\
 depthai_to_bev_ready_avg/max=.../...,\
 bev_input_to_ready_avg/max=.../...) \
 bev_compute_ms(avg/max)=... skipped=0 errors(...)=0/0/0
 ```
 
-- `CAMERA.stabilized_fps`: 흔들림 보정된 NV12 프레임의 발행 속도
-- `stabilized_compute_ms`: 흔들림 보정 homography 적용과 NV12 출력
-  메시지 준비까지의 평균/최대 시간
+- `CAMERA.stabilized_fps`: 통합 launch에서는 하단 NV12+보정 행렬의 발행 속도
+- `stabilized_compute_ms`: 통합 launch에서는 보정 행렬 계산과 하단 NV12
+  메시지 준비까지의 평균/최대 시간(CPU 전체 프레임 워프는 포함하지 않음)
 - `depthai_to_host`: DepthAI 프레임의 `getTimestamp()`부터 Jetson의
   카메라 캡처 스레드가 패킷을 꺼낸 시점까지의 평균/최대 시간
 - `host_to_stabilized`: Jetson 패킷 수신부터 흔들림 보정된 NV12
@@ -129,11 +131,20 @@ intra-process 통신을 사용한다. BEV 시작 측정이 OAK 장치를 반환�
 
 ## 변환 로직
 
-`CudaBevProcessor`는 다음 처리만 수행한다.
+`CudaBevProcessor`는 다음 처리를 한 커널에서 수행한다.
 
-1. BEV LUT 좌표에서 NV12 Y/UV 값을 bilinear 보간한다.
-2. YUV를 BGR로 변환한다.
-3. LUT 기반 BEV 워핑 결과를 `bgr8`로 발행한다.
+1. 고정 BEV LUT 좌표를 프레임별 보정 역행렬로 하단 crop 원본 좌표에 매핑한다.
+2. 해당 NV12 Y/UV 값을 bilinear 보간한다.
+3. YUV를 BGR로 변환하고 `bgr8` BEV를 발행한다.
+
+전체 1280x720 Y/UV를 CPU `warpPerspective()`한 뒤 다시 BEV로 보간하는
+중간 영상은 만들지 않는다. crop 비율은 빌드 없이 바꿀 수 있으며 카메라와
+BEV에 같은 값이 전달된다.
+
+```bash
+ros2 launch bev_processor bev_processor.launch.py \
+  bev_input_bottom_fraction:=0.70
+```
 
 Sobel, 미분 필터, 대비 강화, 밝기 임계값, morphology, 차선 추출과 상단
 크롭은 CUDA 변환에는 적용하지 않는다. CUDA 변환 뒤의 선택적 CPU 단계인
@@ -146,28 +157,28 @@ Sobel, 미분 필터, 대비 강화, 밝기 임계값, morphology, 차선 추출
 - `/camera/image_bev` (`bgr8`): 변경하지 않은 원본 컬러 BEV
 - `/camera/image_bev_lane` (`mono8`): 검은 배경에 흰색 좌·우 차선만 다시 그린 결과
 
-GUI 프리뷰는 기본적으로 원본 BEV 위에 검출 차선을 옅은 파란색, 투명도
-`0.35`로만 합성한다. 이 오버레이는 위 두 발행 토픽에는 들어가지 않는다.
+GUI 프리뷰는 기본적으로 원본 BEV 위에 검출 차선을 초록색, 투명도
+`0.8`로만 합성한다. 이 오버레이는 위 두 발행 토픽에는 들어가지 않는다.
 `lane_preview_enabled:=false`로 실행하면 프리뷰도 원본 BEV만 표시한다.
 
 재구성 단계는 다음 순서로 동작한다.
 
-1. 컬러 BEV를 grayscale 밝기로 변환한다. 1.8m 이후에는 임계값을
+1. 컬러 BEV를 grayscale 밝기로 변환한다. 1.5m 이후에는 임계값을
    `lane_far_minimum_brightness`까지 점진적으로 낮춰 흐린 픽셀도 남긴다.
 2. HSV saturation 80 이하인 흰색·회색 후보만 남겨 컬러 풍경을 제거한다.
-3. 후보 양옆 5cm가 어둡고 중심과 배경의 밝기 차가 35 이상인지 검사한다.
-4. `0.20~1.00m`의 가까운 행에서 폭 8cm 이하인 좌·우 시작점을 고른다.
+3. 후보 양옆 4cm가 어둡고 중심과 배경의 밝기 차가 40 이상인지 검사한다.
+4. `0.20~1.00m`의 가까운 행에서 폭 3cm 이하인 좌·우 시작점을 고른다.
 5. 이전 실제 측정점의 방향으로 회전형 슬라이딩 윈도우의 다음 위치만 예측한다.
 6. 윈도우의 밝은 픽셀을 횡방향 덩어리로 나누고, 예측점에 가장 가까우며
-   거리별 허용 폭 안에 있는 실제 덩어리 하나만 선택해 위치를 90% 보정한다.
-7. 1.8m 이후에는 윈도우 반폭을 12cm에서 최대 22cm까지 넓혀 번진 곡선의
+   거리별 허용 폭 안에 있는 실제 덩어리 하나만 선택해 위치를 95% 보정한다.
+7. 1.5m 이후에는 윈도우 반폭을 12cm에서 최대 22cm까지 넓혀 번진 곡선의
    중앙을 계속 측정한다.
 8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
 9. Odometry 없이 이전 승인 라인과 같은 X의 위치·방향을 비교한다. 큰 변화는
    2프레임 연속일 때만 승인하고, 검출 소실 시 이전 라인은 2프레임만 유지한다.
 10. 한쪽 차선의 국소 법선 방향 55~70cm에서 반대편 실제 픽셀을 다시 찾는다.
     픽셀이 가려진 위치만 승인된 차선 폭으로 보완한다.
-11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 20cm만 연장한다.
+11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 10cm만 연장한다.
 
 실제로 검출된 반대편 픽셀이 있으면 추정점보다 실제 픽셀을 우선한다. 픽셀이
 없는 부분만 보이는 차선의 접선에 수직인 방향으로 보완하므로 곡선에서도 단순
@@ -187,7 +198,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_sliding_window_measurement_weight:=0.90 \
   lane_expected_width_m:=0.625 \
   lane_output_line_thickness_m:=0.02 \
-  lane_preview_overlay_alpha:=0.35
+  lane_preview_overlay_alpha:=0.8
 ```
 
 시간 연속성과 한쪽 가림 보완을 조절하는 예시는 다음과 같다.

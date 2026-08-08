@@ -20,6 +20,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(CUDAToolkit REQUIRED)
+find_package(camera_driver REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
@@ -121,6 +122,7 @@ add_library(bev_processor_component SHARED
 target_include_directories(
   bev_processor_component PRIVATE ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(bev_processor_component
+  camera_driver
   rclcpp
   rclcpp_components
   geometry_msgs
@@ -190,5 +192,6 @@ install(
 )
 
 ament_export_include_directories(include)
-ament_export_dependencies(OpenCV rclcpp_components geometry_msgs)
+ament_export_dependencies(
+  camera_driver OpenCV rclcpp_components geometry_msgs)
 ament_package()
