@@ -306,7 +306,8 @@ public:
   void update(
     const std::optional<cv::Vec3d> & acceleration_camera_mps2,
     const cv::Vec3d & angular_velocity_camera_radps,
-    const double timestamp_sec)
+    const double timestamp_sec,
+    const std::optional<bool> vehicle_stationary)
   {
     if (
       !finiteVector(angular_velocity_camera_radps) ||
@@ -433,8 +434,13 @@ public:
     }
 
     stationary_confirmed_ = false;
-    cv::Vec3d stationary_gyroscope_mean(0.0, 0.0, 0.0);
-    if (acceleration_available) {
+    cv::Vec3d stationary_gyroscope_mean = angular_velocity_camera_radps;
+    if (vehicle_stationary.has_value()) {
+      // Runtime vehicle motion is supplied by measured ERPM. Startup
+      // calibration above intentionally remains IMU-based.
+      stationary_samples_.clear();
+      stationary_confirmed_ = *vehicle_stationary;
+    } else if (acceleration_available) {
       stationary_samples_.push_back(StationarySample{
         timestamp_sec, *acceleration_camera_mps2,
         angular_velocity_camera_radps});
@@ -488,42 +494,48 @@ public:
 
     double roll_acceleration_confidence = 0.0;
     double pitch_acceleration_confidence = 0.0;
-    if (
-      acceleration_available && acceleration_confidence > 0.0 &&
-      (!config_.acceleration_correction_stationary_only ||
-      stationary_confirmed_))
-    {
-      const cv::Vec3d measured_up =
-        *acceleration_camera_mps2 / acceleration_magnitude;
+    const bool use_stationary_reference = stationary_confirmed_;
+    const bool use_moving_accelerometer =
+      !use_stationary_reference && acceleration_available &&
+      acceleration_confidence > 0.0 &&
+      !config_.acceleration_correction_stationary_only;
+    if (use_stationary_reference || use_moving_accelerometer) {
       const cv::Vec3d predicted_up = current_up_camera_;
-      const double direction_error_deg = angleDegrees(
-        predicted_up, measured_up);
-      const double pitch_direction_confidence = stationary_confirmed_ ? 1.0 :
-        std::clamp(
-        1.0 - direction_error_deg /
-        config_.acceleration_correction_gate_deg,
-        0.0, 1.0);
       const double predicted_roll_deg = rollDegrees(predicted_up);
       const double predicted_pitch_deg = pitchDegrees(predicted_up);
-      const double roll_error_deg = wrapDegrees(
-        rollDegrees(measured_up) - predicted_roll_deg);
-      const double roll_direction_confidence = stationary_confirmed_ ? 1.0 :
-        std::clamp(
-        1.0 - std::abs(roll_error_deg) /
-        config_.roll_acceleration_direction_gate_deg,
-        0.0, 1.0);
-      roll_acceleration_confidence =
-        acceleration_confidence * roll_direction_confidence;
-      pitch_acceleration_confidence =
-        acceleration_confidence * pitch_direction_confidence;
+      cv::Vec3d correction_target = reference_up_camera_;
+      if (use_stationary_reference) {
+        roll_acceleration_confidence = 1.0;
+        pitch_acceleration_confidence = 1.0;
+      } else {
+        const cv::Vec3d measured_up =
+          *acceleration_camera_mps2 / acceleration_magnitude;
+        correction_target = measured_up;
+        const double direction_error_deg = angleDegrees(
+          predicted_up, measured_up);
+        const double pitch_direction_confidence = std::clamp(
+          1.0 - direction_error_deg /
+          config_.acceleration_correction_gate_deg,
+          0.0, 1.0);
+        const double roll_error_deg = wrapDegrees(
+          rollDegrees(measured_up) - predicted_roll_deg);
+        const double roll_direction_confidence = std::clamp(
+          1.0 - std::abs(roll_error_deg) /
+          config_.roll_acceleration_direction_gate_deg,
+          0.0, 1.0);
+        roll_acceleration_confidence =
+          acceleration_confidence * roll_direction_confidence;
+        pitch_acceleration_confidence =
+          acceleration_confidence * pitch_direction_confidence;
+      }
       if (
         roll_acceleration_confidence > 0.0 ||
         pitch_acceleration_confidence > 0.0)
       {
-        const double roll_time_constant = stationary_confirmed_ ?
+        const double roll_time_constant = use_stationary_reference ?
           config_.stationary_tilt_recovery_time_constant_sec :
           config_.roll_acceleration_correction_time_constant_sec;
-        const double pitch_time_constant = stationary_confirmed_ ?
+        const double pitch_time_constant = use_stationary_reference ?
           config_.stationary_tilt_recovery_time_constant_sec :
           config_.acceleration_correction_time_constant_sec;
         const double roll_gain =
@@ -532,11 +544,8 @@ public:
         const double pitch_gain =
           pitch_acceleration_confidence * (1.0 - std::exp(
           -dt_sec / pitch_time_constant));
-        // The stationary detector already verified that the physical camera
-        // returned to the startup pose. Recover to that immutable view rather
-        // than following accelerometer noise or a new drifting reference.
-        const cv::Vec3d correction_target = stationary_confirmed_ ?
-          reference_up_camera_ : measured_up;
+        // ERPM-confirmed stationarity recovers to the immutable startup view
+        // without allowing accelerometer noise to toggle this correction.
         const double target_roll_deg = rollDegrees(correction_target);
         const double target_pitch_deg = pitchDegrees(correction_target);
         const cv::Vec3d corrected_up = upVectorFromRollPitchDegrees(
@@ -1043,10 +1052,12 @@ ImuImageStabilizer::~ImuImageStabilizer() = default;
 void ImuImageStabilizer::update(
   const std::optional<cv::Vec3d> & acceleration_camera_mps2,
   const cv::Vec3d & angular_velocity_camera_radps,
-  const double timestamp_sec)
+  const double timestamp_sec,
+  const std::optional<bool> vehicle_stationary)
 {
   impl_->update(
-    acceleration_camera_mps2, angular_velocity_camera_radps, timestamp_sec);
+    acceleration_camera_mps2, angular_velocity_camera_radps, timestamp_sec,
+    vehicle_stationary);
 }
 
 bool ImuImageStabilizer::setExternalReferenceUpCamera(

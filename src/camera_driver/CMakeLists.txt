@@ -16,6 +16,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
 find_package(depthai 3 CONFIG QUIET)
 if(NOT depthai_FOUND)
@@ -58,6 +59,7 @@ ament_target_dependencies(camera_driver_component
   rclcpp_components
   geometry_msgs
   sensor_msgs
+  std_msgs
 )
 target_link_libraries(camera_driver_component
   camera_imu_stabilizer
@@ -114,6 +116,6 @@ install(
 
 ament_export_targets(export_camera_driver HAS_LIBRARY_TARGET)
 ament_export_dependencies(
-  OpenCV rclcpp rclcpp_components geometry_msgs sensor_msgs)
+  OpenCV rclcpp rclcpp_components geometry_msgs sensor_msgs std_msgs)
 
 ament_package()

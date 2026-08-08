@@ -163,7 +163,8 @@ void verifyStationaryRecoveryAndThreeAxisBiasUpdate()
     stabilizer.update(
       cv::Vec3d(0.0, -9.80665, 0.0),
       stationary_gyro_bias,
-      timestamp_sec);
+      timestamp_sec,
+      true);
   }
   const auto recovered = stabilizer.correctionAt(timestamp_sec);
   require(recovered.has_value(), "stationary recovery lookup failed");
@@ -200,7 +201,47 @@ void verifyReferenceLeakBoundsGyroDrift()
     "startup-reference leak did not bound accumulated gyro drift");
 }
 
-void verifyExternalBevReferenceIsSharedWithoutChangingStationarySignature()
+void verifyExternalVehicleStationaryControlsRecovery()
+{
+  auto config = fastConfig();
+  config.stationary_tilt_recovery_time_constant_sec = 0.02;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  calibrate(stabilizer);
+
+  double timestamp_sec = 0.01;
+  for (int index = 1; index <= 40; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      std::nullopt,
+      cv::Vec3d(0.0, 0.0, 1.0),
+      timestamp_sec,
+      false);
+  }
+  const auto drifted = stabilizer.correctionAt(timestamp_sec);
+  require(drifted.has_value(), "ERPM-moving tilt lookup failed");
+  require(
+    std::abs(drifted->roll_error_deg) > 3.0,
+    "vehicle moving state unexpectedly activated stationary recovery");
+
+  for (int index = 1; index <= 80; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      std::nullopt,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      true);
+  }
+  const auto recovered = stabilizer.correctionAt(timestamp_sec);
+  require(recovered.has_value(), "ERPM-stationary recovery lookup failed");
+  require(
+    std::abs(recovered->roll_error_deg) < 0.1,
+    "ERPM stationary state did not restore the startup view");
+  require(
+    stabilizer.stationaryConfirmed(),
+    "external vehicle stationary state was not reported");
+}
+
+void verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery()
 {
   auto config = fastConfig();
   config.external_reference_required = true;
@@ -230,7 +271,7 @@ void verifyExternalBevReferenceIsSharedWithoutChangingStationarySignature()
     stabilizer.externalReferenceReceived(),
     "BEV ground reference receipt was not recorded");
 
-  for (int index = 1; index <= 5; ++index) {
+  for (int index = 1; index <= 6; ++index) {
     stabilizer.update(
       startup_acceleration,
       cv::Vec3d(0.0, 0.0, 0.0),
@@ -240,7 +281,7 @@ void verifyExternalBevReferenceIsSharedWithoutChangingStationarySignature()
     stabilizer.initialized(),
     "calibration did not finish after the BEV reference arrived");
 
-  double timestamp_sec = 0.0225;
+  double timestamp_sec = 0.025;
   const auto startup_correction = stabilizer.correctionAt(timestamp_sec);
   require(
     startup_correction.has_value() &&
@@ -257,13 +298,13 @@ void verifyExternalBevReferenceIsSharedWithoutChangingStationarySignature()
     stabilizer.update(
       startup_acceleration,
       cv::Vec3d(0.0, 0.0, 0.0),
-      timestamp_sec);
+      timestamp_sec,
+      true);
   }
   const auto recovered = stabilizer.correctionAt(timestamp_sec);
   require(
     stabilizer.stationaryConfirmed(),
-    "IMU startup signature did not confirm stationary with a different "
-    "depth reference");
+    "ERPM stationary state was not accepted with a different depth reference");
   require(
     recovered.has_value() && std::abs(recovered->roll_error_deg) < 0.1,
     "stationary recovery did not return to the shared BEV reference");
@@ -277,8 +318,9 @@ int main()
   verifyLateralAccelerationDoesNotCreateRoll();
   verifyPitchedUturnDoesNotCreateTilt();
   verifyStationaryRecoveryAndThreeAxisBiasUpdate();
+  verifyExternalVehicleStationaryControlsRecovery();
   verifyReferenceLeakBoundsGyroDrift();
-  verifyExternalBevReferenceIsSharedWithoutChangingStationarySignature();
+  verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery();
 
   const auto config = fastConfig();
   camera_driver::ImuImageStabilizer stabilizer(config);

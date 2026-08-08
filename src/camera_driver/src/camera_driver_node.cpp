@@ -29,6 +29,7 @@
 #include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "std_msgs/msg/int32.hpp"
 
 namespace camera_driver
 {
@@ -40,6 +41,12 @@ namespace
 
 constexpr std::uint32_t kOv9782The720PWidth = 1280U;
 constexpr std::uint32_t kOv9782The720PHeight = 720U;
+
+std::int64_t steady_now_nanoseconds()
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 void update_maximum(
   std::atomic<std::uint64_t> & target,
@@ -225,6 +232,13 @@ public:
           on_startup_ground_reference(*message);
         },
         reference_subscription_options);
+      measured_erpm_subscription_ =
+        node_.create_subscription<std_msgs::msg::Int32>(
+        measured_erpm_topic_,
+        rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
+        [this](std_msgs::msg::Int32::ConstSharedPtr message) {
+          on_measured_erpm(*message);
+        });
     }
 
     if (!enabled_) {
@@ -394,6 +408,16 @@ private:
     imu_stabilizer_config_.external_reference_required =
       node_.declare_parameter<bool>(
       "imu_stabilization_external_reference_required", false);
+    measured_erpm_topic_ = node_.declare_parameter<std::string>(
+      "imu_stabilization_measured_erpm_topic", "/vesc/measured_erpm");
+    stationary_erpm_enter_threshold_ = node_.declare_parameter<int>(
+      "imu_stabilization_stationary_erpm_enter_threshold", 100);
+    stationary_erpm_exit_threshold_ = node_.declare_parameter<int>(
+      "imu_stabilization_stationary_erpm_exit_threshold", 200);
+    stationary_erpm_enter_duration_sec_ = node_.declare_parameter<double>(
+      "imu_stabilization_stationary_erpm_enter_duration_sec", 0.5);
+    measured_erpm_timeout_sec_ = node_.declare_parameter<double>(
+      "imu_stabilization_measured_erpm_timeout_sec", 1.0);
     imu_stabilizer_config_.reference_tilt_leak_time_constant_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_reference_tilt_leak_time_constant_sec", 8.0);
@@ -528,6 +552,20 @@ private:
                 "imu_stabilization_external_reference_topic must not be "
                 "empty when stabilization is enabled");
       }
+      if (
+        imu_stabilization_enabled_ &&
+        (measured_erpm_topic_.empty() ||
+        stationary_erpm_enter_threshold_ < 0 ||
+        stationary_erpm_exit_threshold_ <=
+        stationary_erpm_enter_threshold_ ||
+        !std::isfinite(stationary_erpm_enter_duration_sec_) ||
+        stationary_erpm_enter_duration_sec_ <= 0.0 ||
+        !std::isfinite(measured_erpm_timeout_sec_) ||
+        measured_erpm_timeout_sec_ <= 0.0))
+      {
+        throw std::invalid_argument(
+                "invalid measured-ERPM stationary detection parameters");
+      }
     }
     if (
       !std::isfinite(fixed_view_zoom_) ||
@@ -596,6 +634,75 @@ private:
       "Accepted BEV startup ground reference in %s: "
       "normal=(%.6f, %.6f, %.6f).",
       frame_id_.c_str(), up_camera[0], up_camera[1], up_camera[2]);
+  }
+
+  void on_measured_erpm(const std_msgs::msg::Int32 & message)
+  {
+    const std::int64_t now_ns = steady_now_nanoseconds();
+    const std::int64_t previous_ns =
+      last_measured_erpm_received_ns_.exchange(
+      now_ns, std::memory_order_relaxed);
+    latest_measured_erpm_.store(message.data, std::memory_order_relaxed);
+
+    const auto timeout_ns = static_cast<std::int64_t>(
+      measured_erpm_timeout_sec_ * 1.0e9);
+    if (
+      previous_ns <= 0 || now_ns - previous_ns > timeout_ns)
+    {
+      erpm_stationary_.store(false, std::memory_order_relaxed);
+      stationary_erpm_candidate_started_ns_.store(
+        0, std::memory_order_relaxed);
+    }
+
+    const std::int64_t absolute_erpm = std::abs(
+      static_cast<std::int64_t>(message.data));
+    if (absolute_erpm <= stationary_erpm_enter_threshold_) {
+      if (erpm_stationary_.load(std::memory_order_relaxed)) {
+        return;
+      }
+      const std::int64_t candidate_started_ns =
+        stationary_erpm_candidate_started_ns_.load(
+        std::memory_order_relaxed);
+      if (candidate_started_ns <= 0) {
+        stationary_erpm_candidate_started_ns_.store(
+          now_ns, std::memory_order_relaxed);
+        return;
+      }
+      const auto enter_duration_ns = static_cast<std::int64_t>(
+        stationary_erpm_enter_duration_sec_ * 1.0e9);
+      if (now_ns - candidate_started_ns >= enter_duration_ns) {
+        erpm_stationary_.store(true, std::memory_order_relaxed);
+      }
+      return;
+    }
+
+    stationary_erpm_candidate_started_ns_.store(
+      0, std::memory_order_relaxed);
+    if (absolute_erpm >= stationary_erpm_exit_threshold_) {
+      erpm_stationary_.store(false, std::memory_order_relaxed);
+    }
+  }
+
+  bool measured_erpm_is_fresh(const std::int64_t now_ns) const
+  {
+    const std::int64_t received_ns =
+      last_measured_erpm_received_ns_.load(std::memory_order_relaxed);
+    if (received_ns <= 0 || now_ns < received_ns) {
+      return false;
+    }
+    return static_cast<double>(now_ns - received_ns) * 1.0e-9 <=
+           measured_erpm_timeout_sec_;
+  }
+
+  bool measured_erpm_stationary()
+  {
+    if (!measured_erpm_is_fresh(steady_now_nanoseconds())) {
+      erpm_stationary_.store(false, std::memory_order_relaxed);
+      stationary_erpm_candidate_started_ns_.store(
+        0, std::memory_order_relaxed);
+      return false;
+    }
+    return erpm_stationary_.load(std::memory_order_relaxed);
   }
 
   void start_pipeline()
@@ -729,7 +836,8 @@ private:
         node_.get_logger(),
         "Virtual-gimbal stabilization: keep camera still for %.1f s "
         "startup discard + %.1f s stationary calibration; yaw-free tilt, "
-        "BEV reference=%s on %s, stationary-only accel recovery, "
+        "BEV reference=%s on %s, runtime stationary=%s "
+        "(enter<=%d, exit>=%d, hold=%.2fs), "
         "pitch/roll limit %.1f deg, "
         "invalid correction policy=zoom-only fallback",
         imu_stabilizer_config_.startup_discard_duration_sec,
@@ -737,6 +845,10 @@ private:
         imu_stabilizer_config_.external_reference_required ?
         "required" : "optional",
         startup_ground_reference_topic_.c_str(),
+        measured_erpm_topic_.c_str(),
+        stationary_erpm_enter_threshold_,
+        stationary_erpm_exit_threshold_,
+        stationary_erpm_enter_duration_sec_,
         imu_stabilizer_config_.maximum_correction_deg);
     }
   }
@@ -1158,7 +1270,8 @@ private:
             imu_stabilizer_->update(
               synchronized_acceleration,
               angular_velocity_camera,
-              gyroscope_timestamp_sec);
+              gyroscope_timestamp_sec,
+              measured_erpm_stationary());
           }
           latest_imu_timestamp_sec_.store(
             gyroscope_timestamp_sec, std::memory_order_relaxed);
@@ -1645,10 +1758,12 @@ private:
           180.0 / 3.141592653589793238462643383279502884;
         const cv::Vec3d bias_degps =
           imu_stabilizer_->gyroscopeBiasRadps() * radians_to_degrees;
+        const bool erpm_fresh = measured_erpm_is_fresh(
+          steady_now_nanoseconds());
         RCLCPP_INFO(
           node_.get_logger(),
           "Virtual gimbal: tilt_error(roll/pitch)=%.3f/%.3fdeg, "
-          "correction=%.3fdeg, stationary=%s, "
+          "correction=%.3fdeg, stationary=%s, measured_erpm=%d/%s, "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
           latest_stabilization_roll_error_deg_.load(
             std::memory_order_relaxed),
@@ -1657,6 +1772,8 @@ private:
           latest_stabilization_correction_angle_deg_.load(
             std::memory_order_relaxed),
           imu_stabilizer_->stationaryConfirmed() ? "yes" : "no",
+          latest_measured_erpm_.load(std::memory_order_relaxed),
+          erpm_fresh ? "fresh" : "stale",
           bias_degps[0], bias_degps[1], bias_degps[2],
           static_cast<unsigned long>(
             imu_stabilizer_->onlineTiltBiasUpdateCount()));
@@ -1771,6 +1888,11 @@ private:
   bool imu_stabilization_enabled_{true};
   ImuImageStabilizerConfig imu_stabilizer_config_{};
   std::string startup_ground_reference_topic_;
+  std::string measured_erpm_topic_;
+  int stationary_erpm_enter_threshold_{100};
+  int stationary_erpm_exit_threshold_{200};
+  double stationary_erpm_enter_duration_sec_{0.5};
+  double measured_erpm_timeout_sec_{1.0};
   double fixed_view_zoom_{1.25};
   double fixed_view_border_margin_px_{1.5};
   int output_crop_top_px_{0};
@@ -1796,6 +1918,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_publisher_;
   rclcpp::Subscription<geometry_msgs::msg::Vector3Stamped>::SharedPtr
     startup_ground_reference_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr
+    measured_erpm_subscription_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 
   std::thread capture_thread_;
@@ -1819,6 +1943,10 @@ private:
   std::atomic<bool> startup_timeout_reported_{false};
   std::atomic<bool> timestamp_fallback_reported_{false};
   std::atomic<bool> late_external_reference_reported_{false};
+  std::atomic<std::int32_t> latest_measured_erpm_{0};
+  std::atomic<std::int64_t> last_measured_erpm_received_ns_{0};
+  std::atomic<std::int64_t> stationary_erpm_candidate_started_ns_{0};
+  std::atomic<bool> erpm_stationary_{false};
   std::atomic<std::uint64_t> received_total_{0};
   std::atomic<std::uint64_t> received_interval_{0};
   std::atomic<std::uint64_t> published_total_{0};

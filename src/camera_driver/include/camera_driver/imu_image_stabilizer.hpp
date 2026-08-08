@@ -89,7 +89,8 @@ public:
   void update(
     const std::optional<cv::Vec3d> & acceleration_camera_mps2,
     const cv::Vec3d & angular_velocity_camera_radps,
-    double timestamp_sec);
+    double timestamp_sec,
+    std::optional<bool> vehicle_stationary = std::nullopt);
 
   // Supplies the immutable ground-plane normal used by the static BEV LUT.
   // It must be expressed in camera optical coordinates and is accepted only
