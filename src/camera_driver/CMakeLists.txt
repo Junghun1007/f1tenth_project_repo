@@ -117,10 +117,15 @@ install(
   TARGETS
     camera_imu_stabilizer
     camera_driver_component
-    camera_driver_node
   EXPORT export_camera_driver
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
+)
+# Executables must not be part of the exported library target set: packages
+# that depend on camera_driver for BevInput would otherwise try to link it.
+install(
+  TARGETS
+    camera_driver_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 
