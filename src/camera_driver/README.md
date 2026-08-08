@@ -296,9 +296,10 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_external_reference_topic` | `/camera/startup_ground_normal` | BEV 시작 지면 법선 토픽 |
 | `imu_stabilization_external_reference_required` | `false` | 외부 기준 필수 여부; 통합 BEV launch에서는 `true` |
 | `imu_stabilization_measured_erpm_topic` | `/vesc/measured_erpm` | 주행 중 정지 판정에 쓰는 VESC 실측 ERPM |
-| `imu_stabilization_stationary_erpm_enter_threshold` | `100` | 이 절댓값 이하가 유지되면 정지 후보 |
-| `imu_stabilization_stationary_erpm_exit_threshold` | `200` | 이 절댓값 이상이면 즉시 주행 판정 |
-| `imu_stabilization_stationary_erpm_enter_duration_sec` | `0.5` | 정지 진입 debounce 시간 |
+| `imu_stabilization_stationary_erpm_enter_threshold` | `100` | 필터링된 ERPM 절댓값이 이하로 유지되면 정지 후보 |
+| `imu_stabilization_stationary_erpm_exit_threshold` | `200` | raw ERPM 절댓값이 이상이면 즉시 주행 판정 |
+| `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
+| `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
 | `imu_stabilization_accelerometer_stationary_only` | `true` | 안정화 라이브러리 단독 사용 시 IMU 정지 판정 fallback |
 | `imu_stabilization_reference_tilt_leak_time_constant_sec` | `8.0` | 주행 중 시작 tilt 기준으로 복귀하는 약한 시정수 |

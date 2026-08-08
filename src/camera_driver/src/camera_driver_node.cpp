@@ -414,8 +414,10 @@ private:
       "imu_stabilization_stationary_erpm_enter_threshold", 100);
     stationary_erpm_exit_threshold_ = node_.declare_parameter<int>(
       "imu_stabilization_stationary_erpm_exit_threshold", 200);
+    stationary_erpm_filter_time_constant_sec_ = node_.declare_parameter<double>(
+      "imu_stabilization_stationary_erpm_filter_time_constant_sec", 0.15);
     stationary_erpm_enter_duration_sec_ = node_.declare_parameter<double>(
-      "imu_stabilization_stationary_erpm_enter_duration_sec", 0.5);
+      "imu_stabilization_stationary_erpm_enter_duration_sec", 1.0);
     measured_erpm_timeout_sec_ = node_.declare_parameter<double>(
       "imu_stabilization_measured_erpm_timeout_sec", 1.0);
     imu_stabilizer_config_.reference_tilt_leak_time_constant_sec =
@@ -558,6 +560,8 @@ private:
         stationary_erpm_enter_threshold_ < 0 ||
         stationary_erpm_exit_threshold_ <=
         stationary_erpm_enter_threshold_ ||
+        !std::isfinite(stationary_erpm_filter_time_constant_sec_) ||
+        stationary_erpm_filter_time_constant_sec_ <= 0.0 ||
         !std::isfinite(stationary_erpm_enter_duration_sec_) ||
         stationary_erpm_enter_duration_sec_ <= 0.0 ||
         !std::isfinite(measured_erpm_timeout_sec_) ||
@@ -646,17 +650,44 @@ private:
 
     const auto timeout_ns = static_cast<std::int64_t>(
       measured_erpm_timeout_sec_ * 1.0e9);
+    const bool reset_filter =
+      previous_ns <= 0 || now_ns - previous_ns > timeout_ns;
     if (
-      previous_ns <= 0 || now_ns - previous_ns > timeout_ns)
+      reset_filter)
     {
       erpm_stationary_.store(false, std::memory_order_relaxed);
       stationary_erpm_candidate_started_ns_.store(
         0, std::memory_order_relaxed);
     }
 
-    const std::int64_t absolute_erpm = std::abs(
+    const std::int64_t raw_absolute_erpm = std::abs(
       static_cast<std::int64_t>(message.data));
-    if (absolute_erpm <= stationary_erpm_enter_threshold_) {
+    double filtered_absolute_erpm = static_cast<double>(raw_absolute_erpm);
+    if (!reset_filter) {
+      const double elapsed_sec =
+        static_cast<double>(now_ns - previous_ns) * 1.0e-9;
+      const double alpha = -std::expm1(
+        -elapsed_sec / stationary_erpm_filter_time_constant_sec_);
+      const double previous_filtered_absolute_erpm =
+        latest_filtered_absolute_erpm_.load(std::memory_order_relaxed);
+      filtered_absolute_erpm = previous_filtered_absolute_erpm +
+        alpha *
+        (static_cast<double>(raw_absolute_erpm) -
+        previous_filtered_absolute_erpm);
+    }
+    latest_filtered_absolute_erpm_.store(
+      filtered_absolute_erpm, std::memory_order_relaxed);
+
+    // A real departure must cancel stationary recovery immediately. Filtering
+    // is intentionally used only for entry so it cannot delay this transition.
+    if (raw_absolute_erpm >= stationary_erpm_exit_threshold_) {
+      stationary_erpm_candidate_started_ns_.store(
+        0, std::memory_order_relaxed);
+      erpm_stationary_.store(false, std::memory_order_relaxed);
+      return;
+    }
+
+    if (filtered_absolute_erpm <= stationary_erpm_enter_threshold_) {
       if (erpm_stationary_.load(std::memory_order_relaxed)) {
         return;
       }
@@ -678,9 +709,6 @@ private:
 
     stationary_erpm_candidate_started_ns_.store(
       0, std::memory_order_relaxed);
-    if (absolute_erpm >= stationary_erpm_exit_threshold_) {
-      erpm_stationary_.store(false, std::memory_order_relaxed);
-    }
   }
 
   bool measured_erpm_is_fresh(const std::int64_t now_ns) const
@@ -837,7 +865,7 @@ private:
         "Virtual-gimbal stabilization: keep camera still for %.1f s "
         "startup discard + %.1f s stationary calibration; yaw-free tilt, "
         "BEV reference=%s on %s, runtime stationary=%s "
-        "(enter<=%d, exit>=%d, hold=%.2fs), "
+        "(filtered enter<=%d, raw exit>=%d, filter tau=%.2fs, hold=%.2fs), "
         "pitch/roll limit %.1f deg, "
         "invalid correction policy=zoom-only fallback",
         imu_stabilizer_config_.startup_discard_duration_sec,
@@ -848,6 +876,7 @@ private:
         measured_erpm_topic_.c_str(),
         stationary_erpm_enter_threshold_,
         stationary_erpm_exit_threshold_,
+        stationary_erpm_filter_time_constant_sec_,
         stationary_erpm_enter_duration_sec_,
         imu_stabilizer_config_.maximum_correction_deg);
     }
@@ -1763,7 +1792,8 @@ private:
         RCLCPP_INFO(
           node_.get_logger(),
           "Virtual gimbal: tilt_error(roll/pitch)=%.3f/%.3fdeg, "
-          "correction=%.3fdeg, stationary=%s, measured_erpm=%d/%s, "
+          "correction=%.3fdeg, stationary=%s, "
+          "measured_erpm=%d (filtered_abs=%.1f)/%s, "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
           latest_stabilization_roll_error_deg_.load(
             std::memory_order_relaxed),
@@ -1773,6 +1803,7 @@ private:
             std::memory_order_relaxed),
           imu_stabilizer_->stationaryConfirmed() ? "yes" : "no",
           latest_measured_erpm_.load(std::memory_order_relaxed),
+          latest_filtered_absolute_erpm_.load(std::memory_order_relaxed),
           erpm_fresh ? "fresh" : "stale",
           bias_degps[0], bias_degps[1], bias_degps[2],
           static_cast<unsigned long>(
@@ -1891,7 +1922,8 @@ private:
   std::string measured_erpm_topic_;
   int stationary_erpm_enter_threshold_{100};
   int stationary_erpm_exit_threshold_{200};
-  double stationary_erpm_enter_duration_sec_{0.5};
+  double stationary_erpm_filter_time_constant_sec_{0.15};
+  double stationary_erpm_enter_duration_sec_{1.0};
   double measured_erpm_timeout_sec_{1.0};
   double fixed_view_zoom_{1.25};
   double fixed_view_border_margin_px_{1.5};
@@ -1944,6 +1976,7 @@ private:
   std::atomic<bool> timestamp_fallback_reported_{false};
   std::atomic<bool> late_external_reference_reported_{false};
   std::atomic<std::int32_t> latest_measured_erpm_{0};
+  std::atomic<double> latest_filtered_absolute_erpm_{0.0};
   std::atomic<std::int64_t> last_measured_erpm_received_ns_{0};
   std::atomic<std::int64_t> stationary_erpm_candidate_started_ns_{0};
   std::atomic<bool> erpm_stationary_{false};
