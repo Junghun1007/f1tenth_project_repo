@@ -213,13 +213,18 @@ public:
         std::make_unique<ImuImageStabilizer>(imu_stabilizer_config_);
       auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
       reference_qos.reliable().transient_local();
+      // Humble's intra-process path only supports volatile durability.
+      rclcpp::SubscriptionOptions reference_subscription_options;
+      reference_subscription_options.use_intra_process_comm =
+        rclcpp::IntraProcessSetting::Disable;
       startup_ground_reference_subscription_ =
         node_.create_subscription<geometry_msgs::msg::Vector3Stamped>(
         startup_ground_reference_topic_,
         reference_qos,
         [this](geometry_msgs::msg::Vector3Stamped::ConstSharedPtr message) {
           on_startup_ground_reference(*message);
-        });
+        },
+        reference_subscription_options);
     }
 
     if (!enabled_) {
