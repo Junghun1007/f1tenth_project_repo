@@ -268,9 +268,15 @@ public:
 
     auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
     reference_qos.reliable().transient_local();
+    // Humble's intra-process path cannot provide transient-local durability
+    // to the camera driver that is loaded after this one-shot publication.
+    rclcpp::PublisherOptions reference_publisher_options;
+    reference_publisher_options.use_intra_process_comm =
+      rclcpp::IntraProcessSetting::Disable;
     startup_ground_reference_publisher_ =
       create_publisher<geometry_msgs::msg::Vector3Stamped>(
-      startup_ground_reference_topic_, reference_qos);
+      startup_ground_reference_topic_, reference_qos,
+      reference_publisher_options);
     publishStartupGroundReference(measurement.attitude_source);
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
