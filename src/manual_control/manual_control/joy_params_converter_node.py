@@ -6,7 +6,6 @@ from typing import Any
 
 import rclpy
 import yaml
-from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Joy
@@ -111,10 +110,9 @@ class JoyParamsConverterNode(Node):
     def _load_keymap(self) -> dict[str, Any]:
         keymap_path = str(self.get_parameter("keymap_path").value)
         if not keymap_path:
-            keymap_path = os.path.join(
-                get_package_share_directory("vehicle_config"),
-                "config",
-                "controller_keymap.yaml",
+            raise RuntimeError(
+                "keymap_path parameter is required; vehicle_bringup passes it "
+                "from controller_keymap.yaml"
             )
 
         with open(keymap_path, "r", encoding="utf-8") as keymap_file:

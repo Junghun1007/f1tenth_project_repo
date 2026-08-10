@@ -6,11 +6,13 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
+from sensor_msgs.msg import JoyFeedback
 from std_msgs.msg import Bool, Float32, String
 
 from manual_control.duty_command_profile import (
     DutyCommandProfile,
     DutyProfileConfig,
+    Gear,
 )
 
 
@@ -24,8 +26,10 @@ class ActuatorCommanderNode(Node):
         self.declare_parameter("gear_toggle_topic", "/manual/gear_toggle")
         self.declare_parameter("current_duty_topic", "/manual/current_duty")
         self.declare_parameter("gear_state_topic", "/manual/gear")
+        self.declare_parameter("joy_feedback_topic", "/joy/set_feedback")
         self.declare_parameter("duty_topic", "/vesc/duty")
         self.declare_parameter("servo_position_topic", "/vesc/servo_position")
+        self.declare_parameter("reverse_gear_rumble_intensity", 0.7)
 
         self.declare_parameter("forward_max_duty", 0.10)
         self.declare_parameter("reverse_max_duty", 0.08)
@@ -51,6 +55,9 @@ class ActuatorCommanderNode(Node):
         gear_toggle_topic = str(self.get_parameter("gear_toggle_topic").value)
         current_duty_topic = str(self.get_parameter("current_duty_topic").value)
         gear_state_topic = str(self.get_parameter("gear_state_topic").value)
+        joy_feedback_topic = str(
+            self.get_parameter("joy_feedback_topic").value
+        )
         duty_topic = str(self.get_parameter("duty_topic").value)
         servo_topic = str(self.get_parameter("servo_position_topic").value)
 
@@ -71,6 +78,11 @@ class ActuatorCommanderNode(Node):
         self.servo_right = float(self.get_parameter("servo_right").value)
         self.steering_deadzone = float(
             self.get_parameter("steering_deadzone").value
+        )
+        self.reverse_gear_rumble_intensity = self._clamp(
+            float(self.get_parameter("reverse_gear_rumble_intensity").value),
+            0.0,
+            1.0,
         )
 
         self.duty_profile = DutyCommandProfile(
@@ -138,6 +150,11 @@ class ActuatorCommanderNode(Node):
             latest_command_qos,
         )
         self.gear_state_pub = self.create_publisher(String, gear_state_topic, 10)
+        self.joy_feedback_pub = self.create_publisher(
+            JoyFeedback,
+            joy_feedback_topic,
+            10,
+        )
 
         self.accelerator_sub = self.create_subscription(
             Float32,
@@ -210,6 +227,8 @@ class ActuatorCommanderNode(Node):
                 f"Gear changed: {self.duty_profile.gear.name}"
             )
             self._publish_gear_state()
+            if self.duty_profile.gear is Gear.REVERSE:
+                self._publish_reverse_gear_rumble()
         else:
             self.get_logger().warn(
                 "Gear change rejected: release the accelerator and wait for "
@@ -286,6 +305,16 @@ class ActuatorCommanderNode(Node):
         self.gear_state_pub.publish(
             String(data=self.duty_profile.gear.name)
         )
+
+    def _publish_reverse_gear_rumble(self) -> None:
+        if self.reverse_gear_rumble_intensity <= 0.0:
+            return
+
+        feedback = JoyFeedback()
+        feedback.type = JoyFeedback.TYPE_RUMBLE
+        feedback.id = 0
+        feedback.intensity = self.reverse_gear_rumble_intensity
+        self.joy_feedback_pub.publish(feedback)
 
     def stop_actuators(self) -> None:
         self.control_timer.cancel()

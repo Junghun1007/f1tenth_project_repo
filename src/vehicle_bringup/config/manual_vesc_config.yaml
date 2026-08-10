@@ -12,8 +12,10 @@ actuator_commander_node:
     gear_toggle_topic: "/manual/gear_toggle"       # RB 버튼, std_msgs/msg/Bool
     current_duty_topic: "/manual/current_duty"     # 현재 duty 명령
     gear_state_topic: "/manual/gear"               # FORWARD 또는 REVERSE
+    joy_feedback_topic: "/joy/set_feedback"        # 후진 체결 시 조이스틱 진동
     duty_topic: "/vesc/duty"
     servo_position_topic: "/vesc/servo_position"
+    reverse_gear_rumble_intensity: 0.7              # 0.0이면 진동 비활성화
 
     forward_max_duty: 0.10
     reverse_max_duty: 0.08
