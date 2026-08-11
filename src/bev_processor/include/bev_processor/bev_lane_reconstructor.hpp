@@ -19,7 +19,7 @@ struct BevLaneReconstructorConfig
   int image_height{300};
 
   int minimum_brightness{160};
-  int far_minimum_brightness{110};
+  int far_minimum_brightness{125};
   int maximum_saturation{80};
   int brightness_blur_kernel{1};
   double vertical_close_m{0.05};
@@ -31,7 +31,7 @@ struct BevLaneReconstructorConfig
   double tracked_lane_mark_width_near_m{0.11};
   double tracked_lane_mark_width_far_m{0.20};
   double measurement_lateral_gate_near_m{0.08};
-  double measurement_lateral_gate_far_m{0.18};
+  double measurement_lateral_gate_far_m{0.10};
   int row_step_px{2};
 
   double observation_minimum_x_m{0.20};
@@ -40,17 +40,17 @@ struct BevLaneReconstructorConfig
   double observation_maximum_x_m{1.80};
   double reconstruction_minimum_x_m{0.20};
   double reconstruction_maximum_x_m{2.70};
-  double maximum_extrapolation_m{0.20};
+  double maximum_extrapolation_m{0.12};
 
   double sliding_window_step_m{0.06};
   double sliding_window_length_m{0.18};
   double sliding_window_half_width_near_m{0.12};
-  double sliding_window_half_width_far_m{0.22};
-  double sliding_window_measurement_weight{0.90};
-  double sliding_window_heading_weight{0.80};
+  double sliding_window_half_width_far_m{0.15};
+  double sliding_window_measurement_weight{0.70};
+  double sliding_window_heading_weight{0.35};
   double maximum_tracking_arc_length_m{3.20};
   double maximum_gap_fill_m{0.26};
-  double measured_point_smoothing_weight{0.85};
+  double measured_point_smoothing_weight{0.50};
   int minimum_window_pixel_count{6};
 
   double expected_lane_width_m{0.625};
@@ -58,7 +58,7 @@ struct BevLaneReconstructorConfig
   double initial_center_tolerance_m{0.30};
   double single_lane_initial_tolerance_m{0.20};
   double maximum_tracking_gap_m{0.20};
-  int minimum_points{5};
+  int minimum_points{8};
   bool allow_single_lane{true};
 
   double correspondence_minimum_width_m{0.55};

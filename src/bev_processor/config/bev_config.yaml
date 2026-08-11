@@ -175,7 +175,7 @@ bev_processor:
     # 임계값을 쓰고 그 이후에는 원거리 번진 픽셀을 잃지 않도록 far 값까지
     # 선형으로 낮춘다. 낮은 saturation은 흰색/회색만 남겨 컬러 풍경을 거른다.
     lane_minimum_brightness: 160
-    lane_far_minimum_brightness: 105
+    lane_far_minimum_brightness: 125
     lane_maximum_saturation: 80
     # 1은 추가 블러 없음. 원거리의 얇은 픽셀을 보존하는 기본값이다.
     lane_brightness_blur_kernel: 1
@@ -195,7 +195,7 @@ bev_processor:
     lane_tracked_mark_width_far_m: 0.22
     # 갑자기 옆 풍경으로 이동하지 않도록 실측점의 횡방향 이동을 제한한다.
     lane_measurement_lateral_gate_near_m: 0.08
-    lane_measurement_lateral_gate_far_m: 0.18
+    lane_measurement_lateral_gate_far_m: 0.10
     lane_row_step_px: 2
 
     # 1.5m는 더 이상 관측 차단점이 아니다. 가까운 차선으로 추적을 시작하고
@@ -204,24 +204,24 @@ bev_processor:
     lane_observation_maximum_x_m: 1.50
     lane_reconstruction_minimum_x_m: 0.10 # 0.20
     lane_reconstruction_maximum_x_m: 3.0 # 2.70
-    # 실제 마지막 측정점 이후에는 마지막 진행 방향으로 10cm만 연장한다.
-    lane_maximum_extrapolation_m: 0.10 # 0.30
+    # 실제 마지막 측정점 이후에는 마지막 진행 방향으로 12cm만 예측한다.
+    lane_maximum_extrapolation_m: 0.12 # 0.30
 
     # 회전형 슬라이딩 윈도우. 예측은 다음 검색 위치에만 사용하고, 픽셀이
-    # 있으면 측정값 95%로 위치를 즉시 보정한다. 먼 곳의 창은 번짐을
-    # 포함하도록 넓어지지만 좌우 차선 사이보다 작게 유지한다.
+    # 있으면 측정값 70%로 위치를 보정한다. 먼 곳의 창은 번짐을
+    # 포함하도록 원거리에서 반폭 15cm까지만 넓어진다.
     lane_sliding_window_step_m: 0.04 # 0.06
     lane_sliding_window_length_m: 0.18
     lane_sliding_window_half_width_near_m: 0.12
-    lane_sliding_window_half_width_far_m: 0.22 # 0.20
-    lane_sliding_window_measurement_weight: 0.95 # 0.90
-    lane_sliding_window_heading_weight: 0.85 # 0.80
+    lane_sliding_window_half_width_far_m: 0.15 # 0.20
+    lane_sliding_window_measurement_weight: 0.70 # 0.90
+    lane_sliding_window_heading_weight: 0.35 # 0.80
     lane_maximum_tracking_arc_length_m: 3.20
     # 1~2개 창이 비어도 다시 픽셀을 찾으면 이 거리 안에서만 연결한다.
     lane_maximum_tracking_gap_m: 0.20
     lane_maximum_gap_fill_m: 0.26
-    # 0.85면 현재 실측점 85%, 앞뒤 실측점 각각 7.5%로 국소 평활화한다.
-    lane_measured_point_smoothing_weight: 0.85
+    # 현재 실측점 50%, 앞뒤 실측점 각각 25%로 국소 평활화한다.
+    lane_measured_point_smoothing_weight: 0.50
     lane_minimum_window_pixel_count: 6
 
     lane_expected_width_m: 0.625
@@ -229,7 +229,7 @@ bev_processor:
     lane_width_tolerance_m: 0.07 # 0.20
     lane_initial_center_tolerance_m: 0.30
     lane_single_initial_tolerance_m: 0.20
-    lane_minimum_points: 5
+    lane_minimum_points: 8
     lane_allow_single_lane: true
 
     # 한쪽 차선을 기준으로 국소 접선의 법선 방향 55~70cm를 검색한다.
