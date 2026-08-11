@@ -37,10 +37,10 @@ owns the joystick node defaults.
 
 ## 8BitDo input safety
 
-The manual launch uses `joy_linux_node`, selects the 8BitDo controller by name,
-and leaves the force-feedback device path empty. This prevents software rumble
-output and leaves the Linux joystick node as the only process that owns the
-controller input. Controller debug JSON is disabled during driving.
+The manual launch uses the original ROS `joy_node` with `device_id=0` for the
+8BitDo controller in D-input mode. Project nodes only subscribe to `/joy`; they
+do not publish joystick feedback or implement rumble. Controller debug JSON is
+disabled during driving.
 
 RB gear changes are edge-triggered and immediate: they are accepted only while
 the commanded duty is already zero. A rejected change is not stored or replayed

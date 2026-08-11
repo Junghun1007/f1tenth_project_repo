@@ -8,8 +8,6 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
-    joy_device_path = LaunchConfiguration("joy_device_path")
-    joy_device_name = LaunchConfiguration("joy_device_name")
     keymap_path = PathJoinSubstitution(
         [FindPackageShare("vehicle_bringup"), "config", "controller_keymap.yaml"]
     )
@@ -26,13 +24,12 @@ def generate_launch_description():
     joy_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(joy_launch_path),
         launch_arguments={
-            "device_path": joy_device_path,
-            "device_name": joy_device_name,
-            "feedback_device": "",
+            "device_id": "0",
+            "device_name": "",
             "deadzone": "0.05",
-            "autorepeat_rate": "20.0",
+            "autorepeat_rate": "50.0",
             "sticky_buttons": "false",
-            "coalesce_interval_sec": "0.001",
+            "coalesce_interval_ms": "1",
         }.items(),
     )
 
@@ -75,16 +72,6 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
-            DeclareLaunchArgument(
-                "joy_device_path",
-                default_value="/dev/input/js0",
-            ),
-            DeclareLaunchArgument(
-                "joy_device_name",
-                default_value=(
-                    "8BitDo 8BitDo Ultimate 2 Wireless Controller for PC"
-                ),
-            ),
             joy_launch,
             joy_params_converter_node,
             actuator_commander_node,

@@ -10,7 +10,7 @@ source install/setup.bash
 
 [1. 조이스틱만 실행]
 
-ros2 launch joy_initializer joy.launch.py device_path:=/dev/input/js0
+ros2 launch joy_initializer joy.launch.py device_id:=0
 
 조이스틱 입력 확인용 별도 터미널:
 
@@ -48,7 +48,7 @@ ros2 launch vehicle_bringup manual_drive.launch.py
 
 이 launch에는 다음 노드가 모두 포함된다.
 
-- joy_linux_node (force feedback disabled)
+- joy_node
 - joy_params_converter_node
 - actuator_commander_node
 - vesc_bridge_node

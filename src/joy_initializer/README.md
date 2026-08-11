@@ -1,12 +1,10 @@
 # joy_initializer
 
-`joy_initializer` is the project-owned wrapper for the ROS `joy_linux` package.
+`joy_initializer` is the project-owned wrapper for the ROS `joy` package.
 
 It does not reimplement joystick device reading. It launches the proven
-`joy_linux_node` with AutoDrive defaults, so other packages can depend on
-`joy_initializer` instead of opening the controller themselves. The controller
-is selected by its Linux name and the force-feedback device path is deliberately
-empty, preventing rumble output to the 8BitDo dongle.
+`joy_node` with the original D-input defaults. The project publishes no
+joystick feedback commands; it only consumes axes and buttons from `/joy`.
 
 Run only the joystick input node:
 
@@ -14,9 +12,9 @@ Run only the joystick input node:
 ros2 launch joy_initializer joy.launch.py
 ```
 
-Override the Linux joystick device path or name when needed:
+Override the Linux joystick device number when needed. `/dev/input/js0` maps
+to `device_id:=0`.
 
 ```bash
-ros2 launch joy_initializer joy.launch.py \
-  device_path:=/dev/input/js0 device_name:="8BitDo controller name"
+ros2 launch joy_initializer joy.launch.py device_id:=0
 ```
