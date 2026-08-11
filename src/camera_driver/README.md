@@ -218,13 +218,17 @@ ros2 launch camera_driver camera_driver.launch.py \
 늦으면 마지막 각속도로 최대 15 ms만 예측한다. 시작 기준과 현재 법선 사이의
 최소 회전만 homography로 되돌리므로 출력 시점은 시작 자세에 고정된다.
 
-가감속과 코너링 가속도를 자세로 오인하지 않도록 기본 설정에서는 주행 중
-가속도 자세 보정을 하지 않는다. 1초 관측 창의 가속도 크기·방향 안정성과
-gyro 평균·분산이 모두 시작 정지 상태와 일치할 때만 자세를 빠르게 복구하고
-gyro bias를 카메라 3축 모두 갱신한다. 정지 판정은 drift가 포함될 수 있는
-현재 자세 추정값이 아니라 변경되지 않는 시작 기준과 비교한다. 평지에서
-서스펜션이 원래 자세로 복귀한다는 전제는 8초 시정수의 약한 시작 기준
-leak으로 반영해, 주행 중 gyro drift가 무한히 누적되지 않게 한다.
+주행 중에는 VESC measured ERPM을 휠 직경, 4-pole 모터의 pole pair,
+pinion/spur 및 differential 비율로 signed m/s로 변환한다. 필터링한 속도의
+시간 미분으로 종가속도를 구하고, IMU yaw rate와 `a_y = v * omega_z`를
+결합해 횡가속도를 구한다. 두 차량 운동 가속도를 카메라 좌표계로 변환해
+가속도계에서 제거한 뒤 남은 specific force를 중력 방향 보정에 사용한다.
+시간 정렬된 ERPM 상태가 없으면 주행 중 raw 가속도계를 사용하지 않는다.
+
+정지 시에는 시작 기준으로 자세를 빠르게 복구하고 gyro bias를 카메라 3축
+모두 갱신한다. 정지 판정은 drift가 포함될 수 있는 현재 자세 추정값이 아니라
+변경되지 않는 시작 기준과 비교한다. 평지에서 서스펜션이 원래 자세로
+복귀한다는 전제는 8초 시정수의 약한 시작 기준 leak으로도 반영한다.
 
 결과 FOV는 광학 중심 기준 1.25배 고정 줌으로 유지한다. 줌 영역으로 원본
 경계를 모두 채울 수 없는 자세, 동기화할 IMU가 없는 프레임, 3도 보정
@@ -313,7 +317,23 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
-| `imu_stabilization_accelerometer_stationary_only` | `true` | 안정화 라이브러리 단독 사용 시 IMU 정지 판정 fallback |
+| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | ERPM/gyro 차량 가속도를 제거한 뒤 주행 중 중력 보정 활성화 |
+| `imu_stabilization_wheel_diameter_m` | `0.110` | 하중 상태 구동 휠 직경 |
+| `imu_stabilization_motor_pole_pairs` | `2` | 4-pole 모터의 pole pair 수 |
+| `imu_stabilization_motor_pulley_teeth` | `50` | motor pinion/pulley teeth |
+| `imu_stabilization_wheel_pulley_teeth` | `59` | wheel-side spur/pulley teeth |
+| `imu_stabilization_differential_pinion_teeth` | `13` | Slash 4X4 differential pinion teeth |
+| `imu_stabilization_differential_ring_teeth` | `37` | Slash 4X4 differential ring teeth |
+| `imu_stabilization_erpm_direction_sign` | `1.0` | 전진 measured ERPM 부호; 반대면 `-1.0` |
+| `imu_stabilization_speed_scale_correction` | `1.0` | 거리 실측으로 보정하는 ERPM 속도 배율 |
+| `imu_stabilization_speed_deadband_mps` | `0.03` | 정지 부근 ERPM 속도 deadband |
+| `imu_stabilization_speed_filter_time_constant_sec` | `0.05` | 속도 저역통과 필터 시정수 |
+| `imu_stabilization_acceleration_filter_time_constant_sec` | `0.12` | `dv/dt` 종가속도 필터 시정수 |
+| `imu_stabilization_maximum_speed_mps` | `6.0` | 속도 이상치/예측 제한 |
+| `imu_stabilization_maximum_longitudinal_acceleration_mps2` | `15.0` | 종가속도 절댓값 제한 |
+| `imu_stabilization_maximum_lateral_acceleration_mps2` | `15.0` | `v*omega_z` 횡가속도 절댓값 제한 |
+| `imu_stabilization_motion_maximum_sample_age_sec` | `0.10` | 이보다 오래된 ERPM motion 상태는 사용하지 않음 |
+| `imu_stabilization_accelerometer_stationary_only` | `false` | motion compensation 사용 시 주행 중 보정 허용 |
 | `imu_stabilization_reference_tilt_leak_time_constant_sec` | `8.0` | 주행 중 시작 tilt 기준으로 복귀하는 약한 시정수 |
 | `imu_stabilization_stationary_tilt_recovery_time_constant_sec` | `0.35` | 정지 후 시작 시점 복귀 시정수 |
 | `imu_stabilization_maximum_correction_deg` | `3.0` | 축별 최대 동적 보정각; 초과 시 zoom-only fallback |
@@ -325,6 +345,17 @@ ros2 topic info /camera/image_rect --verbose
 | `preview_fps` | `60.0` | 프리뷰 갱신 목표 최대 FPS |
 | `preview_grid_enabled` | `true` | 독립 프리뷰 격자 표시 |
 | `preview_grid_spacing_px` | `20` | 원본 영상 기준 격자 간격 |
+
+실차 거리 기준 속도가 로그의 `vehicle(v/ax/ay)` 속도와 다르면
+`imu_stabilization_speed_scale_correction`을 다음처럼 조정한다.
+
+```text
+new_scale = old_scale * actual_speed / logged_speed
+```
+
+속도는 맞지만 `ax`가 너무 요동치면 speed/acceleration filter 시정수를
+늘리고, 반응이 너무 늦으면 줄인다. 차폭과 조향각은 사용하지 않으며,
+횡가속도는 속도와 IMU yaw rate를 직접 결합한다.
 
 143 FPS에서 `1280x720 NV12`의 순수 영상 데이터는 약 189 MiB/s다.
 `BGR888i`의 약 377 MiB/s보다 작다. 외부 프로세스 구독자는 DDS 직렬화와

@@ -201,6 +201,32 @@ void verifyReferenceLeakBoundsGyroDrift()
     "startup-reference leak did not bound accumulated gyro drift");
 }
 
+void verifyMotionCompensatedGravityCorrectsMovingGyroDrift()
+{
+  auto config = fastConfig();
+  config.acceleration_correction_stationary_only = false;
+  config.roll_acceleration_correction_time_constant_sec = 0.02;
+  config.roll_acceleration_direction_gate_deg = 10.0;
+  config.reference_tilt_leak_time_constant_sec = 1000.0;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  calibrate(stabilizer);
+
+  double timestamp_sec = 0.01;
+  for (int index = 1; index <= 800; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      cv::Vec3d(0.0, -9.80665, 0.0),
+      cv::Vec3d(0.0, 0.0, 0.01),
+      timestamp_sec,
+      false);
+  }
+  const auto correction = stabilizer.correctionAt(timestamp_sec);
+  require(correction.has_value(), "moving gravity correction lookup failed");
+  require(
+    std::abs(correction->roll_error_deg) < 0.1,
+    "motion-compensated gravity did not bound moving gyro drift");
+}
+
 void verifyExternalVehicleStationaryControlsRecovery()
 {
   auto config = fastConfig();
@@ -320,6 +346,7 @@ int main()
   verifyStationaryRecoveryAndThreeAxisBiasUpdate();
   verifyExternalVehicleStationaryControlsRecovery();
   verifyReferenceLeakBoundsGyroDrift();
+  verifyMotionCompensatedGravityCorrectsMovingGyroDrift();
   verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery();
 
   const auto config = fastConfig();

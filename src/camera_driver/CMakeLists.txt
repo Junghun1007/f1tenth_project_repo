@@ -49,6 +49,17 @@ target_include_directories(camera_imu_stabilizer
 )
 target_link_libraries(camera_imu_stabilizer PUBLIC ${OpenCV_LIBS})
 
+add_library(camera_vehicle_motion STATIC
+  src/vehicle_motion_estimator.cpp
+)
+set_target_properties(
+  camera_vehicle_motion PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(camera_vehicle_motion
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+)
+
 add_library(camera_driver_component SHARED
   src/camera_driver_node.cpp
 )
@@ -69,6 +80,7 @@ ament_target_dependencies(camera_driver_component
 )
 target_link_libraries(camera_driver_component
   camera_imu_stabilizer
+  camera_vehicle_motion
   depthai::core
   ${OpenCV_LIBS}
   Threads::Threads
@@ -101,6 +113,12 @@ if(BUILD_TESTING)
     imu_image_stabilizer_test camera_imu_stabilizer ${OpenCV_LIBS})
   add_test(
     NAME imu_image_stabilizer_test COMMAND imu_image_stabilizer_test)
+  add_executable(
+    vehicle_motion_estimator_test test/vehicle_motion_estimator_test.cpp)
+  target_link_libraries(
+    vehicle_motion_estimator_test camera_vehicle_motion)
+  add_test(
+    NAME vehicle_motion_estimator_test COMMAND vehicle_motion_estimator_test)
 endif()
 
 install(
@@ -116,6 +134,7 @@ install(
 install(
   TARGETS
     camera_imu_stabilizer
+    camera_vehicle_motion
     camera_driver_component
   EXPORT export_camera_driver
   ARCHIVE DESTINATION lib

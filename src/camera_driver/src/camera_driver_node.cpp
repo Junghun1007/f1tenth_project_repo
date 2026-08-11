@@ -1,6 +1,7 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/msg/bev_input.hpp"
+#include "camera_driver/vehicle_motion_estimator.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -219,6 +220,18 @@ public:
     if (imu_stabilization_enabled_) {
       imu_stabilizer_ =
         std::make_unique<ImuImageStabilizer>(imu_stabilizer_config_);
+      if (vehicle_motion_compensation_enabled_) {
+        vehicle_motion_estimator_ =
+          std::make_unique<VehicleMotionEstimator>(vehicle_motion_config_);
+        RCLCPP_INFO(
+          node_.get_logger(),
+          "Vehicle motion compensation: gear_ratio=%.6f, "
+          "speed_scale=%.9fm/s per ERPM, 5m/s=%.0f ERPM.",
+          vehicle_motion_estimator_->totalGearRatio(),
+          vehicle_motion_estimator_->metersPerSecondPerErpm(),
+          5.0 / std::abs(
+            vehicle_motion_estimator_->metersPerSecondPerErpm()));
+      }
       auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
       reference_qos.reliable().transient_local();
       // Humble's intra-process path only supports volatile durability.
@@ -235,8 +248,8 @@ public:
         reference_subscription_options);
       measured_erpm_subscription_ =
         node_.create_subscription<std_msgs::msg::Int32>(
-        measured_erpm_topic_,
-        rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
+          measured_erpm_topic_,
+          rclcpp::SensorDataQoS().keep_last(1),
         [this](std_msgs::msg::Int32::ConstSharedPtr message) {
           on_measured_erpm(*message);
         });
@@ -326,6 +339,13 @@ private:
     std::optional<cv::Matx33d> homography;
     bool frame_usable{true};
     bool dynamic_correction_applied{false};
+  };
+
+  struct VehicleAxesCamera
+  {
+    cv::Vec3d forward;
+    cv::Vec3d left;
+    cv::Vec3d up;
   };
 
   template<typename IntegerT>
@@ -428,6 +448,51 @@ private:
       "imu_stabilization_stationary_erpm_enter_duration_sec", 1.0);
     measured_erpm_timeout_sec_ = node_.declare_parameter<double>(
       "imu_stabilization_measured_erpm_timeout_sec", 1.0);
+    vehicle_motion_compensation_enabled_ = node_.declare_parameter<bool>(
+      "imu_stabilization_vehicle_motion_compensation_enabled", true);
+    vehicle_motion_config_.wheel_diameter_m = node_.declare_parameter<double>(
+      "imu_stabilization_wheel_diameter_m", 0.110);
+    vehicle_motion_config_.motor_pole_pairs = node_.declare_parameter<int>(
+      "imu_stabilization_motor_pole_pairs", 2);
+    vehicle_motion_config_.motor_pulley_teeth = node_.declare_parameter<int>(
+      "imu_stabilization_motor_pulley_teeth", 50);
+    vehicle_motion_config_.wheel_pulley_teeth = node_.declare_parameter<int>(
+      "imu_stabilization_wheel_pulley_teeth", 59);
+    vehicle_motion_config_.differential_pinion_teeth =
+      node_.declare_parameter<int>(
+      "imu_stabilization_differential_pinion_teeth", 13);
+    vehicle_motion_config_.differential_ring_teeth =
+      node_.declare_parameter<int>(
+      "imu_stabilization_differential_ring_teeth", 37);
+    vehicle_motion_config_.erpm_direction_sign =
+      node_.declare_parameter<double>(
+      "imu_stabilization_erpm_direction_sign", 1.0);
+    vehicle_motion_config_.speed_scale_correction =
+      node_.declare_parameter<double>(
+      "imu_stabilization_speed_scale_correction", 1.0);
+    vehicle_motion_config_.speed_deadband_mps =
+      node_.declare_parameter<double>(
+      "imu_stabilization_speed_deadband_mps", 0.03);
+    vehicle_motion_config_.speed_filter_time_constant_sec =
+      node_.declare_parameter<double>(
+      "imu_stabilization_speed_filter_time_constant_sec", 0.05);
+    vehicle_motion_config_.acceleration_filter_time_constant_sec =
+      node_.declare_parameter<double>(
+      "imu_stabilization_acceleration_filter_time_constant_sec", 0.12);
+    vehicle_motion_config_.maximum_speed_mps =
+      node_.declare_parameter<double>(
+      "imu_stabilization_maximum_speed_mps", 6.0);
+    vehicle_motion_config_.maximum_longitudinal_acceleration_mps2 =
+      node_.declare_parameter<double>(
+      "imu_stabilization_maximum_longitudinal_acceleration_mps2", 15.0);
+    maximum_lateral_acceleration_mps2_ = node_.declare_parameter<double>(
+      "imu_stabilization_maximum_lateral_acceleration_mps2", 15.0);
+    vehicle_motion_config_.maximum_sample_interval_sec =
+      node_.declare_parameter<double>(
+      "imu_stabilization_motion_maximum_sample_interval_sec", 0.10);
+    vehicle_motion_config_.maximum_sample_age_sec =
+      node_.declare_parameter<double>(
+      "imu_stabilization_motion_maximum_sample_age_sec", 0.10);
     imu_stabilizer_config_.reference_tilt_leak_time_constant_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_reference_tilt_leak_time_constant_sec", 8.0);
@@ -597,6 +662,36 @@ private:
         throw std::invalid_argument(
                 "invalid measured-ERPM stationary detection parameters");
       }
+      if (
+        imu_stabilization_enabled_ &&
+        vehicle_motion_compensation_enabled_)
+      {
+        if (
+          !std::isfinite(maximum_lateral_acceleration_mps2_) ||
+          maximum_lateral_acceleration_mps2_ <= 0.0)
+        {
+          throw std::invalid_argument(
+                  "maximum lateral acceleration must be positive");
+        }
+        if (imu_stabilizer_config_.acceleration_correction_stationary_only) {
+          RCLCPP_WARN(
+            node_.get_logger(),
+            "Vehicle motion compensation enables moving accelerometer "
+            "correction; overriding accelerometer_stationary_only=false.");
+          imu_stabilizer_config_.acceleration_correction_stationary_only =
+            false;
+        }
+      } else if (
+        imu_stabilization_enabled_ &&
+        !imu_stabilizer_config_.acceleration_correction_stationary_only)
+      {
+        RCLCPP_WARN(
+          node_.get_logger(),
+          "Vehicle motion compensation is off; overriding "
+          "accelerometer_stationary_only=true to reject raw moving "
+          "acceleration.");
+        imu_stabilizer_config_.acceleration_correction_stationary_only = true;
+      }
     }
     if (
       !std::isfinite(fixed_view_zoom_) ||
@@ -664,6 +759,23 @@ private:
       }
       return;
     }
+    if (vehicle_motion_compensation_enabled_) {
+      const cv::Vec3d up = up_camera / cv::norm(up_camera);
+      const cv::Vec3d optical_forward(0.0, 0.0, 1.0);
+      cv::Vec3d forward = optical_forward - up * optical_forward.dot(up);
+      const double forward_norm = cv::norm(forward);
+      if (!std::isfinite(forward_norm) || forward_norm <= 1.0e-6) {
+        RCLCPP_ERROR(
+          node_.get_logger(),
+          "Cannot derive vehicle forward axis from startup ground normal.");
+      } else {
+        forward /= forward_norm;
+        cv::Vec3d left = up.cross(forward);
+        left /= cv::norm(left);
+        std::lock_guard<std::mutex> lock(vehicle_axes_mutex_);
+        vehicle_axes_camera_ = VehicleAxesCamera{forward, left, up};
+      }
+    }
     RCLCPP_INFO(
       node_.get_logger(),
       "Accepted BEV startup ground reference in %s: "
@@ -678,6 +790,15 @@ private:
       last_measured_erpm_received_ns_.exchange(
       now_ns, std::memory_order_relaxed);
     latest_measured_erpm_.store(message.data, std::memory_order_relaxed);
+    if (vehicle_motion_estimator_) {
+      const VehicleMotionSample motion = vehicle_motion_estimator_->update(
+        message.data, static_cast<double>(now_ns) * 1.0e-9);
+      latest_vehicle_speed_mps_.store(
+        motion.speed_mps, std::memory_order_relaxed);
+      latest_longitudinal_acceleration_mps2_.store(
+        motion.longitudinal_acceleration_mps2,
+        std::memory_order_relaxed);
+    }
 
     const auto timeout_ns = static_cast<std::int64_t>(
       measured_erpm_timeout_sec_ * 1.0e9);
@@ -762,6 +883,12 @@ private:
       return false;
     }
     return erpm_stationary_.load(std::memory_order_relaxed);
+  }
+
+  std::optional<VehicleAxesCamera> vehicle_axes_camera()
+  {
+    std::lock_guard<std::mutex> lock(vehicle_axes_mutex_);
+    return vehicle_axes_camera_;
   }
 
   void start_pipeline()
@@ -1399,11 +1526,64 @@ private:
           }
 
           if (imu_stabilization_enabled_ && imu_stabilizer_) {
+            const bool vehicle_stationary = measured_erpm_stationary();
+            if (vehicle_stationary) {
+              latest_lateral_acceleration_mps2_.store(
+                0.0, std::memory_order_relaxed);
+            }
+            if (
+              vehicle_motion_compensation_enabled_ &&
+              imu_stabilizer_->initialized() &&
+              !vehicle_stationary)
+            {
+              std::optional<VehicleMotionSample> motion;
+              if (vehicle_motion_estimator_) {
+                motion = vehicle_motion_estimator_->estimateAt(
+                  gyroscope_timestamp_sec);
+              }
+              const auto axes = vehicle_axes_camera();
+              if (synchronized_acceleration && motion && axes) {
+                const cv::Vec3d corrected_angular_velocity =
+                  angular_velocity_camera -
+                  imu_stabilizer_->gyroscopeBiasRadps();
+                const double yaw_rate_radps =
+                  corrected_angular_velocity.dot(axes->up);
+                const double lateral_acceleration_mps2 =
+                  lateralAccelerationMps2(
+                    motion->speed_mps,
+                    yaw_rate_radps,
+                    maximum_lateral_acceleration_mps2_);
+                const cv::Vec3d vehicle_acceleration_camera =
+                  axes->forward *
+                  motion->longitudinal_acceleration_mps2 +
+                  axes->left * lateral_acceleration_mps2;
+                synchronized_acceleration =
+                  *synchronized_acceleration - vehicle_acceleration_camera;
+                latest_vehicle_speed_mps_.store(
+                  motion->speed_mps, std::memory_order_relaxed);
+                latest_longitudinal_acceleration_mps2_.store(
+                  motion->longitudinal_acceleration_mps2,
+                  std::memory_order_relaxed);
+                latest_lateral_acceleration_mps2_.store(
+                  lateral_acceleration_mps2,
+                  std::memory_order_relaxed);
+                motion_compensated_samples_total_.fetch_add(
+                  1U, std::memory_order_relaxed);
+              } else {
+                // Raw moving acceleration is not a gravity observation. If
+                // time-aligned vehicle motion is unavailable, omit the sample
+                // instead of injecting longitudinal/lateral acceleration into
+                // roll or pitch.
+                synchronized_acceleration.reset();
+                motion_compensation_misses_total_.fetch_add(
+                  1U, std::memory_order_relaxed);
+              }
+            }
             imu_stabilizer_->update(
               synchronized_acceleration,
               angular_velocity_camera,
               gyroscope_timestamp_sec,
-              measured_erpm_stationary());
+              vehicle_stationary);
           }
           latest_imu_timestamp_sec_.store(
             gyroscope_timestamp_sec, std::memory_order_relaxed);
@@ -1928,6 +2108,8 @@ private:
           "Virtual gimbal: tilt_error(roll/pitch)=%.3f/%.3fdeg, "
           "correction=%.3fdeg, stationary=%s, "
           "measured_erpm=%d (filtered_abs=%.1f)/%s, "
+          "vehicle(v/ax/ay)=%.3f/%.3f/%.3f SI, motion_fusion=%s "
+          "(samples/misses=%lu/%lu), "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
           latest_stabilization_roll_error_deg_.load(
             std::memory_order_relaxed),
@@ -1939,6 +2121,16 @@ private:
           latest_measured_erpm_.load(std::memory_order_relaxed),
           latest_filtered_absolute_erpm_.load(std::memory_order_relaxed),
           erpm_fresh ? "fresh" : "stale",
+          latest_vehicle_speed_mps_.load(std::memory_order_relaxed),
+          latest_longitudinal_acceleration_mps2_.load(
+            std::memory_order_relaxed),
+          latest_lateral_acceleration_mps2_.load(
+            std::memory_order_relaxed),
+          vehicle_motion_compensation_enabled_ ? "on" : "off",
+          static_cast<unsigned long>(
+            motion_compensated_samples_total_.load()),
+          static_cast<unsigned long>(
+            motion_compensation_misses_total_.load()),
           bias_degps[0], bias_degps[1], bias_degps[2],
           static_cast<unsigned long>(
             imu_stabilizer_->onlineTiltBiasUpdateCount()));
@@ -2059,6 +2251,9 @@ private:
   double stationary_erpm_filter_time_constant_sec_{0.15};
   double stationary_erpm_enter_duration_sec_{1.0};
   double measured_erpm_timeout_sec_{1.0};
+  bool vehicle_motion_compensation_enabled_{true};
+  VehicleMotionEstimatorConfig vehicle_motion_config_{};
+  double maximum_lateral_acceleration_mps2_{15.0};
   double fixed_view_zoom_{1.25};
   double fixed_view_border_margin_px_{1.5};
   int output_crop_top_px_{0};
@@ -2085,6 +2280,7 @@ private:
   std::shared_ptr<dai::MessageQueue> output_queue_;
   std::shared_ptr<dai::MessageQueue> imu_queue_;
   std::unique_ptr<ImuImageStabilizer> imu_stabilizer_;
+  std::unique_ptr<VehicleMotionEstimator> vehicle_motion_estimator_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
   rclcpp::Publisher<camera_driver::msg::BevInput>::SharedPtr
     fused_bev_publisher_;
@@ -2109,6 +2305,8 @@ private:
   std::optional<std::int64_t> last_device_sequence_;
   cv::Matx33d calibrated_imu_output_to_camera_rotation_{
     cv::Matx33d::eye()};
+  std::mutex vehicle_axes_mutex_;
+  std::optional<VehicleAxesCamera> vehicle_axes_camera_;
   std::string imu_name_;
   bool preview_window_sized_{false};
 
@@ -2121,6 +2319,11 @@ private:
   std::atomic<std::int64_t> last_measured_erpm_received_ns_{0};
   std::atomic<std::int64_t> stationary_erpm_candidate_started_ns_{0};
   std::atomic<bool> erpm_stationary_{false};
+  std::atomic<double> latest_vehicle_speed_mps_{0.0};
+  std::atomic<double> latest_longitudinal_acceleration_mps2_{0.0};
+  std::atomic<double> latest_lateral_acceleration_mps2_{0.0};
+  std::atomic<std::uint64_t> motion_compensated_samples_total_{0};
+  std::atomic<std::uint64_t> motion_compensation_misses_total_{0};
   std::atomic<std::uint64_t> received_total_{0};
   std::atomic<std::uint64_t> received_interval_{0};
   std::atomic<std::uint64_t> published_total_{0};
