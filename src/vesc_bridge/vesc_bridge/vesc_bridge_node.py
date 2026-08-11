@@ -20,7 +20,7 @@ class VescBridgeNode(Node):
     def __init__(self) -> None:
         super().__init__("vesc_bridge_node")
 
-        self.declare_parameter("port", "/dev/ttyUSB0")
+        self.declare_parameter("port", "/dev/ttyTHS1")
         self.declare_parameter("baudrate", 115200)
         self.declare_parameter("serial_timeout", 0.1)
         self.declare_parameter("write_timeout", 2.0)

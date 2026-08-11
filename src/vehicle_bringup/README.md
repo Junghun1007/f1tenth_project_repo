@@ -17,8 +17,8 @@ ros2 launch vehicle_bringup vesc_only.launch.py
 ros2 launch vehicle_bringup manual_drive.launch.py
 ```
 
-The VESC launch files default to `/dev/ttyUSB0` for the CH341T adapter. A
-different or stable device path can be supplied without editing YAML:
+The VESC launch files default to the Jetson UART device `/dev/ttyTHS1`. A
+different device path can be supplied without editing YAML:
 
 ```bash
 ros2 launch vehicle_bringup vesc_only.launch.py \

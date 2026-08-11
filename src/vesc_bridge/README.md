@@ -13,7 +13,7 @@ in `vehicle_bringup/config/vesc_config.yaml`.
 - Subscribes: `/vesc/duty`, `/vesc/erpm`, `/vesc/servo_position`
 - Publishes: `/vesc/measured_erpm`, `/vesc/connected`
 
-For a CH341T adapter on Linux, the device normally appears as
-`/dev/ttyUSB0`. Prefer a stable `/dev/serial/by-id/...` path when available.
-Configure the adapter for UART and 3.3 V logic, cross TX/RX, connect GND, and
-do not connect the adapter power pin to the VESC.
+The port defaults to the Jetson UART device `/dev/ttyTHS1`. Override the
+`port` parameter when using a different serial device. Configure UART for
+3.3 V logic, cross TX/RX, connect GND, and do not connect the UART power pin
+to the VESC.

@@ -54,7 +54,7 @@ class VescDriver:
 
     def __init__(
         self,
-        port: str = "/dev/ttyUSB0",
+        port: str = "/dev/ttyTHS1",
         baudrate: int = 115200,
         timeout: float = 0.1,
         write_timeout: float = 2.0,

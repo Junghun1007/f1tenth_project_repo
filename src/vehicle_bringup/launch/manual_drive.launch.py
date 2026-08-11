@@ -71,7 +71,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
-            DeclareLaunchArgument("vesc_port", default_value="/dev/ttyUSB0"),
+            DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             joy_launch,
             joy_params_converter_node,
             actuator_commander_node,

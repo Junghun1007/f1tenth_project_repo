@@ -23,7 +23,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "vesc_port",
-                default_value="/dev/ttyUSB0",
+                default_value="/dev/ttyTHS1",
                 description="VESC serial device path",
             ),
             vesc_bridge_node,
