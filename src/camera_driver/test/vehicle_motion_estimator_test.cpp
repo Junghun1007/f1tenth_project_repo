@@ -32,12 +32,12 @@ int main()
   camera_driver::VehicleMotionEstimator estimator(config);
 
   const double expected_ratio =
-    (59.0 / 50.0) * (37.0 / 13.0);
+    (54.0 / 13.0) * (37.0 / 13.0);
   require(
     std::abs(estimator.totalGearRatio() - expected_ratio) < 1.0e-12,
     "Traxxas total gear ratio is incorrect");
   const double expected_scale =
-    3.141592653589793238462643383279502884 * 0.110 /
+    3.141592653589793238462643383279502884 * 0.1095 /
     (60.0 * 2.0 * expected_ratio);
   require(
     std::abs(estimator.metersPerSecondPerErpm() - expected_scale) < 1.0e-12,
@@ -45,7 +45,7 @@ int main()
 
   const auto stopped = estimator.update(0, 1.0000);
   require(stopped.speed_mps == 0.0, "zero ERPM did not produce zero speed");
-  const auto moving = estimator.update(5831, 1.0125);
+  const auto moving = estimator.update(20620, 1.0125);
   require(
     moving.speed_mps > 4.9 && moving.speed_mps < 5.1,
     "positive ERPM did not produce the expected forward speed");
@@ -65,7 +65,7 @@ int main()
     !estimator.estimateAt(1.2000).has_value(),
     "stale motion prediction was accepted");
 
-  const auto reversing = estimator.update(-5831, 2.0000);
+  const auto reversing = estimator.update(-20620, 2.0000);
   require(
     reversing.speed_mps < -4.9 && reversing.speed_mps > -5.1,
     "negative ERPM did not produce reverse speed");

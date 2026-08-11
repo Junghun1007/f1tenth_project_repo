@@ -66,12 +66,15 @@ camera_driver:
     imu_stabilization_measured_erpm_timeout_sec: 1.0
     # true이면 보정된 차량 가속도를 IMU에서 제거한 뒤 주행 중에도 중력 방향을 사용한다.
     imu_stabilization_vehicle_motion_compensation_enabled: true
-    # Traxxas Slash 4X4 Ultimate 기반 초기값. 4-pole 모터는 pole pair=2이다.
-    imu_stabilization_wheel_diameter_m: 0.110
+    # Traxxas Slash 4X4 Ultimate 순정 구동계 기반 초기값.
+    # 4-pole 모터는 pole pair=2이고, 타이어 직경은 109.5mm로 시작한다.
+    imu_stabilization_wheel_diameter_m: 0.1095
     imu_stabilization_motor_pole_pairs: 2
-    imu_stabilization_motor_pulley_teeth: 50
-    imu_stabilization_wheel_pulley_teeth: 59
-    # 공식 전/후 differential 13T pinion / 37T ring.
+    # 실제 13T motor pinion / 54T spur. 50/591은 앱에 총 감속비를
+    # 11.82로 입력하기 위한 등가값이므로 여기에 직접 넣지 않는다.
+    imu_stabilization_motor_pinion_teeth: 13
+    imu_stabilization_spur_gear_teeth: 54
+    # 전/후 differential 13T pinion / 37T ring.
     imu_stabilization_differential_pinion_teeth: 13
     imu_stabilization_differential_ring_teeth: 37
     # 전진 measured ERPM이 양수이므로 +1. 실차 거리 측정 오차는 scale로 보정한다.

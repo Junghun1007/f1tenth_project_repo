@@ -11,10 +11,10 @@ namespace camera_driver
 
 struct VehicleMotionEstimatorConfig
 {
-  double wheel_diameter_m{0.110};
+  double wheel_diameter_m{0.1095};
   int motor_pole_pairs{2};
-  int motor_pulley_teeth{50};
-  int wheel_pulley_teeth{59};
+  int motor_pinion_teeth{13};
+  int spur_gear_teeth{54};
   int differential_pinion_teeth{13};
   int differential_ring_teeth{37};
   double erpm_direction_sign{1.0};

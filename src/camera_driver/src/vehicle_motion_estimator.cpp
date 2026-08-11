@@ -73,8 +73,8 @@ VehicleMotionEstimator::VehicleMotionEstimator(
   if (
     !positiveFinite(config_.wheel_diameter_m) ||
     config_.motor_pole_pairs <= 0 ||
-    config_.motor_pulley_teeth <= 0 ||
-    config_.wheel_pulley_teeth <= 0 ||
+    config_.motor_pinion_teeth <= 0 ||
+    config_.spur_gear_teeth <= 0 ||
     config_.differential_pinion_teeth <= 0 ||
     config_.differential_ring_teeth <= 0 ||
     !std::isfinite(config_.erpm_direction_sign) ||
@@ -95,8 +95,8 @@ VehicleMotionEstimator::VehicleMotionEstimator(
 
   config_.erpm_direction_sign = config_.erpm_direction_sign > 0.0 ? 1.0 : -1.0;
   total_gear_ratio_ =
-    static_cast<double>(config_.wheel_pulley_teeth) /
-    static_cast<double>(config_.motor_pulley_teeth) *
+    static_cast<double>(config_.spur_gear_teeth) /
+    static_cast<double>(config_.motor_pinion_teeth) *
     static_cast<double>(config_.differential_ring_teeth) /
     static_cast<double>(config_.differential_pinion_teeth);
   meters_per_second_per_erpm_ =

@@ -451,13 +451,13 @@ private:
     vehicle_motion_compensation_enabled_ = node_.declare_parameter<bool>(
       "imu_stabilization_vehicle_motion_compensation_enabled", true);
     vehicle_motion_config_.wheel_diameter_m = node_.declare_parameter<double>(
-      "imu_stabilization_wheel_diameter_m", 0.110);
+      "imu_stabilization_wheel_diameter_m", 0.1095);
     vehicle_motion_config_.motor_pole_pairs = node_.declare_parameter<int>(
       "imu_stabilization_motor_pole_pairs", 2);
-    vehicle_motion_config_.motor_pulley_teeth = node_.declare_parameter<int>(
-      "imu_stabilization_motor_pulley_teeth", 50);
-    vehicle_motion_config_.wheel_pulley_teeth = node_.declare_parameter<int>(
-      "imu_stabilization_wheel_pulley_teeth", 59);
+    vehicle_motion_config_.motor_pinion_teeth = node_.declare_parameter<int>(
+      "imu_stabilization_motor_pinion_teeth", 13);
+    vehicle_motion_config_.spur_gear_teeth = node_.declare_parameter<int>(
+      "imu_stabilization_spur_gear_teeth", 54);
     vehicle_motion_config_.differential_pinion_teeth =
       node_.declare_parameter<int>(
       "imu_stabilization_differential_pinion_teeth", 13);

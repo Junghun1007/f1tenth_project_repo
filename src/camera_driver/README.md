@@ -318,10 +318,10 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
 | `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | ERPM/gyro 차량 가속도를 제거한 뒤 주행 중 중력 보정 활성화 |
-| `imu_stabilization_wheel_diameter_m` | `0.110` | 하중 상태 구동 휠 직경 |
+| `imu_stabilization_wheel_diameter_m` | `0.1095` | 하중 상태 구동 휠 직경 |
 | `imu_stabilization_motor_pole_pairs` | `2` | 4-pole 모터의 pole pair 수 |
-| `imu_stabilization_motor_pulley_teeth` | `50` | motor pinion/pulley teeth |
-| `imu_stabilization_wheel_pulley_teeth` | `59` | wheel-side spur/pulley teeth |
+| `imu_stabilization_motor_pinion_teeth` | `13` | 실제 motor pinion teeth |
+| `imu_stabilization_spur_gear_teeth` | `54` | 실제 spur gear teeth |
 | `imu_stabilization_differential_pinion_teeth` | `13` | Slash 4X4 differential pinion teeth |
 | `imu_stabilization_differential_ring_teeth` | `37` | Slash 4X4 differential ring teeth |
 | `imu_stabilization_erpm_direction_sign` | `1.0` | 전진 measured ERPM 부호; 반대면 `-1.0` |
@@ -352,6 +352,10 @@ ros2 topic info /camera/image_rect --verbose
 ```text
 new_scale = old_scale * actual_speed / logged_speed
 ```
+
+텔레메트리 앱의 `50/591`은 총 감속비 `11.82`를 표현하는 등가
+입력값이다. 이 코드는 실제 `13/54` pinion/spur와 `13/37`
+differential을 각각 계산하므로 `50/591`을 중복 적용하지 않는다.
 
 속도는 맞지만 `ax`가 너무 요동치면 speed/acceleration filter 시정수를
 늘리고, 반응이 너무 늦으면 줄인다. 차폭과 조향각은 사용하지 않으며,
