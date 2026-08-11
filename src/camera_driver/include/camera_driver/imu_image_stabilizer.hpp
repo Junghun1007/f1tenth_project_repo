@@ -103,6 +103,7 @@ public:
   bool initialized() const;
   ImageStabilizerCalibrationProgress calibrationProgress() const;
   cv::Vec3d gyroscopeBiasRadps() const;
+  std::optional<cv::Vec3d> referenceUpCamera() const;
   bool stationaryConfirmed() const;
   bool externalReferenceReceived() const;
   std::uint64_t onlineTiltBiasUpdateCount() const;

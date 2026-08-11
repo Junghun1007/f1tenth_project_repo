@@ -758,6 +758,15 @@ public:
     return gyroscope_bias_radps_;
   }
 
+  std::optional<cv::Vec3d> referenceUpCamera() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!initialized_) {
+      return std::nullopt;
+    }
+    return reference_up_camera_;
+  }
+
   bool stationaryConfirmed() const
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1086,6 +1095,11 @@ ImuImageStabilizer::calibrationProgress() const
 cv::Vec3d ImuImageStabilizer::gyroscopeBiasRadps() const
 {
   return impl_->gyroscopeBiasRadps();
+}
+
+std::optional<cv::Vec3d> ImuImageStabilizer::referenceUpCamera() const
+{
+  return impl_->referenceUpCamera();
 }
 
 bool ImuImageStabilizer::stationaryConfirmed() const

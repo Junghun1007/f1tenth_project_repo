@@ -732,6 +732,54 @@ private:
     resize_mode_ = parse_resize_mode(resize_mode_name_);
   }
 
+  bool set_vehicle_axes_from_up_camera(const cv::Vec3d & up_camera)
+  {
+    const double up_norm = cv::norm(up_camera);
+    if (!std::isfinite(up_norm) || up_norm <= 1.0e-6) {
+      return false;
+    }
+    const cv::Vec3d up = up_camera / up_norm;
+    const cv::Vec3d optical_forward(0.0, 0.0, 1.0);
+    cv::Vec3d forward = optical_forward - up * optical_forward.dot(up);
+    const double forward_norm = cv::norm(forward);
+    if (!std::isfinite(forward_norm) || forward_norm <= 1.0e-6) {
+      return false;
+    }
+    forward /= forward_norm;
+    cv::Vec3d left = up.cross(forward);
+    const double left_norm = cv::norm(left);
+    if (!std::isfinite(left_norm) || left_norm <= 1.0e-6) {
+      return false;
+    }
+    left /= left_norm;
+    std::lock_guard<std::mutex> lock(vehicle_axes_mutex_);
+    vehicle_axes_camera_ = VehicleAxesCamera{forward, left, up};
+    return true;
+  }
+
+  void ensure_vehicle_axes_from_stabilizer_reference()
+  {
+    if (!vehicle_motion_compensation_enabled_ || !imu_stabilizer_) {
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(vehicle_axes_mutex_);
+      if (vehicle_axes_camera_.has_value()) {
+        return;
+      }
+    }
+    const auto reference_up = imu_stabilizer_->referenceUpCamera();
+    if (!reference_up || !set_vehicle_axes_from_up_camera(*reference_up)) {
+      return;
+    }
+    if (!fallback_vehicle_axes_reported_.exchange(true)) {
+      RCLCPP_INFO(
+        node_.get_logger(),
+        "Vehicle axes derived from the calibrated IMU startup reference; "
+        "no external BEV ground reference was received.");
+    }
+  }
+
   void on_startup_ground_reference(
     const geometry_msgs::msg::Vector3Stamped & message)
   {
@@ -759,22 +807,13 @@ private:
       }
       return;
     }
-    if (vehicle_motion_compensation_enabled_) {
-      const cv::Vec3d up = up_camera / cv::norm(up_camera);
-      const cv::Vec3d optical_forward(0.0, 0.0, 1.0);
-      cv::Vec3d forward = optical_forward - up * optical_forward.dot(up);
-      const double forward_norm = cv::norm(forward);
-      if (!std::isfinite(forward_norm) || forward_norm <= 1.0e-6) {
-        RCLCPP_ERROR(
-          node_.get_logger(),
-          "Cannot derive vehicle forward axis from startup ground normal.");
-      } else {
-        forward /= forward_norm;
-        cv::Vec3d left = up.cross(forward);
-        left /= cv::norm(left);
-        std::lock_guard<std::mutex> lock(vehicle_axes_mutex_);
-        vehicle_axes_camera_ = VehicleAxesCamera{forward, left, up};
-      }
+    if (
+      vehicle_motion_compensation_enabled_ &&
+      !set_vehicle_axes_from_up_camera(up_camera))
+    {
+      RCLCPP_ERROR(
+        node_.get_logger(),
+        "Cannot derive vehicle forward axis from startup ground normal.");
     }
     RCLCPP_INFO(
       node_.get_logger(),
@@ -1489,6 +1528,16 @@ private:
           continue;
         }
 
+        const double batch_received_steady_sec =
+          static_cast<double>(steady_now_nanoseconds()) * 1.0e-9;
+        double newest_gyroscope_timestamp_sec =
+          -std::numeric_limits<double>::infinity();
+        for (const auto & packet : data->packets) {
+          newest_gyroscope_timestamp_sec = std::max(
+            newest_gyroscope_timestamp_sec,
+            timestampSeconds(packet.gyroscope.getTimestamp()));
+        }
+
         for (const auto & packet : data->packets) {
           const auto & calibrated_acceleration = packet.acceleroMeter;
           const auto & calibrated_gyroscope = packet.gyroscope;
@@ -1527,6 +1576,7 @@ private:
 
           if (imu_stabilization_enabled_ && imu_stabilizer_) {
             const bool vehicle_stationary = measured_erpm_stationary();
+            ensure_vehicle_axes_from_stabilizer_reference();
             if (vehicle_stationary) {
               latest_lateral_acceleration_mps2_.store(
                 0.0, std::memory_order_relaxed);
@@ -1538,8 +1588,22 @@ private:
             {
               std::optional<VehicleMotionSample> motion;
               if (vehicle_motion_estimator_) {
+                // ERPM samples are timestamped on host receipt. Preserve the
+                // relative timing within this IMU batch, but query the motion
+                // history in that same host steady-clock domain instead of
+                // assuming DepthAI's timestamp epoch matches the host epoch.
+                double motion_timestamp_sec = batch_received_steady_sec;
+                const double age_in_batch_sec =
+                  newest_gyroscope_timestamp_sec - gyroscope_timestamp_sec;
+                if (
+                  std::isfinite(age_in_batch_sec) &&
+                  age_in_batch_sec >= 0.0 &&
+                  age_in_batch_sec <= maximum_timestamp_domain_delta_sec_)
+                {
+                  motion_timestamp_sec -= age_in_batch_sec;
+                }
                 motion = vehicle_motion_estimator_->estimateAt(
-                  gyroscope_timestamp_sec);
+                  motion_timestamp_sec);
               }
               const auto axes = vehicle_axes_camera();
               if (synchronized_acceleration && motion && axes) {
@@ -1574,9 +1638,23 @@ private:
                 // time-aligned vehicle motion is unavailable, omit the sample
                 // instead of injecting longitudinal/lateral acceleration into
                 // roll or pitch.
+                const bool acceleration_missing =
+                  !synchronized_acceleration.has_value();
                 synchronized_acceleration.reset();
                 motion_compensation_misses_total_.fetch_add(
                   1U, std::memory_order_relaxed);
+                if (acceleration_missing) {
+                  motion_missing_acceleration_total_.fetch_add(
+                    1U, std::memory_order_relaxed);
+                }
+                if (!motion) {
+                  motion_missing_state_total_.fetch_add(
+                    1U, std::memory_order_relaxed);
+                }
+                if (!axes) {
+                  motion_missing_axes_total_.fetch_add(
+                    1U, std::memory_order_relaxed);
+                }
               }
             }
             imu_stabilizer_->update(
@@ -2109,7 +2187,7 @@ private:
           "correction=%.3fdeg, stationary=%s, "
           "measured_erpm=%d (filtered_abs=%.1f)/%s, "
           "vehicle(v/ax/ay)=%.3f/%.3f/%.3f SI, motion_fusion=%s "
-          "(samples/misses=%lu/%lu), "
+          "(samples/misses=%lu/%lu, no_accel/motion/axes=%lu/%lu/%lu), "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
           latest_stabilization_roll_error_deg_.load(
             std::memory_order_relaxed),
@@ -2131,6 +2209,12 @@ private:
             motion_compensated_samples_total_.load()),
           static_cast<unsigned long>(
             motion_compensation_misses_total_.load()),
+          static_cast<unsigned long>(
+            motion_missing_acceleration_total_.load()),
+          static_cast<unsigned long>(
+            motion_missing_state_total_.load()),
+          static_cast<unsigned long>(
+            motion_missing_axes_total_.load()),
           bias_degps[0], bias_degps[1], bias_degps[2],
           static_cast<unsigned long>(
             imu_stabilizer_->onlineTiltBiasUpdateCount()));
@@ -2324,6 +2408,10 @@ private:
   std::atomic<double> latest_lateral_acceleration_mps2_{0.0};
   std::atomic<std::uint64_t> motion_compensated_samples_total_{0};
   std::atomic<std::uint64_t> motion_compensation_misses_total_{0};
+  std::atomic<std::uint64_t> motion_missing_acceleration_total_{0};
+  std::atomic<std::uint64_t> motion_missing_state_total_{0};
+  std::atomic<std::uint64_t> motion_missing_axes_total_{0};
+  std::atomic<bool> fallback_vehicle_axes_reported_{false};
   std::atomic<std::uint64_t> received_total_{0};
   std::atomic<std::uint64_t> received_interval_{0};
   std::atomic<std::uint64_t> published_total_{0};

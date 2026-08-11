@@ -224,6 +224,8 @@ pinion/spur 및 differential 비율로 signed m/s로 변환한다. 필터링한 
 결합해 횡가속도를 구한다. 두 차량 운동 가속도를 카메라 좌표계로 변환해
 가속도계에서 제거한 뒤 남은 specific force를 중력 방향 보정에 사용한다.
 시간 정렬된 ERPM 상태가 없으면 주행 중 raw 가속도계를 사용하지 않는다.
+통합 BEV에서는 depth 시작 법선으로 차량 축을 구하고, 외부 법선이 없는
+단독 카메라 프리뷰에서는 교정된 IMU 시작 중력 방향을 fallback으로 사용한다.
 
 정지 시에는 시작 기준으로 자세를 빠르게 복구하고 gyro bias를 카메라 3축
 모두 갱신한다. 정지 판정은 drift가 포함될 수 있는 현재 자세 추정값이 아니라
@@ -267,7 +269,8 @@ ros2 run camera_driver camera_driver_node \
   `stationary-calibration`, `virtual-gimbal-ready` 상태와 누적
   mapping/miss/drop 수
 - `Virtual gimbal`: 현재 roll/pitch 오차, 적용 회전각, 정지 판정,
-  3축 gyro bias와 온라인 bias 갱신 횟수
+  차량 `v/ax/ay`, motion fusion 적용/누락 원인, 3축 gyro bias와
+  온라인 bias 갱신 횟수
 - `dropped`: 최근 상태 구간의 sequence 누락 프레임 수
 
 예:

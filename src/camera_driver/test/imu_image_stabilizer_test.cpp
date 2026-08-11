@@ -35,6 +35,9 @@ camera_driver::ImuImageStabilizerConfig fastConfig()
 
 void calibrate(camera_driver::ImuImageStabilizer & stabilizer)
 {
+  require(
+    !stabilizer.referenceUpCamera().has_value(),
+    "reference up was exposed before calibration");
   const cv::Vec3d startup_acceleration(0.0, -9.80665, 0.0);
   for (int index = 0; index <= 4; ++index) {
     stabilizer.update(
@@ -43,6 +46,11 @@ void calibrate(camera_driver::ImuImageStabilizer & stabilizer)
       0.0025 * static_cast<double>(index));
   }
   require(stabilizer.initialized(), "stationary calibration did not finish");
+  const auto reference_up = stabilizer.referenceUpCamera();
+  require(
+    reference_up.has_value() &&
+    cv::norm(*reference_up - cv::Vec3d(0.0, -1.0, 0.0)) < 1.0e-12,
+    "IMU fallback reference up is unavailable or incorrect");
 }
 
 void calibrateAtTilt(
@@ -306,6 +314,11 @@ void verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery()
   require(
     stabilizer.initialized(),
     "calibration did not finish after the BEV reference arrived");
+  const auto shared_reference = stabilizer.referenceUpCamera();
+  require(
+    shared_reference.has_value() &&
+    cv::norm(*shared_reference - depth_up_camera) < 1.0e-12,
+    "exposed reference up does not match the BEV reference");
 
   double timestamp_sec = 0.025;
   const auto startup_correction = stabilizer.correctionAt(timestamp_sec);
