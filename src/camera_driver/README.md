@@ -47,10 +47,8 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 오래된 프레임을 쌓지 않고 최신 프레임으로 건너뛴다.
 
 OAK에서 `NV12`를 생성해 Jetson으로 전송한다. BGR888i보다 전송량이 절반
-이하이므로 USB/XLink 병목을 줄인다. 통합 BEV 전용 경로에서는 OAK의
-`ImageManip`이 rectified 영상의 하단 ROI를 먼저 잘라 1280x504 NV12만
-XLink/USB로 전송한다. 캡처 스레드는 `ImgFrame` 패킷만 보관하며 색 변환을
-하지 않는다. ROS 토픽 발행을 선택한 경우 원본 NV12를
+이하이므로 USB/XLink 병목을 줄인다. 캡처 스레드는 `ImgFrame` 패킷만
+보관하며 색 변환을 하지 않는다. ROS 토픽 발행을 선택한 경우 원본 NV12를
 `sensor_msgs/Image` 데이터로 한 번 복사한다.
 
 기본 NV12 메시지는 `encoding="nv12"`, `width=1280`, `height=720`,
@@ -75,12 +73,10 @@ ROS 발행은 `sensor_msgs/msg/Image`의 `UniquePtr`를 사용한다. 기본 lau
 
 통합 BEV launch에서는 일반 `sensor_msgs/Image` 발행을 끄고
 `camera_driver/msg/BevInput`을 사용한다. 원본 rectified NV12의 하단 70%
-(1280x504)를 OAK에서 crop한 뒤 Jetson으로 전송하고, 같은 노출 시점의
-원본→안정화 homography를 함께 보낸다. crop metadata의 주점은 전체
-1280x720 좌표로 되돌려 기존 BEV LUT와 동일한 기하를 유지한다. 이 경로는
-CPU Y/UV `warpPerspective()`를 수행하지 않으며, 고정 줌과 동적 roll/pitch
-보정은 BEV의 CUDA sampling에 합쳐진다. 단독 프리뷰와 일반 이미지 토픽의
-기존 전체 프레임 경로는 호환성을 위해 유지한다.
+(1280x504)만 복사하고, 같은 노출 시점의 원본→안정화 homography를 함께
+보낸다. 이 경로는 CPU Y/UV `warpPerspective()`를 수행하지 않으며, 고정 줌과
+동적 roll/pitch 보정은 BEV의 CUDA sampling에 합쳐진다. 단독 프리뷰와 일반
+이미지 토픽의 기존 CPU 안정화 경로는 호환성을 위해 유지한다.
 
 `publish_fps`가 센서 FPS 이상이면 고정 주기의 타이머로 최신 영상을
 샘플링하지 않고 새 프레임 도착 알림에 맞춰 발행한다. 두 143 Hz 주기의

@@ -174,8 +174,8 @@ def generate_launch_description():
                             {"use_intra_process_comms": True},
                         ],
                     ),
-                    # OAK에서 crop한 하단 raw NV12와 보정 행렬을 전달한다.
-                    # CUDA가 안정화와 BEV를 한 번에 수행한다.
+                    # 하단 raw NV12와 보정 행렬을 전달한다. CUDA가 안정화와
+                    # BEV를 한 번에 수행하므로 전체 CPU warp는 실행하지 않는다.
                     ComposableNode(
                         package="camera_driver",
                         plugin="camera_driver::CameraDriverNode",
