@@ -14,7 +14,6 @@ Published topics:
 /vesc/measured_erpm       std_msgs/msg/Int32  VESC-estimated ERPM
 /manual/gear              std_msgs/msg/String
 /manual/controller_debug  std_msgs/msg/String  JSON controller state
-/joy/set_feedback         sensor_msgs/msg/JoyFeedback  reverse gear rumble
 ```
 
 Current mapping:
@@ -34,9 +33,6 @@ an accumulated command alive. Current gear and command duty are
 published on `/manual/gear` and
 `/manual/current_duty`. The VESC node publishes measured ERPM on
 `/vesc/measured_erpm` and logs target duty and measured ERPM together.
-When a gear change to `REVERSE` succeeds, the node publishes one rumble request
-to `/joy/set_feedback`. Controllers without SDL haptic support ignore it and do
-not affect the driving path.
 
 RB is converted from a repeated button state into one reliable rising-edge
 event. The first press is handled immediately, holding the button does not
@@ -61,7 +57,6 @@ coast_deceleration_duty_per_sec: 0.04
 brake_duty_per_sec: 0.08
 immediate_stop_on_accelerator_release: false
 button_debounce_sec: 0.15
-reverse_gear_rumble_intensity: 0.7
 ```
 
 `coast_deceleration_duty_per_sec` is used only when
