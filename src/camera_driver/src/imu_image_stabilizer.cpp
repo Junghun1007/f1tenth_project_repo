@@ -401,6 +401,12 @@ public:
         normalized(warmup_acceleration_sum_);
       reference_up_camera_ = external_reference_up_camera_.value_or(
         stationary_acceleration_reference_up_camera_);
+      // Depth supplies the absolute BEV attitude, while the accelerometer may
+      // have a repeatable mounting/calibration offset from that ground-plane
+      // normal. Preserve the depth reference and use the accelerometer only
+      // for changes relative to its own startup direction.
+      accelerometer_to_reference_rotation_ = quaternionFromTwoVectors(
+        stationary_acceleration_reference_up_camera_, reference_up_camera_);
       double acceleration_norm_sum = 0.0;
       for (const StationarySample & sample : calibration_samples_) {
         acceleration_norm_sum += cv::norm(sample.acceleration_camera_mps2);
@@ -508,8 +514,11 @@ public:
         roll_acceleration_confidence = 1.0;
         pitch_acceleration_confidence = 1.0;
       } else {
-        const cv::Vec3d measured_up =
+        const cv::Vec3d measured_accelerometer_up =
           *acceleration_camera_mps2 / acceleration_magnitude;
+        const cv::Vec3d measured_up = normalized(rotateVector(
+          accelerometer_to_reference_rotation_,
+          measured_accelerometer_up));
         correction_target = measured_up;
         const double direction_error_deg = angleDegrees(
           predicted_up, measured_up);
@@ -1041,6 +1050,7 @@ private:
   std::optional<cv::Vec3d> external_reference_up_camera_;
   cv::Vec3d stationary_acceleration_reference_up_camera_{
     0.0, -1.0, 0.0};
+  Quaternion accelerometer_to_reference_rotation_{};
   cv::Vec3d reference_up_camera_{0.0, -1.0, 0.0};
   cv::Vec3d current_up_camera_{0.0, -1.0, 0.0};
   double last_timestamp_sec_{0.0};

@@ -351,6 +351,16 @@ ros2 topic info /camera/image_rect --verbose
 | `preview_grid_enabled` | `true` | 독립 프리뷰 격자 표시 |
 | `preview_grid_spacing_px` | `20` | 원본 영상 기준 격자 간격 |
 
+시작 Depth 지면 법선은 BEV의 불변 절대 자세로 사용한다. 주행 중
+차량 가속도를 제거한 IMU 방향은 시작 IMU와 Depth 법선 사이의 정렬을
+적용하여, 정지와 주행 상태가 다른 절대 자세를 목표로 삼지 않는다.
+
+`Virtual gimbal` 로그의 `yaw_now/peak`와 `ay_peak`는 각각 현재값/직전
+로그 구간의 최대 절댓값이다. 1 Hz 상태 로그 사이에 발생한 짧은 조향도
+최대값에 남는다. `imu_residual_accel(forward/left)`는 ERPM/자이로로
+계산한 차량 종/횡가속도를 IMU에서 제거한 뒤, Depth 자세 정렬을
+적용하기 전의 잔여값이다.
+
 실차 거리 기준 속도가 로그의 `vehicle(v/ax/ay)` 속도와 다르면
 `imu_stabilization_speed_scale_correction`을 다음처럼 조정한다.
 

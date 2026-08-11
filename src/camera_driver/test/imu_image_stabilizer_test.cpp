@@ -235,6 +235,66 @@ void verifyMotionCompensatedGravityCorrectsMovingGyroDrift()
     "motion-compensated gravity did not bound moving gyro drift");
 }
 
+void verifyMovingAccelerometerStaysAlignedWithExternalBevReference()
+{
+  auto config = fastConfig();
+  config.external_reference_required = true;
+  config.acceleration_correction_stationary_only = false;
+  config.acceleration_correction_time_constant_sec = 0.02;
+  config.roll_acceleration_correction_time_constant_sec = 0.02;
+  config.acceleration_correction_gate_deg = 10.0;
+  config.roll_acceleration_direction_gate_deg = 10.0;
+  config.reference_tilt_leak_time_constant_sec = 1000.0;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+
+  constexpr double depth_roll_rad = 1.0 * kDegreesToRadians;
+  constexpr double depth_pitch_rad = 3.0 * kDegreesToRadians;
+  const cv::Vec3d depth_up_camera(
+    -std::sin(depth_roll_rad) * std::cos(depth_pitch_rad),
+    -std::cos(depth_roll_rad) * std::cos(depth_pitch_rad),
+    -std::sin(depth_pitch_rad));
+  require(
+    stabilizer.setExternalReferenceUpCamera(depth_up_camera),
+    "external BEV reference was rejected for moving alignment test");
+
+  const cv::Vec3d startup_acceleration(0.0, -9.80665, 0.0);
+  calibrateAtTilt(stabilizer, startup_acceleration);
+
+  double timestamp_sec = 0.01;
+  for (int index = 1; index <= 800; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      startup_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      false);
+  }
+  const auto aligned = stabilizer.correctionAt(timestamp_sec);
+  require(aligned.has_value(), "moving BEV alignment lookup failed");
+  require(
+    aligned->correction_angle_deg < 0.01,
+    "moving accelerometer replaced the external depth reference");
+
+  constexpr double relative_roll_rad = 1.0 * kDegreesToRadians;
+  const cv::Vec3d changed_acceleration(
+    -9.80665 * std::sin(relative_roll_rad),
+    -9.80665 * std::cos(relative_roll_rad),
+    0.0);
+  for (int index = 1; index <= 800; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      changed_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      false);
+  }
+  const auto relative_change = stabilizer.correctionAt(timestamp_sec);
+  require(relative_change.has_value(), "relative tilt lookup failed");
+  require(
+    relative_change->correction_angle_deg > 0.5,
+    "external alignment suppressed a real relative accelerometer change");
+}
+
 void verifyExternalVehicleStationaryControlsRecovery()
 {
   auto config = fastConfig();
@@ -360,6 +420,7 @@ int main()
   verifyExternalVehicleStationaryControlsRecovery();
   verifyReferenceLeakBoundsGyroDrift();
   verifyMotionCompensatedGravityCorrectsMovingGyroDrift();
+  verifyMovingAccelerometerStaysAlignedWithExternalBevReference();
   verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery();
 
   const auto config = fastConfig();

@@ -66,6 +66,25 @@ void update_maximum(
   }
 }
 
+void update_maximum(
+  std::atomic<double> & target,
+  const double candidate)
+{
+  if (!std::isfinite(candidate)) {
+    return;
+  }
+  auto current = target.load(std::memory_order_relaxed);
+  while (
+    current < candidate &&
+    !target.compare_exchange_weak(
+      current,
+      candidate,
+      std::memory_order_relaxed,
+      std::memory_order_relaxed))
+  {
+  }
+}
+
 void record_steady_latency(
   const std::chrono::steady_clock::duration latency,
   std::atomic<std::uint64_t> & sample_count,
@@ -1578,7 +1597,12 @@ private:
             const bool vehicle_stationary = measured_erpm_stationary();
             ensure_vehicle_axes_from_stabilizer_reference();
             if (vehicle_stationary) {
+              latest_yaw_rate_degps_.store(0.0, std::memory_order_relaxed);
               latest_lateral_acceleration_mps2_.store(
+                0.0, std::memory_order_relaxed);
+              latest_residual_longitudinal_acceleration_mps2_.store(
+                0.0, std::memory_order_relaxed);
+              latest_residual_lateral_acceleration_mps2_.store(
                 0.0, std::memory_order_relaxed);
             }
             if (
@@ -1612,6 +1636,10 @@ private:
                   imu_stabilizer_->gyroscopeBiasRadps();
                 const double yaw_rate_radps =
                   corrected_angular_velocity.dot(axes->up);
+                constexpr double radians_to_degrees =
+                  180.0 / 3.141592653589793238462643383279502884;
+                const double yaw_rate_degps =
+                  yaw_rate_radps * radians_to_degrees;
                 const double lateral_acceleration_mps2 =
                   lateralAccelerationMps2(
                     motion->speed_mps,
@@ -1621,8 +1649,9 @@ private:
                   axes->forward *
                   motion->longitudinal_acceleration_mps2 +
                   axes->left * lateral_acceleration_mps2;
-                synchronized_acceleration =
+                const cv::Vec3d residual_acceleration_camera =
                   *synchronized_acceleration - vehicle_acceleration_camera;
+                synchronized_acceleration = residual_acceleration_camera;
                 latest_vehicle_speed_mps_.store(
                   motion->speed_mps, std::memory_order_relaxed);
                 latest_longitudinal_acceleration_mps2_.store(
@@ -1631,6 +1660,20 @@ private:
                 latest_lateral_acceleration_mps2_.store(
                   lateral_acceleration_mps2,
                   std::memory_order_relaxed);
+                latest_yaw_rate_degps_.store(
+                  yaw_rate_degps, std::memory_order_relaxed);
+                latest_residual_longitudinal_acceleration_mps2_.store(
+                  residual_acceleration_camera.dot(axes->forward),
+                  std::memory_order_relaxed);
+                latest_residual_lateral_acceleration_mps2_.store(
+                  residual_acceleration_camera.dot(axes->left),
+                  std::memory_order_relaxed);
+                update_maximum(
+                  maximum_absolute_yaw_rate_degps_interval_,
+                  std::abs(yaw_rate_degps));
+                update_maximum(
+                  maximum_absolute_lateral_acceleration_mps2_interval_,
+                  std::abs(lateral_acceleration_mps2));
                 motion_compensated_samples_total_.fetch_add(
                   1U, std::memory_order_relaxed);
               } else {
@@ -2181,12 +2224,20 @@ private:
           imu_stabilizer_->gyroscopeBiasRadps() * radians_to_degrees;
         const bool erpm_fresh = measured_erpm_is_fresh(
           steady_now_nanoseconds());
+        const double peak_yaw_rate_degps =
+          maximum_absolute_yaw_rate_degps_interval_.exchange(
+          0.0, std::memory_order_relaxed);
+        const double peak_lateral_acceleration_mps2 =
+          maximum_absolute_lateral_acceleration_mps2_interval_.exchange(
+          0.0, std::memory_order_relaxed);
         RCLCPP_INFO(
           node_.get_logger(),
           "Virtual gimbal: tilt_error(roll/pitch)=%.3f/%.3fdeg, "
           "correction=%.3fdeg, stationary=%s, "
           "measured_erpm=%d (filtered_abs=%.1f)/%s, "
-          "vehicle(v/ax/ay)=%.3f/%.3f/%.3f SI, motion_fusion=%s "
+          "vehicle(v/ax/ay)=%.3f/%.3f/%.3f SI, "
+          "turn(yaw_now/peak=%.2f/%.2fdegps, ay_peak=%.3f), "
+          "imu_residual_accel(forward/left)=%.3f/%.3f, motion_fusion=%s "
           "(samples/misses=%lu/%lu, no_accel/motion/axes=%lu/%lu/%lu), "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
           latest_stabilization_roll_error_deg_.load(
@@ -2203,6 +2254,13 @@ private:
           latest_longitudinal_acceleration_mps2_.load(
             std::memory_order_relaxed),
           latest_lateral_acceleration_mps2_.load(
+            std::memory_order_relaxed),
+          latest_yaw_rate_degps_.load(std::memory_order_relaxed),
+          peak_yaw_rate_degps,
+          peak_lateral_acceleration_mps2,
+          latest_residual_longitudinal_acceleration_mps2_.load(
+            std::memory_order_relaxed),
+          latest_residual_lateral_acceleration_mps2_.load(
             std::memory_order_relaxed),
           vehicle_motion_compensation_enabled_ ? "on" : "off",
           static_cast<unsigned long>(
@@ -2406,6 +2464,13 @@ private:
   std::atomic<double> latest_vehicle_speed_mps_{0.0};
   std::atomic<double> latest_longitudinal_acceleration_mps2_{0.0};
   std::atomic<double> latest_lateral_acceleration_mps2_{0.0};
+  std::atomic<double> latest_yaw_rate_degps_{0.0};
+  std::atomic<double> maximum_absolute_yaw_rate_degps_interval_{0.0};
+  std::atomic<double>
+  maximum_absolute_lateral_acceleration_mps2_interval_{0.0};
+  std::atomic<double>
+  latest_residual_longitudinal_acceleration_mps2_{0.0};
+  std::atomic<double> latest_residual_lateral_acceleration_mps2_{0.0};
   std::atomic<std::uint64_t> motion_compensated_samples_total_{0};
   std::atomic<std::uint64_t> motion_compensation_misses_total_{0};
   std::atomic<std::uint64_t> motion_missing_acceleration_total_{0};
