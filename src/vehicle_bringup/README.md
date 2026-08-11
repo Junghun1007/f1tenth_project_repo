@@ -34,3 +34,15 @@ ros2 launch vehicle_bringup vesc_only.launch.py \
 
 The previous empty `joy.yaml` was removed because `joy_initializer` already
 owns the joystick node defaults.
+
+## 8BitDo input safety
+
+The manual launch uses `joy_linux_node`, selects the 8BitDo controller by name,
+and leaves the force-feedback device path empty. This prevents software rumble
+output and leaves the Linux joystick node as the only process that owns the
+controller input. Controller debug JSON is disabled during driving.
+
+RB gear changes are edge-triggered and immediate: they are accepted only while
+the commanded duty is already zero. A rejected change is not stored or replayed
+later. `vesc_bridge` communicates through `/dev/ttyTHS1` and does not access the
+8BitDo USB device.

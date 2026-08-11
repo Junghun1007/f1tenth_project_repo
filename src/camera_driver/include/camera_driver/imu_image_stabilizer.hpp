@@ -21,9 +21,9 @@ struct ImuImageStabilizerConfig
   double gravity_mps2{9.80665};
   double accelerometer_full_trust_deviation_mps2{0.15};
   double accelerometer_zero_trust_deviation_mps2{1.50};
-  double acceleration_correction_time_constant_sec{4.3};
+  double acceleration_correction_time_constant_sec{1.5};
   double acceleration_correction_gate_deg{4.3};
-  double roll_acceleration_correction_time_constant_sec{6.0};
+  double roll_acceleration_correction_time_constant_sec{2.0};
   double roll_acceleration_direction_gate_deg{4.3};
   bool acceleration_correction_stationary_only{true};
   bool external_reference_required{false};

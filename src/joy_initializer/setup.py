@@ -19,6 +19,6 @@ setup(
     zip_safe=True,
     maintainer="ohslo",
     maintainer_email="ohslo@example.com",
-    description="Project wrapper around the ROS joy_node for AutoDrive.",
+    description="Project wrapper around joy_linux_node for AutoDrive.",
     license="TODO",
 )

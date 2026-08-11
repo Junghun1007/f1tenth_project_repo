@@ -3,13 +3,13 @@
 <package format="3">
   <name>joy_initializer</name>
   <version>0.0.0</version>
-  <description>Project wrapper around the ROS joy_node for AutoDrive.</description>
+  <description>Project wrapper around joy_linux_node for AutoDrive.</description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>TODO</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
-  <exec_depend>joy</exec_depend>
+  <exec_depend>joy_linux</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

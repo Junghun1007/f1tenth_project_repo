@@ -314,6 +314,8 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_reference_calibration_duration_sec` | `4.0` | 정지 기준 자세 측정 시간 |
 | `imu_stabilization_external_reference_topic` | `/camera/startup_ground_normal` | BEV 시작 지면 법선 토픽 |
 | `imu_stabilization_external_reference_required` | `false` | 외부 기준 필수 여부; 통합 BEV launch에서는 `true` |
+| `imu_stabilization_accelerometer_time_constant_sec` | `1.5` | pitch 가속도계 보정 시정수 |
+| `imu_stabilization_roll_accelerometer_time_constant_sec` | `2.0` | roll 가속도계 보정 시정수 |
 | `imu_stabilization_measured_erpm_topic` | `/vesc/measured_erpm` | 주행 중 정지 판정에 쓰는 VESC 실측 ERPM |
 | `imu_stabilization_stationary_erpm_enter_threshold` | `100` | 필터링된 ERPM 절댓값이 이하로 유지되면 정지 후보 |
 | `imu_stabilization_stationary_erpm_exit_threshold` | `500` | raw ERPM 절댓값이 이상이면 즉시 주행 판정 |

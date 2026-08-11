@@ -46,9 +46,9 @@ camera_driver:
     imu_stabilization_gravity_mps2: 9.80665
     imu_stabilization_accelerometer_full_trust_deviation_mps2: 0.15
     imu_stabilization_accelerometer_zero_trust_deviation_mps2: 1.50
-    imu_stabilization_accelerometer_time_constant_sec: 4.3 # 4.3
+    imu_stabilization_accelerometer_time_constant_sec: 1.5
     imu_stabilization_accelerometer_direction_gate_deg: 4.3 # 4.3
-    imu_stabilization_roll_accelerometer_time_constant_sec: 6.0 # 6.0
+    imu_stabilization_roll_accelerometer_time_constant_sec: 2.0
     imu_stabilization_roll_accelerometer_direction_gate_deg: 4.3 # 4.3
     imu_stabilization_external_reference_topic: "/camera/startup_ground_normal"
     # The combined BEV launch overrides this to true. Keep false for the

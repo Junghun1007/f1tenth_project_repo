@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 import json
-import os
 from typing import Any
 
 import rclpy
@@ -23,7 +22,7 @@ class JoyParamsConverterNode(Node):
         self.declare_parameter("gear_toggle_topic", "/manual/gear_toggle")
         self.declare_parameter("debug_topic", "/manual/controller_debug")
         self.declare_parameter("keymap_path", "")
-        self.declare_parameter("publish_debug", True)
+        self.declare_parameter("publish_debug", False)
         self.declare_parameter("trigger_deadzone", 0.03)
         self.declare_parameter("steering_deadzone", 0.05)
 
@@ -33,7 +32,6 @@ class JoyParamsConverterNode(Node):
             self.get_parameter("trigger_deadzone").value
         )
         self.steering_deadzone = float(self.get_parameter("steering_deadzone").value)
-        self._log_joystick_connection_status()
 
         joy_topic = str(self.get_parameter("joy_topic").value)
         accelerator_topic = str(self.get_parameter("accelerator_topic").value)
@@ -107,59 +105,6 @@ class JoyParamsConverterNode(Node):
         keymap = loaded.get("manual_keymap", loaded)
         self.get_logger().info(f"Loaded manual keymap: {keymap_path}")
         return keymap
-
-    def _log_joystick_connection_status(self) -> None:
-        device_path = str(
-            self.keymap.get("controller", {}).get("device", "")
-        ).strip()
-        title = "==================== 조이스틱 연결 여부 ===================="
-        bottom = "============================================================"
-
-        if not device_path:
-            self.get_logger().warn(
-                "\n"
-                f"{title}\n"
-                "조이스틱 연결확인 실패: 장치 경로가 설정되지 않았습니다.\n"
-                f"{bottom}"
-            )
-            return
-
-        try:
-            fd = os.open(device_path, os.O_RDONLY | os.O_NONBLOCK)
-        except FileNotFoundError:
-            self.get_logger().warn(
-                "\n"
-                f"{title}\n"
-                f"조이스틱 미연결: {device_path}\n"
-                f"{bottom}"
-            )
-            return
-        except PermissionError as exc:
-            self.get_logger().warn(
-                "\n"
-                f"{title}\n"
-                f"조이스틱 장치 감지됨: {device_path}\n"
-                f"접근권한 확인 필요: {exc}\n"
-                f"{bottom}"
-            )
-            return
-        except OSError as exc:
-            self.get_logger().warn(
-                "\n"
-                f"{title}\n"
-                f"조이스틱 연결확인 실패: {device_path}\n"
-                f"원인: {exc}\n"
-                f"{bottom}"
-            )
-            return
-
-        os.close(fd)
-        self.get_logger().info(
-            "\n"
-            f"{title}\n"
-            f"조이스틱 연결완료: {device_path}\n"
-            f"{bottom}"
-        )
 
     def _on_joy(self, msg: Joy) -> None:
         controller_state = self._controller_state(msg)

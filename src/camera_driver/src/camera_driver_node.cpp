@@ -417,13 +417,13 @@ private:
       "imu_stabilization_accelerometer_zero_trust_deviation_mps2", 1.50);
     imu_stabilizer_config_.acceleration_correction_time_constant_sec =
       node_.declare_parameter<double>(
-      "imu_stabilization_accelerometer_time_constant_sec", 4.3);
+      "imu_stabilization_accelerometer_time_constant_sec", 1.5);
     imu_stabilizer_config_.acceleration_correction_gate_deg =
       node_.declare_parameter<double>(
       "imu_stabilization_accelerometer_direction_gate_deg", 4.3);
     imu_stabilizer_config_.roll_acceleration_correction_time_constant_sec =
       node_.declare_parameter<double>(
-      "imu_stabilization_roll_accelerometer_time_constant_sec", 6.0);
+      "imu_stabilization_roll_accelerometer_time_constant_sec", 2.0);
     imu_stabilizer_config_.roll_acceleration_direction_gate_deg =
       node_.declare_parameter<double>(
       "imu_stabilization_roll_accelerometer_direction_gate_deg", 4.3);
