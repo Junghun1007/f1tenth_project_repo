@@ -294,6 +294,15 @@ public:
     }
     preview_active_.store(preview_enabled_);
 
+    // The fused BEV launch consumes only the bottom ROI. Crop it on the OAK
+    // before XLink/USB instead of transporting the unused top rows. Preserve
+    // the full-frame stream for standalone image publishing and preview.
+    device_bev_crop_enabled_ =
+      fused_bev_output_enabled_ && !publish_enabled_ && !preview_enabled_;
+    device_output_width_ = width_;
+    device_output_height_ =
+      device_bev_crop_enabled_ ? fused_bev_crop_height_ : height_;
+
     if (publish_enabled_) {
       auto qos = rclcpp::SensorDataQoS();
       qos.keep_last(1);
@@ -985,7 +994,7 @@ private:
       camera_socket_,
       std::make_pair(kOv9782The720PWidth, kOv9782The720PHeight),
       static_cast<float>(sensor_fps_));
-    auto * output = camera->requestOutput(
+    auto * camera_output = camera->requestOutput(
       std::make_pair(
         static_cast<std::uint32_t>(width_),
         static_cast<std::uint32_t>(height_)),
@@ -996,7 +1005,22 @@ private:
       static_cast<float>(sensor_fps_),
       undistort_enabled_);
 
-    output_queue_ = output->createOutputQueue(
+    dai::Node::Output * host_output = camera_output;
+    if (device_bev_crop_enabled_) {
+      auto crop = pipeline_->create<dai::node::ImageManip>();
+      crop->initialConfig->addCrop(
+        0U,
+        static_cast<std::uint32_t>(fused_bev_crop_top_),
+        static_cast<std::uint32_t>(width_),
+        static_cast<std::uint32_t>(fused_bev_crop_height_));
+      crop->initialConfig->setFrameType(dai::ImgFrame::Type::NV12);
+      crop->setMaxOutputFrameSize(
+        width_ * fused_bev_crop_height_ * 3 / 2);
+      camera_output->link(crop->inputImage);
+      host_output = &crop->out;
+    }
+
+    output_queue_ = host_output->createOutputQueue(
       static_cast<unsigned int>(queue_size_), queue_blocking_);
 
     if (imu_stream_enabled_) {
@@ -1058,7 +1082,7 @@ private:
     // a separate implicit XLinkOut input queue on the device. Build first so
     // that bridge exists, then make its queue latest-only as well.
     pipeline_->build();
-    const auto xlink_bridge = output->getXLinkBridge();
+    const auto xlink_bridge = host_output->getXLinkBridge();
     if (!xlink_bridge || !xlink_bridge->xLinkOut) {
       throw std::runtime_error("DepthAI did not create the camera XLink output bridge");
     }
@@ -1070,8 +1094,11 @@ private:
     RCLCPP_INFO(
       node_.get_logger(),
       "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, "
-      "transport=NV12, XLink chunks=off, XLink device queue=1/non-blocking",
-      width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
+      "transport=NV12 %dx%d%s, XLink chunks=off, "
+      "XLink device queue=1/non-blocking",
+      width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()),
+      device_output_width_, device_output_height_,
+      device_bev_crop_enabled_ ? " bottom-ROI" : " full-frame");
     RCLCPP_INFO(
       node_.get_logger(),
       "Options: undistort=%s, image_publish=%s, fused_bev_publish=%s, "
@@ -1208,14 +1235,14 @@ private:
         if (publish_enabled_ || fused_bev_output_enabled_ || preview_enabled_) {
           const bool valid_nv12 =
             packet->getType() == dai::ImgFrame::Type::NV12 &&
-            static_cast<int>(packet->getWidth()) == width_ &&
-            static_cast<int>(packet->getHeight()) == height_;
+            static_cast<int>(packet->getWidth()) == device_output_width_ &&
+            static_cast<int>(packet->getHeight()) == device_output_height_;
           if (!valid_nv12) {
             invalid_frames_total_.fetch_add(1);
             RCLCPP_ERROR_THROTTLE(
               node_.get_logger(), *node_.get_clock(), 1000,
               "Expected a %dx%d NV12 frame from DepthAI.",
-              width_, height_);
+              device_output_width_, device_output_height_);
             continue;
           }
 
@@ -1237,30 +1264,28 @@ private:
           RCLCPP_INFO(
             node_.get_logger(),
             "First frame received: %dx%d, sequence=%ld",
-            width_, height_, static_cast<long>(device_sequence));
+            static_cast<int>(packet->getWidth()),
+            static_cast<int>(packet->getHeight()),
+            static_cast<long>(device_sequence));
 
           const auto & transformation = packet->getTransformation();
           if (transformation.isValid()) {
             const auto [intrinsics_width, intrinsics_height] =
               transformation.getSize();
-            const auto k_rect = transformation.getIntrinsicMatrix();
+            const cv::Matx33d k_rect_full = fullFrameCameraMatrix(*packet);
             RCLCPP_INFO(
               node_.get_logger(),
-              "K_rect %zux%zu: fx=%.9f, fy=%.9f, cx=%.9f, cy=%.9f",
+              "K_rect metadata=%zux%zu, full-frame=%dx%d: "
+              "fx=%.9f, fy=%.9f, cx=%.9f, cy=%.9f",
               intrinsics_width, intrinsics_height,
-              static_cast<double>(k_rect[0][0]),
-              static_cast<double>(k_rect[1][1]),
-              static_cast<double>(k_rect[0][2]),
-              static_cast<double>(k_rect[1][2]));
+              width_, height_,
+              k_rect_full(0, 0), k_rect_full(1, 1),
+              k_rect_full(0, 2), k_rect_full(1, 2));
             RCLCPP_INFO(
               node_.get_logger(),
-              "Published output %dx%d: fx=%.9f, fy=%.9f, cx=%.9f, cy=%.9f",
-              width_, height_ - output_crop_top_px_,
-              static_cast<double>(k_rect[0][0]),
-              static_cast<double>(k_rect[1][1]),
-              static_cast<double>(k_rect[0][2]),
-              static_cast<double>(k_rect[1][2]) -
-              static_cast<double>(output_crop_top_px_));
+              "DepthAI host output %dx%d, full-frame source crop top=%dpx.",
+              device_output_width_, device_output_height_,
+              device_bev_crop_enabled_ ? fused_bev_crop_top_ : 0);
           } else {
             RCLCPP_WARN(
               node_.get_logger(),
@@ -1285,6 +1310,44 @@ private:
       timestamp.time_since_epoch()).count();
   }
 
+  cv::Matx33d fullFrameCameraMatrix(dai::ImgFrame & packet) const
+  {
+    const auto & transformation = packet.getTransformation();
+    if (!transformation.isValid()) {
+      throw std::runtime_error(
+              "DepthAI image transformation metadata is unavailable");
+    }
+
+    const auto [intrinsics_width, intrinsics_height] =
+      transformation.getSize();
+    const auto intrinsics = transformation.getIntrinsicMatrix();
+    cv::Matx33d camera_matrix(
+      static_cast<double>(intrinsics[0][0]), 0.0,
+      static_cast<double>(intrinsics[0][2]),
+      0.0, static_cast<double>(intrinsics[1][1]),
+      static_cast<double>(intrinsics[1][2]),
+      0.0, 0.0, 1.0);
+
+    if (device_bev_crop_enabled_) {
+      const bool metadata_is_cropped =
+        static_cast<int>(intrinsics_width) == device_output_width_ &&
+        static_cast<int>(intrinsics_height) == device_output_height_;
+      const bool metadata_is_full_frame =
+        static_cast<int>(intrinsics_width) == width_ &&
+        static_cast<int>(intrinsics_height) == height_;
+      if (metadata_is_cropped) {
+        // ImageManip expresses the principal point in cropped coordinates.
+        // Lift it back into the unchanged 1280x720 geometry used by the BEV
+        // LUT and the per-frame stabilization homography.
+        camera_matrix(1, 2) += static_cast<double>(fused_bev_crop_top_);
+      } else if (!metadata_is_full_frame) {
+        throw std::runtime_error(
+                "DepthAI returned unexpected crop transformation metadata");
+      }
+    }
+    return camera_matrix;
+  }
+
   StabilizationTransform stabilizationTransform(
     dai::ImgFrame & packet,
     const std::chrono::steady_clock::time_point & sensor_timestamp)
@@ -1307,13 +1370,7 @@ private:
       // would be geometrically wrong. This is the one case that must drop.
       return StabilizationTransform{std::nullopt, false, false};
     }
-    const auto intrinsics = transformation.getIntrinsicMatrix();
-    const cv::Matx33d camera_matrix(
-      static_cast<double>(intrinsics[0][0]), 0.0,
-      static_cast<double>(intrinsics[0][2]),
-      0.0, static_cast<double>(intrinsics[1][1]),
-      static_cast<double>(intrinsics[1][2]),
-      0.0, 0.0, 1.0);
+    const cv::Matx33d camera_matrix = fullFrameCameraMatrix(packet);
     const cv::Matx33d fixed_view_zoom_homography =
       makeFixedViewZoomHomography(camera_matrix, fixed_view_zoom_);
     const auto zoom_only = [&]() {
@@ -1509,6 +1566,16 @@ private:
       packet.getStride() > 0U ? packet.getStride() : packet.getWidth();
     const int frame_width = static_cast<int>(packet.getWidth());
     const int frame_height = static_cast<int>(packet.getHeight());
+    const int packet_crop_top =
+      device_bev_crop_enabled_ ? 0 : fused_bev_crop_top_;
+    const bool dimensions_valid =
+      frame_width == width_ &&
+      frame_height == device_output_height_ &&
+      packet_crop_top + fused_bev_crop_height_ <= frame_height;
+    if (!dimensions_valid) {
+      throw std::runtime_error(
+              "DepthAI BEV input dimensions do not match the configured ROI");
+    }
     const std::size_t source_rows =
       static_cast<std::size_t>(frame_height) * 3U / 2U;
     if (nv12.size() < static_cast<std::size_t>(source_stride) * source_rows) {
@@ -1516,8 +1583,10 @@ private:
               "DepthAI returned an undersized NV12 frame");
     }
 
-    message.source_width = static_cast<std::uint32_t>(frame_width);
-    message.source_height = static_cast<std::uint32_t>(frame_height);
+    // Message geometry remains in the original rectified 1280x720 coordinate
+    // system even when the packet has already been cropped on the device.
+    message.source_width = static_cast<std::uint32_t>(width_);
+    message.source_height = static_cast<std::uint32_t>(height_);
     message.source_crop_top = static_cast<std::uint32_t>(fused_bev_crop_top_);
     message.cropped_width = static_cast<std::uint32_t>(frame_width);
     message.cropped_height = static_cast<std::uint32_t>(
@@ -1542,11 +1611,11 @@ private:
     message.nv12.resize(output_y_bytes + output_y_bytes / 2U);
     const std::uint8_t * source_y =
       nv12.data() +
-      static_cast<std::size_t>(fused_bev_crop_top_) * source_stride;
+      static_cast<std::size_t>(packet_crop_top) * source_stride;
     const std::uint8_t * source_uv =
       nv12.data() +
       static_cast<std::size_t>(frame_height) * source_stride +
-      static_cast<std::size_t>(fused_bev_crop_top_ / 2) * source_stride;
+      static_cast<std::size_t>(packet_crop_top / 2) * source_stride;
     for (int row = 0; row < fused_bev_crop_height_; ++row) {
       std::memcpy(
         message.nv12.data() +
@@ -2445,6 +2514,9 @@ private:
   double bev_input_bottom_fraction_{0.70};
   int fused_bev_crop_top_{216};
   int fused_bev_crop_height_{504};
+  bool device_bev_crop_enabled_{false};
+  int device_output_width_{1280};
+  int device_output_height_{720};
   bool preview_enabled_{false};
   double preview_fps_{60.0};
   std::string preview_window_name_;

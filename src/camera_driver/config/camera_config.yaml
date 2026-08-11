@@ -132,11 +132,11 @@ camera_driver:
     publish_enabled: false
     publish_fps: 80.0
 
-    # 통합 BEV launch에서만 켠다. 전체 영상을 CPU warp하지 않고, 원본
-    # rectified NV12의 아래쪽만 보정 행렬과 함께 CUDA BEV 단계로 전달한다.
+    # 통합 BEV launch에서만 켠다. 전체 영상을 CPU warp하지 않고, OAK에서
+    # rectified NV12의 아래쪽만 crop해 보정 행렬과 함께 CUDA BEV로 전달한다.
     fused_bev_output_enabled: false
     fused_bev_topic: "/camera/bev_input"
-    # 0.70이면 1280x720 중 하단 504행을 사용한다. 실행 시 변경 가능하다.
+    # 0.70이면 OAK->Jetson 전송부터 1280x720 중 하단 504행만 사용한다.
     bev_input_bottom_fraction: 0.70
 
     # 독립 프리뷰는 표시할 최신 NV12 프레임만 CPU에서 BGR로 바꾼다.
