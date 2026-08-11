@@ -33,6 +33,8 @@ an accumulated command alive. Current gear and command duty are
 published on `/manual/gear` and
 `/manual/current_duty`. The VESC node publishes measured ERPM on
 `/vesc/measured_erpm` and logs target duty and measured ERPM together.
+Forward and reverse gear changes publish no `JoyFeedback`; controller rumble is
+disabled in both directions.
 
 RB is converted from a repeated button state into one reliable rising-edge
 event. The first press is handled immediately, holding the button does not

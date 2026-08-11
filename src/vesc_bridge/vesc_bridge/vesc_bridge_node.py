@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
@@ -14,6 +16,7 @@ from vesc_bridge.vesc_driver import (
     VescDriverError,
     VescScales,
 )
+from vesc_bridge.vesc_io_worker import VescIoResult, VescIoWorker
 
 
 class VescBridgeNode(Node):
@@ -22,8 +25,8 @@ class VescBridgeNode(Node):
 
         self.declare_parameter("port", "/dev/ttyTHS1")
         self.declare_parameter("baudrate", 115200)
-        self.declare_parameter("serial_timeout", 0.1)
-        self.declare_parameter("write_timeout", 2.0)
+        self.declare_parameter("serial_timeout", 0.02)
+        self.declare_parameter("write_timeout", 0.02)
         self.declare_parameter("startup_delay", 0.2)
         self.declare_parameter("connect_on_startup", True)
         self.declare_parameter("verify_firmware_on_startup", True)
@@ -41,7 +44,7 @@ class VescBridgeNode(Node):
         self.declare_parameter("servo_max", 1.0)
         self.declare_parameter("command_timeout", 0.3)
         self.declare_parameter("log_commands", False)
-        self.declare_parameter("telemetry_rate_hz", 10.0)
+        self.declare_parameter("telemetry_rate_hz", 80.0)
         self.declare_parameter("telemetry_log_rate_hz", 2.0)
 
         self.declare_parameter("packet.comm_get_firmware_version", 0)
@@ -87,9 +90,13 @@ class VescBridgeNode(Node):
         self._last_erpm_time: Time | None = None
         self._last_erpm_command = 0
         self._last_command_mode: str | None = None
-        self._last_telemetry_log_time: Time | None = None
         self._connection_status: bool | None = None
         self._connection_verified = False
+        self._telemetry_stats_started_sec = time.monotonic()
+        self._telemetry_samples_interval = 0
+        self._telemetry_failures_interval = 0
+        self._telemetry_rtt_sum_sec = 0.0
+        self._telemetry_rtt_max_sec = 0.0
 
         connection_qos = QoSProfile(depth=1)
         connection_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -133,6 +140,9 @@ class VescBridgeNode(Node):
         if bool(self.get_parameter("connect_on_startup").value):
             self._try_open_driver()
 
+        self.io_worker = VescIoWorker(self.driver, self.telemetry_rate_hz)
+        self.io_worker.start()
+
         # Duty/ERPM/servo commands are desired current states. If serial I/O
         # pauses the executor, discard superseded commands instead of replaying
         # them after the operator has released or changed an input.
@@ -166,20 +176,17 @@ class VescBridgeNode(Node):
             1.0,
             self._publish_connection_status,
         )
-        if self.telemetry_rate_hz > 0.0:
-            self.telemetry_timer = self.create_timer(
-                1.0 / self.telemetry_rate_hz,
-                self._poll_telemetry,
-            )
-        else:
-            self.telemetry_timer = None
+        # UART runs independently; this short callback only transfers completed
+        # results into ROS publishers and logging without ever blocking control.
+        self.io_result_timer = self.create_timer(0.0025, self._drain_io_results)
 
         self.get_logger().info(
             f"VESC bridge ready. duty_topic={duty_topic}, "
             f"erpm_topic={erpm_topic}, "
             f"measured_erpm_topic={measured_erpm_topic}, "
             f"servo_position_topic={servo_topic}, "
-            f"connection_status_topic={connection_status_topic}"
+            f"connection_status_topic={connection_status_topic}, "
+            f"telemetry={self.telemetry_rate_hz:.1f}Hz via dedicated UART worker"
         )
 
     def _try_open_driver(self) -> None:
@@ -222,7 +229,7 @@ class VescBridgeNode(Node):
         self._last_duty_time = self.get_clock().now()
         self._last_duty_command = target_duty
         self._last_command_mode = "duty"
-        self._send_duty(target_duty)
+        self.io_worker.submit_duty(target_duty)
 
     def _on_erpm(self, msg: Int32) -> None:
         target_erpm = self._clamp_int(
@@ -233,62 +240,90 @@ class VescBridgeNode(Node):
         self._last_erpm_time = self.get_clock().now()
         self._last_erpm_command = target_erpm
         self._last_command_mode = "erpm"
-        self._send_erpm(target_erpm)
+        self.io_worker.submit_erpm(target_erpm)
 
     def _on_servo_position(self, msg: Float32) -> None:
         position = self._clamp_float(float(msg.data), self.servo_min, self.servo_max)
-        try:
-            self.driver.set_servo_position(position)
+        self.io_worker.submit_servo(position)
+
+    def _drain_io_results(self) -> None:
+        for result in self.io_worker.drain_results():
+            self._handle_io_result(result)
+
+    def _handle_io_result(self, result: VescIoResult) -> None:
+        if not result.success:
+            self._connection_verified = False
+            self._set_connection_status(False)
+            if result.operation == "telemetry":
+                self._telemetry_failures_interval += 1
+                self.get_logger().warn(
+                    f"Failed to read measured ERPM: {result.error}",
+                    throttle_duration_sec=1.0,
+                )
+            else:
+                self.get_logger().error(
+                    f"VESC {result.operation} command failed: {result.error}",
+                    throttle_duration_sec=1.0,
+                )
+            return
+
+        if result.operation != "telemetry":
+            # A successful serial write does not prove the VESC received it.
+            # Only a response-bearing transaction can restore a failed link.
             if self._connection_verified:
                 self._set_connection_status(True)
             if self.log_commands:
                 self.get_logger().info(
-                    f"VESC serial write OK: servo_position={position:.3f}"
+                    f"VESC serial write OK: "
+                    f"{result.operation}={result.value}",
+                    throttle_duration_sec=0.25,
                 )
-        except VescDriverError as exc:
-            self._connection_verified = False
-            self.driver.close()
-            self._set_connection_status(False)
-            self.get_logger().error(
-                f"Servo position command failed: {exc}",
-                throttle_duration_sec=1.0,
-            )
-
-    def _poll_telemetry(self) -> None:
-        try:
-            measured_erpm = self.driver.get_measured_erpm()
-        except VescDriverError as exc:
-            self._connection_verified = False
-            self._set_connection_status(False)
-            self.get_logger().warn(
-                f"Failed to read measured ERPM: {exc}",
-                throttle_duration_sec=1.0,
-            )
             return
 
         self._connection_verified = True
         self._set_connection_status(True)
+        measured_erpm = int(result.value)
         self.measured_erpm_pub.publish(Int32(data=measured_erpm))
+        self._telemetry_samples_interval += 1
+        self._telemetry_rtt_sum_sec += result.round_trip_sec
+        self._telemetry_rtt_max_sec = max(
+            self._telemetry_rtt_max_sec,
+            result.round_trip_sec,
+        )
+        self._report_telemetry_if_due(measured_erpm)
 
+    def _report_telemetry_if_due(self, measured_erpm: int) -> None:
         if self.telemetry_log_rate_hz <= 0.0:
             return
 
-        now = self.get_clock().now()
-        if self._last_telemetry_log_time is not None:
-            elapsed_sec = (
-                now - self._last_telemetry_log_time
-            ).nanoseconds / 1_000_000_000.0
-            if elapsed_sec < 1.0 / self.telemetry_log_rate_hz:
-                return
+        now_sec = time.monotonic()
+        elapsed_sec = now_sec - self._telemetry_stats_started_sec
+        if elapsed_sec < 1.0 / self.telemetry_log_rate_hz:
+            return
 
-        self._last_telemetry_log_time = now
+        sample_count = self._telemetry_samples_interval
+        actual_hz = sample_count / elapsed_sec if elapsed_sec > 0.0 else 0.0
+        average_rtt_ms = (
+            1000.0 * self._telemetry_rtt_sum_sec / sample_count
+            if sample_count > 0
+            else 0.0
+        )
         if self._last_command_mode == "erpm":
             target_text = f"target_erpm={self._last_erpm_command}"
         else:
             target_text = f"target_duty={self._last_duty_command:.5f}"
         self.get_logger().info(
-            f"VESC | {target_text} | measured_erpm={measured_erpm}"
+            f"VESC | {target_text} | measured_erpm={measured_erpm} | "
+            f"telemetry={actual_hz:.1f}/{self.telemetry_rate_hz:.1f}Hz | "
+            f"uart_rtt={average_rtt_ms:.2f}/"
+            f"{1000.0 * self._telemetry_rtt_max_sec:.2f}ms avg/max | "
+            f"failures={self._telemetry_failures_interval}"
         )
+        self._telemetry_stats_started_sec = now_sec
+        self._telemetry_samples_interval = 0
+        self._telemetry_failures_interval = 0
+        self._telemetry_rtt_sum_sec = 0.0
+        self._telemetry_rtt_max_sec = 0.0
 
     def _check_command_timeout(self) -> None:
         if self._last_command_mode == "duty":
@@ -316,7 +351,7 @@ class VescBridgeNode(Node):
             )
             self._last_duty_time = self.get_clock().now()
             self._last_duty_command = 0.0
-            self._send_duty(0.0)
+            self.io_worker.submit_duty(0.0)
         else:
             self.get_logger().warn(
                 f"ERPM command timeout ({elapsed_sec:.2f}s). Sending ERPM 0.",
@@ -324,45 +359,7 @@ class VescBridgeNode(Node):
             )
             self._last_erpm_time = self.get_clock().now()
             self._last_erpm_command = 0
-            self._send_erpm(0)
-
-    def _send_duty(self, target_duty: float) -> None:
-        try:
-            self.driver.set_duty(target_duty)
-            if self._connection_verified:
-                self._set_connection_status(True)
-            if self.log_commands:
-                self.get_logger().info(
-                    f"VESC serial write OK: duty={target_duty:.5f}",
-                    throttle_duration_sec=0.25,
-                )
-        except VescDriverError as exc:
-            self._connection_verified = False
-            self.driver.close()
-            self._set_connection_status(False)
-            self.get_logger().error(
-                f"Duty command failed: {exc}",
-                throttle_duration_sec=1.0,
-            )
-
-    def _send_erpm(self, target_erpm: int) -> None:
-        try:
-            self.driver.set_erpm(target_erpm)
-            if self._connection_verified:
-                self._set_connection_status(True)
-            if self.log_commands:
-                self.get_logger().info(
-                    f"VESC serial write OK: erpm={target_erpm}",
-                    throttle_duration_sec=0.25,
-                )
-        except VescDriverError as exc:
-            self._connection_verified = False
-            self.driver.close()
-            self._set_connection_status(False)
-            self.get_logger().error(
-                f"ERPM command failed: {exc}",
-                throttle_duration_sec=1.0,
-            )
+            self.io_worker.submit_erpm(0)
 
     def _set_connection_status(self, connected: bool) -> None:
         if self._connection_status == connected:
@@ -376,14 +373,13 @@ class VescBridgeNode(Node):
         self.connection_pub.publish(Bool(data=connected))
 
     def destroy_node(self) -> bool:
-        try:
-            if self.driver.is_open:
-                self.driver.set_duty(0.0)
-        except VescDriverError as exc:
-            self.get_logger().warn(f"Failed to send duty 0 before shutdown: {exc}")
-        finally:
-            self.driver.close()
-            self._set_connection_status(False)
+        stopped = self.io_worker.stop(send_duty_zero=True, timeout_sec=1.0)
+        if not stopped:
+            self.get_logger().warn(
+                "VESC UART worker did not stop within 1.0s during shutdown."
+            )
+        self._connection_verified = False
+        self._set_connection_status(False)
 
         return super().destroy_node()
 
