@@ -258,6 +258,14 @@ bool validConfig(const ImuImageStabilizerConfig & config)
     positive_finite(config.roll_acceleration_correction_time_constant_sec) &&
     positive_finite(config.roll_acceleration_direction_gate_deg) &&
     config.roll_acceleration_direction_gate_deg < 90.0 &&
+    positive_finite(config.moving_accelerometer_nudge_time_constant_sec) &&
+    std::isfinite(config.moving_accelerometer_nudge_strength) &&
+    config.moving_accelerometer_nudge_strength >= 0.0 &&
+    config.moving_accelerometer_nudge_strength <= 1.0 &&
+    positive_finite(config.moving_accelerometer_pitch_nudge_maximum_deg) &&
+    config.moving_accelerometer_pitch_nudge_maximum_deg < 5.0 &&
+    positive_finite(config.moving_accelerometer_roll_nudge_maximum_deg) &&
+    config.moving_accelerometer_roll_nudge_maximum_deg < 5.0 &&
     positive_finite(config.reference_tilt_leak_time_constant_sec) &&
     positive_finite(config.stationary_tilt_recovery_time_constant_sec) &&
     positive_finite(config.online_gyroscope_tilt_bias_time_constant_sec) &&
@@ -417,6 +425,7 @@ public:
         warmup_gyroscope_sum_ / static_cast<double>(calibration_count_) :
         cv::Vec3d(0.0, 0.0, 0.0);
       current_up_camera_ = reference_up_camera_;
+      moving_accelerometer_nudge_deg_ = cv::Vec2d(0.0, 0.0);
       last_timestamp_sec_ = timestamp_sec;
       calibration_samples_.clear();
       stationary_samples_.clear();
@@ -504,7 +513,8 @@ public:
     const bool use_moving_accelerometer =
       !use_stationary_reference && acceleration_available &&
       acceleration_confidence > 0.0 &&
-      !config_.acceleration_correction_stationary_only;
+      !config_.acceleration_correction_stationary_only &&
+      !config_.moving_accelerometer_nudge_enabled;
     if (use_stationary_reference || use_moving_accelerometer) {
       const cv::Vec3d predicted_up = current_up_camera_;
       const double predicted_roll_deg = rollDegrees(predicted_up);
@@ -566,8 +576,63 @@ public:
       }
     }
 
+    // Keep the user's stable gyro/reference attitude as the persistent state.
+    // Moving acceleration contributes only a fast, bounded output offset; it
+    // is never fed back into current_up_camera_, so an imperfect vehicle
+    // acceleration estimate cannot accumulate an attitude error over time.
+    cv::Vec2d target_moving_nudge_deg(0.0, 0.0);
+    if (
+      config_.moving_accelerometer_nudge_enabled &&
+      !stationary_confirmed_ && acceleration_available &&
+      acceleration_confidence > 0.0)
+    {
+      const cv::Vec3d measured_accelerometer_up =
+        *acceleration_camera_mps2 / acceleration_magnitude;
+      const cv::Vec3d measured_up = normalized(rotateVector(
+        accelerometer_to_reference_rotation_, measured_accelerometer_up));
+      const double base_roll_deg = rollDegrees(current_up_camera_);
+      const double base_pitch_deg = pitchDegrees(current_up_camera_);
+      const double roll_error_deg = wrapDegrees(
+        rollDegrees(measured_up) - base_roll_deg);
+      const double pitch_error_deg = wrapDegrees(
+        pitchDegrees(measured_up) - base_pitch_deg);
+      const double direction_error_deg = angleDegrees(
+        current_up_camera_, measured_up);
+      const double roll_direction_confidence = std::clamp(
+        1.0 - std::abs(roll_error_deg) /
+        config_.roll_acceleration_direction_gate_deg,
+        0.0, 1.0);
+      const double pitch_direction_confidence = std::clamp(
+        1.0 - direction_error_deg /
+        config_.acceleration_correction_gate_deg,
+        0.0, 1.0);
+      target_moving_nudge_deg[0] = std::clamp(
+        config_.moving_accelerometer_nudge_strength *
+        acceleration_confidence * roll_direction_confidence *
+        roll_error_deg,
+        -config_.moving_accelerometer_roll_nudge_maximum_deg,
+        config_.moving_accelerometer_roll_nudge_maximum_deg);
+      target_moving_nudge_deg[1] = std::clamp(
+        config_.moving_accelerometer_nudge_strength *
+        acceleration_confidence * pitch_direction_confidence *
+        pitch_error_deg,
+        -config_.moving_accelerometer_pitch_nudge_maximum_deg,
+        config_.moving_accelerometer_pitch_nudge_maximum_deg);
+    }
+    if (config_.moving_accelerometer_nudge_enabled) {
+      const double nudge_gain = 1.0 - std::exp(
+        -dt_sec / config_.moving_accelerometer_nudge_time_constant_sec);
+      moving_accelerometer_nudge_deg_ += nudge_gain *
+        (target_moving_nudge_deg - moving_accelerometer_nudge_deg_);
+    } else {
+      moving_accelerometer_nudge_deg_ = cv::Vec2d(0.0, 0.0);
+    }
+
+    const cv::Vec3d output_up_camera = upVectorFromRollPitchDegrees(
+      rollDegrees(current_up_camera_) + moving_accelerometer_nudge_deg_[0],
+      pitchDegrees(current_up_camera_) + moving_accelerometer_nudge_deg_[1]);
     history_.push_back(TimedTilt{
-      timestamp_sec, current_up_camera_,
+      timestamp_sec, output_up_camera,
       corrected_angular_velocity});
     while (
       history_.size() > 2U &&
@@ -765,6 +830,12 @@ public:
   {
     std::lock_guard<std::mutex> lock(mutex_);
     return gyroscope_bias_radps_;
+  }
+
+  cv::Vec2d movingAccelerometerNudgeDegrees() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return moving_accelerometer_nudge_deg_;
   }
 
   std::optional<cv::Vec3d> referenceUpCamera() const
@@ -1053,6 +1124,7 @@ private:
   Quaternion accelerometer_to_reference_rotation_{};
   cv::Vec3d reference_up_camera_{0.0, -1.0, 0.0};
   cv::Vec3d current_up_camera_{0.0, -1.0, 0.0};
+  cv::Vec2d moving_accelerometer_nudge_deg_{0.0, 0.0};
   double last_timestamp_sec_{0.0};
   bool initialized_{false};
   std::deque<StationarySample> calibration_samples_;
@@ -1105,6 +1177,11 @@ ImuImageStabilizer::calibrationProgress() const
 cv::Vec3d ImuImageStabilizer::gyroscopeBiasRadps() const
 {
   return impl_->gyroscopeBiasRadps();
+}
+
+cv::Vec2d ImuImageStabilizer::movingAccelerometerNudgeDegrees() const
+{
+  return impl_->movingAccelerometerNudgeDegrees();
 }
 
 std::optional<cv::Vec3d> ImuImageStabilizer::referenceUpCamera() const

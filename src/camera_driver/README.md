@@ -322,7 +322,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
-| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | ERPM/gyro 차량 가속도를 제거한 뒤 주행 중 중력 보정 활성화 |
+| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | ERPM/gyro 차량 가속도를 제거해 주행 중 nudge에 사용 |
 | `imu_stabilization_wheel_diameter_m` | `0.1095` | 하중 상태 구동 휠 직경 |
 | `imu_stabilization_motor_pole_pairs` | `2` | 4-pole 모터의 pole pair 수 |
 | `imu_stabilization_motor_pinion_teeth` | `13` | 실제 motor pinion teeth |
@@ -338,8 +338,13 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_maximum_longitudinal_acceleration_mps2` | `15.0` | 종가속도 절댓값 제한 |
 | `imu_stabilization_maximum_lateral_acceleration_mps2` | `15.0` | `v*omega_z` 횡가속도 절댓값 제한 |
 | `imu_stabilization_motion_maximum_sample_age_sec` | `0.10` | 이보다 오래된 ERPM motion 상태는 사용하지 않음 |
-| `imu_stabilization_accelerometer_stationary_only` | `false` | motion compensation 사용 시 주행 중 보정 허용 |
-| `imu_stabilization_reference_tilt_leak_time_constant_sec` | `8.0` | 주행 중 시작 tilt 기준으로 복귀하는 약한 시정수 |
+| `imu_stabilization_accelerometer_stationary_only` | `true` | 주행 중 가속도계를 기본 자세에 누적하지 않음 |
+| `imu_stabilization_moving_accelerometer_nudge_enabled` | `true` | 보정된 가속도계를 비누적 bounded nudge로만 적용 |
+| `imu_stabilization_moving_accelerometer_nudge_time_constant_sec` | `0.15` | 주행 중 nudge 반응/제거 시정수 |
+| `imu_stabilization_moving_accelerometer_nudge_strength` | `0.15` | 신뢰도를 통과한 가속도계 오차의 반영 비율 |
+| `imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg` | `0.20` | 주행 중 가속도계가 만들 수 있는 pitch 최대 영향 |
+| `imu_stabilization_moving_accelerometer_roll_nudge_maximum_deg` | `0.15` | 주행 중 가속도계가 만들 수 있는 roll 최대 영향 |
+| `imu_stabilization_reference_tilt_leak_time_constant_sec` | `4.0` | 주행 중 시작 tilt 기준으로 복귀하는 시정수 |
 | `imu_stabilization_stationary_tilt_recovery_time_constant_sec` | `0.35` | 정지 후 시작 시점 복귀 시정수 |
 | `imu_stabilization_maximum_correction_deg` | `3.0` | 축별 최대 동적 보정각; 초과 시 zoom-only fallback |
 | `imu_stabilization_maximum_prediction_sec` | `0.015` | 마지막 gyro 기반 최대 예측 시간 |
@@ -359,7 +364,13 @@ ros2 topic info /camera/image_rect --verbose
 로그 구간의 최대 절댓값이다. 1 Hz 상태 로그 사이에 발생한 짧은 조향도
 최대값에 남는다. `imu_residual_accel(forward/left)`는 ERPM/자이로로
 계산한 차량 종/횡가속도를 IMU에서 제거한 뒤, Depth 자세 정렬을
-적용하기 전의 잔여값이다.
+적용하기 전의 잔여값이다. `accel_nudge(roll/pitch)`는 기본
+자이로/기준 자세에 더해진 현재 비누적 가속도계 보정각이다.
+
+주행 중 bounded nudge는 기본 자세 적분에 다시 넣지 않는다.
+따라서 residual 가속도가 오래 틀려도 pitch/roll 영향은
+각각 설정한 maximum을 넘어 누적되지 않는다. 유효한 가속도
+샘플이 없거나 정지하면 같은 빠른 시정수로 0도로 복귀한다.
 
 실차 거리 기준 속도가 로그의 `vehicle(v/ax/ay)` 속도와 다르면
 `imu_stabilization_speed_scale_correction`을 다음처럼 조정한다.

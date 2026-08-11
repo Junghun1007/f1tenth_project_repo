@@ -295,6 +295,97 @@ void verifyMovingAccelerometerStaysAlignedWithExternalBevReference()
     "external alignment suppressed a real relative accelerometer change");
 }
 
+void verifyMovingAccelerometerNudgeIsFastBoundedAndNonAccumulating()
+{
+  auto config = fastConfig();
+  config.moving_accelerometer_nudge_enabled = true;
+  config.moving_accelerometer_nudge_time_constant_sec = 0.15;
+  config.moving_accelerometer_nudge_strength = 1.0;
+  config.moving_accelerometer_roll_nudge_maximum_deg = 0.15;
+  config.moving_accelerometer_pitch_nudge_maximum_deg = 0.20;
+  config.reference_tilt_leak_time_constant_sec = 1000.0;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  calibrate(stabilizer);
+
+  constexpr double measured_roll_rad = 3.0 * kDegreesToRadians;
+  const cv::Vec3d tilted_acceleration(
+    -9.80665 * std::sin(measured_roll_rad),
+    -9.80665 * std::cos(measured_roll_rad),
+    0.0);
+  double timestamp_sec = 0.01;
+  for (int index = 0; index < 60; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      tilted_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      false);
+  }
+  require(
+    std::abs(stabilizer.movingAccelerometerNudgeDegrees()[0]) > 0.08,
+    "moving accelerometer nudge did not react within one time constant");
+  for (int index = 60; index < 400; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      tilted_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      false);
+  }
+
+  const cv::Vec2d active_nudge =
+    stabilizer.movingAccelerometerNudgeDegrees();
+  const auto bounded = stabilizer.correctionAt(timestamp_sec);
+  require(bounded.has_value(), "bounded nudge lookup failed");
+  require(
+    std::abs(active_nudge[0]) > 0.13 &&
+    std::abs(active_nudge[0]) <= 0.150001,
+    "moving accelerometer roll nudge did not reach its configured cap");
+  require(
+    std::abs(bounded->roll_error_deg) <= 0.151,
+    "moving accelerometer nudge accumulated beyond its configured cap");
+
+  for (int index = 0; index < 400; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      std::nullopt,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      false);
+  }
+  const cv::Vec2d cleared_nudge =
+    stabilizer.movingAccelerometerNudgeDegrees();
+  const auto cleared = stabilizer.correctionAt(timestamp_sec);
+  require(cleared.has_value(), "cleared nudge lookup failed");
+  require(
+    std::abs(cleared_nudge[0]) < 0.001 &&
+    std::abs(cleared->roll_error_deg) < 0.001,
+    "moving accelerometer nudge contaminated the persistent gyro attitude");
+
+  constexpr double measured_pitch_rad = 3.0 * kDegreesToRadians;
+  const cv::Vec3d pitched_acceleration(
+    0.0,
+    -9.80665 * std::cos(measured_pitch_rad),
+    -9.80665 * std::sin(measured_pitch_rad));
+  for (int index = 0; index < 400; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      pitched_acceleration,
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      false);
+  }
+  const cv::Vec2d pitch_nudge =
+    stabilizer.movingAccelerometerNudgeDegrees();
+  const auto pitch_bounded = stabilizer.correctionAt(timestamp_sec);
+  require(pitch_bounded.has_value(), "bounded pitch nudge lookup failed");
+  require(
+    std::abs(pitch_nudge[1]) > 0.18 &&
+    std::abs(pitch_nudge[1]) <= 0.200001 &&
+    std::abs(pitch_bounded->pitch_error_deg) <= 0.201,
+    "moving accelerometer pitch nudge exceeded its configured cap");
+}
+
 void verifyExternalVehicleStationaryControlsRecovery()
 {
   auto config = fastConfig();
@@ -421,6 +512,7 @@ int main()
   verifyReferenceLeakBoundsGyroDrift();
   verifyMotionCompensatedGravityCorrectsMovingGyroDrift();
   verifyMovingAccelerometerStaysAlignedWithExternalBevReference();
+  verifyMovingAccelerometerNudgeIsFastBoundedAndNonAccumulating();
   verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery();
 
   const auto config = fastConfig();

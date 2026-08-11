@@ -64,7 +64,7 @@ camera_driver:
     imu_stabilization_stationary_erpm_enter_duration_sec: 1.0
     # 텔레메트리가 끊기면 정지로 고정하지 않고 주행 상태로 안전하게 복귀한다.
     imu_stabilization_measured_erpm_timeout_sec: 1.0
-    # true이면 보정된 차량 가속도를 IMU에서 제거한 뒤 주행 중에도 중력 방향을 사용한다.
+    # true이면 차량 가속도를 IMU에서 제거해 주행 중 bounded nudge에 사용한다.
     imu_stabilization_vehicle_motion_compensation_enabled: true
     # Traxxas Slash 4X4 Ultimate 순정 구동계 기반 초기값.
     # 4-pole 모터는 pole pair=2이고, 타이어 직경은 109.5mm로 시작한다.
@@ -89,12 +89,17 @@ camera_driver:
     imu_stabilization_maximum_lateral_acceleration_mps2: 15.0
     imu_stabilization_motion_maximum_sample_interval_sec: 0.10
     imu_stabilization_motion_maximum_sample_age_sec: 0.10
-    # motion compensation이 켜지면 주행 중 보정이 필요하므로 false를 사용한다.
-    # motion compensation을 끈 상태에서는 true가 raw 주행 가속도 오인을 막는다.
-    imu_stabilization_accelerometer_stationary_only: false
-    # 평지/서스펜션 복귀 가정에 따라 gyro tilt를 시작 기준으로 매우 천천히 누설한다.
+    # 기본 자세에는 주행 중 가속도계를 누적하지 않는다. 대신 아래의
+    # 빠르고 작은 bounded nudge만 출력 자세에 비누적으로 더한다.
+    imu_stabilization_accelerometer_stationary_only: true
+    imu_stabilization_moving_accelerometer_nudge_enabled: true
+    imu_stabilization_moving_accelerometer_nudge_time_constant_sec: 0.15
+    imu_stabilization_moving_accelerometer_nudge_strength: 0.15
+    imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg: 0.20
+    imu_stabilization_moving_accelerometer_roll_nudge_maximum_deg: 0.15
+    # 평지/서스펜션 복귀 가정에 따라 gyro tilt를 시작 기준으로 천천히 누설한다.
     # 작을수록 drift는 줄지만 오래 지속되는 실제 자세 변화를 덜 보정할 수 있다.
-    imu_stabilization_reference_tilt_leak_time_constant_sec: 8.0
+    imu_stabilization_reference_tilt_leak_time_constant_sec: 4.0
     # 1초 정지 확인 후 약 1초(약 3 tau) 안에 시작 시점으로 복귀하는 시정수다.
     imu_stabilization_stationary_tilt_recovery_time_constant_sec: 0.35
     imu_stabilization_online_gyroscope_tilt_bias_enabled: true

@@ -26,8 +26,13 @@ struct ImuImageStabilizerConfig
   double roll_acceleration_correction_time_constant_sec{2.0};
   double roll_acceleration_direction_gate_deg{4.3};
   bool acceleration_correction_stationary_only{true};
+  bool moving_accelerometer_nudge_enabled{false};
+  double moving_accelerometer_nudge_time_constant_sec{0.15};
+  double moving_accelerometer_nudge_strength{0.15};
+  double moving_accelerometer_pitch_nudge_maximum_deg{0.20};
+  double moving_accelerometer_roll_nudge_maximum_deg{0.15};
   bool external_reference_required{false};
-  double reference_tilt_leak_time_constant_sec{8.0};
+  double reference_tilt_leak_time_constant_sec{4.0};
   double stationary_tilt_recovery_time_constant_sec{0.35};
   bool online_gyroscope_tilt_bias_enabled{true};
   double online_gyroscope_tilt_bias_time_constant_sec{10.0};
@@ -103,6 +108,7 @@ public:
   bool initialized() const;
   ImageStabilizerCalibrationProgress calibrationProgress() const;
   cv::Vec3d gyroscopeBiasRadps() const;
+  cv::Vec2d movingAccelerometerNudgeDegrees() const;
   std::optional<cv::Vec3d> referenceUpCamera() const;
   bool stationaryConfirmed() const;
   bool externalReferenceReceived() const;

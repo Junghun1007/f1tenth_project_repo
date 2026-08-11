@@ -449,6 +449,21 @@ private:
     imu_stabilizer_config_.acceleration_correction_stationary_only =
       node_.declare_parameter<bool>(
       "imu_stabilization_accelerometer_stationary_only", true);
+    imu_stabilizer_config_.moving_accelerometer_nudge_enabled =
+      node_.declare_parameter<bool>(
+      "imu_stabilization_moving_accelerometer_nudge_enabled", true);
+    imu_stabilizer_config_.moving_accelerometer_nudge_time_constant_sec =
+      node_.declare_parameter<double>(
+      "imu_stabilization_moving_accelerometer_nudge_time_constant_sec", 0.15);
+    imu_stabilizer_config_.moving_accelerometer_nudge_strength =
+      node_.declare_parameter<double>(
+      "imu_stabilization_moving_accelerometer_nudge_strength", 0.15);
+    imu_stabilizer_config_.moving_accelerometer_pitch_nudge_maximum_deg =
+      node_.declare_parameter<double>(
+      "imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg", 0.20);
+    imu_stabilizer_config_.moving_accelerometer_roll_nudge_maximum_deg =
+      node_.declare_parameter<double>(
+      "imu_stabilization_moving_accelerometer_roll_nudge_maximum_deg", 0.15);
     startup_ground_reference_topic_ = node_.declare_parameter<std::string>(
       "imu_stabilization_external_reference_topic",
       "/camera/startup_ground_normal");
@@ -514,7 +529,7 @@ private:
       "imu_stabilization_motion_maximum_sample_age_sec", 0.10);
     imu_stabilizer_config_.reference_tilt_leak_time_constant_sec =
       node_.declare_parameter<double>(
-      "imu_stabilization_reference_tilt_leak_time_constant_sec", 8.0);
+      "imu_stabilization_reference_tilt_leak_time_constant_sec", 4.0);
     imu_stabilizer_config_.stationary_tilt_recovery_time_constant_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_stationary_tilt_recovery_time_constant_sec", 0.35);
@@ -692,24 +707,33 @@ private:
           throw std::invalid_argument(
                   "maximum lateral acceleration must be positive");
         }
-        if (imu_stabilizer_config_.acceleration_correction_stationary_only) {
+        if (
+          imu_stabilizer_config_.moving_accelerometer_nudge_enabled &&
+          !imu_stabilizer_config_.acceleration_correction_stationary_only)
+        {
           RCLCPP_WARN(
             node_.get_logger(),
-            "Vehicle motion compensation enables moving accelerometer "
-            "correction; overriding accelerometer_stationary_only=false.");
+            "Bounded moving accelerometer nudge replaces cumulative moving "
+            "correction; overriding accelerometer_stationary_only=true.");
           imu_stabilizer_config_.acceleration_correction_stationary_only =
-            false;
+            true;
         }
-      } else if (
-        imu_stabilization_enabled_ &&
-        !imu_stabilizer_config_.acceleration_correction_stationary_only)
-      {
-        RCLCPP_WARN(
-          node_.get_logger(),
-          "Vehicle motion compensation is off; overriding "
-          "accelerometer_stationary_only=true to reject raw moving "
-          "acceleration.");
-        imu_stabilizer_config_.acceleration_correction_stationary_only = true;
+      } else if (imu_stabilization_enabled_) {
+        if (imu_stabilizer_config_.moving_accelerometer_nudge_enabled) {
+          RCLCPP_WARN(
+            node_.get_logger(),
+            "Vehicle motion compensation is off; disabling bounded moving "
+            "accelerometer nudge to reject raw vehicle acceleration.");
+          imu_stabilizer_config_.moving_accelerometer_nudge_enabled = false;
+        }
+        if (!imu_stabilizer_config_.acceleration_correction_stationary_only) {
+          RCLCPP_WARN(
+            node_.get_logger(),
+            "Vehicle motion compensation is off; overriding "
+            "accelerometer_stationary_only=true to reject raw moving "
+            "acceleration.");
+          imu_stabilizer_config_.acceleration_correction_stationary_only = true;
+        }
       }
     }
     if (
@@ -1091,6 +1115,8 @@ private:
         "startup discard + %.1f s stationary calibration; yaw-free tilt, "
         "BEV reference=%s on %s, runtime stationary=%s "
         "(filtered enter<=%d, raw exit>=%d, filter tau=%.2fs, hold=%.2fs), "
+        "moving accel=%s (tau=%.2fs, strength=%.2f, pitch/roll cap="
+        "%.2f/%.2fdeg), "
         "pitch/roll limit %.1f deg, "
         "invalid correction policy=zoom-only fallback",
         imu_stabilizer_config_.startup_discard_duration_sec,
@@ -1103,6 +1129,14 @@ private:
         stationary_erpm_exit_threshold_,
         stationary_erpm_filter_time_constant_sec_,
         stationary_erpm_enter_duration_sec_,
+        imu_stabilizer_config_.moving_accelerometer_nudge_enabled ?
+        "bounded-nudge" :
+        (imu_stabilizer_config_.acceleration_correction_stationary_only ?
+        "off" : "cumulative"),
+        imu_stabilizer_config_.moving_accelerometer_nudge_time_constant_sec,
+        imu_stabilizer_config_.moving_accelerometer_nudge_strength,
+        imu_stabilizer_config_.moving_accelerometer_pitch_nudge_maximum_deg,
+        imu_stabilizer_config_.moving_accelerometer_roll_nudge_maximum_deg,
         imu_stabilizer_config_.maximum_correction_deg);
     }
   }
@@ -2222,6 +2256,8 @@ private:
           180.0 / 3.141592653589793238462643383279502884;
         const cv::Vec3d bias_degps =
           imu_stabilizer_->gyroscopeBiasRadps() * radians_to_degrees;
+        const cv::Vec2d moving_accelerometer_nudge_deg =
+          imu_stabilizer_->movingAccelerometerNudgeDegrees();
         const bool erpm_fresh = measured_erpm_is_fresh(
           steady_now_nanoseconds());
         const double peak_yaw_rate_degps =
@@ -2239,6 +2275,7 @@ private:
           "turn(yaw_now/peak=%.2f/%.2fdegps, ay_peak=%.3f), "
           "imu_residual_accel(forward/left)=%.3f/%.3f, motion_fusion=%s "
           "(samples/misses=%lu/%lu, no_accel/motion/axes=%lu/%lu/%lu), "
+          "accel_nudge(roll/pitch)=%.3f/%.3fdeg, "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
           latest_stabilization_roll_error_deg_.load(
             std::memory_order_relaxed),
@@ -2273,6 +2310,8 @@ private:
             motion_missing_state_total_.load()),
           static_cast<unsigned long>(
             motion_missing_axes_total_.load()),
+          moving_accelerometer_nudge_deg[0],
+          moving_accelerometer_nudge_deg[1],
           bias_degps[0], bias_degps[1], bias_degps[2],
           static_cast<unsigned long>(
             imu_stabilizer_->onlineTiltBiasUpdateCount()));
