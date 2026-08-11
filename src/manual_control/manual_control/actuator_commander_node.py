@@ -116,6 +116,7 @@ class ActuatorCommanderNode(Node):
         self._last_control_time = self.get_clock().now()
         self._pedal_input_timed_out = True
         self._steering_input_timed_out = True
+        self._gear_button_was_pressed = False
 
         # Manual commands are state values. Intermediate samples may be
         # discarded; every consumer should act on the newest sample only.
@@ -137,7 +138,11 @@ class ActuatorCommanderNode(Node):
             current_duty_topic,
             latest_command_qos,
         )
-        self.gear_state_pub = self.create_publisher(String, gear_state_topic, 10)
+        self.gear_state_pub = self.create_publisher(
+            String,
+            gear_state_topic,
+            latest_command_qos,
+        )
 
         self.accelerator_sub = self.create_subscription(
             Float32,
@@ -157,14 +162,13 @@ class ActuatorCommanderNode(Node):
             self._on_steering,
             latest_command_qos,
         )
-        button_event_qos = QoSProfile(depth=10)
-        button_event_qos.reliability = ReliabilityPolicy.RELIABLE
-        button_event_qos.durability = DurabilityPolicy.VOLATILE
+        # Match the publisher's latest-only policy. Gear requests are never
+        # queued for delayed execution.
         self.gear_toggle_sub = self.create_subscription(
             Bool,
             gear_toggle_topic,
             self._on_gear_toggle,
-            button_event_qos,
+            latest_command_qos,
         )
 
         self.control_timer = self.create_timer(
@@ -202,7 +206,12 @@ class ActuatorCommanderNode(Node):
         self._steering_input_timed_out = False
 
     def _on_gear_toggle(self, msg: Bool) -> None:
-        if not bool(msg.data):
+        gear_button_pressed = bool(msg.data)
+        gear_toggle_requested = (
+            gear_button_pressed and not self._gear_button_was_pressed
+        )
+        self._gear_button_was_pressed = gear_button_pressed
+        if not gear_toggle_requested:
             return
 
         if self.duty_profile.toggle_gear():

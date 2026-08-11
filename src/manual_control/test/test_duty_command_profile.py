@@ -85,6 +85,7 @@ class DutyCommandProfileTest(unittest.TestCase):
 
         self.assertFalse(profile.toggle_gear())
         self.assertEqual(profile.update(0.0, 0.0, 0.0125), 0.0)
+        self.assertEqual(profile.gear, Gear.FORWARD)
         self.assertTrue(profile.toggle_gear())
         self.assertEqual(profile.gear, Gear.REVERSE)
 

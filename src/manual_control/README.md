@@ -33,21 +33,21 @@ an accumulated command alive. Current gear and command duty are
 published on `/manual/gear` and
 `/manual/current_duty`. The VESC node publishes measured ERPM on
 `/vesc/measured_erpm` and logs target duty and measured ERPM together.
-Forward and reverse gear changes publish no `JoyFeedback`; controller rumble is
-disabled in both directions.
 
-RB is converted from a repeated button state into one reliable rising-edge
-event. The first press is handled immediately, holding the button does not
-repeat the gear change, and edges within `button_debounce_sec: 0.15` are
-discarded as contact bounce.
+RB's current pressed/released state is published every joystick frame. The
+actuator node changes gear only on its rising edge, so holding the button does
+not repeat the change. A release overwrites a delayed press through
+`KEEP_LAST(1)`; there is no debounce timer, pending request, or reliable event
+backlog.
 
 The manual controller runs at 80 Hz. Its configured duty limits and ramps are:
 
 Controller state and VESC command topics use `KEEP_LAST(1)` best-effort QoS.
 Holding RT or a steering input therefore replaces the pending value instead of
-accumulating old commands. RB uses a separate reliable event QoS so a short press
-is not overwritten by its release. When serial I/O is temporarily delayed, the
-VESC node processes only the newest waiting duty/ERPM/servo command.
+accumulating old commands. RB also uses `KEEP_LAST(1)` best-effort QoS, so a
+delayed gear event is discarded instead of replayed. When serial I/O is
+temporarily delayed, the VESC node processes only the newest waiting
+duty/ERPM/servo command.
 
 ```yaml
 forward_max_duty: 0.10
@@ -58,7 +58,6 @@ acceleration_duty_per_sec: 0.03
 coast_deceleration_duty_per_sec: 0.04
 brake_duty_per_sec: 0.08
 immediate_stop_on_accelerator_release: false
-button_debounce_sec: 0.15
 ```
 
 `coast_deceleration_duty_per_sec` is used only when
