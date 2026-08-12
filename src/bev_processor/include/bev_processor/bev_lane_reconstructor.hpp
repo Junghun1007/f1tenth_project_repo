@@ -63,9 +63,6 @@ struct BevLaneReconstructorConfig
   int minimum_points{6};
   bool allow_single_lane{true};
 
-  double correspondence_minimum_width_m{0.55};
-  double correspondence_maximum_width_m{0.70};
-  double correspondence_longitudinal_tolerance_m{0.10};
   bool infer_partially_missing_lane{true};
 
   bool temporal_tracking_enabled{true};

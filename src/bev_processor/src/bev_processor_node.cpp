@@ -461,15 +461,14 @@ public:
         get_logger(),
         "BEV lane continuity: temporal=%s, lateral jump near/far="
         "%.2f/%.2fm, heading jump=%.1fdeg, confirm/hold=%d/%d frames, "
-        "normal correspondence=%.2f..%.2fm",
+        "missing-side inference=%s",
         lane_reconstructor_config_.temporal_tracking_enabled ? "on" : "off",
         lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m,
         lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m,
         lane_reconstructor_config_.temporal_maximum_heading_jump_deg,
         lane_reconstructor_config_.temporal_confirmation_frames,
         lane_reconstructor_config_.temporal_hold_frames,
-        lane_reconstructor_config_.correspondence_minimum_width_m,
-        lane_reconstructor_config_.correspondence_maximum_width_m);
+        lane_reconstructor_config_.infer_partially_missing_lane ? "on" : "off");
     }
     RCLCPP_INFO(
       get_logger(),
@@ -658,12 +657,6 @@ private:
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.08);
     declare_parameter<int>("lane_minimum_points", 6);
     declare_parameter<bool>("lane_allow_single_lane", true);
-    declare_parameter<double>(
-      "lane_correspondence_minimum_width_m", 0.55);
-    declare_parameter<double>(
-      "lane_correspondence_maximum_width_m", 0.70);
-    declare_parameter<double>(
-      "lane_correspondence_longitudinal_tolerance_m", 0.10);
     declare_parameter<bool>("lane_infer_partially_missing_lane", true);
     declare_parameter<bool>("lane_temporal_tracking_enabled", true);
     declare_parameter<double>(
@@ -937,13 +930,6 @@ private:
       get_parameter("lane_minimum_points").as_int());
     lane_reconstructor_config_.allow_single_lane =
       get_parameter("lane_allow_single_lane").as_bool();
-    lane_reconstructor_config_.correspondence_minimum_width_m =
-      get_parameter("lane_correspondence_minimum_width_m").as_double();
-    lane_reconstructor_config_.correspondence_maximum_width_m =
-      get_parameter("lane_correspondence_maximum_width_m").as_double();
-    lane_reconstructor_config_.correspondence_longitudinal_tolerance_m =
-      get_parameter(
-        "lane_correspondence_longitudinal_tolerance_m").as_double();
     lane_reconstructor_config_.infer_partially_missing_lane =
       get_parameter("lane_infer_partially_missing_lane").as_bool();
     lane_reconstructor_config_.temporal_tracking_enabled =

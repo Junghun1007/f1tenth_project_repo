@@ -195,16 +195,15 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
 9. Odometry 없이 이전 승인 라인과 같은 X의 위치·방향을 비교한다. 큰 변화는
    2프레임 연속일 때만 승인하고, 검출 소실 시 이전 라인은 2프레임만 유지한다.
-10. 양쪽 차선이 모두 실측되면 각자의 슬라이딩 윈도우 결과를 그대로 유지한다.
-    한쪽 차선의 실측점이 없는 X 구간만, 더 신뢰할 수 있는 반대편 차선의
-    국소 법선 방향 55~70cm에서 실제 픽셀을 다시 찾고 없으면 평행 차선으로
-    보완한다. 한쪽 전체가 없을 때만 반대편 전체를 생성한다.
+10. 양쪽 차선이 모두 실측되거나 한쪽의 중간 구간만 비면, 각자의 슬라이딩
+    윈도우 결과를 그대로 유지한다. 한쪽 전체가 `lane_minimum_points`를
+    채우지 못할 때만 반대편 차선의 국소 법선 방향으로 전체 평행 차선을 예측한다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
-이 기능은 이미 잘 잡힌 반대편 차선을 재구성하지 않는다. 실측점이 없는
-구간만 보이는 차선의 접선에 수직인 방향으로 보완하므로 곡선에서도 단순
-Y 이동보다 차선 폭을 잘 유지한다. 낮은 신뢰도의 새 라인은 즉시 승인하지 않고,
-이전 라인도 2프레임을 넘겨 계속 만들지 않는다.
+이 기능은 이미 잘 잡힌 반대편이나 반대편의 빈 구간을 재구성하지 않는다.
+전체 미검출 상태에서만 보이는 차선의 접선에 수직인 방향으로 평행 차선을
+예측한다. 낮은 신뢰도의 새 라인은 즉시 승인하지 않고, 이전 라인도 2프레임을
+넘겨 계속 만들지 않는다.
 
 실행하면서 값을 바꾸는 예시는 다음과 같다.
 
@@ -224,7 +223,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_preview_overlay_alpha:=0.8
 ```
 
-시간 연속성과 한쪽 가림 보완을 조절하는 예시는 다음과 같다.
+시간 연속성과 한쪽 전체 미검출 시 예측을 조절하는 예시는 다음과 같다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
@@ -232,8 +231,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_maximum_lateral_jump_far_m:=0.12 \
   lane_temporal_confirmation_frames:=2 \
   lane_temporal_hold_frames:=2 \
-  lane_correspondence_minimum_width_m:=0.55 \
-  lane_correspondence_maximum_width_m:=0.70
+  lane_infer_partially_missing_lane:=true
 ```
 
 원거리 곡선을 놓치면 far 밝기 임계값과 원거리 윈도우 폭을 다음처럼 조절한다.

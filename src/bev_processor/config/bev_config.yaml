@@ -239,12 +239,9 @@ bev_processor:
     lane_minimum_points: 6
     lane_allow_single_lane: true
 
-    # 한쪽 차선을 기준으로 국소 접선의 법선 방향 55~70cm를 검색한다.
-    # 반대쪽 실제 픽셀이 있으면 그 픽셀을 쓰고, 가려진 구간만 62.5cm
-    # 위치에 보완한다. 단순 Y 이동이 아니므로 곡선에서도 평행 폭을 유지한다.
-    lane_correspondence_minimum_width_m: 0.55
-    lane_correspondence_maximum_width_m: 0.70
-    lane_correspondence_longitudinal_tolerance_m: 0.10
+    # 한쪽 전체가 lane_minimum_points를 채우지 못해 미검출일 때만, 잡힌
+    # 반대편의 국소 접선 법선 방향으로 차선 폭만큼 평행 예측한다. 양쪽이
+    # 검출됐거나 한쪽 중간 구간만 비면 각자의 슬라이딩 윈도우 결과를 유지한다.
     lane_infer_partially_missing_lane: true
 
     # Odometry 없이 이전 승인 라인과 현재 라인을 같은 X에서 비교한다.
