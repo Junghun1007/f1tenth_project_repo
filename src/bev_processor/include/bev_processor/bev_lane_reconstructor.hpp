@@ -15,6 +15,7 @@ struct BevLaneReconstructorConfig
   double x_max_m{3.0};
   double y_min_m{-0.6};
   double y_max_m{0.6};
+  double output_lateral_margin_m{0.70};
   double meter_per_pixel{0.01};
   int image_width{120};
   int image_height{300};
@@ -81,6 +82,8 @@ struct BevLaneReconstruction
 {
   cv::Mat candidate_mask;
   cv::Mat reconstructed_mask;
+  cv::Mat left_reconstructed_mask;
+  cv::Mat right_reconstructed_mask;
   std::vector<cv::Point2d> left_measured_points;
   std::vector<cv::Point2d> right_measured_points;
   bool valid{false};

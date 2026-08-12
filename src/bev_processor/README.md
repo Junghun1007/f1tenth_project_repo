@@ -155,10 +155,11 @@ Sobel, 미분 필터, 대비 강화, 밝기 임계값, morphology, 차선 추출
 기본 설정에서는 두 결과를 동시에 발행한다.
 
 - `/camera/image_bev` (`bgr8`): 변경하지 않은 원본 컬러 BEV
-- `/camera/image_bev_lane` (`mono8`): 검은 배경에 흰색 좌·우 차선만 다시 그린 결과
+- `/camera/image_bev_lane` (`mono8`): 검은 배경에 흰색 좌·우 차선만 다시 그린 결과.
+  좌우에는 `lane_output_lateral_margin_m`만큼의 추론 공간이 추가된다.
 
-GUI 프리뷰는 기본적으로 원본 BEV 위에 검출 차선을 초록색, 투명도
-`0.8`로만 합성한다. 이 오버레이는 위 두 발행 토픽에는 들어가지 않는다.
+GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, 오른쪽 차선을
+빨간색, 투명도 `0.8`로 합성한다. 색상 오버레이는 발행 토픽에는 들어가지 않는다.
 `lane_preview_enabled:=false`로 실행하면 프리뷰도 원본 BEV만 표시한다.
 
 `lane_preview_sliding_windows_enabled:=true`면 실제 추적에 사용한
@@ -167,10 +168,15 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 검출 차선을 초록색, �
 어두운 테두리로 표시한다. 성능 측정이나 일반 주행 시 박스가 필요 없으면
 `lane_preview_sliding_windows_enabled:=false`로 끄면 된다.
 
-`preview_x_origin_m:=0.30`은 프리뷰의 하단을 실제 전방 30cm 지점으로
-자르고, 그 지점을 `X=0.0m`로 표시한다. 따라서 기본 3m BEV는 프리뷰에서
-`X=0.0~2.7m`로 보인다. 이 옵션은 표시용이며 BEV 변환, 차선 추적,
-발행 토픽의 실제 좌표는 바꾸지 않는다.
+기본 `preview_x_origin_m:=0.02`는 차량 좌표 `X=0.02m`에 있는 카메라
+위치를 프리뷰 `X=0.0m`로 표시한다. 따라서 현재 3m BEV는 카메라
+기준 `X=0.0~2.98m`로 보인다.
+
+`lane_output_lateral_margin_m:=0.70`은 원본 BEV 좌우에 각각 70cm의 검은
+픽셀 공간을 추가한다. 원본 컬러 BEV 범위는 중앙에 그대로 표시되고, 한쪽
+차선을 기준으로 계산한 반대편 차선이 원본 BEV 밖에 있어도 이 공간에 그려진다.
+기본 1cm/pixel에서는 차선 결과 폭이 `120 + 70 * 2 = 260px`이고 좌표 범위는
+`Y=-1.3~+1.3m`이다. 원본 `/camera/image_bev` 크기는 120x300으로 유지된다.
 
 재구성 단계는 다음 순서로 동작한다.
 
@@ -189,8 +195,9 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 검출 차선을 초록색, �
 8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
 9. Odometry 없이 이전 승인 라인과 같은 X의 위치·방향을 비교한다. 큰 변화는
    2프레임 연속일 때만 승인하고, 검출 소실 시 이전 라인은 2프레임만 유지한다.
-10. 한쪽 차선의 국소 법선 방향 55~70cm에서 반대편 실제 픽셀을 다시 찾는다.
-    픽셀이 가려진 위치만 승인된 차선 폭으로 보완한다.
+10. 더 신뢰할 수 있는 한쪽 차선의 국소 법선 방향 55~70cm에서 반대편 실제
+    픽셀을 다시 찾는다. 찾지 못한 위치는 기준 차선과 같은 접선·곡률을 갖는
+    평행 차선으로 항상 보완한다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
 실제로 검출된 반대편 픽셀이 있으면 추정점보다 실제 픽셀을 우선한다. 픽셀이
@@ -210,6 +217,8 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_minimum_local_contrast:=35 \
   lane_sliding_window_measurement_weight:=0.90 \
   lane_expected_width_m:=0.625 \
+  lane_infer_partially_missing_lane:=true \
+  lane_output_lateral_margin_m:=0.70 \
   lane_output_line_thickness_m:=0.02 \
   lane_preview_overlay_alpha:=0.8
 ```

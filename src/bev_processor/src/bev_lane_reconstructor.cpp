@@ -41,6 +41,7 @@ struct Seed
   cv::Point2d right;
   bool left_measured{false};
   bool right_measured{false};
+  double implied_center_abs_m{0.0};
 };
 
 struct WindowMeasurement
@@ -221,17 +222,19 @@ cv::Point imagePoint(
   const cv::Point2d & metric_point)
 {
   return cv::Point(
-    columnAtY(config, metric_point.y),
+    static_cast<int>(std::lround(
+      (config.y_max_m + config.output_lateral_margin_m - metric_point.y) /
+      config.meter_per_pixel - 0.5)),
     rowAtX(config, metric_point.x));
 }
 
 bool imagePointInside(
-  const BevLaneReconstructorConfig & config,
+  const cv::Mat & image,
   const cv::Point & point)
 {
   return
-    point.x >= 0 && point.x < config.image_width &&
-    point.y >= 0 && point.y < config.image_height;
+    point.x >= 0 && point.x < image.cols &&
+    point.y >= 0 && point.y < image.rows;
 }
 
 double farBlend(
@@ -391,12 +394,15 @@ std::vector<Seed> findSeedCandidates(
         pair.right = cv::Point2d(x_m, right_m);
         pair.left_measured = true;
         pair.right_measured = true;
+        pair.implied_center_abs_m = std::abs(center_m);
         candidates.push_back(pair);
       }
     }
 
     if (config.allow_single_lane) {
       for (const double lateral_m : laterals_m) {
+        const double as_left_center_m =
+          lateral_m - 0.5 * config.expected_lane_width_m;
         Seed as_left;
         as_left.valid = true;
         as_left.x_m = x_m;
@@ -404,8 +410,16 @@ std::vector<Seed> findSeedCandidates(
         as_left.right = cv::Point2d(
           x_m, lateral_m - config.expected_lane_width_m);
         as_left.left_measured = true;
-        candidates.push_back(as_left);
+        as_left.implied_center_abs_m = std::abs(as_left_center_m);
+        if (
+          as_left.implied_center_abs_m <=
+          config.single_lane_initial_tolerance_m)
+        {
+          candidates.push_back(as_left);
+        }
 
+        const double as_right_center_m =
+          lateral_m + 0.5 * config.expected_lane_width_m;
         Seed as_right;
         as_right.valid = true;
         as_right.x_m = x_m;
@@ -413,7 +427,13 @@ std::vector<Seed> findSeedCandidates(
           x_m, lateral_m + config.expected_lane_width_m);
         as_right.right = cv::Point2d(x_m, lateral_m);
         as_right.right_measured = true;
-        candidates.push_back(as_right);
+        as_right.implied_center_abs_m = std::abs(as_right_center_m);
+        if (
+          as_right.implied_center_abs_m <=
+          config.single_lane_initial_tolerance_m)
+        {
+          candidates.push_back(as_right);
+        }
       }
     }
   }
@@ -767,16 +787,59 @@ SeedProbeScore probeSeed(
   return score;
 }
 
+double seedIdentityError(
+  const Seed & seed,
+  const std::vector<cv::Point2d> & previous_left,
+  const std::vector<cv::Point2d> & previous_right)
+{
+  const auto pointError = [](
+      const cv::Point2d & point,
+      const std::vector<cv::Point2d> & previous) {
+      if (previous.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      const auto closest = std::min_element(
+        previous.begin(), previous.end(),
+        [&point](const cv::Point2d & first, const cv::Point2d & second) {
+          return std::abs(first.x - point.x) < std::abs(second.x - point.x);
+        });
+      return std::abs(closest->y - point.y);
+    };
+  double total_error_m = 0.0;
+  int comparison_count = 0;
+  if (seed.left_measured) {
+    const double error_m = pointError(seed.left, previous_left);
+    if (std::isfinite(error_m)) {
+      total_error_m += error_m;
+      ++comparison_count;
+    }
+  }
+  if (seed.right_measured) {
+    const double error_m = pointError(seed.right, previous_right);
+    if (std::isfinite(error_m)) {
+      total_error_m += error_m;
+      ++comparison_count;
+    }
+  }
+  return comparison_count > 0 ?
+         total_error_m / static_cast<double>(comparison_count) :
+         seed.implied_center_abs_m;
+}
+
 Seed selectSeedByTrackSupport(
   const std::vector<Seed> & candidates,
   const cv::Mat & candidate_mask,
   const cv::Mat & gray,
-  const BevLaneReconstructorConfig & config)
+  const BevLaneReconstructorConfig & config,
+  const std::vector<cv::Point2d> & previous_left,
+  const std::vector<cv::Point2d> & previous_right)
 {
   Seed selected_pair;
   double best_pair_seed_score = std::numeric_limits<double>::infinity();
   Seed selected_single;
   SeedProbeScore best_single_score;
+  double best_single_identity_error_m =
+    std::numeric_limits<double>::infinity();
   for (const auto & candidate : candidates) {
     const bool paired_candidate =
       candidate.left_measured && candidate.right_measured;
@@ -794,14 +857,20 @@ Seed selectSeedByTrackSupport(
       continue;
     }
     const auto score = probeSeed(candidate, candidate_mask, gray, config);
+    const double identity_error_m = seedIdentityError(
+      candidate, previous_left, previous_right);
     if (
       !selected_single.valid ||
       score.measured_points > best_single_score.measured_points ||
       (score.measured_points == best_single_score.measured_points &&
-      score.maximum_x_m > best_single_score.maximum_x_m))
+      score.maximum_x_m > best_single_score.maximum_x_m + 1.0e-9) ||
+      (score.measured_points == best_single_score.measured_points &&
+      std::abs(score.maximum_x_m - best_single_score.maximum_x_m) <= 1.0e-9 &&
+      identity_error_m < best_single_identity_error_m))
     {
       selected_single = candidate;
       best_single_score = score;
+      best_single_identity_error_m = identity_error_m;
     }
   }
   if (selected_pair.valid) {
@@ -1118,7 +1187,7 @@ double drawMeasuredLane(
   double maximum_x_m = 0.0;
   for (const auto & point : points) {
     const cv::Point pixel = imagePoint(config, point);
-    if (!imagePointInside(config, pixel)) {
+    if (!imagePointInside(*mask, pixel)) {
       previous_image_point.reset();
       previous_metric_point.reset();
       continue;
@@ -1150,7 +1219,10 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
 {
   if (
     config_.x_min_m < 0.0 || config_.x_max_m <= config_.x_min_m ||
-    config_.y_max_m <= config_.y_min_m || config_.meter_per_pixel <= 0.0 ||
+    config_.y_max_m <= config_.y_min_m ||
+    !std::isfinite(config_.output_lateral_margin_m) ||
+    config_.output_lateral_margin_m < 0.0 ||
+    config_.meter_per_pixel <= 0.0 ||
     config_.image_width <= 0 || config_.image_height <= 0 ||
     config_.minimum_brightness < 0 || config_.minimum_brightness > 255 ||
     config_.far_minimum_brightness < 0 ||
@@ -1287,12 +1359,20 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
       cv::MORPH_CLOSE, close_kernel);
   }
 
+  const int output_margin_px = static_cast<int>(std::llround(
+      config_.output_lateral_margin_m / config_.meter_per_pixel));
+  const int output_width = config_.image_width + 2 * output_margin_px;
+  result.left_reconstructed_mask = cv::Mat::zeros(
+    config_.image_height, output_width, CV_8UC1);
+  result.right_reconstructed_mask = cv::Mat::zeros(
+    config_.image_height, output_width, CV_8UC1);
   result.reconstructed_mask = cv::Mat::zeros(
-    config_.image_height, config_.image_width, CV_8UC1);
+    config_.image_height, output_width, CV_8UC1);
   const auto seed_candidates = findSeedCandidates(
     result.candidate_mask, gray, config_);
   const Seed seed = selectSeedByTrackSupport(
-    seed_candidates, result.candidate_mask, gray, config_);
+    seed_candidates, result.candidate_mask, gray, config_,
+    accepted_left_points_, accepted_right_points_);
   std::vector<cv::Point2d> backward_left_points = trackBackwardFromSeed(
     seed.left, seed.left_measured, true, result.candidate_mask, gray,
     config_, &result.sliding_windows);
@@ -1519,9 +1599,16 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
 
   left_output = extendByTangent(std::move(left_output), config_);
   right_output = extendByTangent(std::move(right_output), config_);
+  const double left_maximum_x_m = drawMeasuredLane(
+    left_output, config_, &result.left_reconstructed_mask);
+  const double right_maximum_x_m = drawMeasuredLane(
+    right_output, config_, &result.right_reconstructed_mask);
+  cv::bitwise_or(
+    result.left_reconstructed_mask,
+    result.right_reconstructed_mask,
+    result.reconstructed_mask);
   result.reconstructed_maximum_x_m = std::max(
-    drawMeasuredLane(left_output, config_, &result.reconstructed_mask),
-    drawMeasuredLane(right_output, config_, &result.reconstructed_mask));
+    left_maximum_x_m, right_maximum_x_m);
   result.valid = cv::countNonZero(result.reconstructed_mask) > 0;
   return result;
 }

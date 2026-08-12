@@ -191,7 +191,8 @@ bool maskHasWhiteNear(
   const double y_m,
   const int radius_px = 3)
 {
-  const cv::Point center = metricPoint(x_m, y_m);
+  cv::Point center = metricPoint(x_m, y_m);
+  center.x += (mask.cols - 120) / 2;
   const int first_row = std::max(0, center.y - radius_px);
   const int last_row = std::min(mask.rows - 1, center.y + radius_px);
   const int first_column = std::max(0, center.x - radius_px);
@@ -285,8 +286,17 @@ void testSingleBoundaryOnlyInfersMissingSide()
   const auto result = makeReconstructor().reconstruct(image);
   require(result.valid, "one actual boundary must still produce an output");
   require(
+    result.reconstructed_mask.cols == 260 &&
+    result.left_reconstructed_mask.size() == result.reconstructed_mask.size() &&
+    result.right_reconstructed_mask.size() == result.reconstructed_mask.size(),
+    "lane output must include the configured lateral prediction margins");
+  require(
     result.left_measured_points.size() >= 5U,
     "the visible boundary must be represented by actual measurements");
+  require(
+    cv::countNonZero(result.left_reconstructed_mask) > 0 &&
+    cv::countNonZero(result.right_reconstructed_mask) > 0,
+    "single-boundary reconstruction must keep separate left/right masks");
   const int row = metricPoint(1.0, 0.0).y;
   int run_count = 0;
   bool inside_run = false;

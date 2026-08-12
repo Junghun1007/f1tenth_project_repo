@@ -44,6 +44,8 @@ struct BevFrame
 {
   cv::Mat image;
   cv::Mat lane_mask;
+  cv::Mat left_lane_mask;
+  cv::Mat right_lane_mask;
   std::vector<BevLaneReconstruction::SlidingWindow> lane_sliding_windows;
   std_msgs::msg::Header header;
   SteadyClock::time_point input_received_at;
@@ -123,34 +125,56 @@ std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
   return message;
 }
 
-cv::Mat makeLaneOverlayPreview(
+cv::Mat makeExpandedBevPreview(
   const cv::Mat & bev_bgr,
-  const cv::Mat & lane_mask,
+  const int lateral_margin_px)
+{
+  if (bev_bgr.type() != CV_8UC3 || lateral_margin_px < 0) {
+    throw std::invalid_argument(
+            "expanded BEV preview expects BGR8 and a non-negative margin");
+  }
+  cv::Mat expanded = cv::Mat::zeros(
+    bev_bgr.rows, bev_bgr.cols + 2 * lateral_margin_px, CV_8UC3);
+  bev_bgr.copyTo(expanded(cv::Rect(
+      lateral_margin_px, 0, bev_bgr.cols, bev_bgr.rows)));
+  return expanded;
+}
+
+cv::Mat makeLaneOverlayPreview(
+  const cv::Mat & expanded_bev_bgr,
+  const cv::Mat & left_lane_mask,
+  const cv::Mat & right_lane_mask,
   const double alpha)
 {
   if (
-    bev_bgr.type() != CV_8UC3 || lane_mask.type() != CV_8UC1 ||
-    bev_bgr.size() != lane_mask.size())
+    expanded_bev_bgr.type() != CV_8UC3 ||
+    left_lane_mask.type() != CV_8UC1 ||
+    right_lane_mask.type() != CV_8UC1 ||
+    expanded_bev_bgr.size() != left_lane_mask.size() ||
+    expanded_bev_bgr.size() != right_lane_mask.size())
   {
     throw std::invalid_argument(
             "lane preview overlay expects matching BGR8 and MONO8 images");
   }
-  cv::Mat highlighted = bev_bgr.clone();
-  // OpenCV uses BGR, so this is pure green before alpha blending.
-  highlighted.setTo(cv::Scalar(0, 255, 0), lane_mask);
+  cv::Mat highlighted = expanded_bev_bgr.clone();
+  // OpenCV uses BGR: left lane is blue and right lane is red.
+  highlighted.setTo(cv::Scalar(255, 0, 0), left_lane_mask);
+  highlighted.setTo(cv::Scalar(0, 0, 255), right_lane_mask);
   cv::Mat blended;
   cv::addWeighted(
-    highlighted, alpha, bev_bgr, 1.0 - alpha, 0.0, blended);
+    highlighted, alpha, expanded_bev_bgr, 1.0 - alpha, 0.0, blended);
   return blended;
 }
 
 cv::Point laneMetricToPixel(
   const cv::Point2d & metric_point,
-  const BevConfig & config)
+  const BevConfig & config,
+  const double lateral_margin_m)
 {
   return cv::Point(
     static_cast<int>(std::lround(
-      (config.y_max_m - metric_point.y) / config.meter_per_pixel - 0.5)),
+      (config.y_max_m + lateral_margin_m - metric_point.y) /
+      config.meter_per_pixel - 0.5)),
     static_cast<int>(std::lround(
       (config.x_max_m - metric_point.x) / config.meter_per_pixel - 0.5)));
 }
@@ -158,7 +182,8 @@ cv::Point laneMetricToPixel(
 cv::Mat makeSlidingWindowPreview(
   const cv::Mat & bev_bgr,
   const std::vector<BevLaneReconstruction::SlidingWindow> & windows,
-  const BevConfig & config)
+  const BevConfig & config,
+  const double lateral_margin_m)
 {
   if (bev_bgr.type() != CV_8UC3) {
     throw std::invalid_argument(
@@ -169,7 +194,7 @@ cv::Mat makeSlidingWindowPreview(
     std::vector<cv::Point> pixels;
     pixels.reserve(window.corners.size());
     for (const auto & corner : window.corners) {
-      pixels.push_back(laneMetricToPixel(corner, config));
+      pixels.push_back(laneMetricToPixel(corner, config, lateral_margin_m));
     }
     const cv::Scalar color = window.left_lane ?
       (window.measurement_found ?
@@ -423,14 +448,15 @@ public:
         get_logger(),
         "BEV lane appearance gate: saturation<=%d, local contrast>=%d, "
         "background<=%d, tracked width near/far=%.2f/%.2fm, "
-        "preview overlay=%s alpha=%.2f",
+        "preview overlay=%s alpha=%.2f, lateral margin=%.2fm",
         lane_reconstructor_config_.maximum_saturation,
         lane_reconstructor_config_.minimum_local_contrast,
         lane_reconstructor_config_.maximum_local_background_brightness,
         lane_reconstructor_config_.tracked_lane_mark_width_near_m,
         lane_reconstructor_config_.tracked_lane_mark_width_far_m,
         lane_preview_enabled_ ? "on" : "off",
-        lane_preview_overlay_alpha_);
+        lane_preview_overlay_alpha_,
+        lane_reconstructor_config_.output_lateral_margin_m);
       RCLCPP_INFO(
         get_logger(),
         "BEV lane continuity: temporal=%s, lateral jump near/far="
@@ -587,7 +613,8 @@ private:
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
     declare_parameter<bool>("lane_preview_sliding_windows_enabled", true);
-    declare_parameter<double>("preview_x_origin_m", 0.30);
+    declare_parameter<double>("preview_x_origin_m", 0.02);
+    declare_parameter<double>("lane_output_lateral_margin_m", 0.70);
     declare_parameter<double>("lane_preview_overlay_alpha", 0.8);
     declare_parameter<int>("lane_minimum_brightness", 160);
     declare_parameter<int>("lane_far_minimum_brightness", 125);
@@ -637,7 +664,7 @@ private:
       "lane_correspondence_maximum_width_m", 0.70);
     declare_parameter<double>(
       "lane_correspondence_longitudinal_tolerance_m", 0.10);
-    declare_parameter<bool>("lane_infer_partially_missing_lane", false);
+    declare_parameter<bool>("lane_infer_partially_missing_lane", true);
     declare_parameter<bool>("lane_temporal_tracking_enabled", true);
     declare_parameter<double>(
       "lane_temporal_maximum_lateral_jump_near_m", 0.06);
@@ -823,6 +850,8 @@ private:
     lane_preview_sliding_windows_enabled_ =
       get_parameter("lane_preview_sliding_windows_enabled").as_bool();
     preview_x_origin_m_ = get_parameter("preview_x_origin_m").as_double();
+    lane_reconstructor_config_.output_lateral_margin_m =
+      get_parameter("lane_output_lateral_margin_m").as_double();
     lane_preview_overlay_alpha_ =
       get_parameter("lane_preview_overlay_alpha").as_double();
     lane_reconstructor_config_.x_min_m = bev_config_.x_min_m;
@@ -1016,6 +1045,8 @@ private:
       !std::isfinite(preview_x_origin_m_) ||
       preview_x_origin_m_ < bev_config_.x_min_m ||
       preview_x_origin_m_ >= bev_config_.x_max_m ||
+      !std::isfinite(lane_reconstructor_config_.output_lateral_margin_m) ||
+      lane_reconstructor_config_.output_lateral_margin_m < 0.0 ||
       status_log_interval_sec_ <= 0.0 ||
       startup_timeout_sec_ <= 0.0 ||
       !std::isfinite(stabilization_settle_sec_) ||
@@ -1283,6 +1314,8 @@ private:
             lane_process_ns, std::memory_order_relaxed);
           updateMaximum(lane_process_ns_max_interval_, lane_process_ns);
           output->lane_mask = lane.reconstructed_mask;
+          output->left_lane_mask = lane.left_reconstructed_mask;
+          output->right_lane_mask = lane.right_reconstructed_mask;
           output->lane_sliding_windows = lane.sliding_windows;
           latest_lane_points_.store(
             lane.measured_point_count, std::memory_order_relaxed);
@@ -1434,6 +1467,12 @@ private:
       bev_image.rows);
     const double displayed_x_max_m =
       bev_config_.x_max_m - preview_x_origin_m_;
+    const double displayed_y_min_m =
+      bev_config_.y_min_m -
+      lane_reconstructor_config_.output_lateral_margin_m;
+    const double displayed_y_max_m =
+      bev_config_.y_max_m +
+      lane_reconstructor_config_.output_lateral_margin_m;
     cv::Mat preview(
       visible_height + kPreviewTopMargin + kPreviewBottomMargin,
       bev_image.cols + kPreviewLeftMargin + kPreviewRightMargin,
@@ -1491,15 +1530,15 @@ private:
       1,
       cv::LINE_AA);
     const double first_y =
-      std::ceil(bev_config_.y_min_m / grid_step_m) * grid_step_m;
+      std::ceil(displayed_y_min_m / grid_step_m) * grid_step_m;
     for (
       double y_m = first_y;
-      y_m <= bev_config_.y_max_m + epsilon;
+      y_m <= displayed_y_max_m + epsilon;
       y_m += grid_step_m)
     {
       const int column = std::clamp(
         static_cast<int>(std::lround(
-          (bev_config_.y_max_m - y_m) /
+          (displayed_y_max_m - y_m) /
           bev_config_.meter_per_pixel)),
         0,
         displayed_bev.cols - 1);
@@ -1530,7 +1569,7 @@ private:
 
     const int center_column = std::clamp(
       static_cast<int>(std::lround(
-        bev_config_.y_max_m / bev_config_.meter_per_pixel)),
+        displayed_y_max_m / bev_config_.meter_per_pixel)),
       0,
       displayed_bev.cols - 1);
     cv::line(
@@ -1563,12 +1602,15 @@ private:
   void previewLoop()
   {
     try {
+      const int lateral_margin_px = static_cast<int>(std::llround(
+          lane_reconstructor_config_.output_lateral_margin_m /
+          bev_config_.meter_per_pixel));
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
       cv::resizeWindow(
         preview_window_name_,
         std::min(
           preview_max_width_,
-          bev_config_.output_width +
+          bev_config_.output_width + 2 * lateral_margin_px +
           kPreviewLeftMargin + kPreviewRightMargin),
         std::min(
           preview_max_height_,
@@ -1598,23 +1640,26 @@ private:
         const auto frame = std::atomic_load_explicit(
           &latest_output_, std::memory_order_acquire);
         if (frame) {
-          cv::Mat displayed_image;
+          cv::Mat displayed_image = makeExpandedBevPreview(
+            frame->image, lateral_margin_px);
           if (
             lane_preview_enabled_ &&
-            !frame->lane_mask.empty())
+            !frame->left_lane_mask.empty() &&
+            !frame->right_lane_mask.empty())
           {
             displayed_image = makeLaneOverlayPreview(
-              frame->image, frame->lane_mask,
+              displayed_image,
+              frame->left_lane_mask,
+              frame->right_lane_mask,
               lane_preview_overlay_alpha_);
-          } else {
-            displayed_image = frame->image;
           }
           if (
             lane_preview_sliding_windows_enabled_ &&
             !frame->lane_sliding_windows.empty())
           {
             displayed_image = makeSlidingWindowPreview(
-              displayed_image, frame->lane_sliding_windows, bev_config_);
+              displayed_image, frame->lane_sliding_windows, bev_config_,
+              lane_reconstructor_config_.output_lateral_margin_m);
           }
           cv::Mat preview_image = makeCoordinatePreview(displayed_image);
           cv::imshow(preview_window_name_, preview_image);
@@ -1960,7 +2005,7 @@ private:
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
   bool lane_preview_sliding_windows_enabled_{true};
-  double preview_x_origin_m_{0.30};
+  double preview_x_origin_m_{0.02};
   double lane_preview_overlay_alpha_{0.8};
   BevLaneReconstructorConfig lane_reconstructor_config_{};
   double status_log_interval_sec_{5.0};
