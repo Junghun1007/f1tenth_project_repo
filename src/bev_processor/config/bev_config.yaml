@@ -170,6 +170,9 @@ bev_processor:
     lane_preview_enabled: true
     # true면 실제 좌/우 회전형 검색 윈도우를 1px 박스로 프리뷰에 표시한다.
     lane_preview_sliding_windows_enabled: true
+    # 프리뷰 표기만 실제 X=0.30m를 X=0.0m로 재기준화한다.
+    # BEV/차선의 물리 좌표와 발행 토픽은 변하지 않는다.
+    preview_x_origin_m: 0.30
     # 0은 투명, 1은 불투명이다. 기본값은 형광펜처럼 원본이 비치는 값이다.
     lane_preview_overlay_alpha: 0.8
 

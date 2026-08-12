@@ -669,6 +669,49 @@ void updateTracker(
   tracker->missing_windows = 0;
 }
 
+std::vector<cv::Point2d> trackBackwardFromSeed(
+  const cv::Point2d & seed_point,
+  const bool seed_is_measured,
+  const bool left_lane,
+  const cv::Mat & candidate_mask,
+  const cv::Mat & gray,
+  const BevLaneReconstructorConfig & config,
+  std::vector<BevLaneReconstruction::SlidingWindow> * debug_windows)
+{
+  if (!seed_is_measured) {
+    return {};
+  }
+  LaneTracker tracker;
+  tracker.active = true;
+  tracker.position = seed_point;
+  tracker.tangent = cv::Point2d(-1.0, 0.0);
+  const int maximum_steps = std::max(
+    1, static_cast<int>(std::ceil(
+      (seed_point.x - config.reconstruction_minimum_x_m) /
+      config.sliding_window_step_m)));
+  for (int step = 0; step < maximum_steps && tracker.active; ++step) {
+    const cv::Point2d prediction =
+      tracker.position + config.sliding_window_step_m * tracker.tangent;
+    const double blend = farBlend(config, prediction.x);
+    const double half_width_m =
+      (1.0 - blend) * config.sliding_window_half_width_near_m +
+      blend * config.sliding_window_half_width_far_m;
+    const auto measurement = measureWindow(
+      candidate_mask, gray, config, prediction, tracker.tangent,
+      half_width_m, tracker.missing_windows);
+    debug_windows->push_back(makeSlidingWindowDebug(
+        prediction, tracker.tangent, half_width_m, tracker.missing_windows,
+        config.sliding_window_length_m, config.sliding_window_step_m,
+        left_lane, measurement.valid));
+    updateTracker(&tracker, prediction, measurement, config);
+    if (tracker.position.x < config.reconstruction_minimum_x_m - 0.10) {
+      tracker.active = false;
+    }
+  }
+  std::reverse(tracker.measured_points.begin(), tracker.measured_points.end());
+  return tracker.measured_points;
+}
+
 struct SeedProbeScore
 {
   int measured_points{0};
@@ -1250,6 +1293,12 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     result.candidate_mask, gray, config_);
   const Seed seed = selectSeedByTrackSupport(
     seed_candidates, result.candidate_mask, gray, config_);
+  std::vector<cv::Point2d> backward_left_points = trackBackwardFromSeed(
+    seed.left, seed.left_measured, true, result.candidate_mask, gray,
+    config_, &result.sliding_windows);
+  std::vector<cv::Point2d> backward_right_points = trackBackwardFromSeed(
+    seed.right, seed.right_measured, false, result.candidate_mask, gray,
+    config_, &result.sliding_windows);
 
   LaneTracker left;
   left.active = seed.left_measured;
@@ -1359,21 +1408,27 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     }
   }
 
-  result.left_measured_points = left.measured_points;
-  result.right_measured_points = right.measured_points;
+  backward_left_points.insert(
+    backward_left_points.end(),
+    left.measured_points.begin(), left.measured_points.end());
+  backward_right_points.insert(
+    backward_right_points.end(),
+    right.measured_points.begin(), right.measured_points.end());
+  result.left_measured_points = std::move(backward_left_points);
+  result.right_measured_points = std::move(backward_right_points);
   result.measured_point_count = static_cast<int>(
-    left.measured_points.size() + right.measured_points.size());
+    result.left_measured_points.size() + result.right_measured_points.size());
   const bool current_left_valid =
-    static_cast<int>(left.measured_points.size()) >= config_.minimum_points;
+    static_cast<int>(result.left_measured_points.size()) >= config_.minimum_points;
   const bool current_right_valid =
-    static_cast<int>(right.measured_points.size()) >= config_.minimum_points;
+    static_cast<int>(result.right_measured_points.size()) >= config_.minimum_points;
   const std::vector<cv::Point2d> empty_points;
   const TemporalTrackResult stable_left = stabilizeTrack(
-    current_left_valid ? left.measured_points : empty_points,
+    current_left_valid ? result.left_measured_points : empty_points,
     &accepted_left_points_, &pending_left_points_,
     &pending_left_frames_, &held_left_frames_, config_);
   const TemporalTrackResult stable_right = stabilizeTrack(
-    current_right_valid ? right.measured_points : empty_points,
+    current_right_valid ? result.right_measured_points : empty_points,
     &accepted_right_points_, &pending_right_points_,
     &pending_right_frames_, &held_right_frames_, config_);
   result.temporal_hold_used =

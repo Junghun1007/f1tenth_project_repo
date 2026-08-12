@@ -43,6 +43,7 @@ def generate_launch_description():
         ("lane_output_topic", "/camera/image_bev_lane", str),
         ("lane_preview_enabled", "true", bool),
         ("lane_preview_sliding_windows_enabled", "true", bool),
+        ("preview_x_origin_m", "0.30", float),
         ("lane_preview_overlay_alpha", "0.8", float),
         ("lane_minimum_brightness", "160", int),
         ("lane_far_minimum_brightness", "125", int),

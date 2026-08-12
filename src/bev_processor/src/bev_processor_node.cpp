@@ -587,6 +587,7 @@ private:
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
     declare_parameter<bool>("lane_preview_sliding_windows_enabled", true);
+    declare_parameter<double>("preview_x_origin_m", 0.30);
     declare_parameter<double>("lane_preview_overlay_alpha", 0.8);
     declare_parameter<int>("lane_minimum_brightness", 160);
     declare_parameter<int>("lane_far_minimum_brightness", 125);
@@ -821,6 +822,7 @@ private:
       get_parameter("lane_preview_enabled").as_bool();
     lane_preview_sliding_windows_enabled_ =
       get_parameter("lane_preview_sliding_windows_enabled").as_bool();
+    preview_x_origin_m_ = get_parameter("preview_x_origin_m").as_double();
     lane_preview_overlay_alpha_ =
       get_parameter("lane_preview_overlay_alpha").as_double();
     lane_reconstructor_config_.x_min_m = bev_config_.x_min_m;
@@ -1011,6 +1013,9 @@ private:
       !std::isfinite(lane_preview_overlay_alpha_) ||
       lane_preview_overlay_alpha_ < 0.0 ||
       lane_preview_overlay_alpha_ > 1.0 ||
+      !std::isfinite(preview_x_origin_m_) ||
+      preview_x_origin_m_ < bev_config_.x_min_m ||
+      preview_x_origin_m_ >= bev_config_.x_max_m ||
       status_log_interval_sec_ <= 0.0 ||
       startup_timeout_sec_ <= 0.0 ||
       !std::isfinite(stabilization_settle_sec_) ||
@@ -1421,8 +1426,16 @@ private:
     const cv::Scalar border_color(180, 180, 180);
     const cv::Scalar centerline_color(0, 200, 0);
 
+    const int visible_height = std::clamp(
+      static_cast<int>(std::lround(
+        (bev_config_.x_max_m - preview_x_origin_m_) /
+        bev_config_.meter_per_pixel)),
+      1,
+      bev_image.rows);
+    const double displayed_x_max_m =
+      bev_config_.x_max_m - preview_x_origin_m_;
     cv::Mat preview(
-      bev_image.rows + kPreviewTopMargin + kPreviewBottomMargin,
+      visible_height + kPreviewTopMargin + kPreviewBottomMargin,
       bev_image.cols + kPreviewLeftMargin + kPreviewRightMargin,
       CV_8UC3,
       margin_color);
@@ -1430,21 +1443,21 @@ private:
       kPreviewLeftMargin,
       kPreviewTopMargin,
       bev_image.cols,
-      bev_image.rows);
-    bev_image.copyTo(preview(bev_region));
+      visible_height);
+    bev_image(cv::Rect(0, 0, bev_image.cols, visible_height)).copyTo(
+      preview(bev_region));
     cv::Mat displayed_bev = preview(bev_region);
     cv::Mat grid_overlay = displayed_bev.clone();
 
-    const double first_x =
-      std::ceil(bev_config_.x_min_m / grid_step_m) * grid_step_m;
+    const double first_x = 0.0;
     for (
       double x_m = first_x;
-      x_m <= bev_config_.x_max_m + epsilon;
+      x_m <= displayed_x_max_m + epsilon;
       x_m += grid_step_m)
     {
       const int row = std::clamp(
         static_cast<int>(std::lround(
-          (bev_config_.x_max_m - x_m) /
+          (displayed_x_max_m - x_m) /
           bev_config_.meter_per_pixel)),
         0,
         displayed_bev.rows - 1);
@@ -1947,6 +1960,7 @@ private:
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
   bool lane_preview_sliding_windows_enabled_{true};
+  double preview_x_origin_m_{0.30};
   double lane_preview_overlay_alpha_{0.8};
   BevLaneReconstructorConfig lane_reconstructor_config_{};
   double status_log_interval_sec_{5.0};
