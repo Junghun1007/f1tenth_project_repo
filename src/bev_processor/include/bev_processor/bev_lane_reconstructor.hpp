@@ -31,8 +31,8 @@ struct BevLaneReconstructorConfig
   double local_background_band_m{0.05};
   double tracked_lane_mark_width_near_m{0.11};
   double tracked_lane_mark_width_far_m{0.20};
-  double measurement_lateral_gate_near_m{0.08};
-  double measurement_lateral_gate_far_m{0.10};
+  double measurement_lateral_gate_near_m{0.05};
+  double measurement_lateral_gate_far_m{0.07};
   int row_step_px{2};
 
   double observation_minimum_x_m{0.20};
@@ -41,14 +41,14 @@ struct BevLaneReconstructorConfig
   double observation_maximum_x_m{1.80};
   double reconstruction_minimum_x_m{0.20};
   double reconstruction_maximum_x_m{2.70};
-  double maximum_extrapolation_m{0.12};
+  double maximum_extrapolation_m{0.0};
 
   double sliding_window_step_m{0.06};
   double sliding_window_length_m{0.18};
-  double sliding_window_half_width_near_m{0.12};
-  double sliding_window_half_width_far_m{0.15};
-  double sliding_window_measurement_weight{0.70};
-  double sliding_window_heading_weight{0.35};
+  double sliding_window_half_width_near_m{0.08};
+  double sliding_window_half_width_far_m{0.10};
+  double sliding_window_measurement_weight{0.88};
+  double sliding_window_heading_weight{0.50};
   double maximum_tracking_arc_length_m{3.20};
   double maximum_gap_fill_m{0.26};
   double measured_point_smoothing_weight{0.50};
@@ -58,8 +58,8 @@ struct BevLaneReconstructorConfig
   double lane_width_tolerance_m{0.075};
   double initial_center_tolerance_m{0.30};
   double single_lane_initial_tolerance_m{0.20};
-  double maximum_tracking_gap_m{0.20};
-  int minimum_points{8};
+  double maximum_tracking_gap_m{0.08};
+  int minimum_points{6};
   bool allow_single_lane{true};
 
   double correspondence_minimum_width_m{0.55};

@@ -595,7 +595,7 @@ private:
     declare_parameter<double>("lane_vertical_close_m", 0.05);
     declare_parameter<double>("lane_minimum_mark_width_m", 0.015);
     declare_parameter<double>("lane_maximum_mark_width_m", 0.030);
-    declare_parameter<int>("lane_minimum_local_contrast", 40);
+    declare_parameter<int>("lane_minimum_local_contrast", 55);
     declare_parameter<int>(
       "lane_maximum_local_background_brightness", 140);
     declare_parameter<double>("lane_local_background_band_m", 0.04);
@@ -604,31 +604,31 @@ private:
     declare_parameter<double>(
       "lane_tracked_mark_width_far_m", 0.22);
     declare_parameter<double>(
-      "lane_measurement_lateral_gate_near_m", 0.08);
+      "lane_measurement_lateral_gate_near_m", 0.05);
     declare_parameter<double>(
-      "lane_measurement_lateral_gate_far_m", 0.10);
+      "lane_measurement_lateral_gate_far_m", 0.07);
     declare_parameter<int>("lane_row_step_px", 2);
     declare_parameter<double>("lane_observation_minimum_x_m", 0.20);
     declare_parameter<double>("lane_observation_maximum_x_m", 1.50);
     declare_parameter<double>("lane_reconstruction_minimum_x_m", 0.10);
     declare_parameter<double>("lane_reconstruction_maximum_x_m", 3.0);
-    declare_parameter<double>("lane_maximum_extrapolation_m", 0.12);
+    declare_parameter<double>("lane_maximum_extrapolation_m", 0.0);
     declare_parameter<double>("lane_sliding_window_step_m", 0.04);
     declare_parameter<double>("lane_sliding_window_length_m", 0.18);
-    declare_parameter<double>("lane_sliding_window_half_width_near_m", 0.12);
-    declare_parameter<double>("lane_sliding_window_half_width_far_m", 0.15);
-    declare_parameter<double>("lane_sliding_window_measurement_weight", 0.70);
-    declare_parameter<double>("lane_sliding_window_heading_weight", 0.35);
+    declare_parameter<double>("lane_sliding_window_half_width_near_m", 0.08);
+    declare_parameter<double>("lane_sliding_window_half_width_far_m", 0.10);
+    declare_parameter<double>("lane_sliding_window_measurement_weight", 0.88);
+    declare_parameter<double>("lane_sliding_window_heading_weight", 0.50);
     declare_parameter<double>("lane_maximum_tracking_arc_length_m", 3.20);
     declare_parameter<double>("lane_maximum_gap_fill_m", 0.26);
-    declare_parameter<double>("lane_measured_point_smoothing_weight", 0.50);
+    declare_parameter<double>("lane_measured_point_smoothing_weight", 0.70);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
     declare_parameter<double>("lane_expected_width_m", 0.625);
     declare_parameter<double>("lane_width_tolerance_m", 0.07);
-    declare_parameter<double>("lane_initial_center_tolerance_m", 0.30);
-    declare_parameter<double>("lane_single_initial_tolerance_m", 0.20);
-    declare_parameter<double>("lane_maximum_tracking_gap_m", 0.20);
-    declare_parameter<int>("lane_minimum_points", 8);
+    declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
+    declare_parameter<double>("lane_single_initial_tolerance_m", 0.60);
+    declare_parameter<double>("lane_maximum_tracking_gap_m", 0.08);
+    declare_parameter<int>("lane_minimum_points", 6);
     declare_parameter<bool>("lane_allow_single_lane", true);
     declare_parameter<double>(
       "lane_correspondence_minimum_width_m", 0.55);
@@ -636,7 +636,7 @@ private:
       "lane_correspondence_maximum_width_m", 0.70);
     declare_parameter<double>(
       "lane_correspondence_longitudinal_tolerance_m", 0.10);
-    declare_parameter<bool>("lane_infer_partially_missing_lane", true);
+    declare_parameter<bool>("lane_infer_partially_missing_lane", false);
     declare_parameter<bool>("lane_temporal_tracking_enabled", true);
     declare_parameter<double>(
       "lane_temporal_maximum_lateral_jump_near_m", 0.06);
@@ -645,7 +645,7 @@ private:
     declare_parameter<double>(
       "lane_temporal_maximum_heading_jump_deg", 15.0);
     declare_parameter<int>("lane_temporal_confirmation_frames", 2);
-    declare_parameter<int>("lane_temporal_hold_frames", 2);
+    declare_parameter<int>("lane_temporal_hold_frames", 5);
     declare_parameter<double>("lane_output_line_thickness_m", 0.02);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
