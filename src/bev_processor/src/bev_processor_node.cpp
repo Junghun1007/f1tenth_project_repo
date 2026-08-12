@@ -461,14 +461,18 @@ public:
         get_logger(),
         "BEV lane continuity: temporal=%s, lateral jump near/far="
         "%.2f/%.2fm, heading jump=%.1fdeg, confirm/hold=%d/%d frames, "
-        "missing-side inference=%s",
+        "missing-side inference=%s(window=%.2fm curvature<=%.2f/m "
+        "step<=%.1fdeg)",
         lane_reconstructor_config_.temporal_tracking_enabled ? "on" : "off",
         lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m,
         lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m,
         lane_reconstructor_config_.temporal_maximum_heading_jump_deg,
         lane_reconstructor_config_.temporal_confirmation_frames,
         lane_reconstructor_config_.temporal_hold_frames,
-        lane_reconstructor_config_.infer_partially_missing_lane ? "on" : "off");
+        lane_reconstructor_config_.infer_partially_missing_lane ? "on" : "off",
+        lane_reconstructor_config_.inference_tangent_window_m,
+        lane_reconstructor_config_.inference_maximum_curvature_per_m,
+        lane_reconstructor_config_.inference_maximum_heading_step_deg);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -658,6 +662,11 @@ private:
     declare_parameter<int>("lane_minimum_points", 6);
     declare_parameter<bool>("lane_allow_single_lane", true);
     declare_parameter<bool>("lane_infer_partially_missing_lane", true);
+    declare_parameter<double>("lane_inference_tangent_window_m", 0.20);
+    declare_parameter<double>(
+      "lane_inference_maximum_curvature_per_m", 1.25);
+    declare_parameter<double>(
+      "lane_inference_maximum_heading_step_deg", 8.0);
     declare_parameter<bool>("lane_temporal_tracking_enabled", true);
     declare_parameter<double>(
       "lane_temporal_maximum_lateral_jump_near_m", 0.06);
@@ -932,6 +941,12 @@ private:
       get_parameter("lane_allow_single_lane").as_bool();
     lane_reconstructor_config_.infer_partially_missing_lane =
       get_parameter("lane_infer_partially_missing_lane").as_bool();
+    lane_reconstructor_config_.inference_tangent_window_m =
+      get_parameter("lane_inference_tangent_window_m").as_double();
+    lane_reconstructor_config_.inference_maximum_curvature_per_m =
+      get_parameter("lane_inference_maximum_curvature_per_m").as_double();
+    lane_reconstructor_config_.inference_maximum_heading_step_deg =
+      get_parameter("lane_inference_maximum_heading_step_deg").as_double();
     lane_reconstructor_config_.temporal_tracking_enabled =
       get_parameter("lane_temporal_tracking_enabled").as_bool();
     lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m =

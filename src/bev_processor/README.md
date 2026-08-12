@@ -202,8 +202,13 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 
 이 기능은 이미 잘 잡힌 반대편이나 반대편의 빈 구간을 재구성하지 않는다.
 전체 미검출 상태에서만 보이는 차선의 접선에 수직인 방향으로 평행 차선을
-예측한다. 낮은 신뢰도의 새 라인은 즉시 승인하지 않고, 이전 라인도 2프레임을
-넘겨 계속 만들지 않는다.
+예측한다. 이 접선은 기본 20cm 범위의 여러 점으로 계산하며, 예측선은 최대
+곡률 `1.25 1/m`(최소 반경 약 0.8m)과 점별 방향 변화 8도를 모두 제한한다.
+차선 폭 0.625m보다 작은 반경에서 안쪽 평행선이 접히는 현상과 한 점의
+노이즈가 갈고리 형태로 확대되는 현상을 방지한다. 설정값을 크게 올리더라도
+실제 예측 폭에 대한 `0.90 / width` 곡률 상한을 추가 적용해 자기접힘을 막는다.
+낮은 신뢰도의 새 라인은
+즉시 승인하지 않고, 이전 라인도 2프레임을 넘겨 계속 만들지 않는다.
 
 실행하면서 값을 바꾸는 예시는 다음과 같다.
 
@@ -231,7 +236,10 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_maximum_lateral_jump_far_m:=0.12 \
   lane_temporal_confirmation_frames:=2 \
   lane_temporal_hold_frames:=2 \
-  lane_infer_partially_missing_lane:=true
+  lane_infer_partially_missing_lane:=true \
+  lane_inference_tangent_window_m:=0.20 \
+  lane_inference_maximum_curvature_per_m:=1.25 \
+  lane_inference_maximum_heading_step_deg:=8.0
 ```
 
 원거리 곡선을 놓치면 far 밝기 임계값과 원거리 윈도우 폭을 다음처럼 조절한다.

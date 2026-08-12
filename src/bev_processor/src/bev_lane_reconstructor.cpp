@@ -1091,24 +1091,113 @@ std::vector<cv::Point2d> extendByTangent(
 
 std::vector<cv::Point2d> offsetLane(
   const std::vector<cv::Point2d> & reference,
-  const double offset_m)
+  const double offset_m,
+  const BevLaneReconstructorConfig & config)
 {
+  if (reference.empty()) {
+    return {};
+  }
+  constexpr double kPi = 3.14159265358979323846;
+  const auto angleDifference = [](const double first, const double second) {
+      double difference = first - second;
+      while (difference > kPi) {
+        difference -= 2.0 * kPi;
+      }
+      while (difference < -kPi) {
+        difference += 2.0 * kPi;
+      }
+      return difference;
+    };
+  const double maximum_heading_step_rad =
+    config.inference_maximum_heading_step_deg * kPi / 180.0;
+  const double maximum_curvature_per_m = std::min(
+    config.inference_maximum_curvature_per_m,
+    0.90 / std::max(std::abs(offset_m), config.meter_per_pixel));
+
+  std::vector<double> arc_length_m(reference.size(), 0.0);
+  for (std::size_t index = 1U; index < reference.size(); ++index) {
+    arc_length_m[index] = arc_length_m[index - 1U] +
+      norm(reference[index] - reference[index - 1U]);
+  }
+
+  // Estimate every tangent from a metric neighbourhood rather than from one
+  // adjacent point. This prevents one noisy sample from rotating a 62.5 cm
+  // offset by a large angle.
+  std::vector<double> tangent_heading_rad(reference.size(), 0.0);
+  const double half_window_m = 0.5 * config.inference_tangent_window_m;
+  for (std::size_t index = 0U; index < reference.size(); ++index) {
+    std::size_t first = index;
+    while (
+      first > 0U &&
+      arc_length_m[index] - arc_length_m[first] < half_window_m)
+    {
+      --first;
+    }
+    std::size_t last = index;
+    while (
+      last + 1U < reference.size() &&
+      arc_length_m[last] - arc_length_m[index] < half_window_m)
+    {
+      ++last;
+    }
+    cv::Point2d tangent = reference[last] - reference[first];
+    if (norm(tangent) <= 1.0e-9 && index > 0U) {
+      tangent = reference[index] - reference[index - 1U];
+    }
+    tangent = normalized(tangent);
+    double heading_rad = std::atan2(tangent.y, tangent.x);
+    if (index > 0U) {
+      const double step_m = std::max(
+        config.meter_per_pixel,
+        arc_length_m[index] - arc_length_m[index - 1U]);
+      const double maximum_change_rad = std::min(
+        maximum_heading_step_rad,
+        maximum_curvature_per_m * step_m);
+      const double change_rad = std::clamp(
+        angleDifference(heading_rad, tangent_heading_rad[index - 1U]),
+        -maximum_change_rad, maximum_change_rad);
+      heading_rad = tangent_heading_rad[index - 1U] + change_rad;
+    }
+    tangent_heading_rad[index] = heading_rad;
+  }
+
   std::vector<cv::Point2d> offset;
   offset.reserve(reference.size());
   for (std::size_t index = 0; index < reference.size(); ++index) {
-    cv::Point2d tangent;
-    if (index == 0U && reference.size() > 1U) {
-      tangent = reference[1U] - reference[0U];
-    } else if (index + 1U == reference.size() && index > 0U) {
-      tangent = reference[index] - reference[index - 1U];
-    } else if (index > 0U && index + 1U < reference.size()) {
-      tangent = reference[index + 1U] - reference[index - 1U];
-    } else {
-      tangent = cv::Point2d(1.0, 0.0);
-    }
-    tangent = normalized(tangent);
+    const cv::Point2d tangent(
+      std::cos(tangent_heading_rad[index]),
+      std::sin(tangent_heading_rad[index]));
     const cv::Point2d left_normal(-tangent.y, tangent.x);
     offset.push_back(reference[index] + offset_m * left_normal);
+  }
+
+  // The normal offset of an inner tight curve can still fold even when the
+  // reference tangent is smooth. Limit the direction change of the inferred
+  // polyline itself, preserving segment length while removing hooks/loops.
+  if (offset.size() >= 3U) {
+    double previous_segment_heading_rad = std::atan2(
+      offset[1U].y - offset[0U].y,
+      offset[1U].x - offset[0U].x);
+    for (std::size_t index = 2U; index < offset.size(); ++index) {
+      const cv::Point2d raw_segment = offset[index] - offset[index - 1U];
+      const double segment_length_m = norm(raw_segment);
+      if (segment_length_m <= 1.0e-9) {
+        offset[index] = offset[index - 1U];
+        continue;
+      }
+      const double raw_heading_rad = std::atan2(
+        raw_segment.y, raw_segment.x);
+      const double maximum_change_rad = std::min(
+        maximum_heading_step_rad,
+        maximum_curvature_per_m * segment_length_m);
+      const double change_rad = std::clamp(
+        angleDifference(raw_heading_rad, previous_segment_heading_rad),
+        -maximum_change_rad, maximum_change_rad);
+      previous_segment_heading_rad += change_rad;
+      offset[index] = offset[index - 1U] + segment_length_m * cv::Point2d(
+        std::cos(previous_segment_heading_rad),
+        std::sin(previous_segment_heading_rad));
+    }
   }
   return offset;
 }
@@ -1215,6 +1304,13 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.initial_center_tolerance_m <= 0.0 ||
     config_.single_lane_initial_tolerance_m <= 0.0 ||
     config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 2 ||
+    !std::isfinite(config_.inference_tangent_window_m) ||
+    config_.inference_tangent_window_m <= 0.0 ||
+    !std::isfinite(config_.inference_maximum_curvature_per_m) ||
+    config_.inference_maximum_curvature_per_m <= 0.0 ||
+    !std::isfinite(config_.inference_maximum_heading_step_deg) ||
+    config_.inference_maximum_heading_step_deg <= 0.0 ||
+    config_.inference_maximum_heading_step_deg > 180.0 ||
     config_.temporal_maximum_lateral_jump_near_m <= 0.0 ||
     config_.temporal_maximum_lateral_jump_far_m <
     config_.temporal_maximum_lateral_jump_near_m ||
@@ -1496,13 +1592,13 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     config_.infer_partially_missing_lane && left_valid && !right_valid &&
     config_.allow_single_lane)
   {
-    right_output = offsetLane(left_output, -lane_width_m);
+    right_output = offsetLane(left_output, -lane_width_m, config_);
     result.inferred_point_count += static_cast<int>(right_output.size());
   } else if (
     config_.infer_partially_missing_lane && right_valid && !left_valid &&
     config_.allow_single_lane)
   {
-    left_output = offsetLane(right_output, lane_width_m);
+    left_output = offsetLane(right_output, lane_width_m, config_);
     result.inferred_point_count += static_cast<int>(left_output.size());
   }
 

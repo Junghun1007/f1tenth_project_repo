@@ -243,6 +243,12 @@ bev_processor:
     # 반대편의 국소 접선 법선 방향으로 차선 폭만큼 평행 예측한다. 양쪽이
     # 검출됐거나 한쪽 중간 구간만 비면 각자의 슬라이딩 윈도우 결과를 유지한다.
     lane_infer_partially_missing_lane: true
+    # 반대편 전체 예측 시 20cm 범위의 여러 기준점으로 접선을 계산한다.
+    # 접선/예측선은 곡률 1.25(최소 회전반경 약 0.8m), 점별 8도를 모두
+    # 넘지 않게 제한해 짧은 노이즈가 갈고리나 고리 형태로 확대되는 것을 막는다.
+    lane_inference_tangent_window_m: 0.20
+    lane_inference_maximum_curvature_per_m: 1.25
+    lane_inference_maximum_heading_step_deg: 8.0
 
     # Odometry 없이 이전 승인 라인과 현재 라인을 같은 X에서 비교한다.
     # 큰 이동/방향 변화는 2프레임 연속일 때만 승인하고, 픽셀이 사라진

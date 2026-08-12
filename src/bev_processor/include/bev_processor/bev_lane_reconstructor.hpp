@@ -64,6 +64,9 @@ struct BevLaneReconstructorConfig
   bool allow_single_lane{true};
 
   bool infer_partially_missing_lane{true};
+  double inference_tangent_window_m{0.20};
+  double inference_maximum_curvature_per_m{1.25};
+  double inference_maximum_heading_step_deg{8.0};
 
   bool temporal_tracking_enabled{true};
   double temporal_maximum_lateral_jump_near_m{0.06};
