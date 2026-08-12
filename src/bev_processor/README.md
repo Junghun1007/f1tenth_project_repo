@@ -161,6 +161,12 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 검출 차선을 초록색, �
 `0.8`로만 합성한다. 이 오버레이는 위 두 발행 토픽에는 들어가지 않는다.
 `lane_preview_enabled:=false`로 실행하면 프리뷰도 원본 BEV만 표시한다.
 
+`lane_preview_sliding_windows_enabled:=true`면 실제 추적에 사용한
+회전형 검색 창을 1px 박스로 프리뷰에만 표시한다. 왼쪽 차선 창은
+청록색, 오른쪽 차선 창은 자홍색이며 픽셀을 찾지 못한 창은 같은 색의
+어두운 테두리로 표시한다. 성능 측정이나 일반 주행 시 박스가 필요 없으면
+`lane_preview_sliding_windows_enabled:=false`로 끄면 된다.
+
 재구성 단계는 다음 순서로 동작한다.
 
 1. 컬러 BEV를 grayscale 밝기로 변환한다. 1.5m 이후에는 임계값을

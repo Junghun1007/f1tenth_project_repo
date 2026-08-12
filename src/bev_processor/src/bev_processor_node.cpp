@@ -14,6 +14,7 @@
 #include <string>
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
@@ -43,6 +44,7 @@ struct BevFrame
 {
   cv::Mat image;
   cv::Mat lane_mask;
+  std::vector<BevLaneReconstruction::SlidingWindow> lane_sliding_windows;
   std_msgs::msg::Header header;
   SteadyClock::time_point input_received_at;
   std::uint64_t generation{0U};
@@ -140,6 +142,45 @@ cv::Mat makeLaneOverlayPreview(
   cv::addWeighted(
     highlighted, alpha, bev_bgr, 1.0 - alpha, 0.0, blended);
   return blended;
+}
+
+cv::Point laneMetricToPixel(
+  const cv::Point2d & metric_point,
+  const BevConfig & config)
+{
+  return cv::Point(
+    static_cast<int>(std::lround(
+      (config.y_max_m - metric_point.y) / config.meter_per_pixel - 0.5)),
+    static_cast<int>(std::lround(
+      (config.x_max_m - metric_point.x) / config.meter_per_pixel - 0.5)));
+}
+
+cv::Mat makeSlidingWindowPreview(
+  const cv::Mat & bev_bgr,
+  const std::vector<BevLaneReconstruction::SlidingWindow> & windows,
+  const BevConfig & config)
+{
+  if (bev_bgr.type() != CV_8UC3) {
+    throw std::invalid_argument(
+            "sliding-window preview expects a BGR8 BEV image");
+  }
+  cv::Mat preview = bev_bgr.clone();
+  for (const auto & window : windows) {
+    std::vector<cv::Point> pixels;
+    pixels.reserve(window.corners.size());
+    for (const auto & corner : window.corners) {
+      pixels.push_back(laneMetricToPixel(corner, config));
+    }
+    const cv::Scalar color = window.left_lane ?
+      (window.measurement_found ?
+      cv::Scalar(255, 255, 0) : cv::Scalar(140, 140, 0)) :
+      (window.measurement_found ?
+      cv::Scalar(255, 0, 255) : cv::Scalar(140, 0, 140));
+    cv::polylines(
+      preview, std::vector<std::vector<cv::Point>>{pixels}, true,
+      color, 1, cv::LINE_AA);
+  }
+  return preview;
 }
 
 }  // namespace
@@ -545,6 +586,7 @@ private:
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
+    declare_parameter<bool>("lane_preview_sliding_windows_enabled", true);
     declare_parameter<double>("lane_preview_overlay_alpha", 0.8);
     declare_parameter<int>("lane_minimum_brightness", 160);
     declare_parameter<int>("lane_far_minimum_brightness", 125);
@@ -777,6 +819,8 @@ private:
     lane_output_topic_ = get_parameter("lane_output_topic").as_string();
     lane_preview_enabled_ =
       get_parameter("lane_preview_enabled").as_bool();
+    lane_preview_sliding_windows_enabled_ =
+      get_parameter("lane_preview_sliding_windows_enabled").as_bool();
     lane_preview_overlay_alpha_ =
       get_parameter("lane_preview_overlay_alpha").as_double();
     lane_reconstructor_config_.x_min_m = bev_config_.x_min_m;
@@ -1234,6 +1278,7 @@ private:
             lane_process_ns, std::memory_order_relaxed);
           updateMaximum(lane_process_ns_max_interval_, lane_process_ns);
           output->lane_mask = lane.reconstructed_mask;
+          output->lane_sliding_windows = lane.sliding_windows;
           latest_lane_points_.store(
             lane.measured_point_count, std::memory_order_relaxed);
           latest_lane_inferred_points_.store(
@@ -1432,22 +1477,6 @@ private:
       grid_color,
       1,
       cv::LINE_AA);
-    const std::string minimum_x_label =
-      cv::format("X %.2f", bev_config_.x_min_m);
-    int minimum_x_baseline = 0;
-    const cv::Size minimum_x_label_size = cv::getTextSize(
-      minimum_x_label,
-      cv::FONT_HERSHEY_SIMPLEX,
-      0.32,
-      1,
-      &minimum_x_baseline);
-    drawPreviewText(
-      preview,
-      minimum_x_label,
-      cv::Point(
-        kPreviewLeftMargin - minimum_x_label_size.width - 5,
-        kPreviewTopMargin + displayed_bev.rows - 2));
-
     const double first_y =
       std::ceil(bev_config_.y_min_m / grid_step_m) * grid_step_m;
     for (
@@ -1566,6 +1595,13 @@ private:
               lane_preview_overlay_alpha_);
           } else {
             displayed_image = frame->image;
+          }
+          if (
+            lane_preview_sliding_windows_enabled_ &&
+            !frame->lane_sliding_windows.empty())
+          {
+            displayed_image = makeSlidingWindowPreview(
+              displayed_image, frame->lane_sliding_windows, bev_config_);
           }
           cv::Mat preview_image = makeCoordinatePreview(displayed_image);
           cv::imshow(preview_window_name_, preview_image);
@@ -1910,6 +1946,7 @@ private:
   bool lane_reconstruction_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
+  bool lane_preview_sliding_windows_enabled_{true};
   double lane_preview_overlay_alpha_{0.8};
   BevLaneReconstructorConfig lane_reconstructor_config_{};
   double status_log_interval_sec_{5.0};

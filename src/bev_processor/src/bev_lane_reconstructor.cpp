@@ -103,6 +103,38 @@ cv::Point2d normalized(
   return length > 1.0e-9 ? vector * (1.0 / length) : fallback;
 }
 
+BevLaneReconstruction::SlidingWindow makeSlidingWindowDebug(
+  const cv::Point2d & prediction,
+  const cv::Point2d & tangent,
+  const double half_width_m,
+  const int missing_windows,
+  const double sliding_window_length_m,
+  const double sliding_window_step_m,
+  const bool left_lane,
+  const bool measurement_found)
+{
+  const cv::Point2d unit_tangent = normalized(tangent);
+  const cv::Point2d normal(-unit_tangent.y, unit_tangent.x);
+  const double expanded_half_width_m = half_width_m *
+    (1.0 + 0.25 * static_cast<double>(missing_windows));
+  const double minimum_longitudinal_m = -0.25 * sliding_window_step_m;
+  const double maximum_longitudinal_m = 0.5 * sliding_window_length_m;
+  const cv::Point2d near_center =
+    prediction + minimum_longitudinal_m * unit_tangent;
+  const cv::Point2d far_center =
+    prediction + maximum_longitudinal_m * unit_tangent;
+
+  BevLaneReconstruction::SlidingWindow window;
+  window.corners = {
+    near_center + expanded_half_width_m * normal,
+    far_center + expanded_half_width_m * normal,
+    far_center - expanded_half_width_m * normal,
+    near_center - expanded_half_width_m * normal};
+  window.left_lane = left_lane;
+  window.measurement_found = measurement_found;
+  return window;
+}
+
 double dot(const cv::Point2d & first, const cv::Point2d & second)
 {
   return first.x * second.x + first.y * second.y;
@@ -1184,6 +1216,10 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
         result.candidate_mask, gray, config_,
         left_prediction, left.tangent,
         left_half_width_m, left.missing_windows);
+      result.sliding_windows.push_back(makeSlidingWindowDebug(
+          left_prediction, left.tangent, left_half_width_m,
+          left.missing_windows, config_.sliding_window_length_m,
+          config_.sliding_window_step_m, true, left_measurement.valid));
     }
     WindowMeasurement right_measurement;
     if (right.active) {
@@ -1191,6 +1227,10 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
         result.candidate_mask, gray, config_,
         right_prediction, right.tangent,
         right_half_width_m, right.missing_windows);
+      result.sliding_windows.push_back(makeSlidingWindowDebug(
+          right_prediction, right.tangent, right_half_width_m,
+          right.missing_windows, config_.sliding_window_length_m,
+          config_.sliding_window_step_m, false, right_measurement.valid));
     }
 
     if (left_measurement.valid && right_measurement.valid) {

@@ -261,6 +261,20 @@ void testRotatingWindowsFollowTightArc()
     meanDistanceToReference(result.left_measured_points, left) < 0.045 &&
     meanDistanceToReference(result.right_measured_points, right) < 0.045,
     "tight-arc measurements must remain on the actual pixels");
+  bool left_window_found = false;
+  bool right_window_found = false;
+  for (const auto & window : result.sliding_windows) {
+    left_window_found = left_window_found || window.left_lane;
+    right_window_found = right_window_found || !window.left_lane;
+    for (const auto & corner : window.corners) {
+      require(
+        std::isfinite(corner.x) && std::isfinite(corner.y),
+        "sliding-window preview corners must stay finite");
+    }
+  }
+  require(
+    left_window_found && right_window_found,
+    "debug output must expose both rotating search-window tracks");
 }
 
 void testSingleBoundaryOnlyInfersMissingSide()

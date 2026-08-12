@@ -1,6 +1,7 @@
 #ifndef BEV_PROCESSOR__BEV_LANE_RECONSTRUCTOR_HPP_
 #define BEV_PROCESSOR__BEV_LANE_RECONSTRUCTOR_HPP_
 
+#include <array>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -88,6 +89,14 @@ struct BevLaneReconstruction
   bool temporal_hold_used{false};
   double measured_lane_width_m{0.0};
   double reconstructed_maximum_x_m{0.0};
+
+  struct SlidingWindow
+  {
+    std::array<cv::Point2d, 4> corners;
+    bool left_lane{false};
+    bool measurement_found{false};
+  };
+  std::vector<SlidingWindow> sliding_windows;
 };
 
 class BevLaneReconstructor
