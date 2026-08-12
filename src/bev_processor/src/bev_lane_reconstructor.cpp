@@ -82,6 +82,7 @@ struct TemporalTrackResult
 struct CorrespondingLaneResult
 {
   std::vector<cv::Point2d> points;
+  std::vector<bool> inferred_points;
   int inferred_point_count{0};
 };
 
@@ -1095,30 +1096,6 @@ std::vector<cv::Point2d> extendByTangent(
   return points;
 }
 
-std::vector<cv::Point2d> offsetLane(
-  const std::vector<cv::Point2d> & reference,
-  const double offset_m)
-{
-  std::vector<cv::Point2d> offset;
-  offset.reserve(reference.size());
-  for (std::size_t index = 0; index < reference.size(); ++index) {
-    cv::Point2d tangent;
-    if (index == 0U && reference.size() > 1U) {
-      tangent = reference[1U] - reference[0U];
-    } else if (index + 1U == reference.size() && index > 0U) {
-      tangent = reference[index] - reference[index - 1U];
-    } else if (index > 0U && index + 1U < reference.size()) {
-      tangent = reference[index + 1U] - reference[index - 1U];
-    } else {
-      tangent = cv::Point2d(1.0, 0.0);
-    }
-    tangent = normalized(tangent);
-    const cv::Point2d left_normal(-tangent.y, tangent.x);
-    offset.push_back(reference[index] + offset_m * left_normal);
-  }
-  return offset;
-}
-
 CorrespondingLaneResult buildCorrespondingLane(
   const std::vector<cv::Point2d> & reference,
   const double offset_sign,
@@ -1129,6 +1106,7 @@ CorrespondingLaneResult buildCorrespondingLane(
 {
   CorrespondingLaneResult result;
   result.points.reserve(reference.size());
+  result.inferred_points.reserve(reference.size());
   const double correspondence_half_width_m = 0.5 *
     (config.correspondence_maximum_width_m -
     config.correspondence_minimum_width_m);
@@ -1163,12 +1141,52 @@ CorrespondingLaneResult buildCorrespondingLane(
     }
     if (actual_pixel_found) {
       result.points.push_back(measurement.point);
+      result.inferred_points.push_back(false);
     } else {
       result.points.push_back(expected_point);
+      result.inferred_points.push_back(true);
       ++result.inferred_point_count;
     }
   }
   return result;
+}
+
+int fillMissingCorrespondingSections(
+  std::vector<cv::Point2d> * observed,
+  const CorrespondingLaneResult & corresponding,
+  const BevLaneReconstructorConfig & config)
+{
+  if (observed == nullptr || corresponding.points.empty()) {
+    return 0;
+  }
+  // One tracking step is the nominal spacing of measured points. Keep every
+  // already tracked point and insert a counterpart only where that track has
+  // no sample at the same longitudinal location.
+  const double longitudinal_match_m = std::max(
+    config.meter_per_pixel,
+    0.75 * config.sliding_window_step_m);
+  int inferred_inserted_count = 0;
+  for (std::size_t index = 0; index < corresponding.points.size(); ++index) {
+    const auto & point = corresponding.points[index];
+    const bool already_observed = std::any_of(
+      observed->begin(), observed->end(),
+      [&point, longitudinal_match_m](const cv::Point2d & existing) {
+        return std::abs(existing.x - point.x) <= longitudinal_match_m;
+      });
+    if (already_observed) {
+      continue;
+    }
+    observed->push_back(point);
+    if (corresponding.inferred_points[index]) {
+      ++inferred_inserted_count;
+    }
+  }
+  std::stable_sort(
+    observed->begin(), observed->end(),
+    [](const cv::Point2d & first, const cv::Point2d & second) {
+      return first.x < second.x;
+    });
+  return inferred_inserted_count;
 }
 
 double drawMeasuredLane(
@@ -1574,27 +1592,25 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
       auto corresponding = buildCorrespondingLane(
         left_output, -1.0, lane_width_m,
         result.candidate_mask, gray, config_);
-      right_output = std::move(corresponding.points);
-      result.inferred_point_count += corresponding.inferred_point_count;
+      if (right_valid) {
+        result.inferred_point_count += fillMissingCorrespondingSections(
+          &right_output, corresponding, config_);
+      } else {
+        right_output = std::move(corresponding.points);
+        result.inferred_point_count += corresponding.inferred_point_count;
+      }
     } else if (right_valid) {
       auto corresponding = buildCorrespondingLane(
         right_output, 1.0, lane_width_m,
         result.candidate_mask, gray, config_);
-      left_output = std::move(corresponding.points);
-      result.inferred_point_count += corresponding.inferred_point_count;
+      if (left_valid) {
+        result.inferred_point_count += fillMissingCorrespondingSections(
+          &left_output, corresponding, config_);
+      } else {
+        left_output = std::move(corresponding.points);
+        result.inferred_point_count += corresponding.inferred_point_count;
+      }
     }
-  } else if (
-    config_.infer_partially_missing_lane && left_valid && !right_valid &&
-    config_.allow_single_lane)
-  {
-    right_output = offsetLane(left_output, -lane_width_m);
-    result.inferred_point_count += static_cast<int>(right_output.size());
-  } else if (
-    config_.infer_partially_missing_lane && right_valid && !left_valid &&
-    config_.allow_single_lane)
-  {
-    left_output = offsetLane(right_output, lane_width_m);
-    result.inferred_point_count += static_cast<int>(left_output.size());
   }
 
   left_output = extendByTangent(std::move(left_output), config_);
