@@ -1990,8 +1990,12 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     config_.infer_partially_missing_lane && left_valid && !right_valid &&
     config_.allow_single_lane)
   {
+    // Missing-side placement must be deterministic. A noisy previously
+    // measured pair may move measured_lane_width_m within the tolerance, but
+    // it must not move the inferred counterpart away from the configured
+    // physical lane width.
     auto inferred = inferLaneFromReference(
-      left_output, -lane_width_m, config_);
+      left_output, -config_.expected_lane_width_m, config_);
     right_output = std::move(inferred.points);
     result.inference_lateral_fallback_used = inferred.lateral_fallback_used;
     result.inferred_point_count += static_cast<int>(right_output.size());
@@ -2000,7 +2004,7 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     config_.allow_single_lane)
   {
     auto inferred = inferLaneFromReference(
-      right_output, lane_width_m, config_);
+      right_output, config_.expected_lane_width_m, config_);
     left_output = std::move(inferred.points);
     result.inference_lateral_fallback_used = inferred.lateral_fallback_used;
     result.inferred_point_count += static_cast<int>(left_output.size());

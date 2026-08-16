@@ -55,7 +55,7 @@ struct BevLaneReconstructorConfig
   double measured_point_smoothing_weight{0.50};
   int minimum_window_pixel_count{6};
 
-  double expected_lane_width_m{0.65};
+  double expected_lane_width_m{0.60};
   double lane_width_tolerance_m{0.07};
   double initial_center_tolerance_m{0.30};
   double single_lane_initial_tolerance_m{0.20};
@@ -65,7 +65,7 @@ struct BevLaneReconstructorConfig
   bool allow_single_lane{true};
 
   bool infer_partially_missing_lane{true};
-  bool inference_preserve_reference_shape{false};
+  bool inference_preserve_reference_shape{true};
   double inference_tangent_window_m{0.20};
   double inference_maximum_curvature_per_m{1.25};
   double inference_maximum_heading_step_deg{8.0};

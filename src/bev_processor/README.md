@@ -202,9 +202,10 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
     때만 한쪽 차선에서 전체 예측선을 만든다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
-기본 `lane_inference_preserve_reference_shape:=false`는 국소 접선의 법선
-방향으로 차선 폭만큼 이동한다. `true`로 바꾸면 기준 차선의 모든
-점을 같은 X에서 횡방향으로 이동해 화면상 형상과 기울기를 유지한다.
+기본 `lane_inference_preserve_reference_shape:=true`는 평활화된 기준 차선의
+모든 점을 같은 X에서 `lane_expected_width_m`만큼 횡방향으로 이동한다.
+이전 프레임에서 실측한 폭이 변해도 예측 간격은 설정된 60cm로 고정된다.
+`false`로 바꾸면 국소 접선의 법선 방향으로 이동한다.
 법선 오프셋이 급커브에서 뒤로 접히거나 X 범위가 기준선의 70% 미만으로
 줄면 자동으로 안전한 동일-X 횡방향 이동으로 fallback한다.
 낮은 신뢰도의 새 라인은
@@ -221,7 +222,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_far_minimum_brightness:=110 \
   lane_minimum_local_contrast:=35 \
   lane_sliding_window_measurement_weight:=0.90 \
-  lane_expected_width_m:=0.65 \
+  lane_expected_width_m:=0.60 \
   lane_width_tolerance_m:=0.07 \
   lane_minimum_counterpart_points:=3 \
   lane_infer_partially_missing_lane:=true \
@@ -239,7 +240,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_confirmation_frames:=4 \
   lane_temporal_hold_frames:=5 \
   lane_infer_partially_missing_lane:=true \
-  lane_inference_preserve_reference_shape:=false \
+  lane_inference_preserve_reference_shape:=true \
   lane_inference_tangent_window_m:=0.20 \
   lane_inference_maximum_curvature_per_m:=1.25 \
   lane_inference_maximum_heading_step_deg:=8.0

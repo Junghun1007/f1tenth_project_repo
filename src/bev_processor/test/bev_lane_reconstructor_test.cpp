@@ -546,6 +546,34 @@ void testInferredLanePreservesReferenceShape()
   }
 }
 
+void testInferenceUsesConfiguredWidthInsteadOfLearnedWidth()
+{
+  auto reconstructor = makeReconstructor();
+  cv::Mat measured_pair = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&measured_pair, 0.33, 0.20, 1.70, farCurveCenter, 245, 5);
+  drawBoundary(&measured_pair, -0.33, 0.20, 1.70, farCurveCenter, 245, 5);
+  const auto learned = reconstructor.reconstruct(measured_pair);
+  require(
+    learned.measured_lane_width_m > 0.63,
+    "the setup frame must learn a width wider than the configured 60cm");
+
+  cv::Mat left_only = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&left_only, 0.30, 0.20, 1.70, farCurveCenter, 245, 5);
+  bev_processor::BevLaneReconstruction inferred;
+  for (int frame = 0; frame <= 5; ++frame) {
+    inferred = reconstructor.reconstruct(left_only);
+  }
+  require(
+    inferred.inferred_point_count > 0,
+    "the missing counterpart must be inferred in the second frame");
+  require(
+    maskHasWhiteNear(inferred.right_reconstructed_mask, 1.0, -0.30, 3),
+    "inference must use the configured 60cm offset at the same X");
+  require(
+    !maskHasWhiteNear(inferred.right_reconstructed_mask, 1.0, -0.36, 2),
+    "a previously learned wider pair must not move the inferred lane");
+}
+
 void testLowSaturationGateRemainsOptional()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -586,6 +614,7 @@ int main()
   testShortNormalDistanceCounterpartBeatsInference();
   testUnsafeNormalOffsetFallsBackToSameX();
   testInferredLanePreservesReferenceShape();
+  testInferenceUsesConfiguredWidthInsteadOfLearnedWidth();
   testLowSaturationGateRemainsOptional();
   testRotatingWindowsFollowTightArc();
   std::cout << "BEV sliding-window lane tests passed\n";

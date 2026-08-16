@@ -654,7 +654,7 @@ private:
     declare_parameter<double>("lane_maximum_gap_fill_m", 0.26);
     declare_parameter<double>("lane_measured_point_smoothing_weight", 0.70);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
-    declare_parameter<double>("lane_expected_width_m", 0.65);
+    declare_parameter<double>("lane_expected_width_m", 0.60);
     declare_parameter<double>("lane_width_tolerance_m", 0.07);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
     declare_parameter<double>("lane_single_initial_tolerance_m", 0.60);
@@ -664,7 +664,7 @@ private:
     declare_parameter<bool>("lane_allow_single_lane", true);
     declare_parameter<bool>("lane_infer_partially_missing_lane", true);
     declare_parameter<bool>(
-      "lane_inference_preserve_reference_shape", false);
+      "lane_inference_preserve_reference_shape", true);
     declare_parameter<double>("lane_inference_tangent_window_m", 0.20);
     declare_parameter<double>(
       "lane_inference_maximum_curvature_per_m", 1.25);

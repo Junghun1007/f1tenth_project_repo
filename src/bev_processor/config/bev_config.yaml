@@ -231,8 +231,9 @@ bev_processor:
     lane_measured_point_smoothing_weight: 0.70
     lane_minimum_window_pixel_count: 6
 
-    # 65cm ± 7cm, 즉 58~72cm를 정상 좌·우 차선 쌍으로 본다.
-    lane_expected_width_m: 0.65
+    # 실제 차선 폭 60cm ± 7cm, 즉 53~67cm를 정상 좌·우 차선 쌍으로 본다.
+    # 반대편 예측에는 실측 폭의 프레임별 변동 대신 이 60cm를 고정 사용한다.
+    lane_expected_width_m: 0.60
     lane_width_tolerance_m: 0.07
     lane_initial_center_tolerance_m: 0.60
     lane_single_initial_tolerance_m: 0.60
@@ -246,9 +247,9 @@ bev_processor:
     # 반대편 차선의 형상으로 전체 차선을 예측한다. 양쪽이 유효하면
     # 짧은 쪽도 실측 결과만 유지하고 빈 구간을 보충하지 않는다.
     lane_infer_partially_missing_lane: true
-    # false면 기준 차선의 법선 방향으로 65cm 이동한다. 급커브에서
-    # 예측선이 뒤로 접히거나 짧어지면 동일-X 이동으로 자동 fallback한다.
-    lane_inference_preserve_reference_shape: false
+    # true면 평활화된 기준 차선의 각 점 (X,Y)를 (X,Y±0.60m)로
+    # 옮겨 시작·종료 X와 형상을 완전히 같게 유지한다.
+    lane_inference_preserve_reference_shape: true
     # preserve_reference_shape=false인 법선 예측 시에만 아래 세 값을 사용한다.
     # 20cm 범위의 여러 기준점으로 접선을 계산한다.
     # 접선/예측선은 곡률 1.25(최소 회전반경 약 0.8m), 점별 8도를 모두
