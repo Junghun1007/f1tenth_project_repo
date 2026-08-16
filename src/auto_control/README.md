@@ -13,15 +13,15 @@ driving. Do not run `manual_drive.launch.py` at the same time.
 4. Calculate Stanley cross-track error as the signed normal distance from the
    real front-axle origin and heading from a short local centerline chord.
 5. Calculate representative forward curvature over `X=0.5..1.6m`.
-6. Convert curvature to a `0.8..1.2m/s` target using the configured maximum
+6. Convert curvature to a `0.6..0.9m/s` target using the configured maximum
    lateral acceleration.
 7. Convert VESC measured ERPM to vehicle speed and apply PID plus a linear
-   duty feed-forward, bounded to `0.05..0.06`.
+   duty feed-forward, bounded to `0.055..0.065`.
 
 The drive command becomes exactly zero and steering returns to center when the
 centerline is missing/short/stale, measured ERPM is stale, the VESC reports a
 disconnect, the node is disabled, or the node shuts down. When all inputs are
-valid, the configured `0.05` start duty is applied in the same way as manual
+valid, the configured `0.055` start duty is applied in the same way as manual
 driving and subsequent changes are rate limited.
 
 Vehicle conversion defaults match `camera_driver`: 109.5mm tire diameter,
@@ -68,6 +68,9 @@ hardware power cutoff reachable.
 
 ## Main tuning parameters
 
+The complete Korean symptom-based tuning guide is installed as
+`share/auto_control/AUTO_CONTROL_PARAMETER_TUNING_KO.txt`.
+
 - `stanley_gain`: larger values correct lateral displacement more strongly.
 - `stanley_heading_lookahead_m`: larger values use a farther, smoother heading.
 - `path_local_smoothing_window_m`: larger values reject wider centerline
@@ -86,7 +89,7 @@ hardware power cutoff reachable.
 - `steering_current_weight`: smaller values smooth steering more but add lag.
 - `steering_servo_inverted`: reverses only the final servo output while keeping
   positive `/auto/steering_angle_rad` defined as a vehicle-left command.
-- `maximum_lateral_acceleration_mps2`: smaller values reach the 0.8m/s corner
+- `maximum_lateral_acceleration_mps2`: smaller values reach the minimum-speed corner
   limit on gentler curves.
 - `curvature_percentile`: smaller values ignore more isolated curvature spikes.
 - `speed_pid_kp`, `speed_pid_ki`, `speed_pid_kd`: measured-speed PID gains.

@@ -12,7 +12,10 @@ setup(
     packages=find_packages(exclude=["test"]),
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
-        (f"share/{package_name}", ["package.xml"]),
+        (
+            f"share/{package_name}",
+            ["package.xml", "AUTO_CONTROL_PARAMETER_TUNING_KO.txt"],
+        ),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],
