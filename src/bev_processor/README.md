@@ -195,17 +195,19 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 7. 1.5m 이후에는 윈도우 반폭을 12cm에서 최대 22cm까지 넓혀 번진 곡선의
    중앙을 계속 측정한다.
 8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
-9. Odometry 없이 이전 승인 라인과 같은 X의 위치·방향을 비교한다. 큰 변화는
-   4프레임 연속일 때만 승인하고, 검출 소실 시 이전 라인은 5프레임만 유지한다.
+9. 기본 화면 표시는 temporal hold를 사용하지 않고 매 프레임 현재
+   픽셀로 좌·우 차선과 예측선을 다시 계산한다.
 10. 법선거리 폭을 통과한 반대편은 `lane_minimum_counterpart_points`
     개만 보여도 실측선을 유지한다. 반대편 실측이 전혀 유효하지 않을
-    때만 한쪽 차선에서 전체 예측선을 만든다.
+    때만 한쪽 차선에서 전체 예측선을 만든다. 왼쪽만 보이면 오른쪽을,
+    오른쪽만 보이면 왼쪽을 예측하며 파란색·빨간색에 방향이 고정되지 않는다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
-기본 `lane_inference_preserve_reference_shape:=true`는 평활화된 기준 차선의
-모든 점을 같은 X에서 `lane_expected_width_m`만큼 횡방향으로 이동한다.
-이전 프레임에서 실측한 폭이 변해도 예측 간격은 설정된 60cm로 고정된다.
-`false`로 바꾸면 국소 접선의 법선 방향으로 이동한다.
+기본 `lane_inference_preserve_reference_shape:=false`는 매 프레임 현재
+기준 차선의 국소 접선을 구하고, 그 법선 방향으로 설정된 60cm를
+이동한다. 차량이 회전해 BEV의 차선 방향이 바뀌면 빨간 예측선도
+현재 프레임에서 즉시 다시 계산된다. 이전 프레임에서 실측한 폭은
+예측 위치에 사용하지 않는다.
 법선 오프셋이 급커브에서 뒤로 접히거나 X 범위가 기준선의 70% 미만으로
 줄면 자동으로 안전한 동일-X 횡방향 이동으로 fallback한다.
 낮은 신뢰도의 새 라인은
@@ -238,9 +240,10 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_maximum_lateral_jump_near_m:=0.06 \
   lane_temporal_maximum_lateral_jump_far_m:=0.12 \
   lane_temporal_confirmation_frames:=4 \
-  lane_temporal_hold_frames:=5 \
+  lane_temporal_tracking_enabled:=false \
+  lane_temporal_hold_frames:=0 \
   lane_infer_partially_missing_lane:=true \
-  lane_inference_preserve_reference_shape:=true \
+  lane_inference_preserve_reference_shape:=false \
   lane_inference_tangent_window_m:=0.20 \
   lane_inference_maximum_curvature_per_m:=1.25 \
   lane_inference_maximum_heading_step_deg:=8.0

@@ -664,13 +664,13 @@ private:
     declare_parameter<bool>("lane_allow_single_lane", true);
     declare_parameter<bool>("lane_infer_partially_missing_lane", true);
     declare_parameter<bool>(
-      "lane_inference_preserve_reference_shape", true);
+      "lane_inference_preserve_reference_shape", false);
     declare_parameter<double>("lane_inference_tangent_window_m", 0.20);
     declare_parameter<double>(
       "lane_inference_maximum_curvature_per_m", 1.25);
     declare_parameter<double>(
       "lane_inference_maximum_heading_step_deg", 8.0);
-    declare_parameter<bool>("lane_temporal_tracking_enabled", true);
+    declare_parameter<bool>("lane_temporal_tracking_enabled", false);
     declare_parameter<double>(
       "lane_temporal_maximum_lateral_jump_near_m", 0.06);
     declare_parameter<double>(
@@ -678,7 +678,7 @@ private:
     declare_parameter<double>(
       "lane_temporal_maximum_heading_jump_deg", 15.0);
     declare_parameter<int>("lane_temporal_confirmation_frames", 4);
-    declare_parameter<int>("lane_temporal_hold_frames", 5);
+    declare_parameter<int>("lane_temporal_hold_frames", 0);
     declare_parameter<double>("lane_output_line_thickness_m", 0.02);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);

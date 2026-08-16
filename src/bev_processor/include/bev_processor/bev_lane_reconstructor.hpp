@@ -65,17 +65,17 @@ struct BevLaneReconstructorConfig
   bool allow_single_lane{true};
 
   bool infer_partially_missing_lane{true};
-  bool inference_preserve_reference_shape{true};
+  bool inference_preserve_reference_shape{false};
   double inference_tangent_window_m{0.20};
   double inference_maximum_curvature_per_m{1.25};
   double inference_maximum_heading_step_deg{8.0};
 
-  bool temporal_tracking_enabled{true};
+  bool temporal_tracking_enabled{false};
   double temporal_maximum_lateral_jump_near_m{0.06};
   double temporal_maximum_lateral_jump_far_m{0.12};
   double temporal_maximum_heading_jump_deg{15.0};
   int temporal_confirmation_frames{4};
-  int temporal_hold_frames{5};
+  int temporal_hold_frames{0};
 
   double output_line_thickness_m{0.02};
 };

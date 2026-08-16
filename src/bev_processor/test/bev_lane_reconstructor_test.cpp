@@ -53,6 +53,11 @@ double tightInferenceCurveCenter(const double x_m)
   return 0.45 - 0.90 * distance_m * distance_m;
 }
 
+double rotatedStraightCenter(const double x_m)
+{
+  return 0.30 - 0.30 * (x_m - 0.20);
+}
+
 std::vector<cv::Point> makeBoundary(
   const double lateral_offset_m,
   const double minimum_x_m,
@@ -113,6 +118,8 @@ bev_processor::BevLaneReconstructor makeReconstructor()
   config.maximum_gap_fill_m = 0.26;
   config.measured_point_smoothing_weight = 0.85;
   config.inference_preserve_reference_shape = true;
+  config.temporal_tracking_enabled = true;
+  config.temporal_hold_frames = 5;
   return bev_processor::BevLaneReconstructor(config);
 }
 
@@ -574,6 +581,79 @@ void testInferenceUsesConfiguredWidthInsteadOfLearnedWidth()
     "a previously learned wider pair must not move the inferred lane");
 }
 
+void testCurrentFrameRotationUpdatesInferenceImmediately()
+{
+  bev_processor::BevLaneReconstructorConfig config;
+  config.initial_center_tolerance_m = 0.60;
+  config.single_lane_initial_tolerance_m = 0.60;
+  config.temporal_tracking_enabled = false;
+  config.temporal_hold_frames = 0;
+  config.inference_preserve_reference_shape = false;
+  bev_processor::BevLaneReconstructor reconstructor(config);
+
+  cv::Mat first = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&first, 0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  require(reconstructor.reconstruct(first).valid, "first frame must be valid");
+
+  cv::Mat rotated = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&rotated, 0.0, 0.20, 1.40, rotatedStraightCenter, 245, 5);
+  const auto result = reconstructor.reconstruct(rotated);
+  const cv::Point2d tangent = cv::Point2d(1.0, -0.30) /
+    cv::norm(cv::Point2d(1.0, -0.30));
+  const cv::Point2d reference_point(0.80, rotatedStraightCenter(0.80));
+  const cv::Point2d expected = reference_point +
+    0.60 * cv::Point2d(tangent.y, -tangent.x);
+
+  require(result.valid, "rotated current frame must remain valid");
+  require(
+    !result.temporal_hold_used,
+    "current-view mode must never hold a previous vehicle-frame lane");
+  require(
+    maskHasWhiteNear(
+      result.right_reconstructed_mask, expected.x, expected.y, 5),
+    "counterpart must move immediately to the current frame normal offset");
+}
+
+void testEitherVisibleSideInfersTheMissingCounterpartEveryFrame()
+{
+  bev_processor::BevLaneReconstructorConfig config;
+  config.initial_center_tolerance_m = 0.60;
+  config.single_lane_initial_tolerance_m = 0.60;
+  config.temporal_tracking_enabled = false;
+  config.temporal_hold_frames = 0;
+  config.inference_preserve_reference_shape = false;
+  bev_processor::BevLaneReconstructor reconstructor(config);
+
+  cv::Mat left_only = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&left_only, 0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  const auto from_left = reconstructor.reconstruct(left_only);
+  require(
+    from_left.left_measured_points.size() >=
+    static_cast<std::size_t>(config.minimum_points) &&
+    from_left.right_measured_points.empty(),
+    "a visible left lane must remain measured while the right is missing");
+  require(
+    from_left.inferred_point_count > 0 &&
+    maskHasWhiteNear(from_left.right_reconstructed_mask, 0.80, -0.30, 4),
+    "a missing right lane must be inferred from the visible left lane");
+
+  cv::Mat right_only = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&right_only, -0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  const auto from_right = reconstructor.reconstruct(right_only);
+  require(
+    from_right.right_measured_points.size() >=
+    static_cast<std::size_t>(config.minimum_points) &&
+    from_right.left_measured_points.empty(),
+    "a visible right lane must remain measured while the left is missing");
+  require(
+    from_right.inferred_point_count > 0 &&
+    maskHasWhiteNear(from_right.left_reconstructed_mask, 0.80, 0.30, 4),
+    "a missing left lane must be inferred from the visible right lane");
+  require(
+    !from_left.temporal_hold_used && !from_right.temporal_hold_used,
+    "side changes must use each current frame without a stale held lane");
+}
+
 void testLowSaturationGateRemainsOptional()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -615,6 +695,8 @@ int main()
   testUnsafeNormalOffsetFallsBackToSameX();
   testInferredLanePreservesReferenceShape();
   testInferenceUsesConfiguredWidthInsteadOfLearnedWidth();
+  testCurrentFrameRotationUpdatesInferenceImmediately();
+  testEitherVisibleSideInfersTheMissingCounterpartEveryFrame();
   testLowSaturationGateRemainsOptional();
   testRotatingWindowsFollowTightArc();
   std::cout << "BEV sliding-window lane tests passed\n";

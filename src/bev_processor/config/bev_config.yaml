@@ -243,13 +243,13 @@ bev_processor:
     lane_minimum_counterpart_points: 3
     lane_allow_single_lane: true
 
-    # 한쪽 전체가 lane_minimum_points를 채우지 못해 미검출일 때만
-    # 반대편 차선의 형상으로 전체 차선을 예측한다. 양쪽이 유효하면
-    # 짧은 쪽도 실측 결과만 유지하고 빈 구간을 보충하지 않는다.
+    # 왼쪽만 검출되면 오른쪽을, 오른쪽만 검출되면 왼쪽을 대칭적으로
+    # 예측한다. 양쪽이 유효하면 짧은 쪽도 실측 결과만 유지하고
+    # 빈 구간을 가상선으로 보충하지 않는다.
     lane_infer_partially_missing_lane: true
-    # true면 평활화된 기준 차선의 각 점 (X,Y)를 (X,Y±0.60m)로
-    # 옮겨 시작·종료 X와 형상을 완전히 같게 유지한다.
-    lane_inference_preserve_reference_shape: true
+    # false면 매 프레임 현재 차선의 접선에 수직인 방향으로 60cm
+    # 옮긴다. 차량이 회전해 화면의 차선 방향이 바뀌면 예측선도 즉시 바뀐다.
+    lane_inference_preserve_reference_shape: false
     # preserve_reference_shape=false인 법선 예측 시에만 아래 세 값을 사용한다.
     # 20cm 범위의 여러 기준점으로 접선을 계산한다.
     # 접선/예측선은 곡률 1.25(최소 회전반경 약 0.8m), 점별 8도를 모두
@@ -258,16 +258,15 @@ bev_processor:
     lane_inference_maximum_curvature_per_m: 1.25
     lane_inference_maximum_heading_step_deg: 8.0
 
-    # Odometry 없이 이전 승인 라인과 현재 라인을 같은 X에서 비교한다.
-    # 큰 이동/방향 변화는 4프레임 연속일 때만 승인하고, 픽셀이 사라진
-    # 경우에는 이전 라인을 최대 5프레임만 유지한 뒤 제거한다.
-    lane_temporal_tracking_enabled: true
+    # 화면 표시는 이전 차량 좌표의 라인을 재사용하지 않고 매 프레임
+    # 현재 픽셀로 다시 계산한다. 이로써 차량 회전 시 stale hold를 막는다.
+    lane_temporal_tracking_enabled: false
     lane_temporal_maximum_lateral_jump_near_m: 0.06
     lane_temporal_maximum_lateral_jump_far_m: 0.12
     lane_temporal_maximum_heading_jump_deg: 15.0
     # 다른 밝은 경계로 크게 점프한 결과는 4프레임 연속 확인된 뒤 승인한다.
     lane_temporal_confirmation_frames: 4
-    lane_temporal_hold_frames: 5
+    lane_temporal_hold_frames: 0
 
     # 1cm/pixel인 기본 BEV에서 약 2pixel 두께다.
     lane_output_line_thickness_m: 0.02
