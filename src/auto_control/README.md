@@ -81,6 +81,8 @@ hardware power cutoff reachable.
 - `stanley_corner_opposing_correction_ratio`: limits an opposing cross-track
   correction so it cannot reverse the path-heading steering direction.
 - `steering_current_weight`: smaller values smooth steering more but add lag.
+- `steering_servo_inverted`: reverses only the final servo output while keeping
+  positive `/auto/steering_angle_rad` defined as a vehicle-left command.
 - `maximum_lateral_acceleration_mps2`: smaller values reach the 0.8m/s corner
   limit on gentler curves.
 - `curvature_percentile`: smaller values ignore more isolated curvature spikes.

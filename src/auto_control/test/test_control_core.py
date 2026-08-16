@@ -195,6 +195,27 @@ class ControlCoreTest(unittest.TestCase):
         self.assertIsNotNone(path)
         self.assertLess(float(np.max(np.abs(path.y_m))), 1.0e-6)
 
+    def test_inverted_servo_mapping_reverses_only_actuator_output(self) -> None:
+        left_steering_rad = math.radians(10.0)
+        normal = steering_angle_to_servo(
+            left_steering_rad,
+            maximum_steering_angle_rad=math.radians(30.0),
+            servo_left=0.98,
+            servo_center=0.46,
+            servo_right=0.02,
+        )
+        inverted = steering_angle_to_servo(
+            left_steering_rad,
+            maximum_steering_angle_rad=math.radians(30.0),
+            servo_left=0.98,
+            servo_center=0.46,
+            servo_right=0.02,
+            inverted=True,
+        )
+
+        self.assertGreater(normal, 0.46)
+        self.assertLess(inverted, 0.46)
+
     def test_erpm_conversion_matches_existing_vehicle_geometry(self) -> None:
         speed_mps = erpm_to_speed_mps(
             10000,

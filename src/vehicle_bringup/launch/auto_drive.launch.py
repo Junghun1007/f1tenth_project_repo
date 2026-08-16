@@ -48,6 +48,12 @@ def generate_launch_description():
             float,
         ),
         (
+            "steering_servo_inverted",
+            "true",
+            "steering_servo_inverted",
+            bool,
+        ),
+        (
             "maximum_lateral_acceleration_mps2",
             "0.8",
             "maximum_lateral_acceleration_mps2",

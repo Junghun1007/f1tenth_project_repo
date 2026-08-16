@@ -183,6 +183,10 @@ class AutoControlNode(Node):
         self.declare_parameter("servo_left", 0.98)
         self.declare_parameter("servo_center", 0.46)
         self.declare_parameter("servo_right", 0.02)
+        # The installed servo linkage reverses the mathematical steering
+        # direction. Keep desired vehicle steering signs unchanged and invert
+        # only the final actuator mapping.
+        self.declare_parameter("steering_servo_inverted", True)
 
         self.declare_parameter("minimum_speed_mps", 0.8)
         self.declare_parameter("maximum_speed_mps", 1.2)
@@ -279,6 +283,9 @@ class AutoControlNode(Node):
             "differential_ring_teeth",
         )
         self.enabled = bool(self.get_parameter("enabled").value)
+        self.steering_servo_inverted = bool(
+            self.get_parameter("steering_servo_inverted").value
+        )
         for name in string_parameters:
             setattr(self, name, str(self.get_parameter(name).value))
         for name in float_parameters:
@@ -520,6 +527,7 @@ class AutoControlNode(Node):
             servo_left=self.servo_left,
             servo_center=self.servo_center,
             servo_right=self.servo_right,
+            inverted=self.steering_servo_inverted,
         )
 
         feedforward_duty = speed_feedforward_duty(

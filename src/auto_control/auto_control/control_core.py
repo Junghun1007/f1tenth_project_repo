@@ -405,7 +405,10 @@ def steering_angle_to_servo(
     servo_left: float,
     servo_center: float,
     servo_right: float,
+    inverted: bool = False,
 ) -> float:
+    if inverted:
+        steering_angle_rad = -steering_angle_rad
     normalized = clamp(
         steering_angle_rad / maximum_steering_angle_rad,
         -1.0,

@@ -58,6 +58,9 @@ auto_control:
     servo_left: 0.98
     servo_center: 0.46
     servo_right: 0.02
+    # 수동주행에서 확인한 실차 서보 링크 방향에 맞춰 최종 출력만 반전한다.
+    # /auto/steering_angle_rad의 +는 계속 차량 좌회전 의미를 유지한다.
+    steering_servo_inverted: true
 
     # 곡률의 90 percentile로 순간 한 점의 spike를 무시하면서 코너를 감속한다.
     minimum_speed_mps: 0.8
