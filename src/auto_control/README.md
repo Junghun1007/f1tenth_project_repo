@@ -76,6 +76,9 @@ hardware power cutoff reachable.
   bumps; it does not change a continuous corner.
 - `path_geometry_window_m`: larger values make local heading and curvature less
   sensitive to centimetre-scale steps.
+- `path_minimum_x_m`, `path_minimum_points`, `path_minimum_span_m`: minimum
+  directly measured centerline coverage accepted by the controller. Smaller
+  values keep tight, mostly lateral corners valid but reduce path confidence.
 - `stanley_corner_heading_threshold_deg`: enables the corner direction guard
   above this absolute path heading.
 - `stanley_corner_opposing_correction_ratio`: limits an opposing cross-track

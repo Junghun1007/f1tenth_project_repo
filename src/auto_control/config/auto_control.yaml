@@ -35,10 +35,12 @@ auto_control:
     # mono8 중앙선 실측 점열을 전역 다항식으로 변형하지 않는다.
     # 12cm 국소 직선 평활화와 4cm 이상 독립 돌출점 제거만 적용해
     # 먼 코너가 현재 조향 구간을 미리 휘게 하는 현상을 막는다.
-    path_minimum_x_m: 0.20
+    # 급코너에서 중앙선이 X=0.10~0.36m만 남아도 정지하지 않도록
+    # 가까운 재구성 구간을 포함하고 20cm span까지 허용한다.
+    path_minimum_x_m: 0.10
     path_maximum_x_m: 2.20
-    path_minimum_points: 20
-    path_minimum_span_m: 0.35
+    path_minimum_points: 12
+    path_minimum_span_m: 0.20
     path_local_smoothing_window_m: 0.12
     path_outlier_threshold_m: 0.04
     path_geometry_window_m: 0.16
@@ -46,7 +48,8 @@ auto_control:
     # Stanley: +조향각은 차량 좌표 +Y인 좌회전이다.
     stanley_gain: 1.2
     stanley_softening_speed_mps: 0.50
-    stanley_heading_lookahead_m: 0.10
+    # 전역 피팅 없이 실측 중앙선의 18cm 앞 접선만 보고 코너를 준비한다.
+    stanley_heading_lookahead_m: 0.18
     # 저속 코너에서 횡오차 항이 경로 선수각보다 커져 조향 부호를 뒤집지
     # 못하게 한다. 선수각 6도 이상이면 반대 방향 보정은 선수각의 80%로 제한한다.
     stanley_corner_heading_threshold_deg: 6.0

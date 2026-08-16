@@ -25,7 +25,7 @@ def generate_launch_description():
         ),
         (
             "stanley_heading_lookahead_m",
-            "0.10",
+            "0.18",
             "stanley_heading_lookahead_m",
             float,
         ),
@@ -79,6 +79,24 @@ def generate_launch_description():
             "path_geometry_window_m",
             "0.16",
             "path_geometry_window_m",
+            float,
+        ),
+        (
+            "path_minimum_x_m",
+            "0.10",
+            "path_minimum_x_m",
+            float,
+        ),
+        (
+            "path_minimum_points",
+            "12",
+            "path_minimum_points",
+            int,
+        ),
+        (
+            "path_minimum_span_m",
+            "0.20",
+            "path_minimum_span_m",
             float,
         ),
     ]

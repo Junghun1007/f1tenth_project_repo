@@ -195,6 +195,35 @@ class ControlCoreTest(unittest.TestCase):
         self.assertIsNotNone(path)
         self.assertLess(float(np.max(np.abs(path.y_m))), 1.0e-6)
 
+    def test_short_tight_corner_centerline_remains_usable(self) -> None:
+        x_m = np.linspace(0.10, 0.36, 27)
+        y_m = -0.20 * np.square((x_m - 0.10) / 0.26)
+        path = build_path_model(
+            x_m,
+            y_m,
+            minimum_points=12,
+            minimum_span_m=0.20,
+            minimum_x_m=0.10,
+            maximum_x_m=2.2,
+            local_smoothing_window_m=0.12,
+            outlier_threshold_m=0.04,
+            geometry_window_m=0.16,
+        )
+        self.assertIsNotNone(path)
+
+        result = stanley_control(
+            path,
+            speed_mps=0.8,
+            gain=1.2,
+            softening_speed_mps=0.5,
+            heading_lookahead_m=0.18,
+            maximum_steering_angle_rad=math.radians(30.0),
+            corner_heading_threshold_rad=math.radians(6.0),
+            corner_opposing_correction_ratio=0.80,
+        )
+        self.assertLess(result.heading_error_rad, 0.0)
+        self.assertLess(result.steering_angle_rad, 0.0)
+
     def test_inverted_servo_mapping_reverses_only_actuator_output(self) -> None:
         left_steering_rad = math.radians(10.0)
         normal = steering_angle_to_servo(

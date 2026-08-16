@@ -160,17 +160,17 @@ class AutoControlNode(Node):
         self.declare_parameter("bev_lateral_margin_m", 0.70)
         self.declare_parameter("bev_meter_per_pixel", 0.01)
         self.declare_parameter("lane_pixel_threshold", 128)
-        self.declare_parameter("path_minimum_x_m", 0.20)
+        self.declare_parameter("path_minimum_x_m", 0.10)
         self.declare_parameter("path_maximum_x_m", 2.20)
-        self.declare_parameter("path_minimum_points", 20)
-        self.declare_parameter("path_minimum_span_m", 0.35)
+        self.declare_parameter("path_minimum_points", 12)
+        self.declare_parameter("path_minimum_span_m", 0.20)
         self.declare_parameter("path_local_smoothing_window_m", 0.12)
         self.declare_parameter("path_outlier_threshold_m", 0.04)
         self.declare_parameter("path_geometry_window_m", 0.16)
 
         self.declare_parameter("stanley_gain", 1.2)
         self.declare_parameter("stanley_softening_speed_mps", 0.50)
-        self.declare_parameter("stanley_heading_lookahead_m", 0.10)
+        self.declare_parameter("stanley_heading_lookahead_m", 0.18)
         self.declare_parameter(
             "stanley_corner_heading_threshold_deg", 6.0
         )
