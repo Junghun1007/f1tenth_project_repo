@@ -57,6 +57,10 @@ ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: true"
 ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: false"
 ```
 
+With the BEV preview focused, pressing `Space` publishes the same disable
+command and immediately sends duty zero. It stays disabled until `true` is
+published explicitly.
+
 The default launch is armed and starts when a valid centerline, VESC connection,
 and fresh ERPM have all arrived. Lift the wheels for the first test and keep a
 hardware power cutoff reachable.
@@ -65,6 +69,10 @@ hardware power cutoff reachable.
 
 - `stanley_gain`: larger values correct lateral displacement more strongly.
 - `stanley_heading_lookahead_m`: larger values use a farther, smoother heading.
+- `stanley_corner_heading_threshold_deg`: enables the corner direction guard
+  above this absolute path heading.
+- `stanley_corner_opposing_correction_ratio`: limits an opposing cross-track
+  correction so it cannot reverse the path-heading steering direction.
 - `steering_current_weight`: smaller values smooth steering more but add lag.
 - `maximum_lateral_acceleration_mps2`: smaller values reach the 0.8m/s corner
   limit on gentler curves.

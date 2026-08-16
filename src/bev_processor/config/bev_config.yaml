@@ -25,6 +25,8 @@ bev_processor:
     preview_enabled: true
     preview_max_fps: 60.0
     preview_window_name: "BEV image"
+    # 프리뷰 창에 포커스를 둔 채 Space를 누르면 false를 발행해 자동주행을 정지한다.
+    preview_stop_topic: "/auto/enabled"
     preview_max_width: 1280
     preview_max_height: 720
 

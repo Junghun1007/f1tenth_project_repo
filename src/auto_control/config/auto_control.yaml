@@ -44,6 +44,10 @@ auto_control:
     stanley_gain: 1.2
     stanley_softening_speed_mps: 0.50
     stanley_heading_lookahead_m: 0.25
+    # 저속 코너에서 횡오차 항이 경로 선수각보다 커져 조향 부호를 뒤집지
+    # 못하게 한다. 선수각 6도 이상이면 반대 방향 보정은 선수각의 80%로 제한한다.
+    stanley_corner_heading_threshold_deg: 6.0
+    stanley_corner_opposing_correction_ratio: 0.80
     maximum_steering_angle_deg: 30.0
     # 현재 계산 조향 45%, 직전 명령 55%와 조향 변화율 제한을 함께 적용한다.
     steering_current_weight: 0.45

@@ -56,6 +56,8 @@ class ControlCoreTest(unittest.TestCase):
             softening_speed_mps=0.5,
             heading_lookahead_m=0.25,
             maximum_steering_angle_rad=math.radians(30.0),
+            corner_heading_threshold_rad=math.radians(6.0),
+            corner_opposing_correction_ratio=0.80,
         )
 
         self.assertGreater(result.cross_track_error_m, 0.0)
@@ -69,6 +71,40 @@ class ControlCoreTest(unittest.TestCase):
             servo_right=0.02,
         )
         self.assertGreater(servo, 0.46)
+
+    def test_corner_guard_prevents_cross_track_from_reversing_turn(self) -> None:
+        # The path is currently left of the axle but its heading is clearly a
+        # right turn. At low speed the unbounded Stanley cross-track term is
+        # large enough to request left steering, opposite the path heading.
+        path = PathModel(
+            coefficients=np.asarray((0.60, -0.40)),
+            minimum_x_m=0.25,
+            maximum_x_m=1.50,
+            point_count=100,
+        )
+        result = stanley_control(
+            path,
+            speed_mps=0.8,
+            gain=1.2,
+            softening_speed_mps=0.5,
+            heading_lookahead_m=0.25,
+            maximum_steering_angle_rad=math.radians(30.0),
+            corner_heading_threshold_rad=math.radians(6.0),
+            corner_opposing_correction_ratio=0.80,
+        )
+
+        self.assertGreater(result.cross_track_error_m, 0.0)
+        self.assertLess(result.heading_error_rad, 0.0)
+        self.assertTrue(result.direction_guard_used)
+        self.assertLess(result.steering_angle_rad, 0.0)
+        servo = steering_angle_to_servo(
+            result.steering_angle_rad,
+            maximum_steering_angle_rad=math.radians(30.0),
+            servo_left=0.98,
+            servo_center=0.46,
+            servo_right=0.02,
+        )
+        self.assertLess(servo, 0.46)
 
     def test_curvature_profile_is_bounded_by_requested_speeds(self) -> None:
         path = PathModel(

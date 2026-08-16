@@ -30,6 +30,18 @@ def generate_launch_description():
             float,
         ),
         (
+            "stanley_corner_heading_threshold_deg",
+            "6.0",
+            "stanley_corner_heading_threshold_deg",
+            float,
+        ),
+        (
+            "stanley_corner_opposing_correction_ratio",
+            "0.80",
+            "stanley_corner_opposing_correction_ratio",
+            float,
+        ),
+        (
             "steering_current_weight",
             "0.45",
             "steering_current_weight",

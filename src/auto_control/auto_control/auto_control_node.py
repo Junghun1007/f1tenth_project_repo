@@ -97,6 +97,7 @@ class AutoControlNode(Node):
         self._latest_curvature_per_m = 0.0
         self._latest_cross_track_error_m = 0.0
         self._latest_heading_error_rad = 0.0
+        self._latest_direction_guard_used = False
 
         self._speed_pid = SpeedPid(
             kp=self.speed_pid_kp,
@@ -168,6 +169,12 @@ class AutoControlNode(Node):
         self.declare_parameter("stanley_gain", 1.2)
         self.declare_parameter("stanley_softening_speed_mps", 0.50)
         self.declare_parameter("stanley_heading_lookahead_m", 0.25)
+        self.declare_parameter(
+            "stanley_corner_heading_threshold_deg", 6.0
+        )
+        self.declare_parameter(
+            "stanley_corner_opposing_correction_ratio", 0.80
+        )
         self.declare_parameter("maximum_steering_angle_deg", 30.0)
         self.declare_parameter("steering_current_weight", 0.45)
         self.declare_parameter("steering_rate_limit_deg_per_sec", 240.0)
@@ -230,6 +237,8 @@ class AutoControlNode(Node):
             "stanley_gain",
             "stanley_softening_speed_mps",
             "stanley_heading_lookahead_m",
+            "stanley_corner_heading_threshold_deg",
+            "stanley_corner_opposing_correction_ratio",
             "maximum_steering_angle_deg",
             "steering_current_weight",
             "steering_rate_limit_deg_per_sec",
@@ -278,6 +287,9 @@ class AutoControlNode(Node):
         self.steering_rate_limit_rad_per_sec = math.radians(
             self.steering_rate_limit_deg_per_sec
         )
+        self.stanley_corner_heading_threshold_rad = math.radians(
+            self.stanley_corner_heading_threshold_deg
+        )
 
     def _validate_parameters(self) -> None:
         if self.control_rate_hz <= 0.0 or self.status_log_rate_hz <= 0.0:
@@ -311,6 +323,14 @@ class AutoControlNode(Node):
             raise ValueError("speed_scale_correction must be positive")
         if not 0.0 <= self.curvature_percentile <= 100.0:
             raise ValueError("curvature_percentile must be in [0, 100]")
+        if self.stanley_corner_heading_threshold_deg < 0.0:
+            raise ValueError(
+                "stanley_corner_heading_threshold_deg must not be negative"
+            )
+        if not 0.0 <= self.stanley_corner_opposing_correction_ratio < 1.0:
+            raise ValueError(
+                "stanley_corner_opposing_correction_ratio must be in [0, 1)"
+            )
         if self.path_minimum_x_m >= self.path_maximum_x_m:
             raise ValueError("path X limits are reversed")
         if self.path_minimum_points < 3:
@@ -412,6 +432,7 @@ class AutoControlNode(Node):
         self.enabled = bool(message.data)
         if not self.enabled:
             self._stop_control("disabled")
+            self._publish_commands(0.0, self.servo_center)
         self.get_logger().warn(
             f"Automatic control {'enabled' if self.enabled else 'disabled'}."
         )
@@ -454,12 +475,30 @@ class AutoControlNode(Node):
             softening_speed_mps=self.stanley_softening_speed_mps,
             heading_lookahead_m=self.stanley_heading_lookahead_m,
             maximum_steering_angle_rad=self.maximum_steering_angle_rad,
+            corner_heading_threshold_rad=(
+                self.stanley_corner_heading_threshold_rad
+            ),
+            corner_opposing_correction_ratio=(
+                self.stanley_corner_opposing_correction_ratio
+            ),
         )
 
-        filtered_steering_rad = (
-            self.steering_current_weight * stanley.steering_angle_rad
-            + (1.0 - self.steering_current_weight) * self._steering_angle_rad
+        corner_sign_reset_used = (
+            abs(stanley.heading_error_rad)
+            >= self.stanley_corner_heading_threshold_rad
+            and stanley.steering_angle_rad * self._steering_angle_rad < 0.0
         )
+        if corner_sign_reset_used:
+            # Do not let temporal smoothing retain a left command after the
+            # fitted path has clearly entered a right corner, or vice versa.
+            self._steering_angle_rad = 0.0
+            filtered_steering_rad = stanley.steering_angle_rad
+        else:
+            filtered_steering_rad = (
+                self.steering_current_weight * stanley.steering_angle_rad
+                + (1.0 - self.steering_current_weight)
+                * self._steering_angle_rad
+            )
         self._steering_angle_rad = move_toward(
             self._steering_angle_rad,
             filtered_steering_rad,
@@ -504,6 +543,9 @@ class AutoControlNode(Node):
         self._latest_curvature_per_m = curvature_per_m
         self._latest_cross_track_error_m = stanley.cross_track_error_m
         self._latest_heading_error_rad = stanley.heading_error_rad
+        self._latest_direction_guard_used = (
+            stanley.direction_guard_used or corner_sign_reset_used
+        )
         self._publish_commands(self._command_duty, servo_position)
 
     def _stop_reason(self, now: Time) -> str | None:
@@ -536,6 +578,7 @@ class AutoControlNode(Node):
         self._latest_curvature_per_m = 0.0
         self._latest_cross_track_error_m = 0.0
         self._latest_heading_error_rad = 0.0
+        self._latest_direction_guard_used = False
         self._speed_pid.reset()
         if reason != self._last_stop_reason:
             self.get_logger().warn(
@@ -564,7 +607,7 @@ class AutoControlNode(Node):
         path_points = self._path.point_count if self._path is not None else 0
         self.get_logger().info(
             "Auto status | state=%s | path_points=%d | speed=%.2f/%.2fm/s | "
-            "curvature=%.3f/m | cte=%+.3fm | heading=%+.1fdeg | "
+            "curvature=%.3f/m | cte=%+.3fm | heading=%+.1fdeg | guard=%s | "
             "steering=%+.1fdeg | duty=%.4f"
             % (
                 self._last_stop_reason,
@@ -574,6 +617,7 @@ class AutoControlNode(Node):
                 self._latest_curvature_per_m,
                 self._latest_cross_track_error_m,
                 math.degrees(self._latest_heading_error_rad),
+                "on" if self._latest_direction_guard_used else "off",
                 math.degrees(self._steering_angle_rad),
                 self._command_duty,
             )

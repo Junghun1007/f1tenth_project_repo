@@ -38,6 +38,7 @@ class StanleyResult:
     steering_angle_rad: float
     cross_track_error_m: float
     heading_error_rad: float
+    direction_guard_used: bool
 
 
 def centerline_points_from_mono8(
@@ -128,6 +129,8 @@ def stanley_control(
     softening_speed_mps: float,
     heading_lookahead_m: float,
     maximum_steering_angle_rad: float,
+    corner_heading_threshold_rad: float,
+    corner_opposing_correction_ratio: float,
 ) -> StanleyResult:
     """Calculate a front-axle Stanley steering command.
 
@@ -147,6 +150,22 @@ def stanley_control(
         max(0.0, gain) * cross_track_error_m,
         max(0.0, abs(speed_mps)) + max(0.0, softening_speed_mps),
     )
+    direction_guard_used = False
+    if (
+        abs(heading_error_rad) >= max(0.0, corner_heading_threshold_rad)
+        and heading_error_rad * correction_rad < 0.0
+    ):
+        maximum_opposing_correction_rad = (
+            abs(heading_error_rad)
+            * clamp(corner_opposing_correction_ratio, 0.0, 0.99)
+        )
+        limited_correction_rad = clamp(
+            correction_rad,
+            -maximum_opposing_correction_rad,
+            maximum_opposing_correction_rad,
+        )
+        direction_guard_used = limited_correction_rad != correction_rad
+        correction_rad = limited_correction_rad
     steering_angle_rad = clamp(
         heading_error_rad + correction_rad,
         -maximum_steering_angle_rad,
@@ -156,6 +175,7 @@ def stanley_control(
         steering_angle_rad=steering_angle_rad,
         cross_track_error_m=cross_track_error_m,
         heading_error_rad=heading_error_rad,
+        direction_guard_used=direction_guard_used,
     )
 
 

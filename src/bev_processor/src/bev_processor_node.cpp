@@ -24,6 +24,7 @@
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/header.hpp>
 
 #include "bev_processor/bev_geometry.hpp"
@@ -368,6 +369,8 @@ public:
       lane_output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
         lane_output_topic_, image_qos);
     }
+    preview_stop_publisher_ = create_publisher<std_msgs::msg::Bool>(
+      preview_stop_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
 
     processing_thread_ = std::thread(&BevProcessorNode::processingLoop, this);
     if (publish_enabled_ || lane_reconstruction_enabled_) {
@@ -550,6 +553,7 @@ private:
     declare_parameter<bool>("preview_enabled", true);
     declare_parameter<double>("preview_max_fps", 60.0);
     declare_parameter<std::string>("preview_window_name", "BEV image");
+    declare_parameter<std::string>("preview_stop_topic", "/auto/enabled");
     declare_parameter<int>("preview_max_width", 1280);
     declare_parameter<int>("preview_max_height", 720);
 
@@ -741,6 +745,7 @@ private:
     preview_enabled_ = get_parameter("preview_enabled").as_bool();
     preview_max_fps_ = get_parameter("preview_max_fps").as_double();
     preview_window_name_ = get_parameter("preview_window_name").as_string();
+    preview_stop_topic_ = get_parameter("preview_stop_topic").as_string();
     preview_max_width_ =
       static_cast<int>(get_parameter("preview_max_width").as_int());
     preview_max_height_ =
@@ -1054,6 +1059,9 @@ private:
     if (publish_enabled_ && output_topic_.empty()) {
       throw std::invalid_argument(
               "output_topic must not be empty when publishing is enabled");
+    }
+    if (preview_stop_topic_.empty()) {
+      throw std::invalid_argument("preview_stop_topic must not be empty");
     }
     if (lane_reconstruction_enabled_ && lane_output_topic_.empty()) {
       throw std::invalid_argument(
@@ -1668,6 +1676,21 @@ private:
     return preview;
   }
 
+  bool handlePreviewKey(const int key)
+  {
+    if (key == ' ') {
+      std_msgs::msg::Bool enabled_message;
+      enabled_message.data = false;
+      preview_stop_publisher_->publish(enabled_message);
+      RCLCPP_WARN(
+        get_logger(),
+        "SPACE pressed in the BEV preview: requested automatic duty 0 on %s.",
+        preview_stop_topic_.c_str());
+      return false;
+    }
+    return key == 27 || key == 'q' || key == 'Q';
+  }
+
   void previewLoop()
   {
     try {
@@ -1700,7 +1723,7 @@ private:
             next_preview_at - now);
           const int key = cv::waitKey(
             std::clamp(static_cast<int>(remaining.count()), 1, 10));
-          if (key == 27 || key == 'q' || key == 'Q') {
+          if (handlePreviewKey(key)) {
             break;
           }
           continue;
@@ -1746,7 +1769,7 @@ private:
         }
 
         const int key = cv::waitKey(1);
-        if (key == 27 || key == 'q' || key == 'Q') {
+        if (handlePreviewKey(key)) {
           break;
         }
         const double visible = cv::getWindowProperty(
@@ -2084,6 +2107,7 @@ private:
   bool preview_enabled_{true};
   double preview_max_fps_{60.0};
   std::string preview_window_name_;
+  std::string preview_stop_topic_{"/auto/enabled"};
   int preview_max_width_{1280};
   int preview_max_height_{720};
   bool lane_reconstruction_enabled_{true};
@@ -2116,6 +2140,7 @@ private:
     input_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr lane_output_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr preview_stop_publisher_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr
     startup_ground_reference_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
