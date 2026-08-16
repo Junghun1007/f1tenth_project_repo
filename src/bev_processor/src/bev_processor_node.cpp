@@ -626,12 +626,12 @@ private:
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
-    declare_parameter<bool>("lane_preview_sliding_windows_enabled", true);
+    declare_parameter<bool>("lane_preview_sliding_windows_enabled", false);
     declare_parameter<double>("preview_x_origin_m", 0.02);
     declare_parameter<double>("lane_output_lateral_margin_m", 0.70);
     declare_parameter<double>("lane_preview_overlay_alpha", 0.8);
     declare_parameter<int>("lane_minimum_brightness", 160);
-    declare_parameter<int>("lane_far_minimum_brightness", 125);
+    declare_parameter<int>("lane_far_minimum_brightness", 110);
     declare_parameter<int>("lane_maximum_saturation", 80);
     declare_parameter<int>("lane_brightness_blur_kernel", 1);
     declare_parameter<double>("lane_vertical_close_m", 0.05);
@@ -648,28 +648,28 @@ private:
     declare_parameter<double>(
       "lane_measurement_lateral_gate_near_m", 0.05);
     declare_parameter<double>(
-      "lane_measurement_lateral_gate_far_m", 0.07);
+      "lane_measurement_lateral_gate_far_m", 0.10);
     declare_parameter<int>("lane_row_step_px", 2);
     declare_parameter<double>("lane_observation_minimum_x_m", 0.20);
-    declare_parameter<double>("lane_observation_maximum_x_m", 1.50);
+    declare_parameter<double>("lane_observation_maximum_x_m", 1.30);
     declare_parameter<double>("lane_reconstruction_minimum_x_m", 0.10);
     declare_parameter<double>("lane_reconstruction_maximum_x_m", 3.0);
     declare_parameter<double>("lane_maximum_extrapolation_m", 0.0);
     declare_parameter<double>("lane_sliding_window_step_m", 0.04);
     declare_parameter<double>("lane_sliding_window_length_m", 0.18);
     declare_parameter<double>("lane_sliding_window_half_width_near_m", 0.08);
-    declare_parameter<double>("lane_sliding_window_half_width_far_m", 0.10);
+    declare_parameter<double>("lane_sliding_window_half_width_far_m", 0.14);
     declare_parameter<double>("lane_sliding_window_measurement_weight", 0.88);
     declare_parameter<double>("lane_sliding_window_heading_weight", 0.50);
     declare_parameter<double>("lane_maximum_tracking_arc_length_m", 3.20);
-    declare_parameter<double>("lane_maximum_gap_fill_m", 0.26);
+    declare_parameter<double>("lane_maximum_gap_fill_m", 0.30);
     declare_parameter<double>("lane_measured_point_smoothing_weight", 0.70);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
-    declare_parameter<double>("lane_expected_width_m", 0.60);
-    declare_parameter<double>("lane_width_tolerance_m", 0.07);
+    declare_parameter<double>("lane_expected_width_m", 0.65);
+    declare_parameter<double>("lane_width_tolerance_m", 0.08);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
     declare_parameter<double>("lane_single_initial_tolerance_m", 0.20);
-    declare_parameter<double>("lane_maximum_tracking_gap_m", 0.08);
+    declare_parameter<double>("lane_maximum_tracking_gap_m", 0.16);
     declare_parameter<int>("lane_minimum_points", 6);
     declare_parameter<int>("lane_minimum_counterpart_points", 3);
     declare_parameter<bool>("lane_allow_single_lane", true);
@@ -678,13 +678,13 @@ private:
     declare_parameter<bool>(
       "lane_centerline_preserve_reference_shape", false);
     declare_parameter<double>(
-      "lane_centerline_midpoint_smoothing_weight", 0.80);
+      "lane_centerline_midpoint_smoothing_weight", 0.65);
     declare_parameter<double>(
-      "lane_centerline_temporal_current_weight", 0.85);
+      "lane_centerline_temporal_current_weight", 0.72);
     declare_parameter<double>(
       "lane_centerline_transition_maximum_correction_m", 0.15);
     declare_parameter<double>(
-      "lane_centerline_transition_correction_decay", 0.65);
+      "lane_centerline_transition_correction_decay", 0.70);
     declare_parameter<double>("lane_centerline_tangent_window_m", 0.20);
     declare_parameter<double>(
       "lane_centerline_maximum_curvature_per_m", 1.25);

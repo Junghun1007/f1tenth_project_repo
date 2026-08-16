@@ -23,7 +23,7 @@ class JoyParamsConverterNode(Node):
         self.declare_parameter("debug_topic", "/manual/controller_debug")
         self.declare_parameter("keymap_path", "")
         self.declare_parameter("publish_debug", False)
-        self.declare_parameter("trigger_deadzone", 0.03)
+        self.declare_parameter("trigger_deadzone", 0.01)
         self.declare_parameter("steering_deadzone", 0.05)
 
         self.keymap = self._load_keymap()

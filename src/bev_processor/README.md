@@ -212,14 +212,14 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 
 기본 `lane_centerline_preserve_reference_shape:=false`는 한쪽만 보일 때 매 프레임
 현재 실측 경계의 국소 접선을 구하고, 그 법선 방향으로 설정 폭의 절반인
-30cm를 이동한다. 차량이 회전해 BEV의 경계 방향이 바뀌면 노란 중심선도
+32.5cm를 이동한다. 차량이 회전해 BEV의 경계 방향이 바뀌면 노란 중심선도
 현재 프레임에서 즉시 다시 계산된다. 양쪽이 보일 때는 설정 폭으로 이동한
 가상선이 아니라 실측 두 경계의 중점을 쓴다.
 
-`lane_centerline_temporal_current_weight:=0.85`는 양쪽 중점의 현재 프레임을
-85% 반영해 작은 프레임 지터만 줄인다. 양쪽에서 한쪽으로 바뀌는 첫 프레임은
+`lane_centerline_temporal_current_weight:=0.72`는 양쪽 중점의 현재 프레임을
+72% 반영해 작은 프레임 지터를 줄인다. 양쪽에서 한쪽으로 바뀌는 첫 프레임은
 직전 중앙선과의 횡방향 차이를 최대 15cm까지 일시 보정한다. 이 보정은 매
-프레임 65%만 남기므로 강한 저역통과처럼 실제 횡방향 변화를 계속 숨기지 않는다.
+프레임 70%만 남기므로 강한 저역통과처럼 실제 횡방향 변화를 계속 숨기지 않는다.
 급커브에서도 동일-X 횡방향 이동으로 되돌아가지 않는다. 법선 오프셋이
 국소 회전반경보다 커져 접히기 시작하면 기준선과 같은 진행 방향을 유지하는
 가장 긴 구간만 표시한다. 그 구간도 최소 점 개수를 만족하지 못하면 잘못된
@@ -229,15 +229,15 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
-  lane_observation_maximum_x_m:=1.8 \
-  lane_reconstruction_maximum_x_m:=2.7 \
-  lane_maximum_extrapolation_m:=0.2 \
+  lane_observation_maximum_x_m:=1.30 \
+  lane_reconstruction_maximum_x_m:=3.0 \
+  lane_maximum_extrapolation_m:=0.0 \
   lane_minimum_brightness:=160 \
   lane_far_minimum_brightness:=110 \
   lane_minimum_local_contrast:=35 \
   lane_sliding_window_measurement_weight:=0.90 \
-  lane_expected_width_m:=0.60 \
-  lane_width_tolerance_m:=0.07 \
+  lane_expected_width_m:=0.65 \
+  lane_width_tolerance_m:=0.08 \
   lane_single_initial_tolerance_m:=0.20 \
   lane_minimum_counterpart_points:=3 \
   lane_centerline_from_single_boundary_enabled:=true \
@@ -256,10 +256,10 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_tracking_enabled:=false \
   lane_temporal_hold_frames:=0 \
   lane_centerline_from_single_boundary_enabled:=true \
-  lane_centerline_midpoint_smoothing_weight:=0.80 \
-  lane_centerline_temporal_current_weight:=0.85 \
+  lane_centerline_midpoint_smoothing_weight:=0.65 \
+  lane_centerline_temporal_current_weight:=0.72 \
   lane_centerline_transition_maximum_correction_m:=0.15 \
-  lane_centerline_transition_correction_decay:=0.65 \
+  lane_centerline_transition_correction_decay:=0.70 \
   lane_centerline_preserve_reference_shape:=false \
   lane_centerline_tangent_window_m:=0.20 \
   lane_centerline_maximum_curvature_per_m:=1.25 \

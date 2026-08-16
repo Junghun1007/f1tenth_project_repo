@@ -49,6 +49,7 @@ def generate_launch_description():
                 "gear_toggle_topic": "/manual/gear_toggle",
                 "debug_topic": "/manual/controller_debug",
                 "publish_debug": False,
+                "trigger_deadzone": 0.01,
             }
         ],
     )
