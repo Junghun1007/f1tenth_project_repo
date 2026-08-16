@@ -560,7 +560,7 @@ private:
     declare_parameter<double>("cx", 643.032653809);
     declare_parameter<double>("cy", 352.621124268);
 
-    declare_parameter<double>("camera_x_m", 0.0);
+    declare_parameter<double>("camera_x_m", -0.15);
     declare_parameter<double>("camera_y_m", 0.0);
     declare_parameter<double>("camera_yaw_deg", 0.0);
 
@@ -634,7 +634,7 @@ private:
     declare_parameter<bool>("lane_preview_enabled", true);
     declare_parameter<bool>("lane_preview_result_only_enabled", false);
     declare_parameter<bool>("lane_preview_sliding_windows_enabled", false);
-    declare_parameter<double>("preview_x_origin_m", 0.02);
+    declare_parameter<double>("preview_x_origin_m", 0.0);
     declare_parameter<double>("lane_output_lateral_margin_m", 0.70);
     declare_parameter<double>("lane_preview_overlay_alpha", 0.8);
     declare_parameter<int>("lane_minimum_brightness", 160);
@@ -2091,7 +2091,7 @@ private:
   bool lane_preview_enabled_{true};
   bool lane_preview_result_only_enabled_{false};
   bool lane_preview_sliding_windows_enabled_{false};
-  double preview_x_origin_m_{0.02};
+  double preview_x_origin_m_{0.0};
   double lane_preview_overlay_alpha_{0.8};
   BevLaneReconstructorConfig lane_reconstructor_config_{};
   double status_log_interval_sec_{5.0};

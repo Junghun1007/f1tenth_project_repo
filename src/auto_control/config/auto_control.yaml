@@ -53,9 +53,9 @@ auto_control:
     servo_right: 0.02
 
     # 곡률의 90 percentile로 순간 한 점의 spike를 무시하면서 코너를 감속한다.
-    minimum_speed_mps: 2.0
-    maximum_speed_mps: 2.5
-    maximum_lateral_acceleration_mps2: 2.0
+    minimum_speed_mps: 0.8
+    maximum_speed_mps: 1.2
+    maximum_lateral_acceleration_mps2: 0.8
     curvature_lookahead_minimum_x_m: 0.50
     curvature_lookahead_maximum_x_m: 1.60
     curvature_percentile: 90.0
@@ -63,7 +63,7 @@ auto_control:
     # 유효 경로가 생기면 manual_control과 같이 start duty를 즉시 적용한 뒤
     # PID+feed-forward 목표까지 rate limit으로 이동한다. 경로 유실은 즉시 0이다.
     minimum_duty: 0.05
-    maximum_duty: 0.07
+    maximum_duty: 0.06
     duty_rise_rate_per_sec: 0.04
     duty_fall_rate_per_sec: 0.08
     speed_pid_kp: 0.012

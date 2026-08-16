@@ -42,7 +42,8 @@ bev_processor:
     # X/Y와 yaw는 시작 측정으로 구하지 않으므로 실제 장착 위치를 직접 잰다.
     # 자동 모드에서는 높이·roll·하향 pitch를 아래 시작 depth 노면 측정에서 구한다.
     # 수동 높이 모드에서는 높이는 지정값, roll/pitch는 IMU 측정값을 사용한다.
-    camera_x_m: 0.02
+    # 카메라 광학 중심은 앞차축 중심에서 뒤쪽으로 15cm에 있다.
+    camera_x_m: -0.15
     camera_y_m: 0.0
     camera_yaw_deg: 0.0
 
@@ -173,8 +174,9 @@ bev_processor:
     lane_preview_result_only_enabled: false
     # true면 실제 좌/우 회전형 검색 윈도우를 1px 박스로 프리뷰에 표시한다.
     lane_preview_sliding_windows_enabled: false
-    # 차량 좌표 X=0.02m에 있는 카메라 위치를 프리뷰 X=0으로 표기한다.
-    preview_x_origin_m: 0.02
+    # 프리뷰 X=0은 카메라가 아니라 차량 앞차축 원점이다. 카메라는
+    # X=-0.15m로 BEV 표시 범위 뒤에 있으므로 화면에 포함하지 않는다.
+    preview_x_origin_m: 0.0
     # 중심선 결과 영상의 좌우에 각각 70cm 검은 공간을 둔다. 원본 컬러
     # BEV는 중앙에 유지되며, 화면 밖으로 추론된 차선도 이 공간에 그린다.
     lane_output_lateral_margin_m: 0.70

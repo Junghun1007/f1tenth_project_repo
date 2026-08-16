@@ -45,7 +45,7 @@ def generate_launch_description():
         ("lane_preview_enabled", "true", bool),
         ("lane_preview_result_only_enabled", "false", bool),
         ("lane_preview_sliding_windows_enabled", "false", bool),
-        ("preview_x_origin_m", "0.02", float),
+        ("preview_x_origin_m", "0.0", float),
         ("lane_output_lateral_margin_m", "0.70", float),
         ("lane_preview_overlay_alpha", "0.8", float),
         ("lane_minimum_brightness", "160", int),

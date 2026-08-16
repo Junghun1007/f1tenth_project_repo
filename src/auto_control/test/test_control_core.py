@@ -72,7 +72,7 @@ class ControlCoreTest(unittest.TestCase):
 
     def test_curvature_profile_is_bounded_by_requested_speeds(self) -> None:
         path = PathModel(
-            coefficients=np.asarray((0.0, 0.0, 0.25)),
+            coefficients=np.asarray((0.0, 0.0, 0.50)),
             minimum_x_m=0.25,
             maximum_x_m=2.2,
             point_count=100,
@@ -85,13 +85,13 @@ class ControlCoreTest(unittest.TestCase):
         )
         target_speed = curvature_target_speed(
             curvature,
-            maximum_lateral_acceleration_mps2=2.0,
-            minimum_speed_mps=2.0,
-            maximum_speed_mps=2.5,
+            maximum_lateral_acceleration_mps2=0.8,
+            minimum_speed_mps=0.8,
+            maximum_speed_mps=1.2,
         )
-        self.assertGreaterEqual(target_speed, 2.0)
-        self.assertLessEqual(target_speed, 2.5)
-        self.assertLess(target_speed, 2.5)
+        self.assertGreaterEqual(target_speed, 0.8)
+        self.assertLessEqual(target_speed, 1.2)
+        self.assertLess(target_speed, 1.2)
 
     def test_erpm_conversion_matches_existing_vehicle_geometry(self) -> None:
         speed_mps = erpm_to_speed_mps(
@@ -114,28 +114,28 @@ class ControlCoreTest(unittest.TestCase):
             kd=0.0,
             integral_limit=1.0,
             minimum_duty=0.05,
-            maximum_duty=0.07,
+            maximum_duty=0.06,
         )
         feedforward = speed_feedforward_duty(
-            2.25,
-            minimum_speed_mps=2.0,
-            maximum_speed_mps=2.5,
+            1.0,
+            minimum_speed_mps=0.8,
+            maximum_speed_mps=1.2,
             minimum_duty=0.05,
-            maximum_duty=0.07,
+            maximum_duty=0.06,
         )
-        self.assertAlmostEqual(feedforward, 0.06)
+        self.assertAlmostEqual(feedforward, 0.055)
         self.assertEqual(
             pid.update(
-                target_speed_mps=2.5,
+                target_speed_mps=1.2,
                 current_speed_mps=0.0,
                 feedforward_duty=feedforward,
                 dt_sec=0.0125,
             ),
-            0.07,
+            0.06,
         )
         self.assertEqual(
             pid.update(
-                target_speed_mps=2.0,
+                target_speed_mps=0.8,
                 current_speed_mps=4.0,
                 feedforward_duty=feedforward,
                 dt_sec=0.0125,

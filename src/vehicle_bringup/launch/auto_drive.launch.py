@@ -13,9 +13,9 @@ def generate_launch_description():
     controller_arguments = [
         ("auto_enabled", "true", "enabled", bool),
         ("minimum_duty", "0.05", "minimum_duty", float),
-        ("maximum_duty", "0.07", "maximum_duty", float),
-        ("minimum_speed_mps", "2.0", "minimum_speed_mps", float),
-        ("maximum_speed_mps", "2.5", "maximum_speed_mps", float),
+        ("maximum_duty", "0.06", "maximum_duty", float),
+        ("minimum_speed_mps", "0.8", "minimum_speed_mps", float),
+        ("maximum_speed_mps", "1.2", "maximum_speed_mps", float),
         ("stanley_gain", "1.2", "stanley_gain", float),
         (
             "stanley_softening_speed_mps",
@@ -37,7 +37,7 @@ def generate_launch_description():
         ),
         (
             "maximum_lateral_acceleration_mps2",
-            "2.0",
+            "0.8",
             "maximum_lateral_acceleration_mps2",
             float,
         ),

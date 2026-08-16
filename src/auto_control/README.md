@@ -12,10 +12,10 @@ driving. Do not run `manual_drive.launch.py` at the same time.
    before either controller sees the path.
 4. Calculate steering with Stanley cross-track and heading errors.
 5. Calculate representative forward curvature over `X=0.5..1.6m`.
-6. Convert curvature to a `2.0..2.5m/s` target using the configured maximum
+6. Convert curvature to a `0.8..1.2m/s` target using the configured maximum
    lateral acceleration.
 7. Convert VESC measured ERPM to vehicle speed and apply PID plus a linear
-   duty feed-forward, bounded to `0.05..0.07`.
+   duty feed-forward, bounded to `0.05..0.06`.
 
 The drive command becomes exactly zero and steering returns to center when the
 centerline is missing/short/stale, measured ERPM is stale, the VESC reports a
@@ -66,7 +66,7 @@ hardware power cutoff reachable.
 - `stanley_gain`: larger values correct lateral displacement more strongly.
 - `stanley_heading_lookahead_m`: larger values use a farther, smoother heading.
 - `steering_current_weight`: smaller values smooth steering more but add lag.
-- `maximum_lateral_acceleration_mps2`: smaller values reach the 2.0m/s corner
+- `maximum_lateral_acceleration_mps2`: smaller values reach the 0.8m/s corner
   limit on gentler curves.
 - `curvature_percentile`: smaller values ignore more isolated curvature spikes.
 - `speed_pid_kp`, `speed_pid_ki`, `speed_pid_kd`: measured-speed PID gains.
