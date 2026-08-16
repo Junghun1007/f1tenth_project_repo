@@ -218,7 +218,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_far_minimum_brightness:=110 \
   lane_minimum_local_contrast:=35 \
   lane_sliding_window_measurement_weight:=0.90 \
-  lane_expected_width_m:=0.625 \
+  lane_expected_width_m:=0.80 \
   lane_infer_partially_missing_lane:=true \
   lane_output_lateral_margin_m:=0.70 \
   lane_output_line_thickness_m:=0.02 \

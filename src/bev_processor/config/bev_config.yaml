@@ -231,9 +231,11 @@ bev_processor:
     lane_measured_point_smoothing_weight: 0.70
     lane_minimum_window_pixel_count: 6
 
-    lane_expected_width_m: 0.625
-    # 62.5cm ± 7.5cm, 즉 55~70cm만 정상 좌우 차선 쌍으로 본다.
-    lane_width_tolerance_m: 0.07 # 0.20
+    # 실차 BEV 격자에서 관측된 좌·우 차선 간격은 약 75~85cm이다.
+    # 80cm ± 10cm를 정상 쌍으로 받아, 반대편 실선이 보이는데도
+    # 62.5cm 위치에 가상 차선을 만드는 경우를 줄인다.
+    lane_expected_width_m: 0.80
+    lane_width_tolerance_m: 0.10
     lane_initial_center_tolerance_m: 0.60
     lane_single_initial_tolerance_m: 0.60
     lane_minimum_points: 6

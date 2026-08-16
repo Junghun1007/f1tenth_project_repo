@@ -55,8 +55,8 @@ struct BevLaneReconstructorConfig
   double measured_point_smoothing_weight{0.50};
   int minimum_window_pixel_count{6};
 
-  double expected_lane_width_m{0.625};
-  double lane_width_tolerance_m{0.075};
+  double expected_lane_width_m{0.80};
+  double lane_width_tolerance_m{0.10};
   double initial_center_tolerance_m{0.30};
   double single_lane_initial_tolerance_m{0.20};
   double maximum_tracking_gap_m{0.08};

@@ -654,8 +654,8 @@ private:
     declare_parameter<double>("lane_maximum_gap_fill_m", 0.26);
     declare_parameter<double>("lane_measured_point_smoothing_weight", 0.70);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
-    declare_parameter<double>("lane_expected_width_m", 0.625);
-    declare_parameter<double>("lane_width_tolerance_m", 0.07);
+    declare_parameter<double>("lane_expected_width_m", 0.80);
+    declare_parameter<double>("lane_width_tolerance_m", 0.10);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
     declare_parameter<double>("lane_single_initial_tolerance_m", 0.60);
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.08);
