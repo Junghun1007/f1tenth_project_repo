@@ -1,28 +1,23 @@
 # manual_control
 
-Translates raw joystick input from `/joy` into normalized manual-control topics.
+Reads raw joystick input from `/joy` and sends manual actuator commands.
 
 Published topics:
 
 ```text
-/manual/accelerator       std_msgs/msg/Float32  0.0 to 1.0
-/manual/brake             std_msgs/msg/Float32  0.0 to 1.0
-/manual/steering          std_msgs/msg/Float32  -1.0 to 1.0
-/manual/gear_toggle       std_msgs/msg/Bool
 /manual/current_duty      std_msgs/msg/Float32
 /vesc/duty                std_msgs/msg/Float32  -1.0 to 1.0
 /vesc/measured_erpm       std_msgs/msg/Int32  VESC-estimated ERPM
 /manual/gear              std_msgs/msg/String
-/manual/controller_debug  std_msgs/msg/String  JSON controller state
 ```
 
 Current mapping:
 
 ```text
-RT trigger axis -> /manual/accelerator
-LT trigger axis -> /manual/brake
-left stick X -> /manual/steering
-RB button -> /manual/gear_toggle
+RT trigger axis -> acceleration
+LT trigger axis -> deceleration toward duty 0
+left stick X -> steering angle
+RB button -> forward/reverse toggle while stopped
 ```
 
 `actuator_commander_node` starts stopped in forward gear. RT increases the
@@ -34,20 +29,18 @@ published on `/manual/gear` and
 `/manual/current_duty`. The VESC node publishes measured ERPM on
 `/vesc/measured_erpm` and logs target duty and measured ERPM together.
 
-RB's current pressed/released state is published every joystick frame. The
-actuator node changes gear only on its rising edge, so holding the button does
-not repeat the change. A release overwrites a delayed press through
-`KEEP_LAST(1)`; there is no debounce timer, pending request, or reliable event
-backlog.
+`actuator_commander_node` reads all four controls directly from the same `/joy`
+frame. The former intermediate converter and four manual input topics are not
+used by `manual_drive.launch.py`. RB changes gear only on its rising edge, so
+holding the button does not repeat the change.
 
 The manual controller runs at 80 Hz. Its configured duty limits and ramps are:
 
 Controller state and VESC command topics use `KEEP_LAST(1)` best-effort QoS.
-Holding RT or a steering input therefore replaces the pending value instead of
-accumulating old commands. RB also uses `KEEP_LAST(1)` best-effort QoS, so a
-delayed gear event is discarded instead of replayed. When serial I/O is
-temporarily delayed, the VESC node processes only the newest waiting
-duty/ERPM/servo command.
+Holding RT or a steering input therefore replaces the pending state instead of
+accumulating old commands. When `/joy` stops, the 0.30-second watchdog sends
+duty 0 and centers steering. When serial I/O is temporarily delayed, the VESC
+node processes only the newest waiting duty/ERPM/servo command.
 
 ```yaml
 forward_max_duty: 0.10

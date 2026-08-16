@@ -665,7 +665,7 @@ private:
     declare_parameter<double>("lane_sliding_window_heading_weight", 0.50);
     declare_parameter<double>("lane_maximum_tracking_arc_length_m", 3.20);
     declare_parameter<double>("lane_maximum_gap_fill_m", 0.30);
-    declare_parameter<double>("lane_measured_point_smoothing_weight", 0.70);
+    declare_parameter<double>("lane_measured_point_smoothing_weight", 0.60);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
     declare_parameter<double>("lane_expected_width_m", 0.65);
     declare_parameter<double>("lane_width_tolerance_m", 0.08);
@@ -680,9 +680,9 @@ private:
     declare_parameter<bool>(
       "lane_centerline_preserve_reference_shape", false);
     declare_parameter<double>(
-      "lane_centerline_midpoint_smoothing_weight", 0.65);
+      "lane_centerline_midpoint_smoothing_weight", 0.45);
     declare_parameter<double>(
-      "lane_centerline_temporal_current_weight", 0.72);
+      "lane_centerline_temporal_current_weight", 0.60);
     declare_parameter<double>(
       "lane_centerline_transition_maximum_correction_m", 0.15);
     declare_parameter<double>(

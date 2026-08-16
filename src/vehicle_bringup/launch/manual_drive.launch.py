@@ -8,9 +8,6 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
-    keymap_path = PathJoinSubstitution(
-        [FindPackageShare("vehicle_bringup"), "config", "controller_keymap.yaml"]
-    )
     actuator_commander_config = PathJoinSubstitution(
         [FindPackageShare("vehicle_bringup"), "config", "manual_vesc_config.yaml"]
     )
@@ -30,28 +27,8 @@ def generate_launch_description():
             "autorepeat_rate": "50.0",
             "sticky_buttons": "false",
             "coalesce_interval_ms": "1",
+            "reconnect_interval_sec": "0.2",
         }.items(),
-    )
-
-    joy_params_converter_node = Node(
-        package="manual_control",
-        executable="joy_params_converter_node",
-        name="joy_params_converter_node",
-        output="screen",
-        parameters=[
-            actuator_commander_config,
-            {
-                "keymap_path": keymap_path,
-                "joy_topic": "/joy",
-                "accelerator_topic": "/manual/accelerator",
-                "brake_topic": "/manual/brake",
-                "steering_topic": "/manual/steering",
-                "gear_toggle_topic": "/manual/gear_toggle",
-                "debug_topic": "/manual/controller_debug",
-                "publish_debug": False,
-                "trigger_deadzone": 0.01,
-            }
-        ],
     )
 
     actuator_commander_node = Node(
@@ -74,7 +51,6 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             joy_launch,
-            joy_params_converter_node,
             actuator_commander_node,
             vesc_bridge_node,
         ]

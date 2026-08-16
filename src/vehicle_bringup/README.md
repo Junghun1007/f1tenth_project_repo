@@ -8,8 +8,8 @@ start the F1TENTH vehicle. It replaces the former `vehicle_launcher` and
 
 - `joy_test.launch.py`: starts only the joystick input path.
 - `vesc_only.launch.py`: starts only `vesc_bridge_node`.
-- `manual_drive.launch.py`: starts joystick input, manual command conversion,
-  actuator commands, and the VESC bridge.
+- `manual_drive.launch.py`: starts joystick input, direct manual actuator
+  commands, and the VESC bridge.
 
 ```bash
 ros2 launch vehicle_bringup joy_test.launch.py
@@ -40,7 +40,8 @@ owns the joystick node defaults.
 The manual launch uses the project-owned `joy_input_node` for the 8BitDo
 controller in D-input mode. It selects the exact SDL controller name, publishes
 only `/joy`, and has no haptic subsystem, feedback subscription, or rumble API.
-Controller debug JSON is disabled during driving.
+The actuator commander consumes `/joy` directly; no conversion/debug process
+runs between the controller and actuator commands.
 
 The initial `Opened joystick input` message is normal startup. If the kernel or
 SDL actually removes the receiver, the node prints `Joystick disconnected by

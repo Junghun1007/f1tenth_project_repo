@@ -230,8 +230,8 @@ bev_processor:
     # 4개 정도의 창이 비어도 다시 픽셀을 찾으면 추적을 이어간다.
     lane_maximum_tracking_gap_m: 0.16
     lane_maximum_gap_fill_m: 0.30
-    # 현재 실측점 70%, 앞뒤 실측점 각각 15%로 국소 평활화한다.
-    lane_measured_point_smoothing_weight: 0.70
+    # 현재 실측점 60%, 앞뒤 실측점 각각 20%로 국소 평활화한다.
+    lane_measured_point_smoothing_weight: 0.60
     lane_minimum_window_pixel_count: 6
 
     # 설정 차선 폭 65cm ± 8cm, 즉 57~73cm를 정상 좌·우 차선 쌍으로 본다.
@@ -253,10 +253,10 @@ bev_processor:
     # 반대편 가상 차선은 생성하지 않는다.
     lane_centerline_from_single_boundary_enabled: true
     # 양쪽 실측 경계의 수직 대응점 중점을 국소 평활화한다.
-    # 0.65는 현재 중점 65%, 앞뒤 중점 각 17.5%이다.
-    lane_centerline_midpoint_smoothing_weight: 0.65
-    # 양쪽이 연속 검출될 때 현재 프레임 72%, 직전 중앙선 28%만 섞는다.
-    lane_centerline_temporal_current_weight: 0.72
+    # 0.45는 현재 중점 45%, 앞뒤 중점 각 27.5%이다.
+    lane_centerline_midpoint_smoothing_weight: 0.45
+    # 양쪽이 연속 검출될 때 현재 프레임 60%, 직전 중앙선 40%를 섞는다.
+    lane_centerline_temporal_current_weight: 0.60
     # 양쪽→한쪽 전환 첫 프레임에서 기존 중앙선과의 Y 차이를
     # 최대 15cm까지 일시 보정하고, 매 프레임 70%만 남겨 제거한다.
     lane_centerline_transition_maximum_correction_m: 0.15

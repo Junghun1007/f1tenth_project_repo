@@ -6,7 +6,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from std_msgs.msg import Bool, Float32, String
+from sensor_msgs.msg import Joy
+from std_msgs.msg import Float32, String
 
 from manual_control.duty_command_profile import (
     DutyCommandProfile,
@@ -18,10 +19,13 @@ class ActuatorCommanderNode(Node):
     def __init__(self) -> None:
         super().__init__("actuator_commander_node")
 
-        self.declare_parameter("accelerator_topic", "/manual/accelerator")
-        self.declare_parameter("brake_topic", "/manual/brake")
-        self.declare_parameter("steering_topic", "/manual/steering")
-        self.declare_parameter("gear_toggle_topic", "/manual/gear_toggle")
+        self.declare_parameter("joy_topic", "/joy")
+        self.declare_parameter("joy_steering_axis", 0)
+        self.declare_parameter("joy_accelerator_axis", 4)
+        self.declare_parameter("joy_brake_axis", 5)
+        self.declare_parameter("joy_gear_button", 7)
+        self.declare_parameter("joy_trigger_released", 1.0)
+        self.declare_parameter("joy_trigger_pressed", -1.0)
         self.declare_parameter("current_duty_topic", "/manual/current_duty")
         self.declare_parameter("gear_state_topic", "/manual/gear")
         self.declare_parameter("duty_topic", "/vesc/duty")
@@ -45,10 +49,25 @@ class ActuatorCommanderNode(Node):
         self.declare_parameter("pedal_deadzone", 0.01)
         self.declare_parameter("steering_deadzone", 0.04)
 
-        accelerator_topic = str(self.get_parameter("accelerator_topic").value)
-        brake_topic = str(self.get_parameter("brake_topic").value)
-        steering_topic = str(self.get_parameter("steering_topic").value)
-        gear_toggle_topic = str(self.get_parameter("gear_toggle_topic").value)
+        joy_topic = str(self.get_parameter("joy_topic").value)
+        self.joy_steering_axis = int(
+            self.get_parameter("joy_steering_axis").value
+        )
+        self.joy_accelerator_axis = int(
+            self.get_parameter("joy_accelerator_axis").value
+        )
+        self.joy_brake_axis = int(
+            self.get_parameter("joy_brake_axis").value
+        )
+        self.joy_gear_button = int(
+            self.get_parameter("joy_gear_button").value
+        )
+        self.joy_trigger_released = float(
+            self.get_parameter("joy_trigger_released").value
+        )
+        self.joy_trigger_pressed = float(
+            self.get_parameter("joy_trigger_pressed").value
+        )
         current_duty_topic = str(self.get_parameter("current_duty_topic").value)
         gear_state_topic = str(self.get_parameter("gear_state_topic").value)
         duty_topic = str(self.get_parameter("duty_topic").value)
@@ -117,6 +136,7 @@ class ActuatorCommanderNode(Node):
         self._pedal_input_timed_out = True
         self._steering_input_timed_out = True
         self._gear_button_was_pressed = False
+        self._invalid_joy_layout_reported = False
 
         # Manual commands are state values. Intermediate samples may be
         # discarded; every consumer should act on the newest sample only.
@@ -144,30 +164,13 @@ class ActuatorCommanderNode(Node):
             latest_command_qos,
         )
 
-        self.accelerator_sub = self.create_subscription(
-            Float32,
-            accelerator_topic,
-            self._on_accelerator,
-            latest_command_qos,
-        )
-        self.brake_sub = self.create_subscription(
-            Float32,
-            brake_topic,
-            self._on_brake,
-            latest_command_qos,
-        )
-        self.steering_sub = self.create_subscription(
-            Float32,
-            steering_topic,
-            self._on_steering,
-            latest_command_qos,
-        )
-        # Match the publisher's latest-only policy. Gear requests are never
-        # queued for delayed execution.
-        self.gear_toggle_sub = self.create_subscription(
-            Bool,
-            gear_toggle_topic,
-            self._on_gear_toggle,
+        # Read every manual command from one current-state message. This avoids
+        # four intermediate topics being received at different times or
+        # replaying stale values after a controller reconnect.
+        self.joy_sub = self.create_subscription(
+            Joy,
+            joy_topic,
+            self._on_joy,
             latest_command_qos,
         )
 
@@ -181,32 +184,64 @@ class ActuatorCommanderNode(Node):
         )
 
         self.get_logger().info(
-            "Manual drive waiting for joystick input. "
-            f"gear={self.duty_profile.gear.name}, command_duty=0"
+            "Manual drive waiting for direct joystick input. "
+            f"RT=axis{self.joy_accelerator_axis}, "
+            f"LT=axis{self.joy_brake_axis}, "
+            f"steering=axis{self.joy_steering_axis}, "
+            f"gear=button{self.joy_gear_button}; "
+            f"initial_gear={self.duty_profile.gear.name}, command_duty=0"
         )
         self._publish_gear_state()
 
-    def _on_accelerator(self, msg: Float32) -> None:
-        self._accelerator = self._clamp(float(msg.data), 0.0, 1.0)
-        self._last_accelerator_time = self.get_clock().now()
-        self._pedal_input_timed_out = False
+    def _on_joy(self, msg: Joy) -> None:
+        required_axis = max(
+            self.joy_steering_axis,
+            self.joy_accelerator_axis,
+            self.joy_brake_axis,
+        )
+        if (
+            required_axis < 0
+            or len(msg.axes) <= required_axis
+            or self.joy_gear_button < 0
+            or len(msg.buttons) <= self.joy_gear_button
+        ):
+            if not self._invalid_joy_layout_reported:
+                self.get_logger().error(
+                    "Joystick message does not contain the configured axes "
+                    "or gear button. Ignoring input so the safety timeout "
+                    "stops the vehicle."
+                )
+                self._invalid_joy_layout_reported = True
+            return
 
-    def _on_brake(self, msg: Float32) -> None:
-        self._brake = self._clamp(float(msg.data), 0.0, 1.0)
-        self._last_brake_time = self.get_clock().now()
-        self._pedal_input_timed_out = False
-
-    def _on_steering(self, msg: Float32) -> None:
-        steering = self._clamp(float(msg.data), -1.0, 1.0)
+        self._invalid_joy_layout_reported = False
+        now = self.get_clock().now()
+        self._accelerator = self._normalize_trigger(
+            float(msg.axes[self.joy_accelerator_axis])
+        )
+        self._brake = self._normalize_trigger(
+            float(msg.axes[self.joy_brake_axis])
+        )
+        steering = self._clamp(
+            float(msg.axes[self.joy_steering_axis]),
+            -1.0,
+            1.0,
+        )
         self._steering = self._apply_deadzone(
             steering,
             self.steering_deadzone,
         )
-        self._last_steering_time = self.get_clock().now()
+        self._last_accelerator_time = now
+        self._last_brake_time = now
+        self._last_steering_time = now
+        self._pedal_input_timed_out = False
         self._steering_input_timed_out = False
 
-    def _on_gear_toggle(self, msg: Bool) -> None:
-        gear_button_pressed = bool(msg.data)
+        self._update_gear_button(
+            bool(msg.buttons[self.joy_gear_button])
+        )
+
+    def _update_gear_button(self, gear_button_pressed: bool) -> None:
         gear_toggle_requested = (
             gear_button_pressed and not self._gear_button_was_pressed
         )
@@ -224,6 +259,14 @@ class ActuatorCommanderNode(Node):
                 "Gear change rejected: release the accelerator and wait for "
                 "duty 0 before pressing RB."
             )
+
+    def _normalize_trigger(self, value: float) -> float:
+        released = self.joy_trigger_released
+        pressed = self.joy_trigger_pressed
+        if pressed == released:
+            return 0.0
+        normalized = (value - released) / (pressed - released)
+        return self._clamp(normalized, 0.0, 1.0)
 
     def _on_control_timer(self) -> None:
         now = self.get_clock().now()
