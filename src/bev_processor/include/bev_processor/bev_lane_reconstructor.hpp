@@ -64,11 +64,11 @@ struct BevLaneReconstructorConfig
   int minimum_counterpart_points{3};
   bool allow_single_lane{true};
 
-  bool infer_partially_missing_lane{true};
-  bool inference_preserve_reference_shape{false};
-  double inference_tangent_window_m{0.20};
-  double inference_maximum_curvature_per_m{1.25};
-  double inference_maximum_heading_step_deg{8.0};
+  bool centerline_from_single_boundary_enabled{true};
+  bool centerline_preserve_reference_shape{false};
+  double centerline_tangent_window_m{0.20};
+  double centerline_maximum_curvature_per_m{1.25};
+  double centerline_maximum_heading_step_deg{8.0};
 
   bool temporal_tracking_enabled{false};
   double temporal_maximum_lateral_jump_near_m{0.06};
@@ -83,15 +83,18 @@ struct BevLaneReconstructorConfig
 struct BevLaneReconstruction
 {
   cv::Mat candidate_mask;
+  // reconstructed_mask is the drive centerline published on lane_output_topic.
   cv::Mat reconstructed_mask;
+  cv::Mat centerline_reconstructed_mask;
   cv::Mat left_reconstructed_mask;
   cv::Mat right_reconstructed_mask;
   std::vector<cv::Point2d> left_measured_points;
   std::vector<cv::Point2d> right_measured_points;
   bool valid{false};
   int measured_point_count{0};
-  int inferred_point_count{0};
-  bool inference_normal_offset_truncated{false};
+  int centerline_point_count{0};
+  bool centerline_normal_offset_truncated{false};
+  bool centerline_from_single_boundary{false};
   bool temporal_hold_used{false};
   double measured_lane_width_m{0.0};
   double reconstructed_maximum_x_m{0.0};

@@ -144,14 +144,17 @@ cv::Mat makeLaneOverlayPreview(
   const cv::Mat & expanded_bev_bgr,
   const cv::Mat & left_lane_mask,
   const cv::Mat & right_lane_mask,
+  const cv::Mat & centerline_mask,
   const double alpha)
 {
   if (
     expanded_bev_bgr.type() != CV_8UC3 ||
     left_lane_mask.type() != CV_8UC1 ||
     right_lane_mask.type() != CV_8UC1 ||
+    centerline_mask.type() != CV_8UC1 ||
     expanded_bev_bgr.size() != left_lane_mask.size() ||
-    expanded_bev_bgr.size() != right_lane_mask.size())
+    expanded_bev_bgr.size() != right_lane_mask.size() ||
+    expanded_bev_bgr.size() != centerline_mask.size())
   {
     throw std::invalid_argument(
             "lane preview overlay expects matching BGR8 and MONO8 images");
@@ -160,6 +163,9 @@ cv::Mat makeLaneOverlayPreview(
   // OpenCV uses BGR: left lane is blue and right lane is red.
   highlighted.setTo(cv::Scalar(255, 0, 0), left_lane_mask);
   highlighted.setTo(cv::Scalar(0, 0, 255), right_lane_mask);
+  // The drive centerline is yellow so it remains distinct from the green
+  // vehicle Y=0 reference drawn by makeCoordinatePreview().
+  highlighted.setTo(cv::Scalar(0, 255, 255), centerline_mask);
   cv::Mat blended;
   cv::addWeighted(
     highlighted, alpha, expanded_bev_bgr, 1.0 - alpha, 0.0, blended);
@@ -461,7 +467,7 @@ public:
         get_logger(),
         "BEV lane continuity: temporal=%s, lateral jump near/far="
         "%.2f/%.2fm, heading jump=%.1fdeg, confirm/hold=%d/%d frames, "
-        "missing-side inference=%s(window=%.2fm curvature<=%.2f/m "
+        "single-boundary centerline=%s(window=%.2fm curvature<=%.2f/m "
         "step<=%.1fdeg)",
         lane_reconstructor_config_.temporal_tracking_enabled ? "on" : "off",
         lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m,
@@ -469,10 +475,11 @@ public:
         lane_reconstructor_config_.temporal_maximum_heading_jump_deg,
         lane_reconstructor_config_.temporal_confirmation_frames,
         lane_reconstructor_config_.temporal_hold_frames,
-        lane_reconstructor_config_.infer_partially_missing_lane ? "on" : "off",
-        lane_reconstructor_config_.inference_tangent_window_m,
-        lane_reconstructor_config_.inference_maximum_curvature_per_m,
-        lane_reconstructor_config_.inference_maximum_heading_step_deg);
+        lane_reconstructor_config_.centerline_from_single_boundary_enabled ?
+        "on" : "off",
+        lane_reconstructor_config_.centerline_tangent_window_m,
+        lane_reconstructor_config_.centerline_maximum_curvature_per_m,
+        lane_reconstructor_config_.centerline_maximum_heading_step_deg);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -610,7 +617,7 @@ private:
 
     // Bright-lane reconstruction is intentionally independent from the CUDA
     // warp. The raw color BEV remains available on output_topic while this
-    // stage publishes a clean MONO8 lane-only image on lane_output_topic.
+    // stage publishes a clean MONO8 drive-centerline image on lane_output_topic.
     declare_parameter<bool>("lane_reconstruction_enabled", true);
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
@@ -657,19 +664,20 @@ private:
     declare_parameter<double>("lane_expected_width_m", 0.60);
     declare_parameter<double>("lane_width_tolerance_m", 0.07);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
-    declare_parameter<double>("lane_single_initial_tolerance_m", 0.60);
+    declare_parameter<double>("lane_single_initial_tolerance_m", 0.20);
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.08);
     declare_parameter<int>("lane_minimum_points", 6);
     declare_parameter<int>("lane_minimum_counterpart_points", 3);
     declare_parameter<bool>("lane_allow_single_lane", true);
-    declare_parameter<bool>("lane_infer_partially_missing_lane", true);
     declare_parameter<bool>(
-      "lane_inference_preserve_reference_shape", false);
-    declare_parameter<double>("lane_inference_tangent_window_m", 0.20);
+      "lane_centerline_from_single_boundary_enabled", true);
+    declare_parameter<bool>(
+      "lane_centerline_preserve_reference_shape", false);
+    declare_parameter<double>("lane_centerline_tangent_window_m", 0.20);
     declare_parameter<double>(
-      "lane_inference_maximum_curvature_per_m", 1.25);
+      "lane_centerline_maximum_curvature_per_m", 1.25);
     declare_parameter<double>(
-      "lane_inference_maximum_heading_step_deg", 8.0);
+      "lane_centerline_maximum_heading_step_deg", 8.0);
     declare_parameter<bool>("lane_temporal_tracking_enabled", false);
     declare_parameter<double>(
       "lane_temporal_maximum_lateral_jump_near_m", 0.06);
@@ -944,16 +952,17 @@ private:
       get_parameter("lane_minimum_counterpart_points").as_int());
     lane_reconstructor_config_.allow_single_lane =
       get_parameter("lane_allow_single_lane").as_bool();
-    lane_reconstructor_config_.infer_partially_missing_lane =
-      get_parameter("lane_infer_partially_missing_lane").as_bool();
-    lane_reconstructor_config_.inference_preserve_reference_shape =
-      get_parameter("lane_inference_preserve_reference_shape").as_bool();
-    lane_reconstructor_config_.inference_tangent_window_m =
-      get_parameter("lane_inference_tangent_window_m").as_double();
-    lane_reconstructor_config_.inference_maximum_curvature_per_m =
-      get_parameter("lane_inference_maximum_curvature_per_m").as_double();
-    lane_reconstructor_config_.inference_maximum_heading_step_deg =
-      get_parameter("lane_inference_maximum_heading_step_deg").as_double();
+    lane_reconstructor_config_.centerline_from_single_boundary_enabled =
+      get_parameter(
+        "lane_centerline_from_single_boundary_enabled").as_bool();
+    lane_reconstructor_config_.centerline_preserve_reference_shape =
+      get_parameter("lane_centerline_preserve_reference_shape").as_bool();
+    lane_reconstructor_config_.centerline_tangent_window_m =
+      get_parameter("lane_centerline_tangent_window_m").as_double();
+    lane_reconstructor_config_.centerline_maximum_curvature_per_m =
+      get_parameter("lane_centerline_maximum_curvature_per_m").as_double();
+    lane_reconstructor_config_.centerline_maximum_heading_step_deg =
+      get_parameter("lane_centerline_maximum_heading_step_deg").as_double();
     lane_reconstructor_config_.temporal_tracking_enabled =
       get_parameter("lane_temporal_tracking_enabled").as_bool();
     lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m =
@@ -1327,10 +1336,13 @@ private:
           output->lane_sliding_windows = lane.sliding_windows;
           latest_lane_points_.store(
             lane.measured_point_count, std::memory_order_relaxed);
-          latest_lane_inferred_points_.store(
-            lane.inferred_point_count, std::memory_order_relaxed);
-          latest_lane_inference_truncated_.store(
-            lane.inference_normal_offset_truncated,
+          latest_lane_centerline_points_.store(
+            lane.centerline_point_count, std::memory_order_relaxed);
+          latest_lane_centerline_truncated_.store(
+            lane.centerline_normal_offset_truncated,
+            std::memory_order_relaxed);
+          latest_lane_centerline_single_boundary_.store(
+            lane.centerline_from_single_boundary,
             std::memory_order_relaxed);
           latest_lane_temporal_hold_.store(
             lane.temporal_hold_used, std::memory_order_relaxed);
@@ -1662,6 +1674,7 @@ private:
               displayed_image,
               frame->left_lane_mask,
               frame->right_lane_mask,
+              frame->lane_mask,
               lane_preview_overlay_alpha_);
           }
           if (
@@ -1951,11 +1964,17 @@ private:
     }
 
     if (lane_reconstruction_enabled_) {
+      const int centerline_point_count =
+        latest_lane_centerline_points_.load(std::memory_order_relaxed);
+      const char * centerline_source = centerline_point_count <= 0 ?
+        "none" :
+        (latest_lane_centerline_single_boundary_.load(
+          std::memory_order_relaxed) ? "single" : "pair");
       RCLCPP_INFO(
         get_logger(),
         "BEV lane: valid/invalid=%.1f/%.1fHz "
-        "(%llu/%llu total), measured/inferred=%d/%d, hold=%s, "
-        "normal_offset_trimmed=%s, "
+        "(%llu/%llu total), measured/centerline=%d/%d, hold=%s, "
+        "center_source=%s, normal_offset_trimmed=%s, "
         "width=%.3fm, reconstructed_to=%.2fm, "
         "lane_compute_ms(avg/max)=%.3f/%.3f, output=%s",
         static_cast<double>(lane_valid) / elapsed_sec,
@@ -1965,10 +1984,11 @@ private:
         static_cast<unsigned long long>(
           lane_invalid_total_.load(std::memory_order_relaxed)),
         latest_lane_points_.load(std::memory_order_relaxed),
-        latest_lane_inferred_points_.load(std::memory_order_relaxed),
+        centerline_point_count,
         latest_lane_temporal_hold_.load(std::memory_order_relaxed) ?
         "yes" : "no",
-        latest_lane_inference_truncated_.load(std::memory_order_relaxed) ?
+        centerline_source,
+        latest_lane_centerline_truncated_.load(std::memory_order_relaxed) ?
         "yes" : "no",
         static_cast<double>(
           latest_lane_width_mm_.load(std::memory_order_relaxed)) / 1000.0,
@@ -2082,8 +2102,9 @@ private:
   std::atomic<std::uint64_t> lane_valid_total_{0U};
   std::atomic<std::uint64_t> lane_invalid_total_{0U};
   std::atomic<int> latest_lane_points_{0};
-  std::atomic<int> latest_lane_inferred_points_{0};
-  std::atomic<bool> latest_lane_inference_truncated_{false};
+  std::atomic<int> latest_lane_centerline_points_{0};
+  std::atomic<bool> latest_lane_centerline_truncated_{false};
+  std::atomic<bool> latest_lane_centerline_single_boundary_{false};
   std::atomic<bool> latest_lane_temporal_hold_{false};
   std::atomic<int> latest_lane_width_mm_{0};
   std::atomic<int> latest_lane_reconstructed_maximum_x_mm_{0};

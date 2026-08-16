@@ -47,7 +47,7 @@ double closeCurveCenter(const double x_m)
   return 0.16 * std::sin(1.8 * (x_m - 0.25));
 }
 
-double tightInferenceCurveCenter(const double x_m)
+double tightCenterlineCurveCenter(const double x_m)
 {
   const double distance_m = x_m - 0.20;
   return 0.45 - 0.90 * distance_m * distance_m;
@@ -117,7 +117,7 @@ bev_processor::BevLaneReconstructor makeReconstructor()
   config.maximum_tracking_gap_m = 0.20;
   config.maximum_gap_fill_m = 0.26;
   config.measured_point_smoothing_weight = 0.85;
-  config.inference_preserve_reference_shape = true;
+  config.centerline_preserve_reference_shape = true;
   config.temporal_tracking_enabled = true;
   config.temporal_hold_frames = 5;
   return bev_processor::BevLaneReconstructor(config);
@@ -292,7 +292,7 @@ void testRotatingWindowsFollowTightArc()
     "debug output must expose both rotating search-window tracks");
 }
 
-void testSingleBoundaryOnlyInfersMissingSide()
+void testSingleBoundaryGeneratesCenterlineDirectly()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(&image, 0.30, 0.20, 1.80, closeCurveCenter, 245, 5);
@@ -301,16 +301,22 @@ void testSingleBoundaryOnlyInfersMissingSide()
   require(result.valid, "one actual boundary must still produce an output");
   require(
     result.reconstructed_mask.cols == 260 &&
+    result.centerline_reconstructed_mask.size() ==
+    result.reconstructed_mask.size() &&
     result.left_reconstructed_mask.size() == result.reconstructed_mask.size() &&
     result.right_reconstructed_mask.size() == result.reconstructed_mask.size(),
-    "lane output must include the configured lateral prediction margins");
+    "centerline output must include the configured lateral margins");
   require(
     result.left_measured_points.size() >= 5U,
     "the visible boundary must be represented by actual measurements");
   require(
     cv::countNonZero(result.left_reconstructed_mask) > 0 &&
-    cv::countNonZero(result.right_reconstructed_mask) > 0,
-    "single-boundary reconstruction must keep separate left/right masks");
+    cv::countNonZero(result.right_reconstructed_mask) == 0,
+    "a missing boundary must not be replaced with a synthetic lane line");
+  require(
+    result.centerline_from_single_boundary &&
+    result.centerline_point_count > 0,
+    "one measured boundary must directly generate the drive centerline");
   const int row = metricPoint(1.0, 0.0).y;
   int run_count = 0;
   bool inside_run = false;
@@ -323,7 +329,7 @@ void testSingleBoundaryOnlyInfersMissingSide()
       inside_run = false;
     }
   }
-  require(run_count == 2, "only the missing side must be inferred");
+  require(run_count == 1, "the published lane output must contain one centerline");
 }
 
 void testMissingPixelsStopLongPrediction()
@@ -381,8 +387,8 @@ void testDefaultOutputLinesStayThin()
   const int white_pixels = cv::countNonZero(
     result.reconstructed_mask.row(metricPoint(1.0, 0.0).y));
   require(
-    white_pixels >= 2 && white_pixels <= 8,
-    "the 2cm output setting must render two thin lane lines");
+    white_pixels >= 2 && white_pixels <= 5,
+    "the 2cm output setting must render one thin centerline");
 }
 
 void testTemporalGateRequiresFourRepeatedLargeChanges()
@@ -405,14 +411,14 @@ void testTemporalGateRequiresFourRepeatedLargeChanges()
     third_shift.temporal_hold_used,
     "three large frame-to-frame jumps must still hold the accepted lane");
   require(
-    maskHasWhiteNear(first_shift.reconstructed_mask, 1.0, 0.30) &&
-    !maskHasWhiteNear(first_shift.reconstructed_mask, 1.0, 0.48),
-    "an unconfirmed jump must not move the rendered lane");
+    maskHasWhiteNear(first_shift.reconstructed_mask, 1.0, 0.0) &&
+    !maskHasWhiteNear(first_shift.reconstructed_mask, 1.0, 0.18),
+    "an unconfirmed jump must not move the rendered centerline");
 
   const auto confirmed_shift = reconstructor.reconstruct(shifted);
   require(
     !confirmed_shift.temporal_hold_used &&
-    maskHasWhiteNear(confirmed_shift.reconstructed_mask, 1.0, 0.48),
+    maskHasWhiteNear(confirmed_shift.reconstructed_mask, 1.0, 0.18),
     "the same large change in four frames must be accepted");
 }
 
@@ -455,12 +461,12 @@ void testValidShortLaneIsNotExtended()
     maximumMeasuredX(result.right_measured_points) < 1.25,
     "the short boundary must remain a valid measured lane");
   require(
-    result.inferred_point_count == 0 &&
+    !result.centerline_from_single_boundary &&
     !maskHasWhiteNear(result.right_reconstructed_mask, 1.70, -0.30),
-    "a valid short boundary must not be extended from the opposite lane");
+    "a valid short boundary must remain measured without synthetic extension");
 }
 
-void testShortNormalDistanceCounterpartBeatsInference()
+void testShortNormalDistanceCounterpartContributesToCenterline()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
   constexpr double heading_rad = -0.5235987755982988;  // -30 degrees.
@@ -501,15 +507,16 @@ void testShortNormalDistanceCounterpartBeatsInference()
     result.right_measured_points.size() >= 3U,
     "normal-distance pairing must retain the short visible counterpart");
   require(
-    result.inferred_point_count == 0,
-    "real counterpart pixels must be preferred over a full inferred lane");
+    !result.centerline_from_single_boundary &&
+    result.centerline_point_count > 0,
+    "real counterpart pixels must contribute to the fused centerline");
 }
 
-void testTightNormalOffsetNeverFallsBackToSameX()
+void testTightCurveGeneratesHalfWidthCenterline()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(
-    &image, 0.0, 0.20, 0.90, tightInferenceCurveCenter, 245, 5);
+    &image, 0.0, 0.20, 0.90, tightCenterlineCurveCenter, 245, 5);
 
   bev_processor::BevLaneReconstructorConfig config;
   config.expected_lane_width_m = 0.65;
@@ -519,7 +526,7 @@ void testTightNormalOffsetNeverFallsBackToSameX()
   config.initial_center_tolerance_m = 0.60;
   config.single_lane_initial_tolerance_m = 0.60;
   config.temporal_tracking_enabled = false;
-  config.inference_preserve_reference_shape = false;
+  config.centerline_preserve_reference_shape = false;
   config.sliding_window_half_width_near_m = 0.12;
   config.sliding_window_half_width_far_m = 0.14;
   bev_processor::BevLaneReconstructor reconstructor(config);
@@ -527,13 +534,12 @@ void testTightNormalOffsetNeverFallsBackToSameX()
 
   require(result.valid, "a single tight curve must produce output");
   require(
-    result.inferred_point_count > 0,
-    "a safe portion of the tight normal offset must remain visible");
+    result.centerline_from_single_boundary &&
+    result.centerline_point_count > 0,
+    "a safe portion of the half-width centerline must remain visible");
   require(
-    !maskHasWhiteNear(
-      result.right_reconstructed_mask,
-      0.50, tightInferenceCurveCenter(0.50) - 0.65, 3),
-    "tight-curve inference must never revert to a same-X translation");
+    cv::countNonZero(result.right_reconstructed_mask) == 0,
+    "tight-curve centerline generation must not draw a synthetic boundary");
 
   constexpr double reference_x_m = 0.90;
   const double derivative = -1.80 * (reference_x_m - 0.20);
@@ -542,15 +548,15 @@ void testTightNormalOffsetNeverFallsBackToSameX()
   const cv::Point2d right_normal(tangent.y, -tangent.x);
   const cv::Point2d expected =
     cv::Point2d(
-      reference_x_m, tightInferenceCurveCenter(reference_x_m)) +
-    0.65 * right_normal;
+      reference_x_m, tightCenterlineCurveCenter(reference_x_m)) +
+    0.325 * right_normal;
   require(
     maskHasWhiteNear(
-      result.right_reconstructed_mask, expected.x, expected.y, 10),
-    "tight-curve inference must retain the curvature-aware normal offset");
+      result.reconstructed_mask, expected.x, expected.y, 8),
+    "tight-curve output must use the curvature-aware half-width offset");
 }
 
-void testInferredLanePreservesReferenceShape()
+void testCenterlineCanPreserveReferenceShape()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(&image, 0.30, 0.20, 1.80, closeCurveCenter, 245, 5);
@@ -560,14 +566,14 @@ void testInferredLanePreservesReferenceShape()
   for (const double x_m : {0.70, 1.10, 1.50}) {
     require(
       maskHasWhiteNear(
-        result.right_reconstructed_mask,
-        x_m, closeCurveCenter(x_m) - 0.30,
+        result.reconstructed_mask,
+        x_m, closeCurveCenter(x_m),
         4),
-      "the inferred lane must retain the reference curve at the same X");
+      "the centerline must retain the same-X reference shape when requested");
   }
 }
 
-void testInferenceUsesConfiguredWidthInsteadOfLearnedWidth()
+void testCenterlineUsesHalfConfiguredWidthInsteadOfLearnedWidth()
 {
   auto reconstructor = makeReconstructor();
   cv::Mat measured_pair = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -580,29 +586,29 @@ void testInferenceUsesConfiguredWidthInsteadOfLearnedWidth()
 
   cv::Mat left_only = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(&left_only, 0.30, 0.20, 1.70, farCurveCenter, 245, 5);
-  bev_processor::BevLaneReconstruction inferred;
+  bev_processor::BevLaneReconstruction centered;
   for (int frame = 0; frame <= 5; ++frame) {
-    inferred = reconstructor.reconstruct(left_only);
+    centered = reconstructor.reconstruct(left_only);
   }
   require(
-    inferred.inferred_point_count > 0,
-    "the missing counterpart must be inferred in the second frame");
+    centered.centerline_point_count > 0,
+    "the single measured boundary must generate a centerline");
   require(
-    maskHasWhiteNear(inferred.right_reconstructed_mask, 1.0, -0.30, 3),
-    "inference must use the configured 60cm offset at the same X");
+    maskHasWhiteNear(centered.reconstructed_mask, 1.0, 0.0, 3),
+    "centerline must use half of the configured 60cm width");
   require(
-    !maskHasWhiteNear(inferred.right_reconstructed_mask, 1.0, -0.36, 2),
-    "a previously learned wider pair must not move the inferred lane");
+    !maskHasWhiteNear(centered.reconstructed_mask, 1.0, -0.03, 1),
+    "a previously learned wider pair must not move the centerline");
 }
 
-void testCurrentFrameRotationUpdatesInferenceImmediately()
+void testCurrentFrameRotationUpdatesCenterlineImmediately()
 {
   bev_processor::BevLaneReconstructorConfig config;
   config.initial_center_tolerance_m = 0.60;
   config.single_lane_initial_tolerance_m = 0.60;
   config.temporal_tracking_enabled = false;
   config.temporal_hold_frames = 0;
-  config.inference_preserve_reference_shape = false;
+  config.centerline_preserve_reference_shape = false;
   bev_processor::BevLaneReconstructor reconstructor(config);
 
   cv::Mat first = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -616,7 +622,7 @@ void testCurrentFrameRotationUpdatesInferenceImmediately()
     cv::norm(cv::Point2d(1.0, -0.30));
   const cv::Point2d reference_point(0.80, rotatedStraightCenter(0.80));
   const cv::Point2d expected = reference_point +
-    0.60 * cv::Point2d(tangent.y, -tangent.x);
+    0.30 * cv::Point2d(tangent.y, -tangent.x);
 
   require(result.valid, "rotated current frame must remain valid");
   require(
@@ -624,18 +630,18 @@ void testCurrentFrameRotationUpdatesInferenceImmediately()
     "current-view mode must never hold a previous vehicle-frame lane");
   require(
     maskHasWhiteNear(
-      result.right_reconstructed_mask, expected.x, expected.y, 5),
-    "counterpart must move immediately to the current frame normal offset");
+      result.reconstructed_mask, expected.x, expected.y, 5),
+    "centerline must move immediately to the current frame half-width offset");
 }
 
-void testEitherVisibleSideInfersTheMissingCounterpartEveryFrame()
+void testEitherVisibleSideGeneratesCenterlineEveryFrame()
 {
   bev_processor::BevLaneReconstructorConfig config;
   config.initial_center_tolerance_m = 0.60;
   config.single_lane_initial_tolerance_m = 0.60;
   config.temporal_tracking_enabled = false;
   config.temporal_hold_frames = 0;
-  config.inference_preserve_reference_shape = false;
+  config.centerline_preserve_reference_shape = false;
   bev_processor::BevLaneReconstructor reconstructor(config);
 
   cv::Mat left_only = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -647,9 +653,11 @@ void testEitherVisibleSideInfersTheMissingCounterpartEveryFrame()
     from_left.right_measured_points.empty(),
     "a visible left lane must remain measured while the right is missing");
   require(
-    from_left.inferred_point_count > 0 &&
-    maskHasWhiteNear(from_left.right_reconstructed_mask, 0.80, -0.30, 4),
-    "a missing right lane must be inferred from the visible left lane");
+    from_left.centerline_from_single_boundary &&
+    from_left.centerline_point_count > 0 &&
+    cv::countNonZero(from_left.right_reconstructed_mask) == 0 &&
+    maskHasWhiteNear(from_left.reconstructed_mask, 0.80, 0.0, 4),
+    "a visible left lane must directly generate the centerline");
 
   cv::Mat right_only = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(&right_only, -0.30, 0.20, 1.40, farCurveCenter, 245, 5);
@@ -660,9 +668,11 @@ void testEitherVisibleSideInfersTheMissingCounterpartEveryFrame()
     from_right.left_measured_points.empty(),
     "a visible right lane must remain measured while the left is missing");
   require(
-    from_right.inferred_point_count > 0 &&
-    maskHasWhiteNear(from_right.left_reconstructed_mask, 0.80, 0.30, 4),
-    "a missing left lane must be inferred from the visible right lane");
+    from_right.centerline_from_single_boundary &&
+    from_right.centerline_point_count > 0 &&
+    cv::countNonZero(from_right.left_reconstructed_mask) == 0 &&
+    maskHasWhiteNear(from_right.reconstructed_mask, 0.80, 0.0, 4),
+    "a visible right lane must directly generate the centerline");
   require(
     !from_left.temporal_hold_used && !from_right.temporal_hold_used,
     "side changes must use each current frame without a stale held lane");
@@ -697,7 +707,7 @@ int main()
 {
   testFarCurveIsReacquiredFromActualPixels();
   testCloseNonQuadraticCurveKeepsPixelShape();
-  testSingleBoundaryOnlyInfersMissingSide();
+  testSingleBoundaryGeneratesCenterlineDirectly();
   testMissingPixelsStopLongPrediction();
   testBroadBrightSceneryDoesNotPullTracker();
   testBrightBackgroundIsNotAcceptedAsRoadLane();
@@ -705,12 +715,12 @@ int main()
   testTemporalGateRequiresFourRepeatedLargeChanges();
   testTemporalHoldExpiresAfterFiveFrames();
   testValidShortLaneIsNotExtended();
-  testShortNormalDistanceCounterpartBeatsInference();
-  testTightNormalOffsetNeverFallsBackToSameX();
-  testInferredLanePreservesReferenceShape();
-  testInferenceUsesConfiguredWidthInsteadOfLearnedWidth();
-  testCurrentFrameRotationUpdatesInferenceImmediately();
-  testEitherVisibleSideInfersTheMissingCounterpartEveryFrame();
+  testShortNormalDistanceCounterpartContributesToCenterline();
+  testTightCurveGeneratesHalfWidthCenterline();
+  testCenterlineCanPreserveReferenceShape();
+  testCenterlineUsesHalfConfiguredWidthInsteadOfLearnedWidth();
+  testCurrentFrameRotationUpdatesCenterlineImmediately();
+  testEitherVisibleSideGeneratesCenterlineEveryFrame();
   testLowSaturationGateRemainsOptional();
   testRotatingWindowsFollowTightArc();
   std::cout << "BEV sliding-window lane tests passed\n";

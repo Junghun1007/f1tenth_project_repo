@@ -1054,7 +1054,8 @@ Seed selectSeedByTrackSupport(
   // Same-X lateral separation grows on a diagonal or tight curve even when
   // the physical lane width measured along the normal is correct. Probe the
   // two visible markings independently, then pair them by perpendicular
-  // polyline distance so a short real counterpart wins over inference.
+  // polyline distance so even a short real counterpart contributes to the
+  // centerline estimate without being replaced by a synthetic boundary.
   constexpr std::size_t kMaximumDiverseProbesPerSide = 8U;
   left_probes = selectDiverseProbes(
     std::move(left_probes), kMaximumDiverseProbesPerSide);
@@ -1356,9 +1357,9 @@ std::vector<cv::Point2d> offsetLane(
       return difference;
     };
   const double maximum_heading_step_rad =
-    config.inference_maximum_heading_step_deg * kPi / 180.0;
+    config.centerline_maximum_heading_step_deg * kPi / 180.0;
   const double maximum_curvature_per_m = std::min(
-    config.inference_maximum_curvature_per_m,
+    config.centerline_maximum_curvature_per_m,
     0.90 / std::max(std::abs(offset_m), config.meter_per_pixel));
 
   std::vector<double> arc_length_m(reference.size(), 0.0);
@@ -1371,7 +1372,7 @@ std::vector<cv::Point2d> offsetLane(
   // adjacent point. This prevents one noisy sample from rotating the full
   // lane-width offset by a large angle.
   std::vector<double> tangent_heading_rad(reference.size(), 0.0);
-  const double half_window_m = 0.5 * config.inference_tangent_window_m;
+  const double half_window_m = 0.5 * config.centerline_tangent_window_m;
   for (std::size_t index = 0U; index < reference.size(); ++index) {
     std::size_t first = index;
     while (
@@ -1425,26 +1426,27 @@ std::vector<cv::Point2d> translateLaneLaterally(
   const std::vector<cv::Point2d> & reference,
   const double offset_m)
 {
-  std::vector<cv::Point2d> inferred = reference;
-  for (auto & point : inferred) {
+  std::vector<cv::Point2d> offset = reference;
+  for (auto & point : offset) {
     point.y += offset_m;
   }
-  return inferred;
+  return offset;
 }
 
-struct InferredLane
+struct OffsetLaneResult
 {
   std::vector<cv::Point2d> points;
   bool normal_offset_truncated{false};
 };
 
-InferredLane retainLongestSafeNormalOffsetSegment(
+OffsetLaneResult retainLongestSafeNormalOffsetSegment(
   const std::vector<cv::Point2d> & reference,
-  const std::vector<cv::Point2d> & inferred,
-  const BevLaneReconstructorConfig & config)
+  const std::vector<cv::Point2d> & offset,
+  const BevLaneReconstructorConfig & config,
+  const int minimum_required_points)
 {
-  if (reference.size() != inferred.size() || inferred.size() < 2U) {
-    return {{}, !inferred.empty()};
+  if (reference.size() != offset.size() || offset.size() < 2U) {
+    return {{}, !offset.empty()};
   }
 
   std::size_t best_first = 0U;
@@ -1464,45 +1466,49 @@ InferredLane retainLongestSafeNormalOffsetSegment(
       }
     };
 
-  for (std::size_t index = 1U; index < inferred.size(); ++index) {
+  for (std::size_t index = 1U; index < offset.size(); ++index) {
     const cv::Point2d reference_segment =
       reference[index] - reference[index - 1U];
-    const cv::Point2d inferred_segment =
-      inferred[index] - inferred[index - 1U];
+    const cv::Point2d offset_segment =
+      offset[index] - offset[index - 1U];
     const double reference_length_m = norm(reference_segment);
-    const double inferred_length_m = norm(inferred_segment);
+    const double offset_length_m = norm(offset_segment);
     const bool same_curve_direction =
       reference_length_m >= config.meter_per_pixel &&
-      inferred_length_m >= config.meter_per_pixel &&
-      dot(reference_segment, inferred_segment) > 0.0;
+      offset_length_m >= config.meter_per_pixel &&
+      dot(reference_segment, offset_segment) > 0.0;
     const bool forward_in_vehicle_frame =
-      inferred[index].x + config.meter_per_pixel >= inferred[index - 1U].x;
+      offset[index].x + config.meter_per_pixel >= offset[index - 1U].x;
     if (!same_curve_direction || !forward_in_vehicle_frame) {
       keepCurrentSegment(index);
       current_first = index;
       current_arc_length_m = 0.0;
       continue;
     }
-    current_arc_length_m += inferred_length_m;
+    current_arc_length_m += offset_length_m;
   }
-  keepCurrentSegment(inferred.size());
+  keepCurrentSegment(offset.size());
 
-  if (best_last - best_first < static_cast<std::size_t>(config.minimum_points)) {
+  if (
+    best_last - best_first <
+    static_cast<std::size_t>(minimum_required_points))
+  {
     return {{}, true};
   }
   return {
     std::vector<cv::Point2d>(
-      inferred.begin() + static_cast<std::ptrdiff_t>(best_first),
-      inferred.begin() + static_cast<std::ptrdiff_t>(best_last)),
-    best_first != 0U || best_last != inferred.size()};
+      offset.begin() + static_cast<std::ptrdiff_t>(best_first),
+      offset.begin() + static_cast<std::ptrdiff_t>(best_last)),
+    best_first != 0U || best_last != offset.size()};
 }
 
-InferredLane inferLaneFromReference(
+OffsetLaneResult offsetFromReference(
   const std::vector<cv::Point2d> & reference,
   const double offset_m,
-  const BevLaneReconstructorConfig & config)
+  const BevLaneReconstructorConfig & config,
+  const int minimum_required_points)
 {
-  if (config.inference_preserve_reference_shape) {
+  if (config.centerline_preserve_reference_shape) {
     return {translateLaneLaterally(reference, offset_m), false};
   }
 
@@ -1511,9 +1517,51 @@ InferredLane inferLaneFromReference(
   // tight curve. Parallel curves can become singular when the requested
   // offset exceeds the local radius, so retain only the longest segment that
   // still advances with the measured curve. If it is too short, emit no
-  // inferred counterpart instead of drawing one at the wrong position.
+  // offset path instead of drawing one at the wrong position.
   return retainLongestSafeNormalOffsetSegment(
-    reference, offsetLane(reference, offset_m, config), config);
+    reference, offsetLane(reference, offset_m, config), config,
+    minimum_required_points);
+}
+
+double polylineArcLength(const std::vector<cv::Point2d> & points)
+{
+  double length_m = 0.0;
+  for (std::size_t index = 1U; index < points.size(); ++index) {
+    length_m += norm(points[index] - points[index - 1U]);
+  }
+  return length_m;
+}
+
+std::vector<cv::Point2d> fuseCenterlineEstimates(
+  const std::vector<cv::Point2d> & first,
+  const std::vector<cv::Point2d> & second,
+  const BevLaneReconstructorConfig & config)
+{
+  if (first.empty()) {
+    return second;
+  }
+  if (second.empty()) {
+    return first;
+  }
+
+  const bool first_is_primary =
+    polylineArcLength(first) >= polylineArcLength(second);
+  const auto & primary = first_is_primary ? first : second;
+  const auto & secondary = first_is_primary ? second : first;
+  std::vector<cv::Point2d> fused = primary;
+  const double maximum_fusion_distance_m = std::max(
+    3.0 * config.meter_per_pixel, config.lane_width_tolerance_m);
+  for (auto & point : fused) {
+    const auto closest = std::min_element(
+      secondary.begin(), secondary.end(),
+      [&point](const cv::Point2d & left, const cv::Point2d & right) {
+        return norm(left - point) < norm(right - point);
+      });
+    if (norm(*closest - point) <= maximum_fusion_distance_m) {
+      point = 0.5 * (point + *closest);
+    }
+  }
+  return fused;
 }
 
 double drawMeasuredLane(
@@ -1620,13 +1668,13 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 2 ||
     config_.minimum_counterpart_points < 2 ||
     config_.minimum_counterpart_points > config_.minimum_points ||
-    !std::isfinite(config_.inference_tangent_window_m) ||
-    config_.inference_tangent_window_m <= 0.0 ||
-    !std::isfinite(config_.inference_maximum_curvature_per_m) ||
-    config_.inference_maximum_curvature_per_m <= 0.0 ||
-    !std::isfinite(config_.inference_maximum_heading_step_deg) ||
-    config_.inference_maximum_heading_step_deg <= 0.0 ||
-    config_.inference_maximum_heading_step_deg > 180.0 ||
+    !std::isfinite(config_.centerline_tangent_window_m) ||
+    config_.centerline_tangent_window_m <= 0.0 ||
+    !std::isfinite(config_.centerline_maximum_curvature_per_m) ||
+    config_.centerline_maximum_curvature_per_m <= 0.0 ||
+    !std::isfinite(config_.centerline_maximum_heading_step_deg) ||
+    config_.centerline_maximum_heading_step_deg <= 0.0 ||
+    config_.centerline_maximum_heading_step_deg > 180.0 ||
     config_.temporal_maximum_lateral_jump_near_m <= 0.0 ||
     config_.temporal_maximum_lateral_jump_far_m <
     config_.temporal_maximum_lateral_jump_near_m ||
@@ -1713,6 +1761,8 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   result.left_reconstructed_mask = cv::Mat::zeros(
     config_.image_height, output_width, CV_8UC1);
   result.right_reconstructed_mask = cv::Mat::zeros(
+    config_.image_height, output_width, CV_8UC1);
+  result.centerline_reconstructed_mask = cv::Mat::zeros(
     config_.image_height, output_width, CV_8UC1);
   result.reconstructed_mask = cv::Mat::zeros(
     config_.image_height, output_width, CV_8UC1);
@@ -1931,44 +1981,50 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
       stable_right.points, config_.measured_point_smoothing_weight);
   }
 
-  if (
-    config_.infer_partially_missing_lane && left_valid && !right_valid &&
-    config_.allow_single_lane)
-  {
-    // Missing-side placement must be deterministic. A noisy previously
-    // measured pair may move measured_lane_width_m within the tolerance, but
-    // it must not move the inferred counterpart away from the configured
-    // physical lane width.
-    auto inferred = inferLaneFromReference(
-      left_output, -config_.expected_lane_width_m, config_);
-    right_output = std::move(inferred.points);
-    result.inference_normal_offset_truncated =
-      inferred.normal_offset_truncated;
-    result.inferred_point_count += static_cast<int>(right_output.size());
-  } else if (
-    config_.infer_partially_missing_lane && right_valid && !left_valid &&
-    config_.allow_single_lane)
-  {
-    auto inferred = inferLaneFromReference(
-      right_output, config_.expected_lane_width_m, config_);
-    left_output = std::move(inferred.points);
-    result.inference_normal_offset_truncated =
-      inferred.normal_offset_truncated;
-    result.inferred_point_count += static_cast<int>(left_output.size());
+  const double center_offset_m = 0.5 * config_.expected_lane_width_m;
+  OffsetLaneResult center_from_left;
+  OffsetLaneResult center_from_right;
+  const int centerline_minimum_points = left_valid && right_valid ?
+    config_.minimum_counterpart_points : config_.minimum_points;
+  if (left_valid) {
+    center_from_left = offsetFromReference(
+      left_output, -center_offset_m, config_, centerline_minimum_points);
   }
+  if (right_valid) {
+    center_from_right = offsetFromReference(
+      right_output, center_offset_m, config_, centerline_minimum_points);
+  }
+
+  std::vector<cv::Point2d> centerline_output;
+  if (left_valid && right_valid) {
+    centerline_output = fuseCenterlineEstimates(
+      center_from_left.points, center_from_right.points, config_);
+    result.centerline_from_single_boundary =
+      center_from_left.points.empty() != center_from_right.points.empty();
+  } else if (
+    config_.centerline_from_single_boundary_enabled &&
+    config_.allow_single_lane)
+  {
+    centerline_output = left_valid ?
+      std::move(center_from_left.points) :
+      std::move(center_from_right.points);
+    result.centerline_from_single_boundary = true;
+  }
+  result.centerline_normal_offset_truncated =
+    center_from_left.normal_offset_truncated ||
+    center_from_right.normal_offset_truncated;
+  result.centerline_point_count = static_cast<int>(centerline_output.size());
 
   left_output = extendByTangent(std::move(left_output), config_);
   right_output = extendByTangent(std::move(right_output), config_);
-  const double left_maximum_x_m = drawMeasuredLane(
+  centerline_output = extendByTangent(std::move(centerline_output), config_);
+  drawMeasuredLane(
     left_output, config_, &result.left_reconstructed_mask);
-  const double right_maximum_x_m = drawMeasuredLane(
+  drawMeasuredLane(
     right_output, config_, &result.right_reconstructed_mask);
-  cv::bitwise_or(
-    result.left_reconstructed_mask,
-    result.right_reconstructed_mask,
-    result.reconstructed_mask);
-  result.reconstructed_maximum_x_m = std::max(
-    left_maximum_x_m, right_maximum_x_m);
+  result.reconstructed_maximum_x_m = drawMeasuredLane(
+    centerline_output, config_, &result.centerline_reconstructed_mask);
+  result.centerline_reconstructed_mask.copyTo(result.reconstructed_mask);
   result.valid = cv::countNonZero(result.reconstructed_mask) > 0;
   return result;
 }

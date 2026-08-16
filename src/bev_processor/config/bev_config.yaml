@@ -162,17 +162,18 @@ bev_processor:
     output_height: 300
 
     # 원본 컬러 BEV(/camera/image_bev)는 그대로 유지하고, 이 단계를 켜면
-    # 검은 배경+흰 차선만 있는 mono8 결과를 lane_output_topic으로 추가 발행한다.
+    # 검은 배경+흰 주행 중심선인 mono8 결과를 lane_output_topic으로 발행한다.
     lane_reconstruction_enabled: true
     lane_output_topic: "/camera/image_bev_lane"
-    # true면 프리뷰에서만 원본 컬러 BEV 위에 차선을 초록색으로 합성한다.
+    # true면 프리뷰에서 실제 왼쪽/오른쪽 경계를 파랑/빨강, 주행 중심선을
+    # 노랑으로 합성한다.
     # false면 필터를 적용하지 않은 원본 BEV를 표시한다. 두 발행 토픽은 불변이다.
     lane_preview_enabled: true
     # true면 실제 좌/우 회전형 검색 윈도우를 1px 박스로 프리뷰에 표시한다.
     lane_preview_sliding_windows_enabled: true
     # 차량 좌표 X=0.02m에 있는 카메라 위치를 프리뷰 X=0으로 표기한다.
     preview_x_origin_m: 0.02
-    # 차선 결과 영상의 좌우에 각각 70cm 검은 공간을 둔다. 원본 컬러
+    # 중심선 결과 영상의 좌우에 각각 70cm 검은 공간을 둔다. 원본 컬러
     # BEV는 중앙에 유지되며, 화면 밖으로 추론된 차선도 이 공간에 그린다.
     lane_output_lateral_margin_m: 0.70
     # 0은 투명, 1은 불투명이다. 기본값은 형광펜처럼 원본이 비치는 값이다.
@@ -232,33 +233,34 @@ bev_processor:
     lane_minimum_window_pixel_count: 6
 
     # 실제 차선 폭 60cm ± 7cm, 즉 53~67cm를 정상 좌·우 차선 쌍으로 본다.
-    # 반대편 예측에는 실측 폭의 프레임별 변동 대신 이 60cm를 고정 사용한다.
+    # 중심선은 실측 폭의 프레임별 변동 대신 이 값의 절반인 30cm를 사용한다.
     lane_expected_width_m: 0.60
     lane_width_tolerance_m: 0.07
     lane_initial_center_tolerance_m: 0.60
-    lane_single_initial_tolerance_m: 0.60
+    # 한 선을 좌/우 양쪽으로 동시에 해석하지 않도록 단일 경계에서 계산한
+    # 도로 중심이 차량 중심으로부터 20cm 안에 있을 때만 채택한다.
+    lane_single_initial_tolerance_m: 0.20
     lane_minimum_points: 6
     # 반대편 실선이 법선거리 폭 검증을 통과하면 3개 실측점부터
     # 전체 가상선으로 덮어쓰지 않고 짧은 실제 차선으로 유지한다.
     lane_minimum_counterpart_points: 3
     lane_allow_single_lane: true
 
-    # 왼쪽만 검출되면 오른쪽을, 오른쪽만 검출되면 왼쪽을 대칭적으로
-    # 예측한다. 양쪽이 유효하면 짧은 쪽도 실측 결과만 유지하고
-    # 빈 구간을 가상선으로 보충하지 않는다.
-    lane_infer_partially_missing_lane: true
-    # false면 매 프레임 현재 차선의 접선에 수직인 방향으로 60cm
-    # 옮긴다. 차량이 회전해 화면의 차선 방향이 바뀌면 예측선도 즉시 바뀐다.
-    lane_inference_preserve_reference_shape: false
-    # preserve_reference_shape=false인 법선 예측 시에만 아래 세 값을 사용한다.
+    # 한쪽만 검출되어도 그 실측 경계에서 폭의 절반만큼 이동해 중심선을 만든다.
+    # 반대편 가상 차선은 생성하지 않는다.
+    lane_centerline_from_single_boundary_enabled: true
+    # false면 매 프레임 현재 경계의 접선에 수직인 방향으로 30cm 옮긴다.
+    # true는 동일-X 횡방향 이동이며 기본 주행에는 권장하지 않는다.
+    lane_centerline_preserve_reference_shape: false
+    # preserve_reference_shape=false인 법선 중심선 계산에 아래 세 값을 사용한다.
     # 20cm 범위의 여러 기준점으로 접선을 계산한다.
     # 접선은 곡률 1.25(최소 회전반경 약 0.8m), 점별 8도를 모두
     # 넘지 않게 제한해 짧은 노이즈가 법선 위치를 크게 흔드는 것을 막는다.
     # 급커브 법선 오프셋이 접히면 동일-X 평행이동으로 바꾸지 않고,
     # 기준선과 같은 방향으로 진행하는 가장 긴 유효 구간만 출력한다.
-    lane_inference_tangent_window_m: 0.20
-    lane_inference_maximum_curvature_per_m: 1.25
-    lane_inference_maximum_heading_step_deg: 8.0
+    lane_centerline_tangent_window_m: 0.20
+    lane_centerline_maximum_curvature_per_m: 1.25
+    lane_centerline_maximum_heading_step_deg: 8.0
 
     # 화면 표시는 이전 차량 좌표의 라인을 재사용하지 않고 매 프레임
     # 현재 픽셀로 다시 계산한다. 이로써 차량 회전 시 stale hold를 막는다.

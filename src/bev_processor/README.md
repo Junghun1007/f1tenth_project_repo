@@ -155,11 +155,13 @@ Sobel, 미분 필터, 대비 강화, 밝기 임계값, morphology, 차선 추출
 기본 설정에서는 두 결과를 동시에 발행한다.
 
 - `/camera/image_bev` (`bgr8`): 변경하지 않은 원본 컬러 BEV
-- `/camera/image_bev_lane` (`mono8`): 검은 배경에 흰색 좌·우 차선만 다시 그린 결과.
-  좌우에는 `lane_output_lateral_margin_m`만큼의 추론 공간이 추가된다.
+- `/camera/image_bev_lane` (`mono8`): 검은 배경에 흰색 주행 중심선만 그린 결과.
+  한쪽 경계만 보이면 설정 폭의 절반만큼 법선 이동해 직접 계산한다.
 
 GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, 오른쪽 차선을
-빨간색, 투명도 `0.8`로 합성한다. 색상 오버레이는 발행 토픽에는 들어가지 않는다.
+빨간색, 주행 중심선을 노란색으로 합성한다. 파랑·빨강은 실제로 측정된
+경계에만 표시하며 반대편 가상 차선은 그리지 않는다. 색상 오버레이는
+발행 토픽에는 들어가지 않는다.
 `lane_preview_enabled:=false`로 실행하면 프리뷰도 원본 BEV만 표시한다.
 
 `lane_preview_sliding_windows_enabled:=true`면 실제 추적에 사용한
@@ -174,7 +176,7 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 
 `lane_output_lateral_margin_m:=0.70`은 원본 BEV 좌우에 각각 70cm의 검은
 픽셀 공간을 추가한다. 원본 컬러 BEV 범위는 중앙에 그대로 표시되고, 한쪽
-차선을 기준으로 계산한 반대편 차선이 원본 BEV 밖에 있어도 이 공간에 그려진다.
+경계에서 계산한 중심선이 원본 BEV 밖에 있어도 이 공간에 그려진다.
 기본 1cm/pixel에서는 차선 결과 폭이 `120 + 70 * 2 = 260px`이고 좌표 범위는
 `Y=-1.3~+1.3m`이다. 원본 `/camera/image_bev` 크기는 120x300으로 유지된다.
 
@@ -196,22 +198,22 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
    중앙을 계속 측정한다.
 8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
 9. 기본 화면 표시는 temporal hold를 사용하지 않고 매 프레임 현재
-   픽셀로 좌·우 차선과 예측선을 다시 계산한다.
+   픽셀로 좌·우 실측 경계와 주행 중심선을 다시 계산한다.
 10. 법선거리 폭을 통과한 반대편은 `lane_minimum_counterpart_points`
-    개만 보여도 실측선을 유지한다. 반대편 실측이 전혀 유효하지 않을
-    때만 한쪽 차선에서 전체 예측선을 만든다. 왼쪽만 보이면 오른쪽을,
-    오른쪽만 보이면 왼쪽을 예측하며 파란색·빨간색에 방향이 고정되지 않는다.
+    개만 보여도 중심선 계산에 함께 사용한다. 양쪽이 보이면 각 경계에서
+    폭의 절반만큼 계산한 두 중심선 추정치를 가까운 구간에서 평균한다.
+    한쪽만 보이면 그 경계에서 폭의 절반만큼 법선 이동해 중심선을 직접 만든다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
-기본 `lane_inference_preserve_reference_shape:=false`는 매 프레임 현재
-기준 차선의 국소 접선을 구하고, 그 법선 방향으로 설정된 60cm를
-이동한다. 차량이 회전해 BEV의 차선 방향이 바뀌면 빨간 예측선도
+기본 `lane_centerline_preserve_reference_shape:=false`는 매 프레임 현재
+실측 경계의 국소 접선을 구하고, 그 법선 방향으로 설정 폭의 절반인 30cm를
+이동한다. 차량이 회전해 BEV의 경계 방향이 바뀌면 노란 중심선도
 현재 프레임에서 즉시 다시 계산된다. 이전 프레임에서 실측한 폭은
-예측 위치에 사용하지 않는다.
+중심선 위치에 사용하지 않는다.
 급커브에서도 동일-X 횡방향 이동으로 되돌아가지 않는다. 법선 오프셋이
 국소 회전반경보다 커져 접히기 시작하면 기준선과 같은 진행 방향을 유지하는
 가장 긴 구간만 표시한다. 그 구간도 최소 점 개수를 만족하지 못하면 잘못된
-위치의 가상선 대신 해당 프레임의 반대편 예측을 생략한다.
+위치의 가상 경로 대신 해당 프레임의 중심선 출력을 생략한다.
 
 실행하면서 값을 바꾸는 예시는 다음과 같다.
 
@@ -226,14 +228,15 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_sliding_window_measurement_weight:=0.90 \
   lane_expected_width_m:=0.60 \
   lane_width_tolerance_m:=0.07 \
+  lane_single_initial_tolerance_m:=0.20 \
   lane_minimum_counterpart_points:=3 \
-  lane_infer_partially_missing_lane:=true \
+  lane_centerline_from_single_boundary_enabled:=true \
   lane_output_lateral_margin_m:=0.70 \
   lane_output_line_thickness_m:=0.02 \
   lane_preview_overlay_alpha:=0.8
 ```
 
-시간 연속성과 한쪽 전체 미검출 시 예측을 조절하는 예시는 다음과 같다.
+시간 연속성과 한쪽 경계 기반 중심선을 조절하는 예시는 다음과 같다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
@@ -242,11 +245,11 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_confirmation_frames:=4 \
   lane_temporal_tracking_enabled:=false \
   lane_temporal_hold_frames:=0 \
-  lane_infer_partially_missing_lane:=true \
-  lane_inference_preserve_reference_shape:=false \
-  lane_inference_tangent_window_m:=0.20 \
-  lane_inference_maximum_curvature_per_m:=1.25 \
-  lane_inference_maximum_heading_step_deg:=8.0
+  lane_centerline_from_single_boundary_enabled:=true \
+  lane_centerline_preserve_reference_shape:=false \
+  lane_centerline_tangent_window_m:=0.20 \
+  lane_centerline_maximum_curvature_per_m:=1.25 \
+  lane_centerline_maximum_heading_step_deg:=8.0
 ```
 
 원거리 곡선을 놓치면 far 밝기 임계값과 원거리 윈도우 폭을 다음처럼 조절한다.
