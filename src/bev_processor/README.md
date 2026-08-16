@@ -194,21 +194,18 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
    중앙을 계속 측정한다.
 8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
 9. Odometry 없이 이전 승인 라인과 같은 X의 위치·방향을 비교한다. 큰 변화는
-   2프레임 연속일 때만 승인하고, 검출 소실 시 이전 라인은 2프레임만 유지한다.
-10. 양쪽 차선이 모두 실측되거나 한쪽의 중간 구간만 비면, 각자의 슬라이딩
-    윈도우 결과를 그대로 유지한다. 한쪽 전체가 `lane_minimum_points`를
-    채우지 못할 때만 반대편 차선의 국소 법선 방향으로 전체 평행 차선을 예측한다.
+   4프레임 연속일 때만 승인하고, 검출 소실 시 이전 라인은 5프레임만 유지한다.
+10. 양쪽의 실측 픽셀은 그대로 유지한다. 한쪽이 전체 미검출이거나 가까운·중간·먼
+    구간의 일부만 보이면, 더 긴 반대편 차선을 같은 X에서 차선 폭만큼 이동한
+    동일 형상으로 빈 구간을 보충한다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
-이 기능은 이미 잘 잡힌 반대편이나 반대편의 빈 구간을 재구성하지 않는다.
-전체 미검출 상태에서만 보이는 차선의 접선에 수직인 방향으로 평행 차선을
-예측한다. 이 접선은 기본 20cm 범위의 여러 점으로 계산하며, 예측선은 최대
-곡률 `1.25 1/m`(최소 반경 약 0.8m)과 점별 방향 변화 8도를 모두 제한한다.
-차선 폭 0.625m보다 작은 반경에서 안쪽 평행선이 접히는 현상과 한 점의
-노이즈가 갈고리 형태로 확대되는 현상을 방지한다. 설정값을 크게 올리더라도
-실제 예측 폭에 대한 `0.90 / width` 곡률 상한을 추가 적용해 자기접힘을 막는다.
+기본 `lane_inference_preserve_reference_shape:=true`는 기준 차선의 모든 점을
+같은 X에서 가로 방향으로 이동하므로 화면에서 형상과 기울기가 동일하다. `false`로
+끄면 기존처럼 국소 접선의 법선 방향으로 차선 폭만큼 이동하며,
+`lane_inference_tangent_window_m`, 곡률·방향 제한 파라미터는 이 기존 방식에만 적용된다.
 낮은 신뢰도의 새 라인은
-즉시 승인하지 않고, 이전 라인도 2프레임을 넘겨 계속 만들지 않는다.
+즉시 승인하지 않고, 이전 라인도 5프레임을 넘겨 계속 만들지 않는다.
 
 실행하면서 값을 바꾸는 예시는 다음과 같다.
 
@@ -234,9 +231,10 @@ ros2 launch bev_processor bev_processor.launch.py \
 ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_maximum_lateral_jump_near_m:=0.06 \
   lane_temporal_maximum_lateral_jump_far_m:=0.12 \
-  lane_temporal_confirmation_frames:=2 \
-  lane_temporal_hold_frames:=2 \
+  lane_temporal_confirmation_frames:=4 \
+  lane_temporal_hold_frames:=5 \
   lane_infer_partially_missing_lane:=true \
+  lane_inference_preserve_reference_shape:=true \
   lane_inference_tangent_window_m:=0.20 \
   lane_inference_maximum_curvature_per_m:=1.25 \
   lane_inference_maximum_heading_step_deg:=8.0

@@ -662,6 +662,8 @@ private:
     declare_parameter<int>("lane_minimum_points", 6);
     declare_parameter<bool>("lane_allow_single_lane", true);
     declare_parameter<bool>("lane_infer_partially_missing_lane", true);
+    declare_parameter<bool>(
+      "lane_inference_preserve_reference_shape", true);
     declare_parameter<double>("lane_inference_tangent_window_m", 0.20);
     declare_parameter<double>(
       "lane_inference_maximum_curvature_per_m", 1.25);
@@ -674,7 +676,7 @@ private:
       "lane_temporal_maximum_lateral_jump_far_m", 0.12);
     declare_parameter<double>(
       "lane_temporal_maximum_heading_jump_deg", 15.0);
-    declare_parameter<int>("lane_temporal_confirmation_frames", 2);
+    declare_parameter<int>("lane_temporal_confirmation_frames", 4);
     declare_parameter<int>("lane_temporal_hold_frames", 5);
     declare_parameter<double>("lane_output_line_thickness_m", 0.02);
 
@@ -941,6 +943,8 @@ private:
       get_parameter("lane_allow_single_lane").as_bool();
     lane_reconstructor_config_.infer_partially_missing_lane =
       get_parameter("lane_infer_partially_missing_lane").as_bool();
+    lane_reconstructor_config_.inference_preserve_reference_shape =
+      get_parameter("lane_inference_preserve_reference_shape").as_bool();
     lane_reconstructor_config_.inference_tangent_window_m =
       get_parameter("lane_inference_tangent_window_m").as_double();
     lane_reconstructor_config_.inference_maximum_curvature_per_m =

@@ -1202,6 +1202,86 @@ std::vector<cv::Point2d> offsetLane(
   return offset;
 }
 
+std::vector<cv::Point2d> inferLaneFromReference(
+  const std::vector<cv::Point2d> & reference,
+  const double offset_m,
+  const BevLaneReconstructorConfig & config)
+{
+  if (!config.inference_preserve_reference_shape) {
+    return offsetLane(reference, offset_m, config);
+  }
+
+  // Keep the inferred boundary at the same forward samples as the measured
+  // boundary. A lateral translation preserves its visible BEV shape and
+  // heading exactly; estimating a separate normal at every noisy sample can
+  // otherwise make the inferred boundary appear to have a different slope.
+  std::vector<cv::Point2d> inferred = reference;
+  for (auto & point : inferred) {
+    point.y += offset_m;
+  }
+  return inferred;
+}
+
+std::vector<cv::Point2d> supplementObservedLane(
+  const std::vector<cv::Point2d> & observed,
+  std::vector<cv::Point2d> inferred,
+  const BevLaneReconstructorConfig & config,
+  int * added_point_count)
+{
+  if (inferred.empty()) {
+    return observed;
+  }
+  if (observed.empty()) {
+    *added_point_count += static_cast<int>(inferred.size());
+    return inferred;
+  }
+
+  // Align the copied shape to the actually visible portion using only a
+  // constant lateral correction. This keeps every inferred heading identical
+  // to the reference while avoiding a seam caused by small lane-width error.
+  std::vector<double> lateral_corrections_m;
+  lateral_corrections_m.reserve(observed.size());
+  for (const auto & point : observed) {
+    const auto inferred_y = lateralAtX(inferred, point.x);
+    if (inferred_y.has_value()) {
+      lateral_corrections_m.push_back(point.y - *inferred_y);
+    }
+  }
+  if (!lateral_corrections_m.empty()) {
+    const double correction_m = std::clamp(
+      median(std::move(lateral_corrections_m)),
+      -config.lane_width_tolerance_m,
+      config.lane_width_tolerance_m);
+    for (auto & point : inferred) {
+      point.y += correction_m;
+    }
+  }
+
+  std::vector<cv::Point2d> supplemented = observed;
+  const double observed_x_radius_m =
+    1.5 * config.sliding_window_step_m;
+  for (const auto & inferred_point : inferred) {
+    const auto closest = std::min_element(
+      observed.begin(), observed.end(),
+      [&inferred_point](
+        const cv::Point2d & first, const cv::Point2d & second) {
+        return std::abs(first.x - inferred_point.x) <
+               std::abs(second.x - inferred_point.x);
+      });
+    if (std::abs(closest->x - inferred_point.x) <= observed_x_radius_m) {
+      continue;
+    }
+    supplemented.push_back(inferred_point);
+    ++(*added_point_count);
+  }
+  std::sort(
+    supplemented.begin(), supplemented.end(),
+    [](const cv::Point2d & first, const cv::Point2d & second) {
+      return first.x < second.x;
+    });
+  return supplemented;
+}
+
 double drawMeasuredLane(
   const std::vector<cv::Point2d> & points,
   const BevLaneReconstructorConfig & config,
@@ -1588,18 +1668,24 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
       stable_right.points, config_.measured_point_smoothing_weight);
   }
 
-  if (
-    config_.infer_partially_missing_lane && left_valid && !right_valid &&
-    config_.allow_single_lane)
-  {
-    right_output = offsetLane(left_output, -lane_width_m, config_);
-    result.inferred_point_count += static_cast<int>(right_output.size());
-  } else if (
-    config_.infer_partially_missing_lane && right_valid && !left_valid &&
-    config_.allow_single_lane)
-  {
-    left_output = offsetLane(right_output, lane_width_m, config_);
-    result.inferred_point_count += static_cast<int>(left_output.size());
+  if (config_.infer_partially_missing_lane && config_.allow_single_lane) {
+    // Use only measured/stabilized points as references. Each side keeps all
+    // of its visible pixels, while missing near, middle, or far sections are
+    // supplied from the longer opposite boundary.
+    const auto measured_left_output = left_output;
+    const auto measured_right_output = right_output;
+    if (left_valid) {
+      right_output = supplementObservedLane(
+        measured_right_output,
+        inferLaneFromReference(measured_left_output, -lane_width_m, config_),
+        config_, &result.inferred_point_count);
+    }
+    if (right_valid) {
+      left_output = supplementObservedLane(
+        measured_left_output,
+        inferLaneFromReference(measured_right_output, lane_width_m, config_),
+        config_, &result.inferred_point_count);
+    }
   }
 
   left_output = extendByTangent(std::move(left_output), config_);
