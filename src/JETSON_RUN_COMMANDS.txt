@@ -130,7 +130,7 @@ cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
 
 source /opt/ros/humble/setup.bash
 colcon build --cmake-clean-cache --packages-select \
-  joy_initializer vehicle_bringup manual_control \
+  joy_initializer vehicle_bringup manual_control auto_control \
   vesc_bridge vehicle_test_drive camera_driver \
   camera_height_estimator bev_processor \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
@@ -156,6 +156,24 @@ GUI 없이 성능만 측정:
 
 ros2 launch bev_processor bev_processor.launch.py \
   performance_measurement_enabled:=true
+
+
+[8. BEV 중앙선 기반 자율주행]
+
+수동주행 launch와 동시에 실행하지 않는다. 기본 실행은 원본 영상을 숨기고
+차선 인식 결과만 프리뷰하며, 중앙선과 VESC/ERPM이 준비되면 바로 출발한다.
+
+ros2 launch vehicle_bringup auto_drive.launch.py
+
+프리뷰를 완전히 끄고 실행:
+
+ros2 launch vehicle_bringup auto_drive.launch.py preview_enabled:=false
+
+바퀴를 띄운 상태에서 명령만 점검하려면 자동 출발을 끈다.
+
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  preview_enabled:=false \
+  auto_enabled:=false
 
 
 [안전 주의]

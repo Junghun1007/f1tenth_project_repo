@@ -26,6 +26,7 @@ def generate_launch_description():
     bev_input_bottom_fraction = LaunchConfiguration(
         "bev_input_bottom_fraction"
     )
+    preview_enabled = LaunchConfiguration("preview_enabled")
     performance_measurement_parameter = ParameterValue(
         performance_measurement_enabled,
         value_type=bool,
@@ -156,6 +157,11 @@ def generate_launch_description():
                     "the fused CUDA stabilization/BEV path."
                 ),
             ),
+            DeclareLaunchArgument(
+                "preview_enabled",
+                default_value="true",
+                description="Show or completely disable the BEV GUI preview.",
+            ),
             *lane_launch_arguments,
             ComposableNodeContainer(
                 name="bev_processor_container",
@@ -175,6 +181,10 @@ def generate_launch_description():
                             {
                                 "performance_measurement_enabled": (
                                     performance_measurement_parameter
+                                ),
+                                "preview_enabled": ParameterValue(
+                                    preview_enabled,
+                                    value_type=bool,
                                 ),
                                 "input_bottom_fraction": ParameterValue(
                                     bev_input_bottom_fraction,

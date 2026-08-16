@@ -1,0 +1,83 @@
+auto_control:
+  ros__parameters:
+    # true이면 VESC 연결, 최신 ERPM, 유효 중앙선이 모두 준비되는 즉시 출발한다.
+    # 주행 중 `ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: false"`
+    # 로 언제든 duty 0과 중앙 조향으로 전환할 수 있다.
+    enabled: true
+    enable_topic: "/auto/enabled"
+    lane_topic: "/camera/image_bev_lane"
+    measured_erpm_topic: "/vesc/measured_erpm"
+    connection_status_topic: "/vesc/connected"
+    duty_topic: "/vesc/duty"
+    servo_position_topic: "/vesc/servo_position"
+
+    command_duty_topic: "/auto/current_duty"
+    target_speed_topic: "/auto/target_speed"
+    current_speed_topic: "/auto/current_speed"
+    curvature_topic: "/auto/path_curvature"
+    steering_angle_topic: "/auto/steering_angle_rad"
+
+    control_rate_hz: 80.0
+    status_log_rate_hz: 2.0
+    # 중앙선 수신, 원본 영상 timestamp, ERPM 중 하나라도 오래되면 즉시 duty 0.
+    path_timeout_sec: 0.15
+    path_capture_maximum_age_sec: 0.20
+    erpm_timeout_sec: 0.15
+
+    # bev_processor 기본 좌표계. lane_output_lateral_margin_m을 바꾸면
+    # bev_lateral_margin_m도 반드시 같은 값으로 바꾼다.
+    bev_x_max_m: 3.0
+    bev_y_max_m: 0.60
+    bev_lateral_margin_m: 0.70
+    bev_meter_per_pixel: 0.01
+    lane_pixel_threshold: 128
+
+    # 중앙선 mono8에서 행별 중앙점을 뽑고 2차 y(x)로 다시 피팅한다.
+    # 3차보다 코너의 작은 지렁이형 굴곡과 곡률 spike에 덜 민감하다.
+    path_minimum_x_m: 0.25
+    path_maximum_x_m: 2.20
+    path_minimum_points: 20
+    path_minimum_span_m: 0.35
+    path_polynomial_order: 2
+
+    # Stanley: +조향각은 차량 좌표 +Y인 좌회전이다.
+    stanley_gain: 1.2
+    stanley_softening_speed_mps: 0.50
+    stanley_heading_lookahead_m: 0.25
+    maximum_steering_angle_deg: 30.0
+    # 현재 계산 조향 45%, 직전 명령 55%와 조향 변화율 제한을 함께 적용한다.
+    steering_current_weight: 0.45
+    steering_rate_limit_deg_per_sec: 240.0
+    servo_left: 0.98
+    servo_center: 0.46
+    servo_right: 0.02
+
+    # 곡률의 90 percentile로 순간 한 점의 spike를 무시하면서 코너를 감속한다.
+    minimum_speed_mps: 2.0
+    maximum_speed_mps: 2.5
+    maximum_lateral_acceleration_mps2: 2.0
+    curvature_lookahead_minimum_x_m: 0.50
+    curvature_lookahead_maximum_x_m: 1.60
+    curvature_percentile: 90.0
+
+    # 유효 경로가 생기면 manual_control과 같이 start duty를 즉시 적용한 뒤
+    # PID+feed-forward 목표까지 rate limit으로 이동한다. 경로 유실은 즉시 0이다.
+    minimum_duty: 0.05
+    maximum_duty: 0.07
+    duty_rise_rate_per_sec: 0.04
+    duty_fall_rate_per_sec: 0.08
+    speed_pid_kp: 0.012
+    speed_pid_ki: 0.004
+    speed_pid_kd: 0.0
+    speed_pid_integral_limit: 1.0
+    speed_filter_time_constant_sec: 0.05
+
+    # Traxxas Slash 4X4 Ultimate 순정 구동계와 기존 camera_driver 값.
+    wheel_diameter_m: 0.1095
+    motor_pole_pairs: 2
+    motor_pinion_teeth: 13
+    spur_gear_teeth: 54
+    differential_pinion_teeth: 13
+    differential_ring_teeth: 37
+    erpm_direction_sign: 1.0
+    speed_scale_correction: 1.0

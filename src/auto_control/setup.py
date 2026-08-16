@@ -1,3 +1,6 @@
+from glob import glob
+import os
+
 from setuptools import find_packages, setup
 
 
@@ -10,14 +13,17 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
+        (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
     maintainer="ohslo",
     maintainer_email="ohslo@example.com",
-    description="Autonomous control package for future AutoDrive nodes.",
+    description="Stanley lateral and curvature-aware speed control.",
     license="TODO",
     entry_points={
-        "console_scripts": [],
+        "console_scripts": [
+            "auto_control_node = auto_control.auto_control_node:main",
+        ],
     },
 )
