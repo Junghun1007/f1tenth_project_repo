@@ -469,7 +469,8 @@ public:
         "BEV lane continuity: temporal=%s, lateral jump near/far="
         "%.2f/%.2fm, heading jump=%.1fdeg, confirm/hold=%d/%d frames, "
         "centerline pair smooth=%.2f/%.2f, transition=%.2fm decay=%.2f, "
-        "single-boundary=%s(window=%.2fm curvature<=%.2f/m step<=%.1fdeg)",
+        "single-boundary=%s side-lock=%s(pair/reset=%d/%d frames, "
+        "window=%.2fm curvature<=%.2f/m step<=%.1fdeg)",
         lane_reconstructor_config_.temporal_tracking_enabled ? "on" : "off",
         lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m,
         lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m,
@@ -482,6 +483,10 @@ public:
         lane_reconstructor_config_.centerline_transition_correction_decay,
         lane_reconstructor_config_.centerline_from_single_boundary_enabled ?
         "on" : "off",
+        lane_reconstructor_config_.single_boundary_side_lock_enabled ?
+        "on" : "off",
+        lane_reconstructor_config_.single_boundary_side_pair_confirmation_frames,
+        lane_reconstructor_config_.single_boundary_side_lock_reset_frames,
         lane_reconstructor_config_.centerline_tangent_window_m,
         lane_reconstructor_config_.centerline_maximum_curvature_per_m,
         lane_reconstructor_config_.centerline_maximum_heading_step_deg);
@@ -679,6 +684,11 @@ private:
       "lane_centerline_from_single_boundary_enabled", true);
     declare_parameter<bool>(
       "lane_centerline_preserve_reference_shape", false);
+    declare_parameter<bool>("lane_single_boundary_side_lock_enabled", true);
+    declare_parameter<int>(
+      "lane_single_boundary_side_pair_confirmation_frames", 2);
+    declare_parameter<int>(
+      "lane_single_boundary_side_lock_reset_frames", 30);
     declare_parameter<double>(
       "lane_centerline_midpoint_smoothing_weight", 0.45);
     declare_parameter<double>(
@@ -973,6 +983,14 @@ private:
         "lane_centerline_from_single_boundary_enabled").as_bool();
     lane_reconstructor_config_.centerline_preserve_reference_shape =
       get_parameter("lane_centerline_preserve_reference_shape").as_bool();
+    lane_reconstructor_config_.single_boundary_side_lock_enabled =
+      get_parameter("lane_single_boundary_side_lock_enabled").as_bool();
+    lane_reconstructor_config_.single_boundary_side_pair_confirmation_frames =
+      static_cast<int>(get_parameter(
+          "lane_single_boundary_side_pair_confirmation_frames").as_int());
+    lane_reconstructor_config_.single_boundary_side_lock_reset_frames =
+      static_cast<int>(get_parameter(
+          "lane_single_boundary_side_lock_reset_frames").as_int());
     lane_reconstructor_config_.centerline_midpoint_smoothing_weight =
       get_parameter(
         "lane_centerline_midpoint_smoothing_weight").as_double();

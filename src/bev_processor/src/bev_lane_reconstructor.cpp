@@ -1806,6 +1806,8 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 2 ||
     config_.minimum_counterpart_points < 2 ||
     config_.minimum_counterpart_points > config_.minimum_points ||
+    config_.single_boundary_side_pair_confirmation_frames <= 0 ||
+    config_.single_boundary_side_lock_reset_frames < 0 ||
     !std::isfinite(config_.centerline_midpoint_smoothing_weight) ||
     config_.centerline_midpoint_smoothing_weight <= 0.0 ||
     config_.centerline_midpoint_smoothing_weight > 1.0 ||
@@ -1846,6 +1848,97 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
   {
     throw std::invalid_argument(
             "lane reconstruction dimensions do not match BEV bounds");
+  }
+}
+
+void BevLaneReconstructor::applySingleBoundarySideLock(
+  BevLaneReconstruction * result,
+  const bool current_left_valid,
+  const bool current_right_valid,
+  const bool current_pair_valid)
+{
+  if (!config_.single_boundary_side_lock_enabled) {
+    return;
+  }
+
+  if (current_pair_valid && current_left_valid && current_right_valid) {
+    consecutive_missing_frames_ = 0;
+    ++consecutive_paired_frames_;
+    last_paired_left_points_ = result->left_measured_points;
+    last_paired_right_points_ = result->right_measured_points;
+    if (
+      consecutive_paired_frames_ >=
+      config_.single_boundary_side_pair_confirmation_frames)
+    {
+      paired_side_identity_available_ = true;
+      single_boundary_side_lock_ = SingleBoundarySide::kUnknown;
+    }
+    return;
+  }
+
+  consecutive_paired_frames_ = 0;
+  if (!current_left_valid && !current_right_valid) {
+    ++consecutive_missing_frames_;
+    const int reset_frames = config_.single_boundary_side_lock_reset_frames;
+    if (reset_frames > 0 && consecutive_missing_frames_ >= reset_frames) {
+      single_boundary_side_lock_ = SingleBoundarySide::kUnknown;
+      paired_side_identity_available_ = false;
+      last_paired_left_points_.clear();
+      last_paired_right_points_.clear();
+    }
+    return;
+  }
+
+  consecutive_missing_frames_ = 0;
+  if (current_left_valid == current_right_valid) {
+    // Two tracks that fail the lane-width check do not establish or release
+    // an identity lock. Downstream geometry validation decides their output.
+    return;
+  }
+
+  const SingleBoundarySide detected_side = current_left_valid ?
+    SingleBoundarySide::kLeft : SingleBoundarySide::kRight;
+  const auto & single_points = current_left_valid ?
+    result->left_measured_points : result->right_measured_points;
+  if (single_boundary_side_lock_ == SingleBoundarySide::kUnknown) {
+    // Do not invent a persistent identity when startup has never observed a
+    // valid pair. In that exceptional case the current detector label remains
+    // the only available information.
+    if (!paired_side_identity_available_) {
+      return;
+    }
+    single_boundary_side_lock_ = detected_side;
+    const auto left_error = centerlineMedianAbsoluteLateralError(
+      last_paired_left_points_, single_points);
+    const auto right_error = centerlineMedianAbsoluteLateralError(
+      last_paired_right_points_, single_points);
+    if (left_error.has_value() && right_error.has_value()) {
+      if (*left_error + config_.meter_per_pixel < *right_error) {
+        single_boundary_side_lock_ = SingleBoundarySide::kLeft;
+      } else if (*right_error + config_.meter_per_pixel < *left_error) {
+        single_boundary_side_lock_ = SingleBoundarySide::kRight;
+      }
+    } else if (left_error.has_value()) {
+      single_boundary_side_lock_ = SingleBoundarySide::kLeft;
+    } else if (right_error.has_value()) {
+      single_boundary_side_lock_ = SingleBoundarySide::kRight;
+    }
+  }
+
+  // From this point until a confirmed pair returns, the detector's current
+  // left/right label is deliberately ignored. Keep the measured points in the
+  // locked logical slot so preview colors, temporal tracks, and offset
+  // direction all use the same persistent identity.
+  if (single_boundary_side_lock_ == SingleBoundarySide::kLeft) {
+    if (!current_left_valid) {
+      result->left_measured_points = result->right_measured_points;
+    }
+    result->right_measured_points.clear();
+  } else if (single_boundary_side_lock_ == SingleBoundarySide::kRight) {
+    if (!current_right_valid) {
+      result->right_measured_points = result->left_measured_points;
+    }
+    result->left_measured_points.clear();
   }
 }
 
@@ -2045,22 +2138,43 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   result.right_measured_points = std::move(backward_right_points);
   result.measured_point_count = static_cast<int>(
     result.left_measured_points.size() + result.right_measured_points.size());
-  const int current_left_point_count = static_cast<int>(
+  int current_left_point_count = static_cast<int>(
     result.left_measured_points.size());
-  const int current_right_point_count = static_cast<int>(
+  int current_right_point_count = static_cast<int>(
     result.right_measured_points.size());
-  const LanePairGeometry current_pair_geometry = measureLanePairGeometry(
+  LanePairGeometry current_pair_geometry = measureLanePairGeometry(
     result.left_measured_points, result.right_measured_points, config_);
-  const bool short_counterpart_pair_valid =
+  bool short_counterpart_pair_valid =
     current_pair_geometry.valid &&
     std::max(current_left_point_count, current_right_point_count) >=
     config_.minimum_points &&
     std::min(current_left_point_count, current_right_point_count) >=
     config_.minimum_counterpart_points;
-  const bool current_left_valid =
+  bool current_left_valid =
     current_left_point_count >= config_.minimum_points ||
     short_counterpart_pair_valid;
-  const bool current_right_valid =
+  bool current_right_valid =
+    current_right_point_count >= config_.minimum_points ||
+    short_counterpart_pair_valid;
+  applySingleBoundarySideLock(
+    &result, current_left_valid, current_right_valid,
+    current_pair_geometry.valid);
+  current_left_point_count = static_cast<int>(
+    result.left_measured_points.size());
+  current_right_point_count = static_cast<int>(
+    result.right_measured_points.size());
+  current_pair_geometry = measureLanePairGeometry(
+    result.left_measured_points, result.right_measured_points, config_);
+  short_counterpart_pair_valid =
+    current_pair_geometry.valid &&
+    std::max(current_left_point_count, current_right_point_count) >=
+    config_.minimum_points &&
+    std::min(current_left_point_count, current_right_point_count) >=
+    config_.minimum_counterpart_points;
+  current_left_valid =
+    current_left_point_count >= config_.minimum_points ||
+    short_counterpart_pair_valid;
+  current_right_valid =
     current_right_point_count >= config_.minimum_points ||
     short_counterpart_pair_valid;
   const std::vector<cv::Point2d> empty_points;
@@ -2176,36 +2290,6 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   {
     centerline_output = left_valid ?
       center_from_left.points : center_from_right.points;
-    // The detected side label can momentarily flip even though the physical
-    // boundary cannot cross the vehicle in one frame. Compare both normal
-    // offset directions with the previous centerline and keep the continuous
-    // candidate. This protects a right-only track that is briefly labelled
-    // left (and vice versa) without holding an old path.
-    if (!previous_centerline_points_.empty()) {
-      const auto & reference = left_valid ? left_output : right_output;
-      const double alternative_offset_m = left_valid ?
-        center_offset_m : -center_offset_m;
-      OffsetLaneResult alternative = offsetFromReference(
-        reference, alternative_offset_m, config_, config_.minimum_points);
-      const auto selected_error = centerlineMedianAbsoluteLateralError(
-        previous_centerline_points_, centerline_output);
-      const auto alternative_error = centerlineMedianAbsoluteLateralError(
-        previous_centerline_points_, alternative.points);
-      if (
-        alternative_error.has_value() &&
-        (!selected_error.has_value() ||
-        *alternative_error + config_.meter_per_pixel < *selected_error))
-      {
-        centerline_output = std::move(alternative.points);
-        if (left_valid) {
-          center_from_left.normal_offset_truncated =
-            alternative.normal_offset_truncated;
-        } else {
-          center_from_right.normal_offset_truncated =
-            alternative.normal_offset_truncated;
-        }
-      }
-    }
     result.centerline_from_single_boundary = true;
   }
 
@@ -2267,6 +2351,12 @@ void BevLaneReconstructor::reset()
   previous_centerline_points_.clear();
   previous_centerline_from_pair_ = false;
   single_boundary_transition_correction_m_ = 0.0;
+  single_boundary_side_lock_ = SingleBoundarySide::kUnknown;
+  paired_side_identity_available_ = false;
+  consecutive_paired_frames_ = 0;
+  consecutive_missing_frames_ = 0;
+  last_paired_left_points_.clear();
+  last_paired_right_points_.clear();
 }
 
 }  // namespace bev_processor

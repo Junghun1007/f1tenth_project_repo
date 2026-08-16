@@ -66,6 +66,9 @@ struct BevLaneReconstructorConfig
 
   bool centerline_from_single_boundary_enabled{true};
   bool centerline_preserve_reference_shape{false};
+  bool single_boundary_side_lock_enabled{true};
+  int single_boundary_side_pair_confirmation_frames{2};
+  int single_boundary_side_lock_reset_frames{30};
   double centerline_midpoint_smoothing_weight{0.80};
   double centerline_temporal_current_weight{0.85};
   double centerline_transition_maximum_correction_m{0.15};
@@ -121,6 +124,19 @@ public:
   void reset();
 
 private:
+  enum class SingleBoundarySide
+  {
+    kUnknown,
+    kLeft,
+    kRight,
+  };
+
+  void applySingleBoundarySideLock(
+    BevLaneReconstruction * result,
+    bool current_left_valid,
+    bool current_right_valid,
+    bool current_pair_valid);
+
   BevLaneReconstructorConfig config_;
   std::vector<cv::Point2d> accepted_left_points_;
   std::vector<cv::Point2d> accepted_right_points_;
@@ -134,6 +150,12 @@ private:
   std::vector<cv::Point2d> previous_centerline_points_;
   bool previous_centerline_from_pair_{false};
   double single_boundary_transition_correction_m_{0.0};
+  SingleBoundarySide single_boundary_side_lock_{SingleBoundarySide::kUnknown};
+  bool paired_side_identity_available_{false};
+  int consecutive_paired_frames_{0};
+  int consecutive_missing_frames_{0};
+  std::vector<cv::Point2d> last_paired_left_points_;
+  std::vector<cv::Point2d> last_paired_right_points_;
 };
 
 }  // namespace bev_processor

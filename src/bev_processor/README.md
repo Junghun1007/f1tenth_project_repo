@@ -209,9 +209,11 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
     경계에서 설정 폭의 절반만큼 법선 이동한 중앙선으로 이어 붙인다.
     좌·우 라벨이 순간 반전되어도 두 경계의 중점은 바뀌지 않는다.
     한쪽만 보이면 그 경계에서 설정 폭의 절반만큼 법선 이동해 중앙선을 만든다.
-    이때 양쪽 법선 후보 중 직전 중앙선과 가까운 쪽을 골라 일시적인
-    좌·우 오인식이 중앙선을 도로 밖으로 보내지 않게 한다.
-11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
+    양쪽이 2프레임 확인되면 경계의 좌·우 역할을 확정하고, 한쪽이 사라진
+    동안에는 현재 검출 라벨과 무관하게 남은 경계의 역할을 고정한다. 정상
+    차선 쌍이 다시 확인되거나 양쪽 모두 30프레임 사라질 때만 잠금을 푼다.
+11. 기본 `lane_maximum_extrapolation_m:=0.0`에서는 실제 마지막 측정점
+    이후로 중심선이나 경계선을 연장하지 않는다.
 
 기본 `lane_centerline_preserve_reference_shape:=false`는 한쪽만 보일 때 매 프레임
 현재 실측 경계의 국소 접선을 구하고, 그 법선 방향으로 설정 폭의 절반인
@@ -259,6 +261,9 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_tracking_enabled:=false \
   lane_temporal_hold_frames:=0 \
   lane_centerline_from_single_boundary_enabled:=true \
+  lane_single_boundary_side_lock_enabled:=true \
+  lane_single_boundary_side_pair_confirmation_frames:=2 \
+  lane_single_boundary_side_lock_reset_frames:=30 \
   lane_centerline_midpoint_smoothing_weight:=0.45 \
   lane_centerline_temporal_current_weight:=0.60 \
   lane_centerline_transition_maximum_correction_m:=0.15 \

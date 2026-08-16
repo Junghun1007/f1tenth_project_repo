@@ -743,6 +743,56 @@ void testEitherVisibleSideGeneratesCenterlineEveryFrame()
     "side changes must use each current frame without a stale held lane");
 }
 
+void testSingleBoundarySideStaysLockedUntilPairReturns()
+{
+  bev_processor::BevLaneReconstructorConfig config;
+  config.initial_center_tolerance_m = 0.60;
+  config.single_lane_initial_tolerance_m = 0.60;
+  config.temporal_tracking_enabled = false;
+  config.temporal_hold_frames = 0;
+  config.centerline_preserve_reference_shape = true;
+  config.single_boundary_side_lock_enabled = true;
+  config.single_boundary_side_pair_confirmation_frames = 2;
+  bev_processor::BevLaneReconstructor reconstructor(config);
+
+  cv::Mat pair = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&pair, 0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  drawBoundary(&pair, -0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  require(reconstructor.reconstruct(pair).valid, "first pair must be valid");
+  require(
+    reconstructor.reconstruct(pair).valid,
+    "second pair must confirm left/right identity");
+
+  cv::Mat left_only = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&left_only, 0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  const auto locked_left = reconstructor.reconstruct(left_only);
+  require(
+    !locked_left.left_measured_points.empty() &&
+    locked_left.right_measured_points.empty(),
+    "losing the right boundary must lock the survivor as left");
+
+  cv::Mat detector_flipped = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(
+    &detector_flipped, -0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  const auto still_locked_left = reconstructor.reconstruct(detector_flipped);
+  require(
+    !still_locked_left.left_measured_points.empty() &&
+    still_locked_left.right_measured_points.empty() &&
+    cv::countNonZero(still_locked_left.left_reconstructed_mask) > 0 &&
+    cv::countNonZero(still_locked_left.right_reconstructed_mask) == 0,
+    "a single-boundary detector label flip must not change its locked side");
+
+  require(reconstructor.reconstruct(pair).valid, "returning pair frame 1");
+  require(reconstructor.reconstruct(pair).valid, "returning pair frame 2");
+  cv::Mat right_only = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&right_only, -0.30, 0.20, 1.40, farCurveCenter, 245, 5);
+  const auto relocked_right = reconstructor.reconstruct(right_only);
+  require(
+    relocked_right.left_measured_points.empty() &&
+    !relocked_right.right_measured_points.empty(),
+    "a confirmed returning pair must release the old lock and allow right-only");
+}
+
 void testLowSaturationGateRemainsOptional()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -788,6 +838,7 @@ int main()
   testPairToSingleTransitionDecaysWithoutHidingNewCenterline();
   testCurrentFrameRotationUpdatesCenterlineImmediately();
   testEitherVisibleSideGeneratesCenterlineEveryFrame();
+  testSingleBoundarySideStaysLockedUntilPairReturns();
   testLowSaturationGateRemainsOptional();
   testRotatingWindowsFollowTightArc();
   std::cout << "BEV sliding-window lane tests passed\n";
