@@ -464,6 +464,10 @@ void testValidShortLaneIsNotExtended()
     !result.centerline_from_single_boundary &&
     !maskHasWhiteNear(result.right_reconstructed_mask, 1.70, -0.30),
     "a valid short boundary must remain measured without synthetic extension");
+  require(
+    maskHasWhiteNear(
+      result.reconstructed_mask, 1.70, farCurveCenter(1.70), 4),
+    "centerline must continue from the longer measured boundary");
 }
 
 void testShortNormalDistanceCounterpartContributesToCenterline()

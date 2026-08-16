@@ -1437,6 +1437,7 @@ struct OffsetLaneResult
 {
   std::vector<cv::Point2d> points;
   bool normal_offset_truncated{false};
+  std::size_t reference_first_index{0U};
 };
 
 OffsetLaneResult retainLongestSafeNormalOffsetSegment(
@@ -1446,7 +1447,7 @@ OffsetLaneResult retainLongestSafeNormalOffsetSegment(
   const int minimum_required_points)
 {
   if (reference.size() != offset.size() || offset.size() < 2U) {
-    return {{}, !offset.empty()};
+    return {{}, !offset.empty(), 0U};
   }
 
   std::size_t best_first = 0U;
@@ -1493,13 +1494,14 @@ OffsetLaneResult retainLongestSafeNormalOffsetSegment(
     best_last - best_first <
     static_cast<std::size_t>(minimum_required_points))
   {
-    return {{}, true};
+    return {{}, true, 0U};
   }
   return {
     std::vector<cv::Point2d>(
       offset.begin() + static_cast<std::ptrdiff_t>(best_first),
       offset.begin() + static_cast<std::ptrdiff_t>(best_last)),
-    best_first != 0U || best_last != offset.size()};
+    best_first != 0U || best_last != offset.size(),
+    best_first};
 }
 
 OffsetLaneResult offsetFromReference(
@@ -1509,7 +1511,7 @@ OffsetLaneResult offsetFromReference(
   const int minimum_required_points)
 {
   if (config.centerline_preserve_reference_shape) {
-    return {translateLaneLaterally(reference, offset_m), false};
+    return {translateLaneLaterally(reference, offset_m), false, 0U};
   }
 
   // Never replace a normal offset with a same-X lateral translation: that
@@ -1567,10 +1569,13 @@ BoundaryProjection closestBoundaryProjection(
   return best;
 }
 
-std::vector<cv::Point2d> centerlineFromMeasuredMidpoints(
+std::vector<cv::Point2d> centerlineFromMeasuredPair(
   const std::vector<cv::Point2d> & left,
   const std::vector<cv::Point2d> & right,
-  const BevLaneReconstructorConfig & config)
+  const OffsetLaneResult & center_from_left,
+  const OffsetLaneResult & center_from_right,
+  const BevLaneReconstructorConfig & config,
+  bool * normal_offset_truncated)
 {
   if (left.size() < 2U || right.size() < 2U) {
     return {};
@@ -1580,6 +1585,9 @@ std::vector<cv::Point2d> centerlineFromMeasuredMidpoints(
     polylineArcLength(left) >= polylineArcLength(right);
   const auto & primary = left_is_primary ? left : right;
   const auto & secondary = left_is_primary ? right : left;
+  const auto & fallback_center = left_is_primary ?
+    center_from_left : center_from_right;
+  *normal_offset_truncated = fallback_center.normal_offset_truncated;
   const double width_margin_m = 2.0 * config.meter_per_pixel;
   const double minimum_width_m = std::max(
     config.meter_per_pixel,
@@ -1589,9 +1597,10 @@ std::vector<cv::Point2d> centerlineFromMeasuredMidpoints(
     config.expected_lane_width_m + config.lane_width_tolerance_m +
     width_margin_m;
 
-  std::vector<cv::Point2d> midpoints;
-  midpoints.reserve(primary.size());
-  for (const auto & point : primary) {
+  std::vector<std::optional<cv::Point2d>> direct_midpoints(primary.size());
+  std::size_t direct_midpoint_count = 0U;
+  for (std::size_t index = 0U; index < primary.size(); ++index) {
+    const auto & point = primary[index];
     const BoundaryProjection projection = closestBoundaryProjection(
       point, secondary);
     if (
@@ -1599,17 +1608,37 @@ std::vector<cv::Point2d> centerlineFromMeasuredMidpoints(
       projection.distance_m >= minimum_width_m &&
       projection.distance_m <= maximum_width_m)
     {
-      midpoints.push_back(0.5 * (point + projection.point));
+      direct_midpoints[index] = 0.5 * (point + projection.point);
+      ++direct_midpoint_count;
     }
   }
   if (
-    midpoints.size() <
+    direct_midpoint_count <
     static_cast<std::size_t>(config.minimum_counterpart_points))
   {
     return {};
   }
+
+  // Follow the longer measured boundary through portions where its real
+  // counterpart is unavailable. Wherever both measurements have a valid
+  // perpendicular correspondence, the actual midpoint takes precedence.
+  // Because both candidates share the longer boundary's sample order, this
+  // also fills brief correspondence holes without reordering a tight curve.
+  std::vector<cv::Point2d> centerline;
+  centerline.reserve(primary.size());
+  const std::size_t fallback_first =
+    fallback_center.reference_first_index;
+  const std::size_t fallback_last =
+    fallback_first + fallback_center.points.size();
+  for (std::size_t index = 0U; index < primary.size(); ++index) {
+    if (direct_midpoints[index].has_value()) {
+      centerline.push_back(*direct_midpoints[index]);
+    } else if (index >= fallback_first && index < fallback_last) {
+      centerline.push_back(fallback_center.points[index - fallback_first]);
+    }
+  }
   return smoothMeasuredPoints(
-    midpoints, config.centerline_midpoint_smoothing_weight);
+    centerline, config.centerline_midpoint_smoothing_weight);
 }
 
 std::vector<cv::Point2d> smoothCenterlineAgainstPrevious(
@@ -2120,9 +2149,11 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
 
   std::vector<cv::Point2d> centerline_output;
   bool centerline_from_pair = false;
+  bool pair_centerline_normal_offset_truncated = false;
   if (left_valid && right_valid) {
-    centerline_output = centerlineFromMeasuredMidpoints(
-      left_output, right_output, config_);
+    centerline_output = centerlineFromMeasuredPair(
+      left_output, right_output, center_from_left, center_from_right,
+      config_, &pair_centerline_normal_offset_truncated);
     centerline_from_pair = !centerline_output.empty();
     if (centerline_from_pair && previous_centerline_from_pair_) {
       centerline_output = smoothCenterlineAgainstPrevious(
@@ -2202,9 +2233,10 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     previous_centerline_from_pair_ = false;
   }
   result.centerline_normal_offset_truncated =
-    result.centerline_from_single_boundary &&
+    (centerline_from_pair && pair_centerline_normal_offset_truncated) ||
+    (result.centerline_from_single_boundary &&
     (center_from_left.normal_offset_truncated ||
-    center_from_right.normal_offset_truncated);
+    center_from_right.normal_offset_truncated));
   result.centerline_point_count = static_cast<int>(centerline_output.size());
 
   left_output = extendByTangent(std::move(left_output), config_);
