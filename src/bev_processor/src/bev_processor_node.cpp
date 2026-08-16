@@ -564,7 +564,7 @@ private:
     declare_parameter<double>("cx", 643.032653809);
     declare_parameter<double>("cy", 352.621124268);
 
-    declare_parameter<double>("camera_x_m", -0.15);
+    declare_parameter<double>("camera_x_m", -0.16);
     declare_parameter<double>("camera_y_m", 0.0);
     declare_parameter<double>("camera_yaw_deg", 0.0);
 

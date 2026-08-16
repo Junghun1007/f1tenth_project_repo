@@ -15,11 +15,11 @@ from std_msgs.msg import Bool, Float32, Int32
 from auto_control.control_core import (
     PathModel,
     SpeedPid,
+    build_path_model,
     centerline_points_from_mono8,
     clamp,
     curvature_target_speed,
     erpm_to_speed_mps,
-    fit_path_model,
     move_toward,
     representative_curvature,
     speed_feedforward_duty,
@@ -160,15 +160,17 @@ class AutoControlNode(Node):
         self.declare_parameter("bev_lateral_margin_m", 0.70)
         self.declare_parameter("bev_meter_per_pixel", 0.01)
         self.declare_parameter("lane_pixel_threshold", 128)
-        self.declare_parameter("path_minimum_x_m", 0.25)
+        self.declare_parameter("path_minimum_x_m", 0.20)
         self.declare_parameter("path_maximum_x_m", 2.20)
         self.declare_parameter("path_minimum_points", 20)
         self.declare_parameter("path_minimum_span_m", 0.35)
-        self.declare_parameter("path_polynomial_order", 2)
+        self.declare_parameter("path_local_smoothing_window_m", 0.12)
+        self.declare_parameter("path_outlier_threshold_m", 0.04)
+        self.declare_parameter("path_geometry_window_m", 0.16)
 
         self.declare_parameter("stanley_gain", 1.2)
         self.declare_parameter("stanley_softening_speed_mps", 0.50)
-        self.declare_parameter("stanley_heading_lookahead_m", 0.25)
+        self.declare_parameter("stanley_heading_lookahead_m", 0.10)
         self.declare_parameter(
             "stanley_corner_heading_threshold_deg", 6.0
         )
@@ -234,6 +236,9 @@ class AutoControlNode(Node):
             "path_minimum_x_m",
             "path_maximum_x_m",
             "path_minimum_span_m",
+            "path_local_smoothing_window_m",
+            "path_outlier_threshold_m",
+            "path_geometry_window_m",
             "stanley_gain",
             "stanley_softening_speed_mps",
             "stanley_heading_lookahead_m",
@@ -267,7 +272,6 @@ class AutoControlNode(Node):
         int_parameters = (
             "lane_pixel_threshold",
             "path_minimum_points",
-            "path_polynomial_order",
             "motor_pole_pairs",
             "motor_pinion_teeth",
             "spur_gear_teeth",
@@ -300,6 +304,8 @@ class AutoControlNode(Node):
             self.erpm_timeout_sec,
             self.bev_meter_per_pixel,
             self.path_minimum_span_m,
+            self.path_local_smoothing_window_m,
+            self.path_geometry_window_m,
             self.maximum_steering_angle_rad,
             self.minimum_speed_mps,
             self.maximum_lateral_acceleration_mps2,
@@ -335,8 +341,8 @@ class AutoControlNode(Node):
             raise ValueError("path X limits are reversed")
         if self.path_minimum_points < 3:
             raise ValueError("path_minimum_points must be at least 3")
-        if self.path_polynomial_order < 1 or self.path_polynomial_order > 3:
-            raise ValueError("path_polynomial_order must be in [1, 3]")
+        if self.path_outlier_threshold_m < 0.0:
+            raise ValueError("path_outlier_threshold_m must not be negative")
         if min(
             self.motor_pole_pairs,
             self.motor_pinion_teeth,
@@ -373,14 +379,18 @@ class AutoControlNode(Node):
                 meter_per_pixel=self.bev_meter_per_pixel,
                 threshold=self.lane_pixel_threshold,
             )
-            self._path = fit_path_model(
+            self._path = build_path_model(
                 x_m,
                 y_m,
-                polynomial_order=self.path_polynomial_order,
                 minimum_points=self.path_minimum_points,
                 minimum_span_m=self.path_minimum_span_m,
                 minimum_x_m=self.path_minimum_x_m,
                 maximum_x_m=self.path_maximum_x_m,
+                local_smoothing_window_m=(
+                    self.path_local_smoothing_window_m
+                ),
+                outlier_threshold_m=self.path_outlier_threshold_m,
+                geometry_window_m=self.path_geometry_window_m,
             )
         except (TypeError, ValueError) as exception:
             self._path = None

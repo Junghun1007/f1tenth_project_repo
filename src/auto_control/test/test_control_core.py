@@ -4,12 +4,11 @@ import unittest
 import numpy as np
 
 from auto_control.control_core import (
-    PathModel,
     SpeedPid,
+    build_path_model,
     centerline_points_from_mono8,
     curvature_target_speed,
     erpm_to_speed_mps,
-    fit_path_model,
     representative_curvature,
     speed_feedforward_duty,
     stanley_control,
@@ -35,17 +34,19 @@ class ControlCoreTest(unittest.TestCase):
         self.assertAlmostEqual(float(x_m[-1]), 1.495)
         self.assertTrue(np.allclose(y_m, 0.0))
 
-    def test_path_fit_and_stanley_steer_toward_left_path(self) -> None:
+    def test_direct_path_and_stanley_steer_toward_left_path(self) -> None:
         x_m = np.linspace(0.3, 2.0, 80)
         y_m = 0.10 + 0.08 * np.square(x_m)
-        path = fit_path_model(
+        path = build_path_model(
             x_m,
             y_m,
-            polynomial_order=2,
             minimum_points=20,
             minimum_span_m=0.35,
-            minimum_x_m=0.25,
+            minimum_x_m=0.20,
             maximum_x_m=2.2,
+            local_smoothing_window_m=0.12,
+            outlier_threshold_m=0.04,
+            geometry_window_m=0.16,
         )
         self.assertIsNotNone(path)
 
@@ -54,7 +55,7 @@ class ControlCoreTest(unittest.TestCase):
             speed_mps=2.0,
             gain=1.2,
             softening_speed_mps=0.5,
-            heading_lookahead_m=0.25,
+            heading_lookahead_m=0.10,
             maximum_steering_angle_rad=math.radians(30.0),
             corner_heading_threshold_rad=math.radians(6.0),
             corner_opposing_correction_ratio=0.80,
@@ -76,18 +77,25 @@ class ControlCoreTest(unittest.TestCase):
         # The path is currently left of the axle but its heading is clearly a
         # right turn. At low speed the unbounded Stanley cross-track term is
         # large enough to request left steering, opposite the path heading.
-        path = PathModel(
-            coefficients=np.asarray((0.60, -0.40)),
-            minimum_x_m=0.25,
-            maximum_x_m=1.50,
-            point_count=100,
+        x_m = np.linspace(0.2, 1.5, 100)
+        path = build_path_model(
+            x_m,
+            0.60 - 0.40 * x_m,
+            minimum_points=20,
+            minimum_span_m=0.35,
+            minimum_x_m=0.20,
+            maximum_x_m=2.2,
+            local_smoothing_window_m=0.12,
+            outlier_threshold_m=0.04,
+            geometry_window_m=0.16,
         )
+        self.assertIsNotNone(path)
         result = stanley_control(
             path,
             speed_mps=0.8,
             gain=1.2,
             softening_speed_mps=0.5,
-            heading_lookahead_m=0.25,
+            heading_lookahead_m=0.10,
             maximum_steering_angle_rad=math.radians(30.0),
             corner_heading_threshold_rad=math.radians(6.0),
             corner_opposing_correction_ratio=0.80,
@@ -107,12 +115,19 @@ class ControlCoreTest(unittest.TestCase):
         self.assertLess(servo, 0.46)
 
     def test_curvature_profile_is_bounded_by_requested_speeds(self) -> None:
-        path = PathModel(
-            coefficients=np.asarray((0.0, 0.0, 0.50)),
-            minimum_x_m=0.25,
+        x_m = np.linspace(0.2, 2.2, 160)
+        path = build_path_model(
+            x_m,
+            0.50 * np.square(x_m),
+            minimum_points=20,
+            minimum_span_m=0.35,
+            minimum_x_m=0.20,
             maximum_x_m=2.2,
-            point_count=100,
+            local_smoothing_window_m=0.12,
+            outlier_threshold_m=0.04,
+            geometry_window_m=0.16,
         )
+        self.assertIsNotNone(path)
         curvature = representative_curvature(
             path,
             lookahead_minimum_x_m=0.5,
@@ -128,6 +143,57 @@ class ControlCoreTest(unittest.TestCase):
         self.assertGreaterEqual(target_speed, 0.8)
         self.assertLessEqual(target_speed, 1.2)
         self.assertLess(target_speed, 1.2)
+
+    def test_far_corner_does_not_bend_current_heading(self) -> None:
+        x_m = np.linspace(0.2, 2.2, 201)
+        y_m = np.zeros_like(x_m)
+        corner = x_m > 1.2
+        y_m[corner] = -0.45 * np.square(x_m[corner] - 1.2)
+        path = build_path_model(
+            x_m,
+            y_m,
+            minimum_points=20,
+            minimum_span_m=0.35,
+            minimum_x_m=0.20,
+            maximum_x_m=2.2,
+            local_smoothing_window_m=0.12,
+            outlier_threshold_m=0.04,
+            geometry_window_m=0.16,
+        )
+        self.assertIsNotNone(path)
+
+        result = stanley_control(
+            path,
+            speed_mps=0.0,
+            gain=1.2,
+            softening_speed_mps=0.5,
+            heading_lookahead_m=0.10,
+            maximum_steering_angle_rad=math.radians(30.0),
+            corner_heading_threshold_rad=math.radians(6.0),
+            corner_opposing_correction_ratio=0.80,
+        )
+
+        self.assertAlmostEqual(result.cross_track_error_m, 0.0, places=4)
+        self.assertAlmostEqual(result.heading_error_rad, 0.0, places=4)
+        self.assertAlmostEqual(result.steering_angle_rad, 0.0, places=4)
+
+    def test_isolated_centerline_bump_is_rejected(self) -> None:
+        x_m = np.linspace(0.2, 1.2, 101)
+        y_m = np.zeros_like(x_m)
+        y_m[10] = 0.20
+        path = build_path_model(
+            x_m,
+            y_m,
+            minimum_points=20,
+            minimum_span_m=0.35,
+            minimum_x_m=0.20,
+            maximum_x_m=2.2,
+            local_smoothing_window_m=0.12,
+            outlier_threshold_m=0.04,
+            geometry_window_m=0.16,
+        )
+        self.assertIsNotNone(path)
+        self.assertLess(float(np.max(np.abs(path.y_m))), 1.0e-6)
 
     def test_erpm_conversion_matches_existing_vehicle_geometry(self) -> None:
         speed_mps = erpm_to_speed_mps(

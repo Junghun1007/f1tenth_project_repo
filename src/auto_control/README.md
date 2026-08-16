@@ -8,9 +8,10 @@ driving. Do not run `manual_drive.launch.py` at the same time.
 
 1. Subscribe to `/camera/image_bev_lane` (`mono8`).
 2. Convert each occupied row to vehicle coordinates (`+X` forward, `+Y` left).
-3. Fit a second-order `y(x)` path. This suppresses short centerline wiggles
-   before either controller sees the path.
-4. Calculate steering with Stanley cross-track and heading errors.
+3. Keep the measured centerline polyline and suppress only local bumps with a
+   short robust straight-segment smoother; no global polynomial is fitted.
+4. Calculate Stanley cross-track error as the signed normal distance from the
+   real front-axle origin and heading from a short local centerline chord.
 5. Calculate representative forward curvature over `X=0.5..1.6m`.
 6. Convert curvature to a `0.8..1.2m/s` target using the configured maximum
    lateral acceleration.
@@ -69,6 +70,12 @@ hardware power cutoff reachable.
 
 - `stanley_gain`: larger values correct lateral displacement more strongly.
 - `stanley_heading_lookahead_m`: larger values use a farther, smoother heading.
+- `path_local_smoothing_window_m`: larger values reject wider centerline
+  roughness but can soften a very tight corner.
+- `path_outlier_threshold_m`: smaller values reject smaller isolated lateral
+  bumps; it does not change a continuous corner.
+- `path_geometry_window_m`: larger values make local heading and curvature less
+  sensitive to centimetre-scale steps.
 - `stanley_corner_heading_threshold_deg`: enables the corner direction guard
   above this absolute path heading.
 - `stanley_corner_opposing_correction_ratio`: limits an opposing cross-track

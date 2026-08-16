@@ -25,7 +25,7 @@ def generate_launch_description():
         ),
         (
             "stanley_heading_lookahead_m",
-            "0.25",
+            "0.10",
             "stanley_heading_lookahead_m",
             float,
         ),
@@ -57,7 +57,24 @@ def generate_launch_description():
         ("speed_pid_kp", "0.012", "speed_pid_kp", float),
         ("speed_pid_ki", "0.004", "speed_pid_ki", float),
         ("speed_pid_kd", "0.0", "speed_pid_kd", float),
-        ("path_polynomial_order", "2", "path_polynomial_order", int),
+        (
+            "path_local_smoothing_window_m",
+            "0.12",
+            "path_local_smoothing_window_m",
+            float,
+        ),
+        (
+            "path_outlier_threshold_m",
+            "0.04",
+            "path_outlier_threshold_m",
+            float,
+        ),
+        (
+            "path_geometry_window_m",
+            "0.16",
+            "path_geometry_window_m",
+            float,
+        ),
     ]
     controller_overrides = {
         parameter_name: ParameterValue(

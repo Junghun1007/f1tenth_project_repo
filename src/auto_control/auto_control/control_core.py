@@ -9,28 +9,103 @@ import numpy as np
 
 @dataclass(frozen=True)
 class PathModel:
-    """Smoothed y(x) centerline in the vehicle frame."""
+    """Locally smoothed measured centerline in the vehicle frame."""
 
-    coefficients: np.ndarray
-    minimum_x_m: float
-    maximum_x_m: float
-    point_count: int
+    x_m: np.ndarray
+    y_m: np.ndarray
+    geometry_window_m: float
+
+    @property
+    def minimum_x_m(self) -> float:
+        return float(self.x_m[0])
+
+    @property
+    def maximum_x_m(self) -> float:
+        return float(self.x_m[-1])
+
+    @property
+    def point_count(self) -> int:
+        return int(self.x_m.size)
 
     def lateral_position(self, x_m: float | np.ndarray) -> float | np.ndarray:
-        return np.polynomial.polynomial.polyval(x_m, self.coefficients)
+        values = np.interp(x_m, self.x_m, self.y_m)
+        return float(values) if np.ndim(x_m) == 0 else values
 
     def first_derivative(self, x_m: float | np.ndarray) -> float | np.ndarray:
-        derivative = np.polynomial.polynomial.polyder(self.coefficients, 1)
-        return np.polynomial.polynomial.polyval(x_m, derivative)
+        query = np.asarray(x_m, dtype=float)
+        half_window_m = 0.5 * max(self.geometry_window_m, 1.0e-3)
+        lower = np.maximum(self.minimum_x_m, query - half_window_m)
+        upper = np.minimum(self.maximum_x_m, query + half_window_m)
 
-    def second_derivative(self, x_m: float | np.ndarray) -> float | np.ndarray:
-        derivative = np.polynomial.polynomial.polyder(self.coefficients, 2)
-        return np.polynomial.polynomial.polyval(x_m, derivative)
+        # Keep a full local chord at either end instead of extrapolating the
+        # measured centerline behind the camera-visible range.
+        short = upper - lower < half_window_m
+        lower = np.where(
+            short,
+            np.maximum(self.minimum_x_m, upper - 2.0 * half_window_m),
+            lower,
+        )
+        upper = np.where(
+            short,
+            np.minimum(self.maximum_x_m, lower + 2.0 * half_window_m),
+            upper,
+        )
+        distance = upper - lower
+        derivative = np.divide(
+            np.interp(upper, self.x_m, self.y_m)
+            - np.interp(lower, self.x_m, self.y_m),
+            distance,
+            out=np.zeros_like(query, dtype=float),
+            where=distance > 1.0e-6,
+        )
+        return float(derivative) if query.ndim == 0 else derivative
 
     def curvature(self, x_m: float | np.ndarray) -> float | np.ndarray:
-        first = self.first_derivative(x_m)
-        second = self.second_derivative(x_m)
-        return second / np.power(1.0 + np.square(first), 1.5)
+        query = np.asarray(x_m, dtype=float)
+        flat_query = np.atleast_1d(query).astype(float).ravel()
+        result = np.zeros_like(flat_query)
+        window_m = min(
+            max(self.geometry_window_m, 1.0e-3),
+            0.5 * (self.maximum_x_m - self.minimum_x_m),
+        )
+        if window_m <= 1.0e-6:
+            return float(result[0]) if query.ndim == 0 else result.reshape(query.shape)
+
+        for index, requested_x_m in enumerate(flat_query):
+            center_x_m = clamp(
+                float(requested_x_m),
+                self.minimum_x_m + window_m,
+                self.maximum_x_m - window_m,
+            )
+            first = np.asarray(
+                (
+                    center_x_m - window_m,
+                    float(self.lateral_position(center_x_m - window_m)),
+                )
+            )
+            middle = np.asarray(
+                (center_x_m, float(self.lateral_position(center_x_m)))
+            )
+            last = np.asarray(
+                (
+                    center_x_m + window_m,
+                    float(self.lateral_position(center_x_m + window_m)),
+                )
+            )
+            first_length = float(np.linalg.norm(middle - first))
+            second_length = float(np.linalg.norm(last - middle))
+            chord_length = float(np.linalg.norm(last - first))
+            denominator = first_length * second_length * chord_length
+            if denominator <= 1.0e-9:
+                continue
+            first_to_middle = middle - first
+            first_to_last = last - first
+            cross = float(
+                first_to_middle[0] * first_to_last[1]
+                - first_to_middle[1] * first_to_last[0]
+            )
+            result[index] = 2.0 * cross / denominator
+        return float(result[0]) if query.ndim == 0 else result.reshape(query.shape)
 
 
 @dataclass(frozen=True)
@@ -86,15 +161,17 @@ def centerline_points_from_mono8(
     return x_m[order], y_m[order]
 
 
-def fit_path_model(
+def build_path_model(
     x_m: Iterable[float],
     y_m: Iterable[float],
     *,
-    polynomial_order: int,
     minimum_points: int,
     minimum_span_m: float,
     minimum_x_m: float,
     maximum_x_m: float,
+    local_smoothing_window_m: float,
+    outlier_threshold_m: float,
+    geometry_window_m: float,
 ) -> PathModel | None:
     x = np.asarray(tuple(x_m), dtype=float)
     y = np.asarray(tuple(y_m), dtype=float)
@@ -109,16 +186,95 @@ def fit_path_model(
     if span_m < minimum_span_m:
         return None
 
-    order = min(max(1, int(polynomial_order)), int(x.size) - 1)
-    coefficients = np.polynomial.polynomial.polyfit(x, y, order)
-    if not np.all(np.isfinite(coefficients)):
+    order = np.argsort(x)
+    x = x[order]
+    y = y[order]
+    unique_x, inverse = np.unique(x, return_inverse=True)
+    if unique_x.size != x.size:
+        y = np.asarray(
+            [np.median(y[inverse == index]) for index in range(unique_x.size)]
+        )
+        x = unique_x
+    if x.size < minimum_points or float(x[-1] - x[0]) < minimum_span_m:
         return None
+
+    # Suppress isolated lateral spikes first, then replace each point with a
+    # local straight-segment estimate. This preserves the measured polyline
+    # and a real corner while preventing centimetre-scale roughness from
+    # becoming steering commands. There is deliberately no global polynomial.
+    half_window_m = 0.5 * max(0.0, local_smoothing_window_m)
+    filtered_y = y.copy()
+    if half_window_m > 0.0:
+        left = np.searchsorted(x, x - half_window_m, side="left")
+        right = np.searchsorted(x, x + half_window_m, side="right")
+        for index, (first, last) in enumerate(zip(left, right)):
+            if last - first < 3:
+                continue
+            median_y_m = float(np.median(y[first:last]))
+            if (
+                outlier_threshold_m > 0.0
+                and abs(float(y[index]) - median_y_m) > outlier_threshold_m
+            ):
+                filtered_y[index] = median_y_m
+
+        def interval_sum(values: np.ndarray) -> np.ndarray:
+            prefix = np.concatenate((np.zeros(1), np.cumsum(values)))
+            return prefix[right] - prefix[left]
+
+        counts = (right - left).astype(float)
+        sum_x = interval_sum(x)
+        sum_y = interval_sum(filtered_y)
+        sum_xx = interval_sum(x * x)
+        sum_xy = interval_sum(x * filtered_y)
+        denominator = counts * sum_xx - sum_x * sum_x
+        valid = (counts >= 3.0) & (np.abs(denominator) > 1.0e-12)
+        smoothed_y = filtered_y.copy()
+        slope = np.zeros_like(x)
+        slope[valid] = (
+            counts[valid] * sum_xy[valid]
+            - sum_x[valid] * sum_y[valid]
+        ) / denominator[valid]
+        intercept = np.zeros_like(x)
+        intercept[valid] = (
+            sum_y[valid] - slope[valid] * sum_x[valid]
+        ) / counts[valid]
+        smoothed_y[valid] = slope[valid] * x[valid] + intercept[valid]
+        y = smoothed_y
+
     return PathModel(
-        coefficients=coefficients,
-        minimum_x_m=float(np.min(x)),
-        maximum_x_m=float(np.max(x)),
-        point_count=int(x.size),
+        x_m=x,
+        y_m=y,
+        geometry_window_m=max(geometry_window_m, 1.0e-3),
     )
+
+
+def closest_path_geometry(path: PathModel) -> tuple[float, float]:
+    """Return signed front-axle cross-track error and closest path X."""
+
+    start_x = path.x_m[:-1]
+    start_y = path.y_m[:-1]
+    delta_x = path.x_m[1:] - start_x
+    delta_y = path.y_m[1:] - start_y
+    length_squared = np.square(delta_x) + np.square(delta_y)
+    projection = np.divide(
+        -(start_x * delta_x + start_y * delta_y),
+        length_squared,
+        out=np.zeros_like(delta_x),
+        where=length_squared > 1.0e-12,
+    )
+    projection = np.clip(projection, 0.0, 1.0)
+    closest_x = start_x + projection * delta_x
+    closest_y = start_y + projection * delta_y
+    squared_distance = np.square(closest_x) + np.square(closest_y)
+    segment = int(np.argmin(squared_distance))
+    segment_length = math.sqrt(max(float(length_squared[segment]), 1.0e-12))
+    tangent_x = float(delta_x[segment]) / segment_length
+    tangent_y = float(delta_y[segment]) / segment_length
+    cross_track_error_m = (
+        -tangent_y * float(closest_x[segment])
+        + tangent_x * float(closest_y[segment])
+    )
+    return cross_track_error_m, float(closest_x[segment])
 
 
 def stanley_control(
@@ -135,15 +291,15 @@ def stanley_control(
     """Calculate a front-axle Stanley steering command.
 
     Positive steering is left because the vehicle frame uses +Y left.
-    The published path starts ahead of the axle, so lateral error is evaluated
-    at its nearest available X while heading uses a short forward lookahead.
+    Cross-track error is the signed normal distance from the real front-axle
+    origin to the measured centerline. Heading uses only a short local chord;
+    a far corner cannot bend the current path as a global polynomial did.
     """
 
-    anchor_x_m = path.minimum_x_m
-    cross_track_error_m = float(path.lateral_position(anchor_x_m))
+    cross_track_error_m, closest_x_m = closest_path_geometry(path)
     heading_x_m = min(
         path.maximum_x_m,
-        anchor_x_m + max(0.0, heading_lookahead_m),
+        closest_x_m + max(0.0, heading_lookahead_m),
     )
     heading_error_rad = math.atan(float(path.first_derivative(heading_x_m)))
     correction_rad = math.atan2(

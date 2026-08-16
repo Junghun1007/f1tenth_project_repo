@@ -180,7 +180,7 @@ GUI 프리뷰를 끈 실행에서는 OpenCV 키 입력을 받을 수 없으므�
 `lane_preview_sliding_windows_enabled:=false`로 끄면 된다.
 
 기본 `preview_x_origin_m:=0.0`은 차량 앞차축 원점을 프리뷰 `X=0.0m`로
-표시한다. 카메라 광학 중심은 앞차축보다 15cm 뒤인 `camera_x_m:=-0.15`에
+표시한다. 카메라 광학 중심은 앞차축보다 16cm 뒤인 `camera_x_m:=-0.16`에
 있으며 BEV의 전방 `X=0.0~3.0m` 표시 범위에는 포함하지 않는다.
 
 `lane_output_lateral_margin_m:=0.70`은 원본 BEV 좌우에 각각 70cm의 검은
