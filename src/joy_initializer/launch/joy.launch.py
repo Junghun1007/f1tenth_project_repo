@@ -12,10 +12,11 @@ def generate_launch_description():
     autorepeat_rate = LaunchConfiguration("autorepeat_rate")
     sticky_buttons = LaunchConfiguration("sticky_buttons")
     coalesce_interval_ms = LaunchConfiguration("coalesce_interval_ms")
+    reconnect_interval_sec = LaunchConfiguration("reconnect_interval_sec")
 
     joy_node = Node(
-        package="joy",
-        executable="joy_node",
+        package="joy_initializer",
+        executable="joy_input_node",
         name="joy_node",
         output="screen",
         parameters=[
@@ -30,6 +31,9 @@ def generate_launch_description():
                 "coalesce_interval_ms": ParameterValue(
                     coalesce_interval_ms, value_type=int
                 ),
+                "reconnect_interval_sec": ParameterValue(
+                    reconnect_interval_sec, value_type=float
+                ),
             }
         ],
     )
@@ -37,11 +41,15 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("device_id", default_value="0"),
-            DeclareLaunchArgument("device_name", default_value=""),
+            DeclareLaunchArgument(
+                "device_name",
+                default_value="8BitDo Ultimate 2 Wireless Controller for PC",
+            ),
             DeclareLaunchArgument("deadzone", default_value="0.05"),
             DeclareLaunchArgument("autorepeat_rate", default_value="50.0"),
             DeclareLaunchArgument("sticky_buttons", default_value="false"),
             DeclareLaunchArgument("coalesce_interval_ms", default_value="1"),
+            DeclareLaunchArgument("reconnect_interval_sec", default_value="1.0"),
             joy_node,
         ]
     )

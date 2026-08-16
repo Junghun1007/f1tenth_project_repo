@@ -4,7 +4,7 @@ manual_keymap:
     mode: "d_input"
     connection: "2.4ghz_dongle"
     device: "/dev/input/js0"
-    name: "8BitDo 8BitDo Ultimate 2 Wireless Controller for PC"
+    name: "8BitDo Ultimate 2 Wireless Controller for PC"
 
   axes:
     left_stick:

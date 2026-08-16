@@ -7,7 +7,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description():
     # Test only:
-    #   8BitDo D-input Controller -> joy_node -> /joy
+    #   8BitDo D-input Controller -> haptic-free joy_input_node -> /joy
     #
     # Run:
     #   ros2 launch vehicle_bringup joy_test.launch.py
@@ -16,7 +16,7 @@ def generate_launch_description():
     #   ros2 topic list
     #   ros2 topic echo /joy
     #
-    # ROS joy_node maps device_id=0 to /dev/input/js0.
+    # The exact SDL device name remains stable if another input device is added.
     joy_launch_path = PathJoinSubstitution(
         [FindPackageShare("joy_initializer"), "launch", "joy.launch.py"]
     )
@@ -24,7 +24,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(joy_launch_path),
         launch_arguments={
             "device_id": "0",
-            "device_name": "",
+            "device_name": "8BitDo Ultimate 2 Wireless Controller for PC",
             "deadzone": "0.05",
             "autorepeat_rate": "50.0",
             "sticky_buttons": "false",

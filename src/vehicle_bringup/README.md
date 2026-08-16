@@ -37,10 +37,16 @@ owns the joystick node defaults.
 
 ## 8BitDo input safety
 
-The manual launch uses the original ROS `joy_node` with `device_id=0` for the
-8BitDo controller in D-input mode. Project nodes only subscribe to `/joy`; they
-do not publish joystick feedback or implement rumble. Controller debug JSON is
-disabled during driving.
+The manual launch uses the project-owned `joy_input_node` for the 8BitDo
+controller in D-input mode. It selects the exact SDL controller name, publishes
+only `/joy`, and has no haptic subsystem, feedback subscription, or rumble API.
+Controller debug JSON is disabled during driving.
+
+The initial `Opened joystick input` message is normal startup. If the kernel or
+SDL actually removes the receiver, the node prints `Joystick disconnected by
+SDL`, stops publishing immediately so the 0.30-second actuator watchdog can
+stop the vehicle, and waits for the same named controller. Only a subsequent
+physical reattachment prints `Reopened joystick after a real SDL disconnect`.
 
 RB gear changes are edge-triggered and immediate: they are accepted only while
 the commanded duty is already zero. A rejected change is not stored or replayed

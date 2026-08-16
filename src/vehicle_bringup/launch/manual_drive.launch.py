@@ -25,7 +25,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(joy_launch_path),
         launch_arguments={
             "device_id": "0",
-            "device_name": "",
+            "device_name": "8BitDo Ultimate 2 Wireless Controller for PC",
             "deadzone": "0.05",
             "autorepeat_rate": "50.0",
             "sticky_buttons": "false",
