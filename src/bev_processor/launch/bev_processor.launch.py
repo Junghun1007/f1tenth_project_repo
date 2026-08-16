@@ -80,7 +80,7 @@ def generate_launch_description():
         ("lane_expected_width_m", "0.65", float),
         ("lane_width_tolerance_m", "0.08", float),
         ("lane_initial_center_tolerance_m", "0.60", float),
-        ("lane_single_initial_tolerance_m", "0.20", float),
+        ("lane_single_initial_tolerance_m", "0.45", float),
         ("lane_maximum_tracking_gap_m", "0.16", float),
         ("lane_minimum_points", "6", int),
         ("lane_minimum_counterpart_points", "3", int),

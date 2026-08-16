@@ -58,7 +58,7 @@ struct BevLaneReconstructorConfig
   double expected_lane_width_m{0.60};
   double lane_width_tolerance_m{0.07};
   double initial_center_tolerance_m{0.30};
-  double single_lane_initial_tolerance_m{0.20};
+  double single_lane_initial_tolerance_m{0.45};
   double maximum_tracking_gap_m{0.08};
   int minimum_points{6};
   int minimum_counterpart_points{3};

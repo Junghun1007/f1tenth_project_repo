@@ -243,7 +243,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_sliding_window_measurement_weight:=0.90 \
   lane_expected_width_m:=0.65 \
   lane_width_tolerance_m:=0.08 \
-  lane_single_initial_tolerance_m:=0.20 \
+  lane_single_initial_tolerance_m:=0.45 \
   lane_minimum_counterpart_points:=3 \
   lane_centerline_from_single_boundary_enabled:=true \
   lane_output_lateral_margin_m:=0.70 \

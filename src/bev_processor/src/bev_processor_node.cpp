@@ -675,7 +675,7 @@ private:
     declare_parameter<double>("lane_expected_width_m", 0.65);
     declare_parameter<double>("lane_width_tolerance_m", 0.08);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
-    declare_parameter<double>("lane_single_initial_tolerance_m", 0.20);
+    declare_parameter<double>("lane_single_initial_tolerance_m", 0.45);
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.16);
     declare_parameter<int>("lane_minimum_points", 6);
     declare_parameter<int>("lane_minimum_counterpart_points", 3);
