@@ -428,22 +428,22 @@ void testTemporalHoldExpiresAfterFiveFrames()
     "stale lanes must disappear after the configured hold duration");
 }
 
-void testPartialLaneIsExtendedFromLongerReferenceShape()
+void testValidShortLaneIsNotExtended()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(&image, 0.30, 0.20, 2.00, farCurveCenter, 245, 5);
   drawBoundary(&image, -0.30, 0.20, 1.00, farCurveCenter, 245, 5);
 
   const auto result = makeReconstructor().reconstruct(image);
-  require(result.valid, "a partially occluded lane pair must remain valid");
+  require(result.valid, "a partially visible lane pair must remain valid");
   require(
     result.right_measured_points.size() >= 5U &&
     maximumMeasuredX(result.right_measured_points) < 1.25,
     "the short boundary must remain a valid measured lane");
   require(
-    result.inferred_point_count > 0 &&
-    maskHasWhiteNear(result.right_reconstructed_mask, 1.70, -0.30),
-    "the valid but shorter boundary must be extended to the longer lane");
+    result.inferred_point_count == 0 &&
+    !maskHasWhiteNear(result.right_reconstructed_mask, 1.70, -0.30),
+    "a valid short boundary must not be extended from the opposite lane");
 }
 
 void testInferredLanePreservesReferenceShape()
@@ -492,7 +492,6 @@ int main()
 {
   testFarCurveIsReacquiredFromActualPixels();
   testCloseNonQuadraticCurveKeepsPixelShape();
-  testRotatingWindowsFollowTightArc();
   testSingleBoundaryOnlyInfersMissingSide();
   testMissingPixelsStopLongPrediction();
   testBroadBrightSceneryDoesNotPullTracker();
@@ -500,9 +499,10 @@ int main()
   testDefaultOutputLinesStayThin();
   testTemporalGateRequiresFourRepeatedLargeChanges();
   testTemporalHoldExpiresAfterFiveFrames();
-  testPartialLaneIsExtendedFromLongerReferenceShape();
+  testValidShortLaneIsNotExtended();
   testInferredLanePreservesReferenceShape();
   testLowSaturationGateRemainsOptional();
+  testRotatingWindowsFollowTightArc();
   std::cout << "BEV sliding-window lane tests passed\n";
   return EXIT_SUCCESS;
 }
