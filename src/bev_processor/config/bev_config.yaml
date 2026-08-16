@@ -233,7 +233,8 @@ bev_processor:
     lane_minimum_window_pixel_count: 6
 
     # 실제 차선 폭 60cm ± 7cm, 즉 53~67cm를 정상 좌·우 차선 쌍으로 본다.
-    # 중심선은 실측 폭의 프레임별 변동 대신 이 값의 절반인 30cm를 사용한다.
+    # 양쪽이 보이면 설정 폭이 아니라 두 실측 경계 대응점의 중점을 사용한다.
+    # 한쪽만 보일 때는 이 값의 절반인 30cm를 사용한다.
     lane_expected_width_m: 0.60
     lane_width_tolerance_m: 0.07
     lane_initial_center_tolerance_m: 0.60
@@ -249,6 +250,15 @@ bev_processor:
     # 한쪽만 검출되어도 그 실측 경계에서 폭의 절반만큼 이동해 중심선을 만든다.
     # 반대편 가상 차선은 생성하지 않는다.
     lane_centerline_from_single_boundary_enabled: true
+    # 양쪽 실측 경계의 수직 대응점 중점을 국소 평활화한다.
+    # 0.80은 현재 중점 80%, 앞뒤 중점 각 10%이다.
+    lane_centerline_midpoint_smoothing_weight: 0.80
+    # 양쪽이 연속 검출될 때 현재 프레임 85%, 직전 중앙선 15%만 섞는다.
+    lane_centerline_temporal_current_weight: 0.85
+    # 양쪽→한쪽 전환 첫 프레임에서 기존 중앙선과의 Y 차이를
+    # 최대 15cm까지 일시 보정하고, 매 프레임 65%만 남겨 빠르게 제거한다.
+    lane_centerline_transition_maximum_correction_m: 0.15
+    lane_centerline_transition_correction_decay: 0.65
     # false면 매 프레임 현재 경계의 접선에 수직인 방향으로 30cm 옮긴다.
     # true는 동일-X 횡방향 이동이며 기본 주행에는 권장하지 않는다.
     lane_centerline_preserve_reference_shape: false

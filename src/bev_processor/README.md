@@ -200,16 +200,24 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 9. 기본 화면 표시는 temporal hold를 사용하지 않고 매 프레임 현재
    픽셀로 좌·우 실측 경계와 주행 중심선을 다시 계산한다.
 10. 법선거리 폭을 통과한 반대편은 `lane_minimum_counterpart_points`
-    개만 보여도 중심선 계산에 함께 사용한다. 양쪽이 보이면 각 경계에서
-    폭의 절반만큼 계산한 두 중심선 추정치를 가까운 구간에서 평균한다.
-    한쪽만 보이면 그 경계에서 폭의 절반만큼 법선 이동해 중심선을 직접 만든다.
+    개만 보여도 중심선 계산에 함께 사용한다. 양쪽이 보이면 한 경계점을
+    반대편 실측 곡선에 수직 투영하고 두 실측점의 중점을 중앙선으로 사용한다.
+    좌·우 라벨이 순간 반전되어도 두 경계의 중점은 바뀌지 않는다.
+    한쪽만 보이면 그 경계에서 설정 폭의 절반만큼 법선 이동해 중앙선을 만든다.
+    이때 양쪽 법선 후보 중 직전 중앙선과 가까운 쪽을 골라 일시적인
+    좌·우 오인식이 중앙선을 도로 밖으로 보내지 않게 한다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
-기본 `lane_centerline_preserve_reference_shape:=false`는 매 프레임 현재
-실측 경계의 국소 접선을 구하고, 그 법선 방향으로 설정 폭의 절반인 30cm를
-이동한다. 차량이 회전해 BEV의 경계 방향이 바뀌면 노란 중심선도
-현재 프레임에서 즉시 다시 계산된다. 이전 프레임에서 실측한 폭은
-중심선 위치에 사용하지 않는다.
+기본 `lane_centerline_preserve_reference_shape:=false`는 한쪽만 보일 때 매 프레임
+현재 실측 경계의 국소 접선을 구하고, 그 법선 방향으로 설정 폭의 절반인
+30cm를 이동한다. 차량이 회전해 BEV의 경계 방향이 바뀌면 노란 중심선도
+현재 프레임에서 즉시 다시 계산된다. 양쪽이 보일 때는 설정 폭으로 이동한
+가상선이 아니라 실측 두 경계의 중점을 쓴다.
+
+`lane_centerline_temporal_current_weight:=0.85`는 양쪽 중점의 현재 프레임을
+85% 반영해 작은 프레임 지터만 줄인다. 양쪽에서 한쪽으로 바뀌는 첫 프레임은
+직전 중앙선과의 횡방향 차이를 최대 15cm까지 일시 보정한다. 이 보정은 매
+프레임 65%만 남기므로 강한 저역통과처럼 실제 횡방향 변화를 계속 숨기지 않는다.
 급커브에서도 동일-X 횡방향 이동으로 되돌아가지 않는다. 법선 오프셋이
 국소 회전반경보다 커져 접히기 시작하면 기준선과 같은 진행 방향을 유지하는
 가장 긴 구간만 표시한다. 그 구간도 최소 점 개수를 만족하지 못하면 잘못된
@@ -246,6 +254,10 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_tracking_enabled:=false \
   lane_temporal_hold_frames:=0 \
   lane_centerline_from_single_boundary_enabled:=true \
+  lane_centerline_midpoint_smoothing_weight:=0.80 \
+  lane_centerline_temporal_current_weight:=0.85 \
+  lane_centerline_transition_maximum_correction_m:=0.15 \
+  lane_centerline_transition_correction_decay:=0.65 \
   lane_centerline_preserve_reference_shape:=false \
   lane_centerline_tangent_window_m:=0.20 \
   lane_centerline_maximum_curvature_per_m:=1.25 \

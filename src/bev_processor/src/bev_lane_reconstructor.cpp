@@ -1532,36 +1532,145 @@ double polylineArcLength(const std::vector<cv::Point2d> & points)
   return length_m;
 }
 
-std::vector<cv::Point2d> fuseCenterlineEstimates(
-  const std::vector<cv::Point2d> & first,
-  const std::vector<cv::Point2d> & second,
-  const BevLaneReconstructorConfig & config)
+struct BoundaryProjection
 {
-  if (first.empty()) {
-    return second;
-  }
-  if (second.empty()) {
-    return first;
-  }
+  bool valid{false};
+  cv::Point2d point;
+  double distance_m{std::numeric_limits<double>::infinity()};
+};
 
-  const bool first_is_primary =
-    polylineArcLength(first) >= polylineArcLength(second);
-  const auto & primary = first_is_primary ? first : second;
-  const auto & secondary = first_is_primary ? second : first;
-  std::vector<cv::Point2d> fused = primary;
-  const double maximum_fusion_distance_m = std::max(
-    3.0 * config.meter_per_pixel, config.lane_width_tolerance_m);
-  for (auto & point : fused) {
-    const auto closest = std::min_element(
-      secondary.begin(), secondary.end(),
-      [&point](const cv::Point2d & left, const cv::Point2d & right) {
-        return norm(left - point) < norm(right - point);
-      });
-    if (norm(*closest - point) <= maximum_fusion_distance_m) {
-      point = 0.5 * (point + *closest);
+BoundaryProjection closestBoundaryProjection(
+  const cv::Point2d & query,
+  const std::vector<cv::Point2d> & reference)
+{
+  BoundaryProjection best;
+  for (std::size_t index = 1U; index < reference.size(); ++index) {
+    const cv::Point2d segment = reference[index] - reference[index - 1U];
+    const double segment_length_squared = dot(segment, segment);
+    if (segment_length_squared <= 1.0e-9) {
+      continue;
+    }
+    const double blend = dot(query - reference[index - 1U], segment) /
+      segment_length_squared;
+    // A clamped endpoint is not a true correspondence and can incorrectly
+    // pair the non-overlapping ends of two measured tracks.
+    if (blend < 0.0 || blend > 1.0) {
+      continue;
+    }
+    const cv::Point2d projection =
+      reference[index - 1U] + blend * segment;
+    const double distance_m = norm(query - projection);
+    if (distance_m < best.distance_m) {
+      best = {true, projection, distance_m};
     }
   }
-  return fused;
+  return best;
+}
+
+std::vector<cv::Point2d> centerlineFromMeasuredMidpoints(
+  const std::vector<cv::Point2d> & left,
+  const std::vector<cv::Point2d> & right,
+  const BevLaneReconstructorConfig & config)
+{
+  if (left.size() < 2U || right.size() < 2U) {
+    return {};
+  }
+
+  const bool left_is_primary =
+    polylineArcLength(left) >= polylineArcLength(right);
+  const auto & primary = left_is_primary ? left : right;
+  const auto & secondary = left_is_primary ? right : left;
+  const double width_margin_m = 2.0 * config.meter_per_pixel;
+  const double minimum_width_m = std::max(
+    config.meter_per_pixel,
+    config.expected_lane_width_m - config.lane_width_tolerance_m -
+    width_margin_m);
+  const double maximum_width_m =
+    config.expected_lane_width_m + config.lane_width_tolerance_m +
+    width_margin_m;
+
+  std::vector<cv::Point2d> midpoints;
+  midpoints.reserve(primary.size());
+  for (const auto & point : primary) {
+    const BoundaryProjection projection = closestBoundaryProjection(
+      point, secondary);
+    if (
+      projection.valid &&
+      projection.distance_m >= minimum_width_m &&
+      projection.distance_m <= maximum_width_m)
+    {
+      midpoints.push_back(0.5 * (point + projection.point));
+    }
+  }
+  if (
+    midpoints.size() <
+    static_cast<std::size_t>(config.minimum_counterpart_points))
+  {
+    return {};
+  }
+  return smoothMeasuredPoints(
+    midpoints, config.centerline_midpoint_smoothing_weight);
+}
+
+std::vector<cv::Point2d> smoothCenterlineAgainstPrevious(
+  const std::vector<cv::Point2d> & current,
+  const std::vector<cv::Point2d> & previous,
+  const double current_weight)
+{
+  if (current.empty() || previous.size() < 2U || current_weight >= 1.0) {
+    return current;
+  }
+  std::vector<cv::Point2d> smoothed = current;
+  for (auto & point : smoothed) {
+    const auto previous_y = lateralAtX(previous, point.x);
+    if (previous_y.has_value()) {
+      point.y = current_weight * point.y +
+        (1.0 - current_weight) * *previous_y;
+    }
+  }
+  return smoothed;
+}
+
+double centerlineLateralCorrection(
+  const std::vector<cv::Point2d> & reference,
+  const std::vector<cv::Point2d> & current)
+{
+  std::vector<double> differences_m;
+  differences_m.reserve(current.size());
+  for (const auto & point : current) {
+    const auto reference_y = lateralAtX(reference, point.x);
+    if (reference_y.has_value()) {
+      differences_m.push_back(*reference_y - point.y);
+    }
+  }
+  return median(std::move(differences_m));
+}
+
+std::optional<double> centerlineMedianAbsoluteLateralError(
+  const std::vector<cv::Point2d> & reference,
+  const std::vector<cv::Point2d> & candidate)
+{
+  std::vector<double> errors_m;
+  errors_m.reserve(candidate.size());
+  for (const auto & point : candidate) {
+    const auto reference_y = lateralAtX(reference, point.x);
+    if (reference_y.has_value()) {
+      errors_m.push_back(std::abs(*reference_y - point.y));
+    }
+  }
+  if (errors_m.size() < 3U) {
+    return std::nullopt;
+  }
+  return median(std::move(errors_m));
+}
+
+void translateCenterlineLaterally(
+  std::vector<cv::Point2d> * points,
+  const double correction_m)
+{
+  for (auto & point : *points) {
+    point.y += correction_m;
+  }
 }
 
 double drawMeasuredLane(
@@ -1668,6 +1777,17 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 2 ||
     config_.minimum_counterpart_points < 2 ||
     config_.minimum_counterpart_points > config_.minimum_points ||
+    !std::isfinite(config_.centerline_midpoint_smoothing_weight) ||
+    config_.centerline_midpoint_smoothing_weight <= 0.0 ||
+    config_.centerline_midpoint_smoothing_weight > 1.0 ||
+    !std::isfinite(config_.centerline_temporal_current_weight) ||
+    config_.centerline_temporal_current_weight <= 0.0 ||
+    config_.centerline_temporal_current_weight > 1.0 ||
+    !std::isfinite(config_.centerline_transition_maximum_correction_m) ||
+    config_.centerline_transition_maximum_correction_m < 0.0 ||
+    !std::isfinite(config_.centerline_transition_correction_decay) ||
+    config_.centerline_transition_correction_decay < 0.0 ||
+    config_.centerline_transition_correction_decay >= 1.0 ||
     !std::isfinite(config_.centerline_tangent_window_m) ||
     config_.centerline_tangent_window_m <= 0.0 ||
     !std::isfinite(config_.centerline_maximum_curvature_per_m) ||
@@ -1967,6 +2087,9 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     stable_right_point_count >= config_.minimum_points ||
     stable_short_counterpart_pair_valid;
   if (!left_valid && !right_valid) {
+    previous_centerline_points_.clear();
+    previous_centerline_from_pair_ = false;
+    single_boundary_transition_correction_m_ = 0.0;
     return result;
   }
 
@@ -1996,23 +2119,92 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   }
 
   std::vector<cv::Point2d> centerline_output;
+  bool centerline_from_pair = false;
   if (left_valid && right_valid) {
-    centerline_output = fuseCenterlineEstimates(
-      center_from_left.points, center_from_right.points, config_);
-    result.centerline_from_single_boundary =
-      center_from_left.points.empty() != center_from_right.points.empty();
+    centerline_output = centerlineFromMeasuredMidpoints(
+      left_output, right_output, config_);
+    centerline_from_pair = !centerline_output.empty();
+    if (centerline_from_pair && previous_centerline_from_pair_) {
+      centerline_output = smoothCenterlineAgainstPrevious(
+        centerline_output, previous_centerline_points_,
+        config_.centerline_temporal_current_weight);
+    }
+    // A direct midpoint needs actual overlap. If the measured pair has too
+    // little overlap, use one safe half-width estimate and report it as a
+    // single-boundary centerline instead of averaging unrelated points.
+    if (!centerline_from_pair) {
+      const bool use_left = polylineArcLength(center_from_left.points) >=
+        polylineArcLength(center_from_right.points);
+      centerline_output = use_left ?
+        center_from_left.points : center_from_right.points;
+      result.centerline_from_single_boundary = !centerline_output.empty();
+    }
   } else if (
     config_.centerline_from_single_boundary_enabled &&
     config_.allow_single_lane)
   {
     centerline_output = left_valid ?
-      std::move(center_from_left.points) :
-      std::move(center_from_right.points);
+      center_from_left.points : center_from_right.points;
+    // The detected side label can momentarily flip even though the physical
+    // boundary cannot cross the vehicle in one frame. Compare both normal
+    // offset directions with the previous centerline and keep the continuous
+    // candidate. This protects a right-only track that is briefly labelled
+    // left (and vice versa) without holding an old path.
+    if (!previous_centerline_points_.empty()) {
+      const auto & reference = left_valid ? left_output : right_output;
+      const double alternative_offset_m = left_valid ?
+        center_offset_m : -center_offset_m;
+      OffsetLaneResult alternative = offsetFromReference(
+        reference, alternative_offset_m, config_, config_.minimum_points);
+      const auto selected_error = centerlineMedianAbsoluteLateralError(
+        previous_centerline_points_, centerline_output);
+      const auto alternative_error = centerlineMedianAbsoluteLateralError(
+        previous_centerline_points_, alternative.points);
+      if (
+        alternative_error.has_value() &&
+        (!selected_error.has_value() ||
+        *alternative_error + config_.meter_per_pixel < *selected_error))
+      {
+        centerline_output = std::move(alternative.points);
+        if (left_valid) {
+          center_from_left.normal_offset_truncated =
+            alternative.normal_offset_truncated;
+        } else {
+          center_from_right.normal_offset_truncated =
+            alternative.normal_offset_truncated;
+        }
+      }
+    }
     result.centerline_from_single_boundary = true;
   }
+
+  if (result.centerline_from_single_boundary && !centerline_output.empty()) {
+    if (previous_centerline_from_pair_) {
+      single_boundary_transition_correction_m_ = std::clamp(
+        centerlineLateralCorrection(
+          previous_centerline_points_, centerline_output),
+        -config_.centerline_transition_maximum_correction_m,
+        config_.centerline_transition_maximum_correction_m);
+    } else {
+      single_boundary_transition_correction_m_ *=
+        config_.centerline_transition_correction_decay;
+    }
+    translateCenterlineLaterally(
+      &centerline_output, single_boundary_transition_correction_m_);
+  } else {
+    single_boundary_transition_correction_m_ = 0.0;
+  }
+  if (!centerline_output.empty()) {
+    previous_centerline_points_ = centerline_output;
+    previous_centerline_from_pair_ = centerline_from_pair;
+  } else {
+    previous_centerline_points_.clear();
+    previous_centerline_from_pair_ = false;
+  }
   result.centerline_normal_offset_truncated =
-    center_from_left.normal_offset_truncated ||
-    center_from_right.normal_offset_truncated;
+    result.centerline_from_single_boundary &&
+    (center_from_left.normal_offset_truncated ||
+    center_from_right.normal_offset_truncated);
   result.centerline_point_count = static_cast<int>(centerline_output.size());
 
   left_output = extendByTangent(std::move(left_output), config_);
@@ -2040,6 +2232,9 @@ void BevLaneReconstructor::reset()
   held_left_frames_ = 0;
   held_right_frames_ = 0;
   accepted_lane_width_m_ = 0.0;
+  previous_centerline_points_.clear();
+  previous_centerline_from_pair_ = false;
+  single_boundary_transition_correction_m_ = 0.0;
 }
 
 }  // namespace bev_processor

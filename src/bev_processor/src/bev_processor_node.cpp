@@ -467,14 +467,18 @@ public:
         get_logger(),
         "BEV lane continuity: temporal=%s, lateral jump near/far="
         "%.2f/%.2fm, heading jump=%.1fdeg, confirm/hold=%d/%d frames, "
-        "single-boundary centerline=%s(window=%.2fm curvature<=%.2f/m "
-        "step<=%.1fdeg)",
+        "centerline pair smooth=%.2f/%.2f, transition=%.2fm decay=%.2f, "
+        "single-boundary=%s(window=%.2fm curvature<=%.2f/m step<=%.1fdeg)",
         lane_reconstructor_config_.temporal_tracking_enabled ? "on" : "off",
         lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m,
         lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m,
         lane_reconstructor_config_.temporal_maximum_heading_jump_deg,
         lane_reconstructor_config_.temporal_confirmation_frames,
         lane_reconstructor_config_.temporal_hold_frames,
+        lane_reconstructor_config_.centerline_midpoint_smoothing_weight,
+        lane_reconstructor_config_.centerline_temporal_current_weight,
+        lane_reconstructor_config_.centerline_transition_maximum_correction_m,
+        lane_reconstructor_config_.centerline_transition_correction_decay,
         lane_reconstructor_config_.centerline_from_single_boundary_enabled ?
         "on" : "off",
         lane_reconstructor_config_.centerline_tangent_window_m,
@@ -673,6 +677,14 @@ private:
       "lane_centerline_from_single_boundary_enabled", true);
     declare_parameter<bool>(
       "lane_centerline_preserve_reference_shape", false);
+    declare_parameter<double>(
+      "lane_centerline_midpoint_smoothing_weight", 0.80);
+    declare_parameter<double>(
+      "lane_centerline_temporal_current_weight", 0.85);
+    declare_parameter<double>(
+      "lane_centerline_transition_maximum_correction_m", 0.15);
+    declare_parameter<double>(
+      "lane_centerline_transition_correction_decay", 0.65);
     declare_parameter<double>("lane_centerline_tangent_window_m", 0.20);
     declare_parameter<double>(
       "lane_centerline_maximum_curvature_per_m", 1.25);
@@ -957,6 +969,18 @@ private:
         "lane_centerline_from_single_boundary_enabled").as_bool();
     lane_reconstructor_config_.centerline_preserve_reference_shape =
       get_parameter("lane_centerline_preserve_reference_shape").as_bool();
+    lane_reconstructor_config_.centerline_midpoint_smoothing_weight =
+      get_parameter(
+        "lane_centerline_midpoint_smoothing_weight").as_double();
+    lane_reconstructor_config_.centerline_temporal_current_weight =
+      get_parameter(
+        "lane_centerline_temporal_current_weight").as_double();
+    lane_reconstructor_config_.centerline_transition_maximum_correction_m =
+      get_parameter(
+        "lane_centerline_transition_maximum_correction_m").as_double();
+    lane_reconstructor_config_.centerline_transition_correction_decay =
+      get_parameter(
+        "lane_centerline_transition_correction_decay").as_double();
     lane_reconstructor_config_.centerline_tangent_window_m =
       get_parameter("lane_centerline_tangent_window_m").as_double();
     lane_reconstructor_config_.centerline_maximum_curvature_per_m =

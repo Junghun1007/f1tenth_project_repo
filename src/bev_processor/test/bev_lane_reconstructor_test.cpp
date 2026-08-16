@@ -587,7 +587,7 @@ void testCenterlineUsesHalfConfiguredWidthInsteadOfLearnedWidth()
   cv::Mat left_only = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(&left_only, 0.30, 0.20, 1.70, farCurveCenter, 245, 5);
   bev_processor::BevLaneReconstruction centered;
-  for (int frame = 0; frame <= 5; ++frame) {
+  for (int frame = 0; frame <= 12; ++frame) {
     centered = reconstructor.reconstruct(left_only);
   }
   require(
@@ -599,6 +599,67 @@ void testCenterlineUsesHalfConfiguredWidthInsteadOfLearnedWidth()
   require(
     !maskHasWhiteNear(centered.reconstructed_mask, 1.0, -0.03, 1),
     "a previously learned wider pair must not move the centerline");
+}
+
+void testMeasuredPairGeneratesDirectMidpointCenterline()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&image, 0.35, 0.20, 1.50, farCurveCenter, 245, 5);
+  drawBoundary(&image, -0.25, 0.20, 1.50, farCurveCenter, 245, 5);
+
+  bev_processor::BevLaneReconstructorConfig config;
+  config.initial_center_tolerance_m = 0.60;
+  config.single_lane_initial_tolerance_m = 0.60;
+  config.temporal_tracking_enabled = false;
+  config.centerline_preserve_reference_shape = false;
+  bev_processor::BevLaneReconstructor reconstructor(config);
+  const auto result = reconstructor.reconstruct(image);
+
+  require(result.valid, "a measured pair must generate a centerline");
+  require(
+    !result.centerline_from_single_boundary &&
+    result.centerline_point_count > 0,
+    "both measured boundaries must be the source of the centerline");
+  require(
+    maskHasWhiteNear(result.reconstructed_mask, 0.90, 0.05, 3),
+    "paired centerline must pass through the midpoint of measured boundaries");
+}
+
+void testPairToSingleTransitionDecaysWithoutHidingNewCenterline()
+{
+  bev_processor::BevLaneReconstructorConfig config;
+  config.initial_center_tolerance_m = 0.60;
+  config.single_lane_initial_tolerance_m = 0.60;
+  config.temporal_tracking_enabled = false;
+  config.centerline_preserve_reference_shape = true;
+  config.centerline_transition_maximum_correction_m = 0.15;
+  config.centerline_transition_correction_decay = 0.65;
+  bev_processor::BevLaneReconstructor reconstructor(config);
+
+  cv::Mat pair = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&pair, 0.35, 0.20, 1.50, farCurveCenter, 245, 5);
+  drawBoundary(&pair, -0.25, 0.20, 1.50, farCurveCenter, 245, 5);
+  const auto paired = reconstructor.reconstruct(pair);
+  require(
+    paired.valid &&
+    maskHasWhiteNear(paired.reconstructed_mask, 0.90, 0.05, 3),
+    "setup pair must establish the measured midpoint centerline");
+
+  cv::Mat left_only = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(&left_only, 0.42, 0.20, 1.50, farCurveCenter, 245, 5);
+  const auto first_single = reconstructor.reconstruct(left_only);
+  require(
+    first_single.centerline_from_single_boundary &&
+    maskHasWhiteNear(first_single.reconstructed_mask, 0.90, 0.05, 3),
+    "first single-boundary frame must stay aligned with the paired centerline");
+
+  bev_processor::BevLaneReconstruction settled = first_single;
+  for (int frame = 0; frame < 9; ++frame) {
+    settled = reconstructor.reconstruct(left_only);
+  }
+  require(
+    maskHasWhiteNear(settled.reconstructed_mask, 0.90, 0.12, 3),
+    "transition correction must decay so the new lateral center is preserved");
 }
 
 void testCurrentFrameRotationUpdatesCenterlineImmediately()
@@ -719,6 +780,8 @@ int main()
   testTightCurveGeneratesHalfWidthCenterline();
   testCenterlineCanPreserveReferenceShape();
   testCenterlineUsesHalfConfiguredWidthInsteadOfLearnedWidth();
+  testMeasuredPairGeneratesDirectMidpointCenterline();
+  testPairToSingleTransitionDecaysWithoutHidingNewCenterline();
   testCurrentFrameRotationUpdatesCenterlineImmediately();
   testEitherVisibleSideGeneratesCenterlineEveryFrame();
   testLowSaturationGateRemainsOptional();

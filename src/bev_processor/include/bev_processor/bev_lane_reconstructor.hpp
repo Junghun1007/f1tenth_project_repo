@@ -66,6 +66,10 @@ struct BevLaneReconstructorConfig
 
   bool centerline_from_single_boundary_enabled{true};
   bool centerline_preserve_reference_shape{false};
+  double centerline_midpoint_smoothing_weight{0.80};
+  double centerline_temporal_current_weight{0.85};
+  double centerline_transition_maximum_correction_m{0.15};
+  double centerline_transition_correction_decay{0.65};
   double centerline_tangent_window_m{0.20};
   double centerline_maximum_curvature_per_m{1.25};
   double centerline_maximum_heading_step_deg{8.0};
@@ -127,6 +131,9 @@ private:
   int held_left_frames_{0};
   int held_right_frames_{0};
   double accepted_lane_width_m_{0.0};
+  std::vector<cv::Point2d> previous_centerline_points_;
+  bool previous_centerline_from_pair_{false};
+  double single_boundary_transition_correction_m_{0.0};
 };
 
 }  // namespace bev_processor
