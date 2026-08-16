@@ -150,11 +150,6 @@ double median(std::vector<double> values)
   return value;
 }
 
-double cross(const cv::Point2d & first, const cv::Point2d & second)
-{
-  return first.x * second.y - first.y * second.x;
-}
-
 struct LanePairGeometry
 {
   bool valid{false};
@@ -1423,34 +1418,6 @@ std::vector<cv::Point2d> offsetLane(
     offset.push_back(reference[index] + offset_m * left_normal);
   }
 
-  // The normal offset of an inner tight curve can still fold even when the
-  // reference tangent is smooth. Limit the direction change of the inferred
-  // polyline itself, preserving segment length while removing hooks/loops.
-  if (offset.size() >= 3U) {
-    double previous_segment_heading_rad = std::atan2(
-      offset[1U].y - offset[0U].y,
-      offset[1U].x - offset[0U].x);
-    for (std::size_t index = 2U; index < offset.size(); ++index) {
-      const cv::Point2d raw_segment = offset[index] - offset[index - 1U];
-      const double segment_length_m = norm(raw_segment);
-      if (segment_length_m <= 1.0e-9) {
-        offset[index] = offset[index - 1U];
-        continue;
-      }
-      const double raw_heading_rad = std::atan2(
-        raw_segment.y, raw_segment.x);
-      const double maximum_change_rad = std::min(
-        maximum_heading_step_rad,
-        maximum_curvature_per_m * segment_length_m);
-      const double change_rad = std::clamp(
-        angleDifference(raw_heading_rad, previous_segment_heading_rad),
-        -maximum_change_rad, maximum_change_rad);
-      previous_segment_heading_rad += change_rad;
-      offset[index] = offset[index - 1U] + segment_length_m * cv::Point2d(
-        std::cos(previous_segment_heading_rad),
-        std::sin(previous_segment_heading_rad));
-    }
-  }
   return offset;
 }
 
@@ -1465,83 +1432,70 @@ std::vector<cv::Point2d> translateLaneLaterally(
   return inferred;
 }
 
-double highDiscreteCurvaturePerM(
-  const std::vector<cv::Point2d> & points,
-  const BevLaneReconstructorConfig & config)
+struct InferredLane
 {
-  if (points.size() < 3U) {
-    return 0.0;
-  }
-  std::vector<double> curvatures_per_m;
-  curvatures_per_m.reserve(points.size() - 2U);
-  for (std::size_t index = 1U; index + 1U < points.size(); ++index) {
-    const cv::Point2d first = points[index] - points[index - 1U];
-    const cv::Point2d second = points[index + 1U] - points[index];
-    const cv::Point2d chord = points[index + 1U] - points[index - 1U];
-    const double first_length_m = norm(first);
-    const double second_length_m = norm(second);
-    const double chord_length_m = norm(chord);
-    if (
-      first_length_m < config.meter_per_pixel ||
-      second_length_m < config.meter_per_pixel ||
-      chord_length_m < config.meter_per_pixel)
-    {
-      continue;
-    }
-    curvatures_per_m.push_back(
-      2.0 * std::abs(cross(first, second)) /
-      (first_length_m * second_length_m * chord_length_m));
-  }
-  if (curvatures_per_m.empty()) {
-    return 0.0;
-  }
-  // A single noisy point must not disable normal inference. The upper
-  // quartile still reacts to a sustained tight turn such as the screenshots.
-  const std::size_t high_index = static_cast<std::size_t>(std::floor(
-      0.75 * static_cast<double>(curvatures_per_m.size() - 1U)));
-  std::nth_element(
-    curvatures_per_m.begin(),
-    curvatures_per_m.begin() + static_cast<std::ptrdiff_t>(high_index),
-    curvatures_per_m.end());
-  return curvatures_per_m[high_index];
-}
+  std::vector<cv::Point2d> points;
+  bool normal_offset_truncated{false};
+};
 
-bool normalOffsetHasSafeLongitudinalProgress(
+InferredLane retainLongestSafeNormalOffsetSegment(
   const std::vector<cv::Point2d> & reference,
   const std::vector<cv::Point2d> & inferred,
   const BevLaneReconstructorConfig & config)
 {
   if (reference.size() != inferred.size() || inferred.size() < 2U) {
-    return false;
+    return {{}, !inferred.empty()};
   }
-  for (std::size_t index = 1U; index < inferred.size(); ++index) {
-    if (inferred[index].x + config.meter_per_pixel < inferred[index - 1U].x) {
-      return false;
-    }
-  }
-  const auto reference_x = std::minmax_element(
-    reference.begin(), reference.end(),
-    [](const cv::Point2d & first, const cv::Point2d & second) {
-      return first.x < second.x;
-    });
-  const auto inferred_x = std::minmax_element(
-    inferred.begin(), inferred.end(),
-    [](const cv::Point2d & first, const cv::Point2d & second) {
-      return first.x < second.x;
-    });
-  const double reference_span_m = reference_x.second->x - reference_x.first->x;
-  const double inferred_span_m = inferred_x.second->x - inferred_x.first->x;
-  constexpr double kMinimumLongitudinalSpanRatio = 0.70;
-  return
-    reference_span_m <= config.meter_per_pixel ||
-    inferred_span_m >= kMinimumLongitudinalSpanRatio * reference_span_m;
-}
 
-struct InferredLane
-{
-  std::vector<cv::Point2d> points;
-  bool lateral_fallback_used{false};
-};
+  std::size_t best_first = 0U;
+  std::size_t best_last = 1U;
+  double best_arc_length_m = 0.0;
+  std::size_t current_first = 0U;
+  double current_arc_length_m = 0.0;
+  const auto keepCurrentSegment = [&](const std::size_t last) {
+      if (
+        last - current_first > best_last - best_first ||
+        (last - current_first == best_last - best_first &&
+        current_arc_length_m > best_arc_length_m))
+      {
+        best_first = current_first;
+        best_last = last;
+        best_arc_length_m = current_arc_length_m;
+      }
+    };
+
+  for (std::size_t index = 1U; index < inferred.size(); ++index) {
+    const cv::Point2d reference_segment =
+      reference[index] - reference[index - 1U];
+    const cv::Point2d inferred_segment =
+      inferred[index] - inferred[index - 1U];
+    const double reference_length_m = norm(reference_segment);
+    const double inferred_length_m = norm(inferred_segment);
+    const bool same_curve_direction =
+      reference_length_m >= config.meter_per_pixel &&
+      inferred_length_m >= config.meter_per_pixel &&
+      dot(reference_segment, inferred_segment) > 0.0;
+    const bool forward_in_vehicle_frame =
+      inferred[index].x + config.meter_per_pixel >= inferred[index - 1U].x;
+    if (!same_curve_direction || !forward_in_vehicle_frame) {
+      keepCurrentSegment(index);
+      current_first = index;
+      current_arc_length_m = 0.0;
+      continue;
+    }
+    current_arc_length_m += inferred_length_m;
+  }
+  keepCurrentSegment(inferred.size());
+
+  if (best_last - best_first < static_cast<std::size_t>(config.minimum_points)) {
+    return {{}, true};
+  }
+  return {
+    std::vector<cv::Point2d>(
+      inferred.begin() + static_cast<std::ptrdiff_t>(best_first),
+      inferred.begin() + static_cast<std::ptrdiff_t>(best_last)),
+    best_first != 0U || best_last != inferred.size()};
+}
 
 InferredLane inferLaneFromReference(
   const std::vector<cv::Point2d> & reference,
@@ -1552,23 +1506,14 @@ InferredLane inferLaneFromReference(
     return {translateLaneLaterally(reference, offset_m), false};
   }
 
-  // An inner parallel curve becomes singular as |curvature * offset|
-  // approaches one. Before it folds or collapses longitudinally, retain the
-  // measured X samples and use the conservative lateral translation.
-  constexpr double kMaximumCurvatureOffsetProduct = 0.75;
-  const double curvature_offset_product =
-    highDiscreteCurvaturePerM(reference, config) * std::abs(offset_m);
-  if (curvature_offset_product >= kMaximumCurvatureOffsetProduct) {
-    return {translateLaneLaterally(reference, offset_m), true};
-  }
-
-  auto normal_offset = offsetLane(reference, offset_m, config);
-  if (!normalOffsetHasSafeLongitudinalProgress(
-      reference, normal_offset, config))
-  {
-    return {translateLaneLaterally(reference, offset_m), true};
-  }
-  return {std::move(normal_offset), false};
+  // Never replace a normal offset with a same-X lateral translation: that
+  // preserves the measured radius and creates a physically false lane on a
+  // tight curve. Parallel curves can become singular when the requested
+  // offset exceeds the local radius, so retain only the longest segment that
+  // still advances with the measured curve. If it is too short, emit no
+  // inferred counterpart instead of drawing one at the wrong position.
+  return retainLongestSafeNormalOffsetSegment(
+    reference, offsetLane(reference, offset_m, config), config);
 }
 
 double drawMeasuredLane(
@@ -1997,7 +1942,8 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     auto inferred = inferLaneFromReference(
       left_output, -config_.expected_lane_width_m, config_);
     right_output = std::move(inferred.points);
-    result.inference_lateral_fallback_used = inferred.lateral_fallback_used;
+    result.inference_normal_offset_truncated =
+      inferred.normal_offset_truncated;
     result.inferred_point_count += static_cast<int>(right_output.size());
   } else if (
     config_.infer_partially_missing_lane && right_valid && !left_valid &&
@@ -2006,7 +1952,8 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     auto inferred = inferLaneFromReference(
       right_output, config_.expected_lane_width_m, config_);
     left_output = std::move(inferred.points);
-    result.inference_lateral_fallback_used = inferred.lateral_fallback_used;
+    result.inference_normal_offset_truncated =
+      inferred.normal_offset_truncated;
     result.inferred_point_count += static_cast<int>(left_output.size());
   }
 

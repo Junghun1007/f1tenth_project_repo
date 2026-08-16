@@ -91,7 +91,7 @@ struct BevLaneReconstruction
   bool valid{false};
   int measured_point_count{0};
   int inferred_point_count{0};
-  bool inference_lateral_fallback_used{false};
+  bool inference_normal_offset_truncated{false};
   bool temporal_hold_used{false};
   double measured_lane_width_m{0.0};
   double reconstructed_maximum_x_m{0.0};

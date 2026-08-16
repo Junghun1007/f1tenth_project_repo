@@ -505,7 +505,7 @@ void testShortNormalDistanceCounterpartBeatsInference()
     "real counterpart pixels must be preferred over a full inferred lane");
 }
 
-void testUnsafeNormalOffsetFallsBackToSameX()
+void testTightNormalOffsetNeverFallsBackToSameX()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
   drawBoundary(
@@ -527,13 +527,27 @@ void testUnsafeNormalOffsetFallsBackToSameX()
 
   require(result.valid, "a single tight curve must produce output");
   require(
-    result.inference_lateral_fallback_used,
-    "an inner normal offset near its curvature singularity must fall back");
+    result.inferred_point_count > 0,
+    "a safe portion of the tight normal offset must remain visible");
+  require(
+    !maskHasWhiteNear(
+      result.right_reconstructed_mask,
+      0.50, tightInferenceCurveCenter(0.50) - 0.65, 3),
+    "tight-curve inference must never revert to a same-X translation");
+
+  constexpr double reference_x_m = 0.90;
+  const double derivative = -1.80 * (reference_x_m - 0.20);
+  const cv::Point2d raw_tangent(1.0, derivative);
+  const cv::Point2d tangent = raw_tangent / cv::norm(raw_tangent);
+  const cv::Point2d right_normal(tangent.y, -tangent.x);
+  const cv::Point2d expected =
+    cv::Point2d(
+      reference_x_m, tightInferenceCurveCenter(reference_x_m)) +
+    0.65 * right_normal;
   require(
     maskHasWhiteNear(
-      result.right_reconstructed_mask,
-      0.50, tightInferenceCurveCenter(0.50) - 0.65, 5),
-    "fallback inference must preserve forward X instead of folding backward");
+      result.right_reconstructed_mask, expected.x, expected.y, 10),
+    "tight-curve inference must retain the curvature-aware normal offset");
 }
 
 void testInferredLanePreservesReferenceShape()
@@ -692,7 +706,7 @@ int main()
   testTemporalHoldExpiresAfterFiveFrames();
   testValidShortLaneIsNotExtended();
   testShortNormalDistanceCounterpartBeatsInference();
-  testUnsafeNormalOffsetFallsBackToSameX();
+  testTightNormalOffsetNeverFallsBackToSameX();
   testInferredLanePreservesReferenceShape();
   testInferenceUsesConfiguredWidthInsteadOfLearnedWidth();
   testCurrentFrameRotationUpdatesInferenceImmediately();

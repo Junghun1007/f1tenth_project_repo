@@ -252,8 +252,10 @@ bev_processor:
     lane_inference_preserve_reference_shape: false
     # preserve_reference_shape=false인 법선 예측 시에만 아래 세 값을 사용한다.
     # 20cm 범위의 여러 기준점으로 접선을 계산한다.
-    # 접선/예측선은 곡률 1.25(최소 회전반경 약 0.8m), 점별 8도를 모두
-    # 넘지 않게 제한해 짧은 노이즈가 갈고리나 고리 형태로 확대되는 것을 막는다.
+    # 접선은 곡률 1.25(최소 회전반경 약 0.8m), 점별 8도를 모두
+    # 넘지 않게 제한해 짧은 노이즈가 법선 위치를 크게 흔드는 것을 막는다.
+    # 급커브 법선 오프셋이 접히면 동일-X 평행이동으로 바꾸지 않고,
+    # 기준선과 같은 방향으로 진행하는 가장 긴 유효 구간만 출력한다.
     lane_inference_tangent_window_m: 0.20
     lane_inference_maximum_curvature_per_m: 1.25
     lane_inference_maximum_heading_step_deg: 8.0

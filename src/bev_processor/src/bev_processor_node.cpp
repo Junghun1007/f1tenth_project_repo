@@ -1329,8 +1329,9 @@ private:
             lane.measured_point_count, std::memory_order_relaxed);
           latest_lane_inferred_points_.store(
             lane.inferred_point_count, std::memory_order_relaxed);
-          latest_lane_inference_fallback_.store(
-            lane.inference_lateral_fallback_used, std::memory_order_relaxed);
+          latest_lane_inference_truncated_.store(
+            lane.inference_normal_offset_truncated,
+            std::memory_order_relaxed);
           latest_lane_temporal_hold_.store(
             lane.temporal_hold_used, std::memory_order_relaxed);
           latest_lane_width_mm_.store(
@@ -1954,7 +1955,7 @@ private:
         get_logger(),
         "BEV lane: valid/invalid=%.1f/%.1fHz "
         "(%llu/%llu total), measured/inferred=%d/%d, hold=%s, "
-        "inference_fallback=%s, "
+        "normal_offset_trimmed=%s, "
         "width=%.3fm, reconstructed_to=%.2fm, "
         "lane_compute_ms(avg/max)=%.3f/%.3f, output=%s",
         static_cast<double>(lane_valid) / elapsed_sec,
@@ -1967,8 +1968,8 @@ private:
         latest_lane_inferred_points_.load(std::memory_order_relaxed),
         latest_lane_temporal_hold_.load(std::memory_order_relaxed) ?
         "yes" : "no",
-        latest_lane_inference_fallback_.load(std::memory_order_relaxed) ?
-        "lateral" : "no",
+        latest_lane_inference_truncated_.load(std::memory_order_relaxed) ?
+        "yes" : "no",
         static_cast<double>(
           latest_lane_width_mm_.load(std::memory_order_relaxed)) / 1000.0,
         static_cast<double>(latest_lane_reconstructed_maximum_x_mm_.load(
@@ -2082,7 +2083,7 @@ private:
   std::atomic<std::uint64_t> lane_invalid_total_{0U};
   std::atomic<int> latest_lane_points_{0};
   std::atomic<int> latest_lane_inferred_points_{0};
-  std::atomic<bool> latest_lane_inference_fallback_{false};
+  std::atomic<bool> latest_lane_inference_truncated_{false};
   std::atomic<bool> latest_lane_temporal_hold_{false};
   std::atomic<int> latest_lane_width_mm_{0};
   std::atomic<int> latest_lane_reconstructed_maximum_x_mm_{0};
