@@ -654,16 +654,17 @@ private:
     declare_parameter<double>("lane_maximum_gap_fill_m", 0.26);
     declare_parameter<double>("lane_measured_point_smoothing_weight", 0.70);
     declare_parameter<int>("lane_minimum_window_pixel_count", 6);
-    declare_parameter<double>("lane_expected_width_m", 0.80);
-    declare_parameter<double>("lane_width_tolerance_m", 0.10);
+    declare_parameter<double>("lane_expected_width_m", 0.65);
+    declare_parameter<double>("lane_width_tolerance_m", 0.07);
     declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
     declare_parameter<double>("lane_single_initial_tolerance_m", 0.60);
     declare_parameter<double>("lane_maximum_tracking_gap_m", 0.08);
     declare_parameter<int>("lane_minimum_points", 6);
+    declare_parameter<int>("lane_minimum_counterpart_points", 3);
     declare_parameter<bool>("lane_allow_single_lane", true);
     declare_parameter<bool>("lane_infer_partially_missing_lane", true);
     declare_parameter<bool>(
-      "lane_inference_preserve_reference_shape", true);
+      "lane_inference_preserve_reference_shape", false);
     declare_parameter<double>("lane_inference_tangent_window_m", 0.20);
     declare_parameter<double>(
       "lane_inference_maximum_curvature_per_m", 1.25);
@@ -939,6 +940,8 @@ private:
       get_parameter("lane_maximum_tracking_gap_m").as_double();
     lane_reconstructor_config_.minimum_points = static_cast<int>(
       get_parameter("lane_minimum_points").as_int());
+    lane_reconstructor_config_.minimum_counterpart_points = static_cast<int>(
+      get_parameter("lane_minimum_counterpart_points").as_int());
     lane_reconstructor_config_.allow_single_lane =
       get_parameter("lane_allow_single_lane").as_bool();
     lane_reconstructor_config_.infer_partially_missing_lane =
@@ -1326,6 +1329,8 @@ private:
             lane.measured_point_count, std::memory_order_relaxed);
           latest_lane_inferred_points_.store(
             lane.inferred_point_count, std::memory_order_relaxed);
+          latest_lane_inference_fallback_.store(
+            lane.inference_lateral_fallback_used, std::memory_order_relaxed);
           latest_lane_temporal_hold_.store(
             lane.temporal_hold_used, std::memory_order_relaxed);
           latest_lane_width_mm_.store(
@@ -1949,6 +1954,7 @@ private:
         get_logger(),
         "BEV lane: valid/invalid=%.1f/%.1fHz "
         "(%llu/%llu total), measured/inferred=%d/%d, hold=%s, "
+        "inference_fallback=%s, "
         "width=%.3fm, reconstructed_to=%.2fm, "
         "lane_compute_ms(avg/max)=%.3f/%.3f, output=%s",
         static_cast<double>(lane_valid) / elapsed_sec,
@@ -1961,6 +1967,8 @@ private:
         latest_lane_inferred_points_.load(std::memory_order_relaxed),
         latest_lane_temporal_hold_.load(std::memory_order_relaxed) ?
         "yes" : "no",
+        latest_lane_inference_fallback_.load(std::memory_order_relaxed) ?
+        "lateral" : "no",
         static_cast<double>(
           latest_lane_width_mm_.load(std::memory_order_relaxed)) / 1000.0,
         static_cast<double>(latest_lane_reconstructed_maximum_x_mm_.load(
@@ -2074,6 +2082,7 @@ private:
   std::atomic<std::uint64_t> lane_invalid_total_{0U};
   std::atomic<int> latest_lane_points_{0};
   std::atomic<int> latest_lane_inferred_points_{0};
+  std::atomic<bool> latest_lane_inference_fallback_{false};
   std::atomic<bool> latest_lane_temporal_hold_{false};
   std::atomic<int> latest_lane_width_mm_{0};
   std::atomic<int> latest_lane_reconstructed_maximum_x_mm_{0};

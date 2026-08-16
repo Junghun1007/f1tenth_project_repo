@@ -231,24 +231,25 @@ bev_processor:
     lane_measured_point_smoothing_weight: 0.70
     lane_minimum_window_pixel_count: 6
 
-    # 실차 BEV 격자에서 관측된 좌·우 차선 간격은 약 75~85cm이다.
-    # 80cm ± 10cm를 정상 쌍으로 받아, 반대편 실선이 보이는데도
-    # 62.5cm 위치에 가상 차선을 만드는 경우를 줄인다.
-    lane_expected_width_m: 0.80
-    lane_width_tolerance_m: 0.10
+    # 65cm ± 7cm, 즉 58~72cm를 정상 좌·우 차선 쌍으로 본다.
+    lane_expected_width_m: 0.65
+    lane_width_tolerance_m: 0.07
     lane_initial_center_tolerance_m: 0.60
     lane_single_initial_tolerance_m: 0.60
     lane_minimum_points: 6
+    # 반대편 실선이 법선거리 폭 검증을 통과하면 3개 실측점부터
+    # 전체 가상선으로 덮어쓰지 않고 짧은 실제 차선으로 유지한다.
+    lane_minimum_counterpart_points: 3
     lane_allow_single_lane: true
 
     # 한쪽 전체가 lane_minimum_points를 채우지 못해 미검출일 때만
     # 반대편 차선의 형상으로 전체 차선을 예측한다. 양쪽이 유효하면
     # 짧은 쪽도 실측 결과만 유지하고 빈 구간을 보충하지 않는다.
     lane_infer_partially_missing_lane: true
-    # true면 반대 차선은 기준 차선의 각 점을 같은 X에서 횡방향 이동해,
-    # 화면상 형상과 기울기를 그대로 유지한다.
-    lane_inference_preserve_reference_shape: true
-    # preserve_reference_shape=false인 기존 법선 예측 시에만 아래 세 값을 사용한다.
+    # false면 기준 차선의 법선 방향으로 65cm 이동한다. 급커브에서
+    # 예측선이 뒤로 접히거나 짧어지면 동일-X 이동으로 자동 fallback한다.
+    lane_inference_preserve_reference_shape: false
+    # preserve_reference_shape=false인 법선 예측 시에만 아래 세 값을 사용한다.
     # 20cm 범위의 여러 기준점으로 접선을 계산한다.
     # 접선/예측선은 곡률 1.25(최소 회전반경 약 0.8m), 점별 8도를 모두
     # 넘지 않게 제한해 짧은 노이즈가 갈고리나 고리 형태로 확대되는 것을 막는다.

@@ -185,6 +185,8 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 2. HSV saturation 80 이하인 흰색·회색 후보만 남겨 컬러 풍경을 제거한다.
 3. 후보 양옆 4cm가 어둡고 중심과 배경의 밝기 차가 40 이상인지 검사한다.
 4. `0.20~1.00m`의 가까운 행에서 폭 3cm 이하인 좌·우 시작점을 고른다.
+   대각선·급커브는 같은 X의 Y 간격 대신 두 실측 곡선의 법선거리로
+   차선 폭을 다시 검증한다.
 5. 이전 실제 측정점의 방향으로 회전형 슬라이딩 윈도우의 다음 위치만 예측한다.
    시작점이 중간에 선택되면 차량 쪽으로도 같은 윈도우를 진행해
    가까운 실제 픽셀을 다시 찾는다.
@@ -195,15 +197,16 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 8. 전역 다항식 없이 측정점 85%와 양옆 측정점 각각 7.5%만 섞어 국소 평활화한다.
 9. Odometry 없이 이전 승인 라인과 같은 X의 위치·방향을 비교한다. 큰 변화는
    4프레임 연속일 때만 승인하고, 검출 소실 시 이전 라인은 5프레임만 유지한다.
-10. 양쪽 차선이 유효하면 각자의 실측 픽셀만 유지하고 짧은 쪽의 빈 구간을
-    보충하지 않는다. 한쪽 전체가 `lane_minimum_points`를 채우지 못해
-    미검출일 때만 반대편 차선을 같은 X에서 차선 폭만큼 이동해 전체 예측한다.
+10. 법선거리 폭을 통과한 반대편은 `lane_minimum_counterpart_points`
+    개만 보여도 실측선을 유지한다. 반대편 실측이 전혀 유효하지 않을
+    때만 한쪽 차선에서 전체 예측선을 만든다.
 11. 실제 마지막 측정점 이후에는 마지막 진행 방향으로 최대 12cm만 예측한다.
 
-기본 `lane_inference_preserve_reference_shape:=true`는 기준 차선의 모든 점을
-같은 X에서 가로 방향으로 이동하므로 화면에서 형상과 기울기가 동일하다. `false`로
-끄면 기존처럼 국소 접선의 법선 방향으로 차선 폭만큼 이동하며,
-`lane_inference_tangent_window_m`, 곡률·방향 제한 파라미터는 이 기존 방식에만 적용된다.
+기본 `lane_inference_preserve_reference_shape:=false`는 국소 접선의 법선
+방향으로 차선 폭만큼 이동한다. `true`로 바꾸면 기준 차선의 모든
+점을 같은 X에서 횡방향으로 이동해 화면상 형상과 기울기를 유지한다.
+법선 오프셋이 급커브에서 뒤로 접히거나 X 범위가 기준선의 70% 미만으로
+줄면 자동으로 안전한 동일-X 횡방향 이동으로 fallback한다.
 낮은 신뢰도의 새 라인은
 즉시 승인하지 않고, 이전 라인도 5프레임을 넘겨 계속 만들지 않는다.
 
@@ -218,7 +221,9 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_far_minimum_brightness:=110 \
   lane_minimum_local_contrast:=35 \
   lane_sliding_window_measurement_weight:=0.90 \
-  lane_expected_width_m:=0.80 \
+  lane_expected_width_m:=0.65 \
+  lane_width_tolerance_m:=0.07 \
+  lane_minimum_counterpart_points:=3 \
   lane_infer_partially_missing_lane:=true \
   lane_output_lateral_margin_m:=0.70 \
   lane_output_line_thickness_m:=0.02 \
@@ -234,7 +239,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_temporal_confirmation_frames:=4 \
   lane_temporal_hold_frames:=5 \
   lane_infer_partially_missing_lane:=true \
-  lane_inference_preserve_reference_shape:=true \
+  lane_inference_preserve_reference_shape:=false \
   lane_inference_tangent_window_m:=0.20 \
   lane_inference_maximum_curvature_per_m:=1.25 \
   lane_inference_maximum_heading_step_deg:=8.0

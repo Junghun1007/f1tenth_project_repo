@@ -47,6 +47,12 @@ double closeCurveCenter(const double x_m)
   return 0.16 * std::sin(1.8 * (x_m - 0.25));
 }
 
+double tightInferenceCurveCenter(const double x_m)
+{
+  const double distance_m = x_m - 0.20;
+  return 0.45 - 0.90 * distance_m * distance_m;
+}
+
 std::vector<cv::Point> makeBoundary(
   const double lateral_offset_m,
   const double minimum_x_m,
@@ -106,6 +112,7 @@ bev_processor::BevLaneReconstructor makeReconstructor()
   config.maximum_tracking_gap_m = 0.20;
   config.maximum_gap_fill_m = 0.26;
   config.measured_point_smoothing_weight = 0.85;
+  config.inference_preserve_reference_shape = true;
   return bev_processor::BevLaneReconstructor(config);
 }
 
@@ -446,6 +453,82 @@ void testValidShortLaneIsNotExtended()
     "a valid short boundary must not be extended from the opposite lane");
 }
 
+void testShortNormalDistanceCounterpartBeatsInference()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  constexpr double heading_rad = -0.5235987755982988;  // -30 degrees.
+  const cv::Point2d tangent(std::cos(heading_rad), std::sin(heading_rad));
+  const cv::Point2d left_normal(-tangent.y, tangent.x);
+  const cv::Point2d center_start(0.42, 0.25);
+  const auto makeParallelBoundary = [&](
+      const double side_sign, const double length_m) {
+      std::vector<cv::Point2d> points;
+      for (double distance_m = 0.0;
+        distance_m <= length_m + 1.0e-9; distance_m += 0.01)
+      {
+        points.push_back(
+          center_start + distance_m * tangent +
+          side_sign * 0.325 * left_normal);
+      }
+      return points;
+    };
+  drawMetricPolyline(&image, makeParallelBoundary(1.0, 0.75));
+  drawMetricPolyline(&image, makeParallelBoundary(-1.0, 0.32));
+
+  bev_processor::BevLaneReconstructorConfig config;
+  config.expected_lane_width_m = 0.65;
+  config.lane_width_tolerance_m = 0.07;
+  config.minimum_points = 8;
+  config.minimum_counterpart_points = 3;
+  config.initial_center_tolerance_m = 0.60;
+  config.single_lane_initial_tolerance_m = 0.60;
+  config.temporal_tracking_enabled = false;
+  config.sliding_window_half_width_near_m = 0.12;
+  config.sliding_window_half_width_far_m = 0.14;
+  bev_processor::BevLaneReconstructor reconstructor(config);
+  const auto result = reconstructor.reconstruct(image);
+
+  require(result.valid, "a steep parallel pair must produce output");
+  require(
+    result.left_measured_points.size() >= 8U &&
+    result.right_measured_points.size() >= 3U,
+    "normal-distance pairing must retain the short visible counterpart");
+  require(
+    result.inferred_point_count == 0,
+    "real counterpart pixels must be preferred over a full inferred lane");
+}
+
+void testUnsafeNormalOffsetFallsBackToSameX()
+{
+  cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
+  drawBoundary(
+    &image, 0.0, 0.20, 0.90, tightInferenceCurveCenter, 245, 5);
+
+  bev_processor::BevLaneReconstructorConfig config;
+  config.expected_lane_width_m = 0.65;
+  config.lane_width_tolerance_m = 0.07;
+  config.minimum_points = 5;
+  config.minimum_counterpart_points = 3;
+  config.initial_center_tolerance_m = 0.60;
+  config.single_lane_initial_tolerance_m = 0.60;
+  config.temporal_tracking_enabled = false;
+  config.inference_preserve_reference_shape = false;
+  config.sliding_window_half_width_near_m = 0.12;
+  config.sliding_window_half_width_far_m = 0.14;
+  bev_processor::BevLaneReconstructor reconstructor(config);
+  const auto result = reconstructor.reconstruct(image);
+
+  require(result.valid, "a single tight curve must produce output");
+  require(
+    result.inference_lateral_fallback_used,
+    "an inner normal offset near its curvature singularity must fall back");
+  require(
+    maskHasWhiteNear(
+      result.right_reconstructed_mask,
+      0.50, tightInferenceCurveCenter(0.50) - 0.65, 5),
+    "fallback inference must preserve forward X instead of folding backward");
+}
+
 void testInferredLanePreservesReferenceShape()
 {
   cv::Mat image = cv::Mat::zeros(300, 120, CV_8UC3);
@@ -500,6 +583,8 @@ int main()
   testTemporalGateRequiresFourRepeatedLargeChanges();
   testTemporalHoldExpiresAfterFiveFrames();
   testValidShortLaneIsNotExtended();
+  testShortNormalDistanceCounterpartBeatsInference();
+  testUnsafeNormalOffsetFallsBackToSameX();
   testInferredLanePreservesReferenceShape();
   testLowSaturationGateRemainsOptional();
   testRotatingWindowsFollowTightArc();

@@ -150,6 +150,118 @@ double median(std::vector<double> values)
   return value;
 }
 
+double cross(const cv::Point2d & first, const cv::Point2d & second)
+{
+  return first.x * second.y - first.y * second.x;
+}
+
+struct LanePairGeometry
+{
+  bool valid{false};
+  double width_m{0.0};
+  int sample_count{0};
+  cv::Point2d representative_left;
+  cv::Point2d representative_right;
+};
+
+struct LanePairSample
+{
+  double distance_m{0.0};
+  cv::Point2d left;
+  cv::Point2d right;
+};
+
+LanePairGeometry measureLanePairGeometry(
+  const std::vector<cv::Point2d> & left,
+  const std::vector<cv::Point2d> & right,
+  const BevLaneReconstructorConfig & config)
+{
+  LanePairGeometry geometry;
+  if (left.size() < 2U || right.size() < 2U) {
+    return geometry;
+  }
+
+  std::vector<LanePairSample> samples;
+  const auto appendNormalProjections = [&samples](
+      const std::vector<cv::Point2d> & query,
+      const std::vector<cv::Point2d> & reference,
+      const bool query_is_left) {
+      for (const auto & query_point : query) {
+        for (std::size_t index = 1U; index < reference.size(); ++index) {
+          const cv::Point2d segment = reference[index] - reference[index - 1U];
+          const double segment_length_squared = dot(segment, segment);
+          if (segment_length_squared <= 1.0e-9) {
+            continue;
+          }
+          const double projection_blend = dot(
+            query_point - reference[index - 1U], segment) /
+            segment_length_squared;
+          // Endpoint clamping would turn non-overlapping track ends into a
+          // false lane-width sample. Only an actual perpendicular foot on the
+          // measured segment is used.
+          if (projection_blend < 0.0 || projection_blend > 1.0) {
+            continue;
+          }
+          const cv::Point2d projection =
+            reference[index - 1U] + projection_blend * segment;
+          const cv::Point2d tangent = normalized(segment);
+          const cv::Point2d left_normal(-tangent.y, tangent.x);
+          const cv::Point2d left_point = query_is_left ? query_point : projection;
+          const cv::Point2d right_point = query_is_left ? projection : query_point;
+          // Both measured tracks are ordered from near to far. This signed
+          // test rejects two seeds from the same marking and crossed pairs.
+          if (dot(left_point - right_point, left_normal) <= 0.0) {
+            continue;
+          }
+          samples.push_back(
+            {norm(left_point - right_point), left_point, right_point});
+        }
+      }
+    };
+  appendNormalProjections(left, right, true);
+  appendNormalProjections(right, left, false);
+  if (samples.size() < 3U) {
+    return geometry;
+  }
+
+  std::vector<double> distances_m;
+  distances_m.reserve(samples.size());
+  for (const auto & sample : samples) {
+    distances_m.push_back(sample.distance_m);
+  }
+  geometry.width_m = median(std::move(distances_m));
+  geometry.sample_count = static_cast<int>(samples.size());
+  const double minimum_width_m =
+    config.expected_lane_width_m - config.lane_width_tolerance_m;
+  const double maximum_width_m =
+    config.expected_lane_width_m + config.lane_width_tolerance_m;
+  if (
+    geometry.width_m < minimum_width_m ||
+    geometry.width_m > maximum_width_m)
+  {
+    return geometry;
+  }
+
+  const auto representative = std::min_element(
+    samples.begin(), samples.end(),
+    [&geometry](const LanePairSample & first, const LanePairSample & second) {
+      const double first_width_error =
+        std::abs(first.distance_m - geometry.width_m);
+      const double second_width_error =
+        std::abs(second.distance_m - geometry.width_m);
+      if (std::abs(first_width_error - second_width_error) > 1.0e-9) {
+        return first_width_error < second_width_error;
+      }
+      return
+        0.5 * (first.left.x + first.right.x) <
+        0.5 * (second.left.x + second.right.x);
+    });
+  geometry.representative_left = representative->left;
+  geometry.representative_right = representative->right;
+  geometry.valid = true;
+  return geometry;
+}
+
 std::vector<Run> findRuns(
   const cv::Mat & binary,
   const int row,
@@ -730,6 +842,7 @@ struct SeedProbeScore
 {
   int measured_points{0};
   double maximum_x_m{0.0};
+  std::vector<cv::Point2d> points;
 };
 
 SeedProbeScore probeSeed(
@@ -741,9 +854,15 @@ SeedProbeScore probeSeed(
   LaneTracker left;
   left.active = seed.left_measured;
   left.position = seed.left;
+  if (seed.left_measured) {
+    left.measured_points.push_back(seed.left);
+  }
   LaneTracker right;
   right.active = seed.right_measured;
   right.position = seed.right;
+  if (seed.right_measured) {
+    right.measured_points.push_back(seed.right);
+  }
   SeedProbeScore score;
   score.measured_points =
     static_cast<int>(seed.left_measured) + static_cast<int>(seed.right_measured);
@@ -778,7 +897,65 @@ SeedProbeScore probeSeed(
     probeTracker(&left);
     probeTracker(&right);
   }
+  score.points = seed.left_measured ?
+    std::move(left.measured_points) : std::move(right.measured_points);
   return score;
+}
+
+struct ProbedSingleSeed
+{
+  Seed seed;
+  SeedProbeScore score;
+  double identity_error_m{std::numeric_limits<double>::infinity()};
+};
+
+bool betterProbe(
+  const ProbedSingleSeed & first,
+  const ProbedSingleSeed & second)
+{
+  if (first.score.measured_points != second.score.measured_points) {
+    return first.score.measured_points > second.score.measured_points;
+  }
+  if (
+    std::abs(first.score.maximum_x_m - second.score.maximum_x_m) > 1.0e-9)
+  {
+    return first.score.maximum_x_m > second.score.maximum_x_m;
+  }
+  return first.identity_error_m < second.identity_error_m;
+}
+
+std::vector<ProbedSingleSeed> selectDiverseProbes(
+  std::vector<ProbedSingleSeed> probes,
+  const std::size_t maximum_count)
+{
+  constexpr double kDuplicateTrackDistanceM = 0.04;
+  std::sort(probes.begin(), probes.end(), betterProbe);
+  std::vector<ProbedSingleSeed> selected;
+  selected.reserve(std::min(maximum_count, probes.size()));
+  for (auto & probe : probes) {
+    bool duplicates_selected_track = false;
+    for (const auto & existing : selected) {
+      double minimum_distance_m = std::numeric_limits<double>::infinity();
+      for (const auto & point : probe.score.points) {
+        for (const auto & existing_point : existing.score.points) {
+          minimum_distance_m = std::min(
+            minimum_distance_m, norm(point - existing_point));
+        }
+      }
+      if (minimum_distance_m <= kDuplicateTrackDistanceM) {
+        duplicates_selected_track = true;
+        break;
+      }
+    }
+    if (duplicates_selected_track) {
+      continue;
+    }
+    selected.push_back(std::move(probe));
+    if (selected.size() >= maximum_count) {
+      break;
+    }
+  }
+  return selected;
 }
 
 double seedIdentityError(
@@ -834,6 +1011,8 @@ Seed selectSeedByTrackSupport(
   SeedProbeScore best_single_score;
   double best_single_identity_error_m =
     std::numeric_limits<double>::infinity();
+  std::vector<ProbedSingleSeed> left_probes;
+  std::vector<ProbedSingleSeed> right_probes;
   for (const auto & candidate : candidates) {
     const bool paired_candidate =
       candidate.left_measured && candidate.right_measured;
@@ -853,6 +1032,12 @@ Seed selectSeedByTrackSupport(
     const auto score = probeSeed(candidate, candidate_mask, gray, config);
     const double identity_error_m = seedIdentityError(
       candidate, previous_left, previous_right);
+    ProbedSingleSeed probed{candidate, score, identity_error_m};
+    if (candidate.left_measured) {
+      left_probes.push_back(probed);
+    } else {
+      right_probes.push_back(probed);
+    }
     if (
       !selected_single.valid ||
       score.measured_points > best_single_score.measured_points ||
@@ -869,6 +1054,73 @@ Seed selectSeedByTrackSupport(
   }
   if (selected_pair.valid) {
     return selected_pair;
+  }
+
+  // Same-X lateral separation grows on a diagonal or tight curve even when
+  // the physical lane width measured along the normal is correct. Probe the
+  // two visible markings independently, then pair them by perpendicular
+  // polyline distance so a short real counterpart wins over inference.
+  constexpr std::size_t kMaximumDiverseProbesPerSide = 8U;
+  left_probes = selectDiverseProbes(
+    std::move(left_probes), kMaximumDiverseProbesPerSide);
+  right_probes = selectDiverseProbes(
+    std::move(right_probes), kMaximumDiverseProbesPerSide);
+  Seed recovered_pair;
+  int best_minimum_support = -1;
+  int best_total_support = -1;
+  double best_geometry_error_m = std::numeric_limits<double>::infinity();
+  for (const auto & left_probe : left_probes) {
+    for (const auto & right_probe : right_probes) {
+      const int left_support = left_probe.score.measured_points;
+      const int right_support = right_probe.score.measured_points;
+      if (
+        std::max(left_support, right_support) < config.minimum_points ||
+        std::min(left_support, right_support) <
+        config.minimum_counterpart_points)
+      {
+        continue;
+      }
+      const LanePairGeometry geometry = measureLanePairGeometry(
+        left_probe.score.points, right_probe.score.points, config);
+      if (!geometry.valid) {
+        continue;
+      }
+      const double center_abs_m = std::abs(
+        0.5 * (geometry.representative_left.y +
+        geometry.representative_right.y));
+      if (center_abs_m > config.initial_center_tolerance_m) {
+        continue;
+      }
+      const int minimum_support = std::min(left_support, right_support);
+      const int total_support = left_support + right_support;
+      const double geometry_error_m =
+        std::abs(geometry.width_m - config.expected_lane_width_m) +
+        0.25 * center_abs_m;
+      if (
+        !recovered_pair.valid ||
+        minimum_support > best_minimum_support ||
+        (minimum_support == best_minimum_support &&
+        total_support > best_total_support) ||
+        (minimum_support == best_minimum_support &&
+        total_support == best_total_support &&
+        geometry_error_m < best_geometry_error_m))
+      {
+        recovered_pair.valid = true;
+        recovered_pair.x_m = 0.5 * (
+          geometry.representative_left.x + geometry.representative_right.x);
+        recovered_pair.left = geometry.representative_left;
+        recovered_pair.right = geometry.representative_right;
+        recovered_pair.left_measured = true;
+        recovered_pair.right_measured = true;
+        recovered_pair.implied_center_abs_m = center_abs_m;
+        best_minimum_support = minimum_support;
+        best_total_support = total_support;
+        best_geometry_error_m = geometry_error_m;
+      }
+    }
+  }
+  if (recovered_pair.valid) {
+    return recovered_pair;
   }
   return selected_single;
 }
@@ -1121,8 +1373,8 @@ std::vector<cv::Point2d> offsetLane(
   }
 
   // Estimate every tangent from a metric neighbourhood rather than from one
-  // adjacent point. This prevents one noisy sample from rotating a 62.5 cm
-  // offset by a large angle.
+  // adjacent point. This prevents one noisy sample from rotating the full
+  // lane-width offset by a large angle.
   std::vector<double> tangent_heading_rad(reference.size(), 0.0);
   const double half_window_m = 0.5 * config.inference_tangent_window_m;
   for (std::size_t index = 0U; index < reference.size(); ++index) {
@@ -1202,24 +1454,121 @@ std::vector<cv::Point2d> offsetLane(
   return offset;
 }
 
-std::vector<cv::Point2d> inferLaneFromReference(
+std::vector<cv::Point2d> translateLaneLaterally(
   const std::vector<cv::Point2d> & reference,
-  const double offset_m,
-  const BevLaneReconstructorConfig & config)
+  const double offset_m)
 {
-  if (!config.inference_preserve_reference_shape) {
-    return offsetLane(reference, offset_m, config);
-  }
-
-  // Keep the inferred boundary at the same forward samples as the measured
-  // boundary. A lateral translation preserves its visible BEV shape and
-  // heading exactly; estimating a separate normal at every noisy sample can
-  // otherwise make the inferred boundary appear to have a different slope.
   std::vector<cv::Point2d> inferred = reference;
   for (auto & point : inferred) {
     point.y += offset_m;
   }
   return inferred;
+}
+
+double highDiscreteCurvaturePerM(
+  const std::vector<cv::Point2d> & points,
+  const BevLaneReconstructorConfig & config)
+{
+  if (points.size() < 3U) {
+    return 0.0;
+  }
+  std::vector<double> curvatures_per_m;
+  curvatures_per_m.reserve(points.size() - 2U);
+  for (std::size_t index = 1U; index + 1U < points.size(); ++index) {
+    const cv::Point2d first = points[index] - points[index - 1U];
+    const cv::Point2d second = points[index + 1U] - points[index];
+    const cv::Point2d chord = points[index + 1U] - points[index - 1U];
+    const double first_length_m = norm(first);
+    const double second_length_m = norm(second);
+    const double chord_length_m = norm(chord);
+    if (
+      first_length_m < config.meter_per_pixel ||
+      second_length_m < config.meter_per_pixel ||
+      chord_length_m < config.meter_per_pixel)
+    {
+      continue;
+    }
+    curvatures_per_m.push_back(
+      2.0 * std::abs(cross(first, second)) /
+      (first_length_m * second_length_m * chord_length_m));
+  }
+  if (curvatures_per_m.empty()) {
+    return 0.0;
+  }
+  // A single noisy point must not disable normal inference. The upper
+  // quartile still reacts to a sustained tight turn such as the screenshots.
+  const std::size_t high_index = static_cast<std::size_t>(std::floor(
+      0.75 * static_cast<double>(curvatures_per_m.size() - 1U)));
+  std::nth_element(
+    curvatures_per_m.begin(),
+    curvatures_per_m.begin() + static_cast<std::ptrdiff_t>(high_index),
+    curvatures_per_m.end());
+  return curvatures_per_m[high_index];
+}
+
+bool normalOffsetHasSafeLongitudinalProgress(
+  const std::vector<cv::Point2d> & reference,
+  const std::vector<cv::Point2d> & inferred,
+  const BevLaneReconstructorConfig & config)
+{
+  if (reference.size() != inferred.size() || inferred.size() < 2U) {
+    return false;
+  }
+  for (std::size_t index = 1U; index < inferred.size(); ++index) {
+    if (inferred[index].x + config.meter_per_pixel < inferred[index - 1U].x) {
+      return false;
+    }
+  }
+  const auto reference_x = std::minmax_element(
+    reference.begin(), reference.end(),
+    [](const cv::Point2d & first, const cv::Point2d & second) {
+      return first.x < second.x;
+    });
+  const auto inferred_x = std::minmax_element(
+    inferred.begin(), inferred.end(),
+    [](const cv::Point2d & first, const cv::Point2d & second) {
+      return first.x < second.x;
+    });
+  const double reference_span_m = reference_x.second->x - reference_x.first->x;
+  const double inferred_span_m = inferred_x.second->x - inferred_x.first->x;
+  constexpr double kMinimumLongitudinalSpanRatio = 0.70;
+  return
+    reference_span_m <= config.meter_per_pixel ||
+    inferred_span_m >= kMinimumLongitudinalSpanRatio * reference_span_m;
+}
+
+struct InferredLane
+{
+  std::vector<cv::Point2d> points;
+  bool lateral_fallback_used{false};
+};
+
+InferredLane inferLaneFromReference(
+  const std::vector<cv::Point2d> & reference,
+  const double offset_m,
+  const BevLaneReconstructorConfig & config)
+{
+  if (config.inference_preserve_reference_shape) {
+    return {translateLaneLaterally(reference, offset_m), false};
+  }
+
+  // An inner parallel curve becomes singular as |curvature * offset|
+  // approaches one. Before it folds or collapses longitudinally, retain the
+  // measured X samples and use the conservative lateral translation.
+  constexpr double kMaximumCurvatureOffsetProduct = 0.75;
+  const double curvature_offset_product =
+    highDiscreteCurvaturePerM(reference, config) * std::abs(offset_m);
+  if (curvature_offset_product >= kMaximumCurvatureOffsetProduct) {
+    return {translateLaneLaterally(reference, offset_m), true};
+  }
+
+  auto normal_offset = offsetLane(reference, offset_m, config);
+  if (!normalOffsetHasSafeLongitudinalProgress(
+      reference, normal_offset, config))
+  {
+    return {translateLaneLaterally(reference, offset_m), true};
+  }
+  return {std::move(normal_offset), false};
 }
 
 double drawMeasuredLane(
@@ -1324,6 +1673,8 @@ BevLaneReconstructor::BevLaneReconstructor(BevLaneReconstructorConfig config)
     config_.initial_center_tolerance_m <= 0.0 ||
     config_.single_lane_initial_tolerance_m <= 0.0 ||
     config_.maximum_tracking_gap_m <= 0.0 || config_.minimum_points < 2 ||
+    config_.minimum_counterpart_points < 2 ||
+    config_.minimum_counterpart_points > config_.minimum_points ||
     !std::isfinite(config_.inference_tangent_window_m) ||
     config_.inference_tangent_window_m <= 0.0 ||
     !std::isfinite(config_.inference_maximum_curvature_per_m) ||
@@ -1550,10 +1901,24 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
   result.right_measured_points = std::move(backward_right_points);
   result.measured_point_count = static_cast<int>(
     result.left_measured_points.size() + result.right_measured_points.size());
+  const int current_left_point_count = static_cast<int>(
+    result.left_measured_points.size());
+  const int current_right_point_count = static_cast<int>(
+    result.right_measured_points.size());
+  const LanePairGeometry current_pair_geometry = measureLanePairGeometry(
+    result.left_measured_points, result.right_measured_points, config_);
+  const bool short_counterpart_pair_valid =
+    current_pair_geometry.valid &&
+    std::max(current_left_point_count, current_right_point_count) >=
+    config_.minimum_points &&
+    std::min(current_left_point_count, current_right_point_count) >=
+    config_.minimum_counterpart_points;
   const bool current_left_valid =
-    static_cast<int>(result.left_measured_points.size()) >= config_.minimum_points;
+    current_left_point_count >= config_.minimum_points ||
+    short_counterpart_pair_valid;
   const bool current_right_valid =
-    static_cast<int>(result.right_measured_points.size()) >= config_.minimum_points;
+    current_right_point_count >= config_.minimum_points ||
+    short_counterpart_pair_valid;
   const std::vector<cv::Point2d> empty_points;
   const TemporalTrackResult stable_left = stabilizeTrack(
     current_left_valid ? result.left_measured_points : empty_points,
@@ -1568,9 +1933,10 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
 
   if (
     stable_left.from_current_frame && stable_right.from_current_frame &&
-    !measured_widths_m.empty())
+    (current_pair_geometry.valid || !measured_widths_m.empty()))
   {
-    const double current_width_m = median(measured_widths_m);
+    const double current_width_m = current_pair_geometry.valid ?
+      current_pair_geometry.width_m : median(measured_widths_m);
     if (
       current_width_m >=
       config_.expected_lane_width_m - config_.lane_width_tolerance_m &&
@@ -1589,10 +1955,22 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     config_.expected_lane_width_m + config_.lane_width_tolerance_m);
   result.measured_lane_width_m = lane_width_m;
 
+  const int stable_left_point_count = static_cast<int>(stable_left.points.size());
+  const int stable_right_point_count = static_cast<int>(stable_right.points.size());
+  const LanePairGeometry stable_pair_geometry = measureLanePairGeometry(
+    stable_left.points, stable_right.points, config_);
+  const bool stable_short_counterpart_pair_valid =
+    stable_pair_geometry.valid &&
+    std::max(stable_left_point_count, stable_right_point_count) >=
+    config_.minimum_points &&
+    std::min(stable_left_point_count, stable_right_point_count) >=
+    config_.minimum_counterpart_points;
   const bool left_valid =
-    static_cast<int>(stable_left.points.size()) >= config_.minimum_points;
+    stable_left_point_count >= config_.minimum_points ||
+    stable_short_counterpart_pair_valid;
   const bool right_valid =
-    static_cast<int>(stable_right.points.size()) >= config_.minimum_points;
+    stable_right_point_count >= config_.minimum_points ||
+    stable_short_counterpart_pair_valid;
   if (!left_valid && !right_valid) {
     return result;
   }
@@ -1612,15 +1990,19 @@ BevLaneReconstruction BevLaneReconstructor::reconstruct(const cv::Mat & bev_bgr)
     config_.infer_partially_missing_lane && left_valid && !right_valid &&
     config_.allow_single_lane)
   {
-    right_output = inferLaneFromReference(
+    auto inferred = inferLaneFromReference(
       left_output, -lane_width_m, config_);
+    right_output = std::move(inferred.points);
+    result.inference_lateral_fallback_used = inferred.lateral_fallback_used;
     result.inferred_point_count += static_cast<int>(right_output.size());
   } else if (
     config_.infer_partially_missing_lane && right_valid && !left_valid &&
     config_.allow_single_lane)
   {
-    left_output = inferLaneFromReference(
+    auto inferred = inferLaneFromReference(
       right_output, lane_width_m, config_);
+    left_output = std::move(inferred.points);
+    result.inference_lateral_fallback_used = inferred.lateral_fallback_used;
     result.inferred_point_count += static_cast<int>(left_output.size());
   }
 
