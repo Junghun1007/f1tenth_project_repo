@@ -163,6 +163,9 @@ GUI 프리뷰는 기본적으로 원본 BEV 위에 왼쪽 차선을 파란색, �
 경계에만 표시하며 반대편 가상 차선은 그리지 않는다. 색상 오버레이는
 발행 토픽에는 들어가지 않는다.
 `lane_preview_enabled:=false`로 실행하면 프리뷰도 원본 BEV만 표시한다.
+`lane_preview_result_only_enabled:=true`로 실행하면 원본 BEV를 숨기고
+검은 배경에 실측 왼쪽/오른쪽 차선과 주행 중앙선만 표시한다.
+좌표 그리드와 차량 `Y=0` 기준선은 그대로 유지된다.
 
 `lane_preview_sliding_windows_enabled:=true`면 실제 추적에 사용한
 회전형 검색 창을 1px 박스로 프리뷰에만 표시한다. 왼쪽 차선 창은
@@ -291,6 +294,7 @@ CUDA BEV 변환, ROS 발행, GUI 프리뷰 시간을 포함하지 않는다. Jet
 값을 확인하면 차선 검출 단계의 실제 평균·최대 계산 시간을 바로 알 수 있다.
 
 필터 없는 원본 컬러 프리뷰를 보려면 `lane_preview_enabled:=false`, 차선
+결과만 보려면 `lane_preview_result_only_enabled:=true`, 차선
 재구성을 완전히 끄려면 `lane_reconstruction_enabled:=false`를 사용한다.
 
 ## 시작 측정

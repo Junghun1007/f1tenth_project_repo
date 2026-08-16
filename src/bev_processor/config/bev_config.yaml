@@ -169,6 +169,8 @@ bev_processor:
     # 노랑으로 합성한다.
     # false면 필터를 적용하지 않은 원본 BEV를 표시한다. 두 발행 토픽은 불변이다.
     lane_preview_enabled: true
+    # true면 원본 BEV를 숨기고 검은 배경에 실측 좌·우 차선과 중앙선만 표시한다.
+    lane_preview_result_only_enabled: false
     # true면 실제 좌/우 회전형 검색 윈도우를 1px 박스로 프리뷰에 표시한다.
     lane_preview_sliding_windows_enabled: false
     # 차량 좌표 X=0.02m에 있는 카메라 위치를 프리뷰 X=0으로 표기한다.

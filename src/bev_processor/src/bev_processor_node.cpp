@@ -454,13 +454,14 @@ public:
         get_logger(),
         "BEV lane appearance gate: saturation<=%d, local contrast>=%d, "
         "background<=%d, tracked width near/far=%.2f/%.2fm, "
-        "preview overlay=%s alpha=%.2f, lateral margin=%.2fm",
+        "preview overlay=%s result-only=%s alpha=%.2f, lateral margin=%.2fm",
         lane_reconstructor_config_.maximum_saturation,
         lane_reconstructor_config_.minimum_local_contrast,
         lane_reconstructor_config_.maximum_local_background_brightness,
         lane_reconstructor_config_.tracked_lane_mark_width_near_m,
         lane_reconstructor_config_.tracked_lane_mark_width_far_m,
         lane_preview_enabled_ ? "on" : "off",
+        lane_preview_result_only_enabled_ ? "on" : "off",
         lane_preview_overlay_alpha_,
         lane_reconstructor_config_.output_lateral_margin_m);
       RCLCPP_INFO(
@@ -626,6 +627,7 @@ private:
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
+    declare_parameter<bool>("lane_preview_result_only_enabled", false);
     declare_parameter<bool>("lane_preview_sliding_windows_enabled", false);
     declare_parameter<double>("preview_x_origin_m", 0.02);
     declare_parameter<double>("lane_output_lateral_margin_m", 0.70);
@@ -872,6 +874,8 @@ private:
     lane_output_topic_ = get_parameter("lane_output_topic").as_string();
     lane_preview_enabled_ =
       get_parameter("lane_preview_enabled").as_bool();
+    lane_preview_result_only_enabled_ =
+      get_parameter("lane_preview_result_only_enabled").as_bool();
     lane_preview_sliding_windows_enabled_ =
       get_parameter("lane_preview_sliding_windows_enabled").as_bool();
     preview_x_origin_m_ = get_parameter("preview_x_origin_m").as_double();
@@ -1689,6 +1693,10 @@ private:
         if (frame) {
           cv::Mat displayed_image = makeExpandedBevPreview(
             frame->image, lateral_margin_px);
+          if (lane_preview_enabled_ && lane_preview_result_only_enabled_) {
+            displayed_image = cv::Mat::zeros(
+              displayed_image.size(), displayed_image.type());
+          }
           if (
             lane_preview_enabled_ &&
             !frame->left_lane_mask.empty() &&
@@ -1699,7 +1707,8 @@ private:
               frame->left_lane_mask,
               frame->right_lane_mask,
               frame->lane_mask,
-              lane_preview_overlay_alpha_);
+              lane_preview_result_only_enabled_ ?
+              1.0 : lane_preview_overlay_alpha_);
           }
           if (
             lane_preview_sliding_windows_enabled_ &&
@@ -2062,7 +2071,8 @@ private:
   bool lane_reconstruction_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
-  bool lane_preview_sliding_windows_enabled_{true};
+  bool lane_preview_result_only_enabled_{false};
+  bool lane_preview_sliding_windows_enabled_{false};
   double preview_x_origin_m_{0.02};
   double lane_preview_overlay_alpha_{0.8};
   BevLaneReconstructorConfig lane_reconstructor_config_{};
