@@ -18,7 +18,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
+find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(depthai 3 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR

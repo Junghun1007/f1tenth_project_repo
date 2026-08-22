@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <limits>
 #include <memory>
@@ -27,10 +28,12 @@
 #include "geometry_msgs/msg/vector3_stamped.hpp"
 #include "opencv2/core.hpp"
 #include "opencv2/highgui.hpp"
+#include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
+#include "sensor_msgs/msg/joy.hpp"
 #include "std_msgs/msg/int32.hpp"
 
 namespace camera_driver
@@ -293,6 +296,21 @@ public:
         "Preview disabled because DISPLAY/WAYLAND_DISPLAY is not available.");
     }
     preview_active_.store(preview_enabled_);
+    if (preview_enabled_) {
+      capture_joy_subscription_ =
+        node_.create_subscription<sensor_msgs::msg::Joy>(
+        capture_joy_topic_,
+        rclcpp::SensorDataQoS().keep_last(1),
+        [this](sensor_msgs::msg::Joy::ConstSharedPtr message) {
+          on_capture_joy(std::move(message));
+        });
+      RCLCPP_INFO(
+        node_.get_logger(),
+        "Camera capture: directory=%s, joy=%s button=%d (B), keyboard=B.",
+        capture_directory_.c_str(),
+        capture_joy_topic_.c_str(),
+        capture_joy_button_);
+    }
 
     if (publish_enabled_) {
       auto qos = rclcpp::SensorDataQoS();
@@ -608,6 +626,12 @@ private:
       node_.declare_parameter<bool>("preview_grid_enabled", false);
     preview_grid_spacing_px_ =
       node_.declare_parameter<int>("preview_grid_spacing_px", 20);
+    capture_directory_ =
+      node_.declare_parameter<std::string>("capture_directory", ".");
+    capture_joy_topic_ =
+      node_.declare_parameter<std::string>("capture_joy_topic", "/joy");
+    capture_joy_button_ =
+      node_.declare_parameter<int>("capture_joy_button", 1);
     startup_timeout_sec_ =
       node_.declare_parameter<double>("startup_timeout_sec", 5.0);
     status_log_interval_sec_ =
@@ -770,6 +794,14 @@ private:
               "preview maximum dimensions must not be negative");
     }
     require_positive(preview_grid_spacing_px_, "preview_grid_spacing_px");
+    if (
+      capture_directory_.empty() || capture_joy_topic_.empty() ||
+      capture_joy_button_ < 0)
+    {
+      throw std::invalid_argument(
+              "capture directory/topic must not be empty and button must "
+              "be non-negative");
+    }
 
     camera_socket_ = parse_camera_socket(camera_socket_name_);
     resize_mode_ = parse_resize_mode(resize_mode_name_);
@@ -1970,6 +2002,83 @@ private:
     }
   }
 
+  void capture_camera_frame(const char * trigger)
+  {
+    cv::Mat camera_image;
+    {
+      std::lock_guard<std::mutex> lock(latest_capture_frame_mutex_);
+      camera_image = latest_capture_frame_;
+    }
+    if (camera_image.empty()) {
+      RCLCPP_WARN(
+        node_.get_logger(),
+        "%s capture requested before a camera frame was available.",
+        trigger);
+      return;
+    }
+
+    try {
+      const std::filesystem::path directory(capture_directory_);
+      std::error_code error;
+      std::filesystem::create_directories(directory, error);
+      if (error) {
+        RCLCPP_ERROR(
+          node_.get_logger(),
+          "Failed to create camera capture directory '%s': %s",
+          directory.string().c_str(),
+          error.message().c_str());
+        return;
+      }
+      const std::filesystem::path filename = directory /
+        ("camera_capture_" +
+        std::to_string(node_.get_clock()->now().nanoseconds()) + ".png");
+      if (!cv::imwrite(filename.string(), camera_image)) {
+        RCLCPP_ERROR(
+          node_.get_logger(),
+          "Failed to capture camera image: %s",
+          filename.string().c_str());
+        return;
+      }
+      const auto absolute_filename = std::filesystem::absolute(filename, error);
+      const std::string saved_path = error ?
+        filename.string() : absolute_filename.string();
+      RCLCPP_INFO(
+        node_.get_logger(),
+        "Camera image captured by %s: %s",
+        trigger,
+        saved_path.c_str());
+    } catch (const cv::Exception & exception) {
+      RCLCPP_ERROR(
+        node_.get_logger(),
+        "Failed to capture camera image: %s",
+        exception.what());
+    }
+  }
+
+  void on_capture_joy(const sensor_msgs::msg::Joy::ConstSharedPtr message)
+  {
+    const bool button_available =
+      capture_joy_button_ < static_cast<int>(message->buttons.size());
+    const bool pressed =
+      button_available &&
+      message->buttons[static_cast<std::size_t>(capture_joy_button_)] != 0;
+    const bool was_pressed =
+      capture_joy_button_pressed_.exchange(pressed, std::memory_order_relaxed);
+    if (!button_available) {
+      RCLCPP_WARN_THROTTLE(
+        node_.get_logger(),
+        *node_.get_clock(),
+        5000,
+        "Joy message on %s has no capture button index %d.",
+        capture_joy_topic_.c_str(),
+        capture_joy_button_);
+      return;
+    }
+    if (pressed && !was_pressed) {
+      capture_camera_frame("controller B");
+    }
+  }
+
   void preview_loop()
   {
     try {
@@ -2041,6 +2150,12 @@ private:
                   preview_frame.cols,
                   preview_frame.rows - output_crop_top_px_)).clone();
             }
+            cv::Mat capture_frame = preview_grid_enabled_ ?
+              preview_frame.clone() : preview_frame;
+            {
+              std::lock_guard<std::mutex> lock(latest_capture_frame_mutex_);
+              latest_capture_frame_ = std::move(capture_frame);
+            }
             if (preview_grid_enabled_) {
               draw_preview_grid(preview_frame);
             }
@@ -2052,6 +2167,9 @@ private:
         }
 
         const auto key = cv::waitKey(1) & 0xff;
+        if (key == 'b' || key == 'B') {
+          capture_camera_frame("keyboard B");
+        }
         const auto visible = cv::getWindowProperty(
           preview_window_name_, cv::WND_PROP_VISIBLE);
         if (visible >= 1.0) {
@@ -2452,6 +2570,10 @@ private:
   int preview_max_height_{720};
   bool preview_grid_enabled_{false};
   int preview_grid_spacing_px_{20};
+  std::string capture_directory_{"."};
+  std::string capture_joy_topic_{"/joy"};
+  int capture_joy_button_{1};
+  std::atomic<bool> capture_joy_button_pressed_{false};
   double startup_timeout_sec_{5.0};
   double status_log_interval_sec_{1.0};
   dai::CameraBoardSocket camera_socket_{dai::CameraBoardSocket::CAM_A};
@@ -2470,6 +2592,8 @@ private:
     startup_ground_reference_subscription_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr
     measured_erpm_subscription_;
+  rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr
+    capture_joy_subscription_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 
   std::thread capture_thread_;
@@ -2483,6 +2607,8 @@ private:
   std::condition_variable frame_available_;
 
   std::shared_ptr<const FrameSnapshot> latest_frame_;
+  std::mutex latest_capture_frame_mutex_;
+  cv::Mat latest_capture_frame_;
   std::optional<std::int64_t> last_device_sequence_;
   cv::Matx33d calibrated_imu_output_to_camera_rotation_{
     cv::Matx33d::eye()};

@@ -13,6 +13,7 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     preview_enabled = LaunchConfiguration("preview_enabled")
     preview_grid_enabled = LaunchConfiguration("preview_grid_enabled")
+    capture_directory = LaunchConfiguration("capture_directory")
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
@@ -34,6 +35,14 @@ def generate_launch_description():
                 "preview_grid_enabled",
                 default_value="false",
                 description="Draw a light-gray 20-pixel grid on the preview.",
+            ),
+            DeclareLaunchArgument(
+                "capture_directory",
+                default_value=".",
+                description=(
+                    "Directory for B-button camera captures; default is the "
+                    "launch working directory."
+                ),
             ),
             DeclareLaunchArgument(
                 "imu_stabilization_enabled",
@@ -64,6 +73,7 @@ def generate_launch_description():
                             {
                                 "preview_enabled": preview_enabled,
                                 "preview_grid_enabled": preview_grid_enabled,
+                                "capture_directory": capture_directory,
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_enabled
                                 ),
