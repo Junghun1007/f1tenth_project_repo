@@ -33,11 +33,21 @@ __device__ float clampFloat(
   return fminf(maximum, fmaxf(minimum, value));
 }
 
-__device__ float samplePlane(
-  const std::uint8_t * plane,
-  const int stride,
+__device__ int clampInt(
+  const int value,
+  const int minimum,
+  const int maximum)
+{
+  return value < minimum ? minimum : value > maximum ? maximum : value;
+}
+
+__device__ float sampleChannelBilinear(
+  const std::uint8_t * data,
+  const int row_stride,
   const int width,
   const int height,
+  const int pixel_stride,
+  const int channel,
   const float x,
   const float y)
 {
@@ -51,43 +61,98 @@ __device__ float samplePlane(
   const float dy = clamped_y - y0;
 
   const float top =
-    plane[y0 * stride + x0] * (1.0F - dx) +
-    plane[y0 * stride + x1] * dx;
+    data[y0 * row_stride + x0 * pixel_stride + channel] * (1.0F - dx) +
+    data[y0 * row_stride + x1 * pixel_stride + channel] * dx;
   const float bottom =
-    plane[y1 * stride + x0] * (1.0F - dx) +
-    plane[y1 * stride + x1] * dx;
+    data[y1 * row_stride + x0 * pixel_stride + channel] * (1.0F - dx) +
+    data[y1 * row_stride + x1 * pixel_stride + channel] * dx;
   return top * (1.0F - dy) + bottom * dy;
 }
 
-__device__ float sampleChroma(
-  const std::uint8_t * uv_plane,
-  const int stride,
+__device__ float cubicCatmullRom(
+  const float p0,
+  const float p1,
+  const float p2,
+  const float p3,
+  const float amount)
+{
+  return p1 + 0.5F * amount * (
+    p2 - p0 + amount * (
+      2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3 +
+      amount * (3.0F * (p1 - p2) + p3 - p0)));
+}
+
+__device__ float sampleChannelBicubic(
+  const std::uint8_t * data,
+  const int row_stride,
   const int width,
   const int height,
-  const float source_x,
-  const float source_y,
-  const int channel)
+  const int pixel_stride,
+  const int channel,
+  const float x,
+  const float y)
 {
-  const int chroma_width = width / 2;
-  const int chroma_height = height / 2;
-  const float x = clampFloat(
-    source_x * 0.5F, 0.0F, chroma_width - 1.0F);
-  const float y = clampFloat(
-    source_y * 0.5F, 0.0F, chroma_height - 1.0F);
-  const int x0 = static_cast<int>(floorf(x));
-  const int y0 = static_cast<int>(floorf(y));
-  const int x1 = x0 + 1 < chroma_width ? x0 + 1 : chroma_width - 1;
-  const int y1 = y0 + 1 < chroma_height ? y0 + 1 : chroma_height - 1;
-  const float dx = x - x0;
-  const float dy = y - y0;
+  const float clamped_x = clampFloat(x, 0.0F, width - 1.0F);
+  const float clamped_y = clampFloat(y, 0.0F, height - 1.0F);
+  const int base_x = static_cast<int>(floorf(clamped_x));
+  const int base_y = static_cast<int>(floorf(clamped_y));
+  const float dx = clamped_x - base_x;
+  const float dy = clamped_y - base_y;
+  float rows[4];
 
-  const float top =
-    uv_plane[y0 * stride + x0 * 2 + channel] * (1.0F - dx) +
-    uv_plane[y0 * stride + x1 * 2 + channel] * dx;
-  const float bottom =
-    uv_plane[y1 * stride + x0 * 2 + channel] * (1.0F - dx) +
-    uv_plane[y1 * stride + x1 * 2 + channel] * dx;
-  return top * (1.0F - dy) + bottom * dy;
+#pragma unroll
+  for (int row_offset = -1; row_offset <= 2; ++row_offset) {
+    const int sample_y = clampInt(base_y + row_offset, 0, height - 1);
+    float samples[4];
+#pragma unroll
+    for (int column_offset = -1; column_offset <= 2; ++column_offset) {
+      const int sample_x = clampInt(base_x + column_offset, 0, width - 1);
+      samples[column_offset + 1] = static_cast<float>(
+        data[sample_y * row_stride + sample_x * pixel_stride + channel]);
+    }
+    rows[row_offset + 1] = cubicCatmullRom(
+      samples[0], samples[1], samples[2], samples[3], dx);
+  }
+
+  // Catmull-Rom can overshoot sharp image edges. Restrict the result to the
+  // four pixels surrounding the sample position to avoid visible halos.
+  const int next_x = clampInt(base_x + 1, 0, width - 1);
+  const int next_y = clampInt(base_y + 1, 0, height - 1);
+  const float center00 = static_cast<float>(
+    data[base_y * row_stride + base_x * pixel_stride + channel]);
+  const float center10 = static_cast<float>(
+    data[base_y * row_stride + next_x * pixel_stride + channel]);
+  const float center01 = static_cast<float>(
+    data[next_y * row_stride + base_x * pixel_stride + channel]);
+  const float center11 = static_cast<float>(
+    data[next_y * row_stride + next_x * pixel_stride + channel]);
+  const float local_minimum = fminf(
+    fminf(center00, center10), fminf(center01, center11));
+  const float local_maximum = fmaxf(
+    fmaxf(center00, center10), fmaxf(center01, center11));
+  return clampFloat(
+    cubicCatmullRom(rows[0], rows[1], rows[2], rows[3], dy),
+    local_minimum,
+    local_maximum);
+}
+
+__device__ float sampleChannel(
+  const std::uint8_t * data,
+  const int row_stride,
+  const int width,
+  const int height,
+  const int pixel_stride,
+  const int channel,
+  const float x,
+  const float y,
+  const bool bicubic)
+{
+  if (bicubic) {
+    return sampleChannelBicubic(
+      data, row_stride, width, height, pixel_stride, channel, x, y);
+  }
+  return sampleChannelBilinear(
+    data, row_stride, width, height, pixel_stride, channel, x, y);
 }
 
 __global__ void nv12ToBevKernel(
@@ -100,6 +165,7 @@ __global__ void nv12ToBevKernel(
   const int source_crop_top,
   const int output_width,
   const int output_height,
+  const bool bicubic,
   std::uint8_t * output_bgr)
 {
   const int output_x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -155,29 +221,40 @@ __global__ void nv12ToBevKernel(
   const std::uint8_t * y_plane = nv12;
   const std::uint8_t * uv_plane =
     nv12 + input_width * input_height;
-  const float y = samplePlane(
+  const float y = sampleChannel(
     y_plane,
     input_width,
     input_width,
     input_height,
-    source_x,
-    source_y);
-  const float u = sampleChroma(
-    uv_plane,
-    input_width,
-    input_width,
-    input_height,
+    1,
+    0,
     source_x,
     source_y,
-    0);
-  const float v = sampleChroma(
+    bicubic);
+  const int chroma_width = input_width / 2;
+  const int chroma_height = input_height / 2;
+  const float chroma_x = source_x * 0.5F;
+  const float chroma_y = source_y * 0.5F;
+  const float u = sampleChannel(
     uv_plane,
     input_width,
+    chroma_width,
+    chroma_height,
+    2,
+    0,
+    chroma_x,
+    chroma_y,
+    bicubic);
+  const float v = sampleChannel(
+    uv_plane,
     input_width,
-    input_height,
-    source_x,
-    source_y,
-    1);
+    chroma_width,
+    chroma_height,
+    2,
+    1,
+    chroma_x,
+    chroma_y,
+    bicubic);
 
   const float c = fmaxf(0.0F, y - 16.0F);
   const float d = u - 128.0F;
@@ -203,11 +280,13 @@ public:
     const int input_width,
     const int input_height,
     const cv::Mat & map_x,
-    const cv::Mat & map_y)
+    const cv::Mat & map_y,
+    const BevInterpolation interpolation)
   : input_width_(input_width),
     input_height_(input_height),
     output_width_(map_x.cols),
-    output_height_(map_x.rows)
+    output_height_(map_x.rows),
+    bicubic_(interpolation == BevInterpolation::Bicubic)
   {
     if (
       input_width_ <= 0 || input_height_ <= 0 ||
@@ -376,6 +455,7 @@ public:
       source_crop_top,
       output_width_,
       output_height_,
+      bicubic_,
       device_output_);
     checkCuda(cudaGetLastError(), "launch NV12-to-BEV kernel");
 
@@ -433,6 +513,7 @@ private:
   int input_height_;
   int output_width_;
   int output_height_;
+  bool bicubic_;
   std::string device_name_;
   cudaStream_t stream_{nullptr};
   std::uint8_t * device_nv12_{nullptr};
@@ -447,9 +528,10 @@ CudaBevProcessor::CudaBevProcessor(
   const int input_width,
   const int input_height,
   const cv::Mat & map_x,
-  const cv::Mat & map_y)
+  const cv::Mat & map_y,
+  const BevInterpolation interpolation)
 : impl_(std::make_unique<Impl>(
-    input_width, input_height, map_x, map_y))
+    input_width, input_height, map_x, map_y, interpolation))
 {
 }
 

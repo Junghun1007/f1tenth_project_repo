@@ -51,6 +51,15 @@ BEV 노드가 IMU를 구독하거나 자세 변화에 따라 LUT를 다시 만�
 ros2 launch bev_processor bev_processor.launch.py
 ```
 
+BEV 보간법은 시작 시 `bilinear`(기본값) 또는 곡선 형태를 더
+부드럽게 재구성하는 `bicubic`으로 선택할 수 있다. 선택한 방식은 NV12의
+Y/UV 채널에 모두 적용된다.
+
+```bash
+ros2 launch bev_processor bev_processor.launch.py \
+  bev_interpolation:=bicubic
+```
+
 SSH 터미널에서 GUI 부하 없이 흔들림 보정과 BEV 변환 속도를
 측정할 때는 연산 측정 모드를 켠다.
 
@@ -134,7 +143,7 @@ intra-process 통신을 사용한다. BEV 시작 측정이 OAK 장치를 반환�
 `CudaBevProcessor`는 다음 처리를 한 커널에서 수행한다.
 
 1. 고정 BEV LUT 좌표를 프레임별 보정 역행렬로 하단 crop 원본 좌표에 매핑한다.
-2. 해당 NV12 Y/UV 값을 bilinear 보간한다.
+2. 해당 NV12 Y/UV 값을 선택한 bilinear 또는 bicubic 방식으로 보간한다.
 3. YUV를 BGR로 변환하고 `bgr8` BEV를 발행한다.
 
 전체 1280x720 Y/UV를 CPU `warpPerspective()`한 뒤 다시 BEV로 보간하는

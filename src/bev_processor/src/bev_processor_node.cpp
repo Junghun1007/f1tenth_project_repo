@@ -404,7 +404,8 @@ public:
       "range X=[%.2f, %.2f]m Y=[%.2f, %.2f]m, %.3fm/px, "
       "camera=(x=%.3f, y=%.3f, z=%.3fm, "
       "roll=%.2f, pitch_down=%.2f, yaw=%.2fdeg), "
-      "valid_lut=%.2f%%, GPU=%s, processing=NV12-to-BEV/latest-only, "
+      "valid_lut=%.2f%%, GPU=%s, interpolation=%s, "
+      "processing=NV12-to-BEV/latest-only, "
       "ROS=%s (max=%.1fHz, 0=unlimited), preview=%s (max=%.1fHz)",
       input_topic_.c_str(),
       input_crop_width_,
@@ -429,6 +430,7 @@ public:
       camera_yaw_deg_,
       valid_lut_percent_.load(std::memory_order_relaxed),
       startup_processor->deviceName().c_str(),
+      bev_interpolation_.c_str(),
       publish_enabled_ ? "on" : "off",
       publish_max_fps_,
       preview_enabled_ ? "on" : "off",
@@ -628,6 +630,7 @@ private:
     declare_parameter<double>("meter_per_pixel", 0.01);
     declare_parameter<int>("output_width", 120);
     declare_parameter<int>("output_height", 300);
+    declare_parameter<std::string>("bev_interpolation", "bilinear");
 
     // Bright-lane reconstruction is intentionally independent from the CUDA
     // warp. The raw color BEV remains available on output_topic while this
@@ -883,6 +886,7 @@ private:
       static_cast<int>(get_parameter("output_width").as_int());
     bev_config_.output_height =
       static_cast<int>(get_parameter("output_height").as_int());
+    bev_interpolation_ = get_parameter("bev_interpolation").as_string();
 
     lane_reconstruction_enabled_ =
       get_parameter("lane_reconstruction_enabled").as_bool();
@@ -1102,6 +1106,13 @@ private:
               "meter_per_pixel");
     }
     if (
+      bev_interpolation_ != "bilinear" &&
+      bev_interpolation_ != "bicubic")
+    {
+      throw std::invalid_argument(
+              "bev_interpolation must be 'bilinear' or 'bicubic'");
+    }
+    if (
       expected_input_fps_ <= 0.0 ||
       !std::isfinite(input_bottom_fraction_) ||
       input_bottom_fraction_ <= 0.0 ||
@@ -1175,7 +1186,9 @@ private:
       input_crop_width_,
       input_crop_height_,
       lut.map_x,
-      lut.map_y);
+      lut.map_y,
+      bev_interpolation_ == "bicubic" ?
+      BevInterpolation::Bicubic : BevInterpolation::Bilinear);
 
     const int valid_pixels = cv::countNonZero(lut.valid_mask);
     const int output_pixels =
@@ -2122,6 +2135,7 @@ private:
   double startup_timeout_sec_{12.0};
   double stabilization_settle_sec_{5.5};
   double camera_yaw_deg_{0.0};
+  std::string bev_interpolation_{"bilinear"};
   OakStartupMeasurementConfig startup_measurement_config_{};
 
   RectifiedCameraModel camera_model_{};

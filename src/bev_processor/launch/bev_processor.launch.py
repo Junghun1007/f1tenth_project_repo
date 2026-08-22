@@ -27,6 +27,7 @@ def generate_launch_description():
         "bev_input_bottom_fraction"
     )
     preview_enabled = LaunchConfiguration("preview_enabled")
+    bev_interpolation = LaunchConfiguration("bev_interpolation")
     performance_measurement_parameter = ParameterValue(
         performance_measurement_enabled,
         value_type=bool,
@@ -162,6 +163,12 @@ def generate_launch_description():
                 default_value="true",
                 description="Show or completely disable the BEV GUI preview.",
             ),
+            DeclareLaunchArgument(
+                "bev_interpolation",
+                default_value="bilinear",
+                choices=["bilinear", "bicubic"],
+                description="Interpolation used by the CUDA NV12-to-BEV warp.",
+            ),
             *lane_launch_arguments,
             ComposableNodeContainer(
                 name="bev_processor_container",
@@ -189,6 +196,10 @@ def generate_launch_description():
                                 "input_bottom_fraction": ParameterValue(
                                     bev_input_bottom_fraction,
                                     value_type=float,
+                                ),
+                                "bev_interpolation": ParameterValue(
+                                    bev_interpolation,
+                                    value_type=str,
                                 ),
                             },
                             lane_parameter_overrides,

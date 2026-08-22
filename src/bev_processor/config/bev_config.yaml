@@ -163,6 +163,9 @@ bev_processor:
     # output_height = round((x_max_m - x_min_m) / meter_per_pixel)
     output_width: 120
     output_height: 300
+    # bilinear: 기존 2x2 보간, bicubic: 곡선 연속성을 위한 Catmull-Rom 4x4 보간.
+    # bicubic은 Y/UV에 모두 적용되며 경계 halo를 막기 위해 주변 픽셀 범위로 제한한다.
+    bev_interpolation: "bilinear"
 
     # 원본 컬러 BEV(/camera/image_bev)는 그대로 유지하고, 이 단계를 켜면
     # 검은 배경+흰 주행 중심선인 mono8 결과를 lane_output_topic으로 발행한다.

@@ -144,6 +144,11 @@ source install/setup.bash
 
 ros2 launch bev_processor bev_processor.launch.py
 
+곡선 형태를 더 부드럽게 유지하는 bicubic 보간으로 실행:
+
+ros2 launch bev_processor bev_processor.launch.py \
+  bev_interpolation:=bicubic
+
 이 launch는 다음 순서로 실행한다.
 
 1. IR dot projector 1.0, 1280x800 5-bit stereo, calibrated IMU로 시작 측정

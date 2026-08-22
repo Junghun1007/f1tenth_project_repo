@@ -11,6 +11,12 @@
 namespace bev_processor
 {
 
+enum class BevInterpolation
+{
+  Bilinear,
+  Bicubic,
+};
+
 class CudaBevProcessor
 {
 public:
@@ -18,7 +24,8 @@ public:
     int input_width,
     int input_height,
     const cv::Mat & map_x,
-    const cv::Mat & map_y);
+    const cv::Mat & map_y,
+    BevInterpolation interpolation);
   ~CudaBevProcessor();
 
   CudaBevProcessor(const CudaBevProcessor &) = delete;
