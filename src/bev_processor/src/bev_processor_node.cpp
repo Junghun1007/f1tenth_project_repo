@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -25,6 +26,7 @@
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/joy.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/header.hpp>
 
@@ -372,6 +374,12 @@ public:
     }
     preview_stop_publisher_ = create_publisher<std_msgs::msg::Bool>(
       preview_stop_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
+    capture_joy_subscription_ = create_subscription<sensor_msgs::msg::Joy>(
+      capture_joy_topic_,
+      rclcpp::SensorDataQoS().keep_last(1),
+      [this](sensor_msgs::msg::Joy::ConstSharedPtr message) {
+        onCaptureJoy(std::move(message));
+      });
 
     processing_thread_ = std::thread(&BevProcessorNode::processingLoop, this);
     if (publish_enabled_ || lane_reconstruction_enabled_) {
@@ -436,6 +444,12 @@ public:
       publish_max_fps_,
       preview_enabled_ ? "on" : "off",
       preview_max_fps_);
+    RCLCPP_INFO(
+      get_logger(),
+      "BEV capture: directory=%s, joy=%s button=%d (B), keyboard=B.",
+      capture_directory_.c_str(),
+      capture_joy_topic_.c_str(),
+      capture_joy_button_);
     if (lane_reconstruction_enabled_) {
       RCLCPP_INFO(
         get_logger(),
@@ -559,6 +573,9 @@ private:
     declare_parameter<std::string>("preview_stop_topic", "/auto/enabled");
     declare_parameter<int>("preview_max_width", 1280);
     declare_parameter<int>("preview_max_height", 720);
+    declare_parameter<std::string>("capture_directory", ".");
+    declare_parameter<std::string>("capture_joy_topic", "/joy");
+    declare_parameter<int>("capture_joy_button", 1);
 
     declare_parameter<int>("input_width", 1280);
     declare_parameter<int>("input_height", 720);
@@ -754,6 +771,10 @@ private:
       static_cast<int>(get_parameter("preview_max_width").as_int());
     preview_max_height_ =
       static_cast<int>(get_parameter("preview_max_height").as_int());
+    capture_directory_ = get_parameter("capture_directory").as_string();
+    capture_joy_topic_ = get_parameter("capture_joy_topic").as_string();
+    capture_joy_button_ =
+      static_cast<int>(get_parameter("capture_joy_button").as_int());
     if (performance_measurement_enabled_) {
       preview_enabled_ = false;
     }
@@ -1067,6 +1088,14 @@ private:
     }
     if (preview_stop_topic_.empty()) {
       throw std::invalid_argument("preview_stop_topic must not be empty");
+    }
+    if (
+      capture_directory_.empty() || capture_joy_topic_.empty() ||
+      capture_joy_button_ < 0)
+    {
+      throw std::invalid_argument(
+              "capture directory/topic must not be empty and button must "
+              "be non-negative");
     }
     if (lane_reconstruction_enabled_ && lane_output_topic_.empty()) {
       throw std::invalid_argument(
@@ -1690,32 +1719,87 @@ private:
     return preview;
   }
 
-  bool handlePreviewKey(const int key, const cv::Mat & preview_image)
+  void captureLatestPreview(const char * trigger)
   {
-    if (key == 'b' || key == 'B') {
-      if (preview_image.empty()) {
-        RCLCPP_WARN(
+    cv::Mat preview_image;
+    {
+      std::lock_guard<std::mutex> lock(latest_preview_image_mutex_);
+      preview_image = latest_preview_image_;
+    }
+    if (preview_image.empty()) {
+      RCLCPP_WARN(
+        get_logger(),
+        "%s capture requested before a BEV preview frame was available.",
+        trigger);
+      return;
+    }
+
+    try {
+      const std::filesystem::path directory(capture_directory_);
+      std::error_code error;
+      std::filesystem::create_directories(directory, error);
+      if (error) {
+        RCLCPP_ERROR(
           get_logger(),
-          "B pressed before a BEV preview frame was available.");
-        return false;
+          "Failed to create BEV capture directory '%s': %s",
+          directory.string().c_str(),
+          error.message().c_str());
+        return;
       }
-      const std::string filename =
-        "bev_capture_" +
-        std::to_string(get_clock()->now().nanoseconds()) + ".png";
-      try {
-        if (cv::imwrite(filename, preview_image)) {
-          RCLCPP_INFO(
-            get_logger(), "BEV preview captured: %s", filename.c_str());
-        } else {
-          RCLCPP_ERROR(
-            get_logger(), "Failed to capture BEV preview: %s", filename.c_str());
-        }
-      } catch (const cv::Exception & exception) {
+      const std::filesystem::path filename = directory /
+        ("bev_capture_" +
+        std::to_string(get_clock()->now().nanoseconds()) + ".png");
+      if (!cv::imwrite(filename.string(), preview_image)) {
         RCLCPP_ERROR(
           get_logger(),
           "Failed to capture BEV preview: %s",
-          exception.what());
+          filename.string().c_str());
+        return;
       }
+      const auto absolute_filename = std::filesystem::absolute(filename, error);
+      const std::string saved_path = error ?
+        filename.string() : absolute_filename.string();
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV preview captured by %s: %s",
+        trigger,
+        saved_path.c_str());
+    } catch (const cv::Exception & exception) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Failed to capture BEV preview: %s",
+        exception.what());
+    }
+  }
+
+  void onCaptureJoy(const sensor_msgs::msg::Joy::ConstSharedPtr message)
+  {
+    const bool button_available =
+      capture_joy_button_ < static_cast<int>(message->buttons.size());
+    const bool pressed =
+      button_available &&
+      message->buttons[static_cast<std::size_t>(capture_joy_button_)] != 0;
+    const bool was_pressed =
+      capture_joy_button_pressed_.exchange(pressed, std::memory_order_relaxed);
+    if (!button_available) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "Joy message on %s has no capture button index %d.",
+        capture_joy_topic_.c_str(),
+        capture_joy_button_);
+      return;
+    }
+    if (pressed && !was_pressed) {
+      captureLatestPreview("controller B");
+    }
+  }
+
+  bool handlePreviewKey(const int key)
+  {
+    if (key == 'b' || key == 'B') {
+      captureLatestPreview("keyboard B");
       return false;
     }
     if (key == ' ') {
@@ -1754,7 +1838,6 @@ private:
         std::chrono::duration<double>(1.0 / preview_max_fps_));
       auto next_preview_at = SteadyClock::now();
       bool window_was_visible = false;
-      cv::Mat latest_preview_image;
 
       while (!stop_.load(std::memory_order_acquire)) {
         const auto now = SteadyClock::now();
@@ -1764,7 +1847,7 @@ private:
             next_preview_at - now);
           const int key = cv::waitKey(
             std::clamp(static_cast<int>(remaining.count()), 1, 10));
-          if (handlePreviewKey(key, latest_preview_image)) {
+          if (handlePreviewKey(key)) {
             break;
           }
           continue;
@@ -1801,7 +1884,10 @@ private:
               lane_reconstructor_config_.output_lateral_margin_m);
           }
           cv::Mat preview_image = makeCoordinatePreview(displayed_image);
-          latest_preview_image = preview_image;
+          {
+            std::lock_guard<std::mutex> lock(latest_preview_image_mutex_);
+            latest_preview_image_ = preview_image;
+          }
           cv::imshow(preview_window_name_, preview_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
@@ -1811,7 +1897,7 @@ private:
         }
 
         const int key = cv::waitKey(1);
-        if (handlePreviewKey(key, latest_preview_image)) {
+        if (handlePreviewKey(key)) {
           break;
         }
         const double visible = cv::getWindowProperty(
@@ -2152,6 +2238,10 @@ private:
   std::string preview_stop_topic_{"/auto/enabled"};
   int preview_max_width_{1280};
   int preview_max_height_{720};
+  std::string capture_directory_{"."};
+  std::string capture_joy_topic_{"/joy"};
+  int capture_joy_button_{1};
+  std::atomic<bool> capture_joy_button_pressed_{false};
   bool lane_reconstruction_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
@@ -2184,6 +2274,8 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr lane_output_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr preview_stop_publisher_;
+  rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr
+    capture_joy_subscription_;
   rclcpp::Publisher<geometry_msgs::msg::Vector3Stamped>::SharedPtr
     startup_ground_reference_publisher_;
   rclcpp::TimerBase::SharedPtr status_timer_;
@@ -2199,6 +2291,8 @@ private:
   std::mutex output_mutex_;
   std::condition_variable output_cv_;
   std::shared_ptr<const BevFrame> latest_output_;
+  std::mutex latest_preview_image_mutex_;
+  cv::Mat latest_preview_image_;
 
   std::atomic<bool> stop_{false};
   std::thread processing_thread_;

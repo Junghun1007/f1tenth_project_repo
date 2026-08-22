@@ -41,6 +41,7 @@ def generate_launch_description():
     # Defaults below mirror the documented YAML baseline. They are explicit
     # launch-time overrides so field tuning never requires rebuilding.
     lane_parameters = [
+        ("capture_directory", ".", str),
         ("lane_reconstruction_enabled", "true", bool),
         ("lane_output_topic", "/camera/image_bev_lane", str),
         ("lane_preview_enabled", "true", bool),
