@@ -16,7 +16,7 @@ bev_processor:
     startup_ground_reference_topic: "/camera/startup_ground_normal"
     startup_ground_reference_frame_id: "camera_optical_frame"
     expected_input_fps: 80.0
-    # 0.70이면 1280x720의 하단 504행. 통합 launch에서 카메라와 같이 바뀐다.
+    # 0.70이면 1280x800의 하단 560행. 통합 launch에서 카메라와 같이 바뀐다.
     input_bottom_fraction: 0.70
 
     # publish_max_fps가 0이면 처리된 프레임을 별도 속도 제한 없이 발행한다.
@@ -28,7 +28,7 @@ bev_processor:
     # 프리뷰 창에 포커스를 둔 채 Space를 누르면 false를 발행해 자동주행을 정지한다.
     preview_stop_topic: "/auto/enabled"
     preview_max_width: 1280
-    preview_max_height: 720
+    preview_max_height: 800
     # 기본값 "."은 ros2 launch 명령을 실행한 경로이다.
     capture_directory: "."
     capture_joy_topic: "/joy"
@@ -39,11 +39,11 @@ bev_processor:
     # camera_config.yaml의 fixed_view_zoom=1.25가 fx/fy에 반영된 값이며,
     # 프레임별 역행렬이 이 좌표를 하단 raw crop 좌표로 다시 매핑한다.
     input_width: 1280
-    input_height: 720
+    input_height: 800
     fx: 701.751174926
     fy: 701.420440674
     cx: 643.032653809
-    cy: 352.621124268
+    cy: 392.621124268
 
     # 차량 좌표계: 원점=앞차축 지면 중심, +X=전방, +Y=좌측, +Z=상방.
     # X/Y와 yaw는 시작 측정으로 구하지 않으므로 실제 장착 위치를 직접 잰다.

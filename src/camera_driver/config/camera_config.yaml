@@ -5,13 +5,13 @@ camera_driver:
     # 캡처/흔들림 보정 출력 FPS를 상태 로그에 출력한다.
     performance_measurement_enabled: false
 
-    # OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS, 2 MIPI lanes.
+    # Full OV9782 sensor image used as the BEV source.
     sensor_fps: 80.0
     width: 1280
-    height: 720
+    height: 800
 
     camera_socket: "CAM_A"
-    # THE_720_P is already a 16:9 sensor crop, so no aspect-ratio change occurs.
+    # The requested output matches the full 1280x800 sensor aspect ratio.
     resize_mode: "CROP"
 
     # Runs inside the OAK/DepthAI pipeline, not with host-side cv::remap().
@@ -136,7 +136,7 @@ camera_driver:
     # rectified NV12의 아래쪽만 보정 행렬과 함께 CUDA BEV 단계로 전달한다.
     fused_bev_output_enabled: false
     fused_bev_topic: "/camera/bev_input"
-    # 0.70이면 1280x720 중 하단 504행을 사용한다. 실행 시 변경 가능하다.
+    # 0.70이면 1280x800 중 하단 560행을 사용한다. 실행 시 변경 가능하다.
     bev_input_bottom_fraction: 0.70
 
     # 독립 프리뷰는 표시할 최신 NV12 프레임만 CPU에서 BGR로 바꾼다.
@@ -144,7 +144,7 @@ camera_driver:
     preview_fps: 60.0
     preview_window_name: "OAK fixed-reference pitch-roll stabilization"
     preview_max_width: 1280
-    preview_max_height: 720
+    preview_max_height: 800
     # Draw a subtle source-image coordinate grid on the standalone preview.
     preview_grid_enabled: false
     preview_grid_spacing_px: 20

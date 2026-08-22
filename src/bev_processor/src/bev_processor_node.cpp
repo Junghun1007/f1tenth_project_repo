@@ -572,17 +572,17 @@ private:
     declare_parameter<std::string>("preview_window_name", "BEV image");
     declare_parameter<std::string>("preview_stop_topic", "/auto/enabled");
     declare_parameter<int>("preview_max_width", 1280);
-    declare_parameter<int>("preview_max_height", 720);
+    declare_parameter<int>("preview_max_height", 800);
     declare_parameter<std::string>("capture_directory", ".");
     declare_parameter<std::string>("capture_joy_topic", "/joy");
     declare_parameter<int>("capture_joy_button", 1);
 
     declare_parameter<int>("input_width", 1280);
-    declare_parameter<int>("input_height", 720);
+    declare_parameter<int>("input_height", 800);
     declare_parameter<double>("fx", 701.751174926);
     declare_parameter<double>("fy", 701.420440674);
     declare_parameter<double>("cx", 643.032653809);
-    declare_parameter<double>("cy", 352.621124268);
+    declare_parameter<double>("cy", 392.621124268);
 
     declare_parameter<double>("camera_x_m", -0.16);
     declare_parameter<double>("camera_y_m", 0.0);
@@ -2264,8 +2264,8 @@ private:
   double expected_input_fps_{80.0};
   double input_bottom_fraction_{0.70};
   int input_crop_width_{1280};
-  int input_crop_height_{504};
-  int input_crop_top_{216};
+  int input_crop_height_{560};
+  int input_crop_top_{240};
   bool publish_enabled_{true};
   double publish_max_fps_{0.0};
   bool preview_enabled_{true};
@@ -2273,7 +2273,7 @@ private:
   std::string preview_window_name_;
   std::string preview_stop_topic_{"/auto/enabled"};
   int preview_max_width_{1280};
-  int preview_max_height_{720};
+  int preview_max_height_{800};
   std::string capture_directory_{"."};
   std::string capture_joy_topic_{"/joy"};
   int capture_joy_button_{1};

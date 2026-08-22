@@ -15,7 +15,7 @@ transient-local이므로 같은 launch에서 뒤에 생성되는 `camera_driver`
 
 `camera_driver`가 발행하는 하단 70%의 rectified NV12와 프레임별 IMU 보정
 행렬을 받아 CUDA에서 컬러 BEV로 변환하는 ROS 2 C++ 패키지다. 기본 입력은
-1280x720의 하단 504행이며, 시작할 때 카메라 높이·roll·하향 pitch를 반드시
+1280x800의 하단 560행이며, 시작할 때 카메라 높이·roll·하향 pitch를 반드시
 측정한다.
 
 ## 작동 순서
@@ -148,7 +148,7 @@ intra-process 통신을 사용한다. BEV 시작 측정이 OAK 장치를 반환�
    UV는 bilinear로 보간한다.
 3. YUV를 BGR로 변환하고 `bgr8` BEV를 발행한다.
 
-전체 1280x720 Y/UV를 CPU `warpPerspective()`한 뒤 다시 BEV로 보간하는
+전체 1280x800 Y/UV를 CPU `warpPerspective()`한 뒤 다시 BEV로 보간하는
 중간 영상은 만들지 않는다. crop 비율은 빌드 없이 바꿀 수 있으며 카메라와
 BEV에 같은 값이 전달된다.
 

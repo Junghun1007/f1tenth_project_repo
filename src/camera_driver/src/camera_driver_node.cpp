@@ -44,8 +44,8 @@ using namespace std::chrono_literals;
 namespace
 {
 
-constexpr std::uint32_t kOv9782The720PWidth = 1280U;
-constexpr std::uint32_t kOv9782The720PHeight = 720U;
+constexpr std::uint32_t kOv9782FullWidth = 1280U;
+constexpr std::uint32_t kOv9782FullHeight = 800U;
 
 std::int64_t steady_now_nanoseconds()
 {
@@ -402,7 +402,7 @@ private:
     camera_socket_name_ =
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
     width_ = node_.declare_parameter<int>("width", 1280);
-    height_ = node_.declare_parameter<int>("height", 720);
+    height_ = node_.declare_parameter<int>("height", 800);
     sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 80.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
@@ -621,7 +621,7 @@ private:
     preview_max_width_ =
       node_.declare_parameter<int>("preview_max_width", 1280);
     preview_max_height_ =
-      node_.declare_parameter<int>("preview_max_height", 720);
+      node_.declare_parameter<int>("preview_max_height", 800);
     preview_grid_enabled_ =
       node_.declare_parameter<bool>("preview_grid_enabled", false);
     preview_grid_spacing_px_ =
@@ -1012,10 +1012,10 @@ private:
     pipeline_ = std::make_unique<dai::Pipeline>(device);
     pipeline_->setXLinkChunkSize(0);
 
-    // Explicit OV9782 THE_720_P sensor mode: 1280x720, up to 143 FPS.
+    // Use the full OV9782 sensor image as the BEV source: 1280x800.
     auto camera = pipeline_->create<dai::node::Camera>()->build(
       camera_socket_,
-      std::make_pair(kOv9782The720PWidth, kOv9782The720PHeight),
+      std::make_pair(kOv9782FullWidth, kOv9782FullHeight),
       static_cast<float>(sensor_fps_));
     auto * output = camera->requestOutput(
       std::make_pair(
@@ -1101,7 +1101,7 @@ private:
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "OAK: THE_720_P %dx%d @ %.1f FPS, USB=%s, "
+      "OAK: full sensor %dx%d @ %.1f FPS, USB=%s, "
       "transport=NV12, XLink chunks=off, XLink device queue=1/non-blocking",
       width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
     RCLCPP_INFO(
@@ -2524,7 +2524,7 @@ private:
   bool performance_measurement_enabled_{false};
   std::string camera_socket_name_;
   int width_{1280};
-  int height_{720};
+  int height_{800};
   double sensor_fps_{80.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
@@ -2561,13 +2561,13 @@ private:
   bool fused_bev_output_enabled_{false};
   std::string fused_bev_topic_{"/camera/bev_input"};
   double bev_input_bottom_fraction_{0.70};
-  int fused_bev_crop_top_{216};
-  int fused_bev_crop_height_{504};
+  int fused_bev_crop_top_{240};
+  int fused_bev_crop_height_{560};
   bool preview_enabled_{false};
   double preview_fps_{60.0};
   std::string preview_window_name_;
   int preview_max_width_{1280};
-  int preview_max_height_{720};
+  int preview_max_height_{800};
   bool preview_grid_enabled_{false};
   int preview_grid_spacing_px_{20};
   std::string capture_directory_{"."};

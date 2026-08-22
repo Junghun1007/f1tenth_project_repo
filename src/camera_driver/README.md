@@ -16,8 +16,8 @@ BEV와 공유한 기준이다. 단독 camera_driver launch에서는 BEV publishe
 OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패키지다.
 기본 설정은 다음과 같다.
 
-- 센서 모드: OV9782 `THE_720_P`, `1280x720`, `NV12`
-- 기본 프리뷰/ROS 출력: 안정화된 전체 `1280x720` 프레임
+- 센서 모드: OV9782 풀 해상도 `1280x800`, `NV12`
+- 기본 프리뷰/ROS 출력: 안정화된 전체 `1280x800` 프레임
 - 요청 센서 FPS: `80`
 - USB 최대 속도 요청: `SUPER` (5 Gbps)
 - XLink 청크 분할: 비활성화 (`setXLinkChunkSize(0)`)
@@ -31,11 +31,11 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 - 호스트 큐: 크기 1, non-blocking
 - 프리뷰: 캡처와 분리된 최신 프레임 방식
 
-센서 모드는 OV9782의 2-lane `THE_720_P`로 명시하며, 이 모드는 센서
-상하를 크롭한 1280x720 출력을 최대 143 FPS로 지원한다. 노드는 요청값과
+센서 모드는 OV9782의 2-lane 1280x800 풀 해상도 출력을 사용한다.
+노드는 요청값과
 별도로 측정된 캡처 FPS와 장치 sequence gap을 주기적으로 출력한다.
 
-첫 프레임에는 resize와 장치 내부 왜곡 보정을 반영한 전체 1280x720
+첫 프레임에는 resize와 장치 내부 왜곡 보정을 반영한 전체 1280x800
 `K_rect`의 `fx`, `fy`, `cx`, `cy`를 출력한다. 투영 기하가 필요한 후속
 처리에서는 이 값을 사용한다.
 
@@ -51,9 +51,9 @@ OAK에서 `NV12`를 생성해 Jetson으로 전송한다. BGR888i보다 전송량
 보관하며 색 변환을 하지 않는다. ROS 토픽 발행을 선택한 경우 원본 NV12를
 `sensor_msgs/Image` 데이터로 한 번 복사한다.
 
-기본 NV12 메시지는 `encoding="nv12"`, `width=1280`, `height=720`,
-`step=1280`을 사용하고, `data`에는 Y plane 720행 다음에 interleaved UV
-plane 360행이 연속으로 들어간다. 일반 BGR8 구독자가 아니라 NV12를
+기본 NV12 메시지는 `encoding="nv12"`, `width=1280`, `height=800`,
+`step=1280`을 사용하고, `data`에는 Y plane 800행 다음에 interleaved UV
+plane 400행이 연속으로 들어간다. 일반 BGR8 구독자가 아니라 NV12를
 이해하는 처리 노드가 받아야 한다.
 
 왜곡 보정은 `Camera::requestOutput(..., enableUndistortion=true)`로 요청한다.
@@ -73,7 +73,7 @@ ROS 발행은 `sensor_msgs/msg/Image`의 `UniquePtr`를 사용한다. 기본 lau
 
 통합 BEV launch에서는 일반 `sensor_msgs/Image` 발행을 끄고
 `camera_driver/msg/BevInput`을 사용한다. 원본 rectified NV12의 하단 70%
-(1280x504)만 복사하고, 같은 노출 시점의 원본→안정화 homography를 함께
+(1280x560)만 복사하고, 같은 노출 시점의 원본→안정화 homography를 함께
 보낸다. 이 경로는 CPU Y/UV `warpPerspective()`를 수행하지 않으며, 고정 줌과
 동적 roll/pitch 보정은 BEV의 CUDA sampling에 합쳐진다. 단독 프리뷰와 일반
 이미지 토픽의 기존 CPU 안정화 경로는 호환성을 위해 유지한다.
@@ -296,7 +296,7 @@ ros2 topic info /camera/image_rect --verbose
 |---|---:|---|
 | `performance_measurement_enabled` | `false` | GUI 프리뷰 강제 비활성화 및 연산 FPS 로그 |
 | `sensor_fps` | `80.0` | OAK 센서/출력 요청 FPS |
-| `width`, `height` | `1280`, `720` | OAK 입력 및 기본 출력 해상도 |
+| `width`, `height` | `1280`, `800` | OAK 입력 및 기본 출력 해상도 |
 | `undistort_enabled` | `true` | OAK 장치 내부 왜곡 보정 |
 | `queue_size` | `8` | DepthAI 호스트 큐 크기 |
 | `queue_blocking` | `false` | 큐가 찼을 때 캡처 차단 여부 |
@@ -387,7 +387,7 @@ differential을 각각 계산하므로 `50/591`을 중복 적용하지 않는다
 늘리고, 반응이 너무 늦으면 줄인다. 차폭과 조향각은 사용하지 않으며,
 횡가속도는 속도와 IMU yaw rate를 직접 결합한다.
 
-143 FPS에서 `1280x720 NV12`의 순수 영상 데이터는 약 189 MiB/s다.
-`BGR888i`의 약 377 MiB/s보다 작다. 외부 프로세스 구독자는 DDS 직렬화와
+80 FPS에서 `1280x800 NV12`의 순수 영상 데이터는 약 117 MiB/s다.
+`BGR888i`의 약 234 MiB/s보다 작다. 외부 프로세스 구독자는 DDS 직렬화와
 추가 복사를 사용하므로, 후속 C++ 영상 처리는 같은 컴포넌트 컨테이너의
 intra-process 통신으로 구성하는 것이 좋다.
