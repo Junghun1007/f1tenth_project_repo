@@ -18,6 +18,7 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/highgui.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -1689,8 +1690,34 @@ private:
     return preview;
   }
 
-  bool handlePreviewKey(const int key)
+  bool handlePreviewKey(const int key, const cv::Mat & preview_image)
   {
+    if (key == 'b' || key == 'B') {
+      if (preview_image.empty()) {
+        RCLCPP_WARN(
+          get_logger(),
+          "B pressed before a BEV preview frame was available.");
+        return false;
+      }
+      const std::string filename =
+        "bev_capture_" +
+        std::to_string(get_clock()->now().nanoseconds()) + ".png";
+      try {
+        if (cv::imwrite(filename, preview_image)) {
+          RCLCPP_INFO(
+            get_logger(), "BEV preview captured: %s", filename.c_str());
+        } else {
+          RCLCPP_ERROR(
+            get_logger(), "Failed to capture BEV preview: %s", filename.c_str());
+        }
+      } catch (const cv::Exception & exception) {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Failed to capture BEV preview: %s",
+          exception.what());
+      }
+      return false;
+    }
     if (key == ' ') {
       std_msgs::msg::Bool enabled_message;
       enabled_message.data = false;
@@ -1727,6 +1754,7 @@ private:
         std::chrono::duration<double>(1.0 / preview_max_fps_));
       auto next_preview_at = SteadyClock::now();
       bool window_was_visible = false;
+      cv::Mat latest_preview_image;
 
       while (!stop_.load(std::memory_order_acquire)) {
         const auto now = SteadyClock::now();
@@ -1736,7 +1764,7 @@ private:
             next_preview_at - now);
           const int key = cv::waitKey(
             std::clamp(static_cast<int>(remaining.count()), 1, 10));
-          if (handlePreviewKey(key)) {
+          if (handlePreviewKey(key, latest_preview_image)) {
             break;
           }
           continue;
@@ -1773,6 +1801,7 @@ private:
               lane_reconstructor_config_.output_lateral_margin_m);
           }
           cv::Mat preview_image = makeCoordinatePreview(displayed_image);
+          latest_preview_image = preview_image;
           cv::imshow(preview_window_name_, preview_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
@@ -1782,7 +1811,7 @@ private:
         }
 
         const int key = cv::waitKey(1);
-        if (handlePreviewKey(key)) {
+        if (handlePreviewKey(key, latest_preview_image)) {
           break;
         }
         const double visible = cv::getWindowProperty(
