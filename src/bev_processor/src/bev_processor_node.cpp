@@ -1719,17 +1719,14 @@ private:
     return preview;
   }
 
-  void captureLatestPreview(const char * trigger)
+  void captureLatestBev(const char * trigger)
   {
-    cv::Mat preview_image;
-    {
-      std::lock_guard<std::mutex> lock(latest_preview_image_mutex_);
-      preview_image = latest_preview_image_;
-    }
-    if (preview_image.empty()) {
+    const auto frame = std::atomic_load_explicit(
+      &latest_output_, std::memory_order_acquire);
+    if (!frame || frame->image.empty()) {
       RCLCPP_WARN(
         get_logger(),
-        "%s capture requested before a BEV preview frame was available.",
+        "%s capture requested before a BEV frame was available.",
         trigger);
       return;
     }
@@ -1749,10 +1746,10 @@ private:
       const std::filesystem::path filename = directory /
         ("bev_capture_" +
         std::to_string(get_clock()->now().nanoseconds()) + ".png");
-      if (!cv::imwrite(filename.string(), preview_image)) {
+      if (!cv::imwrite(filename.string(), frame->image)) {
         RCLCPP_ERROR(
           get_logger(),
-          "Failed to capture BEV preview: %s",
+          "Failed to capture BEV image: %s",
           filename.string().c_str());
         return;
       }
@@ -1761,13 +1758,13 @@ private:
         filename.string() : absolute_filename.string();
       RCLCPP_INFO(
         get_logger(),
-        "BEV preview captured by %s: %s",
+        "BEV image captured by %s: %s",
         trigger,
         saved_path.c_str());
     } catch (const cv::Exception & exception) {
       RCLCPP_ERROR(
         get_logger(),
-        "Failed to capture BEV preview: %s",
+        "Failed to capture BEV image: %s",
         exception.what());
     }
   }
@@ -1792,14 +1789,14 @@ private:
       return;
     }
     if (pressed && !was_pressed) {
-      captureLatestPreview("controller B");
+      captureLatestBev("controller B");
     }
   }
 
   bool handlePreviewKey(const int key)
   {
     if (key == 'b' || key == 'B') {
-      captureLatestPreview("keyboard B");
+      captureLatestBev("keyboard B");
       return false;
     }
     if (key == ' ') {
@@ -1884,10 +1881,6 @@ private:
               lane_reconstructor_config_.output_lateral_margin_m);
           }
           cv::Mat preview_image = makeCoordinatePreview(displayed_image);
-          {
-            std::lock_guard<std::mutex> lock(latest_preview_image_mutex_);
-            latest_preview_image_ = preview_image;
-          }
           cv::imshow(preview_window_name_, preview_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
@@ -2291,8 +2284,6 @@ private:
   std::mutex output_mutex_;
   std::condition_variable output_cv_;
   std::shared_ptr<const BevFrame> latest_output_;
-  std::mutex latest_preview_image_mutex_;
-  cv::Mat latest_preview_image_;
 
   std::atomic<bool> stop_{false};
   std::thread processing_thread_;
