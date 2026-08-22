@@ -57,21 +57,34 @@ Start without automatic motion for a lifted-wheel check with
 `auto_enabled:=false`. Controller parameters are installed from
 `auto_control/config/auto_control.yaml`.
 
-## 8BitDo input safety
+## 8BitDo Bluetooth input safety
 
 The manual launch uses the project-owned `joy_input_node` for the 8BitDo
-controller in D-input mode. It selects the exact SDL controller name, publishes
-only `/joy`, and has no haptic subsystem, feedback subscription, or rumble API.
-The actuator commander consumes `/joy` directly; no conversion/debug process
-runs between the controller and actuator commands.
+controller in Bluetooth D-input mode. Remove the 2.4 GHz receiver before
+launch. The node uses SDL GameController's standard layout and matches the
+`8BitDo` name substring, publishes only `/joy`, and has no haptic subsystem,
+feedback subscription, or rumble API. The actuator commander consumes `/joy`
+directly; no conversion/debug process runs between the controller and actuator
+commands.
 
-The initial `Opened joystick input` message is normal startup. If the kernel or
-SDL actually removes the receiver, the node prints `Joystick disconnected by
-SDL`, stops publishing immediately so the 0.30-second actuator watchdog can
-stop the vehicle, and waits for the same named controller. Only a subsequent
-physical reattachment prints `Reopened joystick after a real SDL disconnect`.
+The initial `Opened Bluetooth game controller` message is normal startup. If
+BlueZ or SDL removes the controller, the node stops publishing immediately so
+the 0.30-second actuator watchdog can stop the vehicle. Reconnection is
+automatic after BlueZ restores the trusted Bluetooth link.
+
+The manual mapping is `RT=axis5`, `LT=axis4`, left-stick X=`axis0`, and
+`RB=button10`. Both triggers use `0.0` released and `1.0` fully pressed. Verify
+these values with `joy_test.launch.py` while the drive wheels are lifted before
+the first powered run.
+
+If SDL exposes a generic name without `8BitDo`, clear the name filter and use
+the first SDL-recognized controller:
+
+```bash
+ros2 launch vehicle_bringup joy_test.launch.py controller_name_contains:=""
+```
 
 RB gear changes are edge-triggered and immediate: they are accepted only while
 the commanded duty is already zero. A rejected change is not stored or replayed
 later. `vesc_bridge` communicates through `/dev/ttyTHS1` and does not access the
-8BitDo USB device.
+Bluetooth controller transport.

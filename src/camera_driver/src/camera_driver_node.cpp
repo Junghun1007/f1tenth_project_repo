@@ -605,7 +605,7 @@ private:
     preview_max_height_ =
       node_.declare_parameter<int>("preview_max_height", 720);
     preview_grid_enabled_ =
-      node_.declare_parameter<bool>("preview_grid_enabled", true);
+      node_.declare_parameter<bool>("preview_grid_enabled", false);
     preview_grid_spacing_px_ =
       node_.declare_parameter<int>("preview_grid_spacing_px", 20);
     startup_timeout_sec_ =
@@ -2450,7 +2450,7 @@ private:
   std::string preview_window_name_;
   int preview_max_width_{1280};
   int preview_max_height_{720};
-  bool preview_grid_enabled_{true};
+  bool preview_grid_enabled_{false};
   int preview_grid_spacing_px_{20};
   double startup_timeout_sec_{5.0};
   double status_log_interval_sec_{1.0};

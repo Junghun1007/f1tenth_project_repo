@@ -192,12 +192,12 @@ ros2 launch camera_driver camera_driver.launch.py
 ros2 launch camera_driver camera_driver.launch.py preview_enabled:=false
 ```
 
-기본 독립 프리뷰에는 원본 영상 좌표 기준 20픽셀 간격의 연한 회색 격자가
-표시된다. 격자만 끄려면 다음처럼 실행한다.
+기본 독립 프리뷰의 격자는 꺼져 있다. 격자가 필요한 경우에만 다음처럼
+명시적으로 켠다.
 
 ```bash
 ros2 launch camera_driver camera_driver.launch.py \
-  preview_enabled:=true preview_grid_enabled:=false
+  preview_enabled:=true preview_grid_enabled:=true
 ```
 
 OAK IMU로 프리뷰와 ROS NV12 출력을 시작 pitch/roll 기준에 고정하려면
@@ -353,7 +353,7 @@ ros2 topic info /camera/image_rect --verbose
 | `output_crop_top_px` | `0` | 안정화 후 제거할 상단 행 수 (`0`이면 원본) |
 | `preview_enabled` | `false` | OpenCV 직접 프리뷰 |
 | `preview_fps` | `60.0` | 프리뷰 갱신 목표 최대 FPS |
-| `preview_grid_enabled` | `true` | 독립 프리뷰 격자 표시 |
+| `preview_grid_enabled` | `false` | 독립 프리뷰 격자 표시 |
 | `preview_grid_spacing_px` | `20` | 원본 영상 기준 격자 간격 |
 
 시작 Depth 지면 법선은 BEV의 불변 절대 자세로 사용한다. 주행 중

@@ -1,6 +1,7 @@
 # manual_control
 
-Reads raw joystick input from `/joy` and sends manual actuator commands.
+Reads SDL-standard Bluetooth controller input from `/joy` and sends manual
+actuator commands.
 
 Published topics:
 
@@ -14,17 +15,16 @@ Published topics:
 Current mapping:
 
 ```text
-RT trigger axis -> acceleration
-LT trigger axis -> deceleration toward duty 0
-left stick X -> steering angle
-RB button -> forward/reverse toggle while stopped
+RT axis 5 (0.0 released, 1.0 pressed) -> acceleration
+LT axis 4 (0.0 released, 1.0 pressed) -> deceleration toward duty 0
+left stick X axis 0 -> steering angle
+RB button 10 -> forward/reverse toggle while stopped
 ```
 
 `actuator_commander_node` starts stopped in forward gear. RT increases the
 command duty, LT reduces duty toward zero, and RB toggles forward/reverse while
-stopped. With the default `immediate_stop_on_accelerator_release: true`,
-releasing RT publishes duty 0 on the next 80 Hz control tick instead of keeping
-an accumulated command alive. Current gear and command duty are
+stopped. With the configured `immediate_stop_on_accelerator_release: false`,
+releasing RT follows the coast deceleration rate. Current gear and command duty are
 published on `/manual/gear` and
 `/manual/current_duty`. The VESC node publishes measured ERPM on
 `/vesc/measured_erpm` and logs target duty and measured ERPM together.

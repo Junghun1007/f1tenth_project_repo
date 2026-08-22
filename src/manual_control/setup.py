@@ -15,7 +15,7 @@ setup(
     zip_safe=True,
     maintainer="ohslo",
     maintainer_email="ohslo@example.com",
-    description="Manual controller input translator for AutoDrive.",
+    description="SDL-standard Bluetooth manual controller input for AutoDrive.",
     license="TODO",
     entry_points={
         "console_scripts": [

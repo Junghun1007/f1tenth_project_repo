@@ -3,11 +3,12 @@ actuator_commander_node:
     # /joy를 직접 읽는다: RT 가속, LT 감속, 왼쪽 스틱 조향, RB 전후진 전환.
     joy_topic: "/joy"
     joy_steering_axis: 0
-    joy_accelerator_axis: 4
-    joy_brake_axis: 5
-    joy_gear_button: 7
-    joy_trigger_released: 1.0
-    joy_trigger_pressed: -1.0
+    # SDL GameController standard: LT=axis4, RT=axis5, RB=button10.
+    joy_accelerator_axis: 5
+    joy_brake_axis: 4
+    joy_gear_button: 10
+    joy_trigger_released: 0.0
+    joy_trigger_pressed: 1.0
     current_duty_topic: "/manual/current_duty"     # 현재 duty 명령
     gear_state_topic: "/manual/gear"               # FORWARD 또는 REVERSE
     duty_topic: "/vesc/duty"

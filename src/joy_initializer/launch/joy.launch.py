@@ -7,7 +7,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     device_id = LaunchConfiguration("device_id")
-    device_name = LaunchConfiguration("device_name")
+    device_name_contains = LaunchConfiguration("device_name_contains")
     deadzone = LaunchConfiguration("deadzone")
     autorepeat_rate = LaunchConfiguration("autorepeat_rate")
     sticky_buttons = LaunchConfiguration("sticky_buttons")
@@ -22,7 +22,9 @@ def generate_launch_description():
         parameters=[
             {
                 "device_id": ParameterValue(device_id, value_type=int),
-                "device_name": ParameterValue(device_name, value_type=str),
+                "device_name_contains": ParameterValue(
+                    device_name_contains, value_type=str
+                ),
                 "deadzone": ParameterValue(deadzone, value_type=float),
                 "autorepeat_rate": ParameterValue(
                     autorepeat_rate, value_type=float
@@ -42,8 +44,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("device_id", default_value="0"),
             DeclareLaunchArgument(
-                "device_name",
-                default_value="8BitDo Ultimate 2 Wireless Controller for PC",
+                "device_name_contains",
+                default_value="8BitDo",
             ),
             DeclareLaunchArgument("deadzone", default_value="0.05"),
             DeclareLaunchArgument("autorepeat_rate", default_value="50.0"),

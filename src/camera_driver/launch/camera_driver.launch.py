@@ -32,7 +32,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "preview_grid_enabled",
-                default_value="true",
+                default_value="false",
                 description="Draw a light-gray 20-pixel grid on the preview.",
             ),
             DeclareLaunchArgument(

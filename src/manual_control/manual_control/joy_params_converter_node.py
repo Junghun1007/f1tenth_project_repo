@@ -193,6 +193,9 @@ class JoyParamsConverterNode(Node):
 
     def _dpad_pressed(self, msg: Joy, dpad_name: str) -> bool:
         dpad_config = self.keymap.get("dpad", {}).get(dpad_name, {})
+        if dpad_config.get("type") == "button":
+            return self._button_pressed_from_config(msg, dpad_config)
+
         raw_axis = self._axis_value(msg, dpad_config.get("number"))
         pressed_value = float(dpad_config.get("normalized_pressed", 0.0))
         if pressed_value < 0.0:
