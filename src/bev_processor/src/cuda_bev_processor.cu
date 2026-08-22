@@ -41,13 +41,24 @@ __device__ int clampInt(
   return value < minimum ? minimum : value > maximum ? maximum : value;
 }
 
-__device__ float sampleChannelBilinear(
-  const std::uint8_t * data,
-  const int row_stride,
+__device__ float readPlane(
+  const std::uint8_t * plane,
+  const int stride,
   const int width,
   const int height,
-  const int pixel_stride,
-  const int channel,
+  const int x,
+  const int y)
+{
+  return static_cast<float>(plane[
+      clampInt(y, 0, height - 1) * stride +
+      clampInt(x, 0, width - 1)]);
+}
+
+__device__ float samplePlane(
+  const std::uint8_t * plane,
+  const int stride,
+  const int width,
+  const int height,
   const float x,
   const float y)
 {
@@ -61,98 +72,259 @@ __device__ float sampleChannelBilinear(
   const float dy = clamped_y - y0;
 
   const float top =
-    data[y0 * row_stride + x0 * pixel_stride + channel] * (1.0F - dx) +
-    data[y0 * row_stride + x1 * pixel_stride + channel] * dx;
+    plane[y0 * stride + x0] * (1.0F - dx) +
+    plane[y0 * stride + x1] * dx;
   const float bottom =
-    data[y1 * row_stride + x0 * pixel_stride + channel] * (1.0F - dx) +
-    data[y1 * row_stride + x1 * pixel_stride + channel] * dx;
+    plane[y1 * stride + x0] * (1.0F - dx) +
+    plane[y1 * stride + x1] * dx;
   return top * (1.0F - dy) + bottom * dy;
 }
 
-__device__ float cubicCatmullRom(
-  const float p0,
-  const float p1,
-  const float p2,
-  const float p3,
-  const float amount)
+__device__ float cubicKernel(const float distance)
 {
-  return p1 + 0.5F * amount * (
-    p2 - p0 + amount * (
-      2.0F * p0 - 5.0F * p1 + 4.0F * p2 - p3 +
-      amount * (3.0F * (p1 - p2) + p3 - p0)));
+  constexpr float a = -0.5F;
+  const float absolute = fabsf(distance);
+  if (absolute <= 1.0F) {
+    return
+      (a + 2.0F) * absolute * absolute * absolute -
+      (a + 3.0F) * absolute * absolute + 1.0F;
+  }
+  if (absolute < 2.0F) {
+    return
+      a * absolute * absolute * absolute -
+      5.0F * a * absolute * absolute +
+      8.0F * a * absolute - 4.0F * a;
+  }
+  return 0.0F;
 }
 
-__device__ float sampleChannelBicubic(
-  const std::uint8_t * data,
-  const int row_stride,
+__device__ void localRange2x2(
+  const std::uint8_t * plane,
+  const int stride,
   const int width,
   const int height,
-  const int pixel_stride,
-  const int channel,
+  const float x,
+  const float y,
+  float & local_minimum,
+  float & local_maximum)
+{
+  const int x0 = clampInt(static_cast<int>(floorf(x)), 0, width - 1);
+  const int y0 = clampInt(static_cast<int>(floorf(y)), 0, height - 1);
+  const int x1 = x0 + 1 < width ? x0 + 1 : width - 1;
+  const int y1 = y0 + 1 < height ? y0 + 1 : height - 1;
+  const float value00 = readPlane(plane, stride, width, height, x0, y0);
+  const float value10 = readPlane(plane, stride, width, height, x1, y0);
+  const float value01 = readPlane(plane, stride, width, height, x0, y1);
+  const float value11 = readPlane(plane, stride, width, height, x1, y1);
+  local_minimum = fminf(fminf(value00, value10), fminf(value01, value11));
+  local_maximum = fmaxf(fmaxf(value00, value10), fmaxf(value01, value11));
+}
+
+__device__ float samplePlaneBicubic(
+  const std::uint8_t * plane,
+  const int stride,
+  const int width,
+  const int height,
   const float x,
   const float y)
 {
-  const float clamped_x = clampFloat(x, 0.0F, width - 1.0F);
-  const float clamped_y = clampFloat(y, 0.0F, height - 1.0F);
-  const int base_x = static_cast<int>(floorf(clamped_x));
-  const int base_y = static_cast<int>(floorf(clamped_y));
-  const float dx = clamped_x - base_x;
-  const float dy = clamped_y - base_y;
-  float rows[4];
-
+  const int base_x = static_cast<int>(floorf(x));
+  const int base_y = static_cast<int>(floorf(y));
+  float weighted_sum = 0.0F;
+  float total_weight = 0.0F;
 #pragma unroll
   for (int row_offset = -1; row_offset <= 2; ++row_offset) {
-    const int sample_y = clampInt(base_y + row_offset, 0, height - 1);
-    float samples[4];
+    const float weight_y = cubicKernel(y - (base_y + row_offset));
 #pragma unroll
     for (int column_offset = -1; column_offset <= 2; ++column_offset) {
-      const int sample_x = clampInt(base_x + column_offset, 0, width - 1);
-      samples[column_offset + 1] = static_cast<float>(
-        data[sample_y * row_stride + sample_x * pixel_stride + channel]);
+      const float weight_x = cubicKernel(x - (base_x + column_offset));
+      const float weight = weight_x * weight_y;
+      weighted_sum += weight * readPlane(
+        plane, stride, width, height,
+        base_x + column_offset, base_y + row_offset);
+      total_weight += weight;
     }
-    rows[row_offset + 1] = cubicCatmullRom(
-      samples[0], samples[1], samples[2], samples[3], dx);
   }
-
-  // Catmull-Rom can overshoot sharp image edges. Restrict the result to the
-  // four pixels surrounding the sample position to avoid visible halos.
-  const int next_x = clampInt(base_x + 1, 0, width - 1);
-  const int next_y = clampInt(base_y + 1, 0, height - 1);
-  const float center00 = static_cast<float>(
-    data[base_y * row_stride + base_x * pixel_stride + channel]);
-  const float center10 = static_cast<float>(
-    data[base_y * row_stride + next_x * pixel_stride + channel]);
-  const float center01 = static_cast<float>(
-    data[next_y * row_stride + base_x * pixel_stride + channel]);
-  const float center11 = static_cast<float>(
-    data[next_y * row_stride + next_x * pixel_stride + channel]);
-  const float local_minimum = fminf(
-    fminf(center00, center10), fminf(center01, center11));
-  const float local_maximum = fmaxf(
-    fmaxf(center00, center10), fmaxf(center01, center11));
-  return clampFloat(
-    cubicCatmullRom(rows[0], rows[1], rows[2], rows[3], dy),
-    local_minimum,
-    local_maximum);
+  const float result = fabsf(total_weight) > 1.0e-6F ?
+    weighted_sum / total_weight :
+    samplePlane(plane, stride, width, height, x, y);
+  float local_minimum = 0.0F;
+  float local_maximum = 0.0F;
+  localRange2x2(
+    plane, stride, width, height, x, y, local_minimum, local_maximum);
+  return clampFloat(result, local_minimum, local_maximum);
 }
 
-__device__ float sampleChannel(
-  const std::uint8_t * data,
-  const int row_stride,
+__device__ float smoothstep(
+  const float edge0,
+  const float edge1,
+  const float value)
+{
+  if (edge1 <= edge0) {
+    return value >= edge1 ? 1.0F : 0.0F;
+  }
+  const float amount = clampFloat((value - edge0) / (edge1 - edge0), 0.0F, 1.0F);
+  return amount * amount * (3.0F - 2.0F * amount);
+}
+
+__device__ void sobelGradient(
+  const std::uint8_t * plane,
+  const int stride,
   const int width,
   const int height,
-  const int pixel_stride,
-  const int channel,
-  const float x,
-  const float y,
-  const bool bicubic)
+  const int x,
+  const int y,
+  float & gradient_x,
+  float & gradient_y)
 {
-  if (bicubic) {
-    return sampleChannelBicubic(
-      data, row_stride, width, height, pixel_stride, channel, x, y);
+  const float top_left = readPlane(plane, stride, width, height, x - 1, y - 1);
+  const float top = readPlane(plane, stride, width, height, x, y - 1);
+  const float top_right = readPlane(plane, stride, width, height, x + 1, y - 1);
+  const float left = readPlane(plane, stride, width, height, x - 1, y);
+  const float right = readPlane(plane, stride, width, height, x + 1, y);
+  const float bottom_left = readPlane(plane, stride, width, height, x - 1, y + 1);
+  const float bottom = readPlane(plane, stride, width, height, x, y + 1);
+  const float bottom_right = readPlane(plane, stride, width, height, x + 1, y + 1);
+  gradient_x = 0.25F * (
+    top_right + 2.0F * right + bottom_right -
+    top_left - 2.0F * left - bottom_left);
+  gradient_y = 0.25F * (
+    bottom_left + 2.0F * bottom + bottom_right -
+    top_left - 2.0F * top - top_right);
+}
+
+__device__ float samplePlaneAdaptive(
+  const std::uint8_t * plane,
+  const int stride,
+  const int width,
+  const int height,
+  const float source_x,
+  const float source_y,
+  const float x_vehicle_m,
+  const float start_x_m,
+  const float full_x_m,
+  const float strength,
+  const float gradient_low,
+  const float gradient_high,
+  const float coherence_minimum,
+  const float maximum_anisotropy)
+{
+  const float standard = samplePlaneBicubic(
+    plane, stride, width, height, source_x, source_y);
+  const int center_x = static_cast<int>(floorf(source_x + 0.5F));
+  const int center_y = static_cast<int>(floorf(source_y + 0.5F));
+  constexpr float gaussian_edge = 0.238994F;
+  constexpr float gaussian_center = 0.522012F;
+  float tensor_xx = 0.0F;
+  float tensor_xy = 0.0F;
+  float tensor_yy = 0.0F;
+#pragma unroll
+  for (int row_offset = -1; row_offset <= 1; ++row_offset) {
+    const float weight_y = row_offset == 0 ? gaussian_center : gaussian_edge;
+#pragma unroll
+    for (int column_offset = -1; column_offset <= 1; ++column_offset) {
+      const float weight_x = column_offset == 0 ? gaussian_center : gaussian_edge;
+      float gradient_x = 0.0F;
+      float gradient_y = 0.0F;
+      sobelGradient(
+        plane, stride, width, height,
+        center_x + column_offset, center_y + row_offset,
+        gradient_x, gradient_y);
+      const float weight = weight_x * weight_y;
+      tensor_xx += weight * gradient_x * gradient_x;
+      tensor_xy += weight * gradient_x * gradient_y;
+      tensor_yy += weight * gradient_y * gradient_y;
+    }
   }
-  return sampleChannelBilinear(
-    data, row_stride, width, height, pixel_stride, channel, x, y);
+
+  const float trace = fmaxf(0.0F, tensor_xx + tensor_yy);
+  const float eigen_gap = sqrtf(fmaxf(
+      0.0F,
+      (tensor_xx - tensor_yy) * (tensor_xx - tensor_yy) +
+      4.0F * tensor_xy * tensor_xy));
+  const float largest_eigenvalue = 0.5F * (trace + eigen_gap);
+  const float gradient = fminf(255.0F, sqrtf(fmaxf(0.0F, largest_eigenvalue)));
+  const float coherence = eigen_gap / (trace + 1.0e-9F);
+  const float blend = clampFloat(
+    strength *
+    smoothstep(gradient_low, gradient_high, gradient) *
+    smoothstep(coherence_minimum, 1.0F, coherence) *
+    smoothstep(start_x_m, full_x_m, x_vehicle_m),
+    0.0F,
+    1.0F);
+  if (blend <= 1.0e-6F) {
+    return standard;
+  }
+
+  const float normal_angle = 0.5F * atan2f(
+    2.0F * tensor_xy, tensor_xx - tensor_yy);
+  const float normal_x = cosf(normal_angle);
+  const float normal_y = sinf(normal_angle);
+  const float anisotropy = 1.0F + (maximum_anisotropy - 1.0F) * blend;
+  const int base_x = static_cast<int>(floorf(source_x));
+  const int base_y = static_cast<int>(floorf(source_y));
+  float weighted_sum = 0.0F;
+  float total_weight = 0.0F;
+#pragma unroll
+  for (int row_offset = -1; row_offset <= 2; ++row_offset) {
+    const float delta_y = base_y + row_offset - source_y;
+    const float weight_y = cubicKernel(-delta_y);
+#pragma unroll
+    for (int column_offset = -1; column_offset <= 2; ++column_offset) {
+      const float delta_x = base_x + column_offset - source_x;
+      const float weight_x = cubicKernel(-delta_x);
+      const float normal_distance = delta_x * normal_x + delta_y * normal_y;
+      const float directional_weight = expf(
+        -0.5F * (anisotropy - 1.0F) * normal_distance * normal_distance);
+      const float weight = weight_x * weight_y * directional_weight;
+      weighted_sum += weight * readPlane(
+        plane, stride, width, height,
+        base_x + column_offset, base_y + row_offset);
+      total_weight += weight;
+    }
+  }
+  if (fabsf(total_weight) <= 1.0e-6F) {
+    return standard;
+  }
+  float local_minimum = 0.0F;
+  float local_maximum = 0.0F;
+  localRange2x2(
+    plane, stride, width, height, source_x, source_y,
+    local_minimum, local_maximum);
+  const float adaptive = clampFloat(
+    weighted_sum / total_weight, local_minimum, local_maximum);
+  return (1.0F - blend) * standard + blend * adaptive;
+}
+
+__device__ float sampleChroma(
+  const std::uint8_t * uv_plane,
+  const int stride,
+  const int width,
+  const int height,
+  const float source_x,
+  const float source_y,
+  const int channel)
+{
+  const int chroma_width = width / 2;
+  const int chroma_height = height / 2;
+  const float x = clampFloat(
+    source_x * 0.5F, 0.0F, chroma_width - 1.0F);
+  const float y = clampFloat(
+    source_y * 0.5F, 0.0F, chroma_height - 1.0F);
+  const int x0 = static_cast<int>(floorf(x));
+  const int y0 = static_cast<int>(floorf(y));
+  const int x1 = x0 + 1 < chroma_width ? x0 + 1 : chroma_width - 1;
+  const int y1 = y0 + 1 < chroma_height ? y0 + 1 : chroma_height - 1;
+  const float dx = x - x0;
+  const float dy = y - y0;
+
+  const float top =
+    uv_plane[y0 * stride + x0 * 2 + channel] * (1.0F - dx) +
+    uv_plane[y0 * stride + x1 * 2 + channel] * dx;
+  const float bottom =
+    uv_plane[y1 * stride + x0 * 2 + channel] * (1.0F - dx) +
+    uv_plane[y1 * stride + x1 * 2 + channel] * dx;
+  return top * (1.0F - dy) + bottom * dy;
 }
 
 __global__ void nv12ToBevKernel(
@@ -165,7 +337,16 @@ __global__ void nv12ToBevKernel(
   const int source_crop_top,
   const int output_width,
   const int output_height,
-  const bool bicubic,
+  const int interpolation,
+  const float adaptive_start_x_m,
+  const float adaptive_full_x_m,
+  const float adaptive_strength,
+  const float adaptive_gradient_low,
+  const float adaptive_gradient_high,
+  const float adaptive_coherence_minimum,
+  const float adaptive_maximum_anisotropy,
+  const float bev_x_max_m,
+  const float meter_per_pixel,
   std::uint8_t * output_bgr)
 {
   const int output_x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -221,40 +402,58 @@ __global__ void nv12ToBevKernel(
   const std::uint8_t * y_plane = nv12;
   const std::uint8_t * uv_plane =
     nv12 + input_width * input_height;
-  const float y = sampleChannel(
-    y_plane,
+  float y = 0.0F;
+  if (interpolation == static_cast<int>(BevInterpolation::Adaptive)) {
+    const float x_vehicle_m =
+      bev_x_max_m - (output_y + 0.5F) * meter_per_pixel;
+    y = samplePlaneAdaptive(
+      y_plane,
+      input_width,
+      input_width,
+      input_height,
+      source_x,
+      source_y,
+      x_vehicle_m,
+      adaptive_start_x_m,
+      adaptive_full_x_m,
+      adaptive_strength,
+      adaptive_gradient_low,
+      adaptive_gradient_high,
+      adaptive_coherence_minimum,
+      adaptive_maximum_anisotropy);
+  } else if (interpolation == static_cast<int>(BevInterpolation::Bicubic)) {
+    y = samplePlaneBicubic(
+      y_plane,
+      input_width,
+      input_width,
+      input_height,
+      source_x,
+      source_y);
+  } else {
+    y = samplePlane(
+      y_plane,
+      input_width,
+      input_width,
+      input_height,
+      source_x,
+      source_y);
+  }
+  const float u = sampleChroma(
+    uv_plane,
     input_width,
     input_width,
     input_height,
-    1,
-    0,
     source_x,
     source_y,
-    bicubic);
-  const int chroma_width = input_width / 2;
-  const int chroma_height = input_height / 2;
-  const float chroma_x = source_x * 0.5F;
-  const float chroma_y = source_y * 0.5F;
-  const float u = sampleChannel(
+    0);
+  const float v = sampleChroma(
     uv_plane,
     input_width,
-    chroma_width,
-    chroma_height,
-    2,
-    0,
-    chroma_x,
-    chroma_y,
-    bicubic);
-  const float v = sampleChannel(
-    uv_plane,
     input_width,
-    chroma_width,
-    chroma_height,
-    2,
-    1,
-    chroma_x,
-    chroma_y,
-    bicubic);
+    input_height,
+    source_x,
+    source_y,
+    1);
 
   const float c = fmaxf(0.0F, y - 16.0F);
   const float d = u - 128.0F;
@@ -281,12 +480,14 @@ public:
     const int input_height,
     const cv::Mat & map_x,
     const cv::Mat & map_y,
-    const BevInterpolation interpolation)
+    const BevInterpolation interpolation,
+    const EdgeAdaptiveConfig & edge_adaptive_config)
   : input_width_(input_width),
     input_height_(input_height),
     output_width_(map_x.cols),
     output_height_(map_x.rows),
-    bicubic_(interpolation == BevInterpolation::Bicubic)
+    interpolation_(interpolation),
+    edge_adaptive_config_(edge_adaptive_config)
   {
     if (
       input_width_ <= 0 || input_height_ <= 0 ||
@@ -455,7 +656,16 @@ public:
       source_crop_top,
       output_width_,
       output_height_,
-      bicubic_,
+      static_cast<int>(interpolation_),
+      static_cast<float>(edge_adaptive_config_.start_x_m),
+      static_cast<float>(edge_adaptive_config_.full_x_m),
+      static_cast<float>(edge_adaptive_config_.strength),
+      static_cast<float>(edge_adaptive_config_.gradient_low),
+      static_cast<float>(edge_adaptive_config_.gradient_high),
+      static_cast<float>(edge_adaptive_config_.coherence_minimum),
+      static_cast<float>(edge_adaptive_config_.maximum_anisotropy),
+      static_cast<float>(edge_adaptive_config_.bev_x_max_m),
+      static_cast<float>(edge_adaptive_config_.meter_per_pixel),
       device_output_);
     checkCuda(cudaGetLastError(), "launch NV12-to-BEV kernel");
 
@@ -513,7 +723,8 @@ private:
   int input_height_;
   int output_width_;
   int output_height_;
-  bool bicubic_;
+  BevInterpolation interpolation_;
+  EdgeAdaptiveConfig edge_adaptive_config_;
   std::string device_name_;
   cudaStream_t stream_{nullptr};
   std::uint8_t * device_nv12_{nullptr};
@@ -529,9 +740,11 @@ CudaBevProcessor::CudaBevProcessor(
   const int input_height,
   const cv::Mat & map_x,
   const cv::Mat & map_y,
-  const BevInterpolation interpolation)
+  const BevInterpolation interpolation,
+  const EdgeAdaptiveConfig & edge_adaptive_config)
 : impl_(std::make_unique<Impl>(
-    input_width, input_height, map_x, map_y, interpolation))
+    input_width, input_height, map_x, map_y, interpolation,
+    edge_adaptive_config))
 {
 }
 

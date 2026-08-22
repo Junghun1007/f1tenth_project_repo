@@ -168,9 +168,18 @@ bev_processor:
     # output_height = round((x_max_m - x_min_m) / meter_per_pixel)
     output_width: 120
     output_height: 300
-    # bilinear: 기존 2x2 보간, bicubic: 곡선 연속성을 위한 Catmull-Rom 4x4 보간.
-    # bicubic은 Y/UV에 모두 적용되며 경계 halo를 막기 위해 주변 픽셀 범위로 제한한다.
+
+    # bilinear: 2x2, bicubic: Catmull-Rom 4x4, adaptive: edge-aware bicubic.
+    # adaptive는 먼 거리의 방향성 엣지에서 엣지 횡단 샘플의 가중치를 줄인다.
+    # 색 경계 번짐을 막기 위해 UV는 모든 모드에서 bilinear로 유지한다.
     bev_interpolation: "bilinear"
+    edge_adaptive_start_x_m: 1.20
+    edge_adaptive_full_x_m: 2.00
+    edge_adaptive_strength: 0.75
+    edge_gradient_low: 8.0
+    edge_gradient_high: 32.0
+    edge_coherence_minimum: 0.30
+    edge_maximum_anisotropy: 3.0
 
     # 원본 컬러 BEV(/camera/image_bev)는 그대로 유지하고, 이 단계를 켜면
     # 검은 배경+흰 주행 중심선인 mono8 결과를 lane_output_topic으로 발행한다.

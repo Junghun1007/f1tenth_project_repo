@@ -649,6 +649,13 @@ private:
     declare_parameter<int>("output_width", 120);
     declare_parameter<int>("output_height", 300);
     declare_parameter<std::string>("bev_interpolation", "bilinear");
+    declare_parameter<double>("edge_adaptive_start_x_m", 1.20);
+    declare_parameter<double>("edge_adaptive_full_x_m", 2.00);
+    declare_parameter<double>("edge_adaptive_strength", 0.75);
+    declare_parameter<double>("edge_gradient_low", 8.0);
+    declare_parameter<double>("edge_gradient_high", 32.0);
+    declare_parameter<double>("edge_coherence_minimum", 0.30);
+    declare_parameter<double>("edge_maximum_anisotropy", 3.0);
 
     // Bright-lane reconstruction is intentionally independent from the CUDA
     // warp. The raw color BEV remains available on output_topic while this
@@ -909,6 +916,22 @@ private:
     bev_config_.output_height =
       static_cast<int>(get_parameter("output_height").as_int());
     bev_interpolation_ = get_parameter("bev_interpolation").as_string();
+    edge_adaptive_config_.start_x_m =
+      get_parameter("edge_adaptive_start_x_m").as_double();
+    edge_adaptive_config_.full_x_m =
+      get_parameter("edge_adaptive_full_x_m").as_double();
+    edge_adaptive_config_.strength =
+      get_parameter("edge_adaptive_strength").as_double();
+    edge_adaptive_config_.gradient_low =
+      get_parameter("edge_gradient_low").as_double();
+    edge_adaptive_config_.gradient_high =
+      get_parameter("edge_gradient_high").as_double();
+    edge_adaptive_config_.coherence_minimum =
+      get_parameter("edge_coherence_minimum").as_double();
+    edge_adaptive_config_.maximum_anisotropy =
+      get_parameter("edge_maximum_anisotropy").as_double();
+    edge_adaptive_config_.bev_x_max_m = bev_config_.x_max_m;
+    edge_adaptive_config_.meter_per_pixel = bev_config_.meter_per_pixel;
 
     lane_reconstruction_enabled_ =
       get_parameter("lane_reconstruction_enabled").as_bool();
@@ -1137,10 +1160,27 @@ private:
     }
     if (
       bev_interpolation_ != "bilinear" &&
-      bev_interpolation_ != "bicubic")
+      bev_interpolation_ != "bicubic" &&
+      bev_interpolation_ != "adaptive")
     {
       throw std::invalid_argument(
-              "bev_interpolation must be 'bilinear' or 'bicubic'");
+              "bev_interpolation must be 'bilinear', 'bicubic', or "
+              "'adaptive'");
+    }
+    if (
+      edge_adaptive_config_.start_x_m < bev_config_.x_min_m ||
+      edge_adaptive_config_.full_x_m <= edge_adaptive_config_.start_x_m ||
+      edge_adaptive_config_.full_x_m > bev_config_.x_max_m ||
+      edge_adaptive_config_.strength < 0.0 ||
+      edge_adaptive_config_.strength > 1.0 ||
+      edge_adaptive_config_.gradient_low < 0.0 ||
+      edge_adaptive_config_.gradient_high <=
+      edge_adaptive_config_.gradient_low ||
+      edge_adaptive_config_.coherence_minimum < 0.0 ||
+      edge_adaptive_config_.coherence_minimum >= 1.0 ||
+      edge_adaptive_config_.maximum_anisotropy < 1.0)
+    {
+      throw std::invalid_argument("invalid edge-adaptive interpolation settings");
     }
     if (
       expected_input_fps_ <= 0.0 ||
@@ -1217,8 +1257,11 @@ private:
       input_crop_height_,
       lut.map_x,
       lut.map_y,
+      bev_interpolation_ == "adaptive" ?
+      BevInterpolation::Adaptive :
       bev_interpolation_ == "bicubic" ?
-      BevInterpolation::Bicubic : BevInterpolation::Bilinear);
+      BevInterpolation::Bicubic : BevInterpolation::Bilinear,
+      edge_adaptive_config_);
 
     const int valid_pixels = cv::countNonZero(lut.valid_mask);
     const int output_pixels =
@@ -2248,6 +2291,7 @@ private:
   double stabilization_settle_sec_{5.5};
   double camera_yaw_deg_{0.0};
   std::string bev_interpolation_{"bilinear"};
+  EdgeAdaptiveConfig edge_adaptive_config_{};
   OakStartupMeasurementConfig startup_measurement_config_{};
 
   RectifiedCameraModel camera_model_{};

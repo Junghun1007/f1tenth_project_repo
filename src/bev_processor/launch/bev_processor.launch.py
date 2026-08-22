@@ -167,7 +167,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "bev_interpolation",
                 default_value="bilinear",
-                choices=["bilinear", "bicubic"],
+                choices=["bilinear", "bicubic", "adaptive"],
                 description="Interpolation used by the CUDA NV12-to-BEV warp.",
             ),
             *lane_launch_arguments,

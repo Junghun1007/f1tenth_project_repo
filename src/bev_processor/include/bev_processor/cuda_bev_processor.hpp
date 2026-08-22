@@ -15,6 +15,20 @@ enum class BevInterpolation
 {
   Bilinear,
   Bicubic,
+  Adaptive,
+};
+
+struct EdgeAdaptiveConfig
+{
+  double start_x_m{1.20};
+  double full_x_m{2.00};
+  double strength{0.75};
+  double gradient_low{8.0};
+  double gradient_high{32.0};
+  double coherence_minimum{0.30};
+  double maximum_anisotropy{3.0};
+  double bev_x_max_m{3.0};
+  double meter_per_pixel{0.01};
 };
 
 class CudaBevProcessor
@@ -25,7 +39,8 @@ public:
     int input_height,
     const cv::Mat & map_x,
     const cv::Mat & map_y,
-    BevInterpolation interpolation);
+    BevInterpolation interpolation,
+    const EdgeAdaptiveConfig & edge_adaptive_config);
   ~CudaBevProcessor();
 
   CudaBevProcessor(const CudaBevProcessor &) = delete;
