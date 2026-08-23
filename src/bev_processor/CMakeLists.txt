@@ -49,18 +49,18 @@ target_include_directories(bev_geometry
 )
 target_link_libraries(bev_geometry PUBLIC ${OpenCV_LIBS})
 
-add_library(bev_lane_reconstructor STATIC
-  src/bev_lane_reconstructor.cpp
+add_library(bev_lane_seed_detector STATIC
+  src/bev_lane_seed_detector.cpp
 )
 set_target_properties(
-  bev_lane_reconstructor PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(bev_lane_reconstructor
+  bev_lane_seed_detector PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(bev_lane_seed_detector
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
     ${OpenCV_INCLUDE_DIRS}
 )
-target_link_libraries(bev_lane_reconstructor PUBLIC ${OpenCV_LIBS})
+target_link_libraries(bev_lane_seed_detector PUBLIC ${OpenCV_LIBS})
 
 add_library(bev_ground_plane STATIC
   src/ground_plane_estimator.cpp
@@ -131,7 +131,7 @@ ament_target_dependencies(bev_processor_component
 )
 target_link_libraries(bev_processor_component
   bev_geometry
-  bev_lane_reconstructor
+  bev_lane_seed_detector
   bev_cuda
   bev_startup_measurement
   ${OpenCV_LIBS}
@@ -147,13 +147,6 @@ if(BUILD_TESTING)
   add_executable(bev_geometry_test test/bev_geometry_test.cpp)
   target_link_libraries(bev_geometry_test bev_geometry ${OpenCV_LIBS})
   add_test(NAME bev_geometry_test COMMAND bev_geometry_test)
-
-  add_executable(
-    bev_lane_reconstructor_test test/bev_lane_reconstructor_test.cpp)
-  target_link_libraries(
-    bev_lane_reconstructor_test bev_lane_reconstructor ${OpenCV_LIBS})
-  add_test(
-    NAME bev_lane_reconstructor_test COMMAND bev_lane_reconstructor_test)
 
   add_executable(
     ground_plane_estimator_test test/ground_plane_estimator_test.cpp)
@@ -174,7 +167,7 @@ endif()
 
 install(TARGETS
   bev_geometry
-  bev_lane_reconstructor
+  bev_lane_seed_detector
   bev_ground_plane
   bev_startup_attitude
   bev_startup_measurement

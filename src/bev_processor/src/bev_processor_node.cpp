@@ -31,7 +31,7 @@
 #include <std_msgs/msg/header.hpp>
 
 #include "bev_processor/bev_geometry.hpp"
-#include "bev_processor/bev_lane_reconstructor.hpp"
+#include "bev_processor/bev_lane_seed_detector.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
 #include "camera_driver/msg/bev_input.hpp"
@@ -48,9 +48,7 @@ struct BevFrame
 {
   cv::Mat image;
   cv::Mat lane_mask;
-  cv::Mat left_lane_mask;
-  cv::Mat right_lane_mask;
-  std::vector<BevLaneReconstruction::SlidingWindow> lane_sliding_windows;
+  cv::Mat lane_preview;
   std_msgs::msg::Header header;
   SteadyClock::time_point input_received_at;
   std::uint64_t generation{0U};
@@ -129,95 +127,6 @@ std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
   return message;
 }
 
-cv::Mat makeExpandedBevPreview(
-  const cv::Mat & bev_bgr,
-  const int lateral_margin_px)
-{
-  if (bev_bgr.type() != CV_8UC3 || lateral_margin_px < 0) {
-    throw std::invalid_argument(
-            "expanded BEV preview expects BGR8 and a non-negative margin");
-  }
-  cv::Mat expanded = cv::Mat::zeros(
-    bev_bgr.rows, bev_bgr.cols + 2 * lateral_margin_px, CV_8UC3);
-  bev_bgr.copyTo(expanded(cv::Rect(
-      lateral_margin_px, 0, bev_bgr.cols, bev_bgr.rows)));
-  return expanded;
-}
-
-cv::Mat makeLaneOverlayPreview(
-  const cv::Mat & expanded_bev_bgr,
-  const cv::Mat & left_lane_mask,
-  const cv::Mat & right_lane_mask,
-  const cv::Mat & centerline_mask,
-  const double alpha)
-{
-  if (
-    expanded_bev_bgr.type() != CV_8UC3 ||
-    left_lane_mask.type() != CV_8UC1 ||
-    right_lane_mask.type() != CV_8UC1 ||
-    centerline_mask.type() != CV_8UC1 ||
-    expanded_bev_bgr.size() != left_lane_mask.size() ||
-    expanded_bev_bgr.size() != right_lane_mask.size() ||
-    expanded_bev_bgr.size() != centerline_mask.size())
-  {
-    throw std::invalid_argument(
-            "lane preview overlay expects matching BGR8 and MONO8 images");
-  }
-  cv::Mat highlighted = expanded_bev_bgr.clone();
-  // OpenCV uses BGR: left lane is blue and right lane is red.
-  highlighted.setTo(cv::Scalar(255, 0, 0), left_lane_mask);
-  highlighted.setTo(cv::Scalar(0, 0, 255), right_lane_mask);
-  // The drive centerline is yellow so it remains distinct from the green
-  // vehicle Y=0 reference drawn by makeCoordinatePreview().
-  highlighted.setTo(cv::Scalar(0, 255, 255), centerline_mask);
-  cv::Mat blended;
-  cv::addWeighted(
-    highlighted, alpha, expanded_bev_bgr, 1.0 - alpha, 0.0, blended);
-  return blended;
-}
-
-cv::Point laneMetricToPixel(
-  const cv::Point2d & metric_point,
-  const BevConfig & config,
-  const double lateral_margin_m)
-{
-  return cv::Point(
-    static_cast<int>(std::lround(
-      (config.y_max_m + lateral_margin_m - metric_point.y) /
-      config.meter_per_pixel - 0.5)),
-    static_cast<int>(std::lround(
-      (config.x_max_m - metric_point.x) / config.meter_per_pixel - 0.5)));
-}
-
-cv::Mat makeSlidingWindowPreview(
-  const cv::Mat & bev_bgr,
-  const std::vector<BevLaneReconstruction::SlidingWindow> & windows,
-  const BevConfig & config,
-  const double lateral_margin_m)
-{
-  if (bev_bgr.type() != CV_8UC3) {
-    throw std::invalid_argument(
-            "sliding-window preview expects a BGR8 BEV image");
-  }
-  cv::Mat preview = bev_bgr.clone();
-  for (const auto & window : windows) {
-    std::vector<cv::Point> pixels;
-    pixels.reserve(window.corners.size());
-    for (const auto & corner : window.corners) {
-      pixels.push_back(laneMetricToPixel(corner, config, lateral_margin_m));
-    }
-    const cv::Scalar color = window.left_lane ?
-      (window.measurement_found ?
-      cv::Scalar(255, 255, 0) : cv::Scalar(140, 140, 0)) :
-      (window.measurement_found ?
-      cv::Scalar(255, 0, 255) : cv::Scalar(140, 0, 140));
-    cv::polylines(
-      preview, std::vector<std::vector<cv::Point>>{pixels}, true,
-      color, 1, cv::LINE_AA);
-  }
-  return preview;
-}
-
 }  // namespace
 
 class BevProcessorNode final : public rclcpp::Node
@@ -230,9 +139,9 @@ public:
     readParameters();
     validateParameters();
     initializeInputCropGeometry();
-    if (lane_reconstruction_enabled_) {
-      lane_reconstructor_ = std::make_unique<BevLaneReconstructor>(
-        lane_reconstructor_config_);
+    if (lane_seed_detection_enabled_) {
+      lane_seed_detector_ = std::make_unique<BevLaneSeedDetector>(
+        lane_seed_config_);
     }
 
     if (performance_measurement_enabled_) {
@@ -368,7 +277,7 @@ public:
       output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
         output_topic_, image_qos);
     }
-    if (lane_reconstruction_enabled_) {
+    if (lane_seed_detection_enabled_) {
       lane_output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
         lane_output_topic_, image_qos);
     }
@@ -381,19 +290,18 @@ public:
         onCaptureJoy(std::move(message));
       });
 
+    if (preview_enabled_ && !graphicalDisplayAvailable()) {
+      preview_enabled_ = false;
+      RCLCPP_WARN(
+        get_logger(),
+        "Preview disabled because DISPLAY/WAYLAND_DISPLAY is unavailable.");
+    }
     processing_thread_ = std::thread(&BevProcessorNode::processingLoop, this);
-    if (publish_enabled_ || lane_reconstruction_enabled_) {
+    if (publish_enabled_ || lane_seed_detection_enabled_) {
       publishing_thread_ = std::thread(&BevProcessorNode::publishingLoop, this);
     }
     if (preview_enabled_) {
-      if (graphicalDisplayAvailable()) {
-        preview_thread_ = std::thread(&BevProcessorNode::previewLoop, this);
-      } else {
-        preview_enabled_ = false;
-        RCLCPP_WARN(
-          get_logger(),
-          "Preview disabled because DISPLAY/WAYLAND_DISPLAY is unavailable.");
-      }
+      preview_thread_ = std::thread(&BevProcessorNode::previewLoop, this);
     }
 
     status_started_at_ = SteadyClock::now();
@@ -450,66 +358,54 @@ public:
       capture_directory_.c_str(),
       capture_joy_topic_.c_str(),
       capture_joy_button_);
-    if (lane_reconstruction_enabled_) {
+    if (lane_seed_detection_enabled_) {
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane reconstruction: output=%s mono8, "
-        "seed/trusted X=[%.2f, %.2f]m, track to %.2fm, "
-        "maximum extrapolation=%.2fm, brightness near/far=%d/%d, "
-        "window near/far=%.2f/%.2fm, pixel weight=%.2f, "
-        "expected width=%.3fm, line=%.3fm",
+        "BEV lane seed detection: output=%s mono8, CUDA gray/Top-hat, "
+        "bands near/middle/far=%.2f/%.2f/%.2f, "
+        "kernel=%dx%d/%dx%d/%dx%d, gain=%.2f/%.2f/%.2f",
         lane_output_topic_.c_str(),
-        lane_reconstructor_config_.observation_minimum_x_m,
-        lane_reconstructor_config_.observation_maximum_x_m,
-        lane_reconstructor_config_.reconstruction_maximum_x_m,
-        lane_reconstructor_config_.maximum_extrapolation_m,
-        lane_reconstructor_config_.minimum_brightness,
-        lane_reconstructor_config_.far_minimum_brightness,
-        lane_reconstructor_config_.sliding_window_half_width_near_m,
-        lane_reconstructor_config_.sliding_window_half_width_far_m,
-        lane_reconstructor_config_.sliding_window_measurement_weight,
-        lane_reconstructor_config_.expected_lane_width_m,
-        lane_reconstructor_config_.output_line_thickness_m);
+        lane_preprocess_config_.near_ratio,
+        lane_preprocess_config_.middle_ratio,
+        lane_preprocess_config_.far_ratio,
+        lane_preprocess_config_.near_kernel_width,
+        lane_preprocess_config_.near_kernel_height,
+        lane_preprocess_config_.middle_kernel_width,
+        lane_preprocess_config_.middle_kernel_height,
+        lane_preprocess_config_.far_kernel_width,
+        lane_preprocess_config_.far_kernel_height,
+        lane_preprocess_config_.near_gain,
+        lane_preprocess_config_.middle_gain,
+        lane_preprocess_config_.far_gain);
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane appearance gate: saturation<=%d, local contrast>=%d, "
-        "background<=%d, tracked width near/far=%.2f/%.2fm, "
-        "preview overlay=%s result-only=%s alpha=%.2f, lateral margin=%.2fm",
-        lane_reconstructor_config_.maximum_saturation,
-        lane_reconstructor_config_.minimum_local_contrast,
-        lane_reconstructor_config_.maximum_local_background_brightness,
-        lane_reconstructor_config_.tracked_lane_mark_width_near_m,
-        lane_reconstructor_config_.tracked_lane_mark_width_far_m,
-        lane_preview_enabled_ ? "on" : "off",
-        lane_preview_result_only_enabled_ ? "on" : "off",
-        lane_preview_overlay_alpha_,
-        lane_reconstructor_config_.output_lateral_margin_m);
+        "BEV lane seed ROI: bottom_exclusion=%.2f height=%.2f, "
+        "response>=%d, run=%d..%dpx, step<=%.1fpx, gap<=%d rows, "
+        "arc>=%.1fpx, contrast>=%.1f, asymmetry<=%.1f",
+        lane_seed_config_.roi_bottom_exclusion_ratio,
+        lane_seed_config_.roi_height_ratio,
+        lane_seed_config_.minimum_top_hat_response,
+        lane_seed_config_.minimum_run_width_px,
+        lane_seed_config_.maximum_run_width_px,
+        lane_seed_config_.maximum_lateral_step_px,
+        lane_seed_config_.maximum_gap_rows,
+        lane_seed_config_.minimum_track_arc_length_px,
+        lane_seed_config_.minimum_bilateral_contrast,
+        lane_seed_config_.maximum_background_asymmetry);
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane continuity: temporal=%s, lateral jump near/far="
-        "%.2f/%.2fm, heading jump=%.1fdeg, confirm/hold=%d/%d frames, "
-        "centerline pair smooth=%.2f/%.2f, transition=%.2fm decay=%.2f, "
-        "single-boundary=%s side-lock=%s(pair/reset=%d/%d frames, "
-        "window=%.2fm curvature<=%.2f/m step<=%.1fdeg)",
-        lane_reconstructor_config_.temporal_tracking_enabled ? "on" : "off",
-        lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m,
-        lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m,
-        lane_reconstructor_config_.temporal_maximum_heading_jump_deg,
-        lane_reconstructor_config_.temporal_confirmation_frames,
-        lane_reconstructor_config_.temporal_hold_frames,
-        lane_reconstructor_config_.centerline_midpoint_smoothing_weight,
-        lane_reconstructor_config_.centerline_temporal_current_weight,
-        lane_reconstructor_config_.centerline_transition_maximum_correction_m,
-        lane_reconstructor_config_.centerline_transition_correction_decay,
-        lane_reconstructor_config_.centerline_from_single_boundary_enabled ?
-        "on" : "off",
-        lane_reconstructor_config_.single_boundary_side_lock_enabled ?
-        "on" : "off",
-        lane_reconstructor_config_.single_boundary_side_pair_confirmation_frames,
-        lane_reconstructor_config_.single_boundary_side_lock_reset_frames,
-        lane_reconstructor_config_.centerline_tangent_window_m,
-        lane_reconstructor_config_.centerline_maximum_curvature_per_m,
-        lane_reconstructor_config_.centerline_maximum_heading_step_deg);
+        "BEV lane seed continuity: slope=%s(window=%d, delta<=%.2fpx/row), "
+        "pair=%.1f..%.1fpx, contrast relaxation=%s(step=%.1f, retries=%d), "
+        "preview=%s",
+        lane_seed_config_.slope_filter_enabled ? "on" : "off",
+        lane_seed_config_.slope_median_window,
+        lane_seed_config_.maximum_slope_change_px_per_row,
+        lane_seed_config_.minimum_pair_distance_px,
+        lane_seed_config_.maximum_pair_distance_px,
+        lane_seed_config_.contrast_relaxation_enabled ? "on" : "off",
+        lane_seed_config_.contrast_relaxation_step,
+        lane_seed_config_.contrast_relaxation_retry_count,
+        lane_preview_enabled_ ? "on" : "off");
     }
     RCLCPP_INFO(
       get_logger(),
@@ -657,93 +553,55 @@ private:
     declare_parameter<double>("edge_coherence_minimum", 0.30);
     declare_parameter<double>("edge_maximum_anisotropy", 3.0);
 
-    // Bright-lane reconstruction is intentionally independent from the CUDA
-    // warp. The raw color BEV remains available on output_topic while this
-    // stage publishes a clean MONO8 drive-centerline image on lane_output_topic.
-    declare_parameter<bool>("lane_reconstruction_enabled", true);
+    // The CUDA warp produces Gray and distance-adaptive Top-hat in the same
+    // stream. CPU work is limited to branch-heavy seed tracking in the ROI.
+    declare_parameter<bool>("lane_seed_detection_enabled", true);
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
-    declare_parameter<bool>("lane_preview_result_only_enabled", false);
-    declare_parameter<bool>("lane_preview_sliding_windows_enabled", false);
-    declare_parameter<double>("preview_x_origin_m", 0.0);
-    declare_parameter<double>("lane_output_lateral_margin_m", 0.70);
-    declare_parameter<double>("lane_preview_overlay_alpha", 0.8);
-    declare_parameter<int>("lane_minimum_brightness", 160);
-    declare_parameter<int>("lane_far_minimum_brightness", 110);
-    declare_parameter<int>("lane_maximum_saturation", 80);
-    declare_parameter<int>("lane_brightness_blur_kernel", 1);
-    declare_parameter<double>("lane_vertical_close_m", 0.05);
-    declare_parameter<double>("lane_minimum_mark_width_m", 0.015);
-    declare_parameter<double>("lane_maximum_mark_width_m", 0.030);
-    declare_parameter<int>("lane_minimum_local_contrast", 55);
-    declare_parameter<int>(
-      "lane_maximum_local_background_brightness", 140);
-    declare_parameter<double>("lane_local_background_band_m", 0.04);
+    declare_parameter<int>("lane_gray_mode", 0);
+    declare_parameter<int>("lane_top_hat_shape", 1);
+    declare_parameter<int>("lane_top_hat_iterations", 1);
+    declare_parameter<int>("lane_top_hat_border", 0);
+    declare_parameter<double>("lane_near_ratio", 0.45);
+    declare_parameter<double>("lane_near_gain", 1.5);
+    declare_parameter<int>("lane_near_noise_floor", 17);
+    declare_parameter<int>("lane_near_kernel_width", 7);
+    declare_parameter<int>("lane_near_kernel_height", 7);
+    declare_parameter<double>("lane_middle_ratio", 0.35);
+    declare_parameter<double>("lane_middle_gain", 1.6);
+    declare_parameter<int>("lane_middle_noise_floor", 13);
+    declare_parameter<int>("lane_middle_kernel_width", 17);
+    declare_parameter<int>("lane_middle_kernel_height", 17);
+    declare_parameter<double>("lane_far_ratio", 0.20);
+    declare_parameter<double>("lane_far_gain", 1.65);
+    declare_parameter<int>("lane_far_noise_floor", 11);
+    declare_parameter<int>("lane_far_kernel_width", 27);
+    declare_parameter<int>("lane_far_kernel_height", 27);
+
     declare_parameter<double>(
-      "lane_tracked_mark_width_near_m", 0.11);
+      "lane_seed_roi_bottom_exclusion_ratio", 0.09);
+    declare_parameter<double>("lane_seed_roi_height_ratio", 0.40);
+    declare_parameter<int>("lane_seed_minimum_response", 30);
+    declare_parameter<int>("lane_seed_minimum_run_width_px", 2);
+    declare_parameter<int>("lane_seed_maximum_run_width_px", 8);
+    declare_parameter<double>("lane_seed_maximum_lateral_step_px", 4.0);
+    declare_parameter<int>("lane_seed_maximum_gap_rows", 4);
+    declare_parameter<double>("lane_seed_minimum_track_arc_length_px", 20.0);
+    declare_parameter<double>("lane_seed_minimum_bilateral_contrast", 25.0);
+    declare_parameter<double>("lane_seed_maximum_background_asymmetry", 50.0);
+    declare_parameter<int>("lane_seed_background_gap_px", 1);
+    declare_parameter<int>("lane_seed_background_band_width_px", 5);
+    declare_parameter<double>("lane_seed_contrast_score_weight", 0.30);
+    declare_parameter<bool>("lane_seed_contrast_relaxation_enabled", true);
+    declare_parameter<double>("lane_seed_contrast_relaxation_step", 5.0);
+    declare_parameter<int>("lane_seed_contrast_relaxation_retries", 5);
+    declare_parameter<bool>("lane_seed_slope_filter_enabled", true);
+    declare_parameter<int>("lane_seed_slope_median_window", 5);
     declare_parameter<double>(
-      "lane_tracked_mark_width_far_m", 0.22);
-    declare_parameter<double>(
-      "lane_measurement_lateral_gate_near_m", 0.05);
-    declare_parameter<double>(
-      "lane_measurement_lateral_gate_far_m", 0.10);
-    declare_parameter<int>("lane_row_step_px", 2);
-    declare_parameter<double>("lane_observation_minimum_x_m", 0.20);
-    declare_parameter<double>("lane_observation_maximum_x_m", 1.30);
-    declare_parameter<double>("lane_reconstruction_minimum_x_m", 0.10);
-    declare_parameter<double>("lane_reconstruction_maximum_x_m", 3.0);
-    declare_parameter<double>("lane_maximum_extrapolation_m", 0.0);
-    declare_parameter<double>("lane_sliding_window_step_m", 0.04);
-    declare_parameter<double>("lane_sliding_window_length_m", 0.18);
-    declare_parameter<double>("lane_sliding_window_half_width_near_m", 0.08);
-    declare_parameter<double>("lane_sliding_window_half_width_far_m", 0.14);
-    declare_parameter<double>("lane_sliding_window_measurement_weight", 0.88);
-    declare_parameter<double>("lane_sliding_window_heading_weight", 0.50);
-    declare_parameter<double>("lane_maximum_tracking_arc_length_m", 3.20);
-    declare_parameter<double>("lane_maximum_gap_fill_m", 0.30);
-    declare_parameter<double>("lane_measured_point_smoothing_weight", 0.60);
-    declare_parameter<int>("lane_minimum_window_pixel_count", 6);
-    declare_parameter<double>("lane_expected_width_m", 0.65);
-    declare_parameter<double>("lane_width_tolerance_m", 0.08);
-    declare_parameter<double>("lane_initial_center_tolerance_m", 0.60);
-    declare_parameter<double>("lane_single_initial_tolerance_m", 0.45);
-    declare_parameter<double>("lane_maximum_tracking_gap_m", 0.16);
-    declare_parameter<int>("lane_minimum_points", 6);
-    declare_parameter<int>("lane_minimum_counterpart_points", 3);
-    declare_parameter<bool>("lane_allow_single_lane", true);
-    declare_parameter<bool>(
-      "lane_centerline_from_single_boundary_enabled", true);
-    declare_parameter<bool>(
-      "lane_centerline_preserve_reference_shape", false);
-    declare_parameter<bool>("lane_single_boundary_side_lock_enabled", true);
-    declare_parameter<int>(
-      "lane_single_boundary_side_pair_confirmation_frames", 2);
-    declare_parameter<int>(
-      "lane_single_boundary_side_lock_reset_frames", 30);
-    declare_parameter<double>(
-      "lane_centerline_midpoint_smoothing_weight", 0.45);
-    declare_parameter<double>(
-      "lane_centerline_temporal_current_weight", 0.60);
-    declare_parameter<double>(
-      "lane_centerline_transition_maximum_correction_m", 0.15);
-    declare_parameter<double>(
-      "lane_centerline_transition_correction_decay", 0.70);
-    declare_parameter<double>("lane_centerline_tangent_window_m", 0.20);
-    declare_parameter<double>(
-      "lane_centerline_maximum_curvature_per_m", 1.25);
-    declare_parameter<double>(
-      "lane_centerline_maximum_heading_step_deg", 8.0);
-    declare_parameter<bool>("lane_temporal_tracking_enabled", false);
-    declare_parameter<double>(
-      "lane_temporal_maximum_lateral_jump_near_m", 0.06);
-    declare_parameter<double>(
-      "lane_temporal_maximum_lateral_jump_far_m", 0.12);
-    declare_parameter<double>(
-      "lane_temporal_maximum_heading_jump_deg", 15.0);
-    declare_parameter<int>("lane_temporal_confirmation_frames", 4);
-    declare_parameter<int>("lane_temporal_hold_frames", 0);
-    declare_parameter<double>("lane_output_line_thickness_m", 0.02);
+      "lane_seed_maximum_slope_change_px_per_row", 2.0);
+    declare_parameter<double>("lane_seed_pair_minimum_distance_px", 50.0);
+    declare_parameter<double>("lane_seed_pair_maximum_distance_px", 95.0);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 12.0);
@@ -933,153 +791,95 @@ private:
     edge_adaptive_config_.bev_x_max_m = bev_config_.x_max_m;
     edge_adaptive_config_.meter_per_pixel = bev_config_.meter_per_pixel;
 
-    lane_reconstruction_enabled_ =
-      get_parameter("lane_reconstruction_enabled").as_bool();
+    lane_seed_detection_enabled_ =
+      get_parameter("lane_seed_detection_enabled").as_bool();
     lane_output_topic_ = get_parameter("lane_output_topic").as_string();
     lane_preview_enabled_ =
       get_parameter("lane_preview_enabled").as_bool();
-    lane_preview_result_only_enabled_ =
-      get_parameter("lane_preview_result_only_enabled").as_bool();
-    lane_preview_sliding_windows_enabled_ =
-      get_parameter("lane_preview_sliding_windows_enabled").as_bool();
-    preview_x_origin_m_ = get_parameter("preview_x_origin_m").as_double();
-    lane_reconstructor_config_.output_lateral_margin_m =
-      get_parameter("lane_output_lateral_margin_m").as_double();
-    lane_preview_overlay_alpha_ =
-      get_parameter("lane_preview_overlay_alpha").as_double();
-    lane_reconstructor_config_.x_min_m = bev_config_.x_min_m;
-    lane_reconstructor_config_.x_max_m = bev_config_.x_max_m;
-    lane_reconstructor_config_.y_min_m = bev_config_.y_min_m;
-    lane_reconstructor_config_.y_max_m = bev_config_.y_max_m;
-    lane_reconstructor_config_.meter_per_pixel =
-      bev_config_.meter_per_pixel;
-    lane_reconstructor_config_.image_width = bev_config_.output_width;
-    lane_reconstructor_config_.image_height = bev_config_.output_height;
-    lane_reconstructor_config_.minimum_brightness = static_cast<int>(
-      get_parameter("lane_minimum_brightness").as_int());
-    lane_reconstructor_config_.far_minimum_brightness = static_cast<int>(
-      get_parameter("lane_far_minimum_brightness").as_int());
-    lane_reconstructor_config_.maximum_saturation = static_cast<int>(
-      get_parameter("lane_maximum_saturation").as_int());
-    lane_reconstructor_config_.brightness_blur_kernel = static_cast<int>(
-      get_parameter("lane_brightness_blur_kernel").as_int());
-    lane_reconstructor_config_.vertical_close_m =
-      get_parameter("lane_vertical_close_m").as_double();
-    lane_reconstructor_config_.minimum_lane_mark_width_m =
-      get_parameter("lane_minimum_mark_width_m").as_double();
-    lane_reconstructor_config_.maximum_lane_mark_width_m =
-      get_parameter("lane_maximum_mark_width_m").as_double();
-    lane_reconstructor_config_.minimum_local_contrast = static_cast<int>(
-      get_parameter("lane_minimum_local_contrast").as_int());
-    lane_reconstructor_config_.maximum_local_background_brightness =
-      static_cast<int>(get_parameter(
-        "lane_maximum_local_background_brightness").as_int());
-    lane_reconstructor_config_.local_background_band_m =
-      get_parameter("lane_local_background_band_m").as_double();
-    lane_reconstructor_config_.tracked_lane_mark_width_near_m =
-      get_parameter("lane_tracked_mark_width_near_m").as_double();
-    lane_reconstructor_config_.tracked_lane_mark_width_far_m =
-      get_parameter("lane_tracked_mark_width_far_m").as_double();
-    lane_reconstructor_config_.measurement_lateral_gate_near_m =
-      get_parameter("lane_measurement_lateral_gate_near_m").as_double();
-    lane_reconstructor_config_.measurement_lateral_gate_far_m =
-      get_parameter("lane_measurement_lateral_gate_far_m").as_double();
-    lane_reconstructor_config_.row_step_px = static_cast<int>(
-      get_parameter("lane_row_step_px").as_int());
-    lane_reconstructor_config_.observation_minimum_x_m =
-      get_parameter("lane_observation_minimum_x_m").as_double();
-    lane_reconstructor_config_.observation_maximum_x_m =
-      get_parameter("lane_observation_maximum_x_m").as_double();
-    lane_reconstructor_config_.reconstruction_minimum_x_m =
-      get_parameter("lane_reconstruction_minimum_x_m").as_double();
-    lane_reconstructor_config_.reconstruction_maximum_x_m =
-      get_parameter("lane_reconstruction_maximum_x_m").as_double();
-    lane_reconstructor_config_.maximum_extrapolation_m =
-      get_parameter("lane_maximum_extrapolation_m").as_double();
-    lane_reconstructor_config_.sliding_window_step_m =
-      get_parameter("lane_sliding_window_step_m").as_double();
-    lane_reconstructor_config_.sliding_window_length_m =
-      get_parameter("lane_sliding_window_length_m").as_double();
-    lane_reconstructor_config_.sliding_window_half_width_near_m =
-      get_parameter("lane_sliding_window_half_width_near_m").as_double();
-    lane_reconstructor_config_.sliding_window_half_width_far_m =
-      get_parameter("lane_sliding_window_half_width_far_m").as_double();
-    lane_reconstructor_config_.sliding_window_measurement_weight =
-      get_parameter("lane_sliding_window_measurement_weight").as_double();
-    lane_reconstructor_config_.sliding_window_heading_weight =
-      get_parameter("lane_sliding_window_heading_weight").as_double();
-    lane_reconstructor_config_.maximum_tracking_arc_length_m =
-      get_parameter("lane_maximum_tracking_arc_length_m").as_double();
-    lane_reconstructor_config_.maximum_gap_fill_m =
-      get_parameter("lane_maximum_gap_fill_m").as_double();
-    lane_reconstructor_config_.measured_point_smoothing_weight =
-      get_parameter("lane_measured_point_smoothing_weight").as_double();
-    lane_reconstructor_config_.minimum_window_pixel_count = static_cast<int>(
-      get_parameter("lane_minimum_window_pixel_count").as_int());
-    lane_reconstructor_config_.expected_lane_width_m =
-      get_parameter("lane_expected_width_m").as_double();
-    lane_reconstructor_config_.lane_width_tolerance_m =
-      get_parameter("lane_width_tolerance_m").as_double();
-    lane_reconstructor_config_.initial_center_tolerance_m =
-      get_parameter("lane_initial_center_tolerance_m").as_double();
-    lane_reconstructor_config_.single_lane_initial_tolerance_m =
-      get_parameter("lane_single_initial_tolerance_m").as_double();
-    lane_reconstructor_config_.maximum_tracking_gap_m =
-      get_parameter("lane_maximum_tracking_gap_m").as_double();
-    lane_reconstructor_config_.minimum_points = static_cast<int>(
-      get_parameter("lane_minimum_points").as_int());
-    lane_reconstructor_config_.minimum_counterpart_points = static_cast<int>(
-      get_parameter("lane_minimum_counterpart_points").as_int());
-    lane_reconstructor_config_.allow_single_lane =
-      get_parameter("lane_allow_single_lane").as_bool();
-    lane_reconstructor_config_.centerline_from_single_boundary_enabled =
-      get_parameter(
-        "lane_centerline_from_single_boundary_enabled").as_bool();
-    lane_reconstructor_config_.centerline_preserve_reference_shape =
-      get_parameter("lane_centerline_preserve_reference_shape").as_bool();
-    lane_reconstructor_config_.single_boundary_side_lock_enabled =
-      get_parameter("lane_single_boundary_side_lock_enabled").as_bool();
-    lane_reconstructor_config_.single_boundary_side_pair_confirmation_frames =
-      static_cast<int>(get_parameter(
-          "lane_single_boundary_side_pair_confirmation_frames").as_int());
-    lane_reconstructor_config_.single_boundary_side_lock_reset_frames =
-      static_cast<int>(get_parameter(
-          "lane_single_boundary_side_lock_reset_frames").as_int());
-    lane_reconstructor_config_.centerline_midpoint_smoothing_weight =
-      get_parameter(
-        "lane_centerline_midpoint_smoothing_weight").as_double();
-    lane_reconstructor_config_.centerline_temporal_current_weight =
-      get_parameter(
-        "lane_centerline_temporal_current_weight").as_double();
-    lane_reconstructor_config_.centerline_transition_maximum_correction_m =
-      get_parameter(
-        "lane_centerline_transition_maximum_correction_m").as_double();
-    lane_reconstructor_config_.centerline_transition_correction_decay =
-      get_parameter(
-        "lane_centerline_transition_correction_decay").as_double();
-    lane_reconstructor_config_.centerline_tangent_window_m =
-      get_parameter("lane_centerline_tangent_window_m").as_double();
-    lane_reconstructor_config_.centerline_maximum_curvature_per_m =
-      get_parameter("lane_centerline_maximum_curvature_per_m").as_double();
-    lane_reconstructor_config_.centerline_maximum_heading_step_deg =
-      get_parameter("lane_centerline_maximum_heading_step_deg").as_double();
-    lane_reconstructor_config_.temporal_tracking_enabled =
-      get_parameter("lane_temporal_tracking_enabled").as_bool();
-    lane_reconstructor_config_.temporal_maximum_lateral_jump_near_m =
-      get_parameter(
-        "lane_temporal_maximum_lateral_jump_near_m").as_double();
-    lane_reconstructor_config_.temporal_maximum_lateral_jump_far_m =
-      get_parameter(
-        "lane_temporal_maximum_lateral_jump_far_m").as_double();
-    lane_reconstructor_config_.temporal_maximum_heading_jump_deg =
-      get_parameter("lane_temporal_maximum_heading_jump_deg").as_double();
-    lane_reconstructor_config_.temporal_confirmation_frames =
-      static_cast<int>(
-        get_parameter("lane_temporal_confirmation_frames").as_int());
-    lane_reconstructor_config_.temporal_hold_frames = static_cast<int>(
-      get_parameter("lane_temporal_hold_frames").as_int());
-    lane_reconstructor_config_.output_line_thickness_m =
-      get_parameter("lane_output_line_thickness_m").as_double();
+    lane_preprocess_config_.enabled = lane_seed_detection_enabled_;
+    lane_preprocess_config_.gray_mode = static_cast<int>(
+      get_parameter("lane_gray_mode").as_int());
+    lane_preprocess_config_.top_hat_kernel_shape = static_cast<int>(
+      get_parameter("lane_top_hat_shape").as_int());
+    lane_preprocess_config_.top_hat_iterations = static_cast<int>(
+      get_parameter("lane_top_hat_iterations").as_int());
+    lane_preprocess_config_.top_hat_border_type = static_cast<int>(
+      get_parameter("lane_top_hat_border").as_int());
+    lane_preprocess_config_.near_ratio =
+      get_parameter("lane_near_ratio").as_double();
+    lane_preprocess_config_.near_gain =
+      get_parameter("lane_near_gain").as_double();
+    lane_preprocess_config_.near_noise_floor = static_cast<int>(
+      get_parameter("lane_near_noise_floor").as_int());
+    lane_preprocess_config_.near_kernel_width = static_cast<int>(
+      get_parameter("lane_near_kernel_width").as_int());
+    lane_preprocess_config_.near_kernel_height = static_cast<int>(
+      get_parameter("lane_near_kernel_height").as_int());
+    lane_preprocess_config_.middle_ratio =
+      get_parameter("lane_middle_ratio").as_double();
+    lane_preprocess_config_.middle_gain =
+      get_parameter("lane_middle_gain").as_double();
+    lane_preprocess_config_.middle_noise_floor = static_cast<int>(
+      get_parameter("lane_middle_noise_floor").as_int());
+    lane_preprocess_config_.middle_kernel_width = static_cast<int>(
+      get_parameter("lane_middle_kernel_width").as_int());
+    lane_preprocess_config_.middle_kernel_height = static_cast<int>(
+      get_parameter("lane_middle_kernel_height").as_int());
+    lane_preprocess_config_.far_ratio =
+      get_parameter("lane_far_ratio").as_double();
+    lane_preprocess_config_.far_gain =
+      get_parameter("lane_far_gain").as_double();
+    lane_preprocess_config_.far_noise_floor = static_cast<int>(
+      get_parameter("lane_far_noise_floor").as_int());
+    lane_preprocess_config_.far_kernel_width = static_cast<int>(
+      get_parameter("lane_far_kernel_width").as_int());
+    lane_preprocess_config_.far_kernel_height = static_cast<int>(
+      get_parameter("lane_far_kernel_height").as_int());
+
+    lane_seed_config_.image_width = bev_config_.output_width;
+    lane_seed_config_.image_height = bev_config_.output_height;
+    lane_seed_config_.roi_bottom_exclusion_ratio = get_parameter(
+      "lane_seed_roi_bottom_exclusion_ratio").as_double();
+    lane_seed_config_.roi_height_ratio =
+      get_parameter("lane_seed_roi_height_ratio").as_double();
+    lane_seed_config_.minimum_top_hat_response = static_cast<int>(
+      get_parameter("lane_seed_minimum_response").as_int());
+    lane_seed_config_.minimum_run_width_px = static_cast<int>(
+      get_parameter("lane_seed_minimum_run_width_px").as_int());
+    lane_seed_config_.maximum_run_width_px = static_cast<int>(
+      get_parameter("lane_seed_maximum_run_width_px").as_int());
+    lane_seed_config_.maximum_lateral_step_px = get_parameter(
+      "lane_seed_maximum_lateral_step_px").as_double();
+    lane_seed_config_.maximum_gap_rows = static_cast<int>(
+      get_parameter("lane_seed_maximum_gap_rows").as_int());
+    lane_seed_config_.minimum_track_arc_length_px = get_parameter(
+      "lane_seed_minimum_track_arc_length_px").as_double();
+    lane_seed_config_.minimum_bilateral_contrast = get_parameter(
+      "lane_seed_minimum_bilateral_contrast").as_double();
+    lane_seed_config_.maximum_background_asymmetry = get_parameter(
+      "lane_seed_maximum_background_asymmetry").as_double();
+    lane_seed_config_.background_gap_px = static_cast<int>(
+      get_parameter("lane_seed_background_gap_px").as_int());
+    lane_seed_config_.background_band_width_px = static_cast<int>(
+      get_parameter("lane_seed_background_band_width_px").as_int());
+    lane_seed_config_.contrast_score_weight = get_parameter(
+      "lane_seed_contrast_score_weight").as_double();
+    lane_seed_config_.contrast_relaxation_enabled = get_parameter(
+      "lane_seed_contrast_relaxation_enabled").as_bool();
+    lane_seed_config_.contrast_relaxation_step = get_parameter(
+      "lane_seed_contrast_relaxation_step").as_double();
+    lane_seed_config_.contrast_relaxation_retry_count = static_cast<int>(
+      get_parameter("lane_seed_contrast_relaxation_retries").as_int());
+    lane_seed_config_.slope_filter_enabled = get_parameter(
+      "lane_seed_slope_filter_enabled").as_bool();
+    lane_seed_config_.slope_median_window = static_cast<int>(
+      get_parameter("lane_seed_slope_median_window").as_int());
+    lane_seed_config_.maximum_slope_change_px_per_row = get_parameter(
+      "lane_seed_maximum_slope_change_px_per_row").as_double();
+    lane_seed_config_.minimum_pair_distance_px = get_parameter(
+      "lane_seed_pair_minimum_distance_px").as_double();
+    lane_seed_config_.maximum_pair_distance_px = get_parameter(
+      "lane_seed_pair_maximum_distance_px").as_double();
 
     status_log_interval_sec_ =
       get_parameter("status_log_interval_sec").as_double();
@@ -1090,9 +890,9 @@ private:
 
   void validateParameters() const
   {
-    if (configuration_version_ != 1) {
+    if (configuration_version_ != 2) {
       throw std::invalid_argument(
-              "configuration_version must be 1; check that bev_config.yaml "
+              "configuration_version must be 2; check that bev_config.yaml "
               "was loaded for the bev_processor node");
     }
     if (input_topic_.empty()) {
@@ -1120,9 +920,9 @@ private:
               "capture directory/topic must not be empty and button must "
               "be non-negative");
     }
-    if (lane_reconstruction_enabled_ && lane_output_topic_.empty()) {
+    if (lane_seed_detection_enabled_ && lane_output_topic_.empty()) {
       throw std::invalid_argument(
-              "lane_output_topic must not be empty when lane reconstruction "
+              "lane_output_topic must not be empty when lane seed detection "
               "is enabled");
     }
     if (
@@ -1182,6 +982,51 @@ private:
     {
       throw std::invalid_argument("invalid edge-adaptive interpolation settings");
     }
+    const auto oddPositive = [](const int value) {
+        return value > 0 && value % 2 == 1;
+      };
+    const double lane_ratio_sum =
+      lane_preprocess_config_.near_ratio +
+      lane_preprocess_config_.middle_ratio +
+      lane_preprocess_config_.far_ratio;
+    const auto validRatio = [](const double value) {
+        return std::isfinite(value) && value >= 0.0;
+      };
+    const auto validGain = [](const double value) {
+        return std::isfinite(value) && value > 0.0;
+      };
+    const auto validNoiseFloor = [](const int value) {
+        return value >= 0 && value <= 255;
+      };
+    if (
+      lane_preprocess_config_.gray_mode < 0 ||
+      lane_preprocess_config_.gray_mode > 2 ||
+      !validRatio(lane_preprocess_config_.near_ratio) ||
+      !validRatio(lane_preprocess_config_.middle_ratio) ||
+      !validRatio(lane_preprocess_config_.far_ratio) ||
+      !std::isfinite(lane_ratio_sum) ||
+      std::abs(lane_ratio_sum - 1.0) > 1.0e-6 ||
+      !validGain(lane_preprocess_config_.near_gain) ||
+      !validGain(lane_preprocess_config_.middle_gain) ||
+      !validGain(lane_preprocess_config_.far_gain) ||
+      !validNoiseFloor(lane_preprocess_config_.near_noise_floor) ||
+      !validNoiseFloor(lane_preprocess_config_.middle_noise_floor) ||
+      !validNoiseFloor(lane_preprocess_config_.far_noise_floor) ||
+      !oddPositive(lane_preprocess_config_.near_kernel_width) ||
+      !oddPositive(lane_preprocess_config_.near_kernel_height) ||
+      !oddPositive(lane_preprocess_config_.middle_kernel_width) ||
+      !oddPositive(lane_preprocess_config_.middle_kernel_height) ||
+      !oddPositive(lane_preprocess_config_.far_kernel_width) ||
+      !oddPositive(lane_preprocess_config_.far_kernel_height) ||
+      lane_preprocess_config_.top_hat_kernel_shape < 0 ||
+      lane_preprocess_config_.top_hat_kernel_shape > 2 ||
+      lane_preprocess_config_.top_hat_iterations < 1 ||
+      lane_preprocess_config_.top_hat_iterations > 10 ||
+      lane_preprocess_config_.top_hat_border_type < 0 ||
+      lane_preprocess_config_.top_hat_border_type > 3)
+    {
+      throw std::invalid_argument("invalid CUDA lane preprocessing settings");
+    }
     if (
       expected_input_fps_ <= 0.0 ||
       !std::isfinite(input_bottom_fraction_) ||
@@ -1191,14 +1036,6 @@ private:
       preview_max_fps_ <= 0.0 ||
       preview_max_width_ <= 0 ||
       preview_max_height_ <= 0 ||
-      !std::isfinite(lane_preview_overlay_alpha_) ||
-      lane_preview_overlay_alpha_ < 0.0 ||
-      lane_preview_overlay_alpha_ > 1.0 ||
-      !std::isfinite(preview_x_origin_m_) ||
-      preview_x_origin_m_ < bev_config_.x_min_m ||
-      preview_x_origin_m_ >= bev_config_.x_max_m ||
-      !std::isfinite(lane_reconstructor_config_.output_lateral_margin_m) ||
-      lane_reconstructor_config_.output_lateral_margin_m < 0.0 ||
       status_log_interval_sec_ <= 0.0 ||
       startup_timeout_sec_ <= 0.0 ||
       !std::isfinite(stabilization_settle_sec_) ||
@@ -1261,7 +1098,8 @@ private:
       BevInterpolation::Adaptive :
       bev_interpolation_ == "bicubic" ?
       BevInterpolation::Bicubic : BevInterpolation::Bilinear,
-      edge_adaptive_config_);
+      edge_adaptive_config_,
+      lane_preprocess_config_);
 
     const int valid_pixels = cv::countNonZero(lut.valid_mask);
     const int output_pixels =
@@ -1452,15 +1290,19 @@ private:
           }
           fused_coverage_reported_ = true;
         }
-        output->image = processor->process(
+        CudaBevResult cuda_result = processor->process(
           input->nv12.data(),
           input->nv12.size(),
           static_cast<std::size_t>(input->step),
           stabilized_to_source,
           static_cast<int>(input->source_crop_top));
-        if (lane_reconstructor_) {
+        output->image = std::move(cuda_result.bgr);
+        if (lane_seed_detector_) {
           const auto lane_started_at = SteadyClock::now();
-          const auto lane = lane_reconstructor_->reconstruct(output->image);
+          BevLaneSeedDetection lane = lane_seed_detector_->detect(
+            cuda_result.gray,
+            cuda_result.enhanced_top_hat,
+            preview_enabled_ && lane_preview_enabled_);
           const auto lane_finished_at = SteadyClock::now();
           const auto lane_process_ns = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1470,31 +1312,32 @@ private:
           lane_process_ns_interval_.fetch_add(
             lane_process_ns, std::memory_order_relaxed);
           updateMaximum(lane_process_ns_max_interval_, lane_process_ns);
-          output->lane_mask = lane.reconstructed_mask;
-          output->left_lane_mask = lane.left_reconstructed_mask;
-          output->right_lane_mask = lane.right_reconstructed_mask;
-          output->lane_sliding_windows = lane.sliding_windows;
-          latest_lane_points_.store(
-            lane.measured_point_count, std::memory_order_relaxed);
-          latest_lane_centerline_points_.store(
-            lane.centerline_point_count, std::memory_order_relaxed);
-          latest_lane_centerline_truncated_.store(
-            lane.centerline_normal_offset_truncated,
+          output->lane_mask = std::move(lane.seed_mask);
+          output->lane_preview = std::move(lane.preview);
+          latest_lane_track_count_.store(
+            lane.accepted_track_count, std::memory_order_relaxed);
+          latest_lane_strict_evidence_count_.store(
+            lane.strict_evidence_count, std::memory_order_relaxed);
+          latest_lane_relaxed_evidence_count_.store(
+            lane.relaxed_evidence_count, std::memory_order_relaxed);
+          latest_lane_slope_break_count_.store(
+            lane.slope_break_count, std::memory_order_relaxed);
+          latest_lane_left_valid_.store(
+            lane.left.valid, std::memory_order_relaxed);
+          latest_lane_right_valid_.store(
+            lane.right.valid, std::memory_order_relaxed);
+          latest_lane_pair_valid_.store(
+            lane.pair_valid, std::memory_order_relaxed);
+          latest_lane_pair_distance_centi_px_.store(
+            static_cast<int>(std::lround(100.0 * lane.pair_distance_px)),
             std::memory_order_relaxed);
-          latest_lane_centerline_single_boundary_.store(
-            lane.centerline_from_single_boundary,
+          latest_lane_left_arc_centi_px_.store(
+            static_cast<int>(std::lround(100.0 * lane.left.arc_length_px)),
             std::memory_order_relaxed);
-          latest_lane_temporal_hold_.store(
-            lane.temporal_hold_used, std::memory_order_relaxed);
-          latest_lane_width_mm_.store(
-            static_cast<int>(std::lround(
-              1000.0 * lane.measured_lane_width_m)),
+          latest_lane_right_arc_centi_px_.store(
+            static_cast<int>(std::lround(100.0 * lane.right.arc_length_px)),
             std::memory_order_relaxed);
-          latest_lane_reconstructed_maximum_x_mm_.store(
-            static_cast<int>(std::lround(
-              1000.0 * lane.reconstructed_maximum_x_m)),
-            std::memory_order_relaxed);
-          if (lane.valid) {
+          if (lane.left.valid || lane.right.valid) {
             lane_valid_total_.fetch_add(1U, std::memory_order_relaxed);
             lane_valid_interval_.fetch_add(1U, std::memory_order_relaxed);
           } else {
@@ -1565,7 +1408,7 @@ private:
           output_publisher_->publish(
             makeBgr8Message(*frame, output_frame_id_));
         }
-        if (lane_reconstruction_enabled_) {
+        if (lane_seed_detection_enabled_) {
           lane_output_publisher_->publish(
             makeMono8Message(*frame, output_frame_id_));
         }
@@ -1593,173 +1436,6 @@ private:
           exception.what());
       }
     }
-  }
-
-  static constexpr int kPreviewLeftMargin = 55;
-  static constexpr int kPreviewRightMargin = 35;
-  static constexpr int kPreviewTopMargin = 24;
-  static constexpr int kPreviewBottomMargin = 30;
-
-  static void drawPreviewText(
-    cv::Mat & image,
-    const std::string & text,
-    const cv::Point & origin)
-  {
-    constexpr double font_scale = 0.32;
-    constexpr int font_face = cv::FONT_HERSHEY_SIMPLEX;
-    cv::putText(
-      image, text, origin, font_face, font_scale,
-      cv::Scalar(0, 0, 0), 1, cv::LINE_AA);
-  }
-
-  cv::Mat makeCoordinatePreview(const cv::Mat & bev_image) const
-  {
-    constexpr double grid_step_m = 0.1;
-    constexpr double label_step_m = 0.5;
-    constexpr double epsilon = 1.0e-9;
-    const cv::Scalar margin_color(245, 245, 245);
-    const cv::Scalar grid_color(210, 210, 210);
-    const cv::Scalar border_color(180, 180, 180);
-    const cv::Scalar centerline_color(0, 200, 0);
-
-    const int visible_height = std::clamp(
-      static_cast<int>(std::lround(
-        (bev_config_.x_max_m - preview_x_origin_m_) /
-        bev_config_.meter_per_pixel)),
-      1,
-      bev_image.rows);
-    const double displayed_x_max_m =
-      bev_config_.x_max_m - preview_x_origin_m_;
-    const double displayed_y_min_m =
-      bev_config_.y_min_m -
-      lane_reconstructor_config_.output_lateral_margin_m;
-    const double displayed_y_max_m =
-      bev_config_.y_max_m +
-      lane_reconstructor_config_.output_lateral_margin_m;
-    cv::Mat preview(
-      visible_height + kPreviewTopMargin + kPreviewBottomMargin,
-      bev_image.cols + kPreviewLeftMargin + kPreviewRightMargin,
-      CV_8UC3,
-      margin_color);
-    const cv::Rect bev_region(
-      kPreviewLeftMargin,
-      kPreviewTopMargin,
-      bev_image.cols,
-      visible_height);
-    bev_image(cv::Rect(0, 0, bev_image.cols, visible_height)).copyTo(
-      preview(bev_region));
-    cv::Mat displayed_bev = preview(bev_region);
-    cv::Mat grid_overlay = displayed_bev.clone();
-
-    const double first_x = 0.0;
-    for (
-      double x_m = first_x;
-      x_m <= displayed_x_max_m + epsilon;
-      x_m += grid_step_m)
-    {
-      const int row = std::clamp(
-        static_cast<int>(std::lround(
-          (displayed_x_max_m - x_m) /
-          bev_config_.meter_per_pixel)),
-        0,
-        displayed_bev.rows - 1);
-      cv::line(
-        grid_overlay,
-        cv::Point(0, row),
-        cv::Point(displayed_bev.cols - 1, row),
-        grid_color,
-        1,
-        cv::LINE_AA);
-      const double label_units = x_m / label_step_m;
-      if (std::abs(label_units - std::round(label_units)) < epsilon) {
-        const std::string label = cv::format("X %.1f", x_m);
-        int baseline = 0;
-        const cv::Size label_size = cv::getTextSize(
-          label, cv::FONT_HERSHEY_SIMPLEX, 0.32, 1, &baseline);
-        drawPreviewText(
-          preview,
-          label,
-          cv::Point(
-            kPreviewLeftMargin - label_size.width - 5,
-            kPreviewTopMargin + row + label_size.height / 2));
-      }
-    }
-
-    cv::line(
-      grid_overlay,
-      cv::Point(0, displayed_bev.rows - 1),
-      cv::Point(displayed_bev.cols - 1, displayed_bev.rows - 1),
-      grid_color,
-      1,
-      cv::LINE_AA);
-    const double first_y =
-      std::ceil(displayed_y_min_m / grid_step_m) * grid_step_m;
-    for (
-      double y_m = first_y;
-      y_m <= displayed_y_max_m + epsilon;
-      y_m += grid_step_m)
-    {
-      const int column = std::clamp(
-        static_cast<int>(std::lround(
-          (displayed_y_max_m - y_m) /
-          bev_config_.meter_per_pixel)),
-        0,
-        displayed_bev.cols - 1);
-      cv::line(
-        grid_overlay,
-        cv::Point(column, 0),
-        cv::Point(column, displayed_bev.rows - 1),
-        grid_color,
-        1,
-        cv::LINE_AA);
-      const double label_units = y_m / label_step_m;
-      if (std::abs(label_units - std::round(label_units)) < epsilon) {
-        const std::string label = cv::format("Y %+.1f", y_m);
-        int baseline = 0;
-        const cv::Size label_size = cv::getTextSize(
-          label, cv::FONT_HERSHEY_SIMPLEX, 0.32, 1, &baseline);
-        drawPreviewText(
-          preview,
-          label,
-          cv::Point(
-            kPreviewLeftMargin + column - label_size.width / 2,
-            kPreviewTopMargin + displayed_bev.rows + 16));
-      }
-    }
-
-    cv::addWeighted(
-      grid_overlay, 0.35, displayed_bev, 0.65, 0.0, displayed_bev);
-
-    const int center_column = std::clamp(
-      static_cast<int>(std::lround(
-        displayed_y_max_m / bev_config_.meter_per_pixel)),
-      0,
-      displayed_bev.cols - 1);
-    cv::line(
-      displayed_bev,
-      cv::Point(center_column, 0),
-      cv::Point(center_column, displayed_bev.rows - 1),
-      centerline_color,
-      1,
-      cv::LINE_AA);
-    cv::rectangle(preview, bev_region, border_color, 1, cv::LINE_AA);
-
-    const std::string direction_label = "+X forward / +Y left";
-    int direction_baseline = 0;
-    const cv::Size direction_size = cv::getTextSize(
-      direction_label,
-      cv::FONT_HERSHEY_SIMPLEX,
-      0.32,
-      1,
-      &direction_baseline);
-    drawPreviewText(
-      preview,
-      direction_label,
-      cv::Point(
-        kPreviewLeftMargin +
-        (displayed_bev.cols - direction_size.width) / 2,
-        15));
-    return preview;
   }
 
   void captureLatestBev(const char * trigger)
@@ -1858,20 +1534,11 @@ private:
   void previewLoop()
   {
     try {
-      const int lateral_margin_px = static_cast<int>(std::llround(
-          lane_reconstructor_config_.output_lateral_margin_m /
-          bev_config_.meter_per_pixel));
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
       cv::resizeWindow(
         preview_window_name_,
-        std::min(
-          preview_max_width_,
-          bev_config_.output_width + 2 * lateral_margin_px +
-          kPreviewLeftMargin + kPreviewRightMargin),
-        std::min(
-          preview_max_height_,
-          bev_config_.output_height +
-          kPreviewTopMargin + kPreviewBottomMargin));
+        std::min(preview_max_width_, 2 * bev_config_.output_width),
+        std::min(preview_max_height_, 2 * bev_config_.output_height));
 
       const auto preview_period =
         std::chrono::duration_cast<SteadyClock::duration>(
@@ -1896,35 +1563,10 @@ private:
         const auto frame = std::atomic_load_explicit(
           &latest_output_, std::memory_order_acquire);
         if (frame) {
-          cv::Mat displayed_image = makeExpandedBevPreview(
-            frame->image, lateral_margin_px);
-          if (lane_preview_enabled_ && lane_preview_result_only_enabled_) {
-            displayed_image = cv::Mat::zeros(
-              displayed_image.size(), displayed_image.type());
-          }
-          if (
-            lane_preview_enabled_ &&
-            !frame->left_lane_mask.empty() &&
-            !frame->right_lane_mask.empty())
-          {
-            displayed_image = makeLaneOverlayPreview(
-              displayed_image,
-              frame->left_lane_mask,
-              frame->right_lane_mask,
-              frame->lane_mask,
-              lane_preview_result_only_enabled_ ?
-              1.0 : lane_preview_overlay_alpha_);
-          }
-          if (
-            lane_preview_sliding_windows_enabled_ &&
-            !frame->lane_sliding_windows.empty())
-          {
-            displayed_image = makeSlidingWindowPreview(
-              displayed_image, frame->lane_sliding_windows, bev_config_,
-              lane_reconstructor_config_.output_lateral_margin_m);
-          }
-          cv::Mat preview_image = makeCoordinatePreview(displayed_image);
-          cv::imshow(preview_window_name_, preview_image);
+          const cv::Mat & displayed_image =
+            lane_preview_enabled_ && !frame->lane_preview.empty() ?
+            frame->lane_preview : frame->image;
+          cv::imshow(preview_window_name_, displayed_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
           next_preview_at = now + preview_period;
@@ -2201,37 +1843,33 @@ private:
           publish_error_total_.load(std::memory_order_relaxed)));
     }
 
-    if (lane_reconstruction_enabled_) {
-      const int centerline_point_count =
-        latest_lane_centerline_points_.load(std::memory_order_relaxed);
-      const char * centerline_source = centerline_point_count <= 0 ?
-        "none" :
-        (latest_lane_centerline_single_boundary_.load(
-          std::memory_order_relaxed) ? "single" : "pair");
+    if (lane_seed_detection_enabled_) {
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane: valid/invalid=%.1f/%.1fHz "
-        "(%llu/%llu total), measured/centerline=%d/%d, hold=%s, "
-        "center_source=%s, normal_offset_trimmed=%s, "
-        "width=%.3fm, reconstructed_to=%.2fm, "
-        "lane_compute_ms(avg/max)=%.3f/%.3f, output=%s",
+        "BEV lane seeds: valid/invalid=%.1f/%.1fHz "
+        "(%llu/%llu total), tracks=%d, selected=L:%s/R:%s, pair=%s "
+        "distance=%.2fpx, arc=L:%.2f/R:%.2fpx, "
+        "evidence=strict:%d/relaxed:%d, slope_breaks=%d, "
+        "CPU_seed_ms(avg/max)=%.3f/%.3f, output=%s",
         static_cast<double>(lane_valid) / elapsed_sec,
         static_cast<double>(lane_invalid) / elapsed_sec,
         static_cast<unsigned long long>(
           lane_valid_total_.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(
           lane_invalid_total_.load(std::memory_order_relaxed)),
-        latest_lane_points_.load(std::memory_order_relaxed),
-        centerline_point_count,
-        latest_lane_temporal_hold_.load(std::memory_order_relaxed) ?
-        "yes" : "no",
-        centerline_source,
-        latest_lane_centerline_truncated_.load(std::memory_order_relaxed) ?
-        "yes" : "no",
-        static_cast<double>(
-          latest_lane_width_mm_.load(std::memory_order_relaxed)) / 1000.0,
-        static_cast<double>(latest_lane_reconstructed_maximum_x_mm_.load(
-          std::memory_order_relaxed)) / 1000.0,
+        latest_lane_track_count_.load(std::memory_order_relaxed),
+        latest_lane_left_valid_.load(std::memory_order_relaxed) ? "yes" : "no",
+        latest_lane_right_valid_.load(std::memory_order_relaxed) ? "yes" : "no",
+        latest_lane_pair_valid_.load(std::memory_order_relaxed) ? "yes" : "no",
+        static_cast<double>(latest_lane_pair_distance_centi_px_.load(
+          std::memory_order_relaxed)) / 100.0,
+        static_cast<double>(latest_lane_left_arc_centi_px_.load(
+          std::memory_order_relaxed)) / 100.0,
+        static_cast<double>(latest_lane_right_arc_centi_px_.load(
+          std::memory_order_relaxed)) / 100.0,
+        latest_lane_strict_evidence_count_.load(std::memory_order_relaxed),
+        latest_lane_relaxed_evidence_count_.load(std::memory_order_relaxed),
+        latest_lane_slope_break_count_.load(std::memory_order_relaxed),
         average_lane_process_ms,
         static_cast<double>(lane_process_ns_max) / 1.0e6,
         lane_output_topic_.c_str());
@@ -2278,14 +1916,11 @@ private:
   std::string capture_joy_topic_{"/joy"};
   int capture_joy_button_{1};
   std::atomic<bool> capture_joy_button_pressed_{false};
-  bool lane_reconstruction_enabled_{true};
+  bool lane_seed_detection_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
-  bool lane_preview_result_only_enabled_{false};
-  bool lane_preview_sliding_windows_enabled_{false};
-  double preview_x_origin_m_{0.0};
-  double lane_preview_overlay_alpha_{0.8};
-  BevLaneReconstructorConfig lane_reconstructor_config_{};
+  CudaLanePreprocessConfig lane_preprocess_config_{};
+  BevLaneSeedDetectorConfig lane_seed_config_{};
   double status_log_interval_sec_{5.0};
   double startup_timeout_sec_{12.0};
   double stabilization_settle_sec_{5.5};
@@ -2304,7 +1939,7 @@ private:
   std::atomic<double> applied_roll_deg_{0.0};
   std::atomic<double> applied_pitch_down_deg_{14.0};
   std::shared_ptr<CudaBevProcessor> gpu_processor_;
-  std::unique_ptr<BevLaneReconstructor> lane_reconstructor_;
+  std::unique_ptr<BevLaneSeedDetector> lane_seed_detector_;
 
   rclcpp::Subscription<camera_driver::msg::BevInput>::SharedPtr
     input_subscription_;
@@ -2350,13 +1985,16 @@ private:
   std::atomic<std::uint64_t> publish_error_total_{0U};
   std::atomic<std::uint64_t> lane_valid_total_{0U};
   std::atomic<std::uint64_t> lane_invalid_total_{0U};
-  std::atomic<int> latest_lane_points_{0};
-  std::atomic<int> latest_lane_centerline_points_{0};
-  std::atomic<bool> latest_lane_centerline_truncated_{false};
-  std::atomic<bool> latest_lane_centerline_single_boundary_{false};
-  std::atomic<bool> latest_lane_temporal_hold_{false};
-  std::atomic<int> latest_lane_width_mm_{0};
-  std::atomic<int> latest_lane_reconstructed_maximum_x_mm_{0};
+  std::atomic<int> latest_lane_track_count_{0};
+  std::atomic<int> latest_lane_strict_evidence_count_{0};
+  std::atomic<int> latest_lane_relaxed_evidence_count_{0};
+  std::atomic<int> latest_lane_slope_break_count_{0};
+  std::atomic<bool> latest_lane_left_valid_{false};
+  std::atomic<bool> latest_lane_right_valid_{false};
+  std::atomic<bool> latest_lane_pair_valid_{false};
+  std::atomic<int> latest_lane_pair_distance_centi_px_{0};
+  std::atomic<int> latest_lane_left_arc_centi_px_{0};
+  std::atomic<int> latest_lane_right_arc_centi_px_{0};
   std::atomic<std::uint64_t> received_interval_{0U};
   std::atomic<std::uint64_t> accepted_interval_{0U};
   std::atomic<std::uint64_t> processed_interval_{0U};
