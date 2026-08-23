@@ -396,7 +396,7 @@ public:
         get_logger(),
         "BEV lane seed continuity: slope=%s(window=%d, delta<=%.2fpx/row), "
         "pair=%.1f..%.1fpx, contrast relaxation=%s(step=%.1f, retries=%d), "
-        "preview=%s",
+        "side_lock=%s(reset=%d frames, reacquire<=%.1fpx), preview=%s",
         lane_seed_config_.slope_filter_enabled ? "on" : "off",
         lane_seed_config_.slope_median_window,
         lane_seed_config_.maximum_slope_change_px_per_row,
@@ -405,6 +405,9 @@ public:
         lane_seed_config_.contrast_relaxation_enabled ? "on" : "off",
         lane_seed_config_.contrast_relaxation_step,
         lane_seed_config_.contrast_relaxation_retry_count,
+        lane_seed_config_.temporal_side_lock_enabled ? "on" : "off",
+        lane_seed_config_.temporal_side_lock_reset_frames,
+        lane_seed_config_.temporal_side_reacquire_maximum_distance_px,
         lane_preview_enabled_ ? "on" : "off");
     }
     RCLCPP_INFO(
@@ -602,6 +605,10 @@ private:
       "lane_seed_maximum_slope_change_px_per_row", 2.0);
     declare_parameter<double>("lane_seed_pair_minimum_distance_px", 50.0);
     declare_parameter<double>("lane_seed_pair_maximum_distance_px", 95.0);
+    declare_parameter<bool>("lane_seed_temporal_side_lock_enabled", true);
+    declare_parameter<int>("lane_seed_temporal_side_lock_reset_frames", 30);
+    declare_parameter<double>(
+      "lane_seed_temporal_side_reacquire_maximum_distance_px", 20.0);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 12.0);
@@ -880,6 +887,13 @@ private:
       "lane_seed_pair_minimum_distance_px").as_double();
     lane_seed_config_.maximum_pair_distance_px = get_parameter(
       "lane_seed_pair_maximum_distance_px").as_double();
+    lane_seed_config_.temporal_side_lock_enabled = get_parameter(
+      "lane_seed_temporal_side_lock_enabled").as_bool();
+    lane_seed_config_.temporal_side_lock_reset_frames = static_cast<int>(
+      get_parameter("lane_seed_temporal_side_lock_reset_frames").as_int());
+    lane_seed_config_.temporal_side_reacquire_maximum_distance_px =
+      get_parameter(
+      "lane_seed_temporal_side_reacquire_maximum_distance_px").as_double();
 
     status_log_interval_sec_ =
       get_parameter("status_log_interval_sec").as_double();
@@ -1328,6 +1342,10 @@ private:
             lane.right.valid, std::memory_order_relaxed);
           latest_lane_pair_valid_.store(
             lane.pair_valid, std::memory_order_relaxed);
+          latest_lane_side_lock_initialized_.store(
+            lane.side_lock_initialized, std::memory_order_relaxed);
+          latest_lane_temporal_labeling_used_.store(
+            lane.temporal_labeling_used, std::memory_order_relaxed);
           latest_lane_pair_distance_centi_px_.store(
             static_cast<int>(std::lround(100.0 * lane.pair_distance_px)),
             std::memory_order_relaxed);
@@ -1850,6 +1868,7 @@ private:
         "(%llu/%llu total), tracks=%d, selected=L:%s/R:%s, pair=%s "
         "distance=%.2fpx, arc=L:%.2f/R:%.2fpx, "
         "evidence=strict:%d/relaxed:%d, slope_breaks=%d, "
+        "side_lock=%s, temporal_label=%s, "
         "CPU_seed_ms(avg/max)=%.3f/%.3f, output=%s",
         static_cast<double>(lane_valid) / elapsed_sec,
         static_cast<double>(lane_invalid) / elapsed_sec,
@@ -1870,6 +1889,11 @@ private:
         latest_lane_strict_evidence_count_.load(std::memory_order_relaxed),
         latest_lane_relaxed_evidence_count_.load(std::memory_order_relaxed),
         latest_lane_slope_break_count_.load(std::memory_order_relaxed),
+        !lane_seed_config_.temporal_side_lock_enabled ? "off" :
+        latest_lane_side_lock_initialized_.load(std::memory_order_relaxed) ?
+        "locked" : "waiting_pair",
+        latest_lane_temporal_labeling_used_.load(std::memory_order_relaxed) ?
+        "yes" : "no",
         average_lane_process_ms,
         static_cast<double>(lane_process_ns_max) / 1.0e6,
         lane_output_topic_.c_str());
@@ -1992,6 +2016,8 @@ private:
   std::atomic<bool> latest_lane_left_valid_{false};
   std::atomic<bool> latest_lane_right_valid_{false};
   std::atomic<bool> latest_lane_pair_valid_{false};
+  std::atomic<bool> latest_lane_side_lock_initialized_{false};
+  std::atomic<bool> latest_lane_temporal_labeling_used_{false};
   std::atomic<int> latest_lane_pair_distance_centi_px_{0};
   std::atomic<int> latest_lane_left_arc_centi_px_{0};
   std::atomic<int> latest_lane_right_arc_centi_px_{0};

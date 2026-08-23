@@ -85,6 +85,13 @@ def generate_launch_description():
         ("lane_seed_maximum_slope_change_px_per_row", "2.0", float),
         ("lane_seed_pair_minimum_distance_px", "50.0", float),
         ("lane_seed_pair_maximum_distance_px", "95.0", float),
+        ("lane_seed_temporal_side_lock_enabled", "true", bool),
+        ("lane_seed_temporal_side_lock_reset_frames", "30", int),
+        (
+            "lane_seed_temporal_side_reacquire_maximum_distance_px",
+            "20.0",
+            float,
+        ),
     ]
     lane_launch_arguments = [
         DeclareLaunchArgument(

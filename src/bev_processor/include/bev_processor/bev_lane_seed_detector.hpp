@@ -38,6 +38,12 @@ struct BevLaneSeedDetectorConfig
 
   double minimum_pair_distance_px{50.0};
   double maximum_pair_distance_px{95.0};
+
+  // Lock left/right roles after the first valid pair. A temporarily missing
+  // single lane is then labelled by temporal continuity, not screen center.
+  bool temporal_side_lock_enabled{true};
+  int temporal_side_lock_reset_frames{30};
+  double temporal_side_reacquire_maximum_distance_px{20.0};
 };
 
 struct BevLaneSeed
@@ -68,6 +74,9 @@ struct BevLaneSeedDetection
   double pair_distance_px{0.0};
   int pair_distance_samples{0};
   int pair_distance_inliers{0};
+  bool side_lock_initialized{false};
+  bool temporal_labeling_used{false};
+  bool side_lock_reset{false};
 };
 
 class BevLaneSeedDetector
@@ -78,10 +87,18 @@ public:
   BevLaneSeedDetection detect(
     const cv::Mat & gray,
     const cv::Mat & enhanced_top_hat,
-    bool create_preview) const;
+    bool create_preview);
 
 private:
   BevLaneSeedDetectorConfig config_;
+  bool side_lock_initialized_{false};
+  bool previous_left_visible_{false};
+  bool previous_right_visible_{false};
+  // -1=left, +1=right, 0=no remembered single-side state.
+  int remembered_single_side_{0};
+  int both_sides_missing_frames_{0};
+  BevLaneSeed remembered_left_;
+  BevLaneSeed remembered_right_;
 };
 
 }  // namespace bev_processor

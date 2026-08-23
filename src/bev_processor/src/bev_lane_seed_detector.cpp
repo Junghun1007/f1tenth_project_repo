@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -112,6 +113,13 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
     config.maximum_pair_distance_px < config.minimum_pair_distance_px)
   {
     throw std::invalid_argument("lane seed pair-distance range is invalid");
+  }
+  if (
+    config.temporal_side_lock_reset_frames < 1 ||
+    !std::isfinite(config.temporal_side_reacquire_maximum_distance_px) ||
+    config.temporal_side_reacquire_maximum_distance_px <= 0.0)
+  {
+    throw std::invalid_argument("lane seed temporal side-lock settings are invalid");
   }
 }
 
@@ -604,6 +612,67 @@ bool candidateColumnAtRow(
   return false;
 }
 
+bool rememberedColumnAtRow(
+  const BevLaneSeed & remembered,
+  const int row,
+  double * column)
+{
+  if (
+    column == nullptr || !remembered.valid ||
+    remembered.support_points.empty())
+  {
+    return false;
+  }
+  for (std::size_t index = 0;
+    index < remembered.support_points.size(); ++index)
+  {
+    const cv::Point2d & current = remembered.support_points[index];
+    if (static_cast<int>(std::lround(current.y)) == row) {
+      *column = current.x;
+      return true;
+    }
+    if (index + 1 >= remembered.support_points.size()) {
+      continue;
+    }
+    const cv::Point2d & next = remembered.support_points[index + 1];
+    if (current.y > row && row > next.y) {
+      const double ratio = (current.y - static_cast<double>(row)) /
+        (current.y - next.y);
+      *column = current.x + ratio * (next.x - current.x);
+      return true;
+    }
+  }
+  return false;
+}
+
+double temporalTrackDistance(
+  const TrackCandidate & candidate,
+  const BevLaneSeed & remembered)
+{
+  if (!candidate.valid || !remembered.valid) {
+    return std::numeric_limits<double>::infinity();
+  }
+  std::vector<double> distances;
+  distances.reserve(candidate.evidence.size());
+  for (const RunEvidence & evidence : candidate.evidence) {
+    double remembered_column = 0.0;
+    if (rememberedColumnAtRow(
+        remembered, evidence.run.row, &remembered_column))
+    {
+      distances.push_back(std::abs(
+        evidence.run.centroid_column - remembered_column));
+    }
+  }
+  if (!distances.empty()) {
+    return median(std::move(distances));
+  }
+  const double column_distance = std::abs(
+    candidate.seed_point.x - remembered.image_point.x);
+  const double row_distance = std::abs(
+    candidate.seed_point.y - remembered.image_point.y);
+  return column_distance + 0.25 * row_distance;
+}
+
 bool sameRowPairDistance(
   const TrackCandidate & left,
   const TrackCandidate & right,
@@ -740,7 +809,7 @@ BevLaneSeedDetector::BevLaneSeedDetector(BevLaneSeedDetectorConfig config)
 BevLaneSeedDetection BevLaneSeedDetector::detect(
   const cv::Mat & gray,
   const cv::Mat & enhanced_top_hat,
-  const bool create_preview) const
+  const bool create_preview)
 {
   if (
     gray.type() != CV_8UC1 || enhanced_top_hat.type() != CV_8UC1 ||
@@ -796,12 +865,30 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
   const double center_column =
     0.5 * static_cast<double>(enhanced_top_hat.cols - 1);
   double best_pair_score = -std::numeric_limits<double>::infinity();
-  for (const TrackCandidate & left : candidates) {
-    if (left.seed_point.x >= center_column) {
-      continue;
-    }
-    for (const TrackCandidate & right : candidates) {
-      if (right.seed_point.x < center_column) {
+  TrackCandidate current_pair_left;
+  TrackCandidate current_pair_right;
+  for (std::size_t first_index = 0;
+    first_index < candidates.size(); ++first_index)
+  {
+    for (std::size_t second_index = first_index + 1;
+      second_index < candidates.size(); ++second_index)
+    {
+      const TrackCandidate & first = candidates[first_index];
+      const TrackCandidate & second = candidates[second_index];
+      const TrackCandidate & left =
+        first.seed_point.x < second.seed_point.x ? first : second;
+      const TrackCandidate & right =
+        first.seed_point.x < second.seed_point.x ? second : first;
+      // The first lock must be anchored by one seed on each side of the BEV
+      // center. Once roles are known, a valid-width pair may move entirely to
+      // one screen half without changing its physical left/right ordering.
+      const bool require_centered_pair =
+        !config_.temporal_side_lock_enabled || !side_lock_initialized_;
+      if (
+        require_centered_pair &&
+        (left.seed_point.x >= center_column ||
+        right.seed_point.x < center_column))
+      {
         continue;
       }
       double distance = 0.0;
@@ -824,8 +911,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         0.5 * std::abs(distance - target);
       if (score > best_pair_score) {
         best_pair_score = score;
-        selected_left = left;
-        selected_right = right;
+        current_pair_left = left;
+        current_pair_right = right;
         result.pair_valid = true;
         result.pair_distance_px = distance;
         result.pair_distance_samples = samples;
@@ -833,21 +920,169 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       }
     }
   }
-  if (!result.pair_valid && !candidates.empty()) {
-    const auto strongest = std::max_element(
-      candidates.begin(), candidates.end(),
-      [](const TrackCandidate & left, const TrackCandidate & right) {
-        return left.score < right.score;
-      });
-    if (strongest->seed_point.x < center_column) {
-      selected_left = *strongest;
+
+  if (!config_.temporal_side_lock_enabled) {
+    if (result.pair_valid) {
+      selected_left = current_pair_left;
+      selected_right = current_pair_right;
+    } else if (!candidates.empty()) {
+      const auto strongest = std::max_element(
+        candidates.begin(), candidates.end(),
+        [](const TrackCandidate & left, const TrackCandidate & right) {
+          return left.score < right.score;
+        });
+      if (strongest->seed_point.x < center_column) {
+        selected_left = *strongest;
+      } else {
+        selected_right = *strongest;
+      }
+    }
+  } else if (!side_lock_initialized_) {
+    // A single track cannot establish its physical side. Initialise the lock
+    // only from a geometrically valid pair, ordered by image column.
+    if (result.pair_valid) {
+      selected_left = current_pair_left;
+      selected_right = current_pair_right;
+      side_lock_initialized_ = true;
+    }
+  } else if (result.pair_valid) {
+    selected_left = current_pair_left;
+    selected_right = current_pair_right;
+  } else {
+    const double maximum_distance =
+      config_.temporal_side_reacquire_maximum_distance_px;
+    std::size_t best_left_index = candidates.size();
+    std::size_t best_right_index = candidates.size();
+    double best_assignment_cost = std::numeric_limits<double>::infinity();
+
+    // Prefer a two-sided temporal assignment when both remembered curves can
+    // be matched without swapping their left-to-right image order.
+    for (std::size_t left_index = 0;
+      left_index < candidates.size(); ++left_index)
+    {
+      const double left_distance = temporalTrackDistance(
+        candidates[left_index], remembered_left_);
+      if (left_distance > maximum_distance) {
+        continue;
+      }
+      for (std::size_t right_index = 0;
+        right_index < candidates.size(); ++right_index)
+      {
+        if (
+          left_index == right_index ||
+          candidates[left_index].seed_point.x >=
+          candidates[right_index].seed_point.x)
+        {
+          continue;
+        }
+        const double right_distance = temporalTrackDistance(
+          candidates[right_index], remembered_right_);
+        if (right_distance > maximum_distance) {
+          continue;
+        }
+        const double cost = left_distance + right_distance - 0.001 * (
+          candidates[left_index].score + candidates[right_index].score);
+        if (cost < best_assignment_cost) {
+          best_assignment_cost = cost;
+          best_left_index = left_index;
+          best_right_index = right_index;
+        }
+      }
+    }
+
+    if (
+      best_left_index != candidates.size() &&
+      best_right_index != candidates.size())
+    {
+      selected_left = candidates[best_left_index];
+      selected_right = candidates[best_right_index];
+      result.temporal_labeling_used = true;
     } else {
-      selected_right = *strongest;
+      // With one visible lane, keep the role that was visible in the previous
+      // frame. If both or neither were visible, use the closer remembered
+      // curve. This also preserves the role after a short detection dropout.
+      const bool prefer_left =
+        (previous_left_visible_ && !previous_right_visible_) ||
+        (!previous_left_visible_ && !previous_right_visible_ &&
+        remembered_single_side_ < 0);
+      const bool prefer_right =
+        (previous_right_visible_ && !previous_left_visible_) ||
+        (!previous_left_visible_ && !previous_right_visible_ &&
+        remembered_single_side_ > 0);
+      std::size_t best_index = candidates.size();
+      bool assign_left = false;
+      double best_cost = std::numeric_limits<double>::infinity();
+      for (std::size_t index = 0; index < candidates.size(); ++index) {
+        const double left_distance = temporalTrackDistance(
+          candidates[index], remembered_left_);
+        const double right_distance = temporalTrackDistance(
+          candidates[index], remembered_right_);
+        if (
+          !prefer_right && left_distance <= maximum_distance &&
+          left_distance < best_cost)
+        {
+          best_cost = left_distance;
+          best_index = index;
+          assign_left = true;
+        }
+        if (
+          !prefer_left && right_distance <= maximum_distance &&
+          right_distance < best_cost)
+        {
+          best_cost = right_distance;
+          best_index = index;
+          assign_left = false;
+        }
+      }
+      if (best_index != candidates.size()) {
+        if (assign_left) {
+          selected_left = candidates[best_index];
+        } else {
+          selected_right = candidates[best_index];
+        }
+        result.temporal_labeling_used = true;
+      }
     }
   }
 
   result.left = toPublicSeed(selected_left);
   result.right = toPublicSeed(selected_right);
+  if (config_.temporal_side_lock_enabled && side_lock_initialized_) {
+    previous_left_visible_ = result.left.valid;
+    previous_right_visible_ = result.right.valid;
+    if (result.left.valid && !result.right.valid) {
+      remembered_single_side_ = -1;
+    } else if (result.right.valid && !result.left.valid) {
+      remembered_single_side_ = 1;
+    } else if (result.left.valid && result.right.valid) {
+      remembered_single_side_ = 0;
+    }
+    if (result.left.valid) {
+      remembered_left_ = result.left;
+    }
+    if (result.right.valid) {
+      remembered_right_ = result.right;
+    }
+    if (result.left.valid || result.right.valid) {
+      both_sides_missing_frames_ = 0;
+    } else {
+      ++both_sides_missing_frames_;
+      if (
+        both_sides_missing_frames_ >=
+        config_.temporal_side_lock_reset_frames)
+      {
+        side_lock_initialized_ = false;
+        previous_left_visible_ = false;
+        previous_right_visible_ = false;
+        remembered_single_side_ = 0;
+        both_sides_missing_frames_ = 0;
+        remembered_left_ = BevLaneSeed{};
+        remembered_right_ = BevLaneSeed{};
+        result.side_lock_reset = true;
+      }
+    }
+  }
+  result.side_lock_initialized = side_lock_initialized_;
   result.seed_mask = cv::Mat::zeros(
     enhanced_top_hat.size(), CV_8UC1);
   drawMaskCandidate(&result.seed_mask, selected_left);
@@ -889,6 +1124,19 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
           static_cast<int>(std::lround(point.y))),
         cv::Scalar(0, 0, 255), cv::MARKER_TILTED_CROSS, 7, 1,
         cv::LINE_AA);
+    }
+    if (config_.temporal_side_lock_enabled) {
+      const std::string lock_text = !result.side_lock_initialized ?
+        "WAIT L+R" : result.temporal_labeling_used ?
+        "SIDE LOCK:T" : "SIDE LOCK";
+      cv::putText(
+        result.preview, lock_text, cv::Point(2, 12),
+        cv::FONT_HERSHEY_SIMPLEX, 0.30, cv::Scalar(0, 0, 0),
+        2, cv::LINE_AA);
+      cv::putText(
+        result.preview, lock_text, cv::Point(2, 12),
+        cv::FONT_HERSHEY_SIMPLEX, 0.30, cv::Scalar(255, 255, 255),
+        1, cv::LINE_AA);
     }
   }
   return result;

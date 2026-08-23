@@ -81,6 +81,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
    대비 완화를 적용한다.
 6. 좌우 트랙의 공통 행에서 간격을 구하고 MAD 이상치를 제거한 평균이
    설정 거리 범위 안인 시드 쌍을 선택한다.
+7. 최초 유효한 좌·우 쌍으로 역할을 잠그고, 이후 단일 차선은 화면
+   중심이 아닌 직전 시드 곡선과의 거리로 좌·우를 유지한다.
+   양쪽이 모두 설정 프레임 동안 사라져야 잠금을 초기화한다.
 
 출력 토픽은 다음과 같다.
 
@@ -102,6 +105,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 - 청록: 선택된 왼쪽 시드와 지지 곡선
 - 자홍: 선택된 오른쪽 시드와 지지 곡선
 - 빨간 X: 기울기 급변으로 분리된 지점
+- `WAIT L+R`: 최초 좌우 시드 쌍을 기다리는 상태
+- `SIDE LOCK`: 좌우 역할 잠금, `SIDE LOCK:T`는 현재 프레임에
+  시간 연속성으로 단일 차선의 역할을 붙였다는 뜻
 
 `lane_preview_enabled:=false`이면 원본 컬러 BEV만 프리뷰한다.
 프리뷰 창에 포커스를 둔 채 Space를 누르면 `preview_stop_topic`
@@ -147,6 +153,9 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
   급격한 기울기 변화 억제
 - `lane_seed_pair_*_distance_px`:
   MAD 이상치 제거 후 좌우 시드 평균 간격
+- `lane_seed_temporal_side_lock_*`:
+  최초 좌우 쌍 후 단일 차선의 역할 유지, 잠금 초기화 프레임,
+  재탐색 최대 곡선 거리
 
 ## BEV 범위
 

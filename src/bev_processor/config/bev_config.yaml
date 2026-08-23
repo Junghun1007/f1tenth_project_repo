@@ -248,6 +248,13 @@ bev_processor:
     lane_seed_pair_minimum_distance_px: 50.0
     lane_seed_pair_maximum_distance_px: 95.0
 
+    # 최초 유효한 좌우 쌍으로 역할을 잠근 뒤 단일 차선을 화면 중심이 아닌
+    # 직전 곡선과의 거리로 재연결한다. 양쪽이 모두 reset_frames 동안
+    # 사라질 때만 잠금을 풀고 다시 좌우 쌍을 기다린다.
+    lane_seed_temporal_side_lock_enabled: true
+    lane_seed_temporal_side_lock_reset_frames: 30
+    lane_seed_temporal_side_reacquire_maximum_distance_px: 20.0
+
     status_log_interval_sec: 5.0
     startup_timeout_sec: 12.0
     # camera_driver의 기존 1초 폐기+4초 기준 측정은 그대로 두고,
