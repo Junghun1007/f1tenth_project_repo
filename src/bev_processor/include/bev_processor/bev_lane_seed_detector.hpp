@@ -39,6 +39,10 @@ struct BevLaneSeedDetectorConfig
   double minimum_pair_distance_px{50.0};
   double maximum_pair_distance_px{95.0};
 
+  // If row-wise tracking cannot complete the required seed selection, run
+  // the same detector on transposed images to recover near-horizontal lanes.
+  bool column_fallback_enabled{true};
+
   // Lock left/right roles after the first valid pair. A temporarily missing
   // single lane is then labelled by temporal continuity, not screen center.
   bool temporal_side_lock_enabled{true};
@@ -77,6 +81,7 @@ struct BevLaneSeedDetection
   bool side_lock_initialized{false};
   bool temporal_labeling_used{false};
   bool side_lock_reset{false};
+  bool column_fallback_used{false};
 };
 
 class BevLaneSeedDetector

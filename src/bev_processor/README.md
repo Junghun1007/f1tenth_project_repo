@@ -84,6 +84,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 7. 최초 유효한 좌·우 쌍으로 역할을 잠그고, 이후 단일 차선은 화면
    중심이 아닌 직전 시드 곡선과의 거리로 좌·우를 유지한다.
    양쪽이 모두 설정 프레임 동안 사라져야 잠금을 초기화한다.
+8. 행 방향으로 유효한 시드 쌍을 완성하지 못하면 영상을 전치해
+   열 방향으로 한 번만 다시 탐색한다. 응답값·폭·gap·이동량·곡선
+   길이·국소 대비·기울기 기준은 행 추적과 동일하다.
 
 출력 토픽은 다음과 같다.
 
@@ -108,6 +111,7 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 - `WAIT L+R`: 최초 좌우 시드 쌍을 기다리는 상태
 - `SIDE LOCK`: 좌우 역할 잠금, `SIDE LOCK:T`는 현재 프레임에
   시간 연속성으로 단일 차선의 역할을 붙였다는 뜻
+- 상태 문자 끝의 `:C`: 현재 프레임에서 열 방향 fallback 실행
 
 `lane_preview_enabled:=false`이면 원본 컬러 BEV만 프리뷰한다.
 프리뷰 창에 포커스를 둔 채 Space를 누르면 `preview_stop_topic`
@@ -153,6 +157,8 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
   급격한 기울기 변화 억제
 - `lane_seed_pair_*_distance_px`:
   MAD 이상치 제거 후 좌우 시드 평균 간격
+- `lane_seed_column_fallback_enabled`:
+  행 방향 시드 쌍 실패 시 동일 기준의 열 방향 탐색 사용 여부
 - `lane_seed_temporal_side_lock_*`:
   최초 좌우 쌍 후 단일 차선의 역할 유지, 잠금 초기화 프레임,
   재탐색 최대 곡선 거리
