@@ -26,9 +26,12 @@ vehicle_dynamics_node:
     status_log_rate_hz: 2.0
     diagnostic_rate_hz: 2.0
 
-    # auto: fresh gyro yaw rate first, steering bicycle-model fallback second.
+    # The installed servo linkage has not been angle-calibrated, so do not use
+    # its normalized 0..1 command for lateral acceleration by default.
+    # After measuring the left/right tire angles, "auto" enables steering as a
+    # fallback when fresh gyro data is unavailable.
     # /camera/imu is in camera_optical_frame, whose vehicle-up axis is normally -Y.
-    yaw_rate_source: "auto"
+    yaw_rate_source: "imu"
     imu_yaw_axis: "y"
     imu_yaw_rate_sign: -1.0
     imu_yaw_rate_bias_radps: 0.0
@@ -55,7 +58,10 @@ vehicle_dynamics_node:
     maximum_sample_interval_sec: 0.10
     sample_timeout_sec: 0.15
 
-    # Steering fallback. Measure wheelbase and actual tire angle for final tuning.
+    # Uncalibrated steering fallback placeholders copied from the existing
+    # auto_control configuration. 30 degrees is not a verified Traxxas spec.
+    # Measure wheelbase and effective left/right tire angles before selecting
+    # yaw_rate_source=steering or auto.
     wheelbase_m: 0.324
     maximum_left_steering_angle_deg: 30.0
     maximum_right_steering_angle_deg: 30.0

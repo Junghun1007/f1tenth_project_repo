@@ -86,6 +86,28 @@ class VehicleDynamicsEstimatorTest(unittest.TestCase):
         self.assertEqual(sample.longitudinal_acceleration_mps2, 0.0)
         self.assertEqual(sample.lateral_acceleration_mps2, 0.0)
 
+    def test_standstill_snaps_filtered_tail_to_exact_zero(self) -> None:
+        estimator = VehicleDynamicsEstimator()
+        sample_period_sec = 1.0 / 80.0
+        estimator.update_erpm(10000, 1.0)
+
+        timestamp_sec = 1.0
+        for _ in range(80):
+            timestamp_sec += sample_period_sec
+            estimator.update_erpm(0, timestamp_sec)
+            if estimator.sample(timestamp_sec).speed_mps == 0.0:
+                break
+
+        sample = estimator.sample(timestamp_sec)
+        self.assertLess(timestamp_sec - 1.0, 0.5)
+        self.assertEqual(sample.raw_speed_mps, 0.0)
+        self.assertEqual(sample.speed_mps, 0.0)
+        self.assertEqual(sample.longitudinal_acceleration_mps2, 0.0)
+
+        timestamp_sec += sample_period_sec
+        estimator.update_erpm(0, timestamp_sec)
+        self.assertEqual(estimator.sample(timestamp_sec).speed_mps, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

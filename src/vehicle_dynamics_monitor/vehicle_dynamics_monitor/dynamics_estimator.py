@@ -173,6 +173,19 @@ class VehicleDynamicsEstimator:
             raw_acceleration_mps2 - self._longitudinal_acceleration_mps2
         )
 
+        # The low-pass filters approach zero asymptotically and otherwise leave
+        # denormal values such as 1e-41 on the published speed topic. Once the
+        # raw ERPM-derived speed and the filtered speed are both inside the
+        # configured physical deadband, the remaining filter state no longer
+        # represents measurable vehicle motion. Snap both states to an exact
+        # standstill instead of waiting for floating-point underflow.
+        if (
+            raw_speed_mps == 0.0
+            and abs(self._speed_mps) <= self.config.speed_deadband_mps
+        ):
+            self._speed_mps = 0.0
+            self._longitudinal_acceleration_mps2 = 0.0
+
     def update_imu_yaw_rate(
         self, yaw_rate_radps: float, timestamp_sec: float
     ) -> None:

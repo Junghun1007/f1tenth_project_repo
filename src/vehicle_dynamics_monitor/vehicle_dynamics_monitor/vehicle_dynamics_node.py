@@ -112,7 +112,9 @@ class VehicleDynamicsNode(Node):
 
     def _declare_parameters(self) -> None:
         self.declare_parameter("input_mode", "ros_topic")
-        self.declare_parameter("yaw_rate_source", "auto")
+        # Steering servo positions are not tire angles until the installed
+        # linkage is measured. Use gyro-only lateral dynamics by default.
+        self.declare_parameter("yaw_rate_source", "imu")
         self.declare_parameter("publish_rate_hz", 80.0)
         self.declare_parameter("status_log_rate_hz", 2.0)
         self.declare_parameter("diagnostic_rate_hz", 2.0)

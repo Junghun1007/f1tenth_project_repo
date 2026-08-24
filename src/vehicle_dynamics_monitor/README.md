@@ -11,8 +11,9 @@ actuator commands.
 - Speed = wheel circumference x wheel RPM / 60
 - Longitudinal acceleration = filtered time derivative of speed
 - Lateral acceleration = speed x yaw rate
-- Gyroscope yaw rate is preferred. If it is unavailable, yaw rate is estimated
-  with `speed * tan(steering angle) / wheelbase`.
+- Gyroscope yaw rate is used by default. After the installed steering linkage
+  is calibrated, optional `auto` mode can fall back to
+  `speed * tan(steering angle) / wheelbase`.
 
 The combined acceleration topic is
 `/vehicle/dynamics/acceleration` (`geometry_msgs/Vector3Stamped`). It uses
@@ -69,9 +70,12 @@ Protocol IDs and scales follow the
 - Measure `wheel_diameter_m` under vehicle load and tune
   `speed_scale_correction` with a known travel distance.
 - Measure wheelbase and real left/right tire angles before relying on the
-  steering fallback for accelerometer compensation.
+  steering fallback for accelerometer compensation. The 30-degree values are
+  unverified placeholders copied from the existing `auto_control` package,
+  not published Traxxas steering-angle specifications.
 - With the current `/camera/imu` optical frame, vehicle yaw is normally the
   negative Y angular velocity. If the IMU frame changes, update
   `imu_yaw_axis` and `imu_yaw_rate_sign`.
-- `yaw_rate_source: auto` uses fresh IMU gyro data first and steering second.
-  This does not feed accelerometer data back into its own correction.
+- The default `yaw_rate_source: imu` does not use uncalibrated steering values.
+  After calibration, `auto` uses fresh IMU gyro data first and steering second.
+  Neither mode feeds accelerometer data back into its own correction.
