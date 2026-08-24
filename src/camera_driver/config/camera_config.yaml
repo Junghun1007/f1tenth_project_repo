@@ -43,6 +43,15 @@ camera_driver:
     # 단독 launch만 이 값을 true로 override해 고주파 모드를 테스트한다.
     imu_stabilization_high_frequency_vibration_only_enabled: false
     imu_stabilization_high_frequency_vibration_cutoff_hz: 3.0
+    # CAN dynamics로 정제한 가속도계만 1 Hz 이하 저주파 보정에 사용한다.
+    # camera_driver/BEV 직접 launch에서만 옵션으로 켜며 auto_drive 기본은 false다.
+    imu_stabilization_can_low_frequency_compensation_enabled: false
+    imu_stabilization_can_acceleration_topic: "/vehicle/dynamics/acceleration"
+    imu_stabilization_can_acceleration_frame_id: "base_link"
+    imu_stabilization_can_acceleration_timeout_sec: 0.10
+    imu_stabilization_low_frequency_cutoff_hz: 1.0
+    imu_stabilization_low_frequency_correction_gain: 0.5
+    imu_stabilization_low_frequency_maximum_correction_deg: 1.0
     imu_stabilization_startup_discard_duration_sec: 1.0
     imu_stabilization_reference_calibration_duration_sec: 4.0
     imu_stabilization_calibration_maximum_angular_speed_degps: 0.5

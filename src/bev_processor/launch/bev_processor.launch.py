@@ -29,6 +29,18 @@ def generate_launch_description():
     high_frequency_vibration_cutoff_hz = LaunchConfiguration(
         "imu_stabilization_high_frequency_vibration_cutoff_hz"
     )
+    can_low_frequency_compensation_enabled = LaunchConfiguration(
+        "imu_stabilization_can_low_frequency_compensation_enabled"
+    )
+    low_frequency_cutoff_hz = LaunchConfiguration(
+        "imu_stabilization_low_frequency_cutoff_hz"
+    )
+    low_frequency_correction_gain = LaunchConfiguration(
+        "imu_stabilization_low_frequency_correction_gain"
+    )
+    low_frequency_maximum_correction_deg = LaunchConfiguration(
+        "imu_stabilization_low_frequency_maximum_correction_deg"
+    )
     bev_input_bottom_fraction = LaunchConfiguration(
         "bev_input_bottom_fraction"
     )
@@ -48,6 +60,22 @@ def generate_launch_description():
     )
     high_frequency_vibration_cutoff_parameter = ParameterValue(
         high_frequency_vibration_cutoff_hz,
+        value_type=float,
+    )
+    can_low_frequency_compensation_parameter = ParameterValue(
+        can_low_frequency_compensation_enabled,
+        value_type=bool,
+    )
+    low_frequency_cutoff_parameter = ParameterValue(
+        low_frequency_cutoff_hz,
+        value_type=float,
+    )
+    low_frequency_correction_gain_parameter = ParameterValue(
+        low_frequency_correction_gain,
+        value_type=float,
+    )
+    low_frequency_maximum_correction_parameter = ParameterValue(
+        low_frequency_maximum_correction_deg,
         value_type=float,
     )
 
@@ -181,6 +209,29 @@ def generate_launch_description():
                 description="High-frequency correction cutoff in Hz.",
             ),
             DeclareLaunchArgument(
+                "imu_stabilization_can_low_frequency_compensation_enabled",
+                default_value="false",
+                description=(
+                    "Use CAN vehicle acceleration for low-frequency tilt "
+                    "correction."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_low_frequency_cutoff_hz",
+                default_value="1.0",
+                description="CAN-compensated low-frequency cutoff in Hz.",
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_low_frequency_correction_gain",
+                default_value="0.5",
+                description="Low-frequency correction strength from 0 to 1.",
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_low_frequency_maximum_correction_deg",
+                default_value="1.0",
+                description="Maximum CAN low-frequency correction angle.",
+            ),
+            DeclareLaunchArgument(
                 "bev_input_bottom_fraction",
                 default_value="0.70",
                 description=(
@@ -254,7 +305,9 @@ def generate_launch_description():
                                     bev_input_bottom_fraction,
                                     value_type=float,
                                 ),
-                                "imu_bridge_enabled": False,
+                                "imu_bridge_enabled": (
+                                    can_low_frequency_compensation_parameter
+                                ),
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_parameter
                                 ),
@@ -266,6 +319,22 @@ def generate_launch_description():
                                     "imu_stabilization_high_frequency_"
                                     "vibration_cutoff_hz"
                                 ): high_frequency_vibration_cutoff_parameter,
+                                (
+                                    "imu_stabilization_can_low_frequency_"
+                                    "compensation_enabled"
+                                ): can_low_frequency_compensation_parameter,
+                                (
+                                    "imu_stabilization_low_frequency_"
+                                    "cutoff_hz"
+                                ): low_frequency_cutoff_parameter,
+                                (
+                                    "imu_stabilization_low_frequency_"
+                                    "correction_gain"
+                                ): low_frequency_correction_gain_parameter,
+                                (
+                                    "imu_stabilization_low_frequency_"
+                                    "maximum_correction_deg"
+                                ): low_frequency_maximum_correction_parameter,
                                 (
                                     "imu_stabilization_external_reference_required"
                                 ): True,

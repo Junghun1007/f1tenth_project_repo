@@ -251,6 +251,15 @@ bool validConfig(const ImuImageStabilizerConfig & config)
     positive_finite(config.calibration_maximum_angular_speed_degps) &&
     positive_finite(config.high_frequency_vibration_cutoff_hz) &&
     config.high_frequency_vibration_cutoff_hz <= 100.0 &&
+    positive_finite(config.low_frequency_accelerometer_cutoff_hz) &&
+    config.low_frequency_accelerometer_cutoff_hz <= 10.0 &&
+    std::isfinite(config.low_frequency_accelerometer_correction_gain) &&
+    config.low_frequency_accelerometer_correction_gain >= 0.0 &&
+    config.low_frequency_accelerometer_correction_gain <= 1.0 &&
+    positive_finite(
+      config.low_frequency_accelerometer_maximum_correction_deg) &&
+    config.low_frequency_accelerometer_maximum_correction_deg <=
+    config.maximum_correction_deg &&
     positive_finite(config.gravity_mps2) &&
     config.accelerometer_full_trust_deviation_mps2 >= 0.0 &&
     positive_finite(config.accelerometer_zero_trust_deviation_mps2) &&
@@ -319,7 +328,9 @@ public:
     const std::optional<cv::Vec3d> & acceleration_camera_mps2,
     const cv::Vec3d & angular_velocity_camera_radps,
     const double timestamp_sec,
-    const std::optional<bool> vehicle_stationary)
+    const std::optional<bool> vehicle_stationary,
+    const std::optional<cv::Vec3d> &
+    low_frequency_acceleration_camera_mps2)
   {
     if (
       !finiteVector(angular_velocity_camera_radps) ||
@@ -430,6 +441,9 @@ public:
         cv::Vec3d(0.0, 0.0, 0.0);
       current_up_camera_ = reference_up_camera_;
       low_frequency_up_camera_ = reference_up_camera_;
+      low_frequency_accelerometer_up_camera_ = reference_up_camera_;
+      low_frequency_acceleration_correction_rotation_ =
+        cv::Vec3d(0.0, 0.0, 0.0);
       moving_accelerometer_nudge_deg_ = cv::Vec2d(0.0, 0.0);
       last_timestamp_sec_ = timestamp_sec;
       calibration_samples_.clear();
@@ -438,6 +452,7 @@ public:
       initialized_ = true;
       history_.push_back(TimedTilt{
         timestamp_sec, current_up_camera_, reference_up_camera_,
+        cv::Vec3d(0.0, 0.0, 0.0), false,
         cv::Vec3d(0.0, 0.0, 0.0)});
       history_condition_.notify_all();
       return;
@@ -650,8 +665,66 @@ public:
     } else {
       low_frequency_up_camera_ = reference_up_camera_;
     }
+
+    bool low_frequency_correction_active = false;
+    if (config_.low_frequency_accelerometer_correction_enabled) {
+      const bool low_frequency_acceleration_available =
+        low_frequency_acceleration_camera_mps2.has_value() &&
+        finiteVector(*low_frequency_acceleration_camera_mps2);
+      const double low_frequency_acceleration_magnitude =
+        low_frequency_acceleration_available ?
+        cv::norm(*low_frequency_acceleration_camera_mps2) :
+        std::numeric_limits<double>::quiet_NaN();
+      const double low_frequency_acceleration_confidence =
+        low_frequency_acceleration_available ?
+        accelerometerConfidence(low_frequency_acceleration_magnitude) : 0.0;
+      const double filter_gain = 1.0 - std::exp(
+        -kTwoPi * config_.low_frequency_accelerometer_cutoff_hz * dt_sec);
+      if (low_frequency_acceleration_confidence > 0.0) {
+        const cv::Vec3d measured_accelerometer_up =
+          *low_frequency_acceleration_camera_mps2 /
+          low_frequency_acceleration_magnitude;
+        const cv::Vec3d measured_up = normalized(rotateVector(
+          accelerometer_to_reference_rotation_,
+          measured_accelerometer_up));
+        low_frequency_accelerometer_up_camera_ = interpolateDirection(
+          low_frequency_accelerometer_up_camera_,
+          measured_up,
+          filter_gain * low_frequency_acceleration_confidence);
+        low_frequency_correction_active = true;
+      } else {
+        // Missing CAN data must never expose raw moving acceleration to this
+        // path. Smoothly release only the bounded low-frequency correction;
+        // the gyro high-frequency correction remains active.
+        low_frequency_accelerometer_up_camera_ = interpolateDirection(
+          low_frequency_accelerometer_up_camera_,
+          reference_up_camera_,
+          filter_gain);
+      }
+
+      low_frequency_acceleration_correction_rotation_ = rotationVector(
+        quaternionFromTwoVectors(
+          low_frequency_accelerometer_up_camera_, reference_up_camera_));
+      low_frequency_acceleration_correction_rotation_ *=
+        config_.low_frequency_accelerometer_correction_gain;
+      const double maximum_correction_rad =
+        config_.low_frequency_accelerometer_maximum_correction_deg *
+        kDegreesToRadians;
+      const double correction_norm = cv::norm(
+        low_frequency_acceleration_correction_rotation_);
+      if (correction_norm > maximum_correction_rad) {
+        low_frequency_acceleration_correction_rotation_ *=
+          maximum_correction_rad / correction_norm;
+      }
+    } else {
+      low_frequency_accelerometer_up_camera_ = reference_up_camera_;
+      low_frequency_acceleration_correction_rotation_ =
+        cv::Vec3d(0.0, 0.0, 0.0);
+    }
     history_.push_back(TimedTilt{
       timestamp_sec, output_up_camera, correction_reference_up_camera,
+      low_frequency_acceleration_correction_rotation_,
+      low_frequency_correction_active,
       corrected_angular_velocity});
     while (
       history_.size() > 2U &&
@@ -711,6 +784,8 @@ public:
 
     cv::Vec3d current_up_camera;
     cv::Vec3d correction_reference_up_camera;
+    cv::Vec3d low_frequency_correction_rotation;
+    bool low_frequency_correction_active = false;
     double nearest_timestamp = 0.0;
     bool predicted = false;
     double prediction_horizon_sec = 0.0;
@@ -744,6 +819,10 @@ public:
       current_up_camera = next->up_camera;
       correction_reference_up_camera =
         next->correction_reference_up_camera;
+      low_frequency_correction_rotation =
+        next->low_frequency_correction_rotation;
+      low_frequency_correction_active =
+        next->low_frequency_correction_active;
       if (previous != next) {
         const double interval_sec =
           next->timestamp_sec - previous->timestamp_sec;
@@ -759,6 +838,13 @@ public:
           previous->correction_reference_up_camera,
           next->correction_reference_up_camera,
           amount);
+        low_frequency_correction_rotation =
+          previous->low_frequency_correction_rotation + amount *
+          (next->low_frequency_correction_rotation -
+          previous->low_frequency_correction_rotation);
+        low_frequency_correction_active =
+          previous->low_frequency_correction_active ||
+          next->low_frequency_correction_active;
       }
       nearest_timestamp =
         std::abs(previous_age_sec) <= std::abs(next_age_sec) ?
@@ -779,6 +865,10 @@ public:
         latest.up_camera));
       correction_reference_up_camera =
         latest.correction_reference_up_camera;
+      low_frequency_correction_rotation =
+        latest.low_frequency_correction_rotation;
+      low_frequency_correction_active =
+        latest.low_frequency_correction_active;
       if (config_.high_frequency_vibration_only_enabled) {
         const double low_frequency_gain = 1.0 - std::exp(
           -kTwoPi * config_.high_frequency_vibration_cutoff_hz *
@@ -792,22 +882,22 @@ public:
       predicted = true;
     }
 
-    Quaternion correction = quaternionFromTwoVectors(
+    const Quaternion high_frequency_correction = quaternionFromTwoVectors(
       current_up_camera, correction_reference_up_camera);
-    if (
-      !config_.pitch_correction_enabled ||
-      !config_.roll_correction_enabled)
-    {
-      cv::Vec3d enabled_rotation = rotationVector(correction);
-      if (!config_.pitch_correction_enabled) {
-        enabled_rotation[0] = 0.0;
-      }
-      if (!config_.roll_correction_enabled) {
-        enabled_rotation[2] = 0.0;
-      }
-      enabled_rotation[1] = 0.0;
-      correction = quaternionFromRotationVector(enabled_rotation);
+    Quaternion correction = multiply(
+      quaternionFromRotationVector(low_frequency_correction_rotation),
+      high_frequency_correction);
+    cv::Vec3d enabled_rotation = rotationVector(correction);
+    if (!config_.pitch_correction_enabled) {
+      enabled_rotation[0] = 0.0;
     }
+    if (!config_.roll_correction_enabled) {
+      enabled_rotation[2] = 0.0;
+    }
+    // Composing the two tilt paths can introduce a tiny second-order yaw.
+    // Image stabilization deliberately remains roll/pitch-only.
+    enabled_rotation[1] = 0.0;
+    correction = quaternionFromRotationVector(enabled_rotation);
 
     const double roll_error_deg = wrapDegrees(
       rollDegrees(current_up_camera) -
@@ -816,12 +906,14 @@ public:
       pitchDegrees(current_up_camera) -
       pitchDegrees(correction_reference_up_camera));
     const double correction_angle_deg =
-      cv::norm(rotationVector(correction)) * kRadiansToDegrees;
+      cv::norm(enabled_rotation) * kRadiansToDegrees;
     const bool within_limit =
       (!config_.roll_correction_enabled ||
-      std::abs(roll_error_deg) <= config_.maximum_correction_deg) &&
+      std::abs(enabled_rotation[2]) * kRadiansToDegrees <=
+      config_.maximum_correction_deg) &&
       (!config_.pitch_correction_enabled ||
-      std::abs(pitch_error_deg) <= config_.maximum_correction_deg);
+      std::abs(enabled_rotation[0]) * kRadiansToDegrees <=
+      config_.maximum_correction_deg);
     return ImageStabilizationCorrection{
       quaternionRotationMatrix(correction),
       timestamp_sec,
@@ -832,7 +924,9 @@ public:
       correction_angle_deg,
       within_limit,
       predicted,
-      prediction_horizon_sec};
+      prediction_horizon_sec,
+      cv::norm(low_frequency_correction_rotation) * kRadiansToDegrees,
+      low_frequency_correction_active};
   }
 
   bool initialized() const
@@ -910,6 +1004,8 @@ private:
     double timestamp_sec;
     cv::Vec3d up_camera;
     cv::Vec3d correction_reference_up_camera;
+    cv::Vec3d low_frequency_correction_rotation;
+    bool low_frequency_correction_active;
     cv::Vec3d angular_velocity_camera_radps;
   };
 
@@ -1165,6 +1261,8 @@ private:
   cv::Vec3d reference_up_camera_{0.0, -1.0, 0.0};
   cv::Vec3d current_up_camera_{0.0, -1.0, 0.0};
   cv::Vec3d low_frequency_up_camera_{0.0, -1.0, 0.0};
+  cv::Vec3d low_frequency_accelerometer_up_camera_{0.0, -1.0, 0.0};
+  cv::Vec3d low_frequency_acceleration_correction_rotation_{0.0, 0.0, 0.0};
   cv::Vec2d moving_accelerometer_nudge_deg_{0.0, 0.0};
   double last_timestamp_sec_{0.0};
   bool initialized_{false};
@@ -1185,11 +1283,13 @@ void ImuImageStabilizer::update(
   const std::optional<cv::Vec3d> & acceleration_camera_mps2,
   const cv::Vec3d & angular_velocity_camera_radps,
   const double timestamp_sec,
-  const std::optional<bool> vehicle_stationary)
+  const std::optional<bool> vehicle_stationary,
+  const std::optional<cv::Vec3d> &
+  low_frequency_acceleration_camera_mps2)
 {
   impl_->update(
     acceleration_camera_mps2, angular_velocity_camera_radps, timestamp_sec,
-    vehicle_stationary);
+    vehicle_stationary, low_frequency_acceleration_camera_mps2);
 }
 
 bool ImuImageStabilizer::setExternalReferenceUpCamera(

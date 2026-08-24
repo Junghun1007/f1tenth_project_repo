@@ -229,6 +229,21 @@ ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true imu_stabilization_enabled:=true
 ```
 
+CAN 저주파 보정까지 포함한 수동주행 테스트는 다음처럼 실행한다.
+
+```bash
+# 터미널 1: 수동주행 + SocketCAN 차량 dynamics
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
+  input_mode:=socketcan can_interface:=can0 can_controller_id:=0
+
+# 터미널 2: 고주파 gyro + CAN 저주파 프리뷰
+ros2 launch camera_driver camera_driver.launch.py \
+  preview_enabled:=true \
+  imu_stabilization_can_low_frequency_compensation_enabled:=true \
+  imu_stabilization_low_frequency_cutoff_hz:=1.0 \
+  imu_stabilization_low_frequency_correction_gain:=0.5
+```
+
 안정화기는 전원 직후 IMU 샘플을 1초간 폐기한 뒤 4초 정지 구간의 중력
 방향과 자이로 bias를 시작 기준으로 측정한다. 이 5초 동안 차량과 카메라를
 움직이면 기준 측정이 다시 시작된다.
@@ -241,11 +256,11 @@ ros2 launch camera_driver camera_driver.launch.py \
 roll/pitch 진동만 주로 상쇄된다. 이 주파수는 이상적인 벽돌형 경계가 아니라
 조정 가능한 1차 필터의 -3 dB 기준이다.
 
-고주파 전용 모드에서는 주행 중 가속도계 nudge와 VESC 차량 가속도
-보정 경로를 자동으로 끄므로, 현재 테스트는 CAN/UART 가속도 데이터에
-의존하지 않는다. ERPM은 정지 판정과 정지 시 gyro bias/자세 복구에만
-사용된다. 저주파 오보정이 실차에서 문제가 될 때 차량 가속도 보정을 CAN
-시간정렬 데이터로 다시 연결한다.
+고주파 전용 모드에서 기존 UART ERPM 기반 moving nudge는 자동으로
+끄고, CAN dynamics의 종·횡가속도를 IMU에서 제거한 잔여 중력 방향만
+별도 저주파 보정에 사용할 수 있다. 기본은 1 Hz 이하, gain 0.5,
+최대 1도다. CAN 샘플이 0.1초 이상 느려지면 raw 가속도계를 사용하지
+않고 저주파 보정만 부드럽게 해제한다. 고주파 gyro 보정은 계속한다.
 통합 BEV에서는 depth 시작 법선으로 차량 축을 구하고, 외부 법선이 없는
 단독 카메라 프리뷰에서는 교정된 IMU 시작 중력 방향을 fallback으로 사용한다.
 
@@ -334,6 +349,12 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_enabled` | `true` | 영상 roll/pitch 진동 보정 on/off |
 | `imu_stabilization_high_frequency_vibration_only_enabled` | `false` | 저주파 자세를 통과시키고 고주파 진동만 보정; 단독 launch는 `true` override |
 | `imu_stabilization_high_frequency_vibration_cutoff_hz` | `3.0` | 1차 고역통과 보정의 -3 dB 기준 주파수 |
+| `imu_stabilization_can_low_frequency_compensation_enabled` | `false` | CAN 차량 가속도로 정제한 저주파 가속도계 보정 |
+| `imu_stabilization_can_acceleration_topic` | `/vehicle/dynamics/acceleration` | `base_link` X=종, Y=횡가속도 입력 |
+| `imu_stabilization_can_acceleration_timeout_sec` | `0.10` | 이보다 오래된 CAN dynamics는 사용하지 않음 |
+| `imu_stabilization_low_frequency_cutoff_hz` | `1.0` | CAN 정제 중력 방향의 저역통과 cutoff |
+| `imu_stabilization_low_frequency_correction_gain` | `0.5` | 저주파 보정 강도 `0.0~1.0` |
+| `imu_stabilization_low_frequency_maximum_correction_deg` | `1.0` | CAN 저주파 최대 보정각 |
 | `imu_stabilization_startup_discard_duration_sec` | `1.0` | 전원 직후 IMU 과도값 폐기 시간 |
 | `imu_stabilization_reference_calibration_duration_sec` | `4.0` | 정지 기준 자세 측정 시간 |
 | `imu_stabilization_external_reference_topic` | `/camera/startup_ground_normal` | BEV 시작 지면 법선 토픽 |
