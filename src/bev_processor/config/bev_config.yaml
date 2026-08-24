@@ -248,10 +248,16 @@ bev_processor:
     lane_seed_pair_minimum_distance_px: 50.0
     lane_seed_pair_maximum_distance_px: 95.0
 
-    # 행 방향 추적이 유효한 시드 쌍을 완성하지 못했을 때만 Gray/Top-hat을
-    # 전치해 같은 기준으로 열 방향 추적을 수행한다. 거의 수평인 차선을
-    # 위한 fallback이며 별도의 느슨한 임계값은 사용하지 않는다.
-    lane_seed_column_fallback_enabled: true
+    # 매 프레임 행·열 방향을 모두 같은 기준으로 검사하고 통합 후 시드를
+    # 선택한다. 수평에 가까운 급커브도 행 검사 실패 여부와 관계없이 후보로 들어온다.
+    lane_seed_column_tracking_enabled: true
+
+    # 같은 방향 후보의 인접한 끝점, 또는 행·열 후보의 닿는 끝점/겹치는
+    # run 영역을 지지율·회전각 조건 내에서 하나의 트랙으로 병합한다.
+    lane_seed_cross_direction_merge_enabled: true
+    lane_seed_cross_direction_merge_maximum_endpoint_distance_px: 3.0
+    lane_seed_cross_direction_merge_minimum_connector_support_ratio: 0.70
+    lane_seed_cross_direction_merge_maximum_turn_angle_deg: 110.0
 
     # 최초 유효한 좌우 쌍으로 역할을 잠근 뒤 단일 차선을 화면 중심이 아닌
     # 직전 곡선과의 거리로 재연결한다. 양쪽이 모두 reset_frames 동안

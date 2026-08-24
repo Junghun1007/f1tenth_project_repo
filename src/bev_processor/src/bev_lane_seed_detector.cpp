@@ -36,16 +36,19 @@ struct SeedTrack
 struct RunEvidence
 {
   SeedRun run;
+  bool transposed{false};
   double bilateral_contrast{0.0};
   double background_asymmetry{0.0};
   int contrast_relaxation_steps{0};
+  bool local_samples_valid{false};
   bool contrast_valid{false};
 };
 
 struct TrackCandidate
 {
   bool valid{false};
-  bool transposed{false};
+  bool has_row_support{false};
+  bool has_column_support{false};
   std::vector<RunEvidence> evidence;
   cv::Point2d seed_point;
   double arc_length_px{0.0};
@@ -115,6 +118,20 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
     config.maximum_pair_distance_px < config.minimum_pair_distance_px)
   {
     throw std::invalid_argument("lane seed pair-distance range is invalid");
+  }
+  if (
+    !finiteNonNegative(
+      config.cross_direction_merge_maximum_endpoint_distance_px) ||
+    !std::isfinite(
+      config.cross_direction_merge_minimum_connector_support_ratio) ||
+    config.cross_direction_merge_minimum_connector_support_ratio < 0.0 ||
+    config.cross_direction_merge_minimum_connector_support_ratio > 1.0 ||
+    !std::isfinite(
+      config.cross_direction_merge_maximum_turn_angle_deg) ||
+    config.cross_direction_merge_maximum_turn_angle_deg <= 0.0 ||
+    config.cross_direction_merge_maximum_turn_angle_deg > 180.0)
+  {
+    throw std::invalid_argument("lane seed cross-direction merge settings are invalid");
   }
   if (
     config.temporal_side_lock_reset_frames < 1 ||
@@ -474,6 +491,7 @@ RunEvidence evaluateRun(
   {
     return evidence;
   }
+  evidence.local_samples_valid = true;
   const double center_brightness = median(std::move(center_values));
   const double negative_brightness = median(std::move(negative_background));
   const double positive_brightness = median(std::move(positive_background));
@@ -552,10 +570,21 @@ TrackCandidate evaluateTrack(
       segment->clear();
     };
 
+  int pending_contrast_gap = 0;
   for (std::size_t index = 0; index < track.runs.size(); ++index) {
     RunEvidence evidence = evaluateRun(track, index, gray, response, config);
     if (!evidence.contrast_valid) {
+      const bool contrast_only_failure = evidence.local_samples_valid &&
+        evidence.background_asymmetry <= config.maximum_background_asymmetry;
+      if (
+        contrast_only_failure && !current.empty() &&
+        pending_contrast_gap < config.maximum_gap_rows)
+      {
+        ++pending_contrast_gap;
+        continue;
+      }
       finishSegment(&current);
+      pending_contrast_gap = 0;
       continue;
     }
     if (contrast_points != nullptr) {
@@ -579,6 +608,7 @@ TrackCandidate evaluateTrack(
       }
     }
     current.push_back(std::move(evidence));
+    pending_contrast_gap = 0;
   }
   finishSegment(&current);
   if (best.valid && best.arc_length_px < config.minimum_track_arc_length_px) {
@@ -595,14 +625,13 @@ cv::Point2d scanPointToOriginal(
 }
 
 cv::Point2d evidenceCenterOriginal(
-  const RunEvidence & evidence,
-  const bool transposed)
+  const RunEvidence & evidence)
 {
   return scanPointToOriginal(
     cv::Point2d(
       evidence.run.centroid_column,
       static_cast<double>(evidence.run.row)),
-    transposed);
+    evidence.transposed);
 }
 
 cv::Point2d candidateSeedOriginal(const TrackCandidate & candidate)
@@ -610,11 +639,9 @@ cv::Point2d candidateSeedOriginal(const TrackCandidate & candidate)
   if (candidate.evidence.empty()) {
     return cv::Point2d();
   }
-  cv::Point2d seed = evidenceCenterOriginal(
-    candidate.evidence.front(), candidate.transposed);
+  cv::Point2d seed = evidenceCenterOriginal(candidate.evidence.front());
   for (const RunEvidence & evidence : candidate.evidence) {
-    const cv::Point2d point = evidenceCenterOriginal(
-      evidence, candidate.transposed);
+    const cv::Point2d point = evidenceCenterOriginal(evidence);
     if (point.y > seed.y) {
       seed = point;
     }
@@ -664,7 +691,11 @@ CandidateExtraction extractCandidates(
     if (!candidate.valid) {
       continue;
     }
-    candidate.transposed = transposed;
+    candidate.has_row_support = !transposed;
+    candidate.has_column_support = transposed;
+    for (RunEvidence & evidence : candidate.evidence) {
+      evidence.transposed = transposed;
+    }
     candidate.seed_point = candidateSeedOriginal(candidate);
     extraction.candidates.push_back(std::move(candidate));
     for (const cv::Point2d & point : scan_contrast_points) {
@@ -683,37 +714,331 @@ CandidateExtraction extractCandidates(
   return extraction;
 }
 
-bool candidateColumnAtRow(
-  const TrackCandidate & candidate,
-  const int row,
-  double * column)
+double candidateArcLengthOriginal(const std::vector<RunEvidence> & evidence)
 {
+  double length = 0.0;
+  for (std::size_t index = 1; index < evidence.size(); ++index) {
+    length += cv::norm(
+      evidenceCenterOriginal(evidence[index]) -
+      evidenceCenterOriginal(evidence[index - 1]));
+  }
+  return length;
+}
+
+double connectorSupportRatio(
+  const cv::Mat & response,
+  const cv::Point2d & first,
+  const cv::Point2d & second,
+  const BevLaneSeedDetectorConfig & config)
+{
+  const int samples = std::max(
+    2, static_cast<int>(std::ceil(cv::norm(second - first))) + 1);
+  int supported = 0;
+  int inside = 0;
+  for (int index = 0; index < samples; ++index) {
+    const double ratio = static_cast<double>(index) /
+      static_cast<double>(samples - 1);
+    const cv::Point2d point = first + ratio * (second - first);
+    const int column = static_cast<int>(std::lround(point.x));
+    const int row = static_cast<int>(std::lround(point.y));
+    if (column < 0 || column >= response.cols || row < 0 || row >= response.rows) {
+      continue;
+    }
+    ++inside;
+    if (response.at<std::uint8_t>(row, column) >=
+      config.minimum_top_hat_response)
+    {
+      ++supported;
+    }
+  }
+  return inside > 0 ?
+         static_cast<double>(supported) / static_cast<double>(inside) : 0.0;
+}
+
+bool perpendicularRunsOverlap(
+  const RunEvidence & first,
+  const RunEvidence & second,
+  cv::Point2d * intersection)
+{
+  if (first.transposed == second.transposed || intersection == nullptr) {
+    return false;
+  }
+  const RunEvidence & row_evidence = first.transposed ? second : first;
+  const RunEvidence & column_evidence = first.transposed ? first : second;
+  const double column = static_cast<double>(column_evidence.run.row);
+  const double row = static_cast<double>(row_evidence.run.row);
   if (
-    column == nullptr || candidate.evidence.empty() ||
-    row > candidate.evidence.front().run.row ||
-    row < candidate.evidence.back().run.row)
+    column < row_evidence.run.first_column ||
+    column > row_evidence.run.last_column ||
+    row < column_evidence.run.first_column ||
+    row > column_evidence.run.last_column)
   {
     return false;
   }
-  for (std::size_t index = 0; index < candidate.evidence.size(); ++index) {
-    const SeedRun & current = candidate.evidence[index].run;
-    if (current.row == row) {
-      *column = current.centroid_column;
-      return true;
-    }
-    if (index + 1 >= candidate.evidence.size()) {
-      continue;
-    }
-    const SeedRun & next = candidate.evidence[index + 1].run;
-    if (current.row > row && row > next.row) {
-      const double ratio = static_cast<double>(current.row - row) /
-        static_cast<double>(current.row - next.row);
-      *column = current.centroid_column +
-        ratio * (next.centroid_column - current.centroid_column);
-      return true;
+  *intersection = cv::Point2d(column, row);
+  return true;
+}
+
+std::vector<RunEvidence> retainedArm(
+  const std::vector<RunEvidence> & evidence,
+  const std::size_t joint_index,
+  const bool toward_front,
+  const bool joint_last)
+{
+  std::vector<RunEvidence> arm;
+  if (toward_front) {
+    arm.insert(
+      arm.end(), evidence.begin(),
+      evidence.begin() + static_cast<std::ptrdiff_t>(joint_index + 1));
+  } else {
+    arm.insert(
+      arm.end(),
+      evidence.begin() + static_cast<std::ptrdiff_t>(joint_index),
+      evidence.end());
+  }
+  if ((joint_last && !toward_front) || (!joint_last && toward_front)) {
+    std::reverse(arm.begin(), arm.end());
+  }
+  return arm;
+}
+
+struct MergeProposal
+{
+  bool valid{false};
+  std::size_t first_index{0};
+  std::size_t second_index{0};
+  std::size_t first_joint_index{0};
+  std::size_t second_joint_index{0};
+  bool first_arm_toward_front{false};
+  bool second_arm_toward_front{false};
+  bool overlap_joint{false};
+  cv::Point2d joint_point;
+  double endpoint_distance_px{0.0};
+  double connector_support_ratio{0.0};
+  double turn_angle_deg{0.0};
+  double retained_arc_length_px{0.0};
+  double quality{-std::numeric_limits<double>::infinity()};
+};
+
+MergeProposal evaluateMergeProposal(
+  const TrackCandidate & first,
+  const TrackCandidate & second,
+  const cv::Mat & response,
+  const BevLaneSeedDetectorConfig & config)
+{
+  if (
+    !first.valid || !second.valid || first.evidence.size() < 2 ||
+    second.evidence.size() < 2)
+  {
+    return MergeProposal{};
+  }
+
+  MergeProposal best;
+  const auto evaluate_joint = [&first, &second, &response, &config, &best](
+      const std::size_t first_index,
+      const std::size_t second_index,
+      const cv::Point2d & joint_point,
+      const bool overlap_joint) {
+      const cv::Point2d first_joint = evidenceCenterOriginal(
+        first.evidence[first_index]);
+      const cv::Point2d second_joint = evidenceCenterOriginal(
+        second.evidence[second_index]);
+      const double joint_distance = cv::norm(second_joint - first_joint);
+      if (
+        !overlap_joint && joint_distance >
+        config.cross_direction_merge_maximum_endpoint_distance_px)
+      {
+        return;
+      }
+      const double support_ratio = connectorSupportRatio(
+        response, first_joint, second_joint, config);
+      if (
+        support_ratio <
+        config.cross_direction_merge_minimum_connector_support_ratio)
+      {
+        return;
+      }
+      for (int first_front = 0; first_front <= 1; ++first_front) {
+        const bool first_toward_front = first_front != 0;
+        const std::vector<RunEvidence> first_arm = retainedArm(
+          first.evidence, first_index, first_toward_front, true);
+        if (first_arm.size() < 2) {
+          continue;
+        }
+        for (int second_front = 0; second_front <= 1; ++second_front) {
+          const bool second_toward_front = second_front != 0;
+          const std::vector<RunEvidence> second_arm = retainedArm(
+            second.evidence, second_index, second_toward_front, false);
+          if (second_arm.size() < 2) {
+            continue;
+          }
+          const std::size_t first_tangent_index = first_arm.size() > 3 ?
+            first_arm.size() - 4 : 0;
+          const std::size_t second_tangent_index = second_arm.size() > 3 ? 3 :
+            second_arm.size() - 1;
+          const cv::Point2d incoming =
+            evidenceCenterOriginal(first_arm.back()) -
+            evidenceCenterOriginal(first_arm[first_tangent_index]);
+          const cv::Point2d outgoing =
+            evidenceCenterOriginal(second_arm[second_tangent_index]) -
+            evidenceCenterOriginal(second_arm.front());
+          const double incoming_length = cv::norm(incoming);
+          const double outgoing_length = cv::norm(outgoing);
+          if (incoming_length <= 1.0e-9 || outgoing_length <= 1.0e-9) {
+            continue;
+          }
+          const double cosine = std::clamp(
+            incoming.dot(outgoing) /
+            (incoming_length * outgoing_length), -1.0, 1.0);
+          const double turn_angle = std::acos(cosine) * 180.0 / CV_PI;
+          if (
+            turn_angle >
+            config.cross_direction_merge_maximum_turn_angle_deg)
+          {
+            continue;
+          }
+          const double retained_arc_length =
+            candidateArcLengthOriginal(first_arm) + joint_distance +
+            candidateArcLengthOriginal(second_arm);
+          const double quality = retained_arc_length + 5.0 * support_ratio -
+            joint_distance - 0.10 * turn_angle;
+          if (!best.valid || quality > best.quality) {
+            best.valid = true;
+            best.first_joint_index = first_index;
+            best.second_joint_index = second_index;
+            best.first_arm_toward_front = first_toward_front;
+            best.second_arm_toward_front = second_toward_front;
+            best.overlap_joint = overlap_joint;
+            best.joint_point = joint_point;
+            best.endpoint_distance_px = joint_distance;
+            best.connector_support_ratio = support_ratio;
+            best.turn_angle_deg = turn_angle;
+            best.retained_arc_length_px = retained_arc_length;
+            best.quality = quality;
+          }
+        }
+      }
+    };
+
+  const std::size_t first_last = first.evidence.size() - 1;
+  const std::size_t second_last = second.evidence.size() - 1;
+  for (const std::size_t first_index : {std::size_t{0}, first_last}) {
+    for (const std::size_t second_index : {std::size_t{0}, second_last}) {
+      const cv::Point2d first_point = evidenceCenterOriginal(
+        first.evidence[first_index]);
+      const cv::Point2d second_point = evidenceCenterOriginal(
+        second.evidence[second_index]);
+      evaluate_joint(
+        first_index, second_index, 0.5 * (first_point + second_point), false);
     }
   }
-  return false;
+  for (std::size_t first_index = 0;
+    first_index < first.evidence.size(); ++first_index)
+  {
+    for (std::size_t second_index = 0;
+      second_index < second.evidence.size(); ++second_index)
+    {
+      cv::Point2d intersection;
+      if (perpendicularRunsOverlap(
+          first.evidence[first_index], second.evidence[second_index],
+          &intersection))
+      {
+        evaluate_joint(first_index, second_index, intersection, true);
+      }
+    }
+  }
+  return best;
+}
+
+TrackCandidate mergeCandidates(
+  const TrackCandidate & first,
+  const TrackCandidate & second,
+  const MergeProposal & proposal,
+  const BevLaneSeedDetectorConfig & config)
+{
+  const std::vector<RunEvidence> first_evidence = retainedArm(
+    first.evidence, proposal.first_joint_index,
+    proposal.first_arm_toward_front, true);
+  const std::vector<RunEvidence> second_evidence = retainedArm(
+    second.evidence, proposal.second_joint_index,
+    proposal.second_arm_toward_front, false);
+  TrackCandidate merged;
+  merged.valid = true;
+  merged.has_row_support =
+    first.has_row_support || second.has_row_support;
+  merged.has_column_support =
+    first.has_column_support || second.has_column_support;
+  merged.evidence.reserve(first_evidence.size() + second_evidence.size());
+  merged.evidence.insert(
+    merged.evidence.end(), first_evidence.begin(), first_evidence.end());
+  merged.evidence.insert(
+    merged.evidence.end(), second_evidence.begin(), second_evidence.end());
+  double contrast_sum = 0.0;
+  double response_sum = 0.0;
+  for (const RunEvidence & evidence : merged.evidence) {
+    contrast_sum += evidence.bilateral_contrast;
+    response_sum += evidence.run.mean_response;
+  }
+  merged.arc_length_px = candidateArcLengthOriginal(merged.evidence);
+  merged.mean_contrast = contrast_sum / merged.evidence.size();
+  merged.mean_response = response_sum / merged.evidence.size();
+  merged.score = merged.arc_length_px +
+    config.contrast_score_weight * merged.mean_contrast +
+    0.05 * merged.mean_response;
+  merged.seed_point = candidateSeedOriginal(merged);
+  return merged;
+}
+
+int mergeTouchingCandidates(
+  std::vector<TrackCandidate> * candidates,
+  const cv::Mat & response,
+  const BevLaneSeedDetectorConfig & config,
+  std::vector<cv::Point2d> * merge_points)
+{
+  if (
+    candidates == nullptr || !config.cross_direction_merge_enabled)
+  {
+    return 0;
+  }
+  int merge_count = 0;
+  while (true) {
+    MergeProposal best;
+    double best_quality = -std::numeric_limits<double>::infinity();
+    for (std::size_t first_index = 0;
+      first_index < candidates->size(); ++first_index)
+    {
+      for (std::size_t second_index = first_index + 1;
+        second_index < candidates->size(); ++second_index)
+      {
+        MergeProposal proposal = evaluateMergeProposal(
+          (*candidates)[first_index], (*candidates)[second_index],
+          response, config);
+        if (!proposal.valid) {
+          continue;
+        }
+        if (proposal.quality > best_quality) {
+          best_quality = proposal.quality;
+          best = proposal;
+          best.first_index = first_index;
+          best.second_index = second_index;
+        }
+      }
+    }
+    if (!best.valid) {
+      break;
+    }
+    TrackCandidate merged = mergeCandidates(
+      (*candidates)[best.first_index], (*candidates)[best.second_index],
+      best, config);
+    (*candidates)[best.first_index] = std::move(merged);
+    candidates->erase(
+      candidates->begin() + static_cast<std::ptrdiff_t>(best.second_index));
+    if (merge_points != nullptr) {
+      merge_points->push_back(best.joint_point);
+    }
+    ++merge_count;
+  }
+  return merge_count;
 }
 
 double temporalTrackDistance(
@@ -726,8 +1051,7 @@ double temporalTrackDistance(
   std::vector<double> distances;
   distances.reserve(candidate.evidence.size());
   for (const RunEvidence & evidence : candidate.evidence) {
-    const cv::Point2d point = evidenceCenterOriginal(
-      evidence, candidate.transposed);
+    const cv::Point2d point = evidenceCenterOriginal(evidence);
     double nearest = std::numeric_limits<double>::infinity();
     for (const cv::Point2d & previous : remembered.support_points) {
       nearest = std::min(nearest, cv::norm(point - previous));
@@ -740,38 +1064,37 @@ double temporalTrackDistance(
   return cv::norm(candidate.seed_point - remembered.image_point);
 }
 
-bool sameRowPairDistance(
-  const TrackCandidate & left,
-  const TrackCandidate & right,
+bool orientationIndependentPairDistance(
+  const TrackCandidate & first,
+  const TrackCandidate & second,
   double * distance,
   int * sample_count,
   int * inlier_count)
 {
   if (
     distance == nullptr || sample_count == nullptr || inlier_count == nullptr ||
-    left.evidence.empty() || right.evidence.empty())
+    first.evidence.empty() || second.evidence.empty())
   {
     return false;
   }
-  const int overlap_bottom = std::min(
-    left.evidence.front().run.row, right.evidence.front().run.row);
-  const int overlap_top = std::max(
-    left.evidence.back().run.row, right.evidence.back().run.row);
-  if (overlap_bottom < overlap_top) {
-    return false;
-  }
   std::vector<double> distances;
-  distances.reserve(static_cast<std::size_t>(overlap_bottom - overlap_top + 1));
-  for (int row = overlap_top; row <= overlap_bottom; ++row) {
-    double left_column = 0.0;
-    double right_column = 0.0;
-    if (
-      candidateColumnAtRow(left, row, &left_column) &&
-      candidateColumnAtRow(right, row, &right_column))
-    {
-      distances.push_back(std::abs(right_column - left_column));
-    }
-  }
+  distances.reserve(first.evidence.size() + second.evidence.size());
+  const auto append_nearest_distances = [&distances](
+      const TrackCandidate & source, const TrackCandidate & target) {
+      for (const RunEvidence & source_evidence : source.evidence) {
+        const cv::Point2d source_point = evidenceCenterOriginal(source_evidence);
+        double nearest = std::numeric_limits<double>::infinity();
+        for (const RunEvidence & target_evidence : target.evidence) {
+          const cv::Point2d target_point = evidenceCenterOriginal(target_evidence);
+          nearest = std::min(nearest, cv::norm(source_point - target_point));
+        }
+        if (std::isfinite(nearest)) {
+          distances.push_back(nearest);
+        }
+      }
+    };
+  append_nearest_distances(first, second);
+  append_nearest_distances(second, first);
   if (distances.empty()) {
     return false;
   }
@@ -809,8 +1132,7 @@ BevLaneSeed toPublicSeed(const TrackCandidate & candidate)
   seed.score = candidate.score;
   seed.support_points.reserve(candidate.evidence.size());
   for (const RunEvidence & evidence : candidate.evidence) {
-    seed.support_points.push_back(evidenceCenterOriginal(
-      evidence, candidate.transposed));
+    seed.support_points.push_back(evidenceCenterOriginal(evidence));
   }
   return seed;
 }
@@ -826,7 +1148,7 @@ void drawCandidate(
   std::vector<cv::Point> points;
   points.reserve(candidate.evidence.size());
   for (const RunEvidence & evidence : candidate.evidence) {
-    if (candidate.transposed) {
+    if (evidence.transposed) {
       cv::line(
         *image,
         cv::Point(evidence.run.row, evidence.run.first_column),
@@ -839,8 +1161,7 @@ void drawCandidate(
         cv::Point(evidence.run.last_column, evidence.run.row),
         color, 1, cv::LINE_8);
     }
-    const cv::Point2d point = evidenceCenterOriginal(
-      evidence, candidate.transposed);
+    const cv::Point2d point = evidenceCenterOriginal(evidence);
     points.emplace_back(
       static_cast<int>(std::lround(point.x)),
       static_cast<int>(std::lround(point.y)));
@@ -865,8 +1186,7 @@ void drawMaskCandidate(cv::Mat * mask, const TrackCandidate & candidate)
   std::vector<cv::Point> points;
   points.reserve(candidate.evidence.size());
   for (const RunEvidence & evidence : candidate.evidence) {
-    const cv::Point2d point = evidenceCenterOriginal(
-      evidence, candidate.transposed);
+    const cv::Point2d point = evidenceCenterOriginal(evidence);
     points.emplace_back(
       static_cast<int>(std::lround(point.x)),
       static_cast<int>(std::lround(point.y)));
@@ -922,6 +1242,48 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     std::move(row_extraction.relaxed_points);
   std::vector<cv::Point2d> slope_break_points =
     std::move(row_extraction.slope_break_points);
+  result.accepted_row_track_count = static_cast<int>(candidates.size());
+
+  // Evaluate columns on every frame, using the exact same run, continuity,
+  // arc-length, local-contrast and slope gates as the row direction.
+  if (config_.column_tracking_enabled) {
+    cv::Mat transposed_gray;
+    cv::Mat transposed_response;
+    cv::transpose(gray, transposed_gray);
+    cv::transpose(enhanced_top_hat, transposed_response);
+    CandidateExtraction column_extraction = extractCandidates(
+      transposed_gray, transposed_response,
+      0, transposed_response.rows,
+      result.roi_top_row, result.roi_bottom_row,
+      config_, true);
+    result.accepted_column_track_count = static_cast<int>(
+      column_extraction.candidates.size());
+    candidates.insert(
+      candidates.end(),
+      std::make_move_iterator(column_extraction.candidates.begin()),
+      std::make_move_iterator(column_extraction.candidates.end()));
+    contrast_points.insert(
+      contrast_points.end(),
+      column_extraction.contrast_points.begin(),
+      column_extraction.contrast_points.end());
+    relaxed_points.insert(
+      relaxed_points.end(),
+      column_extraction.relaxed_points.begin(),
+      column_extraction.relaxed_points.end());
+    slope_break_points.insert(
+      slope_break_points.end(),
+      column_extraction.slope_break_points.begin(),
+      column_extraction.slope_break_points.end());
+    result.column_tracking_used = true;
+  }
+  std::vector<cv::Point2d> merge_points;
+  result.merged_track_count = mergeTouchingCandidates(
+    &candidates, enhanced_top_hat, config_, &merge_points);
+  result.accepted_track_count = static_cast<int>(candidates.size());
+  result.strict_evidence_count = static_cast<int>(contrast_points.size()) -
+    static_cast<int>(relaxed_points.size());
+  result.relaxed_evidence_count = static_cast<int>(relaxed_points.size());
+  result.slope_break_count = static_cast<int>(slope_break_points.size());
 
   TrackCandidate selected_left;
   TrackCandidate selected_right;
@@ -947,8 +1309,10 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       // one screen half without changing its physical left/right ordering.
       const bool require_centered_pair =
         !config_.temporal_side_lock_enabled || !side_lock_initialized_;
+      const bool pair_has_column_track =
+        left.has_column_support || right.has_column_support;
       if (
-        require_centered_pair &&
+        require_centered_pair && !pair_has_column_track &&
         (left.seed_point.x >= center_column ||
         right.seed_point.x < center_column))
       {
@@ -957,7 +1321,7 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       double distance = 0.0;
       int samples = 0;
       int inliers = 0;
-      if (!sameRowPairDistance(
+      if (!orientationIndependentPairDistance(
           left, right, &distance, &samples, &inliers))
       {
         continue;
@@ -983,43 +1347,6 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       }
     }
   }
-
-  // Row-wise tracking is the primary path. Only when it cannot produce a
-  // valid pair do we transpose both inputs and apply exactly the same run,
-  // continuity, arc-length, contrast and slope gates along image columns.
-  if (config_.column_fallback_enabled && !result.pair_valid) {
-    cv::Mat transposed_gray;
-    cv::Mat transposed_response;
-    cv::transpose(gray, transposed_gray);
-    cv::transpose(enhanced_top_hat, transposed_response);
-    CandidateExtraction column_extraction = extractCandidates(
-      transposed_gray, transposed_response,
-      0, transposed_response.rows,
-      result.roi_top_row, result.roi_bottom_row,
-      config_, true);
-    candidates.insert(
-      candidates.end(),
-      std::make_move_iterator(column_extraction.candidates.begin()),
-      std::make_move_iterator(column_extraction.candidates.end()));
-    contrast_points.insert(
-      contrast_points.end(),
-      column_extraction.contrast_points.begin(),
-      column_extraction.contrast_points.end());
-    relaxed_points.insert(
-      relaxed_points.end(),
-      column_extraction.relaxed_points.begin(),
-      column_extraction.relaxed_points.end());
-    slope_break_points.insert(
-      slope_break_points.end(),
-      column_extraction.slope_break_points.begin(),
-      column_extraction.slope_break_points.end());
-    result.column_fallback_used = true;
-  }
-  result.accepted_track_count = static_cast<int>(candidates.size());
-  result.strict_evidence_count = static_cast<int>(contrast_points.size()) -
-    static_cast<int>(relaxed_points.size());
-  result.relaxed_evidence_count = static_cast<int>(relaxed_points.size());
-  result.slope_break_count = static_cast<int>(slope_break_points.size());
 
   if (!config_.temporal_side_lock_enabled) {
     if (result.pair_valid) {
@@ -1221,12 +1548,20 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         cv::Scalar(0, 0, 255), cv::MARKER_TILTED_CROSS, 7, 1,
         cv::LINE_AA);
     }
+    for (const cv::Point2d & point : merge_points) {
+      cv::circle(
+        result.preview,
+        cv::Point(
+          static_cast<int>(std::lround(point.x)),
+          static_cast<int>(std::lround(point.y))),
+        3, cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+    }
     if (config_.temporal_side_lock_enabled) {
       std::string lock_text = !result.side_lock_initialized ?
         "WAIT L+R" : result.temporal_labeling_used ?
         "SIDE LOCK:T" : "SIDE LOCK";
-      if (result.column_fallback_used) {
-        lock_text += ":C";
+      if (result.column_tracking_used) {
+        lock_text += ":RC";
       }
       cv::putText(
         result.preview, lock_text, cv::Point(2, 12),

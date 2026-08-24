@@ -85,7 +85,23 @@ def generate_launch_description():
         ("lane_seed_maximum_slope_change_px_per_row", "2.0", float),
         ("lane_seed_pair_minimum_distance_px", "50.0", float),
         ("lane_seed_pair_maximum_distance_px", "95.0", float),
-        ("lane_seed_column_fallback_enabled", "true", bool),
+        ("lane_seed_column_tracking_enabled", "true", bool),
+        ("lane_seed_cross_direction_merge_enabled", "true", bool),
+        (
+            "lane_seed_cross_direction_merge_maximum_endpoint_distance_px",
+            "3.0",
+            float,
+        ),
+        (
+            "lane_seed_cross_direction_merge_minimum_connector_support_ratio",
+            "0.70",
+            float,
+        ),
+        (
+            "lane_seed_cross_direction_merge_maximum_turn_angle_deg",
+            "110.0",
+            float,
+        ),
         ("lane_seed_temporal_side_lock_enabled", "true", bool),
         ("lane_seed_temporal_side_lock_reset_frames", "30", int),
         (

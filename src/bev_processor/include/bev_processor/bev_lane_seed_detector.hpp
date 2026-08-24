@@ -39,9 +39,16 @@ struct BevLaneSeedDetectorConfig
   double minimum_pair_distance_px{50.0};
   double maximum_pair_distance_px{95.0};
 
-  // If row-wise tracking cannot complete the required seed selection, run
-  // the same detector on transposed images to recover near-horizontal lanes.
-  bool column_fallback_enabled{true};
+  // Run the same detector in row and column directions every frame, then
+  // select seeds from the combined orientation-independent candidate set.
+  bool column_tracking_enabled{true};
+
+  // Join touching same-direction fragments, and join row/column tracks when
+  // their endpoints touch or their perpendicular run evidence overlaps.
+  bool cross_direction_merge_enabled{true};
+  double cross_direction_merge_maximum_endpoint_distance_px{3.0};
+  double cross_direction_merge_minimum_connector_support_ratio{0.70};
+  double cross_direction_merge_maximum_turn_angle_deg{110.0};
 
   // Lock left/right roles after the first valid pair. A temporarily missing
   // single lane is then labelled by temporal continuity, not screen center.
@@ -71,6 +78,9 @@ struct BevLaneSeedDetection
   int roi_top_row{0};
   int roi_bottom_row{0};
   int accepted_track_count{0};
+  int accepted_row_track_count{0};
+  int accepted_column_track_count{0};
+  int merged_track_count{0};
   int strict_evidence_count{0};
   int relaxed_evidence_count{0};
   int slope_break_count{0};
@@ -81,7 +91,7 @@ struct BevLaneSeedDetection
   bool side_lock_initialized{false};
   bool temporal_labeling_used{false};
   bool side_lock_reset{false};
-  bool column_fallback_used{false};
+  bool column_tracking_used{false};
 };
 
 class BevLaneSeedDetector

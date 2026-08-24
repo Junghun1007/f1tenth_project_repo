@@ -84,9 +84,11 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 7. 최초 유효한 좌·우 쌍으로 역할을 잠그고, 이후 단일 차선은 화면
    중심이 아닌 직전 시드 곡선과의 거리로 좌·우를 유지한다.
    양쪽이 모두 설정 프레임 동안 사라져야 잠금을 초기화한다.
-8. 행 방향으로 유효한 시드 쌍을 완성하지 못하면 영상을 전치해
-   열 방향으로 한 번만 다시 탐색한다. 응답값·폭·gap·이동량·곡선
-   길이·국소 대비·기울기 기준은 행 추적과 동일하다.
+8. 매 프레임 행·열 방향을 모두 탐색한 뒤 후보를 하나로 통합한다.
+   응답값·폭·gap·이동량·곡선 길이·국소 대비·기울기 기준은 두
+   방향에서 동일하며, 좌·우 거리는 원본 좌표계의 곡선 간 거리로 평가한다.
+9. 행·열 후보의 끝점이 설정 거리 이내에서 닿고 연결부 응답과 회전각
+   기준을 통과하면 하나의 `RC` 트랙으로 이어서 점수와 시드를 다시 계산한다.
 
 출력 토픽은 다음과 같다.
 
@@ -111,7 +113,8 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 - `WAIT L+R`: 최초 좌우 시드 쌍을 기다리는 상태
 - `SIDE LOCK`: 좌우 역할 잠금, `SIDE LOCK:T`는 현재 프레임에
   시간 연속성으로 단일 차선의 역할을 붙였다는 뜻
-- 상태 문자 끝의 `:C`: 현재 프레임에서 열 방향 fallback 실행
+- 상태 문자 끝의 `:RC`: 행·열 통합 추적 사용
+- 흰색 원: 행·열 트랙이 실제로 병합된 연결 위치
 
 `lane_preview_enabled:=false`이면 원본 컬러 BEV만 프리뷰한다.
 프리뷰 창에 포커스를 둔 채 Space를 누르면 `preview_stop_topic`
@@ -145,7 +148,7 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
 - `lane_seed_minimum_response`, `*_run_width_px`:
   행별 ridge 후보의 Top-hat 응답과 폭
 - `lane_seed_maximum_lateral_step_px`, `*_gap_rows`:
-  곡선 트랙 연결 허용량
+  곡선 트랙의 좌우 이동량과 누락 run/고립된 대비 실패 허용량
 - `lane_seed_minimum_track_arc_length_px`:
   행 개수가 아닌 후보 곡선의 최소 실제 길이
 - `lane_seed_minimum_bilateral_contrast`,
@@ -157,8 +160,17 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
   급격한 기울기 변화 억제
 - `lane_seed_pair_*_distance_px`:
   MAD 이상치 제거 후 좌우 시드 평균 간격
-- `lane_seed_column_fallback_enabled`:
-  행 방향 시드 쌍 실패 시 동일 기준의 열 방향 탐색 사용 여부
+- `lane_seed_column_tracking_enabled`:
+  행 후보와 함께 동일 기준의 열 방향 후보를 매 프레임 통합할지 여부
+- `lane_seed_cross_direction_merge_enabled`:
+  인접한 같은 방향 조각과, 끝점이 닿거나 run 영역이 겹치는
+  행·열 후보를 하나의 트랙으로 이을지 여부
+- `lane_seed_cross_direction_merge_maximum_endpoint_distance_px`:
+  병합을 허용할 두 끝점의 최대 거리
+- `lane_seed_cross_direction_merge_minimum_connector_support_ratio`:
+  접합할 두 지점 사이에서 Top-hat 임계값을 통과해야 하는 최소 비율
+- `lane_seed_cross_direction_merge_maximum_turn_angle_deg`:
+  연결부에서 허용할 최대 방향 변화각
 - `lane_seed_temporal_side_lock_*`:
   최초 좌우 쌍 후 단일 차선의 역할 유지, 잠금 초기화 프레임,
   재탐색 최대 곡선 거리
