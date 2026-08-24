@@ -10,6 +10,8 @@ start the F1TENTH vehicle. It replaces the former `vehicle_launcher` and
 - `vesc_only.launch.py`: starts only `vesc_bridge_node`.
 - `manual_drive.launch.py`: starts joystick input, direct manual actuator
   commands, and the VESC bridge.
+- `manual_drive_with_dynamics.launch.py`: starts manual driving plus the
+  read-only vehicle dynamics/CAN monitor.
 - `auto_drive.launch.py`: starts BEV centerline generation, Stanley/PID
   autonomous control, and the VESC bridge.
 
@@ -17,8 +19,14 @@ start the F1TENTH vehicle. It replaces the former `vehicle_launcher` and
 ros2 launch vehicle_bringup joy_test.launch.py
 ros2 launch vehicle_bringup vesc_only.launch.py
 ros2 launch vehicle_bringup manual_drive.launch.py
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py
 ros2 launch vehicle_bringup auto_drive.launch.py
 ```
+
+The dynamics launch defaults to the current UART VESC telemetry path. To use
+VESC CAN STATUS broadcasts directly, bring up `can0` first and launch with
+`input_mode:=socketcan`. See `vehicle_dynamics_monitor/README.md` for CAN and
+accelerometer-compensation details.
 
 The VESC launch files default to the Jetson UART device `/dev/ttyTHS1`. A
 different device path can be supplied without editing YAML:

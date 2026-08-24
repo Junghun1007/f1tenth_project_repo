@@ -1,0 +1,77 @@
+# vehicle_dynamics_monitor
+
+VESC vehicle telemetry is converted into body-frame motion values for logging
+and future IMU accelerometer compensation. The monitor never transmits CAN or
+actuator commands.
+
+## Calculated values
+
+- Motor RPM = ERPM / motor pole pairs
+- Wheel RPM = motor RPM / total drivetrain ratio
+- Speed = wheel circumference x wheel RPM / 60
+- Longitudinal acceleration = filtered time derivative of speed
+- Lateral acceleration = speed x yaw rate
+- Gyroscope yaw rate is preferred. If it is unavailable, yaw rate is estimated
+  with `speed * tan(steering angle) / wheelbase`.
+
+The combined acceleration topic is
+`/vehicle/dynamics/acceleration` (`geometry_msgs/Vector3Stamped`). It uses
+`base_link`: X is forward acceleration, Y is left acceleration, and Z is zero.
+This is the vehicle-motion component to transform into the IMU frame and
+subtract from accelerometer measurements before tilt correction.
+
+Other outputs are:
+
+- `/vehicle/dynamics/speed_mps`
+- `/vehicle/dynamics/longitudinal_acceleration_mps2`
+- `/vehicle/dynamics/lateral_acceleration_mps2`
+- `/vehicle/dynamics/yaw_rate_radps`
+- `/vehicle/dynamics/motor_rpm`
+- `/vehicle/dynamics/wheel_rpm`
+- `/vehicle/dynamics/diagnostics`
+
+## Manual-drive launch
+
+Build and start the existing manual controller, VESC bridge, and monitor:
+
+```bash
+colcon build --packages-select vehicle_dynamics_monitor vehicle_bringup
+source install/setup.bash
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py
+```
+
+The repository currently controls and polls the VESC over Jetson UART
+`/dev/ttyTHS1`, so `ros_topic` is the default input. This mode consumes the
+transport-independent `/vesc/measured_erpm` output from `vesc_bridge`.
+
+## Direct SocketCAN mode
+
+Bring up the physical CAN interface with the bitrate configured in the VESC,
+then select the receive-only input:
+
+```bash
+sudo ip link set can0 up type can bitrate 500000
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
+  input_mode:=socketcan can_interface:=can0 can_controller_id:=0
+```
+
+The VESC must be configured to broadcast CAN STATUS frames. The package
+decodes STATUS through STATUS_6, including ERPM,
+duty, motor/input current, voltage, FET/motor temperature, amp-hours,
+watt-hours, tachometer/electrical revolutions, ADC inputs, and PPM. It opens a
+raw CAN socket but sends no frames.
+
+Protocol IDs and scales follow the
+[official VESC CAN-bus documentation](https://github.com/vedderb/bldc/blob/master/documentation/comm_can.md).
+
+## Calibration notes
+
+- Measure `wheel_diameter_m` under vehicle load and tune
+  `speed_scale_correction` with a known travel distance.
+- Measure wheelbase and real left/right tire angles before relying on the
+  steering fallback for accelerometer compensation.
+- With the current `/camera/imu` optical frame, vehicle yaw is normally the
+  negative Y angular velocity. If the IMU frame changes, update
+  `imu_yaw_axis` and `imu_yaw_rate_sign`.
+- `yaw_rate_source: auto` uses fresh IMU gyro data first and steering second.
+  This does not feed accelerometer data back into its own correction.
