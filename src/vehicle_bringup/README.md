@@ -61,21 +61,6 @@ window completely with:
 ros2 launch vehicle_bringup auto_drive.launch.py preview_enabled:=false
 ```
 
-Camera stabilization defaults to high-frequency-only correction at 3 Hz.
-Compare correction on and off without changing the BEV path:
-
-```bash
-ros2 launch vehicle_bringup auto_drive.launch.py \
-  imu_stabilization_enabled:=true
-ros2 launch vehicle_bringup auto_drive.launch.py \
-  imu_stabilization_enabled:=false
-```
-
-Tune the split with
-`imu_stabilization_high_frequency_vibration_cutoff_hz:=3.0`. A larger value
-passes more slow/medium motion through; a smaller value corrects a wider
-frequency range.
-
 Start without automatic motion for a lifted-wheel check with
 `auto_enabled:=false`. Controller parameters are installed from
 `auto_control/config/auto_control.yaml`.

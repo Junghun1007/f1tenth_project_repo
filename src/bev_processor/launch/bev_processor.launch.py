@@ -23,12 +23,6 @@ def generate_launch_description():
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
-    high_frequency_vibration_only_enabled = LaunchConfiguration(
-        "imu_stabilization_high_frequency_vibration_only_enabled"
-    )
-    high_frequency_vibration_cutoff_hz = LaunchConfiguration(
-        "imu_stabilization_high_frequency_vibration_cutoff_hz"
-    )
     bev_input_bottom_fraction = LaunchConfiguration(
         "bev_input_bottom_fraction"
     )
@@ -41,14 +35,6 @@ def generate_launch_description():
     imu_stabilization_parameter = ParameterValue(
         imu_stabilization_enabled,
         value_type=bool,
-    )
-    high_frequency_vibration_only_parameter = ParameterValue(
-        high_frequency_vibration_only_enabled,
-        value_type=bool,
-    )
-    high_frequency_vibration_cutoff_parameter = ParameterValue(
-        high_frequency_vibration_cutoff_hz,
-        value_type=float,
     )
 
     # Keep every lane tuning value overridable from `ros2 launch ... name:=x`.
@@ -168,19 +154,6 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
-                "imu_stabilization_high_frequency_vibration_only_enabled",
-                default_value="true",
-                description=(
-                    "Pass low-frequency attitude through and correct only "
-                    "high-frequency camera vibration."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_high_frequency_vibration_cutoff_hz",
-                default_value="3.0",
-                description="High-frequency correction cutoff in Hz.",
-            ),
-            DeclareLaunchArgument(
                 "bev_input_bottom_fraction",
                 default_value="0.70",
                 description=(
@@ -258,14 +231,6 @@ def generate_launch_description():
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_parameter
                                 ),
-                                (
-                                    "imu_stabilization_high_frequency_"
-                                    "vibration_only_enabled"
-                                ): high_frequency_vibration_only_parameter,
-                                (
-                                    "imu_stabilization_high_frequency_"
-                                    "vibration_cutoff_hz"
-                                ): high_frequency_vibration_cutoff_parameter,
                                 (
                                     "imu_stabilization_external_reference_required"
                                 ): True,

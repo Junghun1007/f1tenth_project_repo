@@ -201,7 +201,8 @@ ros2 launch camera_driver camera_driver.launch.py \
 ```
 
 OAK IMU로 고주파 roll/pitch 진동만 안정화하려면 다음처럼
-실행한다. 현재 launch 기본값도 고주파 전용 모드다.
+실행한다. `camera_driver.launch.py`는 단독 디버깅을 위해 이 모드를
+기본으로 override하며, BEV와 `auto_drive`의 기존 설정은 변경하지 않는다.
 
 ```bash
 ros2 launch camera_driver camera_driver.launch.py \
@@ -215,6 +216,18 @@ ros2 launch camera_driver camera_driver.launch.py \
 `imu_stabilization_enabled:=true/false`만 바꾼다. 기존의 시작 자세
 고정(전체 대역) 방식으로 되돌리려면 안정화를 켠 상태에서
 `imu_stabilization_high_frequency_vibration_only_enabled:=false`를 사용한다.
+
+실차에서는 `auto_drive.launch.py`를 실행하지 않고, 수동주행과
+`camera_driver` 프리뷰를 각각의 터미널에서 실행해 A/B 비교한다.
+
+```bash
+# 터미널 1: 수동주행
+ros2 launch vehicle_bringup manual_drive.launch.py
+
+# 터미널 2: 카메라 고주파 보정 프리뷰
+ros2 launch camera_driver camera_driver.launch.py \
+  preview_enabled:=true imu_stabilization_enabled:=true
+```
 
 안정화기는 전원 직후 IMU 샘플을 1초간 폐기한 뒤 4초 정지 구간의 중력
 방향과 자이로 bias를 시작 기준으로 측정한다. 이 5초 동안 차량과 카메라를
@@ -319,7 +332,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_max_batch_reports` | `5` | 장치측 IMU 묶음 전송 상한 |
 | `imu_topic` | `/camera/imu` | `sensor_msgs/Imu` 출력 |
 | `imu_stabilization_enabled` | `true` | 영상 roll/pitch 진동 보정 on/off |
-| `imu_stabilization_high_frequency_vibration_only_enabled` | `true` | 저주파 자세를 통과시키고 고주파 진동만 보정; `false`는 전체 대역 |
+| `imu_stabilization_high_frequency_vibration_only_enabled` | `false` | 저주파 자세를 통과시키고 고주파 진동만 보정; 단독 launch는 `true` override |
 | `imu_stabilization_high_frequency_vibration_cutoff_hz` | `3.0` | 1차 고역통과 보정의 -3 dB 기준 주파수 |
 | `imu_stabilization_startup_discard_duration_sec` | `1.0` | 전원 직후 IMU 과도값 폐기 시간 |
 | `imu_stabilization_reference_calibration_duration_sec` | `4.0` | 정지 기준 자세 측정 시간 |
@@ -333,7 +346,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
-| `imu_stabilization_vehicle_motion_compensation_enabled` | `false` | 전체 대역 모드에서 ERPM/gyro 차량 가속도를 제거 |
+| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | ERPM/gyro 차량 가속도를 제거해 주행 중 nudge에 사용 |
 | `imu_stabilization_wheel_diameter_m` | `0.1095` | 하중 상태 구동 휠 직경 |
 | `imu_stabilization_motor_pole_pairs` | `2` | 4-pole 모터의 pole pair 수 |
 | `imu_stabilization_motor_pinion_teeth` | `13` | 실제 motor pinion teeth |
@@ -350,7 +363,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_maximum_lateral_acceleration_mps2` | `15.0` | `v*omega_z` 횡가속도 절댓값 제한 |
 | `imu_stabilization_motion_maximum_sample_age_sec` | `0.10` | 이보다 오래된 ERPM motion 상태는 사용하지 않음 |
 | `imu_stabilization_accelerometer_stationary_only` | `true` | 주행 중 가속도계를 기본 자세에 누적하지 않음 |
-| `imu_stabilization_moving_accelerometer_nudge_enabled` | `false` | 전체 대역 모드의 보정된 가속도계 bounded nudge |
+| `imu_stabilization_moving_accelerometer_nudge_enabled` | `true` | 보정된 가속도계를 비누적 bounded nudge로만 적용 |
 | `imu_stabilization_moving_accelerometer_nudge_time_constant_sec` | `0.15` | 주행 중 nudge 반응/제거 시정수 |
 | `imu_stabilization_moving_accelerometer_nudge_strength` | `0.15` | 신뢰도를 통과한 가속도계 오차의 반영 비율 |
 | `imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg` | `0.20` | 주행 중 가속도계가 만들 수 있는 pitch 최대 영향 |

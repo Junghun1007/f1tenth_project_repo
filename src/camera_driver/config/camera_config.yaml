@@ -39,9 +39,9 @@ camera_driver:
     # stabilized_preview와 동일한 고정 기준 pitch/roll 안정화. 시작 후 총 5초
     # 동안 카메라를 정지시켜 IMU 과도값 폐기와 기준 자세 측정을 완료한다.
     imu_stabilization_enabled: true
-    # true: 3 Hz 이하의 느린 차체 자세는 영상에 남기고, 그보다 빠른
-    # roll/pitch 진동만 안정화한다. false는 기존 전체 대역 방식이다.
-    imu_stabilization_high_frequency_vibration_only_enabled: true
+    # 기존 BEV/auto_drive는 전체 대역 방식을 유지한다. camera_driver
+    # 단독 launch만 이 값을 true로 override해 고주파 모드를 테스트한다.
+    imu_stabilization_high_frequency_vibration_only_enabled: false
     imu_stabilization_high_frequency_vibration_cutoff_hz: 3.0
     imu_stabilization_startup_discard_duration_sec: 1.0
     imu_stabilization_reference_calibration_duration_sec: 4.0
@@ -68,9 +68,9 @@ camera_driver:
     imu_stabilization_stationary_erpm_enter_duration_sec: 1.0
     # 텔레메트리가 끊기면 정지로 고정하지 않고 주행 상태로 안전하게 복귀한다.
     imu_stabilization_measured_erpm_timeout_sec: 1.0
-    # 고주파 전용 테스트에서는 차량 가속도 보정을 사용하지 않는다.
-    # 나중에 저주파 보정을 켤 때 CAN 동기 데이터 연동으로 대체한다.
-    imu_stabilization_vehicle_motion_compensation_enabled: false
+    # true이면 차량 가속도를 IMU에서 제거해 주행 중 bounded nudge에 사용한다.
+    # camera_driver 고주파 전용 launch에서는 노드가 자동으로 비활성화한다.
+    imu_stabilization_vehicle_motion_compensation_enabled: true
     # Traxxas Slash 4X4 Ultimate 순정 구동계 기반 초기값.
     # 4-pole 모터는 pole pair=2이고, 타이어 직경은 109.5mm로 시작한다.
     imu_stabilization_wheel_diameter_m: 0.1095
@@ -94,10 +94,10 @@ camera_driver:
     imu_stabilization_maximum_lateral_acceleration_mps2: 15.0
     imu_stabilization_motion_maximum_sample_interval_sec: 0.10
     imu_stabilization_motion_maximum_sample_age_sec: 0.10
-    # 고주파 전용 모드에서는 주행 중 가속도계를 자세에 반영하지 않는다.
-    # 아래 nudge 설정은 기존 전체 대역 모드로 되돌릴 때만 사용한다.
+    # 기본 자세에는 주행 중 가속도계를 누적하지 않는다. 대신 아래의
+    # 빠르고 작은 bounded nudge만 출력 자세에 비누적으로 더한다.
     imu_stabilization_accelerometer_stationary_only: true
-    imu_stabilization_moving_accelerometer_nudge_enabled: false
+    imu_stabilization_moving_accelerometer_nudge_enabled: true
     imu_stabilization_moving_accelerometer_nudge_time_constant_sec: 0.15
     imu_stabilization_moving_accelerometer_nudge_strength: 0.15
     imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg: 0.20

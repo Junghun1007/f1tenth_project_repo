@@ -10,15 +10,6 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
     preview_enabled = LaunchConfiguration("preview_enabled")
-    imu_stabilization_enabled = LaunchConfiguration(
-        "imu_stabilization_enabled"
-    )
-    high_frequency_vibration_only_enabled = LaunchConfiguration(
-        "imu_stabilization_high_frequency_vibration_only_enabled"
-    )
-    high_frequency_vibration_cutoff_hz = LaunchConfiguration(
-        "imu_stabilization_high_frequency_vibration_cutoff_hz"
-    )
     controller_arguments = [
         ("auto_enabled", "true", "enabled", bool),
         ("minimum_duty", "0.055", "minimum_duty", float),
@@ -132,13 +123,6 @@ def generate_launch_description():
             # Autonomous mode shows only measured lanes and the centerline.
             # preview_enabled:=false disables the OpenCV window completely.
             "preview_enabled": preview_enabled,
-            "imu_stabilization_enabled": imu_stabilization_enabled,
-            "imu_stabilization_high_frequency_vibration_only_enabled": (
-                high_frequency_vibration_only_enabled
-            ),
-            "imu_stabilization_high_frequency_vibration_cutoff_hz": (
-                high_frequency_vibration_cutoff_hz
-            ),
             "lane_preview_enabled": "true",
             "lane_preview_result_only_enabled": "true",
             "lane_preview_sliding_windows_enabled": "false",
@@ -173,23 +157,6 @@ def generate_launch_description():
                 description=(
                     "Show result-only BEV lane preview. Set false for no GUI."
                 ),
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_enabled",
-                default_value="true",
-                description="Enable or disable camera vibration correction.",
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_high_frequency_vibration_only_enabled",
-                default_value="true",
-                description=(
-                    "Correct only high-frequency roll/pitch vibration."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_high_frequency_vibration_cutoff_hz",
-                default_value="3.0",
-                description="High-frequency correction cutoff in Hz.",
             ),
             *[
                 DeclareLaunchArgument(argument_name, default_value=default)
