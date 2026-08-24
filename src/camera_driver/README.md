@@ -208,13 +208,15 @@ ros2 launch camera_driver camera_driver.launch.py \
 ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
   input_mode:=socketcan can_interface:=can0 can_controller_id:=112
 
-# 터미널 2: 수정 전 full-band 안정화 + CAN 가속도 제거
+# 터미널 2: full-band gyro 안정화 + CAN 저주파 자세 anchor
 ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true \
   imu_stabilization_enabled:=true \
   imu_stabilization_can_longitudinal_compensation_gain:=0.7 \
   imu_stabilization_can_lateral_compensation_gain:=0.7 \
-  imu_stabilization_moving_accelerometer_nudge_strength:=0.15
+  imu_stabilization_moving_accelerometer_nudge_strength:=0.15 \
+  imu_stabilization_moving_gravity_anchor_maximum_correction_rate_degps:=0.50 \
+  imu_stabilization_invalid_correction_hold_frames:=2
 ```
 
 안정화 유무를 A/B 비교할 때는 `imu_stabilization_enabled:=true/false`만
@@ -231,9 +233,11 @@ ros2 launch camera_driver camera_driver.launch.py \
 homography로 적용한다. 별도의 주파수 cutoff는 사용하지 않는다.
 
 주행 중 가속도계 입력에는 CAN dynamics의 종가속도와 횡가속도를 카메라
-좌표로 변환해 뺀다. 이 잔여 가속도는 수정 전부터 사용하던 bounded nudge에
-그대로 전달된다. CAN 샘플이 0.1초 이상 느려지면 차량 가속도가 섞인 raw
-가속도계를 넣지 않고 해당 가속도 샘플을 생략하며 gyro 보정은 계속한다.
+좌표로 변환해 뺀다. 이 잔여 중력 방향은 누적 gyro 자세를 천천히 붙잡는
+persistent anchor와 빠르지만 비누적인 bounded nudge에 함께 사용된다. Anchor
+변화율은 기본 `0.50 deg/s`로 제한해 불완전한 CAN 모델이 자세를 급격하게
+움직이지 못하게 한다. CAN 샘플이 0.1초 이상 느려지면 차량 가속도가 섞인
+raw 가속도계를 넣지 않고 해당 가속도 샘플을 생략하며 gyro 보정은 계속한다.
 통합 BEV에서는 depth 시작 법선으로 차량 축을 구하고, 외부 법선이 없는
 단독 카메라 프리뷰에서는 교정된 IMU 시작 중력 방향을 fallback으로 사용한다.
 
@@ -243,10 +247,10 @@ homography로 적용한다. 별도의 주파수 cutoff는 사용하지 않는다
 복귀한다는 전제는 4초 시정수의 약한 시작 기준 leak으로도 반영한다.
 
 결과 FOV는 광학 중심 기준 1.25배 고정 줌으로 유지한다. 줌 영역으로 원본
-경계를 모두 채울 수 없는 자세, 동기화할 IMU가 없는 프레임, 3도 보정
-한계를 넘은 불확실한 자세에는 동적 회전을 적용하지 않고 zoom-only 원본을
-전달한다. 잘못된 큰 보정이나 프레임 폐기보다 작은 무보정 오차를 우선하는
-BEV 안전 정책이다.
+경계를 모두 채울 수 없는 자세나 3도 보정 한계를 넘은 불확실한 자세에는
+동적 회전을 적용하지 않고 zoom-only 원본을 전달한다. 단, 일시적인 RGB/IMU
+매칭 실패에는 직전 정상 homography를 기본 2프레임까지 유지해 단일 프레임
+점프를 막고, 그 이상 연속 실패할 때만 zoom-only로 전환한다.
 단독 프리뷰와 일반 이미지 발행은 CPU OpenCV 워프를 유지한다. 통합 BEV
 launch는 프레임별 행렬만 계산하고 CUDA BEV 변환에 합치므로 CPU 워프를
 건너뛴다. 활성화 후 상태 로그의 실제 capture FPS와 누락 프레임 수는
@@ -336,19 +340,21 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
-| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | CAN 종·횡가속도를 IMU에서 제거해 기존 nudge에 사용 |
+| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | CAN 종·횡가속도를 IMU에서 제거해 중력 방향을 추정 |
 | `imu_stabilization_maximum_longitudinal_acceleration_mps2` | `15.0` | 종가속도 절댓값 제한 |
 | `imu_stabilization_maximum_lateral_acceleration_mps2` | `15.0` | CAN 횡가속도 절댓값 제한 |
-| `imu_stabilization_accelerometer_stationary_only` | `true` | 주행 중 가속도계를 기본 자세에 누적하지 않음 |
-| `imu_stabilization_moving_accelerometer_nudge_enabled` | `true` | 보정된 가속도계를 비누적 bounded nudge로만 적용 |
+| `imu_stabilization_accelerometer_stationary_only` | `false` | `false`이면 주행 중 CAN 보정 중력으로 누적 자세 drift를 제한 |
+| `imu_stabilization_moving_accelerometer_nudge_enabled` | `true` | 보정된 가속도계의 빠른 성분을 비누적 bounded nudge로 추가 적용 |
 | `imu_stabilization_moving_accelerometer_nudge_time_constant_sec` | `0.15` | 주행 중 nudge 반응/제거 시정수 |
 | `imu_stabilization_moving_accelerometer_nudge_strength` | `0.15` | 잔여 가속도계 자세 오차의 영상 반영 비율 `0.0~1.0` |
 | `imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg` | `0.20` | 주행 중 가속도계가 만들 수 있는 pitch 최대 영향 |
 | `imu_stabilization_moving_accelerometer_roll_nudge_maximum_deg` | `0.15` | 주행 중 가속도계가 만들 수 있는 roll 최대 영향 |
+| `imu_stabilization_moving_gravity_anchor_maximum_correction_rate_degps` | `0.50` | CAN 보정 중력 anchor의 roll/pitch 합성 최대 변화율 |
 | `imu_stabilization_reference_tilt_leak_time_constant_sec` | `4.0` | 주행 중 시작 tilt 기준으로 복귀하는 시정수 |
 | `imu_stabilization_stationary_tilt_recovery_time_constant_sec` | `0.35` | 정지 후 시작 시점 복귀 시정수 |
 | `imu_stabilization_maximum_correction_deg` | `3.0` | 축별 최대 동적 보정각; 초과 시 zoom-only fallback |
 | `imu_stabilization_maximum_prediction_sec` | `0.015` | 마지막 gyro 기반 최대 예측 시간 |
+| `imu_stabilization_invalid_correction_hold_frames` | `2` | RGB/IMU 매칭 실패 시 직전 정상 homography 유지 프레임 수 (`0~5`) |
 | `fixed_view_zoom` | `1.25` | 고정 출력 FOV 줌 배율 |
 | `fixed_view_border_margin_px` | `1.5` | 원본 경계 bilinear 안전 여백 |
 | `output_crop_top_px` | `0` | 안정화 후 제거할 상단 행 수 (`0`이면 원본) |
@@ -365,8 +371,10 @@ ros2 topic info /camera/image_rect --verbose
 종/횡가속도와 직전 로그 구간의 최대 횡가속도를 표시한다.
 `imu_residual_accel(forward/left)`는 이 차량 종/횡가속도를 IMU에서
 제거한 뒤, Depth 자세 정렬을 적용하기 전의 잔여값이다.
-`accel_nudge(roll/pitch)`는 기본
-자이로/기준 자세에 더해진 현재 비누적 가속도계 보정각이다.
+`accel_nudge(roll/pitch)`는 기본 자이로/중력-anchor 자세에 더해진 현재 비누적
+가속도계 보정각이고, `gravity_anchor_updates`가 증가하면 주행 중 persistent
+anchor가 실제로 동작한 것이다. FPS 로그의 `held`는 RGB/IMU 매칭 실패 때
+직전 정상 homography를 재사용한 누적 프레임 수다.
 
 주행 중 bounded nudge는 기본 자세 적분에 다시 넣지 않는다.
 따라서 residual 가속도가 오래 틀려도 pitch/roll 영향은

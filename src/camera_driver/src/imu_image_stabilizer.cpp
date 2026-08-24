@@ -266,6 +266,9 @@ bool validConfig(const ImuImageStabilizerConfig & config)
     config.moving_accelerometer_pitch_nudge_maximum_deg < 5.0 &&
     positive_finite(config.moving_accelerometer_roll_nudge_maximum_deg) &&
     config.moving_accelerometer_roll_nudge_maximum_deg < 5.0 &&
+    positive_finite(
+      config.moving_gravity_anchor_maximum_correction_rate_degps) &&
+    config.moving_gravity_anchor_maximum_correction_rate_degps <= 10.0 &&
     positive_finite(config.reference_tilt_leak_time_constant_sec) &&
     positive_finite(config.stationary_tilt_recovery_time_constant_sec) &&
     positive_finite(config.online_gyroscope_tilt_bias_time_constant_sec) &&
@@ -513,8 +516,7 @@ public:
     const bool use_moving_accelerometer =
       !use_stationary_reference && acceleration_available &&
       acceleration_confidence > 0.0 &&
-      !config_.acceleration_correction_stationary_only &&
-      !config_.moving_accelerometer_nudge_enabled;
+      !config_.acceleration_correction_stationary_only;
     if (use_stationary_reference || use_moving_accelerometer) {
       const cv::Vec3d predicted_up = current_up_camera_;
       const double predicted_roll_deg = rollDegrees(predicted_up);
@@ -567,19 +569,33 @@ public:
         // without allowing accelerometer noise to toggle this correction.
         const double target_roll_deg = rollDegrees(correction_target);
         const double target_pitch_deg = pitchDegrees(correction_target);
+        double roll_step_deg = roll_gain * wrapDegrees(
+          target_roll_deg - predicted_roll_deg);
+        double pitch_step_deg = pitch_gain * wrapDegrees(
+          target_pitch_deg - predicted_pitch_deg);
+        if (!use_stationary_reference) {
+          const double maximum_step_deg =
+            config_.moving_gravity_anchor_maximum_correction_rate_degps *
+            dt_sec;
+          const double step_magnitude_deg = std::hypot(
+            roll_step_deg, pitch_step_deg);
+          if (step_magnitude_deg > maximum_step_deg) {
+            const double step_scale = maximum_step_deg / step_magnitude_deg;
+            roll_step_deg *= step_scale;
+            pitch_step_deg *= step_scale;
+          }
+          ++moving_gravity_anchor_update_count_;
+        }
         const cv::Vec3d corrected_up = upVectorFromRollPitchDegrees(
-          predicted_roll_deg + roll_gain * wrapDegrees(
-            target_roll_deg - predicted_roll_deg),
-          predicted_pitch_deg + pitch_gain * wrapDegrees(
-            target_pitch_deg - predicted_pitch_deg));
+          predicted_roll_deg + roll_step_deg,
+          predicted_pitch_deg + pitch_step_deg);
         current_up_camera_ = normalized(corrected_up);
       }
     }
 
-    // Keep the user's stable gyro/reference attitude as the persistent state.
-    // Moving acceleration contributes only a fast, bounded output offset; it
-    // is never fed back into current_up_camera_, so an imperfect vehicle
-    // acceleration estimate cannot accumulate an attitude error over time.
+    // Keep the persistent gyro/gravity-anchor attitude separate from the
+    // supplementary fast nudge below. The nudge is never fed back into
+    // current_up_camera_, so its estimation error cannot accumulate over time.
     cv::Vec2d target_moving_nudge_deg(0.0, 0.0);
     if (
       config_.moving_accelerometer_nudge_enabled &&
@@ -836,6 +852,12 @@ public:
   {
     std::lock_guard<std::mutex> lock(mutex_);
     return moving_accelerometer_nudge_deg_;
+  }
+
+  std::uint64_t movingGravityAnchorUpdateCount() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return moving_gravity_anchor_update_count_;
   }
 
   std::optional<cv::Vec3d> referenceUpCamera() const
@@ -1117,6 +1139,7 @@ private:
   cv::Vec3d gyroscope_bias_radps_{0.0, 0.0, 0.0};
   double gravity_magnitude_reference_mps2_{9.80665};
   std::uint64_t online_tilt_bias_update_count_{0U};
+  std::uint64_t moving_gravity_anchor_update_count_{0U};
   bool stationary_confirmed_{false};
   std::optional<cv::Vec3d> external_reference_up_camera_;
   cv::Vec3d stationary_acceleration_reference_up_camera_{
@@ -1184,6 +1207,11 @@ cv::Vec2d ImuImageStabilizer::movingAccelerometerNudgeDegrees() const
   return impl_->movingAccelerometerNudgeDegrees();
 }
 
+std::uint64_t ImuImageStabilizer::movingGravityAnchorUpdateCount() const
+{
+  return impl_->movingGravityAnchorUpdateCount();
+}
+
 std::optional<cv::Vec3d> ImuImageStabilizer::referenceUpCamera() const
 {
   return impl_->referenceUpCamera();
@@ -1202,6 +1230,70 @@ bool ImuImageStabilizer::externalReferenceReceived() const
 std::uint64_t ImuImageStabilizer::onlineTiltBiasUpdateCount() const
 {
   return impl_->onlineTiltBiasUpdateCount();
+}
+
+LastValidStabilizationHomography::LastValidStabilizationHomography(
+  const std::size_t maximum_hold_frames)
+: maximum_hold_frames_(maximum_hold_frames)
+{
+}
+
+void LastValidStabilizationHomography::setMaximumHoldFrames(
+  const std::size_t maximum_hold_frames)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  maximum_hold_frames_ = maximum_hold_frames;
+  homography_.reset();
+  last_reused_frame_token_.reset();
+  remaining_hold_frames_ = 0U;
+}
+
+void LastValidStabilizationHomography::remember(
+  const cv::Matx33d & homography)
+{
+  if (!validHomography(homography)) {
+    throw std::invalid_argument("cannot remember an invalid homography");
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  homography_ = homography;
+  last_reused_frame_token_.reset();
+  remaining_hold_frames_ = maximum_hold_frames_;
+}
+
+std::optional<cv::Matx33d>
+LastValidStabilizationHomography::reuseForFrame(
+  const std::uint64_t frame_token)
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!homography_.has_value()) {
+    return std::nullopt;
+  }
+  if (
+    last_reused_frame_token_.has_value() &&
+    *last_reused_frame_token_ == frame_token)
+  {
+    return homography_;
+  }
+  if (remaining_hold_frames_ == 0U) {
+    return std::nullopt;
+  }
+  --remaining_hold_frames_;
+  last_reused_frame_token_ = frame_token;
+  return homography_;
+}
+
+void LastValidStabilizationHomography::clear()
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  homography_.reset();
+  last_reused_frame_token_.reset();
+  remaining_hold_frames_ = 0U;
+}
+
+std::size_t LastValidStabilizationHomography::remainingHoldFrames() const
+{
+  std::lock_guard<std::mutex> lock(mutex_);
+  return remaining_hold_frames_;
 }
 
 cv::Matx33d makeImageStabilizationHomography(

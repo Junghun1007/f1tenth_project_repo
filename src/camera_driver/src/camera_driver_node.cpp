@@ -491,7 +491,7 @@ private:
       "imu_stabilization_roll_accelerometer_direction_gate_deg", 4.3);
     imu_stabilizer_config_.acceleration_correction_stationary_only =
       node_.declare_parameter<bool>(
-      "imu_stabilization_accelerometer_stationary_only", true);
+      "imu_stabilization_accelerometer_stationary_only", false);
     imu_stabilizer_config_.moving_accelerometer_nudge_enabled =
       node_.declare_parameter<bool>(
       "imu_stabilization_moving_accelerometer_nudge_enabled", true);
@@ -507,6 +507,10 @@ private:
     imu_stabilizer_config_.moving_accelerometer_roll_nudge_maximum_deg =
       node_.declare_parameter<double>(
       "imu_stabilization_moving_accelerometer_roll_nudge_maximum_deg", 0.15);
+    imu_stabilizer_config_.moving_gravity_anchor_maximum_correction_rate_degps =
+      node_.declare_parameter<double>(
+      "imu_stabilization_moving_gravity_anchor_maximum_correction_rate_degps",
+      0.50);
     startup_ground_reference_topic_ = node_.declare_parameter<std::string>(
       "imu_stabilization_external_reference_topic",
       "/camera/startup_ground_normal");
@@ -583,6 +587,8 @@ private:
     imu_stabilizer_config_.maximum_frame_imu_prediction_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_maximum_prediction_sec", 0.015);
+    invalid_correction_hold_frames_ = node_.declare_parameter<int>(
+      "imu_stabilization_invalid_correction_hold_frames", 2);
     fixed_view_zoom_ =
       node_.declare_parameter<double>("fixed_view_zoom", 1.25);
     fixed_view_border_margin_px_ = node_.declare_parameter<double>(
@@ -737,17 +743,6 @@ private:
             "internal IMU bridge; the dynamics monitor needs another fresh "
             "yaw-rate source for lateral acceleration.");
         }
-        if (
-          imu_stabilizer_config_.moving_accelerometer_nudge_enabled &&
-          !imu_stabilizer_config_.acceleration_correction_stationary_only)
-        {
-          RCLCPP_WARN(
-            node_.get_logger(),
-            "Bounded moving accelerometer nudge replaces cumulative moving "
-            "correction; overriding accelerometer_stationary_only=true.");
-          imu_stabilizer_config_.acceleration_correction_stationary_only =
-            true;
-        }
       } else if (imu_stabilization_enabled_) {
         if (imu_stabilizer_config_.moving_accelerometer_nudge_enabled) {
           RCLCPP_WARN(
@@ -776,6 +771,14 @@ private:
     {
       throw std::invalid_argument(
               "invalid fixed-view zoom or source border margin");
+    }
+    if (
+      invalid_correction_hold_frames_ < 0 ||
+      invalid_correction_hold_frames_ > 5)
+    {
+      throw std::invalid_argument(
+              "imu_stabilization_invalid_correction_hold_frames must be "
+              "between 0 and 5");
     }
     if (publish_enabled_ || fused_bev_output_enabled_) {
       require_positive(publish_fps_, "publish_fps");
@@ -811,6 +814,8 @@ private:
 
     camera_socket_ = parse_camera_socket(camera_socket_name_);
     resize_mode_ = parse_resize_mode(resize_mode_name_);
+    last_valid_stabilization_homography_.setMaximumHoldFrames(
+      static_cast<std::size_t>(invalid_correction_hold_frames_));
   }
 
   bool set_vehicle_axes_from_up_camera(const cv::Vec3d & up_camera)
@@ -1295,10 +1300,11 @@ private:
         "(timeout=%.3fs, gain_long/lat=%.2f/%.2f), "
         "BEV reference=%s on %s, runtime stationary=%s "
         "(filtered enter<=%d, raw exit>=%d, filter tau=%.2fs, hold=%.2fs), "
-        "moving accel=%s (tau=%.2fs, strength=%.2f, pitch/roll cap="
-        "%.2f/%.2fdeg), "
+        "moving accel=%s (anchor tau pitch/roll=%.2f/%.2fs, "
+        "anchor rate<=%.2fdeg/s, nudge tau=%.2fs, strength=%.2f, "
+        "pitch/roll cap=%.2f/%.2fdeg), "
         "pitch/roll limit %.1f deg, "
-        "invalid correction policy=zoom-only fallback",
+        "invalid correction policy=hold-last-%d-frames then zoom-only",
         imu_stabilizer_config_.startup_discard_duration_sec,
         imu_stabilizer_config_.reference_calibration_duration_sec,
         vehicle_motion_compensation_enabled_ ? "on" : "off",
@@ -1314,15 +1320,21 @@ private:
         stationary_erpm_exit_threshold_,
         stationary_erpm_filter_time_constant_sec_,
         stationary_erpm_enter_duration_sec_,
-        imu_stabilizer_config_.moving_accelerometer_nudge_enabled ?
-        "bounded-nudge" :
-        (imu_stabilizer_config_.acceleration_correction_stationary_only ?
-        "off" : "cumulative"),
+        !imu_stabilizer_config_.acceleration_correction_stationary_only ?
+        (imu_stabilizer_config_.moving_accelerometer_nudge_enabled ?
+        "persistent-anchor+bounded-nudge" : "persistent-anchor") :
+        (imu_stabilizer_config_.moving_accelerometer_nudge_enabled ?
+        "bounded-nudge-only" : "off"),
+        imu_stabilizer_config_.acceleration_correction_time_constant_sec,
+        imu_stabilizer_config_.roll_acceleration_correction_time_constant_sec,
+        imu_stabilizer_config_.
+          moving_gravity_anchor_maximum_correction_rate_degps,
         imu_stabilizer_config_.moving_accelerometer_nudge_time_constant_sec,
         imu_stabilizer_config_.moving_accelerometer_nudge_strength,
         imu_stabilizer_config_.moving_accelerometer_pitch_nudge_maximum_deg,
         imu_stabilizer_config_.moving_accelerometer_roll_nudge_maximum_deg,
-        imu_stabilizer_config_.maximum_correction_deg);
+        imu_stabilizer_config_.maximum_correction_deg,
+        invalid_correction_hold_frames_);
     }
   }
 
@@ -1472,7 +1484,8 @@ private:
 
   StabilizationTransform stabilizationTransform(
     dai::ImgFrame & packet,
-    const std::chrono::steady_clock::time_point & sensor_timestamp)
+    const std::chrono::steady_clock::time_point & sensor_timestamp,
+    const std::uint64_t frame_generation)
   {
     const bool fixed_view_zoom_enabled = fixed_view_zoom_ > 1.0;
     if (
@@ -1509,6 +1522,18 @@ private:
           true,
           false};
       };
+    const auto held_or_zoom_only = [&]() {
+        const auto held_homography =
+          last_valid_stabilization_homography_.reuseForFrame(
+          frame_generation);
+        if (!held_homography.has_value()) {
+          return zoom_only();
+        }
+        stabilization_held_last_total_.fetch_add(
+          1U, std::memory_order_relaxed);
+        return StabilizationTransform{
+          held_homography, true, true};
+      };
 
     // The fixed crop is independent of IMU stabilization. This keeps the
     // calibrated 1.25x camera view when pitch/roll correction is disabled.
@@ -1534,14 +1559,14 @@ private:
       RCLCPP_ERROR_THROTTLE(
         node_.get_logger(), *node_.get_clock(), 5000,
         "RGB/IMU timestamps are not in the same clock domain.");
-      return zoom_only();
+      return held_or_zoom_only();
     }
 
     const auto correction = imu_stabilizer_->correctionAt(
       frame_timestamp_sec);
     if (!correction) {
       stabilization_missed_total_.fetch_add(1U);
-      return zoom_only();
+      return held_or_zoom_only();
     }
     latest_stabilization_roll_error_deg_.store(
       correction->roll_error_deg, std::memory_order_relaxed);
@@ -1551,6 +1576,7 @@ private:
       correction->correction_angle_deg, std::memory_order_relaxed);
     if (!correction->within_correction_limit) {
       stabilization_angle_rejections_total_.fetch_add(1U);
+      last_valid_stabilization_homography_.clear();
       return zoom_only();
     }
 
@@ -1567,11 +1593,13 @@ private:
         fixed_view_border_margin_px_))
     {
       stabilization_crop_rejections_total_.fetch_add(1U);
+      last_valid_stabilization_homography_.clear();
       return zoom_only();
     }
     if (correction->predicted) {
       stabilization_predictions_total_.fetch_add(1U);
     }
+    last_valid_stabilization_homography_.remember(output_homography);
     return StabilizationTransform{output_homography, true, true};
   }
 
@@ -1977,7 +2005,8 @@ private:
             std::chrono::steady_clock::now();
           const auto transform = stabilizationTransform(
             *snapshot->packet,
-            snapshot->sensor_timestamp);
+            snapshot->sensor_timestamp,
+            snapshot->generation);
           published_generation = snapshot->generation;
 
           if (!transform.frame_usable) {
@@ -2241,7 +2270,8 @@ private:
           &latest_frame_, std::memory_order_acquire);
         if (snapshot && snapshot->generation != previewed_generation) {
           const auto transform = stabilizationTransform(
-            *snapshot->packet, snapshot->sensor_timestamp);
+            *snapshot->packet, snapshot->sensor_timestamp,
+            snapshot->generation);
           previewed_generation = snapshot->generation;
           if (!transform.frame_usable) {
             stabilization_output_drops_total_.fetch_add(1U);
@@ -2482,12 +2512,15 @@ private:
         RCLCPP_INFO(
           node_.get_logger(),
           "FPS: capture=%.1f/%.1f, preview=%.1f, IMU=%.1f, "
-          "stabilizer=%s (mapped_frames=%lu, misses=%lu, output_drops=%lu), "
+          "stabilizer=%s (mapped_frames=%lu, misses=%lu, held=%lu, "
+          "output_drops=%lu), "
           "dropped=%lu",
           capture_hz, sensor_fps_, preview_hz, imu_hz,
           stabilization_state.c_str(),
           static_cast<unsigned long>(stabilized_frames_total_.load()),
           static_cast<unsigned long>(stabilization_missed_total_.load()),
+          static_cast<unsigned long>(
+            stabilization_held_last_total_.load()),
           static_cast<unsigned long>(stabilization_output_drops_total_.load()),
           static_cast<unsigned long>(dropped_count));
       }
@@ -2520,6 +2553,7 @@ private:
           "imu_residual_accel(forward/left)=%.3f/%.3f, motion_fusion=%s "
           "(samples/misses=%lu/%lu, no_accel/CAN/axes=%lu/%lu/%lu, "
           "received/rejected=%lu/%lu), "
+          "gravity_anchor_updates=%lu, "
           "accel_nudge(roll/pitch)=%.3f/%.3fdeg, "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
           latest_stabilization_roll_error_deg_.load(
@@ -2558,6 +2592,8 @@ private:
             motion_missing_axes_total_.load()),
           static_cast<unsigned long>(can_acceleration_received_total_.load()),
           static_cast<unsigned long>(can_acceleration_rejected_total_.load()),
+          static_cast<unsigned long>(
+            imu_stabilizer_->movingGravityAnchorUpdateCount()),
           moving_accelerometer_nudge_deg[0],
           moving_accelerometer_nudge_deg[1],
           bias_degps[0], bias_degps[1], bias_degps[2],
@@ -2688,6 +2724,7 @@ private:
   double can_lateral_compensation_gain_{1.0};
   double maximum_longitudinal_acceleration_mps2_{15.0};
   double maximum_lateral_acceleration_mps2_{15.0};
+  int invalid_correction_hold_frames_{2};
   double fixed_view_zoom_{1.25};
   double fixed_view_border_margin_px_{1.5};
   int output_crop_top_px_{0};
@@ -2718,6 +2755,7 @@ private:
   std::shared_ptr<dai::MessageQueue> output_queue_;
   std::shared_ptr<dai::MessageQueue> imu_queue_;
   std::unique_ptr<ImuImageStabilizer> imu_stabilizer_;
+  LastValidStabilizationHomography last_valid_stabilization_homography_{2U};
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
   rclcpp::Publisher<camera_driver::msg::BevInput>::SharedPtr
     fused_bev_publisher_;
@@ -2798,6 +2836,7 @@ private:
   std::atomic<std::uint64_t> imu_errors_total_{0};
   std::atomic<std::uint64_t> stabilized_frames_total_{0};
   std::atomic<std::uint64_t> stabilization_missed_total_{0};
+  std::atomic<std::uint64_t> stabilization_held_last_total_{0};
   std::atomic<std::uint64_t> stabilization_angle_rejections_total_{0};
   std::atomic<std::uint64_t> stabilization_crop_rejections_total_{0};
   std::atomic<std::uint64_t> stabilization_predictions_total_{0};

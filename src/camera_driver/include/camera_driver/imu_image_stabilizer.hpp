@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -31,6 +32,7 @@ struct ImuImageStabilizerConfig
   double moving_accelerometer_nudge_strength{0.15};
   double moving_accelerometer_pitch_nudge_maximum_deg{0.20};
   double moving_accelerometer_roll_nudge_maximum_deg{0.15};
+  double moving_gravity_anchor_maximum_correction_rate_degps{0.50};
   bool external_reference_required{false};
   double reference_tilt_leak_time_constant_sec{4.0};
   double stationary_tilt_recovery_time_constant_sec{0.35};
@@ -109,6 +111,7 @@ public:
   ImageStabilizerCalibrationProgress calibrationProgress() const;
   cv::Vec3d gyroscopeBiasRadps() const;
   cv::Vec2d movingAccelerometerNudgeDegrees() const;
+  std::uint64_t movingGravityAnchorUpdateCount() const;
   std::optional<cv::Vec3d> referenceUpCamera() const;
   bool stationaryConfirmed() const;
   bool externalReferenceReceived() const;
@@ -117,6 +120,26 @@ public:
 private:
   class Impl;
   std::unique_ptr<Impl> impl_;
+};
+
+class LastValidStabilizationHomography
+{
+public:
+  explicit LastValidStabilizationHomography(
+    std::size_t maximum_hold_frames = 2U);
+
+  void setMaximumHoldFrames(std::size_t maximum_hold_frames);
+  void remember(const cv::Matx33d & homography);
+  std::optional<cv::Matx33d> reuseForFrame(std::uint64_t frame_token);
+  void clear();
+  std::size_t remainingHoldFrames() const;
+
+private:
+  mutable std::mutex mutex_;
+  std::size_t maximum_hold_frames_{2U};
+  std::size_t remaining_hold_frames_{0U};
+  std::optional<cv::Matx33d> homography_;
+  std::optional<std::uint64_t> last_reused_frame_token_;
 };
 
 cv::Matx33d makeImageStabilizationHomography(

@@ -32,6 +32,12 @@ def generate_launch_description():
     moving_accelerometer_nudge_strength = LaunchConfiguration(
         "imu_stabilization_moving_accelerometer_nudge_strength"
     )
+    moving_gravity_anchor_maximum_correction_rate_degps = LaunchConfiguration(
+        "imu_stabilization_moving_gravity_anchor_maximum_correction_rate_degps"
+    )
+    invalid_correction_hold_frames = LaunchConfiguration(
+        "imu_stabilization_invalid_correction_hold_frames"
+    )
     bev_input_bottom_fraction = LaunchConfiguration(
         "bev_input_bottom_fraction"
     )
@@ -56,6 +62,14 @@ def generate_launch_description():
     moving_accelerometer_nudge_strength_parameter = ParameterValue(
         moving_accelerometer_nudge_strength,
         value_type=float,
+    )
+    moving_gravity_anchor_rate_parameter = ParameterValue(
+        moving_gravity_anchor_maximum_correction_rate_degps,
+        value_type=float,
+    )
+    invalid_correction_hold_frames_parameter = ParameterValue(
+        invalid_correction_hold_frames,
+        value_type=int,
     )
 
     # Keep every lane tuning value overridable from `ros2 launch ... name:=x`.
@@ -199,6 +213,25 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
+                (
+                    "imu_stabilization_moving_gravity_anchor_maximum_"
+                    "correction_rate_degps"
+                ),
+                default_value="0.50",
+                description=(
+                    "Maximum persistent CAN-compensated gravity anchor "
+                    "correction rate in degrees per second."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_invalid_correction_hold_frames",
+                default_value="2",
+                description=(
+                    "Reuse the last valid stabilization homography for this "
+                    "many consecutive RGB/IMU matching misses."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "bev_input_bottom_fraction",
                 default_value="0.70",
                 description=(
@@ -291,6 +324,14 @@ def generate_launch_description():
                                 ): (
                                     moving_accelerometer_nudge_strength_parameter
                                 ),
+                                (
+                                    "imu_stabilization_moving_gravity_anchor_"
+                                    "maximum_correction_rate_degps"
+                                ): moving_gravity_anchor_rate_parameter,
+                                (
+                                    "imu_stabilization_invalid_correction_"
+                                    "hold_frames"
+                                ): invalid_correction_hold_frames_parameter,
                                 (
                                     "imu_stabilization_external_reference_required"
                                 ): True,

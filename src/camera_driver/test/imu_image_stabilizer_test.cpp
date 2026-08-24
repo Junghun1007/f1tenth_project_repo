@@ -213,6 +213,7 @@ void verifyMotionCompensatedGravityCorrectsMovingGyroDrift()
 {
   auto config = fastConfig();
   config.acceleration_correction_stationary_only = false;
+  config.moving_gravity_anchor_maximum_correction_rate_degps = 10.0;
   config.roll_acceleration_correction_time_constant_sec = 0.02;
   config.roll_acceleration_direction_gate_deg = 10.0;
   config.reference_tilt_leak_time_constant_sec = 1000.0;
@@ -386,6 +387,110 @@ void verifyMovingAccelerometerNudgeIsFastBoundedAndNonAccumulating()
     "moving accelerometer pitch nudge exceeded its configured cap");
 }
 
+void verifyPersistentGravityAnchorAndBoundedNudgeCanRunTogether()
+{
+  auto config = fastConfig();
+  config.acceleration_correction_stationary_only = false;
+  config.moving_accelerometer_nudge_enabled = true;
+  config.acceleration_correction_time_constant_sec = 0.02;
+  config.roll_acceleration_correction_time_constant_sec = 0.02;
+  config.acceleration_correction_gate_deg = 10.0;
+  config.roll_acceleration_direction_gate_deg = 10.0;
+  config.moving_gravity_anchor_maximum_correction_rate_degps = 10.0;
+  config.reference_tilt_leak_time_constant_sec = 1000.0;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  calibrate(stabilizer);
+
+  double timestamp_sec = 0.01;
+  for (int index = 0; index < 800; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      cv::Vec3d(0.0, -9.80665, 0.0),
+      cv::Vec3d(0.0, 0.0, 0.01),
+      timestamp_sec,
+      false);
+  }
+
+  const auto correction = stabilizer.correctionAt(timestamp_sec);
+  require(correction.has_value(), "combined anchor/nudge lookup failed");
+  require(
+    std::abs(correction->roll_error_deg) < 0.1,
+    "persistent gravity anchor did not bound gyro drift with nudge enabled");
+  require(
+    stabilizer.movingGravityAnchorUpdateCount() > 0U,
+    "persistent gravity anchor was not activated with bounded nudge");
+}
+
+void verifyPersistentGravityAnchorRateIsLimited()
+{
+  auto config = fastConfig();
+  config.acceleration_correction_stationary_only = false;
+  config.acceleration_correction_time_constant_sec = 0.001;
+  config.roll_acceleration_correction_time_constant_sec = 0.001;
+  config.acceleration_correction_gate_deg = 10.0;
+  config.roll_acceleration_direction_gate_deg = 10.0;
+  config.moving_gravity_anchor_maximum_correction_rate_degps = 0.5;
+  config.reference_tilt_leak_time_constant_sec = 1000.0;
+  camera_driver::ImuImageStabilizer stabilizer(config);
+  calibrate(stabilizer);
+
+  double timestamp_sec = 0.01;
+  for (int index = 0; index < 80; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      std::nullopt,
+      cv::Vec3d(0.0, 0.0, 10.0 * kDegreesToRadians),
+      timestamp_sec,
+      false);
+  }
+  const auto before = stabilizer.correctionAt(timestamp_sec);
+  require(before.has_value(), "pre-anchor drift lookup failed");
+
+  for (int index = 0; index < 400; ++index) {
+    timestamp_sec += 0.0025;
+    stabilizer.update(
+      cv::Vec3d(0.0, -9.80665, 0.0),
+      cv::Vec3d(0.0, 0.0, 0.0),
+      timestamp_sec,
+      false);
+  }
+  const auto after = stabilizer.correctionAt(timestamp_sec);
+  require(after.has_value(), "rate-limited anchor lookup failed");
+  const double correction_change_deg =
+    std::abs(before->roll_error_deg) - std::abs(after->roll_error_deg);
+  require(
+    correction_change_deg > 0.40 && correction_change_deg <= 0.51,
+    "persistent gravity anchor exceeded its configured correction rate");
+}
+
+void verifyLastValidHomographyIsHeldForExactlyTwoMisses()
+{
+  camera_driver::LastValidStabilizationHomography hold(2U);
+  require(
+    !hold.reuseForFrame(10U).has_value(),
+    "empty hold returned a homography");
+
+  const cv::Matx33d homography(
+    1.0, 0.0, 3.0,
+    0.0, 1.0, -2.0,
+    0.0, 0.0, 1.0);
+  hold.remember(homography);
+  require(hold.remainingHoldFrames() == 2U, "hold count was not armed");
+  const auto first = hold.reuseForFrame(10U);
+  const auto same_frame = hold.reuseForFrame(10U);
+  const auto second = hold.reuseForFrame(11U);
+  require(
+    first.has_value() && same_frame.has_value() && second.has_value() &&
+    cv::norm(cv::Mat(*first - homography)) < 1.0e-12 &&
+    cv::norm(cv::Mat(*same_frame - homography)) < 1.0e-12 &&
+    cv::norm(cv::Mat(*second - homography)) < 1.0e-12,
+    "last valid homography was not reused unchanged");
+  require(
+    !hold.reuseForFrame(12U).has_value() &&
+    hold.remainingHoldFrames() == 0U,
+    "last valid homography was reused beyond two misses");
+}
+
 void verifyExternalVehicleStationaryControlsRecovery()
 {
   auto config = fastConfig();
@@ -513,6 +618,9 @@ int main()
   verifyMotionCompensatedGravityCorrectsMovingGyroDrift();
   verifyMovingAccelerometerStaysAlignedWithExternalBevReference();
   verifyMovingAccelerometerNudgeIsFastBoundedAndNonAccumulating();
+  verifyPersistentGravityAnchorAndBoundedNudgeCanRunTogether();
+  verifyPersistentGravityAnchorRateIsLimited();
+  verifyLastValidHomographyIsHeldForExactlyTwoMisses();
   verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery();
 
   const auto config = fastConfig();

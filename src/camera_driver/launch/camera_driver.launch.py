@@ -27,6 +27,12 @@ def generate_launch_description():
     moving_accelerometer_nudge_strength = LaunchConfiguration(
         "imu_stabilization_moving_accelerometer_nudge_strength"
     )
+    moving_gravity_anchor_maximum_correction_rate_degps = LaunchConfiguration(
+        "imu_stabilization_moving_gravity_anchor_maximum_correction_rate_degps"
+    )
+    invalid_correction_hold_frames = LaunchConfiguration(
+        "imu_stabilization_invalid_correction_hold_frames"
+    )
     publish_enabled = LaunchConfiguration("publish_enabled")
 
     return LaunchDescription(
@@ -87,6 +93,25 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
+                (
+                    "imu_stabilization_moving_gravity_anchor_maximum_"
+                    "correction_rate_degps"
+                ),
+                default_value="0.50",
+                description=(
+                    "Maximum persistent CAN-compensated gravity anchor "
+                    "correction rate in degrees per second."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_invalid_correction_hold_frames",
+                default_value="2",
+                description=(
+                    "Reuse the last valid stabilization homography for this "
+                    "many consecutive RGB/IMU matching misses."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "publish_enabled",
                 default_value="false",
                 description="Publish sensor_msgs/Image frames.",
@@ -131,6 +156,20 @@ def generate_launch_description():
                                 ): ParameterValue(
                                     moving_accelerometer_nudge_strength,
                                     value_type=float,
+                                ),
+                                (
+                                    "imu_stabilization_moving_gravity_anchor_"
+                                    "maximum_correction_rate_degps"
+                                ): ParameterValue(
+                                    moving_gravity_anchor_maximum_correction_rate_degps,
+                                    value_type=float,
+                                ),
+                                (
+                                    "imu_stabilization_invalid_correction_"
+                                    "hold_frames"
+                                ): ParameterValue(
+                                    invalid_correction_hold_frames,
+                                    value_type=int,
                                 ),
                                 "publish_enabled": publish_enabled,
                                 # The CAN dynamics monitor needs camera yaw.

@@ -76,14 +76,16 @@ camera_driver:
     imu_stabilization_vehicle_motion_compensation_enabled: true
     imu_stabilization_maximum_longitudinal_acceleration_mps2: 15.0
     imu_stabilization_maximum_lateral_acceleration_mps2: 15.0
-    # 기본 자세에는 주행 중 가속도계를 누적하지 않는다. 대신 아래의
-    # 빠르고 작은 bounded nudge만 출력 자세에 비누적으로 더한다.
-    imu_stabilization_accelerometer_stationary_only: true
+    # CAN으로 차량 가속도를 제거한 잔여 중력 방향을 저주파 persistent
+    # anchor로 사용해 주행 중 gyro drift를 줄인다. 빠른 반응은 아래의
+    # bounded nudge가 담당하며 anchor는 변화율로 제한된다.
+    imu_stabilization_accelerometer_stationary_only: false
     imu_stabilization_moving_accelerometer_nudge_enabled: true
     imu_stabilization_moving_accelerometer_nudge_time_constant_sec: 0.15
     imu_stabilization_moving_accelerometer_nudge_strength: 0.15
     imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg: 0.20
     imu_stabilization_moving_accelerometer_roll_nudge_maximum_deg: 0.15
+    imu_stabilization_moving_gravity_anchor_maximum_correction_rate_degps: 0.50
     # 평지/서스펜션 복귀 가정에 따라 gyro tilt를 시작 기준으로 천천히 누설한다.
     # 작을수록 drift는 줄지만 오래 지속되는 실제 자세 변화를 덜 보정할 수 있다.
     imu_stabilization_reference_tilt_leak_time_constant_sec: 4.0
@@ -105,6 +107,9 @@ camera_driver:
     imu_stabilization_maximum_frame_imu_wait_sec: 0.005
     imu_stabilization_maximum_frame_imu_age_sec: 0.012
     imu_stabilization_maximum_prediction_sec: 0.015
+    # 짧은 RGB/IMU 매칭 실패는 zoom-only로 튀지 않고 직전 정상
+    # homography를 두 프레임까지 유지한다.
+    imu_stabilization_invalid_correction_hold_frames: 2
 
     # 광학 중심 기준 고정 FOV. 이 crop으로 원본 경계를 채울 수 없는 자세의
     # 프레임은 검은 영역을 섞지 않고 폐기한다.

@@ -44,13 +44,17 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
 ros2 launch bev_processor bev_processor.launch.py \
   imu_stabilization_can_longitudinal_compensation_gain:=0.7 \
   imu_stabilization_can_lateral_compensation_gain:=0.7 \
-  imu_stabilization_moving_accelerometer_nudge_strength:=0.15
+  imu_stabilization_moving_accelerometer_nudge_strength:=0.15 \
+  imu_stabilization_moving_gravity_anchor_maximum_correction_rate_degps:=0.50 \
+  imu_stabilization_invalid_correction_hold_frames:=2
 ```
 
-BEV 안정화 자체는 수정 전과 동일한 시작 자세 기준 전체 대역 방식이다.
-CAN 종·횡가속도만 IMU 가속도에서 제거해 기존 가속도계 보정 경로에 넣는다.
-두 CAN gain은 `0.0~1.0`, 잔여 가속도계 영상 반영 강도도 `0.0~1.0`으로
-실행할 때 조절할 수 있다.
+BEV의 빠른 진동 보정은 기존과 동일한 gyro 전체 대역 방식을 유지한다. CAN
+종·횡가속도를 IMU 가속도에서 제거한 잔여 중력은 주행 자세 drift를 줄이는
+저주파 persistent anchor와 비누적 bounded nudge에 사용한다. 두 CAN gain과
+nudge 강도는 `0.0~1.0`, anchor 최대 변화율은 `deg/s` 단위로 실행할 때
+조절할 수 있다. RGB/IMU 매칭이 한두 프레임 실패하면 직전 정상 보정 행렬을
+유지하고, 지정 횟수를 넘긴 연속 실패에만 zoom-only로 돌아간다.
 
 CUDA 컴파일러를 자동으로 찾지 못하면 빌드 인자에
 `-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`를 추가한다.
