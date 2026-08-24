@@ -210,11 +210,17 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
 
 # 터미널 2: 수정 전 full-band 안정화 + CAN 가속도 제거
 ros2 launch camera_driver camera_driver.launch.py \
-  preview_enabled:=true imu_stabilization_enabled:=true
+  preview_enabled:=true \
+  imu_stabilization_enabled:=true \
+  imu_stabilization_can_longitudinal_compensation_gain:=0.7 \
+  imu_stabilization_can_lateral_compensation_gain:=0.7 \
+  imu_stabilization_moving_accelerometer_nudge_strength:=0.15
 ```
 
 안정화 유무를 A/B 비교할 때는 `imu_stabilization_enabled:=true/false`만
-바꾼다.
+바꾼다. CAN gain은 `0.0`이면 해당 차량가속도를 제거하지 않고 `1.0`이면
+전량 제거한다. `nudge_strength`는 제거 후 남은 가속도계 자세 오차가 영상에
+반영되는 비율이다.
 
 안정화기는 전원 직후 IMU 샘플을 1초간 폐기한 뒤 4초 정지 구간의 중력
 방향과 자이로 bias를 시작 기준으로 측정한다. 이 5초 동안 차량과 카메라를
@@ -316,6 +322,8 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_enabled` | `true` | 영상 roll/pitch 진동 보정 on/off |
 | `imu_stabilization_can_acceleration_topic` | `/vehicle/dynamics/acceleration` | `base_link` X=종, Y=횡가속도 입력 |
 | `imu_stabilization_can_acceleration_timeout_sec` | `0.10` | 이보다 오래된 CAN dynamics는 사용하지 않음 |
+| `imu_stabilization_can_longitudinal_compensation_gain` | `1.0` | CAN 종가속도 제거 비율 `0.0~1.0` |
+| `imu_stabilization_can_lateral_compensation_gain` | `1.0` | CAN 횡가속도 제거 비율 `0.0~1.0` |
 | `imu_stabilization_startup_discard_duration_sec` | `1.0` | 전원 직후 IMU 과도값 폐기 시간 |
 | `imu_stabilization_reference_calibration_duration_sec` | `4.0` | 정지 기준 자세 측정 시간 |
 | `imu_stabilization_external_reference_topic` | `/camera/startup_ground_normal` | BEV 시작 지면 법선 토픽 |
@@ -334,7 +342,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_accelerometer_stationary_only` | `true` | 주행 중 가속도계를 기본 자세에 누적하지 않음 |
 | `imu_stabilization_moving_accelerometer_nudge_enabled` | `true` | 보정된 가속도계를 비누적 bounded nudge로만 적용 |
 | `imu_stabilization_moving_accelerometer_nudge_time_constant_sec` | `0.15` | 주행 중 nudge 반응/제거 시정수 |
-| `imu_stabilization_moving_accelerometer_nudge_strength` | `0.15` | 신뢰도를 통과한 가속도계 오차의 반영 비율 |
+| `imu_stabilization_moving_accelerometer_nudge_strength` | `0.15` | 잔여 가속도계 자세 오차의 영상 반영 비율 `0.0~1.0` |
 | `imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg` | `0.20` | 주행 중 가속도계가 만들 수 있는 pitch 최대 영향 |
 | `imu_stabilization_moving_accelerometer_roll_nudge_maximum_deg` | `0.15` | 주행 중 가속도계가 만들 수 있는 roll 최대 영향 |
 | `imu_stabilization_reference_tilt_leak_time_constant_sec` | `4.0` | 주행 중 시작 tilt 기준으로 복귀하는 시정수 |

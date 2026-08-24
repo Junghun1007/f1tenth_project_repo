@@ -44,6 +44,9 @@ camera_driver:
     imu_stabilization_can_acceleration_topic: "/vehicle/dynamics/acceleration"
     imu_stabilization_can_acceleration_frame_id: "base_link"
     imu_stabilization_can_acceleration_timeout_sec: 0.10
+    # CAN 차량 가속도 제거 비율. 0.0=제거 안 함, 1.0=전량 제거.
+    imu_stabilization_can_longitudinal_compensation_gain: 1.0
+    imu_stabilization_can_lateral_compensation_gain: 1.0
     imu_stabilization_startup_discard_duration_sec: 1.0
     imu_stabilization_reference_calibration_duration_sec: 4.0
     imu_stabilization_calibration_maximum_angular_speed_degps: 0.5

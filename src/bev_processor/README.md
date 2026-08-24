@@ -41,11 +41,16 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
   input_mode:=socketcan can_interface:=can0 can_controller_id:=112
 
 # 다른 터미널
-ros2 launch bev_processor bev_processor.launch.py
+ros2 launch bev_processor bev_processor.launch.py \
+  imu_stabilization_can_longitudinal_compensation_gain:=0.7 \
+  imu_stabilization_can_lateral_compensation_gain:=0.7 \
+  imu_stabilization_moving_accelerometer_nudge_strength:=0.15
 ```
 
 BEV 안정화 자체는 수정 전과 동일한 시작 자세 기준 전체 대역 방식이다.
 CAN 종·횡가속도만 IMU 가속도에서 제거해 기존 가속도계 보정 경로에 넣는다.
+두 CAN gain은 `0.0~1.0`, 잔여 가속도계 영상 반영 강도도 `0.0~1.0`으로
+실행할 때 조절할 수 있다.
 
 CUDA 컴파일러를 자동으로 찾지 못하면 빌드 인자에
 `-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`를 추가한다.

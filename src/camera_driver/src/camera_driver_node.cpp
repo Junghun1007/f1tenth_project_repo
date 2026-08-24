@@ -452,6 +452,10 @@ private:
       "imu_stabilization_can_acceleration_frame_id", "base_link");
     can_acceleration_timeout_sec_ = node_.declare_parameter<double>(
       "imu_stabilization_can_acceleration_timeout_sec", 0.10);
+    can_longitudinal_compensation_gain_ = node_.declare_parameter<double>(
+      "imu_stabilization_can_longitudinal_compensation_gain", 1.0);
+    can_lateral_compensation_gain_ = node_.declare_parameter<double>(
+      "imu_stabilization_can_lateral_compensation_gain", 1.0);
     imu_stabilizer_config_.startup_discard_duration_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_startup_discard_duration_sec", 1.0);
@@ -712,6 +716,12 @@ private:
           can_acceleration_frame_id_.empty() ||
           !std::isfinite(can_acceleration_timeout_sec_) ||
           can_acceleration_timeout_sec_ <= 0.0 ||
+          !std::isfinite(can_longitudinal_compensation_gain_) ||
+          can_longitudinal_compensation_gain_ < 0.0 ||
+          can_longitudinal_compensation_gain_ > 1.0 ||
+          !std::isfinite(can_lateral_compensation_gain_) ||
+          can_lateral_compensation_gain_ < 0.0 ||
+          can_lateral_compensation_gain_ > 1.0 ||
           !std::isfinite(maximum_longitudinal_acceleration_mps2_) ||
           maximum_longitudinal_acceleration_mps2_ <= 0.0 ||
           !std::isfinite(maximum_lateral_acceleration_mps2_) ||
@@ -1282,7 +1292,7 @@ private:
         "Virtual-gimbal stabilization: keep camera still for %.1f s "
         "startup discard + %.1f s stationary calibration; yaw-free tilt, "
         "full-band correction, CAN vehicle acceleration=%s on %s "
-        "(timeout=%.3fs), "
+        "(timeout=%.3fs, gain_long/lat=%.2f/%.2f), "
         "BEV reference=%s on %s, runtime stationary=%s "
         "(filtered enter<=%d, raw exit>=%d, filter tau=%.2fs, hold=%.2fs), "
         "moving accel=%s (tau=%.2fs, strength=%.2f, pitch/roll cap="
@@ -1294,6 +1304,8 @@ private:
         vehicle_motion_compensation_enabled_ ? "on" : "off",
         can_acceleration_topic_.c_str(),
         can_acceleration_timeout_sec_,
+        can_longitudinal_compensation_gain_,
+        can_lateral_compensation_gain_,
         imu_stabilizer_config_.external_reference_required ?
         "required" : "optional",
         startup_ground_reference_topic_.c_str(),
@@ -1833,8 +1845,11 @@ private:
               if (synchronized_acceleration && vehicle_acceleration && axes) {
                 const cv::Vec3d vehicle_acceleration_camera =
                   axes->forward *
-                  vehicle_acceleration->longitudinal_mps2 +
-                  axes->left * vehicle_acceleration->lateral_mps2;
+                  (can_longitudinal_compensation_gain_ *
+                  vehicle_acceleration->longitudinal_mps2) +
+                  axes->left *
+                  (can_lateral_compensation_gain_ *
+                  vehicle_acceleration->lateral_mps2);
                 const cv::Vec3d residual_acceleration_camera =
                   *synchronized_acceleration - vehicle_acceleration_camera;
                 synchronized_acceleration = residual_acceleration_camera;
@@ -2500,7 +2515,8 @@ private:
           "Virtual gimbal: tilt_error(roll/pitch)=%.3f/%.3fdeg, "
           "correction=%.3fdeg, stationary=%s, "
           "measured_erpm=%d (filtered_abs=%.1f)/%s, "
-          "CAN_vehicle_accel=%s/%s (ax/ay/peak_ay)=%.3f/%.3f/%.3f, "
+          "CAN_vehicle_accel=%s/%s (gain_long/lat=%.2f/%.2f, "
+          "ax/ay/peak_ay=%.3f/%.3f/%.3f), "
           "imu_residual_accel(forward/left)=%.3f/%.3f, motion_fusion=%s "
           "(samples/misses=%lu/%lu, no_accel/CAN/axes=%lu/%lu/%lu, "
           "received/rejected=%lu/%lu), "
@@ -2518,6 +2534,8 @@ private:
           erpm_fresh ? "fresh" : "stale",
           vehicle_motion_compensation_enabled_ ? "on" : "off",
           can_acceleration_fresh ? "fresh" : "stale",
+          can_longitudinal_compensation_gain_,
+          can_lateral_compensation_gain_,
           latest_longitudinal_acceleration_mps2_.load(
             std::memory_order_relaxed),
           latest_lateral_acceleration_mps2_.load(
@@ -2666,6 +2684,8 @@ private:
   std::string can_acceleration_topic_{"/vehicle/dynamics/acceleration"};
   std::string can_acceleration_frame_id_{"base_link"};
   double can_acceleration_timeout_sec_{0.10};
+  double can_longitudinal_compensation_gain_{1.0};
+  double can_lateral_compensation_gain_{1.0};
   double maximum_longitudinal_acceleration_mps2_{15.0};
   double maximum_lateral_acceleration_mps2_{15.0};
   double fixed_view_zoom_{1.25};

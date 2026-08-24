@@ -23,6 +23,15 @@ def generate_launch_description():
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
+    can_longitudinal_compensation_gain = LaunchConfiguration(
+        "imu_stabilization_can_longitudinal_compensation_gain"
+    )
+    can_lateral_compensation_gain = LaunchConfiguration(
+        "imu_stabilization_can_lateral_compensation_gain"
+    )
+    moving_accelerometer_nudge_strength = LaunchConfiguration(
+        "imu_stabilization_moving_accelerometer_nudge_strength"
+    )
     bev_input_bottom_fraction = LaunchConfiguration(
         "bev_input_bottom_fraction"
     )
@@ -35,6 +44,18 @@ def generate_launch_description():
     imu_stabilization_parameter = ParameterValue(
         imu_stabilization_enabled,
         value_type=bool,
+    )
+    can_longitudinal_compensation_parameter = ParameterValue(
+        can_longitudinal_compensation_gain,
+        value_type=float,
+    )
+    can_lateral_compensation_parameter = ParameterValue(
+        can_lateral_compensation_gain,
+        value_type=float,
+    )
+    moving_accelerometer_nudge_strength_parameter = ParameterValue(
+        moving_accelerometer_nudge_strength,
+        value_type=float,
     )
 
     # Keep every lane tuning value overridable from `ros2 launch ... name:=x`.
@@ -154,6 +175,30 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
+                "imu_stabilization_can_longitudinal_compensation_gain",
+                default_value="1.0",
+                description=(
+                    "Fraction of CAN longitudinal acceleration removed "
+                    "from the camera accelerometer, from 0.0 to 1.0."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_can_lateral_compensation_gain",
+                default_value="1.0",
+                description=(
+                    "Fraction of CAN lateral acceleration removed from "
+                    "the camera accelerometer, from 0.0 to 1.0."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_moving_accelerometer_nudge_strength",
+                default_value="0.15",
+                description=(
+                    "Strength of the bounded residual-accelerometer image "
+                    "correction, from 0.0 to 1.0."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "bev_input_bottom_fraction",
                 default_value="0.70",
                 description=(
@@ -231,6 +276,20 @@ def generate_launch_description():
                                 "imu_bridge_enabled": True,
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_parameter
+                                ),
+                                (
+                                    "imu_stabilization_can_longitudinal_"
+                                    "compensation_gain"
+                                ): can_longitudinal_compensation_parameter,
+                                (
+                                    "imu_stabilization_can_lateral_"
+                                    "compensation_gain"
+                                ): can_lateral_compensation_parameter,
+                                (
+                                    "imu_stabilization_moving_"
+                                    "accelerometer_nudge_strength"
+                                ): (
+                                    moving_accelerometer_nudge_strength_parameter
                                 ),
                                 (
                                     "imu_stabilization_external_reference_required"
