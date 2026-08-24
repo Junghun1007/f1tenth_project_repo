@@ -500,61 +500,6 @@ void verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery()
     "stationary recovery did not return to the shared BEV reference");
 }
 
-void verifyCanCompensatedLowFrequencyCorrectionIsBoundedAndReleases()
-{
-  auto config = fastConfig();
-  config.high_frequency_vibration_only_enabled = true;
-  config.high_frequency_vibration_cutoff_hz = 3.0;
-  config.low_frequency_accelerometer_correction_enabled = true;
-  config.low_frequency_accelerometer_cutoff_hz = 5.0;
-  config.low_frequency_accelerometer_correction_gain = 0.5;
-  config.low_frequency_accelerometer_maximum_correction_deg = 2.0;
-  config.reference_tilt_leak_time_constant_sec = 1000.0;
-  camera_driver::ImuImageStabilizer stabilizer(config);
-  calibrate(stabilizer);
-
-  constexpr double measured_roll_rad = 2.0 * kDegreesToRadians;
-  const cv::Vec3d can_compensated_gravity(
-    -9.80665 * std::sin(measured_roll_rad),
-    -9.80665 * std::cos(measured_roll_rad),
-    0.0);
-  double timestamp_sec = 0.01;
-  for (int index = 0; index < 400; ++index) {
-    timestamp_sec += 0.0025;
-    stabilizer.update(
-      std::nullopt,
-      cv::Vec3d(0.0, 0.0, 0.0),
-      timestamp_sec,
-      false,
-      can_compensated_gravity);
-  }
-  const auto active = stabilizer.correctionAt(timestamp_sec);
-  require(active.has_value(), "CAN low-frequency correction lookup failed");
-  require(
-    active->low_frequency_correction_active,
-    "fresh CAN-compensated gravity was not marked active");
-  require(
-    active->low_frequency_correction_angle_deg > 0.95 &&
-    active->low_frequency_correction_angle_deg < 1.01,
-    "CAN low-frequency gain or angle bound is incorrect");
-
-  for (int index = 0; index < 400; ++index) {
-    timestamp_sec += 0.0025;
-    stabilizer.update(
-      std::nullopt,
-      cv::Vec3d(0.0, 0.0, 0.0),
-      timestamp_sec,
-      false,
-      std::nullopt);
-  }
-  const auto released = stabilizer.correctionAt(timestamp_sec);
-  require(released.has_value(), "released low-frequency lookup failed");
-  require(
-    !released->low_frequency_correction_active &&
-    released->low_frequency_correction_angle_deg < 0.01,
-    "stale CAN low-frequency correction did not release safely");
-}
-
 }  // namespace
 
 int main()
@@ -569,7 +514,6 @@ int main()
   verifyMovingAccelerometerStaysAlignedWithExternalBevReference();
   verifyMovingAccelerometerNudgeIsFastBoundedAndNonAccumulating();
   verifyExternalBevReferenceIsSharedWithErpmStationaryRecovery();
-  verifyCanCompensatedLowFrequencyCorrectionIsBoundedAndReleases();
 
   const auto config = fastConfig();
   camera_driver::ImuImageStabilizer stabilizer(config);

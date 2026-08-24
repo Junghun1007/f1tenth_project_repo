@@ -39,19 +39,11 @@ camera_driver:
     # stabilized_preview와 동일한 고정 기준 pitch/roll 안정화. 시작 후 총 5초
     # 동안 카메라를 정지시켜 IMU 과도값 폐기와 기준 자세 측정을 완료한다.
     imu_stabilization_enabled: true
-    # 기존 BEV/auto_drive는 전체 대역 방식을 유지한다. camera_driver
-    # 단독 launch만 이 값을 true로 override해 고주파 모드를 테스트한다.
-    imu_stabilization_high_frequency_vibration_only_enabled: false
-    imu_stabilization_high_frequency_vibration_cutoff_hz: 3.0
-    # CAN dynamics로 정제한 가속도계만 1 Hz 이하 저주파 보정에 사용한다.
-    # camera_driver/BEV 직접 launch에서만 옵션으로 켜며 auto_drive 기본은 false다.
-    imu_stabilization_can_low_frequency_compensation_enabled: false
+    # 수정 전과 동일한 full-band 자세 안정화를 유지한다. CAN dynamics의
+    # 종/횡가속도만 IMU 가속도에서 빼서 기존 가속도계 보정기에 전달한다.
     imu_stabilization_can_acceleration_topic: "/vehicle/dynamics/acceleration"
     imu_stabilization_can_acceleration_frame_id: "base_link"
     imu_stabilization_can_acceleration_timeout_sec: 0.10
-    imu_stabilization_low_frequency_cutoff_hz: 1.0
-    imu_stabilization_low_frequency_correction_gain: 0.5
-    imu_stabilization_low_frequency_maximum_correction_deg: 1.0
     imu_stabilization_startup_discard_duration_sec: 1.0
     imu_stabilization_reference_calibration_duration_sec: 4.0
     imu_stabilization_calibration_maximum_angular_speed_degps: 0.5
@@ -77,32 +69,10 @@ camera_driver:
     imu_stabilization_stationary_erpm_enter_duration_sec: 1.0
     # 텔레메트리가 끊기면 정지로 고정하지 않고 주행 상태로 안전하게 복귀한다.
     imu_stabilization_measured_erpm_timeout_sec: 1.0
-    # true이면 차량 가속도를 IMU에서 제거해 주행 중 bounded nudge에 사용한다.
-    # camera_driver 고주파 전용 launch에서는 노드가 자동으로 비활성화한다.
+    # true이면 CAN 차량 가속도를 IMU에서 제거해 기존 bounded nudge에 사용한다.
     imu_stabilization_vehicle_motion_compensation_enabled: true
-    # Traxxas Slash 4X4 Ultimate 순정 구동계 기반 초기값.
-    # 4-pole 모터는 pole pair=2이고, 타이어 직경은 109.5mm로 시작한다.
-    imu_stabilization_wheel_diameter_m: 0.1095
-    imu_stabilization_motor_pole_pairs: 2
-    # 실제 13T motor pinion / 54T spur. 50/591은 앱에 총 감속비를
-    # 11.82로 입력하기 위한 등가값이므로 여기에 직접 넣지 않는다.
-    imu_stabilization_motor_pinion_teeth: 13
-    imu_stabilization_spur_gear_teeth: 54
-    # 전/후 differential 13T pinion / 37T ring.
-    imu_stabilization_differential_pinion_teeth: 13
-    imu_stabilization_differential_ring_teeth: 37
-    # 전진 measured ERPM이 양수이므로 +1. 실차 거리 측정 오차는 scale로 보정한다.
-    imu_stabilization_erpm_direction_sign: 1.0
-    imu_stabilization_speed_scale_correction: 1.0
-    imu_stabilization_speed_deadband_mps: 0.03
-    imu_stabilization_speed_filter_time_constant_sec: 0.05
-    imu_stabilization_acceleration_filter_time_constant_sec: 0.12
-    # 실제 주행은 4~5m/s 예정이므로 이상치 상한을 6m/s로 둔다.
-    imu_stabilization_maximum_speed_mps: 6.0
     imu_stabilization_maximum_longitudinal_acceleration_mps2: 15.0
     imu_stabilization_maximum_lateral_acceleration_mps2: 15.0
-    imu_stabilization_motion_maximum_sample_interval_sec: 0.10
-    imu_stabilization_motion_maximum_sample_age_sec: 0.10
     # 기본 자세에는 주행 중 가속도계를 누적하지 않는다. 대신 아래의
     # 빠르고 작은 bounded nudge만 출력 자세에 비누적으로 더한다.
     imu_stabilization_accelerometer_stationary_only: true

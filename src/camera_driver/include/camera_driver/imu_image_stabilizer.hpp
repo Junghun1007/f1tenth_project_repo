@@ -18,12 +18,6 @@ struct ImuImageStabilizerConfig
   double reference_calibration_duration_sec{4.0};
   double calibration_maximum_angular_speed_degps{0.5};
   bool gyroscope_bias_enabled{true};
-  bool high_frequency_vibration_only_enabled{false};
-  double high_frequency_vibration_cutoff_hz{3.0};
-  bool low_frequency_accelerometer_correction_enabled{false};
-  double low_frequency_accelerometer_cutoff_hz{1.0};
-  double low_frequency_accelerometer_correction_gain{0.5};
-  double low_frequency_accelerometer_maximum_correction_deg{1.0};
   double gravity_mps2{9.80665};
   double accelerometer_full_trust_deviation_mps2{0.15};
   double accelerometer_zero_trust_deviation_mps2{1.50};
@@ -71,8 +65,6 @@ struct ImageStabilizationCorrection
   bool within_correction_limit{true};
   bool predicted{false};
   double prediction_horizon_sec{0.0};
-  double low_frequency_correction_angle_deg{0.0};
-  bool low_frequency_correction_active{false};
 };
 
 struct ImageStabilizerCalibrationProgress
@@ -103,9 +95,7 @@ public:
     const std::optional<cv::Vec3d> & acceleration_camera_mps2,
     const cv::Vec3d & angular_velocity_camera_radps,
     double timestamp_sec,
-    std::optional<bool> vehicle_stationary = std::nullopt,
-    const std::optional<cv::Vec3d> &
-    low_frequency_acceleration_camera_mps2 = std::nullopt);
+    std::optional<bool> vehicle_stationary = std::nullopt);
 
   // Supplies the immutable ground-plane normal used by the static BEV LUT.
   // It must be expressed in camera optical coordinates and is accepted only

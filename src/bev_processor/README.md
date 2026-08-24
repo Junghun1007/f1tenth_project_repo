@@ -33,29 +33,19 @@ source install/setup.bash
 ros2 launch bev_processor bev_processor.launch.py
 ```
 
-고주파 roll/pitch 진동만 BEV 영상에서 보정하려면 직접 BEV launch에
-옵션을 주어 실행한다.
+CAN 차량 가속도 보정을 사용하려면 먼저 다른 터미널에서
+`vehicle_dynamics_monitor`를 SocketCAN 모드로 실행한다.
 
 ```bash
-ros2 launch bev_processor bev_processor.launch.py \
-  imu_stabilization_high_frequency_vibration_only_enabled:=true \
-  imu_stabilization_high_frequency_vibration_cutoff_hz:=3.0
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
+  input_mode:=socketcan can_interface:=can0 can_controller_id:=112
+
+# 다른 터미널
+ros2 launch bev_processor bev_processor.launch.py
 ```
 
-CAN 저주파 보정도 함께 켜려면 먼저 다른 터미널에서
-`vehicle_dynamics_monitor`를 `socketcan` 모드로 실행한 후 다음처럼
-BEV를 직접 실행한다.
-
-```bash
-ros2 launch bev_processor bev_processor.launch.py \
-  imu_stabilization_high_frequency_vibration_only_enabled:=true \
-  imu_stabilization_can_low_frequency_compensation_enabled:=true \
-  imu_stabilization_low_frequency_cutoff_hz:=1.0 \
-  imu_stabilization_low_frequency_correction_gain:=0.5
-```
-
-이 옵션의 기본값은 `false`다. 따라서 인자를 넘기지 않는
-`auto_drive.launch.py`와 기본 BEV 실행은 기존 전체 대역 보정을 유지한다.
+BEV 안정화 자체는 수정 전과 동일한 시작 자세 기준 전체 대역 방식이다.
+CAN 종·횡가속도만 IMU 가속도에서 제거해 기존 가속도계 보정 경로에 넣는다.
 
 CUDA 컴파일러를 자동으로 찾지 못하면 빌드 인자에
 `-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`를 추가한다.

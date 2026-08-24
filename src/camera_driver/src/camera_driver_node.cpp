@@ -1,7 +1,6 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/msg/bev_input.hpp"
-#include "camera_driver/vehicle_motion_estimator.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -245,16 +244,11 @@ public:
       imu_stabilizer_ =
         std::make_unique<ImuImageStabilizer>(imu_stabilizer_config_);
       if (vehicle_motion_compensation_enabled_) {
-        vehicle_motion_estimator_ =
-          std::make_unique<VehicleMotionEstimator>(vehicle_motion_config_);
         RCLCPP_INFO(
           node_.get_logger(),
-          "Vehicle motion compensation: gear_ratio=%.6f, "
-          "speed_scale=%.9fm/s per ERPM, 5m/s=%.0f ERPM.",
-          vehicle_motion_estimator_->totalGearRatio(),
-          vehicle_motion_estimator_->metersPerSecondPerErpm(),
-          5.0 / std::abs(
-            vehicle_motion_estimator_->metersPerSecondPerErpm()));
+          "Vehicle acceleration compensation uses time-aligned CAN "
+          "dynamics on %s.",
+          can_acceleration_topic_.c_str());
       }
       auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
       reference_qos.reliable().transient_local();
@@ -277,7 +271,7 @@ public:
         [this](std_msgs::msg::Int32::ConstSharedPtr message) {
           on_measured_erpm(*message);
         });
-      if (can_low_frequency_compensation_enabled_) {
+      if (vehicle_motion_compensation_enabled_) {
         can_acceleration_subscription_ =
           node_.create_subscription<geometry_msgs::msg::Vector3Stamped>(
             can_acceleration_topic_,
@@ -451,26 +445,6 @@ private:
       "maximum_timestamp_domain_delta_sec", 1.0);
     imu_stabilization_enabled_ =
       node_.declare_parameter<bool>("imu_stabilization_enabled", true);
-    imu_stabilizer_config_.high_frequency_vibration_only_enabled =
-      node_.declare_parameter<bool>(
-      "imu_stabilization_high_frequency_vibration_only_enabled", false);
-    imu_stabilizer_config_.high_frequency_vibration_cutoff_hz =
-      node_.declare_parameter<double>(
-      "imu_stabilization_high_frequency_vibration_cutoff_hz", 3.0);
-    can_low_frequency_compensation_enabled_ =
-      node_.declare_parameter<bool>(
-      "imu_stabilization_can_low_frequency_compensation_enabled", false);
-    imu_stabilizer_config_.low_frequency_accelerometer_correction_enabled =
-      can_low_frequency_compensation_enabled_;
-    imu_stabilizer_config_.low_frequency_accelerometer_cutoff_hz =
-      node_.declare_parameter<double>(
-      "imu_stabilization_low_frequency_cutoff_hz", 1.0);
-    imu_stabilizer_config_.low_frequency_accelerometer_correction_gain =
-      node_.declare_parameter<double>(
-      "imu_stabilization_low_frequency_correction_gain", 0.5);
-    imu_stabilizer_config_.low_frequency_accelerometer_maximum_correction_deg =
-      node_.declare_parameter<double>(
-      "imu_stabilization_low_frequency_maximum_correction_deg", 1.0);
     can_acceleration_topic_ = node_.declare_parameter<std::string>(
       "imu_stabilization_can_acceleration_topic",
       "/vehicle/dynamics/acceleration");
@@ -549,49 +523,11 @@ private:
       "imu_stabilization_measured_erpm_timeout_sec", 1.0);
     vehicle_motion_compensation_enabled_ = node_.declare_parameter<bool>(
       "imu_stabilization_vehicle_motion_compensation_enabled", true);
-    vehicle_motion_config_.wheel_diameter_m = node_.declare_parameter<double>(
-      "imu_stabilization_wheel_diameter_m", 0.1095);
-    vehicle_motion_config_.motor_pole_pairs = node_.declare_parameter<int>(
-      "imu_stabilization_motor_pole_pairs", 2);
-    vehicle_motion_config_.motor_pinion_teeth = node_.declare_parameter<int>(
-      "imu_stabilization_motor_pinion_teeth", 13);
-    vehicle_motion_config_.spur_gear_teeth = node_.declare_parameter<int>(
-      "imu_stabilization_spur_gear_teeth", 54);
-    vehicle_motion_config_.differential_pinion_teeth =
-      node_.declare_parameter<int>(
-      "imu_stabilization_differential_pinion_teeth", 13);
-    vehicle_motion_config_.differential_ring_teeth =
-      node_.declare_parameter<int>(
-      "imu_stabilization_differential_ring_teeth", 37);
-    vehicle_motion_config_.erpm_direction_sign =
-      node_.declare_parameter<double>(
-      "imu_stabilization_erpm_direction_sign", 1.0);
-    vehicle_motion_config_.speed_scale_correction =
-      node_.declare_parameter<double>(
-      "imu_stabilization_speed_scale_correction", 1.0);
-    vehicle_motion_config_.speed_deadband_mps =
-      node_.declare_parameter<double>(
-      "imu_stabilization_speed_deadband_mps", 0.03);
-    vehicle_motion_config_.speed_filter_time_constant_sec =
-      node_.declare_parameter<double>(
-      "imu_stabilization_speed_filter_time_constant_sec", 0.05);
-    vehicle_motion_config_.acceleration_filter_time_constant_sec =
-      node_.declare_parameter<double>(
-      "imu_stabilization_acceleration_filter_time_constant_sec", 0.12);
-    vehicle_motion_config_.maximum_speed_mps =
-      node_.declare_parameter<double>(
-      "imu_stabilization_maximum_speed_mps", 6.0);
-    vehicle_motion_config_.maximum_longitudinal_acceleration_mps2 =
+    maximum_longitudinal_acceleration_mps2_ =
       node_.declare_parameter<double>(
       "imu_stabilization_maximum_longitudinal_acceleration_mps2", 15.0);
     maximum_lateral_acceleration_mps2_ = node_.declare_parameter<double>(
       "imu_stabilization_maximum_lateral_acceleration_mps2", 15.0);
-    vehicle_motion_config_.maximum_sample_interval_sec =
-      node_.declare_parameter<double>(
-      "imu_stabilization_motion_maximum_sample_interval_sec", 0.10);
-    vehicle_motion_config_.maximum_sample_age_sec =
-      node_.declare_parameter<double>(
-      "imu_stabilization_motion_maximum_sample_age_sec", 0.10);
     imu_stabilizer_config_.reference_tilt_leak_time_constant_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_reference_tilt_leak_time_constant_sec", 4.0);
@@ -767,67 +703,29 @@ private:
         throw std::invalid_argument(
                 "invalid measured-ERPM stationary detection parameters");
       }
-      if (can_low_frequency_compensation_enabled_) {
-        if (
-          !imu_stabilization_enabled_ ||
-          !imu_stabilizer_config_.high_frequency_vibration_only_enabled)
-        {
-          throw std::invalid_argument(
-                  "CAN low-frequency compensation requires enabled "
-                  "high-frequency-only stabilization");
-        }
-        if (
-          can_acceleration_topic_.empty() ||
-          can_acceleration_frame_id_.empty() ||
-          !std::isfinite(can_acceleration_timeout_sec_) ||
-          can_acceleration_timeout_sec_ <= 0.0 ||
-          !std::isfinite(
-            vehicle_motion_config_.maximum_longitudinal_acceleration_mps2) ||
-          vehicle_motion_config_.maximum_longitudinal_acceleration_mps2 <=
-          0.0 ||
-          !std::isfinite(maximum_lateral_acceleration_mps2_) ||
-          maximum_lateral_acceleration_mps2_ <= 0.0)
-        {
-          throw std::invalid_argument(
-                  "invalid CAN low-frequency compensation parameters");
-        }
-        if (!imu_bridge_enabled_) {
-          RCLCPP_WARN(
-            node_.get_logger(),
-            "CAN low-frequency compensation is enabled without the internal "
-            "IMU bridge; the dynamics monitor needs another fresh yaw-rate "
-            "source for lateral acceleration.");
-        }
-      }
-      if (
-        imu_stabilization_enabled_ &&
-        imu_stabilizer_config_.high_frequency_vibration_only_enabled)
-      {
-        if (
-          vehicle_motion_compensation_enabled_ ||
-          imu_stabilizer_config_.moving_accelerometer_nudge_enabled ||
-          !imu_stabilizer_config_.acceleration_correction_stationary_only)
-        {
-          RCLCPP_WARN(
-            node_.get_logger(),
-            "High-frequency-only stabilization disables the legacy UART "
-            "vehicle-motion and moving-accelerometer paths. CAN low-frequency "
-            "compensation remains independently configurable.");
-        }
-        vehicle_motion_compensation_enabled_ = false;
-        imu_stabilizer_config_.moving_accelerometer_nudge_enabled = false;
-        imu_stabilizer_config_.acceleration_correction_stationary_only = true;
-      }
       if (
         imu_stabilization_enabled_ &&
         vehicle_motion_compensation_enabled_)
       {
         if (
+          can_acceleration_topic_.empty() ||
+          can_acceleration_frame_id_.empty() ||
+          !std::isfinite(can_acceleration_timeout_sec_) ||
+          can_acceleration_timeout_sec_ <= 0.0 ||
+          !std::isfinite(maximum_longitudinal_acceleration_mps2_) ||
+          maximum_longitudinal_acceleration_mps2_ <= 0.0 ||
           !std::isfinite(maximum_lateral_acceleration_mps2_) ||
           maximum_lateral_acceleration_mps2_ <= 0.0)
         {
           throw std::invalid_argument(
-                  "maximum lateral acceleration must be positive");
+                  "invalid CAN vehicle acceleration compensation parameters");
+        }
+        if (!imu_bridge_enabled_) {
+          RCLCPP_WARN(
+            node_.get_logger(),
+            "CAN vehicle acceleration compensation is enabled without the "
+            "internal IMU bridge; the dynamics monitor needs another fresh "
+            "yaw-rate source for lateral acceleration.");
         }
         if (
           imu_stabilizer_config_.moving_accelerometer_nudge_enabled &&
@@ -932,11 +830,7 @@ private:
 
   void ensure_vehicle_axes_from_stabilizer_reference()
   {
-    if (
-      (!vehicle_motion_compensation_enabled_ &&
-      !can_low_frequency_compensation_enabled_) ||
-      !imu_stabilizer_)
-    {
+    if (!vehicle_motion_compensation_enabled_ || !imu_stabilizer_) {
       return;
     }
     {
@@ -985,8 +879,7 @@ private:
       return;
     }
     if (
-      (vehicle_motion_compensation_enabled_ ||
-      can_low_frequency_compensation_enabled_) &&
+      vehicle_motion_compensation_enabled_ &&
       !set_vehicle_axes_from_up_camera(up_camera))
     {
       RCLCPP_ERROR(
@@ -1046,8 +939,8 @@ private:
       timestamp_sec,
       std::clamp(
         message.vector.x,
-        -vehicle_motion_config_.maximum_longitudinal_acceleration_mps2,
-        vehicle_motion_config_.maximum_longitudinal_acceleration_mps2),
+        -maximum_longitudinal_acceleration_mps2_,
+        maximum_longitudinal_acceleration_mps2_),
       std::clamp(
         message.vector.y,
         -maximum_lateral_acceleration_mps2_,
@@ -1156,15 +1049,6 @@ private:
       last_measured_erpm_received_ns_.exchange(
       now_ns, std::memory_order_relaxed);
     latest_measured_erpm_.store(message.data, std::memory_order_relaxed);
-    if (vehicle_motion_estimator_) {
-      const VehicleMotionSample motion = vehicle_motion_estimator_->update(
-        message.data, static_cast<double>(now_ns) * 1.0e-9);
-      latest_vehicle_speed_mps_.store(
-        motion.speed_mps, std::memory_order_relaxed);
-      latest_longitudinal_acceleration_mps2_.store(
-        motion.longitudinal_acceleration_mps2,
-        std::memory_order_relaxed);
-    }
 
     const auto timeout_ns = static_cast<std::int64_t>(
       measured_erpm_timeout_sec_ * 1.0e9);
@@ -1397,9 +1281,8 @@ private:
         node_.get_logger(),
         "Virtual-gimbal stabilization: keep camera still for %.1f s "
         "startup discard + %.1f s stationary calibration; yaw-free tilt, "
-        "correction mode=%s (cutoff=%.2fHz), "
-        "CAN low-frequency=%s on %s (cutoff=%.2fHz, gain=%.2f, "
-        "cap=%.2fdeg, timeout=%.3fs), "
+        "full-band correction, CAN vehicle acceleration=%s on %s "
+        "(timeout=%.3fs), "
         "BEV reference=%s on %s, runtime stationary=%s "
         "(filtered enter<=%d, raw exit>=%d, filter tau=%.2fs, hold=%.2fs), "
         "moving accel=%s (tau=%.2fs, strength=%.2f, pitch/roll cap="
@@ -1408,14 +1291,8 @@ private:
         "invalid correction policy=zoom-only fallback",
         imu_stabilizer_config_.startup_discard_duration_sec,
         imu_stabilizer_config_.reference_calibration_duration_sec,
-        imu_stabilizer_config_.high_frequency_vibration_only_enabled ?
-        "high-frequency-only" : "full-band",
-        imu_stabilizer_config_.high_frequency_vibration_cutoff_hz,
-        can_low_frequency_compensation_enabled_ ? "on" : "off",
+        vehicle_motion_compensation_enabled_ ? "on" : "off",
         can_acceleration_topic_.c_str(),
-        imu_stabilizer_config_.low_frequency_accelerometer_cutoff_hz,
-        imu_stabilizer_config_.low_frequency_accelerometer_correction_gain,
-        imu_stabilizer_config_.low_frequency_accelerometer_maximum_correction_deg,
         can_acceleration_timeout_sec_,
         imu_stabilizer_config_.external_reference_required ?
         "required" : "optional",
@@ -1660,12 +1537,6 @@ private:
       correction->pitch_error_deg, std::memory_order_relaxed);
     latest_stabilization_correction_angle_deg_.store(
       correction->correction_angle_deg, std::memory_order_relaxed);
-    latest_low_frequency_correction_angle_deg_.store(
-      correction->low_frequency_correction_angle_deg,
-      std::memory_order_relaxed);
-    latest_low_frequency_correction_active_.store(
-      correction->low_frequency_correction_active,
-      std::memory_order_relaxed);
     if (!correction->within_correction_limit) {
       stabilization_angle_rejections_total_.fetch_add(1U);
       return zoom_only();
@@ -1932,12 +1803,7 @@ private:
           if (imu_stabilization_enabled_ && imu_stabilizer_) {
             const bool vehicle_stationary = measured_erpm_stationary();
             ensure_vehicle_axes_from_stabilizer_reference();
-            std::optional<cv::Vec3d>
-              can_low_frequency_acceleration_camera;
             if (vehicle_stationary) {
-              latest_yaw_rate_degps_.store(0.0, std::memory_order_relaxed);
-              latest_lateral_acceleration_mps2_.store(
-                0.0, std::memory_order_relaxed);
               latest_residual_longitudinal_acceleration_mps2_.store(
                 0.0, std::memory_order_relaxed);
               latest_residual_lateral_acceleration_mps2_.store(
@@ -1945,61 +1811,33 @@ private:
             }
             if (
               vehicle_motion_compensation_enabled_ &&
-              imu_stabilizer_->initialized() &&
-              !vehicle_stationary)
+              imu_stabilizer_->initialized())
             {
-              std::optional<VehicleMotionSample> motion;
-              if (vehicle_motion_estimator_) {
-                // ERPM samples are timestamped on host receipt. Preserve the
-                // relative timing within this IMU batch, but query the motion
-                // history in that same host steady-clock domain instead of
-                // assuming DepthAI's timestamp epoch matches the host epoch.
-                double motion_timestamp_sec = batch_received_steady_sec;
-                const double age_in_batch_sec =
-                  newest_gyroscope_timestamp_sec - gyroscope_timestamp_sec;
-                if (
-                  std::isfinite(age_in_batch_sec) &&
-                  age_in_batch_sec >= 0.0 &&
-                  age_in_batch_sec <= maximum_timestamp_domain_delta_sec_)
-                {
-                  motion_timestamp_sec -= age_in_batch_sec;
-                }
-                motion = vehicle_motion_estimator_->estimateAt(
-                  motion_timestamp_sec);
+              // CAN dynamics are stamped in the host clock domain. Preserve
+              // each IMU report's relative age within the received batch so
+              // the vehicle acceleration is queried at the same instant.
+              double acceleration_query_timestamp_sec =
+                batch_received_steady_sec;
+              const double age_in_batch_sec =
+                newest_gyroscope_timestamp_sec - gyroscope_timestamp_sec;
+              if (
+                std::isfinite(age_in_batch_sec) &&
+                age_in_batch_sec >= 0.0 &&
+                age_in_batch_sec <= maximum_timestamp_domain_delta_sec_)
+              {
+                acceleration_query_timestamp_sec -= age_in_batch_sec;
               }
+              const auto vehicle_acceleration = can_acceleration_at(
+                acceleration_query_timestamp_sec);
               const auto axes = vehicle_axes_camera();
-              if (synchronized_acceleration && motion && axes) {
-                const cv::Vec3d corrected_angular_velocity =
-                  angular_velocity_camera -
-                  imu_stabilizer_->gyroscopeBiasRadps();
-                const double yaw_rate_radps =
-                  corrected_angular_velocity.dot(axes->up);
-                constexpr double radians_to_degrees =
-                  180.0 / 3.141592653589793238462643383279502884;
-                const double yaw_rate_degps =
-                  yaw_rate_radps * radians_to_degrees;
-                const double lateral_acceleration_mps2 =
-                  lateralAccelerationMps2(
-                    motion->speed_mps,
-                    yaw_rate_radps,
-                    maximum_lateral_acceleration_mps2_);
+              if (synchronized_acceleration && vehicle_acceleration && axes) {
                 const cv::Vec3d vehicle_acceleration_camera =
                   axes->forward *
-                  motion->longitudinal_acceleration_mps2 +
-                  axes->left * lateral_acceleration_mps2;
+                  vehicle_acceleration->longitudinal_mps2 +
+                  axes->left * vehicle_acceleration->lateral_mps2;
                 const cv::Vec3d residual_acceleration_camera =
                   *synchronized_acceleration - vehicle_acceleration_camera;
                 synchronized_acceleration = residual_acceleration_camera;
-                latest_vehicle_speed_mps_.store(
-                  motion->speed_mps, std::memory_order_relaxed);
-                latest_longitudinal_acceleration_mps2_.store(
-                  motion->longitudinal_acceleration_mps2,
-                  std::memory_order_relaxed);
-                latest_lateral_acceleration_mps2_.store(
-                  lateral_acceleration_mps2,
-                  std::memory_order_relaxed);
-                latest_yaw_rate_degps_.store(
-                  yaw_rate_degps, std::memory_order_relaxed);
                 latest_residual_longitudinal_acceleration_mps2_.store(
                   residual_acceleration_camera.dot(axes->forward),
                   std::memory_order_relaxed);
@@ -2007,11 +1845,8 @@ private:
                   residual_acceleration_camera.dot(axes->left),
                   std::memory_order_relaxed);
                 update_maximum(
-                  maximum_absolute_yaw_rate_degps_interval_,
-                  std::abs(yaw_rate_degps));
-                update_maximum(
                   maximum_absolute_lateral_acceleration_mps2_interval_,
-                  std::abs(lateral_acceleration_mps2));
+                  std::abs(vehicle_acceleration->lateral_mps2));
                 motion_compensated_samples_total_.fetch_add(
                   1U, std::memory_order_relaxed);
               } else {
@@ -2028,7 +1863,7 @@ private:
                   motion_missing_acceleration_total_.fetch_add(
                     1U, std::memory_order_relaxed);
                 }
-                if (!motion) {
+                if (!vehicle_acceleration) {
                   motion_missing_state_total_.fetch_add(
                     1U, std::memory_order_relaxed);
                 }
@@ -2038,56 +1873,11 @@ private:
                 }
               }
             }
-            if (
-              can_low_frequency_compensation_enabled_ &&
-              imu_stabilizer_->initialized())
-            {
-              double acceleration_query_timestamp_sec =
-                batch_received_steady_sec;
-              const double age_in_batch_sec =
-                newest_gyroscope_timestamp_sec - gyroscope_timestamp_sec;
-              if (
-                std::isfinite(age_in_batch_sec) &&
-                age_in_batch_sec >= 0.0 &&
-                age_in_batch_sec <= maximum_timestamp_domain_delta_sec_)
-              {
-                acceleration_query_timestamp_sec -= age_in_batch_sec;
-              }
-              const auto vehicle_acceleration = can_acceleration_at(
-                acceleration_query_timestamp_sec);
-              const auto axes = vehicle_axes_camera();
-              if (
-                synchronized_acceleration &&
-                vehicle_acceleration &&
-                axes)
-              {
-                const cv::Vec3d vehicle_acceleration_camera =
-                  axes->forward *
-                  vehicle_acceleration->longitudinal_mps2 +
-                  axes->left * vehicle_acceleration->lateral_mps2;
-                const cv::Vec3d residual_acceleration_camera =
-                  *synchronized_acceleration - vehicle_acceleration_camera;
-                can_low_frequency_acceleration_camera =
-                  residual_acceleration_camera;
-                latest_residual_longitudinal_acceleration_mps2_.store(
-                  residual_acceleration_camera.dot(axes->forward),
-                  std::memory_order_relaxed);
-                latest_residual_lateral_acceleration_mps2_.store(
-                  residual_acceleration_camera.dot(axes->left),
-                  std::memory_order_relaxed);
-                can_low_frequency_compensated_samples_total_.fetch_add(
-                  1U, std::memory_order_relaxed);
-              } else {
-                can_low_frequency_compensation_misses_total_.fetch_add(
-                  1U, std::memory_order_relaxed);
-              }
-            }
             imu_stabilizer_->update(
               synchronized_acceleration,
               angular_velocity_camera,
               gyroscope_timestamp_sec,
-              vehicle_stationary,
-              can_low_frequency_acceleration_camera);
+              vehicle_stationary);
           }
           latest_imu_timestamp_sec_.store(
             gyroscope_timestamp_sec, std::memory_order_relaxed);
@@ -2702,9 +2492,6 @@ private:
           can_received_ns > 0 && steady_now_ns >= can_received_ns &&
           static_cast<double>(steady_now_ns - can_received_ns) * 1.0e-9 <=
           can_acceleration_timeout_sec_;
-        const double peak_yaw_rate_degps =
-          maximum_absolute_yaw_rate_degps_interval_.exchange(
-          0.0, std::memory_order_relaxed);
         const double peak_lateral_acceleration_mps2 =
           maximum_absolute_lateral_acceleration_mps2_interval_.exchange(
           0.0, std::memory_order_relaxed);
@@ -2713,11 +2500,9 @@ private:
           "Virtual gimbal: tilt_error(roll/pitch)=%.3f/%.3fdeg, "
           "correction=%.3fdeg, stationary=%s, "
           "measured_erpm=%d (filtered_abs=%.1f)/%s, "
-          "vehicle(v/ax/ay)=%.3f/%.3f/%.3f SI, "
-          "turn(yaw_now/peak=%.2f/%.2fdegps, ay_peak=%.3f), "
+          "CAN_vehicle_accel=%s/%s (ax/ay/peak_ay)=%.3f/%.3f/%.3f, "
           "imu_residual_accel(forward/left)=%.3f/%.3f, motion_fusion=%s "
-          "(samples/misses=%lu/%lu, no_accel/motion/axes=%lu/%lu/%lu), "
-          "CAN_lowfreq=%s/%s/%s (angle=%.3fdeg, samples/misses=%lu/%lu, "
+          "(samples/misses=%lu/%lu, no_accel/CAN/axes=%lu/%lu/%lu, "
           "received/rejected=%lu/%lu), "
           "accel_nudge(roll/pitch)=%.3f/%.3fdeg, "
           "gyro_bias_xyz=%.4f/%.4f/%.4fdegps, bias_updates=%lu",
@@ -2731,13 +2516,12 @@ private:
           latest_measured_erpm_.load(std::memory_order_relaxed),
           latest_filtered_absolute_erpm_.load(std::memory_order_relaxed),
           erpm_fresh ? "fresh" : "stale",
-          latest_vehicle_speed_mps_.load(std::memory_order_relaxed),
+          vehicle_motion_compensation_enabled_ ? "on" : "off",
+          can_acceleration_fresh ? "fresh" : "stale",
           latest_longitudinal_acceleration_mps2_.load(
             std::memory_order_relaxed),
           latest_lateral_acceleration_mps2_.load(
             std::memory_order_relaxed),
-          latest_yaw_rate_degps_.load(std::memory_order_relaxed),
-          peak_yaw_rate_degps,
           peak_lateral_acceleration_mps2,
           latest_residual_longitudinal_acceleration_mps2_.load(
             std::memory_order_relaxed),
@@ -2754,16 +2538,6 @@ private:
             motion_missing_state_total_.load()),
           static_cast<unsigned long>(
             motion_missing_axes_total_.load()),
-          can_low_frequency_compensation_enabled_ ? "on" : "off",
-          can_acceleration_fresh ? "fresh" : "stale",
-          latest_low_frequency_correction_active_.load(
-            std::memory_order_relaxed) ? "applied" : "released",
-          latest_low_frequency_correction_angle_deg_.load(
-            std::memory_order_relaxed),
-          static_cast<unsigned long>(
-            can_low_frequency_compensated_samples_total_.load()),
-          static_cast<unsigned long>(
-            can_low_frequency_compensation_misses_total_.load()),
           static_cast<unsigned long>(can_acceleration_received_total_.load()),
           static_cast<unsigned long>(can_acceleration_rejected_total_.load()),
           moving_accelerometer_nudge_deg[0],
@@ -2889,11 +2663,10 @@ private:
   double stationary_erpm_enter_duration_sec_{1.0};
   double measured_erpm_timeout_sec_{1.0};
   bool vehicle_motion_compensation_enabled_{true};
-  bool can_low_frequency_compensation_enabled_{false};
   std::string can_acceleration_topic_{"/vehicle/dynamics/acceleration"};
   std::string can_acceleration_frame_id_{"base_link"};
   double can_acceleration_timeout_sec_{0.10};
-  VehicleMotionEstimatorConfig vehicle_motion_config_{};
+  double maximum_longitudinal_acceleration_mps2_{15.0};
   double maximum_lateral_acceleration_mps2_{15.0};
   double fixed_view_zoom_{1.25};
   double fixed_view_border_margin_px_{1.5};
@@ -2925,7 +2698,6 @@ private:
   std::shared_ptr<dai::MessageQueue> output_queue_;
   std::shared_ptr<dai::MessageQueue> imu_queue_;
   std::unique_ptr<ImuImageStabilizer> imu_stabilizer_;
-  std::unique_ptr<VehicleMotionEstimator> vehicle_motion_estimator_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
   rclcpp::Publisher<camera_driver::msg::BevInput>::SharedPtr
     fused_bev_publisher_;
@@ -2973,11 +2745,8 @@ private:
   std::atomic<std::int64_t> last_can_acceleration_received_ns_{0};
   std::atomic<std::int64_t> stationary_erpm_candidate_started_ns_{0};
   std::atomic<bool> erpm_stationary_{false};
-  std::atomic<double> latest_vehicle_speed_mps_{0.0};
   std::atomic<double> latest_longitudinal_acceleration_mps2_{0.0};
   std::atomic<double> latest_lateral_acceleration_mps2_{0.0};
-  std::atomic<double> latest_yaw_rate_degps_{0.0};
-  std::atomic<double> maximum_absolute_yaw_rate_degps_interval_{0.0};
   std::atomic<double>
   maximum_absolute_lateral_acceleration_mps2_interval_{0.0};
   std::atomic<double>
@@ -2990,10 +2759,6 @@ private:
   std::atomic<std::uint64_t> motion_missing_axes_total_{0};
   std::atomic<std::uint64_t> can_acceleration_received_total_{0};
   std::atomic<std::uint64_t> can_acceleration_rejected_total_{0};
-  std::atomic<std::uint64_t>
-  can_low_frequency_compensated_samples_total_{0};
-  std::atomic<std::uint64_t>
-  can_low_frequency_compensation_misses_total_{0};
   std::atomic<bool> fallback_vehicle_axes_reported_{false};
   std::atomic<std::uint64_t> received_total_{0};
   std::atomic<std::uint64_t> received_interval_{0};
@@ -3021,8 +2786,6 @@ private:
   std::atomic<double> latest_stabilization_roll_error_deg_{0.0};
   std::atomic<double> latest_stabilization_pitch_error_deg_{0.0};
   std::atomic<double> latest_stabilization_correction_angle_deg_{0.0};
-  std::atomic<double> latest_low_frequency_correction_angle_deg_{0.0};
-  std::atomic<bool> latest_low_frequency_correction_active_{false};
   std::atomic<std::uint64_t> maximum_imu_pair_skew_ns_{0};
   std::atomic<double> latest_imu_timestamp_sec_{
     std::numeric_limits<double>::quiet_NaN()};

@@ -4,7 +4,6 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
-from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -17,24 +16,6 @@ def generate_launch_description():
     capture_directory = LaunchConfiguration("capture_directory")
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
-    )
-    high_frequency_vibration_only_enabled = LaunchConfiguration(
-        "imu_stabilization_high_frequency_vibration_only_enabled"
-    )
-    high_frequency_vibration_cutoff_hz = LaunchConfiguration(
-        "imu_stabilization_high_frequency_vibration_cutoff_hz"
-    )
-    can_low_frequency_compensation_enabled = LaunchConfiguration(
-        "imu_stabilization_can_low_frequency_compensation_enabled"
-    )
-    low_frequency_cutoff_hz = LaunchConfiguration(
-        "imu_stabilization_low_frequency_cutoff_hz"
-    )
-    low_frequency_correction_gain = LaunchConfiguration(
-        "imu_stabilization_low_frequency_correction_gain"
-    )
-    low_frequency_maximum_correction_deg = LaunchConfiguration(
-        "imu_stabilization_low_frequency_maximum_correction_deg"
     )
     publish_enabled = LaunchConfiguration("publish_enabled")
 
@@ -72,45 +53,6 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
-                "imu_stabilization_high_frequency_vibration_only_enabled",
-                default_value="true",
-                description=(
-                    "Pass slow body attitude through and stabilize only "
-                    "high-frequency roll/pitch vibration."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_high_frequency_vibration_cutoff_hz",
-                default_value="3.0",
-                description=(
-                    "First-order high-pass cutoff in Hz for roll/pitch "
-                    "vibration correction."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_can_low_frequency_compensation_enabled",
-                default_value="false",
-                description=(
-                    "Use time-aligned CAN vehicle acceleration to correct "
-                    "low-frequency accelerometer tilt."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_low_frequency_cutoff_hz",
-                default_value="1.0",
-                description="CAN-compensated low-frequency cutoff in Hz.",
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_low_frequency_correction_gain",
-                default_value="0.5",
-                description="Low-frequency correction strength from 0 to 1.",
-            ),
-            DeclareLaunchArgument(
-                "imu_stabilization_low_frequency_maximum_correction_deg",
-                default_value="1.0",
-                description="Maximum CAN low-frequency correction angle.",
-            ),
-            DeclareLaunchArgument(
                 "publish_enabled",
                 default_value="false",
                 description="Publish sensor_msgs/Image frames.",
@@ -135,54 +77,9 @@ def generate_launch_description():
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_enabled
                                 ),
-                                (
-                                    "imu_stabilization_high_frequency_"
-                                    "vibration_only_enabled"
-                                ): ParameterValue(
-                                    high_frequency_vibration_only_enabled,
-                                    value_type=bool,
-                                ),
-                                (
-                                    "imu_stabilization_high_frequency_"
-                                    "vibration_cutoff_hz"
-                                ): ParameterValue(
-                                    high_frequency_vibration_cutoff_hz,
-                                    value_type=float,
-                                ),
-                                (
-                                    "imu_stabilization_can_low_frequency_"
-                                    "compensation_enabled"
-                                ): ParameterValue(
-                                    can_low_frequency_compensation_enabled,
-                                    value_type=bool,
-                                ),
-                                (
-                                    "imu_stabilization_low_frequency_"
-                                    "cutoff_hz"
-                                ): ParameterValue(
-                                    low_frequency_cutoff_hz,
-                                    value_type=float,
-                                ),
-                                (
-                                    "imu_stabilization_low_frequency_"
-                                    "correction_gain"
-                                ): ParameterValue(
-                                    low_frequency_correction_gain,
-                                    value_type=float,
-                                ),
-                                (
-                                    "imu_stabilization_low_frequency_"
-                                    "maximum_correction_deg"
-                                ): ParameterValue(
-                                    low_frequency_maximum_correction_deg,
-                                    value_type=float,
-                                ),
                                 "publish_enabled": publish_enabled,
                                 # The CAN dynamics monitor needs camera yaw.
-                                "imu_bridge_enabled": ParameterValue(
-                                    can_low_frequency_compensation_enabled,
-                                    value_type=bool,
-                                ),
+                                "imu_bridge_enabled": True,
                             },
                         ],
                         extra_arguments=[

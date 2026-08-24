@@ -1,7 +1,7 @@
 # vehicle_dynamics_monitor
 
 VESC vehicle telemetry is converted into body-frame motion values for logging
-and future IMU accelerometer compensation. The monitor never transmits CAN or
+and camera IMU accelerometer compensation. The monitor never transmits CAN or
 actuator commands.
 
 ## Calculated values

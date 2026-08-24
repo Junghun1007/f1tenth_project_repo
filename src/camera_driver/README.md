@@ -200,67 +200,34 @@ ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true preview_grid_enabled:=true
 ```
 
-OAK IMU로 고주파 roll/pitch 진동만 안정화하려면 다음처럼
-실행한다. `camera_driver.launch.py`는 단독 디버깅을 위해 이 모드를
-기본으로 override하며, BEV와 `auto_drive`의 기존 설정은 변경하지 않는다.
+실차에서는 `auto_drive.launch.py`를 실행하지 않고, SocketCAN 차량 dynamics와
+`camera_driver` 프리뷰를 각각의 터미널에서 실행한다.
 
 ```bash
-ros2 launch camera_driver camera_driver.launch.py \
-  preview_enabled:=true \
-  imu_stabilization_enabled:=true \
-  imu_stabilization_high_frequency_vibration_only_enabled:=true \
-  imu_stabilization_high_frequency_vibration_cutoff_hz:=3.0
-```
+# 터미널 1: 수동주행 + SocketCAN 종/횡가속도
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
+  input_mode:=socketcan can_interface:=can0 can_controller_id:=112
 
-고주파 보정 유무를 A/B 비교할 때는
-`imu_stabilization_enabled:=true/false`만 바꾼다. 기존의 시작 자세
-고정(전체 대역) 방식으로 되돌리려면 안정화를 켠 상태에서
-`imu_stabilization_high_frequency_vibration_only_enabled:=false`를 사용한다.
-
-실차에서는 `auto_drive.launch.py`를 실행하지 않고, 수동주행과
-`camera_driver` 프리뷰를 각각의 터미널에서 실행해 A/B 비교한다.
-
-```bash
-# 터미널 1: 수동주행
-ros2 launch vehicle_bringup manual_drive.launch.py
-
-# 터미널 2: 카메라 고주파 보정 프리뷰
+# 터미널 2: 수정 전 full-band 안정화 + CAN 가속도 제거
 ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true imu_stabilization_enabled:=true
 ```
 
-CAN 저주파 보정까지 포함한 수동주행 테스트는 다음처럼 실행한다.
-
-```bash
-# 터미널 1: 수동주행 + SocketCAN 차량 dynamics
-ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
-  input_mode:=socketcan can_interface:=can0 can_controller_id:=0
-
-# 터미널 2: 고주파 gyro + CAN 저주파 프리뷰
-ros2 launch camera_driver camera_driver.launch.py \
-  preview_enabled:=true \
-  imu_stabilization_can_low_frequency_compensation_enabled:=true \
-  imu_stabilization_low_frequency_cutoff_hz:=1.0 \
-  imu_stabilization_low_frequency_correction_gain:=0.5
-```
+안정화 유무를 A/B 비교할 때는 `imu_stabilization_enabled:=true/false`만
+바꾼다.
 
 안정화기는 전원 직후 IMU 샘플을 1초간 폐기한 뒤 4초 정지 구간의 중력
 방향과 자이로 bias를 시작 기준으로 측정한다. 이 5초 동안 차량과 카메라를
 움직이면 기준 측정이 다시 시작된다.
 
-이후 400 Hz calibrated gyro로 카메라 좌표의 노면/중력 법선 벡터만
-적분한다. yaw 상태를 별도로 누적하지 않으므로 법선축 주위 U턴은 roll/pitch에
-섞이지 않는다. 현재 법선을 3 Hz 1차 저역통과한 `느린 기준 자세`와
-비교하고, 두 자세의 차이만 homography로 되돌린다. 그러므로 조종·가감속에
-따른 느린 차체 자세는 영상에 남고, 지면·타이어에서 올라오는 빠른
-roll/pitch 진동만 주로 상쇄된다. 이 주파수는 이상적인 벽돌형 경계가 아니라
-조정 가능한 1차 필터의 -3 dB 기준이다.
+이후 400 Hz calibrated gyro로 카메라 좌표의 노면/중력 법선 벡터를
+적분하고, 수정 전과 동일하게 시작 기준 자세와 비교한 전체 대역 보정을
+homography로 적용한다. 별도의 주파수 cutoff는 사용하지 않는다.
 
-고주파 전용 모드에서 기존 UART ERPM 기반 moving nudge는 자동으로
-끄고, CAN dynamics의 종·횡가속도를 IMU에서 제거한 잔여 중력 방향만
-별도 저주파 보정에 사용할 수 있다. 기본은 1 Hz 이하, gain 0.5,
-최대 1도다. CAN 샘플이 0.1초 이상 느려지면 raw 가속도계를 사용하지
-않고 저주파 보정만 부드럽게 해제한다. 고주파 gyro 보정은 계속한다.
+주행 중 가속도계 입력에는 CAN dynamics의 종가속도와 횡가속도를 카메라
+좌표로 변환해 뺀다. 이 잔여 가속도는 수정 전부터 사용하던 bounded nudge에
+그대로 전달된다. CAN 샘플이 0.1초 이상 느려지면 차량 가속도가 섞인 raw
+가속도계를 넣지 않고 해당 가속도 샘플을 생략하며 gyro 보정은 계속한다.
 통합 BEV에서는 depth 시작 법선으로 차량 축을 구하고, 외부 법선이 없는
 단독 카메라 프리뷰에서는 교정된 IMU 시작 중력 방향을 fallback으로 사용한다.
 
@@ -342,19 +309,13 @@ ros2 topic info /camera/image_rect --verbose
 | `fused_bev_output_enabled` | `false` | 하단 NV12+보정 행렬 BEV 전용 출력; 통합 launch에서 `true` |
 | `fused_bev_topic` | `/camera/bev_input` | `camera_driver/msg/BevInput` 출력 |
 | `bev_input_bottom_fraction` | `0.70` | BEV 변환 전에 유지할 원본 영상 하단 비율 |
-| `imu_bridge_enabled` | `false` | 가속도+자이로 ROS 발행 |
+| `imu_bridge_enabled` | `false` | 가속도+자이로 ROS 발행; 기본 launch는 CAN 횡가속도 계산을 위해 `true` override |
 | `imu_rate_hz` | `400.0` | calibrated accel+gyro 요청/발행 rate |
 | `imu_max_batch_reports` | `5` | 장치측 IMU 묶음 전송 상한 |
 | `imu_topic` | `/camera/imu` | `sensor_msgs/Imu` 출력 |
 | `imu_stabilization_enabled` | `true` | 영상 roll/pitch 진동 보정 on/off |
-| `imu_stabilization_high_frequency_vibration_only_enabled` | `false` | 저주파 자세를 통과시키고 고주파 진동만 보정; 단독 launch는 `true` override |
-| `imu_stabilization_high_frequency_vibration_cutoff_hz` | `3.0` | 1차 고역통과 보정의 -3 dB 기준 주파수 |
-| `imu_stabilization_can_low_frequency_compensation_enabled` | `false` | CAN 차량 가속도로 정제한 저주파 가속도계 보정 |
 | `imu_stabilization_can_acceleration_topic` | `/vehicle/dynamics/acceleration` | `base_link` X=종, Y=횡가속도 입력 |
 | `imu_stabilization_can_acceleration_timeout_sec` | `0.10` | 이보다 오래된 CAN dynamics는 사용하지 않음 |
-| `imu_stabilization_low_frequency_cutoff_hz` | `1.0` | CAN 정제 중력 방향의 저역통과 cutoff |
-| `imu_stabilization_low_frequency_correction_gain` | `0.5` | 저주파 보정 강도 `0.0~1.0` |
-| `imu_stabilization_low_frequency_maximum_correction_deg` | `1.0` | CAN 저주파 최대 보정각 |
 | `imu_stabilization_startup_discard_duration_sec` | `1.0` | 전원 직후 IMU 과도값 폐기 시간 |
 | `imu_stabilization_reference_calibration_duration_sec` | `4.0` | 정지 기준 자세 측정 시간 |
 | `imu_stabilization_external_reference_topic` | `/camera/startup_ground_normal` | BEV 시작 지면 법선 토픽 |
@@ -367,22 +328,9 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
-| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | ERPM/gyro 차량 가속도를 제거해 주행 중 nudge에 사용 |
-| `imu_stabilization_wheel_diameter_m` | `0.1095` | 하중 상태 구동 휠 직경 |
-| `imu_stabilization_motor_pole_pairs` | `2` | 4-pole 모터의 pole pair 수 |
-| `imu_stabilization_motor_pinion_teeth` | `13` | 실제 motor pinion teeth |
-| `imu_stabilization_spur_gear_teeth` | `54` | 실제 spur gear teeth |
-| `imu_stabilization_differential_pinion_teeth` | `13` | Slash 4X4 differential pinion teeth |
-| `imu_stabilization_differential_ring_teeth` | `37` | Slash 4X4 differential ring teeth |
-| `imu_stabilization_erpm_direction_sign` | `1.0` | 전진 measured ERPM 부호; 반대면 `-1.0` |
-| `imu_stabilization_speed_scale_correction` | `1.0` | 거리 실측으로 보정하는 ERPM 속도 배율 |
-| `imu_stabilization_speed_deadband_mps` | `0.03` | 정지 부근 ERPM 속도 deadband |
-| `imu_stabilization_speed_filter_time_constant_sec` | `0.05` | 속도 저역통과 필터 시정수 |
-| `imu_stabilization_acceleration_filter_time_constant_sec` | `0.12` | `dv/dt` 종가속도 필터 시정수 |
-| `imu_stabilization_maximum_speed_mps` | `6.0` | 속도 이상치/예측 제한 |
+| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | CAN 종·횡가속도를 IMU에서 제거해 기존 nudge에 사용 |
 | `imu_stabilization_maximum_longitudinal_acceleration_mps2` | `15.0` | 종가속도 절댓값 제한 |
-| `imu_stabilization_maximum_lateral_acceleration_mps2` | `15.0` | `v*omega_z` 횡가속도 절댓값 제한 |
-| `imu_stabilization_motion_maximum_sample_age_sec` | `0.10` | 이보다 오래된 ERPM motion 상태는 사용하지 않음 |
+| `imu_stabilization_maximum_lateral_acceleration_mps2` | `15.0` | CAN 횡가속도 절댓값 제한 |
 | `imu_stabilization_accelerometer_stationary_only` | `true` | 주행 중 가속도계를 기본 자세에 누적하지 않음 |
 | `imu_stabilization_moving_accelerometer_nudge_enabled` | `true` | 보정된 가속도계를 비누적 bounded nudge로만 적용 |
 | `imu_stabilization_moving_accelerometer_nudge_time_constant_sec` | `0.15` | 주행 중 nudge 반응/제거 시정수 |
@@ -405,11 +353,11 @@ ros2 topic info /camera/image_rect --verbose
 차량 가속도를 제거한 IMU 방향은 시작 IMU와 Depth 법선 사이의 정렬을
 적용하여, 정지와 주행 상태가 다른 절대 자세를 목표로 삼지 않는다.
 
-`Virtual gimbal` 로그의 `yaw_now/peak`와 `ay_peak`는 각각 현재값/직전
-로그 구간의 최대 절댓값이다. 1 Hz 상태 로그 사이에 발생한 짧은 조향도
-최대값에 남는다. `imu_residual_accel(forward/left)`는 ERPM/자이로로
-계산한 차량 종/횡가속도를 IMU에서 제거한 뒤, Depth 자세 정렬을
-적용하기 전의 잔여값이다. `accel_nudge(roll/pitch)`는 기본
+`Virtual gimbal` 로그의 `CAN_vehicle_accel`은 CAN dynamics의 현재
+종/횡가속도와 직전 로그 구간의 최대 횡가속도를 표시한다.
+`imu_residual_accel(forward/left)`는 이 차량 종/횡가속도를 IMU에서
+제거한 뒤, Depth 자세 정렬을 적용하기 전의 잔여값이다.
+`accel_nudge(roll/pitch)`는 기본
 자이로/기준 자세에 더해진 현재 비누적 가속도계 보정각이다.
 
 주행 중 bounded nudge는 기본 자세 적분에 다시 넣지 않는다.
@@ -417,20 +365,17 @@ ros2 topic info /camera/image_rect --verbose
 각각 설정한 maximum을 넘어 누적되지 않는다. 유효한 가속도
 샘플이 없거나 정지하면 같은 빠른 시정수로 0도로 복귀한다.
 
-실차 거리 기준 속도가 로그의 `vehicle(v/ax/ay)` 속도와 다르면
-`imu_stabilization_speed_scale_correction`을 다음처럼 조정한다.
+속도·가속도와 구동계 보정값은 `vehicle_dynamics_monitor`에서 관리한다.
+실차 거리 기준 속도가 `/vehicle/dynamics/speed_mps`와 다르면 monitor의
+`speed_scale_correction`을 다음처럼 조정한다.
 
 ```text
 new_scale = old_scale * actual_speed / logged_speed
 ```
 
-텔레메트리 앱의 `50/591`은 총 감속비 `11.82`를 표현하는 등가
-입력값이다. 이 코드는 실제 `13/54` pinion/spur와 `13/37`
-differential을 각각 계산하므로 `50/591`을 중복 적용하지 않는다.
-
-속도는 맞지만 `ax`가 너무 요동치면 speed/acceleration filter 시정수를
-늘리고, 반응이 너무 늦으면 줄인다. 차폭과 조향각은 사용하지 않으며,
-횡가속도는 속도와 IMU yaw rate를 직접 결합한다.
+속도는 맞지만 `ax`가 너무 요동치면 monitor의 speed/acceleration filter
+시정수를 늘리고, 반응이 너무 늦으면 줄인다. 기본 횡가속도는 monitor에서
+CAN 속도와 `/camera/imu` yaw rate를 결합해 계산한다.
 
 80 FPS에서 `1280x800 NV12`의 순수 영상 데이터는 약 117 MiB/s다.
 `BGR888i`의 약 234 MiB/s보다 작다. 외부 프로세스 구독자는 DDS 직렬화와
