@@ -33,6 +33,18 @@ source install/setup.bash
 ros2 launch bev_processor bev_processor.launch.py
 ```
 
+고주파 roll/pitch 진동만 BEV 영상에서 보정하려면 직접 BEV launch에
+옵션을 주어 실행한다.
+
+```bash
+ros2 launch bev_processor bev_processor.launch.py \
+  imu_stabilization_high_frequency_vibration_only_enabled:=true \
+  imu_stabilization_high_frequency_vibration_cutoff_hz:=3.0
+```
+
+이 옵션의 기본값은 `false`다. 따라서 인자를 넘기지 않는
+`auto_drive.launch.py`와 기본 BEV 실행은 기존 전체 대역 보정을 유지한다.
+
 CUDA 컴파일러를 자동으로 찾지 못하면 빌드 인자에
 `-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`를 추가한다.
 
