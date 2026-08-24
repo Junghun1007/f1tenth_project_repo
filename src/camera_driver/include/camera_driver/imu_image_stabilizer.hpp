@@ -18,6 +18,8 @@ struct ImuImageStabilizerConfig
   double reference_calibration_duration_sec{4.0};
   double calibration_maximum_angular_speed_degps{0.5};
   bool gyroscope_bias_enabled{true};
+  bool high_frequency_vibration_only_enabled{false};
+  double high_frequency_vibration_cutoff_hz{3.0};
   double gravity_mps2{9.80665};
   double accelerometer_full_trust_deviation_mps2{0.15};
   double accelerometer_zero_trust_deviation_mps2{1.50};

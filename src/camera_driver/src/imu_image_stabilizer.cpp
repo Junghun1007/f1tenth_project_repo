@@ -21,6 +21,8 @@ namespace
 constexpr double kDegreesToRadians =
   3.141592653589793238462643383279502884 / 180.0;
 constexpr double kRadiansToDegrees = 1.0 / kDegreesToRadians;
+constexpr double kTwoPi =
+  2.0 * 3.141592653589793238462643383279502884;
 
 bool finiteVector(const cv::Vec3d & value)
 {
@@ -247,6 +249,8 @@ bool validConfig(const ImuImageStabilizerConfig & config)
     config.startup_discard_duration_sec <= 10.0 &&
     positive_finite(config.reference_calibration_duration_sec) &&
     positive_finite(config.calibration_maximum_angular_speed_degps) &&
+    positive_finite(config.high_frequency_vibration_cutoff_hz) &&
+    config.high_frequency_vibration_cutoff_hz <= 100.0 &&
     positive_finite(config.gravity_mps2) &&
     config.accelerometer_full_trust_deviation_mps2 >= 0.0 &&
     positive_finite(config.accelerometer_zero_trust_deviation_mps2) &&
@@ -425,6 +429,7 @@ public:
         warmup_gyroscope_sum_ / static_cast<double>(calibration_count_) :
         cv::Vec3d(0.0, 0.0, 0.0);
       current_up_camera_ = reference_up_camera_;
+      low_frequency_up_camera_ = reference_up_camera_;
       moving_accelerometer_nudge_deg_ = cv::Vec2d(0.0, 0.0);
       last_timestamp_sec_ = timestamp_sec;
       calibration_samples_.clear();
@@ -432,7 +437,7 @@ public:
       stationary_confirmed_ = false;
       initialized_ = true;
       history_.push_back(TimedTilt{
-        timestamp_sec, current_up_camera_,
+        timestamp_sec, current_up_camera_, reference_up_camera_,
         cv::Vec3d(0.0, 0.0, 0.0)});
       history_condition_.notify_all();
       return;
@@ -631,8 +636,22 @@ public:
     const cv::Vec3d output_up_camera = upVectorFromRollPitchDegrees(
       rollDegrees(current_up_camera_) + moving_accelerometer_nudge_deg_[0],
       pitchDegrees(current_up_camera_) + moving_accelerometer_nudge_deg_[1]);
+    cv::Vec3d correction_reference_up_camera = reference_up_camera_;
+    if (config_.high_frequency_vibration_only_enabled) {
+      // Low-pass the measured tilt and correct only the residual between the
+      // current tilt and this moving baseline. This is the orientation-domain
+      // half of a complementary filter: slow body attitude passes through the
+      // image, while roll/pitch vibration above the cutoff is cancelled.
+      const double low_frequency_gain = 1.0 - std::exp(
+        -kTwoPi * config_.high_frequency_vibration_cutoff_hz * dt_sec);
+      low_frequency_up_camera_ = interpolateDirection(
+        low_frequency_up_camera_, output_up_camera, low_frequency_gain);
+      correction_reference_up_camera = low_frequency_up_camera_;
+    } else {
+      low_frequency_up_camera_ = reference_up_camera_;
+    }
     history_.push_back(TimedTilt{
-      timestamp_sec, output_up_camera,
+      timestamp_sec, output_up_camera, correction_reference_up_camera,
       corrected_angular_velocity});
     while (
       history_.size() > 2U &&
@@ -691,6 +710,7 @@ public:
     }
 
     cv::Vec3d current_up_camera;
+    cv::Vec3d correction_reference_up_camera;
     double nearest_timestamp = 0.0;
     bool predicted = false;
     double prediction_horizon_sec = 0.0;
@@ -722,6 +742,8 @@ public:
       }
 
       current_up_camera = next->up_camera;
+      correction_reference_up_camera =
+        next->correction_reference_up_camera;
       if (previous != next) {
         const double interval_sec =
           next->timestamp_sec - previous->timestamp_sec;
@@ -733,6 +755,10 @@ public:
           0.0, 1.0);
         current_up_camera = interpolateDirection(
           previous->up_camera, next->up_camera, amount);
+        correction_reference_up_camera = interpolateDirection(
+          previous->correction_reference_up_camera,
+          next->correction_reference_up_camera,
+          amount);
       }
       nearest_timestamp =
         std::abs(previous_age_sec) <= std::abs(next_age_sec) ?
@@ -751,12 +777,23 @@ public:
         conjugate(quaternionFromRotationVector(
           latest.angular_velocity_camera_radps * prediction_horizon_sec)),
         latest.up_camera));
+      correction_reference_up_camera =
+        latest.correction_reference_up_camera;
+      if (config_.high_frequency_vibration_only_enabled) {
+        const double low_frequency_gain = 1.0 - std::exp(
+          -kTwoPi * config_.high_frequency_vibration_cutoff_hz *
+          prediction_horizon_sec);
+        correction_reference_up_camera = interpolateDirection(
+          correction_reference_up_camera,
+          current_up_camera,
+          low_frequency_gain);
+      }
       nearest_timestamp = latest.timestamp_sec;
       predicted = true;
     }
 
     Quaternion correction = quaternionFromTwoVectors(
-      current_up_camera, reference_up_camera_);
+      current_up_camera, correction_reference_up_camera);
     if (
       !config_.pitch_correction_enabled ||
       !config_.roll_correction_enabled)
@@ -773,9 +810,11 @@ public:
     }
 
     const double roll_error_deg = wrapDegrees(
-      rollDegrees(current_up_camera) - rollDegrees(reference_up_camera_));
+      rollDegrees(current_up_camera) -
+      rollDegrees(correction_reference_up_camera));
     const double pitch_error_deg = wrapDegrees(
-      pitchDegrees(current_up_camera) - pitchDegrees(reference_up_camera_));
+      pitchDegrees(current_up_camera) -
+      pitchDegrees(correction_reference_up_camera));
     const double correction_angle_deg =
       cv::norm(rotationVector(correction)) * kRadiansToDegrees;
     const bool within_limit =
@@ -870,6 +909,7 @@ private:
   {
     double timestamp_sec;
     cv::Vec3d up_camera;
+    cv::Vec3d correction_reference_up_camera;
     cv::Vec3d angular_velocity_camera_radps;
   };
 
@@ -1124,6 +1164,7 @@ private:
   Quaternion accelerometer_to_reference_rotation_{};
   cv::Vec3d reference_up_camera_{0.0, -1.0, 0.0};
   cv::Vec3d current_up_camera_{0.0, -1.0, 0.0};
+  cv::Vec3d low_frequency_up_camera_{0.0, -1.0, 0.0};
   cv::Vec2d moving_accelerometer_nudge_deg_{0.0, 0.0};
   double last_timestamp_sec_{0.0};
   bool initialized_{false};

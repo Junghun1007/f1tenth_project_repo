@@ -431,6 +431,12 @@ private:
       "maximum_timestamp_domain_delta_sec", 1.0);
     imu_stabilization_enabled_ =
       node_.declare_parameter<bool>("imu_stabilization_enabled", true);
+    imu_stabilizer_config_.high_frequency_vibration_only_enabled =
+      node_.declare_parameter<bool>(
+      "imu_stabilization_high_frequency_vibration_only_enabled", false);
+    imu_stabilizer_config_.high_frequency_vibration_cutoff_hz =
+      node_.declare_parameter<double>(
+      "imu_stabilization_high_frequency_vibration_cutoff_hz", 3.0);
     imu_stabilizer_config_.startup_discard_duration_sec =
       node_.declare_parameter<double>(
       "imu_stabilization_startup_discard_duration_sec", 1.0);
@@ -719,6 +725,25 @@ private:
       {
         throw std::invalid_argument(
                 "invalid measured-ERPM stationary detection parameters");
+      }
+      if (
+        imu_stabilization_enabled_ &&
+        imu_stabilizer_config_.high_frequency_vibration_only_enabled)
+      {
+        if (
+          vehicle_motion_compensation_enabled_ ||
+          imu_stabilizer_config_.moving_accelerometer_nudge_enabled ||
+          !imu_stabilizer_config_.acceleration_correction_stationary_only)
+        {
+          RCLCPP_WARN(
+            node_.get_logger(),
+            "High-frequency-only stabilization ignores vehicle-motion and "
+            "moving-accelerometer correction; disabling those low-frequency "
+            "paths.");
+        }
+        vehicle_motion_compensation_enabled_ = false;
+        imu_stabilizer_config_.moving_accelerometer_nudge_enabled = false;
+        imu_stabilizer_config_.acceleration_correction_stationary_only = true;
       }
       if (
         imu_stabilization_enabled_ &&
@@ -1145,6 +1170,7 @@ private:
         node_.get_logger(),
         "Virtual-gimbal stabilization: keep camera still for %.1f s "
         "startup discard + %.1f s stationary calibration; yaw-free tilt, "
+        "correction mode=%s (cutoff=%.2fHz), "
         "BEV reference=%s on %s, runtime stationary=%s "
         "(filtered enter<=%d, raw exit>=%d, filter tau=%.2fs, hold=%.2fs), "
         "moving accel=%s (tau=%.2fs, strength=%.2f, pitch/roll cap="
@@ -1153,6 +1179,9 @@ private:
         "invalid correction policy=zoom-only fallback",
         imu_stabilizer_config_.startup_discard_duration_sec,
         imu_stabilizer_config_.reference_calibration_duration_sec,
+        imu_stabilizer_config_.high_frequency_vibration_only_enabled ?
+        "high-frequency-only" : "full-band",
+        imu_stabilizer_config_.high_frequency_vibration_cutoff_hz,
         imu_stabilizer_config_.external_reference_required ?
         "required" : "optional",
         startup_ground_reference_topic_.c_str(),

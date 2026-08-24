@@ -200,37 +200,46 @@ ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true preview_grid_enabled:=true
 ```
 
-OAK IMU로 프리뷰와 ROS NV12 출력을 시작 pitch/roll 기준에 고정하려면
-다음처럼 실행한다.
+OAK IMU로 고주파 roll/pitch 진동만 안정화하려면 다음처럼
+실행한다. 현재 launch 기본값도 고주파 전용 모드다.
 
 ```bash
 ros2 launch camera_driver camera_driver.launch.py \
-  preview_enabled:=true imu_stabilization_enabled:=true
+  preview_enabled:=true \
+  imu_stabilization_enabled:=true \
+  imu_stabilization_high_frequency_vibration_only_enabled:=true \
+  imu_stabilization_high_frequency_vibration_cutoff_hz:=3.0
 ```
+
+고주파 보정 유무를 A/B 비교할 때는
+`imu_stabilization_enabled:=true/false`만 바꾼다. 기존의 시작 자세
+고정(전체 대역) 방식으로 되돌리려면 안정화를 켠 상태에서
+`imu_stabilization_high_frequency_vibration_only_enabled:=false`를 사용한다.
 
 안정화기는 전원 직후 IMU 샘플을 1초간 폐기한 뒤 4초 정지 구간의 중력
 방향과 자이로 bias를 시작 기준으로 측정한다. 이 5초 동안 차량과 카메라를
 움직이면 기준 측정이 다시 시작된다.
 
-이후 400 Hz calibrated gyro로 카메라 좌표의 시작 노면/중력 법선 벡터만
+이후 400 Hz calibrated gyro로 카메라 좌표의 노면/중력 법선 벡터만
 적분한다. yaw 상태를 별도로 누적하지 않으므로 법선축 주위 U턴은 roll/pitch에
-섞이지 않는다. 각 RGB 노출 중심을 둘러싼 법선 방향을 보간하고, 미래 IMU가
-늦으면 마지막 각속도로 최대 15 ms만 예측한다. 시작 기준과 현재 법선 사이의
-최소 회전만 homography로 되돌리므로 출력 시점은 시작 자세에 고정된다.
+섞이지 않는다. 현재 법선을 3 Hz 1차 저역통과한 `느린 기준 자세`와
+비교하고, 두 자세의 차이만 homography로 되돌린다. 그러므로 조종·가감속에
+따른 느린 차체 자세는 영상에 남고, 지면·타이어에서 올라오는 빠른
+roll/pitch 진동만 주로 상쇄된다. 이 주파수는 이상적인 벽돌형 경계가 아니라
+조정 가능한 1차 필터의 -3 dB 기준이다.
 
-주행 중에는 VESC measured ERPM을 휠 직경, 4-pole 모터의 pole pair,
-pinion/spur 및 differential 비율로 signed m/s로 변환한다. 필터링한 속도의
-시간 미분으로 종가속도를 구하고, IMU yaw rate와 `a_y = v * omega_z`를
-결합해 횡가속도를 구한다. 두 차량 운동 가속도를 카메라 좌표계로 변환해
-가속도계에서 제거한 뒤 남은 specific force를 중력 방향 보정에 사용한다.
-시간 정렬된 ERPM 상태가 없으면 주행 중 raw 가속도계를 사용하지 않는다.
+고주파 전용 모드에서는 주행 중 가속도계 nudge와 VESC 차량 가속도
+보정 경로를 자동으로 끄므로, 현재 테스트는 CAN/UART 가속도 데이터에
+의존하지 않는다. ERPM은 정지 판정과 정지 시 gyro bias/자세 복구에만
+사용된다. 저주파 오보정이 실차에서 문제가 될 때 차량 가속도 보정을 CAN
+시간정렬 데이터로 다시 연결한다.
 통합 BEV에서는 depth 시작 법선으로 차량 축을 구하고, 외부 법선이 없는
 단독 카메라 프리뷰에서는 교정된 IMU 시작 중력 방향을 fallback으로 사용한다.
 
 정지 시에는 시작 기준으로 자세를 빠르게 복구하고 gyro bias를 카메라 3축
 모두 갱신한다. 정지 판정은 drift가 포함될 수 있는 현재 자세 추정값이 아니라
 변경되지 않는 시작 기준과 비교한다. 평지에서 서스펜션이 원래 자세로
-복귀한다는 전제는 8초 시정수의 약한 시작 기준 leak으로도 반영한다.
+복귀한다는 전제는 4초 시정수의 약한 시작 기준 leak으로도 반영한다.
 
 결과 FOV는 광학 중심 기준 1.25배 고정 줌으로 유지한다. 줌 영역으로 원본
 경계를 모두 채울 수 없는 자세, 동기화할 IMU가 없는 프레임, 3도 보정
@@ -309,7 +318,9 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_rate_hz` | `400.0` | calibrated accel+gyro 요청/발행 rate |
 | `imu_max_batch_reports` | `5` | 장치측 IMU 묶음 전송 상한 |
 | `imu_topic` | `/camera/imu` | `sensor_msgs/Imu` 출력 |
-| `imu_stabilization_enabled` | `true` | 시작 기준 pitch/roll 안정화 |
+| `imu_stabilization_enabled` | `true` | 영상 roll/pitch 진동 보정 on/off |
+| `imu_stabilization_high_frequency_vibration_only_enabled` | `true` | 저주파 자세를 통과시키고 고주파 진동만 보정; `false`는 전체 대역 |
+| `imu_stabilization_high_frequency_vibration_cutoff_hz` | `3.0` | 1차 고역통과 보정의 -3 dB 기준 주파수 |
 | `imu_stabilization_startup_discard_duration_sec` | `1.0` | 전원 직후 IMU 과도값 폐기 시간 |
 | `imu_stabilization_reference_calibration_duration_sec` | `4.0` | 정지 기준 자세 측정 시간 |
 | `imu_stabilization_external_reference_topic` | `/camera/startup_ground_normal` | BEV 시작 지면 법선 토픽 |
@@ -322,7 +333,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_erpm_filter_time_constant_sec` | `0.15` | 정지 진입용 ERPM 절댓값 저역통과 필터 시정수 |
 | `imu_stabilization_stationary_erpm_enter_duration_sec` | `1.0` | 정지 진입 debounce 시간 |
 | `imu_stabilization_measured_erpm_timeout_sec` | `1.0` | ERPM 수신 중단 시 정지 판정을 해제하는 시간 |
-| `imu_stabilization_vehicle_motion_compensation_enabled` | `true` | ERPM/gyro 차량 가속도를 제거해 주행 중 nudge에 사용 |
+| `imu_stabilization_vehicle_motion_compensation_enabled` | `false` | 전체 대역 모드에서 ERPM/gyro 차량 가속도를 제거 |
 | `imu_stabilization_wheel_diameter_m` | `0.1095` | 하중 상태 구동 휠 직경 |
 | `imu_stabilization_motor_pole_pairs` | `2` | 4-pole 모터의 pole pair 수 |
 | `imu_stabilization_motor_pinion_teeth` | `13` | 실제 motor pinion teeth |
@@ -339,7 +350,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_maximum_lateral_acceleration_mps2` | `15.0` | `v*omega_z` 횡가속도 절댓값 제한 |
 | `imu_stabilization_motion_maximum_sample_age_sec` | `0.10` | 이보다 오래된 ERPM motion 상태는 사용하지 않음 |
 | `imu_stabilization_accelerometer_stationary_only` | `true` | 주행 중 가속도계를 기본 자세에 누적하지 않음 |
-| `imu_stabilization_moving_accelerometer_nudge_enabled` | `true` | 보정된 가속도계를 비누적 bounded nudge로만 적용 |
+| `imu_stabilization_moving_accelerometer_nudge_enabled` | `false` | 전체 대역 모드의 보정된 가속도계 bounded nudge |
 | `imu_stabilization_moving_accelerometer_nudge_time_constant_sec` | `0.15` | 주행 중 nudge 반응/제거 시정수 |
 | `imu_stabilization_moving_accelerometer_nudge_strength` | `0.15` | 신뢰도를 통과한 가속도계 오차의 반영 비율 |
 | `imu_stabilization_moving_accelerometer_pitch_nudge_maximum_deg` | `0.20` | 주행 중 가속도계가 만들 수 있는 pitch 최대 영향 |

@@ -4,6 +4,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -16,6 +17,12 @@ def generate_launch_description():
     capture_directory = LaunchConfiguration("capture_directory")
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
+    )
+    high_frequency_vibration_only_enabled = LaunchConfiguration(
+        "imu_stabilization_high_frequency_vibration_only_enabled"
+    )
+    high_frequency_vibration_cutoff_hz = LaunchConfiguration(
+        "imu_stabilization_high_frequency_vibration_cutoff_hz"
     )
     publish_enabled = LaunchConfiguration("publish_enabled")
 
@@ -48,8 +55,24 @@ def generate_launch_description():
                 "imu_stabilization_enabled",
                 default_value="true",
                 description=(
-                    "Hold preview/published NV12 at the startup pitch/roll "
-                    "reference with the OAK IMU."
+                    "Apply OAK IMU roll/pitch correction to preview and "
+                    "published NV12 output."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_high_frequency_vibration_only_enabled",
+                default_value="true",
+                description=(
+                    "Pass slow body attitude through and stabilize only "
+                    "high-frequency roll/pitch vibration."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_high_frequency_vibration_cutoff_hz",
+                default_value="3.0",
+                description=(
+                    "First-order high-pass cutoff in Hz for roll/pitch "
+                    "vibration correction."
                 ),
             ),
             DeclareLaunchArgument(
@@ -76,6 +99,20 @@ def generate_launch_description():
                                 "capture_directory": capture_directory,
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_enabled
+                                ),
+                                (
+                                    "imu_stabilization_high_frequency_"
+                                    "vibration_only_enabled"
+                                ): ParameterValue(
+                                    high_frequency_vibration_only_enabled,
+                                    value_type=bool,
+                                ),
+                                (
+                                    "imu_stabilization_high_frequency_"
+                                    "vibration_cutoff_hz"
+                                ): ParameterValue(
+                                    high_frequency_vibration_cutoff_hz,
+                                    value_type=float,
                                 ),
                                 "publish_enabled": publish_enabled,
                                 # Standalone launch does not publish IMU;
