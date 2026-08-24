@@ -4,7 +4,8 @@
   <name>vehicle_dynamics_monitor</name>
   <version>0.1.0</version>
   <description>
-    Read-only VESC ROS/SocketCAN telemetry monitor and vehicle acceleration estimator.
+    Receive-only VESC ROS, SocketCAN, and SLCAN telemetry and vehicle
+    acceleration estimation.
   </description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>TODO</license>
@@ -15,6 +16,8 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-can</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>

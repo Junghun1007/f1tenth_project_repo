@@ -1,10 +1,13 @@
 vehicle_dynamics_node:
   ros__parameters:
     # Current vehicle default: vesc_bridge reads VESC telemetry through UART.
-    # Use "socketcan" to decode receive-only VESC status frames from can0.
+    # "slcan" reads CANable 2 directly with python-can when the Jetson kernel
+    # has no slcan module. "socketcan" keeps the kernel CAN path available.
     input_mode: "ros_topic"
     can_interface: "can0"
     can_controller_id: 0
+    slcan_channel: "/dev/ttyACM0"
+    slcan_bitrate: 500000
 
     measured_erpm_topic: "/vesc/measured_erpm"
     connection_status_topic: "/vesc/connected"
@@ -19,6 +22,12 @@ vehicle_dynamics_node:
     yaw_rate_topic: "/vehicle/dynamics/yaw_rate_radps"
     motor_rpm_topic: "/vehicle/dynamics/motor_rpm"
     wheel_rpm_topic: "/vehicle/dynamics/wheel_rpm"
+    motor_current_topic: "/vehicle/dynamics/motor_current_a"
+    input_current_topic: "/vehicle/dynamics/input_current_a"
+    input_voltage_topic: "/vehicle/dynamics/input_voltage_v"
+    duty_cycle_topic: "/vehicle/dynamics/duty_cycle"
+    fet_temperature_topic: "/vehicle/dynamics/fet_temperature_c"
+    motor_temperature_topic: "/vehicle/dynamics/motor_temperature_c"
     diagnostics_topic: "/vehicle/dynamics/diagnostics"
     vehicle_frame_id: "base_link"
 

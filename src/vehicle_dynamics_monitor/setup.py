@@ -16,11 +16,11 @@ setup(
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
         (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
     ],
-    install_requires=["setuptools"],
+    install_requires=["setuptools", "python-can>=4.0", "pyserial>=3.5"],
     zip_safe=True,
     maintainer="ohslo",
     maintainer_email="ohslo@example.com",
-    description="Read-only VESC telemetry and vehicle acceleration estimator.",
+    description="Receive-only VESC telemetry and vehicle dynamics estimation.",
     license="TODO",
     entry_points={
         "console_scripts": [

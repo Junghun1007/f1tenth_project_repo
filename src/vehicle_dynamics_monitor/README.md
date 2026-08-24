@@ -1,8 +1,9 @@
 # vehicle_dynamics_monitor
 
 VESC vehicle telemetry is converted into body-frame motion values for logging
-and camera IMU accelerometer compensation. The monitor never transmits CAN or
-actuator commands.
+and camera IMU accelerometer compensation. It supports ROS topics, kernel
+SocketCAN, and a CANable 2 connected as a `python-can` SLCAN serial device.
+The monitor never transmits CAN or actuator commands.
 
 ## Calculated values
 
@@ -29,6 +30,12 @@ Other outputs are:
 - `/vehicle/dynamics/yaw_rate_radps`
 - `/vehicle/dynamics/motor_rpm`
 - `/vehicle/dynamics/wheel_rpm`
+- `/vehicle/dynamics/motor_current_a`
+- `/vehicle/dynamics/input_current_a`
+- `/vehicle/dynamics/input_voltage_v`
+- `/vehicle/dynamics/duty_cycle`
+- `/vehicle/dynamics/fet_temperature_c`
+- `/vehicle/dynamics/motor_temperature_c`
 - `/vehicle/dynamics/diagnostics`
 
 ## Manual-drive launch
@@ -64,6 +71,46 @@ raw CAN socket but sends no frames.
 
 Protocol IDs and scales follow the
 [official VESC CAN-bus documentation](https://github.com/vedderb/bldc/blob/master/documentation/comm_can.md).
+
+## CANable 2 SLCAN mode
+
+Use this mode on Jetson kernels without the `slcan` kernel module. It does not
+create `can1`; `python-can` opens `/dev/ttyACM0` directly:
+
+```bash
+python3 -m pip install 'python-can[serial]'
+colcon build --symlink-install \
+  --packages-select vehicle_dynamics_monitor vehicle_bringup
+source install/setup.bash
+
+ros2 launch vehicle_dynamics_monitor vehicle_dynamics_monitor.launch.py \
+  input_mode:=slcan \
+  slcan_channel:=/dev/ttyACM0 \
+  slcan_bitrate:=500000 \
+  can_controller_id:=112
+```
+
+No `ip link`, `slcand`, or kernel SocketCAN interface is required. Enable VESC
+STATUS 1 for ERPM, motor current, and duty; STATUS 4 for input current and
+temperatures; and STATUS 5 for input voltage.
+
+Stop any standalone Python receive script before starting the ROS node because
+only one process can own `/dev/ttyACM0`. Internally, the node opens the adapter
+using the same verified call:
+
+```python
+can.Bus(interface="slcan", channel="/dev/ttyACM0", bitrate=500000)
+```
+
+For manual driving with UART actuation and receive-only CANable telemetry, run:
+
+```bash
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
+  input_mode:=slcan \
+  slcan_channel:=/dev/ttyACM0 \
+  slcan_bitrate:=500000 \
+  can_controller_id:=112
+```
 
 ## Calibration notes
 

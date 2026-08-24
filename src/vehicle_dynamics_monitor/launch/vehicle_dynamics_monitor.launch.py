@@ -11,6 +11,8 @@ def generate_launch_description():
     input_mode = LaunchConfiguration("input_mode")
     can_interface = LaunchConfiguration("can_interface")
     can_controller_id = LaunchConfiguration("can_controller_id")
+    slcan_channel = LaunchConfiguration("slcan_channel")
+    slcan_bitrate = LaunchConfiguration("slcan_bitrate")
 
     default_params = PathJoinSubstitution(
         [
@@ -33,6 +35,10 @@ def generate_launch_description():
                 "can_controller_id": ParameterValue(
                     can_controller_id, value_type=int
                 ),
+                "slcan_channel": slcan_channel,
+                "slcan_bitrate": ParameterValue(
+                    slcan_bitrate, value_type=int
+                ),
             },
         ],
     )
@@ -47,10 +53,14 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "input_mode",
                 default_value="ros_topic",
-                description="ros_topic or receive-only socketcan.",
+                description="ros_topic, receive-only socketcan, or USB slcan.",
             ),
             DeclareLaunchArgument("can_interface", default_value="can0"),
             DeclareLaunchArgument("can_controller_id", default_value="0"),
+            DeclareLaunchArgument(
+                "slcan_channel", default_value="/dev/ttyACM0"
+            ),
+            DeclareLaunchArgument("slcan_bitrate", default_value="500000"),
             dynamics_node,
         ]
     )

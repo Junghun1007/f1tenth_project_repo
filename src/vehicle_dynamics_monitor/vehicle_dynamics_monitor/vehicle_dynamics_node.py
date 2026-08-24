@@ -28,6 +28,7 @@ from vehicle_dynamics_monitor.vesc_can import (
     SocketCanReceiver,
     decode_vesc_can_frame,
 )
+from vehicle_dynamics_monitor.vesc_slcan import VescSlcanInterface
 
 
 class VehicleDynamicsNode(Node):
@@ -39,8 +40,8 @@ class VehicleDynamicsNode(Node):
         self.yaw_rate_source = str(
             self.get_parameter("yaw_rate_source").value
         ).lower()
-        if self.input_mode not in {"ros_topic", "socketcan"}:
-            raise ValueError("input_mode must be ros_topic or socketcan")
+        if self.input_mode not in {"ros_topic", "socketcan", "slcan"}:
+            raise ValueError("input_mode must be ros_topic, socketcan, or slcan")
         if self.yaw_rate_source not in {"auto", "imu", "steering"}:
             raise ValueError("yaw_rate_source must be auto, imu, or steering")
 
@@ -79,7 +80,9 @@ class VehicleDynamicsNode(Node):
         self._last_status_log_sec = 0.0
         self._last_diagnostic_sec = 0.0
         self._last_can_open_attempt_sec = 0.0
-        self._can_receiver: SocketCanReceiver | None = None
+        self._can_frames_received = 0
+        self._vesc_frames_decoded = 0
+        self._can_receiver: SocketCanReceiver | VescSlcanInterface | None = None
         self._can_controller_id = int(
             self.get_parameter("can_controller_id").value
         )
@@ -94,6 +97,12 @@ class VehicleDynamicsNode(Node):
                 str(self.get_parameter("can_interface").value)
             )
             self._try_open_can()
+        elif self.input_mode == "slcan":
+            self._can_receiver = VescSlcanInterface(
+                channel=str(self.get_parameter("slcan_channel").value),
+                bitrate=int(self.get_parameter("slcan_bitrate").value),
+            )
+            self._try_open_can()
 
         self.publish_timer = self.create_timer(
             1.0 / self.publish_rate_hz, self._on_publish_timer
@@ -106,8 +115,8 @@ class VehicleDynamicsNode(Node):
         )
         if self.input_mode == "ros_topic":
             self.get_logger().info(
-                "Using VESC bridge telemetry topic. Set input_mode:=socketcan "
-                "to receive VESC CAN status frames directly."
+                "Using VESC bridge telemetry topic. Set input_mode:=slcan for "
+                "CANable 2 or input_mode:=socketcan for a kernel CAN interface."
             )
 
     def _declare_parameters(self) -> None:
@@ -145,11 +154,32 @@ class VehicleDynamicsNode(Node):
         )
         self.declare_parameter("wheel_rpm_topic", "/vehicle/dynamics/wheel_rpm")
         self.declare_parameter(
+            "motor_current_topic", "/vehicle/dynamics/motor_current_a"
+        )
+        self.declare_parameter(
+            "input_current_topic", "/vehicle/dynamics/input_current_a"
+        )
+        self.declare_parameter(
+            "input_voltage_topic", "/vehicle/dynamics/input_voltage_v"
+        )
+        self.declare_parameter(
+            "duty_cycle_topic", "/vehicle/dynamics/duty_cycle"
+        )
+        self.declare_parameter(
+            "fet_temperature_topic", "/vehicle/dynamics/fet_temperature_c"
+        )
+        self.declare_parameter(
+            "motor_temperature_topic",
+            "/vehicle/dynamics/motor_temperature_c",
+        )
+        self.declare_parameter(
             "diagnostics_topic", "/vehicle/dynamics/diagnostics"
         )
 
         self.declare_parameter("can_interface", "can0")
         self.declare_parameter("can_controller_id", 0)
+        self.declare_parameter("slcan_channel", "/dev/ttyACM0")
+        self.declare_parameter("slcan_bitrate", 500_000)
         # /camera/imu uses camera optical coordinates: vehicle up is normally -Y.
         self.declare_parameter("imu_yaw_axis", "y")
         self.declare_parameter("imu_yaw_rate_sign", -1.0)
@@ -227,6 +257,22 @@ class VehicleDynamicsNode(Node):
             str(self.get_parameter("wheel_rpm_topic").value),
             qos_profile_sensor_data,
         )
+        telemetry_topics = {
+            "motor_current_a": "motor_current_topic",
+            "input_current_a": "input_current_topic",
+            "input_voltage_v": "input_voltage_topic",
+            "duty_cycle": "duty_cycle_topic",
+            "fet_temperature_c": "fet_temperature_topic",
+            "motor_temperature_c": "motor_temperature_topic",
+        }
+        self.telemetry_publishers = {
+            value_name: self.create_publisher(
+                Float32,
+                str(self.get_parameter(topic_parameter).value),
+                qos_profile_sensor_data,
+            )
+            for value_name, topic_parameter in telemetry_topics.items()
+        }
         self.diagnostics_pub = self.create_publisher(
             DiagnosticArray,
             str(self.get_parameter("diagnostics_topic").value),
@@ -254,23 +300,22 @@ class VehicleDynamicsNode(Node):
         )
         self.measured_erpm_sub = None
         self.connection_sub = None
-        if self.input_mode != "ros_topic":
-            return
-        self.measured_erpm_sub = self.create_subscription(
-            Int32,
-            str(self.get_parameter("measured_erpm_topic").value),
-            self._on_measured_erpm,
-            qos_profile_sensor_data,
-        )
-        connection_qos = QoSProfile(depth=1)
-        connection_qos.reliability = ReliabilityPolicy.RELIABLE
-        connection_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
-        self.connection_sub = self.create_subscription(
-            Bool,
-            str(self.get_parameter("connection_status_topic").value),
-            self._on_connection_status,
-            connection_qos,
-        )
+        if self.input_mode == "ros_topic":
+            self.measured_erpm_sub = self.create_subscription(
+                Int32,
+                str(self.get_parameter("measured_erpm_topic").value),
+                self._on_measured_erpm,
+                qos_profile_sensor_data,
+            )
+            connection_qos = QoSProfile(depth=1)
+            connection_qos.reliability = ReliabilityPolicy.RELIABLE
+            connection_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+            self.connection_sub = self.create_subscription(
+                Bool,
+                str(self.get_parameter("connection_status_topic").value),
+                self._on_connection_status,
+                connection_qos,
+            )
 
     def _on_measured_erpm(self, message: Int32) -> None:
         now_sec = time.monotonic()
@@ -302,13 +347,21 @@ class VehicleDynamicsNode(Node):
         self._last_can_open_attempt_sec = now_sec
         try:
             self._can_receiver.open()
-            self.get_logger().info(
-                f"Opened receive-only SocketCAN interface {self._can_receiver.interface} "
-                f"for VESC controller ID {self._can_controller_id}."
-            )
+            if isinstance(self._can_receiver, VescSlcanInterface):
+                self.get_logger().info(
+                    f"Opened python-can SLCAN {self._can_receiver.channel} "
+                    f"at {self._can_receiver.bitrate} bit/s (receive-only) for "
+                    f"VESC controller ID {self._can_controller_id}."
+                )
+            else:
+                self.get_logger().info(
+                    "Opened receive-only SocketCAN interface "
+                    f"{self._can_receiver.interface} for VESC controller "
+                    f"ID {self._can_controller_id}."
+                )
         except Exception as exc:
             self.get_logger().error(
-                f"Cannot open SocketCAN interface {self._can_receiver.interface}: {exc}",
+                f"Cannot open {self.input_mode} CAN input: {exc}",
                 throttle_duration_sec=5.0,
             )
 
@@ -320,27 +373,33 @@ class VehicleDynamicsNode(Node):
             return
         try:
             frames = self._can_receiver.drain()
-        except OSError as exc:
+        except Exception as exc:
             self.get_logger().error(
-                f"SocketCAN receive failed: {exc}", throttle_duration_sec=2.0
+                f"{self.input_mode} CAN receive failed: {exc}",
+                throttle_duration_sec=2.0,
             )
             return
 
         now_sec = time.monotonic()
+        self._can_frames_received += len(frames)
         for can_id, data in frames:
             update = decode_vesc_can_frame(
                 can_id, data, self._can_controller_id
             )
             if update is None:
                 continue
+            self._vesc_frames_decoded += 1
             self._latest_telemetry.update(update.values)
+            for name, publisher in self.telemetry_publishers.items():
+                if name in update.values:
+                    publisher.publish(Float32(data=float(update.values[name])))
             if "measured_erpm" in update.values:
                 self.estimator.update_erpm(
                     int(update.values["measured_erpm"]), now_sec
                 )
 
     def _on_publish_timer(self) -> None:
-        if self.input_mode == "socketcan":
+        if self.input_mode in {"socketcan", "slcan"}:
             self._drain_can()
         now_sec = time.monotonic()
         sample = self.estimator.sample(now_sec, self.yaw_rate_source)
@@ -394,11 +453,12 @@ class VehicleDynamicsNode(Node):
         status = DiagnosticStatus()
         status.level = level
         status.name = "vehicle_dynamics_monitor"
-        status.hardware_id = (
-            f"vesc-can-{self._can_controller_id}"
-            if self.input_mode == "socketcan"
-            else "vesc-bridge"
-        )
+        if self.input_mode == "ros_topic":
+            status.hardware_id = "vesc-bridge"
+        else:
+            status.hardware_id = (
+                f"vesc-{self.input_mode}-{self._can_controller_id}"
+            )
         status.message = message
         values: dict[str, Any] = {
             "input_mode": self.input_mode,
@@ -417,6 +477,8 @@ class VehicleDynamicsNode(Node):
             ),
             "yaw_rate_radps": f"{sample.yaw_rate_radps:.4f}",
             "steering_angle_deg": f"{math.degrees(sample.steering_angle_rad):.3f}",
+            "can_frames_received": self._can_frames_received,
+            "vesc_frames_decoded": self._vesc_frames_decoded,
         }
         if self._commanded_duty is not None:
             values["commanded_duty"] = f"{self._commanded_duty:.5f}"
@@ -433,7 +495,10 @@ class VehicleDynamicsNode(Node):
     def _log_status(self, sample: DynamicsSample) -> None:
         if not sample.valid:
             self.get_logger().warn(
-                f"Vehicle dynamics | waiting for fresh {self.input_mode} ERPM telemetry",
+                "Vehicle dynamics | waiting for fresh "
+                f"{self.input_mode} ERPM telemetry | "
+                f"CAN frames={self._can_frames_received} | "
+                f"VESC frames={self._vesc_frames_decoded}",
                 throttle_duration_sec=1.0,
             )
             return
@@ -462,7 +527,7 @@ class VehicleDynamicsNode(Node):
         )
 
     def _is_connected(self, sample: DynamicsSample) -> bool:
-        if self.input_mode == "socketcan":
+        if self.input_mode in {"socketcan", "slcan"}:
             return sample.valid
         return self._connection_status is True
 
@@ -480,7 +545,12 @@ class VehicleDynamicsNode(Node):
 
     def destroy_node(self) -> bool:
         if self._can_receiver is not None:
-            self._can_receiver.close()
+            try:
+                self._can_receiver.close()
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Could not close {self.input_mode} CAN input: {exc}"
+                )
         return super().destroy_node()
 
 

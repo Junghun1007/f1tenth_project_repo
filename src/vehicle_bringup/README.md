@@ -11,7 +11,8 @@ start the F1TENTH vehicle. It replaces the former `vehicle_launcher` and
 - `manual_drive.launch.py`: starts joystick input, direct manual actuator
   commands, and the VESC bridge.
 - `manual_drive_with_dynamics.launch.py`: starts manual driving plus the
-  read-only vehicle dynamics/CAN monitor.
+  read-only vehicle dynamics/CAN monitor, including direct CANable 2 SLCAN
+  telemetry when selected.
 - `auto_drive.launch.py`: starts BEV centerline generation, Stanley/PID
   autonomous control, and the VESC bridge.
 
@@ -27,6 +28,22 @@ The dynamics launch defaults to the current UART VESC telemetry path. To use
 VESC CAN STATUS broadcasts directly, bring up `can0` first and launch with
 `input_mode:=socketcan`. See `vehicle_dynamics_monitor/README.md` for CAN and
 accelerometer-compensation details.
+
+On the Jetson L4T kernel without `slcan`, a CANable 2 at `/dev/ttyACM0` can be
+read directly without creating `can1`:
+
+```bash
+python3 -m pip install 'python-can[serial]'
+ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
+  input_mode:=slcan \
+  slcan_channel:=/dev/ttyACM0 \
+  slcan_bitrate:=500000 \
+  can_controller_id:=112
+```
+
+The VESC continues to receive actuator commands through the existing UART
+bridge. The CANable path is receive-only and is used only for vehicle telemetry
+and acceleration estimation.
 
 The VESC launch files default to the Jetson UART device `/dev/ttyTHS1`. A
 different device path can be supplied without editing YAML:
