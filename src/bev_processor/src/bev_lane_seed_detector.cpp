@@ -1372,9 +1372,6 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       selected_right = current_pair_right;
       side_lock_initialized_ = true;
     }
-  } else if (result.pair_valid) {
-    selected_left = current_pair_left;
-    selected_right = current_pair_right;
   } else {
     const double maximum_distance =
       config_.temporal_side_reacquire_maximum_distance_px;
@@ -1382,6 +1379,12 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     std::size_t best_right_index = candidates.size();
     double best_assignment_cost = std::numeric_limits<double>::infinity();
 
+    // Once the physical roles are locked, temporal association always takes
+    // precedence over the current frame's geometric pair. A tight corner can
+    // move one physical lane across the image and a transient second candidate
+    // can still satisfy the pair-width gate. Reordering that pair by image X
+    // would silently swap the remembered lane identities.
+    //
     // Prefer a two-sided temporal assignment when two distinct candidates
     // match the remembered physical left/right curves.
     for (std::size_t left_index = 0;

@@ -149,6 +149,13 @@ if(BUILD_TESTING)
   add_test(NAME bev_geometry_test COMMAND bev_geometry_test)
 
   add_executable(
+    bev_lane_seed_detector_test test/bev_lane_seed_detector_test.cpp)
+  target_link_libraries(
+    bev_lane_seed_detector_test bev_lane_seed_detector ${OpenCV_LIBS})
+  add_test(
+    NAME bev_lane_seed_detector_test COMMAND bev_lane_seed_detector_test)
+
+  add_executable(
     ground_plane_estimator_test test/ground_plane_estimator_test.cpp)
   target_link_libraries(
     ground_plane_estimator_test
