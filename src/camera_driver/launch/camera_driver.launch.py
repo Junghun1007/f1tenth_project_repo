@@ -18,6 +18,15 @@ def generate_launch_description():
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
+    high_frequency_only = LaunchConfiguration(
+        "imu_stabilization_high_frequency_only"
+    )
+    high_frequency_cutoff_hz = LaunchConfiguration(
+        "imu_stabilization_high_frequency_vibration_cutoff_hz"
+    )
+    gyroscope_correction_gain = LaunchConfiguration(
+        "imu_stabilization_gyroscope_correction_gain"
+    )
     can_longitudinal_compensation_gain = LaunchConfiguration(
         "imu_stabilization_can_longitudinal_compensation_gain"
     )
@@ -66,6 +75,26 @@ def generate_launch_description():
                 description=(
                     "Apply OAK IMU roll/pitch correction to preview and "
                     "published NV12 output."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_high_frequency_only",
+                default_value="false",
+                description=(
+                    "Disable CAN and moving accelerometer corrections, "
+                    "leaving gyro high-frequency stabilization only."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_high_frequency_vibration_cutoff_hz",
+                default_value="3.0",
+                description="High-frequency-only gyro cutoff in Hz.",
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_gyroscope_correction_gain",
+                default_value="1.0",
+                description=(
+                    "Applied gyro image correction fraction from 0.0 to 1.0."
                 ),
             ),
             DeclareLaunchArgument(
@@ -135,6 +164,26 @@ def generate_launch_description():
                                 "capture_directory": capture_directory,
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_enabled
+                                ),
+                                "imu_stabilization_high_frequency_only": (
+                                    ParameterValue(
+                                        high_frequency_only,
+                                        value_type=bool,
+                                    )
+                                ),
+                                (
+                                    "imu_stabilization_high_frequency_"
+                                    "vibration_cutoff_hz"
+                                ): ParameterValue(
+                                    high_frequency_cutoff_hz,
+                                    value_type=float,
+                                ),
+                                (
+                                    "imu_stabilization_gyroscope_"
+                                    "correction_gain"
+                                ): ParameterValue(
+                                    gyroscope_correction_gain,
+                                    value_type=float,
                                 ),
                                 (
                                     "imu_stabilization_can_longitudinal_"

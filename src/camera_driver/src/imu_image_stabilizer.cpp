@@ -290,6 +290,9 @@ bool validConfig(const ImuImageStabilizerConfig & config)
     positive_finite(config.stationary_gyroscope_stddev_maximum_degps) &&
     config.stationary_gyroscope_stddev_maximum_degps < 5.0 &&
     (config.pitch_correction_enabled || config.roll_correction_enabled) &&
+    std::isfinite(config.gyroscope_correction_gain) &&
+    config.gyroscope_correction_gain >= 0.0 &&
+    config.gyroscope_correction_gain <= 1.0 &&
     positive_finite(config.maximum_correction_deg) &&
     config.maximum_correction_deg < 45.0 &&
     positive_finite(config.maximum_sample_interval_sec) &&
@@ -792,20 +795,27 @@ public:
       rollDegrees(current_up_camera) - rollDegrees(reference_up_camera_));
     const double pitch_error_deg = wrapDegrees(
       pitchDegrees(current_up_camera) - pitchDegrees(reference_up_camera_));
+    const cv::Vec3d applied_rotation =
+      rotationVector(correction) * config_.gyroscope_correction_gain;
+    correction = quaternionFromRotationVector(applied_rotation);
+    const double applied_roll_error_deg =
+      roll_error_deg * config_.gyroscope_correction_gain;
+    const double applied_pitch_error_deg =
+      pitch_error_deg * config_.gyroscope_correction_gain;
     const double correction_angle_deg =
-      cv::norm(rotationVector(correction)) * kRadiansToDegrees;
+      cv::norm(applied_rotation) * kRadiansToDegrees;
     const bool within_limit =
       (!config_.roll_correction_enabled ||
-      std::abs(roll_error_deg) <= config_.maximum_correction_deg) &&
+      std::abs(applied_roll_error_deg) <= config_.maximum_correction_deg) &&
       (!config_.pitch_correction_enabled ||
-      std::abs(pitch_error_deg) <= config_.maximum_correction_deg);
+      std::abs(applied_pitch_error_deg) <= config_.maximum_correction_deg);
     return ImageStabilizationCorrection{
       quaternionRotationMatrix(correction),
       timestamp_sec,
       nearest_timestamp,
       nearest_timestamp - timestamp_sec,
-      roll_error_deg,
-      pitch_error_deg,
+      applied_roll_error_deg,
+      applied_pitch_error_deg,
       correction_angle_deg,
       within_limit,
       predicted,

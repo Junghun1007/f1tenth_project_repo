@@ -230,7 +230,9 @@ ros2 launch camera_driver camera_driver.launch.py \
 
 이후 400 Hz calibrated gyro로 카메라 좌표의 노면/중력 법선 벡터를
 적분하고, 수정 전과 동일하게 시작 기준 자세와 비교한 전체 대역 보정을
-homography로 적용한다. 별도의 주파수 cutoff는 사용하지 않는다.
+homography로 적용한다. `imu_stabilization_high_frequency_only:=true`이면
+CAN과 주행 중 accelerometer anchor/nudge를 끄고, 지정한 cutoff 이상의 gyro
+변화만 `imu_stabilization_gyroscope_correction_gain` 비율로 적용한다.
 
 주행 중 가속도계 입력에는 CAN dynamics의 종가속도와 횡가속도를 카메라
 좌표로 변환해 뺀다. 이 잔여 중력 방향은 누적 gyro 자세를 천천히 붙잡는
@@ -324,6 +326,9 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_max_batch_reports` | `5` | 장치측 IMU 묶음 전송 상한 |
 | `imu_topic` | `/camera/imu` | `sensor_msgs/Imu` 출력 |
 | `imu_stabilization_enabled` | `true` | 영상 roll/pitch 진동 보정 on/off |
+| `imu_stabilization_high_frequency_only` | `false` | CAN·주행 accelerometer를 끄고 gyro 고주파만 보정 |
+| `imu_stabilization_high_frequency_vibration_cutoff_hz` | `3.0` | 고주파 전용 모드의 gyro high-pass cutoff |
+| `imu_stabilization_gyroscope_correction_gain` | `1.0` | 추정 gyro 회전의 영상 상쇄 비율 `0.0~1.0` |
 | `imu_stabilization_can_acceleration_topic` | `/vehicle/dynamics/acceleration` | `base_link` X=종, Y=횡가속도 입력 |
 | `imu_stabilization_can_acceleration_timeout_sec` | `0.10` | 이보다 오래된 CAN dynamics는 사용하지 않음 |
 | `imu_stabilization_can_longitudinal_compensation_gain` | `1.0` | CAN 종가속도 제거 비율 `0.0~1.0` |

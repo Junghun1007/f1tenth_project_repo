@@ -33,6 +33,23 @@ source install/setup.bash
 ros2 launch bev_processor bev_processor.launch.py
 ```
 
+CAN과 주행 중 가속도계 보정을 모두 끄고 gyro 고주파 진동만 억제하려면:
+
+```bash
+ros2 launch bev_processor bev_processor.launch.py \
+  preview_enabled:=true \
+  imu_stabilization_enabled:=true \
+  imu_stabilization_high_frequency_only:=true \
+  imu_stabilization_high_frequency_vibration_cutoff_hz:=3.0 \
+  imu_stabilization_gyroscope_correction_gain:=1.0 \
+  imu_stabilization_invalid_correction_hold_frames:=2
+```
+
+`cutoff_hz`를 높이면 더 빠른 진동만 보정하고, 낮추면 느린 흔들림까지
+포함한다. `gyroscope_correction_gain`은 `0.0`이면 영상 회전 보정을 적용하지
+않고 `1.0`이면 추정된 고주파 회전을 전량 상쇄한다. 권장 시작값은
+`cutoff=3.0 Hz`, `gain=1.0`이다. 이 모드에서는 CAN dynamics가 필요 없다.
+
 CAN 차량 가속도 보정을 사용하려면 먼저 다른 터미널에서
 `vehicle_dynamics_monitor`를 SocketCAN 모드로 실행한다.
 

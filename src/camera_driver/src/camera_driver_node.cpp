@@ -47,6 +47,8 @@ namespace
 
 constexpr std::uint32_t kOv9782FullWidth = 1280U;
 constexpr std::uint32_t kOv9782FullHeight = 800U;
+constexpr double kTwoPi =
+  2.0 * 3.141592653589793238462643383279502884;
 
 std::int64_t steady_now_nanoseconds()
 {
@@ -445,6 +447,10 @@ private:
       "maximum_timestamp_domain_delta_sec", 1.0);
     imu_stabilization_enabled_ =
       node_.declare_parameter<bool>("imu_stabilization_enabled", true);
+    high_frequency_only_ = node_.declare_parameter<bool>(
+      "imu_stabilization_high_frequency_only", false);
+    high_frequency_vibration_cutoff_hz_ = node_.declare_parameter<double>(
+      "imu_stabilization_high_frequency_vibration_cutoff_hz", 3.0);
     can_acceleration_topic_ = node_.declare_parameter<std::string>(
       "imu_stabilization_can_acceleration_topic",
       "/vehicle/dynamics/acceleration");
@@ -575,6 +581,9 @@ private:
     imu_stabilizer_config_.roll_correction_enabled =
       node_.declare_parameter<bool>(
       "imu_stabilization_roll_correction_enabled", true);
+    imu_stabilizer_config_.gyroscope_correction_gain =
+      node_.declare_parameter<double>(
+      "imu_stabilization_gyroscope_correction_gain", 1.0);
     imu_stabilizer_config_.maximum_correction_deg =
       node_.declare_parameter<double>(
       "imu_stabilization_maximum_correction_deg", 3.0);
@@ -629,6 +638,23 @@ private:
       node_.declare_parameter<double>("startup_timeout_sec", 5.0);
     status_log_interval_sec_ =
       node_.declare_parameter<double>("status_log_interval_sec", 1.0);
+
+    if (
+      !std::isfinite(high_frequency_vibration_cutoff_hz_) ||
+      high_frequency_vibration_cutoff_hz_ <= 0.0 ||
+      high_frequency_vibration_cutoff_hz_ >= 0.5 * imu_rate_hz_)
+    {
+      throw std::invalid_argument(
+              "imu_stabilization_high_frequency_vibration_cutoff_hz must "
+              "be positive and below half the IMU rate");
+    }
+    if (high_frequency_only_) {
+      vehicle_motion_compensation_enabled_ = false;
+      imu_stabilizer_config_.acceleration_correction_stationary_only = true;
+      imu_stabilizer_config_.moving_accelerometer_nudge_enabled = false;
+      imu_stabilizer_config_.reference_tilt_leak_time_constant_sec =
+        1.0 / (kTwoPi * high_frequency_vibration_cutoff_hz_);
+    }
 
     if (performance_measurement_enabled_) {
       preview_enabled_ = false;
@@ -1296,7 +1322,8 @@ private:
         node_.get_logger(),
         "Virtual-gimbal stabilization: keep camera still for %.1f s "
         "startup discard + %.1f s stationary calibration; yaw-free tilt, "
-        "full-band correction, CAN vehicle acceleration=%s on %s "
+        "%s correction (cutoff=%.2fHz, gyro gain=%.2f), "
+        "CAN vehicle acceleration=%s on %s "
         "(timeout=%.3fs, gain_long/lat=%.2f/%.2f), "
         "BEV reference=%s on %s, runtime stationary=%s "
         "(filtered enter<=%d, raw exit>=%d, filter tau=%.2fs, hold=%.2fs), "
@@ -1307,6 +1334,9 @@ private:
         "invalid correction policy=hold-last-%d-frames then zoom-only",
         imu_stabilizer_config_.startup_discard_duration_sec,
         imu_stabilizer_config_.reference_calibration_duration_sec,
+        high_frequency_only_ ? "high-frequency-only" : "full-band",
+        high_frequency_only_ ? high_frequency_vibration_cutoff_hz_ : 0.0,
+        imu_stabilizer_config_.gyroscope_correction_gain,
         vehicle_motion_compensation_enabled_ ? "on" : "off",
         can_acceleration_topic_.c_str(),
         can_acceleration_timeout_sec_,
@@ -2708,6 +2738,8 @@ private:
   double maximum_imu_pair_skew_sec_{0.003};
   double maximum_timestamp_domain_delta_sec_{1.0};
   bool imu_stabilization_enabled_{true};
+  bool high_frequency_only_{false};
+  double high_frequency_vibration_cutoff_hz_{3.0};
   ImuImageStabilizerConfig imu_stabilizer_config_{};
   std::string startup_ground_reference_topic_;
   std::string measured_erpm_topic_;

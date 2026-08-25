@@ -47,6 +47,7 @@ struct ImuImageStabilizerConfig
   double stationary_gyroscope_stddev_maximum_degps{0.8};
   bool pitch_correction_enabled{true};
   bool roll_correction_enabled{true};
+  double gyroscope_correction_gain{1.0};
   double maximum_correction_deg{3.0};
   double maximum_sample_interval_sec{0.1};
   double maximum_history_sec{2.0};

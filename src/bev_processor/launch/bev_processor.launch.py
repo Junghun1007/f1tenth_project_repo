@@ -23,6 +23,15 @@ def generate_launch_description():
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
+    high_frequency_only = LaunchConfiguration(
+        "imu_stabilization_high_frequency_only"
+    )
+    high_frequency_cutoff_hz = LaunchConfiguration(
+        "imu_stabilization_high_frequency_vibration_cutoff_hz"
+    )
+    gyroscope_correction_gain = LaunchConfiguration(
+        "imu_stabilization_gyroscope_correction_gain"
+    )
     can_longitudinal_compensation_gain = LaunchConfiguration(
         "imu_stabilization_can_longitudinal_compensation_gain"
     )
@@ -50,6 +59,18 @@ def generate_launch_description():
     imu_stabilization_parameter = ParameterValue(
         imu_stabilization_enabled,
         value_type=bool,
+    )
+    high_frequency_only_parameter = ParameterValue(
+        high_frequency_only,
+        value_type=bool,
+    )
+    high_frequency_cutoff_parameter = ParameterValue(
+        high_frequency_cutoff_hz,
+        value_type=float,
+    )
+    gyroscope_correction_gain_parameter = ParameterValue(
+        gyroscope_correction_gain,
+        value_type=float,
     )
     can_longitudinal_compensation_parameter = ParameterValue(
         can_longitudinal_compensation_gain,
@@ -189,6 +210,26 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
+                "imu_stabilization_high_frequency_only",
+                default_value="false",
+                description=(
+                    "Disable CAN and moving accelerometer corrections, "
+                    "leaving gyro high-frequency stabilization only."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_high_frequency_vibration_cutoff_hz",
+                default_value="3.0",
+                description="High-frequency-only gyro cutoff in Hz.",
+            ),
+            DeclareLaunchArgument(
+                "imu_stabilization_gyroscope_correction_gain",
+                default_value="1.0",
+                description=(
+                    "Applied gyro image correction fraction from 0.0 to 1.0."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "imu_stabilization_can_longitudinal_compensation_gain",
                 default_value="1.0",
                 description=(
@@ -310,6 +351,17 @@ def generate_launch_description():
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_parameter
                                 ),
+                                "imu_stabilization_high_frequency_only": (
+                                    high_frequency_only_parameter
+                                ),
+                                (
+                                    "imu_stabilization_high_frequency_"
+                                    "vibration_cutoff_hz"
+                                ): high_frequency_cutoff_parameter,
+                                (
+                                    "imu_stabilization_gyroscope_"
+                                    "correction_gain"
+                                ): gyroscope_correction_gain_parameter,
                                 (
                                     "imu_stabilization_can_longitudinal_"
                                     "compensation_gain"

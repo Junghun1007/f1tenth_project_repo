@@ -39,6 +39,12 @@ camera_driver:
     # stabilized_preview와 동일한 고정 기준 pitch/roll 안정화. 시작 후 총 5초
     # 동안 카메라를 정지시켜 IMU 과도값 폐기와 기준 자세 측정을 완료한다.
     imu_stabilization_enabled: true
+    # true이면 CAN, 주행 중 accelerometer anchor/nudge를 모두 끄고 gyro의
+    # cutoff 이상 진동만 보정한다. false는 기존 full-band+CAN 방식을 유지한다.
+    imu_stabilization_high_frequency_only: false
+    imu_stabilization_high_frequency_vibration_cutoff_hz: 3.0
+    # 0.0=영상 회전 보정 안 함, 1.0=추정된 gyro 회전을 전량 상쇄.
+    imu_stabilization_gyroscope_correction_gain: 1.0
     # 수정 전과 동일한 full-band 자세 안정화를 유지한다. CAN dynamics의
     # 종/횡가속도만 IMU 가속도에서 빼서 기존 가속도계 보정기에 전달한다.
     imu_stabilization_can_acceleration_topic: "/vehicle/dynamics/acceleration"
