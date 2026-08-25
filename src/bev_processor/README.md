@@ -180,6 +180,16 @@ ros2 launch bev_processor bev_processor.launch.py \
 ros2 launch bev_processor bev_processor.launch.py --show-args
 ```
 
+슬라이딩 윈도우 값은 실행할 때 바로 덮어쓸 수 있다.
+
+```bash
+ros2 launch bev_processor bev_processor.launch.py \
+  lane_seed_sliding_window_growth_ratio:=1.12 \
+  lane_seed_sliding_window_maximum_turn_deg_per_window:=15.0 \
+  lane_seed_sliding_window_maximum_turn_change_deg_per_window:=5.0 \
+  lane_seed_sliding_window_heading_update_gain:=0.50
+```
+
 주요 파라미터 그룹:
 
 - `lane_near_*`, `lane_middle_*`, `lane_far_*`:
