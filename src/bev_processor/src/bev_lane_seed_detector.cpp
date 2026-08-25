@@ -44,6 +44,14 @@ struct RunEvidence
   bool contrast_valid{false};
 };
 
+struct SlidingWindowDebug
+{
+  cv::RotatedRect rectangle;
+  cv::Point2d predicted_center;
+  cv::Point2d centroid;
+  bool accepted{false};
+};
+
 struct TrackCandidate
 {
   bool valid{false};
@@ -55,6 +63,8 @@ struct TrackCandidate
   double mean_contrast{0.0};
   double mean_response{0.0};
   double score{0.0};
+  std::vector<cv::Point2d> sliding_window_points;
+  std::vector<SlidingWindowDebug> sliding_windows;
 };
 
 bool isOddPositive(const int value)
@@ -118,6 +128,37 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
     config.maximum_pair_distance_px < config.minimum_pair_distance_px)
   {
     throw std::invalid_argument("lane seed pair-distance range is invalid");
+  }
+  if (
+    !finiteNonNegative(config.sliding_window_minimum_seed_arc_length_px) ||
+    config.sliding_window_initial_width_px < 1 ||
+    config.sliding_window_initial_height_px < 1 ||
+    !std::isfinite(config.sliding_window_growth_ratio) ||
+    config.sliding_window_growth_ratio < 1.0 ||
+    config.sliding_window_maximum_width_px <
+    config.sliding_window_initial_width_px ||
+    config.sliding_window_maximum_height_px <
+    config.sliding_window_initial_height_px ||
+    !std::isfinite(config.sliding_window_step_ratio) ||
+    config.sliding_window_step_ratio <= 0.0 ||
+    config.sliding_window_step_ratio > 1.0 ||
+    config.sliding_window_maximum_count < 1 ||
+    config.sliding_window_minimum_bright_pixels < 1 ||
+    config.sliding_window_maximum_consecutive_misses < 0 ||
+    !std::isfinite(
+      config.sliding_window_maximum_turn_deg_per_window) ||
+    config.sliding_window_maximum_turn_deg_per_window <= 0.0 ||
+    config.sliding_window_maximum_turn_deg_per_window > 90.0 ||
+    !std::isfinite(
+      config.sliding_window_maximum_turn_change_deg_per_window) ||
+    config.sliding_window_maximum_turn_change_deg_per_window <= 0.0 ||
+    config.sliding_window_maximum_turn_change_deg_per_window >
+    config.sliding_window_maximum_turn_deg_per_window ||
+    !std::isfinite(config.sliding_window_heading_update_gain) ||
+    config.sliding_window_heading_update_gain <= 0.0 ||
+    config.sliding_window_heading_update_gain > 1.0)
+  {
+    throw std::invalid_argument("lane seed sliding-window settings are invalid");
   }
   if (
     !finiteNonNegative(
@@ -654,6 +695,215 @@ cv::Point2d candidateSeedOriginal(const TrackCandidate & candidate)
   return seed;
 }
 
+cv::Point2d candidateFarEndpointOriginal(const TrackCandidate & candidate)
+{
+  if (candidate.evidence.empty()) {
+    return cv::Point2d();
+  }
+  const cv::Point2d first = evidenceCenterOriginal(candidate.evidence.front());
+  const cv::Point2d last = evidenceCenterOriginal(candidate.evidence.back());
+  return first.y <= last.y ? first : last;
+}
+
+cv::Point2d normalized(const cv::Point2d & vector)
+{
+  const double length = cv::norm(vector);
+  return length > 1.0e-9 ? vector * (1.0 / length) : cv::Point2d();
+}
+
+cv::Point2d rotateDirection(
+  const cv::Point2d & direction,
+  const double angle_deg)
+{
+  const double angle_rad = angle_deg * CV_PI / 180.0;
+  const double cosine = std::cos(angle_rad);
+  const double sine = std::sin(angle_rad);
+  return normalized(cv::Point2d(
+      cosine * direction.x - sine * direction.y,
+      sine * direction.x + cosine * direction.y));
+}
+
+double signedTurnDegrees(
+  const cv::Point2d & from,
+  const cv::Point2d & to)
+{
+  const double cross = from.x * to.y - from.y * to.x;
+  const double dot = from.dot(to);
+  return std::atan2(cross, dot) * 180.0 / CV_PI;
+}
+
+bool initialFarDirection(
+  const TrackCandidate & candidate,
+  const BevLaneSeedDetectorConfig & config,
+  cv::Point2d * anchor,
+  cv::Point2d * direction)
+{
+  if (
+    anchor == nullptr || direction == nullptr ||
+    candidate.evidence.size() < 2)
+  {
+    return false;
+  }
+  std::vector<cv::Point2d> points;
+  points.reserve(candidate.evidence.size());
+  for (const RunEvidence & evidence : candidate.evidence) {
+    points.push_back(evidenceCenterOriginal(evidence));
+  }
+  if (points.front().y < points.back().y) {
+    std::reverse(points.begin(), points.end());
+  }
+  *anchor = points.back();
+  const double desired_lookback = std::max(
+    4.0, 0.75 * static_cast<double>(
+      config.sliding_window_initial_height_px));
+  std::size_t reference_index = points.size() - 2;
+  for (std::size_t index = points.size() - 1; index > 0; --index) {
+    reference_index = index - 1;
+    if (cv::norm(*anchor - points[reference_index]) >= desired_lookback) {
+      break;
+    }
+  }
+  *direction = normalized(*anchor - points[reference_index]);
+  return cv::norm(*direction) > 0.0;
+}
+
+void extendWithSlidingWindows(
+  const cv::Mat & response,
+  const BevLaneSeedDetectorConfig & config,
+  TrackCandidate * candidate)
+{
+  if (
+    candidate == nullptr || !candidate->valid ||
+    !config.sliding_window_enabled ||
+    candidate->arc_length_px <
+    config.sliding_window_minimum_seed_arc_length_px)
+  {
+    return;
+  }
+
+  cv::Point2d anchor;
+  cv::Point2d direction;
+  if (!initialFarDirection(*candidate, config, &anchor, &direction)) {
+    return;
+  }
+
+  const cv::Rect image_bounds(0, 0, response.cols, response.rows);
+  double previous_turn_deg = 0.0;
+  int consecutive_misses = 0;
+  for (int index = 0; index < config.sliding_window_maximum_count; ++index) {
+    const double scale = std::pow(
+      config.sliding_window_growth_ratio, static_cast<double>(index));
+    const double window_width = static_cast<double>(std::min(
+        config.sliding_window_maximum_width_px,
+        std::max(1, static_cast<int>(std::lround(
+            config.sliding_window_initial_width_px * scale)))));
+    const double window_height = static_cast<double>(std::min(
+        config.sliding_window_maximum_height_px,
+        std::max(1, static_cast<int>(std::lround(
+            config.sliding_window_initial_height_px * scale)))));
+    const double step = window_height * config.sliding_window_step_ratio;
+    const cv::Point2d predicted_center = anchor + step * direction;
+    const double heading_deg = std::atan2(direction.y, direction.x) *
+      180.0 / CV_PI;
+    const cv::RotatedRect window(
+      cv::Point2f(
+        static_cast<float>(predicted_center.x),
+        static_cast<float>(predicted_center.y)),
+      cv::Size2f(
+        static_cast<float>(window_height),
+        static_cast<float>(window_width)),
+      static_cast<float>(heading_deg));
+    SlidingWindowDebug debug{
+      window, predicted_center, predicted_center, false};
+    const cv::Rect search_bounds = window.boundingRect() & image_bounds;
+    if (search_bounds.empty()) {
+      candidate->sliding_windows.push_back(std::move(debug));
+      break;
+    }
+
+    const cv::Point2d normal(-direction.y, direction.x);
+    double response_sum = 0.0;
+    double weighted_column_sum = 0.0;
+    double weighted_row_sum = 0.0;
+    int bright_pixels = 0;
+    for (int row = search_bounds.y;
+      row < search_bounds.y + search_bounds.height; ++row)
+    {
+      const auto * values = response.ptr<std::uint8_t>(row);
+      for (int column = search_bounds.x;
+        column < search_bounds.x + search_bounds.width; ++column)
+      {
+        const int value = static_cast<int>(values[column]);
+        if (value < config.minimum_top_hat_response) {
+          continue;
+        }
+        const cv::Point2d offset(
+          static_cast<double>(column) - predicted_center.x,
+          static_cast<double>(row) - predicted_center.y);
+        if (
+          std::abs(offset.dot(direction)) > 0.5 * window_height ||
+          std::abs(offset.dot(normal)) > 0.5 * window_width)
+        {
+          continue;
+        }
+        const double weight = static_cast<double>(value);
+        response_sum += weight;
+        weighted_column_sum += weight * static_cast<double>(column);
+        weighted_row_sum += weight * static_cast<double>(row);
+        ++bright_pixels;
+      }
+    }
+
+    bool accepted =
+      bright_pixels >= config.sliding_window_minimum_bright_pixels &&
+      response_sum > 0.0;
+    cv::Point2d centroid = predicted_center;
+    if (accepted) {
+      centroid = cv::Point2d(
+        weighted_column_sum / response_sum,
+        weighted_row_sum / response_sum);
+      const double forward_advance = (centroid - anchor).dot(direction);
+      accepted = forward_advance >= std::max(1.0, 0.20 * step);
+    }
+
+    debug.centroid = centroid;
+    debug.accepted = accepted;
+    candidate->sliding_windows.push_back(std::move(debug));
+    if (!accepted) {
+      ++consecutive_misses;
+      if (
+        consecutive_misses >
+        config.sliding_window_maximum_consecutive_misses)
+      {
+        break;
+      }
+      anchor = predicted_center;
+      continue;
+    }
+
+    consecutive_misses = 0;
+    const cv::Point2d observed_direction = normalized(centroid - anchor);
+    double desired_turn_deg = std::clamp(
+      signedTurnDegrees(direction, observed_direction),
+      -config.sliding_window_maximum_turn_deg_per_window,
+      config.sliding_window_maximum_turn_deg_per_window);
+    desired_turn_deg = std::clamp(
+      desired_turn_deg,
+      previous_turn_deg -
+      config.sliding_window_maximum_turn_change_deg_per_window,
+      previous_turn_deg +
+      config.sliding_window_maximum_turn_change_deg_per_window);
+    const double applied_turn_deg = previous_turn_deg +
+      config.sliding_window_heading_update_gain *
+      (desired_turn_deg - previous_turn_deg);
+    direction = rotateDirection(direction, applied_turn_deg);
+    previous_turn_deg = applied_turn_deg;
+    candidate->arc_length_px += cv::norm(centroid - anchor);
+    candidate->sliding_window_points.push_back(centroid);
+    anchor = centroid;
+  }
+}
+
 struct CandidateExtraction
 {
   std::vector<TrackCandidate> candidates;
@@ -1166,6 +1416,10 @@ BevLaneSeed toPublicSeed(const TrackCandidate & candidate)
   for (const RunEvidence & evidence : candidate.evidence) {
     seed.support_points.push_back(evidenceCenterOriginal(evidence));
   }
+  seed.support_points.insert(
+    seed.support_points.end(),
+    candidate.sliding_window_points.begin(),
+    candidate.sliding_window_points.end());
   return seed;
 }
 
@@ -1201,6 +1455,40 @@ void drawCandidate(
   if (points.size() >= 2) {
     cv::polylines(*image, points, false, color, 1, cv::LINE_AA);
   }
+  if (!candidate.sliding_window_points.empty()) {
+    std::vector<cv::Point> extension_points;
+    extension_points.reserve(candidate.sliding_window_points.size() + 1U);
+    const cv::Point2d far_endpoint = candidateFarEndpointOriginal(candidate);
+    extension_points.emplace_back(
+      static_cast<int>(std::lround(far_endpoint.x)),
+      static_cast<int>(std::lround(far_endpoint.y)));
+    for (const cv::Point2d & point : candidate.sliding_window_points) {
+      extension_points.emplace_back(
+        static_cast<int>(std::lround(point.x)),
+        static_cast<int>(std::lround(point.y)));
+    }
+    cv::polylines(
+      *image, extension_points, false, color, 1, cv::LINE_AA);
+  }
+  for (const SlidingWindowDebug & window : candidate.sliding_windows) {
+    cv::Point2f vertices[4];
+    window.rectangle.points(vertices);
+    const cv::Scalar window_color = window.accepted ?
+      color : cv::Scalar(0, 0, 255);
+    for (int index = 0; index < 4; ++index) {
+      cv::line(
+        *image, vertices[index], vertices[(index + 1) % 4],
+        window_color, 1, cv::LINE_AA);
+    }
+    if (window.accepted) {
+      cv::circle(
+        *image,
+        cv::Point(
+          static_cast<int>(std::lround(window.centroid.x)),
+          static_cast<int>(std::lround(window.centroid.y))),
+        2, cv::Scalar(0, 255, 255), cv::FILLED, cv::LINE_AA);
+    }
+  }
   const cv::Point2d seed_point = candidateSeedOriginal(candidate);
   const cv::Point seed(
     static_cast<int>(std::lround(seed_point.x)),
@@ -1227,6 +1515,14 @@ void drawMaskCandidate(cv::Mat * mask, const TrackCandidate & candidate)
     cv::polylines(*mask, points, false, cv::Scalar(255), 1, cv::LINE_8);
   } else if (!points.empty()) {
     cv::circle(*mask, points.front(), 1, cv::Scalar(255), cv::FILLED);
+  }
+  // A sliding window contributes exactly one center-of-brightness pixel.
+  for (const cv::Point2d & point : candidate.sliding_window_points) {
+    const int column = static_cast<int>(std::lround(point.x));
+    const int row = static_cast<int>(std::lround(point.y));
+    if (column >= 0 && column < mask->cols && row >= 0 && row < mask->rows) {
+      mask->at<std::uint8_t>(row, column) = 255U;
+    }
   }
 }
 
@@ -1497,6 +1793,10 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     }
   }
 
+  // The conservative ROI detector remains the authority for lane identity.
+  // Only after selection do growing, rotated windows extend its far endpoint.
+  extendWithSlidingWindows(enhanced_top_hat, config_, &selected_left);
+  extendWithSlidingWindows(enhanced_top_hat, config_, &selected_right);
   result.left = toPublicSeed(selected_left);
   result.right = toPublicSeed(selected_right);
   if (config_.temporal_side_lock_enabled && side_lock_initialized_) {

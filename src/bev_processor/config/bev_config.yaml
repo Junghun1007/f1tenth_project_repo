@@ -248,6 +248,27 @@ bev_processor:
     lane_seed_pair_minimum_distance_px: 50.0
     lane_seed_pair_maximum_distance_px: 95.0
 
+    # 안정적으로 선택된 ROI 트랙의 먼 쪽 끝에서 회전 가능한 창을 쌓는다.
+    # 각 창은 Top-hat 밝기의 가중 무게중심 한 점만 차선 시드로 추가한다.
+    # growth_ratio가 1보다 클수록 원거리 창의 폭/높이가 빠르게 증가한다.
+    lane_seed_sliding_window_enabled: true
+    lane_seed_sliding_window_minimum_seed_arc_length_px: 40.0
+    lane_seed_sliding_window_initial_width_px: 9
+    lane_seed_sliding_window_initial_height_px: 12
+    lane_seed_sliding_window_growth_ratio: 1.08
+    lane_seed_sliding_window_maximum_width_px: 25
+    lane_seed_sliding_window_maximum_height_px: 24
+    lane_seed_sliding_window_step_ratio: 0.65
+    lane_seed_sliding_window_maximum_count: 24
+    lane_seed_sliding_window_minimum_bright_pixels: 2
+    lane_seed_sliding_window_maximum_consecutive_misses: 1
+
+    # 창당 회전각과 연속 창 사이 회전각 변화량을 함께 제한하고 gain으로
+    # 방향을 완만하게 갱신해 코너에서 좌우로 진동하는 경로를 억제한다.
+    lane_seed_sliding_window_maximum_turn_deg_per_window: 12.0
+    lane_seed_sliding_window_maximum_turn_change_deg_per_window: 4.0
+    lane_seed_sliding_window_heading_update_gain: 0.65
+
     # 매 프레임 행·열 방향을 모두 같은 기준으로 검사하고 통합 후 시드를
     # 선택한다. 수평에 가까운 급커브도 행 검사 실패 여부와 관계없이 후보로 들어온다.
     lane_seed_column_tracking_enabled: true

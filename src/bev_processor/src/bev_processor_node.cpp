@@ -418,6 +418,26 @@ public:
         lane_seed_config_.temporal_side_reacquire_distance_per_missing_frame_px,
         lane_seed_config_.temporal_side_reacquire_maximum_distance_px,
         lane_preview_enabled_ ? "on" : "off");
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV lane sliding windows: %s, stable_arc>=%.1fpx, "
+        "initial=%dx%dpx, growth=%.3f, maximum=%dx%dpx, step=%.2f, "
+        "count<=%d, bright_pixels>=%d, misses<=%d, "
+        "turn<=%.1fdeg/window, turn_change<=%.1fdeg/window, gain=%.2f",
+        lane_seed_config_.sliding_window_enabled ? "on" : "off",
+        lane_seed_config_.sliding_window_minimum_seed_arc_length_px,
+        lane_seed_config_.sliding_window_initial_width_px,
+        lane_seed_config_.sliding_window_initial_height_px,
+        lane_seed_config_.sliding_window_growth_ratio,
+        lane_seed_config_.sliding_window_maximum_width_px,
+        lane_seed_config_.sliding_window_maximum_height_px,
+        lane_seed_config_.sliding_window_step_ratio,
+        lane_seed_config_.sliding_window_maximum_count,
+        lane_seed_config_.sliding_window_minimum_bright_pixels,
+        lane_seed_config_.sliding_window_maximum_consecutive_misses,
+        lane_seed_config_.sliding_window_maximum_turn_deg_per_window,
+        lane_seed_config_.sliding_window_maximum_turn_change_deg_per_window,
+        lane_seed_config_.sliding_window_heading_update_gain);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -614,6 +634,26 @@ private:
       "lane_seed_maximum_slope_change_px_per_row", 2.0);
     declare_parameter<double>("lane_seed_pair_minimum_distance_px", 50.0);
     declare_parameter<double>("lane_seed_pair_maximum_distance_px", 95.0);
+    declare_parameter<bool>("lane_seed_sliding_window_enabled", true);
+    declare_parameter<double>(
+      "lane_seed_sliding_window_minimum_seed_arc_length_px", 40.0);
+    declare_parameter<int>("lane_seed_sliding_window_initial_width_px", 9);
+    declare_parameter<int>("lane_seed_sliding_window_initial_height_px", 12);
+    declare_parameter<double>("lane_seed_sliding_window_growth_ratio", 1.08);
+    declare_parameter<int>("lane_seed_sliding_window_maximum_width_px", 25);
+    declare_parameter<int>("lane_seed_sliding_window_maximum_height_px", 24);
+    declare_parameter<double>("lane_seed_sliding_window_step_ratio", 0.65);
+    declare_parameter<int>("lane_seed_sliding_window_maximum_count", 24);
+    declare_parameter<int>(
+      "lane_seed_sliding_window_minimum_bright_pixels", 2);
+    declare_parameter<int>(
+      "lane_seed_sliding_window_maximum_consecutive_misses", 1);
+    declare_parameter<double>(
+      "lane_seed_sliding_window_maximum_turn_deg_per_window", 12.0);
+    declare_parameter<double>(
+      "lane_seed_sliding_window_maximum_turn_change_deg_per_window", 4.0);
+    declare_parameter<double>(
+      "lane_seed_sliding_window_heading_update_gain", 0.65);
     declare_parameter<bool>("lane_seed_column_tracking_enabled", true);
     declare_parameter<bool>("lane_seed_cross_direction_merge_enabled", true);
     declare_parameter<double>(
@@ -908,6 +948,38 @@ private:
       "lane_seed_pair_minimum_distance_px").as_double();
     lane_seed_config_.maximum_pair_distance_px = get_parameter(
       "lane_seed_pair_maximum_distance_px").as_double();
+    lane_seed_config_.sliding_window_enabled = get_parameter(
+      "lane_seed_sliding_window_enabled").as_bool();
+    lane_seed_config_.sliding_window_minimum_seed_arc_length_px = get_parameter(
+      "lane_seed_sliding_window_minimum_seed_arc_length_px").as_double();
+    lane_seed_config_.sliding_window_initial_width_px = static_cast<int>(
+      get_parameter("lane_seed_sliding_window_initial_width_px").as_int());
+    lane_seed_config_.sliding_window_initial_height_px = static_cast<int>(
+      get_parameter("lane_seed_sliding_window_initial_height_px").as_int());
+    lane_seed_config_.sliding_window_growth_ratio = get_parameter(
+      "lane_seed_sliding_window_growth_ratio").as_double();
+    lane_seed_config_.sliding_window_maximum_width_px = static_cast<int>(
+      get_parameter("lane_seed_sliding_window_maximum_width_px").as_int());
+    lane_seed_config_.sliding_window_maximum_height_px = static_cast<int>(
+      get_parameter("lane_seed_sliding_window_maximum_height_px").as_int());
+    lane_seed_config_.sliding_window_step_ratio = get_parameter(
+      "lane_seed_sliding_window_step_ratio").as_double();
+    lane_seed_config_.sliding_window_maximum_count = static_cast<int>(
+      get_parameter("lane_seed_sliding_window_maximum_count").as_int());
+    lane_seed_config_.sliding_window_minimum_bright_pixels = static_cast<int>(
+      get_parameter(
+        "lane_seed_sliding_window_minimum_bright_pixels").as_int());
+    lane_seed_config_.sliding_window_maximum_consecutive_misses =
+      static_cast<int>(get_parameter(
+          "lane_seed_sliding_window_maximum_consecutive_misses").as_int());
+    lane_seed_config_.sliding_window_maximum_turn_deg_per_window =
+      get_parameter(
+      "lane_seed_sliding_window_maximum_turn_deg_per_window").as_double();
+    lane_seed_config_.sliding_window_maximum_turn_change_deg_per_window =
+      get_parameter(
+      "lane_seed_sliding_window_maximum_turn_change_deg_per_window").as_double();
+    lane_seed_config_.sliding_window_heading_update_gain = get_parameter(
+      "lane_seed_sliding_window_heading_update_gain").as_double();
     lane_seed_config_.column_tracking_enabled = get_parameter(
       "lane_seed_column_tracking_enabled").as_bool();
     lane_seed_config_.cross_direction_merge_enabled = get_parameter(

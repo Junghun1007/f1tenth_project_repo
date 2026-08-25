@@ -200,6 +200,27 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
   급격한 기울기 변화 억제
 - `lane_seed_pair_*_distance_px`:
   MAD 이상치 제거 후 좌우 시드 평균 간격
+- `lane_seed_sliding_window_enabled`,
+  `lane_seed_sliding_window_minimum_seed_arc_length_px`:
+  기존 ROI 검출을 통과한 안정 트랙만 먼 쪽 끝에서 슬라이딩 윈도우로
+  연장할지 여부와 연장을 시작할 최소 곡선 길이
+- `lane_seed_sliding_window_initial_*`,
+  `lane_seed_sliding_window_growth_ratio`,
+  `lane_seed_sliding_window_maximum_*`:
+  첫 창의 폭/높이, 창마다 적용할 증가 비율, 최대 폭/높이. 원거리에서
+  굵어지는 차선에 맞춰 폭과 높이가 함께 증가한다.
+- `lane_seed_sliding_window_step_ratio`,
+  `lane_seed_sliding_window_maximum_count`:
+  현재 창 높이 대비 다음 창 이동 거리와 한 차선당 최대 창 개수
+- `lane_seed_sliding_window_minimum_bright_pixels`,
+  `lane_seed_sliding_window_maximum_consecutive_misses`:
+  창 안에서 무게중심을 계산할 최소 밝은 픽셀 수와 연결 중 허용할 빈 창 수
+- `lane_seed_sliding_window_maximum_turn_deg_per_window`:
+  직전 진행 방향에서 다음 창으로 허용할 최대 회전각
+- `lane_seed_sliding_window_maximum_turn_change_deg_per_window`,
+  `lane_seed_sliding_window_heading_update_gain`:
+  연속 창 사이 회전량 급변 제한과 방향 갱신 비율. 코너 방향과 반대로
+  순간 진동하는 중심선 생성을 억제한다.
 - `lane_seed_column_tracking_enabled`:
   행 후보와 함께 동일 기준의 열 방향 후보를 매 프레임 통합할지 여부
 - `lane_seed_cross_direction_merge_enabled`:
@@ -216,6 +237,11 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
   유지, 잠금 초기화 프레임, 마지막 유효 곡선에서 허용할 기본 거리,
   누락 프레임당 추가 거리와 최대 거리. 단일 차선과 좌우 쌍 모두 이 동적
   거리 범위 안에서만 재연결된다.
+
+차선 프리뷰에는 선택된 좌·우 색으로 회전 슬라이딩 윈도우가 표시된다.
+통과한 창의 노란 점은 Top-hat 응답으로 계산한 밝기 가중 무게중심이며,
+빨간 창은 밝은 픽셀 부족 또는 진행 방향 조건으로 중단된 창이다. 차선
+마스크에는 통과한 창마다 무게중심 한 픽셀만 추가된다.
 
 ## BEV 범위
 
