@@ -261,6 +261,9 @@ void testPairProducesExplicitCenterline()
     detection.centerline_source == BevLaneCenterlineSource::PAIR,
     "lane pair must produce a pair centerline");
   require(
+    detection.centerline_direct_midpoint_count >= 3,
+    "lane pair did not use perpendicular midpoint correspondences");
+  require(
     std::abs(centerColumnNearRow(detection, 150.0) - 50.0) <= 1.0,
     "pair centerline is not between the two boundaries");
   require(
@@ -272,7 +275,7 @@ void testPairProducesExplicitCenterline()
     "published mono8 mask still contains lane boundaries");
 }
 
-void testSingleBoundaryUsesRememberedRoadWidth()
+void testSingleBoundaryUsesConfiguredRoadWidth()
 {
   BevLaneSeedDetector left_detector = makeDetector();
   initializePair(&left_detector);
@@ -284,7 +287,7 @@ void testSingleBoundaryUsesRememberedRoadWidth()
     "single left boundary did not produce a left-derived centerline");
   require(
     std::abs(centerColumnNearRow(left, 150.0) - 50.0) <= 1.0,
-    "left boundary centerline did not use half the remembered road width");
+    "left boundary centerline did not use half the configured road width");
 
   BevLaneSeedDetector right_detector = makeDetector();
   initializePair(&right_detector);
@@ -296,7 +299,7 @@ void testSingleBoundaryUsesRememberedRoadWidth()
     "single right boundary did not produce a right-derived centerline");
   require(
     std::abs(centerColumnNearRow(right, 150.0) - 50.0) <= 1.0,
-    "right boundary centerline did not use half the remembered road width");
+    "right boundary centerline did not use half the configured road width");
 }
 
 void testPairToSingleTransitionLimitsLateralJump()
@@ -372,7 +375,7 @@ void testCenterlineSuppressesIsolatedBump()
   config.column_tracking_enabled = false;
   config.cross_direction_merge_enabled = false;
   config.sliding_window_enabled = false;
-  config.centerline_outlier_distance_px = 2.0;
+  config.centerline_midpoint_smoothing_weight = 0.10;
   BevLaneSeedDetector detector(config);
   std::vector<int> center_columns(300, 50);
   center_columns[150] = 58;
@@ -398,7 +401,7 @@ int main()
   testValidPairReinitializesBothSides();
   testPairRejectsDistantReacquisition();
   testPairProducesExplicitCenterline();
-  testSingleBoundaryUsesRememberedRoadWidth();
+  testSingleBoundaryUsesConfiguredRoadWidth();
   testPairToSingleTransitionLimitsLateralJump();
   testAdaptiveSmoothingPreservesStraightToCurve();
   testCenterlineUsesSlidingWindowExtension();

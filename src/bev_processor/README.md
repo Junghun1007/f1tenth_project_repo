@@ -200,17 +200,18 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_seed_sliding_window_heading_update_gain:=0.50
 ```
 
-중심선 폭·구간 피팅·전환값도 같은 방법으로 조절한다.
+중심선의 도로 폭·수직 투영·보정값도 같은 방법으로 조절한다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
-  lane_centerline_nominal_lane_width_px:=62.0 \
-  lane_centerline_fit_segment_length_px:=12.0 \
-  lane_centerline_fit_straight_maximum_residual_px:=1.5 \
-  lane_centerline_fit_maximum_turn_deg_per_segment:=28.0 \
-  lane_centerline_fit_maximum_turn_change_deg_per_segment:=10.0 \
-  lane_centerline_transition_frames:=4 \
-  lane_centerline_maximum_lateral_jump_px:=3.0
+  lane_centerline_expected_width_m:=0.65 \
+  lane_centerline_width_tolerance_m:=0.08 \
+  lane_centerline_measured_point_smoothing_weight:=0.60 \
+  lane_centerline_midpoint_smoothing_weight:=0.45 \
+  lane_centerline_temporal_current_weight:=0.60 \
+  lane_centerline_transition_maximum_correction_m:=0.15 \
+  lane_centerline_tangent_window_m:=0.20 \
+  lane_centerline_maximum_heading_step_deg:=8.0
 ```
 
 주요 파라미터 그룹:
@@ -254,35 +255,31 @@ ros2 launch bev_processor bev_processor.launch.py \
   `lane_seed_sliding_window_heading_update_gain`:
   연속 창 사이 회전량 급변 제한과 방향 갱신 비율. 코너 방향과 반대로
   순간 진동하는 중심선 생성을 억제한다.
-- `lane_centerline_enabled`, `lane_centerline_nominal_lane_width_px`,
-  `lane_centerline_width_update_gain`:
-  중심선 생성 여부, 양쪽 차선을 보기 전 사용할 기본 폭, 양쪽 차선에서
-  실측한 도로 폭과 단일 차선별 중심 bias의 갱신 비율
-- `lane_centerline_resample_spacing_px`:
-  ROI 시드와 성긴 슬라이딩 윈도우 점을 동일 비중으로 만들 재샘플 간격
-- `lane_centerline_outlier_distance_px`:
-  이웃을 잇는 선분에서 벗어난 고립 중심점을 교정할 거리
-- `lane_centerline_fit_segment_length_px`,
-  `lane_centerline_fit_tail_window_px`:
-  가까운 쪽부터 순차적으로 확정할 피팅 구간 길이와 구간 끝
-  접선을 계산할 관측 길이
-- `lane_centerline_fit_straight_maximum_residual_px`,
-  `lane_centerline_fit_straight_maximum_heading_deg`:
-  현재 직선을 그대로 연장할 최대 중앙 잔차와 방향 차이
-- `lane_centerline_fit_maximum_residual_px`,
-  `lane_centerline_fit_hermite_tangent_scale`:
-  구간 곡선과 관측점의 최대 중앙 잔차, Hermite 접선 길이 비율
-- `lane_centerline_fit_maximum_turn_deg_per_segment`,
-  `lane_centerline_fit_maximum_turn_change_deg_per_segment`,
-  `lane_centerline_fit_minimum_forward_progress_ratio`:
-  구간당 최대 회전각, 인접 구간 회전량 변화 제한, 직전 진행
-  방향으로 반드시 남아야 하는 최소 전진 비율. 자기교차와 되돌아가는
-  선분은 파라미터와 관계없이 발행하지 않는다.
-- `lane_centerline_transition_frames`,
-  `lane_centerline_maximum_lateral_jump_px`,
-  `lane_centerline_maximum_heading_jump_deg`:
-  양쪽에서 한쪽 차선으로 전환될 때 허용할 짧은 보정 기간과 최초
-  중심선 횡이동·방향 변화 한계
+- `lane_centerline_enabled`, `lane_centerline_expected_width_m`,
+  `lane_centerline_width_tolerance_m`:
+  중심선 생성 여부, 기대 도로 폭, 양쪽 경계를 서로 투영할 때
+  허용할 폭 오차. 거리 단위는 BEV와 동일하게 m이다.
+- `lane_centerline_minimum_points`,
+  `lane_centerline_minimum_counterpart_points`:
+  단일 경계로 중심선을 만들 최소 점 수와, 양쪽 직접 중점 생성을
+  시도할 상대 경계의 최소 점 수
+- `lane_centerline_measured_point_smoothing_weight`,
+  `lane_centerline_midpoint_smoothing_weight`:
+  검출 경계 점과 수직 투영으로 생성한 중점에서 현재 점을 유지하는 가중치.
+  작을수록 부드럽지만 급커브가 더 많이 완화된다.
+- `lane_centerline_temporal_current_weight`:
+  양쪽 중심선을 이전 프레임과 합성할 때 현재 프레임의 가중치
+- `lane_centerline_transition_maximum_correction_m`,
+  `lane_centerline_transition_correction_decay`:
+  양쪽에서 한쪽으로 전환될 때 이전 중심선과의 최대 가로 방향 보정량과
+  매 프레임 보정량 유지 비율
+- `lane_centerline_tangent_window_m`,
+  `lane_centerline_maximum_curvature_per_m`,
+  `lane_centerline_maximum_heading_step_deg`:
+  단일 경계의 법선 이동에 사용할 접선 측정 거리, 최대 곡률, 인접 점간
+  방향 변화 한계. 되돌아가거나 자기 교차할 수 있는 법선 이동 구간은 잘라낸다.
+- `lane_centerline_maximum_gap_fill_m`:
+  중심선 마스크와 프리뷰에서 두 점 사이를 선으로 이을 최대 거리
 - `lane_seed_column_tracking_enabled`:
   행 후보와 함께 동일 기준의 열 방향 후보를 매 프레임 통합할지 여부
 - `lane_seed_cross_direction_merge_enabled`:

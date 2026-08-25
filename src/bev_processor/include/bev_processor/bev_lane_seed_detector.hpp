@@ -56,26 +56,25 @@ struct BevLaneSeedDetectorConfig
   double sliding_window_maximum_turn_change_deg_per_window{3.0};
   double sliding_window_heading_update_gain{0.80};
 
-  // Convert the selected boundaries into one drive centerline. Pair frames
-  // update the measured road width and per-side offset bias; a single
-  // boundary is shifted along its local normal by half that width.
+  // Convert the selected boundaries into one drive centerline using the
+  // reference reconstructor geometry. Real perpendicular pair midpoints take
+  // priority; missing counterpart sections follow the longer boundary's safe
+  // half-width normal offset.
   bool centerline_enabled{true};
-  double centerline_nominal_lane_width_px{62.0};
-  double centerline_width_update_gain{0.10};
-  double centerline_resample_spacing_px{2.0};
-  double centerline_outlier_distance_px{4.0};
-  double centerline_fit_segment_length_px{12.0};
-  double centerline_fit_tail_window_px{8.0};
-  double centerline_fit_straight_maximum_residual_px{1.5};
-  double centerline_fit_straight_maximum_heading_deg{4.0};
-  double centerline_fit_maximum_residual_px{5.0};
-  double centerline_fit_maximum_turn_deg_per_segment{28.0};
-  double centerline_fit_maximum_turn_change_deg_per_segment{10.0};
-  double centerline_fit_minimum_forward_progress_ratio{0.20};
-  double centerline_fit_hermite_tangent_scale{0.75};
-  int centerline_transition_frames{4};
-  double centerline_maximum_lateral_jump_px{3.0};
-  double centerline_maximum_heading_jump_deg{5.0};
+  double centerline_meter_per_pixel{0.01};
+  double centerline_expected_lane_width_m{0.65};
+  double centerline_lane_width_tolerance_m{0.08};
+  int centerline_minimum_points{6};
+  int centerline_minimum_counterpart_points{3};
+  double centerline_measured_point_smoothing_weight{0.60};
+  double centerline_midpoint_smoothing_weight{0.45};
+  double centerline_temporal_current_weight{0.60};
+  double centerline_transition_maximum_correction_m{0.15};
+  double centerline_transition_correction_decay{0.70};
+  double centerline_tangent_window_m{0.20};
+  double centerline_maximum_curvature_per_m{1.25};
+  double centerline_maximum_heading_step_deg{8.0};
+  double centerline_maximum_gap_fill_m{0.30};
 
   // Run the same detector in row and column directions every frame, then
   // select seeds from the combined orientation-independent candidate set.
@@ -125,8 +124,9 @@ struct BevLaneSeedDetection
   BevLaneSeed right;
   std::vector<cv::Point2d> centerline_points;
   BevLaneCenterlineSource centerline_source{BevLaneCenterlineSource::NONE};
-  double estimated_lane_width_px{0.0};
   bool centerline_transition_used{false};
+  bool centerline_normal_offset_truncated{false};
+  int centerline_direct_midpoint_count{0};
   int roi_top_row{0};
   int roi_bottom_row{0};
   int accepted_track_count{0};
@@ -167,17 +167,9 @@ private:
   int right_missing_frames_{0};
   BevLaneSeed remembered_left_;
   BevLaneSeed remembered_right_;
-  double estimated_lane_width_px_{0.0};
-  bool estimated_lane_width_initialized_{false};
-  double left_center_bias_px_{0.0};
-  double right_center_bias_px_{0.0};
-  bool center_bias_initialized_{false};
   std::vector<cv::Point2d> previous_centerline_;
-  BevLaneCenterlineSource previous_centerline_source_{
-    BevLaneCenterlineSource::NONE};
-  cv::Point2d centerline_transition_offset_;
-  double centerline_transition_heading_deg_{0.0};
-  int centerline_transition_frames_remaining_{0};
+  bool previous_centerline_from_pair_{false};
+  double single_boundary_transition_correction_px_{0.0};
 };
 
 }  // namespace bev_processor

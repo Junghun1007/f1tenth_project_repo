@@ -440,29 +440,24 @@ public:
         lane_seed_config_.sliding_window_heading_update_gain);
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane centerline: %s, nominal_width=%.1fpx, width_gain=%.2f, "
-        "resample=%.1fpx, piecewise_fit(segment/tail)=%.1f/%.1fpx, "
-        "straight<=%.1fpx/%.1fdeg, fit_residual<=%.1fpx, "
-        "turn<=%.1fdeg, turn_change<=%.1fdeg, forward>=%.2f, "
-        "tangent_scale=%.2f, outlier>%.1fpx, "
-        "transition=%d frames, jump<=%.1fpx/%.1fdeg",
+        "BEV lane centerline: %s reference geometry, width=%.2f+/-%.2fm, "
+        "points=%d/%d, smooth(measured/midpoint/temporal)=%.2f/%.2f/%.2f, "
+        "transition<=%.2fm decay=%.2f, tangent=%.2fm, "
+        "curvature<=%.2f/m, heading_step<=%.1fdeg, gap<=%.2fm",
         lane_seed_config_.centerline_enabled ? "on" : "off",
-        lane_seed_config_.centerline_nominal_lane_width_px,
-        lane_seed_config_.centerline_width_update_gain,
-        lane_seed_config_.centerline_resample_spacing_px,
-        lane_seed_config_.centerline_fit_segment_length_px,
-        lane_seed_config_.centerline_fit_tail_window_px,
-        lane_seed_config_.centerline_fit_straight_maximum_residual_px,
-        lane_seed_config_.centerline_fit_straight_maximum_heading_deg,
-        lane_seed_config_.centerline_fit_maximum_residual_px,
-        lane_seed_config_.centerline_fit_maximum_turn_deg_per_segment,
-        lane_seed_config_.centerline_fit_maximum_turn_change_deg_per_segment,
-        lane_seed_config_.centerline_fit_minimum_forward_progress_ratio,
-        lane_seed_config_.centerline_fit_hermite_tangent_scale,
-        lane_seed_config_.centerline_outlier_distance_px,
-        lane_seed_config_.centerline_transition_frames,
-        lane_seed_config_.centerline_maximum_lateral_jump_px,
-        lane_seed_config_.centerline_maximum_heading_jump_deg);
+        lane_seed_config_.centerline_expected_lane_width_m,
+        lane_seed_config_.centerline_lane_width_tolerance_m,
+        lane_seed_config_.centerline_minimum_points,
+        lane_seed_config_.centerline_minimum_counterpart_points,
+        lane_seed_config_.centerline_measured_point_smoothing_weight,
+        lane_seed_config_.centerline_midpoint_smoothing_weight,
+        lane_seed_config_.centerline_temporal_current_weight,
+        lane_seed_config_.centerline_transition_maximum_correction_m,
+        lane_seed_config_.centerline_transition_correction_decay,
+        lane_seed_config_.centerline_tangent_window_m,
+        lane_seed_config_.centerline_maximum_curvature_per_m,
+        lane_seed_config_.centerline_maximum_heading_step_deg,
+        lane_seed_config_.centerline_maximum_gap_fill_m);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -680,33 +675,26 @@ private:
     declare_parameter<double>(
       "lane_seed_sliding_window_heading_update_gain", 0.80);
     declare_parameter<bool>("lane_centerline_enabled", true);
-    declare_parameter<double>("lane_centerline_nominal_lane_width_px", 62.0);
-    declare_parameter<double>("lane_centerline_width_update_gain", 0.10);
-    declare_parameter<double>("lane_centerline_resample_spacing_px", 2.0);
+    declare_parameter<double>("lane_centerline_expected_width_m", 0.65);
+    declare_parameter<double>("lane_centerline_width_tolerance_m", 0.08);
+    declare_parameter<int>("lane_centerline_minimum_points", 6);
+    declare_parameter<int>("lane_centerline_minimum_counterpart_points", 3);
     declare_parameter<double>(
-      "lane_centerline_fit_segment_length_px", 12.0);
+      "lane_centerline_measured_point_smoothing_weight", 0.60);
     declare_parameter<double>(
-      "lane_centerline_fit_tail_window_px", 8.0);
+      "lane_centerline_midpoint_smoothing_weight", 0.45);
     declare_parameter<double>(
-      "lane_centerline_fit_straight_maximum_residual_px", 1.5);
+      "lane_centerline_temporal_current_weight", 0.60);
     declare_parameter<double>(
-      "lane_centerline_fit_straight_maximum_heading_deg", 4.0);
+      "lane_centerline_transition_maximum_correction_m", 0.15);
     declare_parameter<double>(
-      "lane_centerline_fit_maximum_residual_px", 5.0);
+      "lane_centerline_transition_correction_decay", 0.70);
+    declare_parameter<double>("lane_centerline_tangent_window_m", 0.20);
     declare_parameter<double>(
-      "lane_centerline_fit_maximum_turn_deg_per_segment", 28.0);
+      "lane_centerline_maximum_curvature_per_m", 1.25);
     declare_parameter<double>(
-      "lane_centerline_fit_maximum_turn_change_deg_per_segment", 10.0);
-    declare_parameter<double>(
-      "lane_centerline_fit_minimum_forward_progress_ratio", 0.20);
-    declare_parameter<double>(
-      "lane_centerline_fit_hermite_tangent_scale", 0.75);
-    declare_parameter<double>("lane_centerline_outlier_distance_px", 4.0);
-    declare_parameter<int>("lane_centerline_transition_frames", 4);
-    declare_parameter<double>(
-      "lane_centerline_maximum_lateral_jump_px", 3.0);
-    declare_parameter<double>(
-      "lane_centerline_maximum_heading_jump_deg", 5.0);
+      "lane_centerline_maximum_heading_step_deg", 8.0);
+    declare_parameter<double>("lane_centerline_maximum_gap_fill_m", 0.30);
     declare_parameter<bool>("lane_seed_column_tracking_enabled", true);
     declare_parameter<bool>("lane_seed_cross_direction_merge_enabled", true);
     declare_parameter<double>(
@@ -1035,43 +1023,33 @@ private:
       "lane_seed_sliding_window_heading_update_gain").as_double();
     lane_seed_config_.centerline_enabled = get_parameter(
       "lane_centerline_enabled").as_bool();
-    lane_seed_config_.centerline_nominal_lane_width_px = get_parameter(
-      "lane_centerline_nominal_lane_width_px").as_double();
-    lane_seed_config_.centerline_width_update_gain = get_parameter(
-      "lane_centerline_width_update_gain").as_double();
-    lane_seed_config_.centerline_resample_spacing_px = get_parameter(
-      "lane_centerline_resample_spacing_px").as_double();
-    lane_seed_config_.centerline_fit_segment_length_px = get_parameter(
-      "lane_centerline_fit_segment_length_px").as_double();
-    lane_seed_config_.centerline_fit_tail_window_px = get_parameter(
-      "lane_centerline_fit_tail_window_px").as_double();
-    lane_seed_config_.centerline_fit_straight_maximum_residual_px =
-      get_parameter(
-        "lane_centerline_fit_straight_maximum_residual_px").as_double();
-    lane_seed_config_.centerline_fit_straight_maximum_heading_deg =
-      get_parameter(
-        "lane_centerline_fit_straight_maximum_heading_deg").as_double();
-    lane_seed_config_.centerline_fit_maximum_residual_px = get_parameter(
-      "lane_centerline_fit_maximum_residual_px").as_double();
-    lane_seed_config_.centerline_fit_maximum_turn_deg_per_segment =
-      get_parameter(
-        "lane_centerline_fit_maximum_turn_deg_per_segment").as_double();
-    lane_seed_config_.centerline_fit_maximum_turn_change_deg_per_segment =
-      get_parameter(
-        "lane_centerline_fit_maximum_turn_change_deg_per_segment").as_double();
-    lane_seed_config_.centerline_fit_minimum_forward_progress_ratio =
-      get_parameter(
-        "lane_centerline_fit_minimum_forward_progress_ratio").as_double();
-    lane_seed_config_.centerline_fit_hermite_tangent_scale = get_parameter(
-      "lane_centerline_fit_hermite_tangent_scale").as_double();
-    lane_seed_config_.centerline_outlier_distance_px = get_parameter(
-      "lane_centerline_outlier_distance_px").as_double();
-    lane_seed_config_.centerline_transition_frames = static_cast<int>(
-      get_parameter("lane_centerline_transition_frames").as_int());
-    lane_seed_config_.centerline_maximum_lateral_jump_px = get_parameter(
-      "lane_centerline_maximum_lateral_jump_px").as_double();
-    lane_seed_config_.centerline_maximum_heading_jump_deg = get_parameter(
-      "lane_centerline_maximum_heading_jump_deg").as_double();
+    lane_seed_config_.centerline_meter_per_pixel = bev_config_.meter_per_pixel;
+    lane_seed_config_.centerline_expected_lane_width_m = get_parameter(
+      "lane_centerline_expected_width_m").as_double();
+    lane_seed_config_.centerline_lane_width_tolerance_m = get_parameter(
+      "lane_centerline_width_tolerance_m").as_double();
+    lane_seed_config_.centerline_minimum_points = static_cast<int>(
+      get_parameter("lane_centerline_minimum_points").as_int());
+    lane_seed_config_.centerline_minimum_counterpart_points = static_cast<int>(
+      get_parameter("lane_centerline_minimum_counterpart_points").as_int());
+    lane_seed_config_.centerline_measured_point_smoothing_weight = get_parameter(
+      "lane_centerline_measured_point_smoothing_weight").as_double();
+    lane_seed_config_.centerline_midpoint_smoothing_weight = get_parameter(
+      "lane_centerline_midpoint_smoothing_weight").as_double();
+    lane_seed_config_.centerline_temporal_current_weight = get_parameter(
+      "lane_centerline_temporal_current_weight").as_double();
+    lane_seed_config_.centerline_transition_maximum_correction_m = get_parameter(
+      "lane_centerline_transition_maximum_correction_m").as_double();
+    lane_seed_config_.centerline_transition_correction_decay = get_parameter(
+      "lane_centerline_transition_correction_decay").as_double();
+    lane_seed_config_.centerline_tangent_window_m = get_parameter(
+      "lane_centerline_tangent_window_m").as_double();
+    lane_seed_config_.centerline_maximum_curvature_per_m = get_parameter(
+      "lane_centerline_maximum_curvature_per_m").as_double();
+    lane_seed_config_.centerline_maximum_heading_step_deg = get_parameter(
+      "lane_centerline_maximum_heading_step_deg").as_double();
+    lane_seed_config_.centerline_maximum_gap_fill_m = get_parameter(
+      "lane_centerline_maximum_gap_fill_m").as_double();
     lane_seed_config_.column_tracking_enabled = get_parameter(
       "lane_seed_column_tracking_enabled").as_bool();
     lane_seed_config_.cross_direction_merge_enabled = get_parameter(
