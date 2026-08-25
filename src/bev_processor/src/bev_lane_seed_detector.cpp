@@ -135,8 +135,13 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
   }
   if (
     config.temporal_side_lock_reset_frames < 1 ||
+    !std::isfinite(config.temporal_side_reacquire_base_distance_px) ||
+    config.temporal_side_reacquire_base_distance_px <= 0.0 ||
+    !finiteNonNegative(
+      config.temporal_side_reacquire_distance_per_missing_frame_px) ||
     !std::isfinite(config.temporal_side_reacquire_maximum_distance_px) ||
-    config.temporal_side_reacquire_maximum_distance_px <= 0.0)
+    config.temporal_side_reacquire_maximum_distance_px <
+    config.temporal_side_reacquire_base_distance_px)
   {
     throw std::invalid_argument("lane seed temporal side-lock settings are invalid");
   }
@@ -1058,10 +1063,37 @@ double temporalTrackDistance(
     }
     distances.push_back(nearest);
   }
+  const double seed_distance = cv::norm(
+    candidateSeedOriginal(candidate) - remembered.image_point);
   if (!distances.empty()) {
-    return median(std::move(distances));
+    // Both the full support curve and its near seed must remain close. This
+    // prevents a partially overlapping but abruptly relocated track from
+    // passing only because some of its support points touch the old curve.
+    return std::max(median(std::move(distances)), seed_distance);
   }
-  return cv::norm(candidate.seed_point - remembered.image_point);
+  return seed_distance;
+}
+
+double temporalReacquireDistanceLimit(
+  const BevLaneSeedDetectorConfig & config,
+  const int missing_frames)
+{
+  return std::min(
+    config.temporal_side_reacquire_maximum_distance_px,
+    config.temporal_side_reacquire_base_distance_px +
+    config.temporal_side_reacquire_distance_per_missing_frame_px *
+    static_cast<double>(std::max(0, missing_frames)));
+}
+
+bool temporalTrackMatches(
+  const TrackCandidate & candidate,
+  const BevLaneSeed & remembered,
+  const int missing_frames,
+  const BevLaneSeedDetectorConfig & config)
+{
+  return !remembered.valid ||
+         temporalTrackDistance(candidate, remembered) <=
+         temporalReacquireDistanceLimit(config, missing_frames);
 }
 
 bool orientationIndependentPairDistance(
@@ -1318,6 +1350,15 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       {
         continue;
       }
+      if (
+        config_.temporal_side_lock_enabled && side_lock_initialized_ &&
+        (!temporalTrackMatches(
+          left, remembered_left_, left_missing_frames_, config_) ||
+        !temporalTrackMatches(
+          right, remembered_right_, right_missing_frames_, config_)))
+      {
+        continue;
+      }
       double distance = 0.0;
       int samples = 0;
       int inliers = 0;
@@ -1373,9 +1414,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       side_lock_initialized_ = true;
     }
   } else if (result.pair_valid) {
-    // A complete geometrically valid pair is authoritative. Refresh both
-    // remembered roles immediately instead of rejecting either lane because
-    // it moved beyond the single-lane temporal reacquisition gate.
+    // A complete pair that also stayed near both remembered sides is
+    // authoritative and refreshes both roles immediately.
     selected_left = current_pair_left;
     selected_right = current_pair_right;
   } else if (!candidates.empty()) {
@@ -1400,19 +1440,28 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
           best_distance = distance;
         }
       }
-      if (remembered_single_side_ < 0) {
-        selected_left = candidates[best_index];
-      } else {
-        selected_right = candidates[best_index];
+      const int missing_frames = remembered_single_side_ < 0 ?
+        left_missing_frames_ : right_missing_frames_;
+      if (
+        best_distance <=
+        temporalReacquireDistanceLimit(config_, missing_frames))
+      {
+        if (remembered_single_side_ < 0) {
+          selected_left = candidates[best_index];
+        } else {
+          selected_right = candidates[best_index];
+        }
+        result.temporal_labeling_used = true;
       }
-      result.temporal_labeling_used = true;
     } else {
       // The previous reliable observation was a pair, so the first following
       // single lane has no remembered single-side role yet. Assign only the
       // closest candidate/side within the ambiguity gate; a new valid pair is
       // handled by the authoritative pair branch above.
-      const double maximum_distance =
-        config_.temporal_side_reacquire_maximum_distance_px;
+      const double left_maximum_distance = temporalReacquireDistanceLimit(
+        config_, left_missing_frames_);
+      const double right_maximum_distance = temporalReacquireDistanceLimit(
+        config_, right_missing_frames_);
       std::size_t best_index = candidates.size();
       bool assign_left = false;
       double best_cost = std::numeric_limits<double>::infinity();
@@ -1422,14 +1471,15 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         const double right_distance = temporalTrackDistance(
           candidates[index], remembered_right_);
         if (
-          left_distance <= maximum_distance && left_distance < best_cost)
+          left_distance <= left_maximum_distance && left_distance < best_cost)
         {
           best_cost = left_distance;
           best_index = index;
           assign_left = true;
         }
         if (
-          right_distance <= maximum_distance && right_distance < best_cost)
+          right_distance <= right_maximum_distance &&
+          right_distance < best_cost)
         {
           best_cost = right_distance;
           best_index = index;
@@ -1459,9 +1509,31 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     }
     if (result.left.valid) {
       remembered_left_ = result.left;
+      left_missing_frames_ = 0;
+    } else if (remembered_left_.valid) {
+      ++left_missing_frames_;
+      if (
+        left_missing_frames_ >= config_.temporal_side_lock_reset_frames)
+      {
+        remembered_left_ = BevLaneSeed{};
+        if (remembered_single_side_ < 0) {
+          remembered_single_side_ = 0;
+        }
+      }
     }
     if (result.right.valid) {
       remembered_right_ = result.right;
+      right_missing_frames_ = 0;
+    } else if (remembered_right_.valid) {
+      ++right_missing_frames_;
+      if (
+        right_missing_frames_ >= config_.temporal_side_lock_reset_frames)
+      {
+        remembered_right_ = BevLaneSeed{};
+        if (remembered_single_side_ > 0) {
+          remembered_single_side_ = 0;
+        }
+      }
     }
     if (result.left.valid || result.right.valid) {
       both_sides_missing_frames_ = 0;
@@ -1474,6 +1546,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         side_lock_initialized_ = false;
         remembered_single_side_ = 0;
         both_sides_missing_frames_ = 0;
+        left_missing_frames_ = 0;
+        right_missing_frames_ = 0;
         remembered_left_ = BevLaneSeed{};
         remembered_right_ = BevLaneSeed{};
         result.side_lock_reset = true;

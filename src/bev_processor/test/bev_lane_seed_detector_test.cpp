@@ -97,70 +97,100 @@ void requirePairNear(
     "right lane seed is not the current pair's right candidate");
 }
 
-void moveLeftLaneAcrossImage(BevLaneSeedDetector * detector)
+void selectSingleLeftLane(BevLaneSeedDetector * detector)
 {
-  for (const int column : {35, 50, 65, 80}) {
-    const LaneImages single = makeVerticalLanes(120, 300, {column});
-    const BevLaneSeedDetection detection = detector->detect(
-      single.gray, single.response, false);
-    requireSeedNear(detection, true, static_cast<double>(column));
-  }
+  const LaneImages single = makeVerticalLanes(120, 300, {25});
+  const BevLaneSeedDetection detection = detector->detect(
+    single.gray, single.response, false);
+  requireSeedNear(detection, true, 25.0);
 }
 
-void moveRightLaneAcrossImage(BevLaneSeedDetector * detector)
+void selectSingleRightLane(BevLaneSeedDetector * detector)
 {
-  for (const int column : {65, 50, 35, 20}) {
-    const LaneImages single = makeVerticalLanes(120, 300, {column});
-    const BevLaneSeedDetection detection = detector->detect(
-      single.gray, single.response, false);
-    requireSeedNear(detection, false, static_cast<double>(column));
-  }
+  const LaneImages single = makeVerticalLanes(120, 300, {75});
+  const BevLaneSeedDetection detection = detector->detect(
+    single.gray, single.response, false);
+  requireSeedNear(detection, false, 75.0);
 }
 
-void insertMissingFrame(BevLaneSeedDetector * detector)
+void insertMissingFrames(BevLaneSeedDetector * detector, const int count)
 {
   const LaneImages missing = makeVerticalLanes(120, 300, {});
-  const BevLaneSeedDetection detection = detector->detect(
-    missing.gray, missing.response, false);
-  require(
-    !detection.left.valid && !detection.right.valid,
-    "empty frame must not produce a lane seed");
+  for (int index = 0; index < count; ++index) {
+    const BevLaneSeedDetection detection = detector->detect(
+      missing.gray, missing.response, false);
+    require(
+      !detection.left.valid && !detection.right.valid,
+      "empty frame must not produce a lane seed");
+  }
+}
+
+void requireNoSeeds(
+  const BevLaneSeedDetection & detection,
+  const char * message)
+{
+  require(!detection.left.valid && !detection.right.valid, message);
 }
 
 void testLeftLaneKeepsItsRoleAfterSingleLaneDropout()
 {
   BevLaneSeedDetector detector = makeDetector();
   initializePair(&detector);
-  moveLeftLaneAcrossImage(&detector);
-  insertMissingFrame(&detector);
+  selectSingleLeftLane(&detector);
+  insertMissingFrames(&detector, 1);
 
-  // The 25px jump exceeds the normal 20px ambiguous-side reacquisition gate.
-  const LaneImages reacquired = makeVerticalLanes(120, 300, {105});
+  const LaneImages reacquired = makeVerticalLanes(120, 300, {31});
   const BevLaneSeedDetection detection = detector.detect(
     reacquired.gray, reacquired.response, false);
-  requireSeedNear(detection, true, 105.0);
+  requireSeedNear(detection, true, 31.0);
 }
 
 void testRightLaneKeepsItsRoleAfterSingleLaneDropout()
 {
   BevLaneSeedDetector detector = makeDetector();
   initializePair(&detector);
-  moveRightLaneAcrossImage(&detector);
-  insertMissingFrame(&detector);
+  selectSingleRightLane(&detector);
+  insertMissingFrames(&detector, 1);
 
-  // The 25px jump exceeds the normal 20px ambiguous-side reacquisition gate.
-  const LaneImages reacquired = makeVerticalLanes(120, 300, {45});
+  const LaneImages reacquired = makeVerticalLanes(120, 300, {69});
   const BevLaneSeedDetection detection = detector.detect(
     reacquired.gray, reacquired.response, false);
-  requireSeedNear(detection, false, 45.0);
+  requireSeedNear(detection, false, 69.0);
+}
+
+void testSingleLaneRejectsDistantReacquisition()
+{
+  BevLaneSeedDetector detector = makeDetector();
+  initializePair(&detector);
+  selectSingleLeftLane(&detector);
+  insertMissingFrames(&detector, 1);
+
+  const LaneImages distant = makeVerticalLanes(120, 300, {60});
+  const BevLaneSeedDetection detection = detector.detect(
+    distant.gray, distant.response, false);
+  requireNoSeeds(
+    detection, "distant single-lane reacquisition must be rejected");
+}
+
+void testReacquisitionAllowanceGrowsWithMissingFrames()
+{
+  BevLaneSeedDetector detector = makeDetector();
+  initializePair(&detector);
+  selectSingleLeftLane(&detector);
+  insertMissingFrames(&detector, 3);
+
+  // 6px base + 3 missing frames * 2px permits this 12px displacement.
+  const LaneImages reacquired = makeVerticalLanes(120, 300, {37});
+  const BevLaneSeedDetection detection = detector.detect(
+    reacquired.gray, reacquired.response, false);
+  requireSeedNear(detection, true, 37.0);
 }
 
 void testValidPairReinitializesBothSides()
 {
   BevLaneSeedDetector detector = makeDetector();
   initializePair(&detector);
-  moveLeftLaneAcrossImage(&detector);
-  insertMissingFrame(&detector);
+  insertMissingFrames(&detector, 1);
 
   const LaneImages reacquired = makeVerticalLanes(120, 300, {22, 82});
   const BevLaneSeedDetection detection = detector.detect(
@@ -171,13 +201,29 @@ void testValidPairReinitializesBothSides()
   requirePairNear(detection, 22.0, 82.0);
 }
 
+void testPairRejectsDistantReacquisition()
+{
+  BevLaneSeedDetector detector = makeDetector();
+  initializePair(&detector);
+  insertMissingFrames(&detector, 1);
+
+  const LaneImages distant = makeVerticalLanes(120, 300, {40, 100});
+  const BevLaneSeedDetection detection = detector.detect(
+    distant.gray, distant.response, false);
+  require(!detection.pair_valid, "distant lane pair must fail temporal gating");
+  requireNoSeeds(detection, "distant lane pair must not produce lane seeds");
+}
+
 }  // namespace
 
 int main()
 {
   testLeftLaneKeepsItsRoleAfterSingleLaneDropout();
   testRightLaneKeepsItsRoleAfterSingleLaneDropout();
+  testSingleLaneRejectsDistantReacquisition();
+  testReacquisitionAllowanceGrowsWithMissingFrames();
   testValidPairReinitializesBothSides();
+  testPairRejectsDistantReacquisition();
   std::cout << "bev_lane_seed_detector_test passed\n";
   return 0;
 }

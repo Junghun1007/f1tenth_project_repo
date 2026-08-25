@@ -54,6 +54,8 @@ struct BevLaneSeedDetectorConfig
   // single lane is then labelled by temporal continuity, not screen center.
   bool temporal_side_lock_enabled{true};
   int temporal_side_lock_reset_frames{30};
+  double temporal_side_reacquire_base_distance_px{6.0};
+  double temporal_side_reacquire_distance_per_missing_frame_px{2.0};
   double temporal_side_reacquire_maximum_distance_px{20.0};
 };
 
@@ -111,6 +113,8 @@ private:
   // The role survives short detection gaps until a valid pair or lock reset.
   int remembered_single_side_{0};
   int both_sides_missing_frames_{0};
+  int left_missing_frames_{0};
+  int right_missing_frames_{0};
   BevLaneSeed remembered_left_;
   BevLaneSeed remembered_right_;
 };

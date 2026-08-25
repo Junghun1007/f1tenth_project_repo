@@ -398,7 +398,7 @@ public:
         "pair=%.1f..%.1fpx, contrast relaxation=%s(step=%.1f, retries=%d), "
         "column_tracking=%s, candidate_merge=%s(endpoint<=%.1fpx, "
         "support>=%.2f, turn<=%.1fdeg), side_lock=%s(reset=%d frames, "
-        "ambiguous_reacquire<=%.1fpx), preview=%s",
+        "reacquire=%.1f+%.1f/miss<=%.1fpx), preview=%s",
         lane_seed_config_.slope_filter_enabled ? "on" : "off",
         lane_seed_config_.slope_median_window,
         lane_seed_config_.maximum_slope_change_px_per_row,
@@ -414,6 +414,8 @@ public:
         lane_seed_config_.cross_direction_merge_maximum_turn_angle_deg,
         lane_seed_config_.temporal_side_lock_enabled ? "on" : "off",
         lane_seed_config_.temporal_side_lock_reset_frames,
+        lane_seed_config_.temporal_side_reacquire_base_distance_px,
+        lane_seed_config_.temporal_side_reacquire_distance_per_missing_frame_px,
         lane_seed_config_.temporal_side_reacquire_maximum_distance_px,
         lane_preview_enabled_ ? "on" : "off");
     }
@@ -622,6 +624,10 @@ private:
       "lane_seed_cross_direction_merge_maximum_turn_angle_deg", 110.0);
     declare_parameter<bool>("lane_seed_temporal_side_lock_enabled", true);
     declare_parameter<int>("lane_seed_temporal_side_lock_reset_frames", 30);
+    declare_parameter<double>(
+      "lane_seed_temporal_side_reacquire_base_distance_px", 6.0);
+    declare_parameter<double>(
+      "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px", 2.0);
     declare_parameter<double>(
       "lane_seed_temporal_side_reacquire_maximum_distance_px", 20.0);
 
@@ -919,6 +925,12 @@ private:
       "lane_seed_temporal_side_lock_enabled").as_bool();
     lane_seed_config_.temporal_side_lock_reset_frames = static_cast<int>(
       get_parameter("lane_seed_temporal_side_lock_reset_frames").as_int());
+    lane_seed_config_.temporal_side_reacquire_base_distance_px =
+      get_parameter(
+      "lane_seed_temporal_side_reacquire_base_distance_px").as_double();
+    lane_seed_config_.temporal_side_reacquire_distance_per_missing_frame_px =
+      get_parameter(
+      "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px").as_double();
     lane_seed_config_.temporal_side_reacquire_maximum_distance_px =
       get_parameter(
       "lane_seed_temporal_side_reacquire_maximum_distance_px").as_double();

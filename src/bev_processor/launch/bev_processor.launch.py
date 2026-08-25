@@ -161,6 +161,16 @@ def generate_launch_description():
         ("lane_seed_temporal_side_lock_enabled", "true", bool),
         ("lane_seed_temporal_side_lock_reset_frames", "30", int),
         (
+            "lane_seed_temporal_side_reacquire_base_distance_px",
+            "6.0",
+            float,
+        ),
+        (
+            "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px",
+            "2.0",
+            float,
+        ),
+        (
             "lane_seed_temporal_side_reacquire_maximum_distance_px",
             "20.0",
             float,
