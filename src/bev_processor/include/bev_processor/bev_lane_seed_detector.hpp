@@ -63,10 +63,16 @@ struct BevLaneSeedDetectorConfig
   double centerline_nominal_lane_width_px{62.0};
   double centerline_width_update_gain{0.10};
   double centerline_resample_spacing_px{2.0};
-  double centerline_straight_smoothing_window_px{15.0};
-  double centerline_corner_smoothing_window_px{5.0};
-  double centerline_corner_curvature_threshold_rad_per_px{0.035};
   double centerline_outlier_distance_px{4.0};
+  double centerline_fit_segment_length_px{12.0};
+  double centerline_fit_tail_window_px{8.0};
+  double centerline_fit_straight_maximum_residual_px{1.5};
+  double centerline_fit_straight_maximum_heading_deg{4.0};
+  double centerline_fit_maximum_residual_px{5.0};
+  double centerline_fit_maximum_turn_deg_per_segment{28.0};
+  double centerline_fit_maximum_turn_change_deg_per_segment{10.0};
+  double centerline_fit_minimum_forward_progress_ratio{0.20};
+  double centerline_fit_hermite_tangent_scale{0.75};
   int centerline_transition_frames{4};
   double centerline_maximum_lateral_jump_px{3.0};
   double centerline_maximum_heading_jump_deg{5.0};
@@ -163,8 +169,8 @@ private:
   BevLaneSeed remembered_right_;
   double estimated_lane_width_px_{0.0};
   bool estimated_lane_width_initialized_{false};
-  cv::Point2d left_center_bias_;
-  cv::Point2d right_center_bias_;
+  double left_center_bias_px_{0.0};
+  double right_center_bias_px_{0.0};
   bool center_bias_initialized_{false};
   std::vector<cv::Point2d> previous_centerline_;
   BevLaneCenterlineSource previous_centerline_source_{

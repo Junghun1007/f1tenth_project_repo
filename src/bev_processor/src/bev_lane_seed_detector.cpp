@@ -170,16 +170,35 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
     config.centerline_width_update_gain > 1.0 ||
     !std::isfinite(config.centerline_resample_spacing_px) ||
     config.centerline_resample_spacing_px <= 0.0 ||
-    !std::isfinite(config.centerline_straight_smoothing_window_px) ||
-    config.centerline_straight_smoothing_window_px <= 0.0 ||
-    !std::isfinite(config.centerline_corner_smoothing_window_px) ||
-    config.centerline_corner_smoothing_window_px <= 0.0 ||
-    config.centerline_corner_smoothing_window_px >
-    config.centerline_straight_smoothing_window_px ||
-    !std::isfinite(
-      config.centerline_corner_curvature_threshold_rad_per_px) ||
-    config.centerline_corner_curvature_threshold_rad_per_px <= 0.0 ||
     !finiteNonNegative(config.centerline_outlier_distance_px) ||
+    !std::isfinite(config.centerline_fit_segment_length_px) ||
+    config.centerline_fit_segment_length_px <=
+    config.centerline_resample_spacing_px ||
+    !std::isfinite(config.centerline_fit_tail_window_px) ||
+    config.centerline_fit_tail_window_px <= 0.0 ||
+    !finiteNonNegative(
+      config.centerline_fit_straight_maximum_residual_px) ||
+    !finiteNonNegative(
+      config.centerline_fit_straight_maximum_heading_deg) ||
+    config.centerline_fit_straight_maximum_heading_deg > 45.0 ||
+    !std::isfinite(config.centerline_fit_maximum_residual_px) ||
+    config.centerline_fit_maximum_residual_px <= 0.0 ||
+    !std::isfinite(
+      config.centerline_fit_maximum_turn_deg_per_segment) ||
+    config.centerline_fit_maximum_turn_deg_per_segment <= 0.0 ||
+    config.centerline_fit_maximum_turn_deg_per_segment > 90.0 ||
+    !std::isfinite(
+      config.centerline_fit_maximum_turn_change_deg_per_segment) ||
+    config.centerline_fit_maximum_turn_change_deg_per_segment <= 0.0 ||
+    config.centerline_fit_maximum_turn_change_deg_per_segment >
+    config.centerline_fit_maximum_turn_deg_per_segment ||
+    !std::isfinite(
+      config.centerline_fit_minimum_forward_progress_ratio) ||
+    config.centerline_fit_minimum_forward_progress_ratio < 0.0 ||
+    config.centerline_fit_minimum_forward_progress_ratio >= 1.0 ||
+    !std::isfinite(config.centerline_fit_hermite_tangent_scale) ||
+    config.centerline_fit_hermite_tangent_scale <= 0.0 ||
+    config.centerline_fit_hermite_tangent_scale > 2.0 ||
     config.centerline_transition_frames < 0 ||
     !finiteNonNegative(config.centerline_maximum_lateral_jump_px) ||
     !finiteNonNegative(config.centerline_maximum_heading_jump_deg) ||
@@ -1106,30 +1125,9 @@ PairedCenterline pairLaneBoundaries(
     result.right_points.push_back(right_point);
     result.centers.push_back(0.5 * (left_point + right_point));
     result.widths_px.push_back(cv::norm(right_point - left_point));
-    first_right_index = best_right_index;
-  }
-  if (result.centers.size() < 2U) {
-    result = PairedCenterline{};
-    const std::size_t samples = std::min(left.size(), right.size());
-    for (std::size_t index = 0; index < samples; ++index) {
-      const double ratio = samples > 1U ?
-        static_cast<double>(index) / static_cast<double>(samples - 1U) : 0.0;
-      const std::size_t left_index = static_cast<std::size_t>(std::lround(
-          ratio * static_cast<double>(left.size() - 1U)));
-      const std::size_t right_index = static_cast<std::size_t>(std::lround(
-          ratio * static_cast<double>(right.size() - 1U)));
-      const double width = cv::norm(right[right_index] - left[left_index]);
-      if (
-        width < config.minimum_pair_distance_px ||
-        width > config.maximum_pair_distance_px)
-      {
-        continue;
-      }
-      result.left_points.push_back(left[left_index]);
-      result.right_points.push_back(right[right_index]);
-      result.centers.push_back(0.5 * (left[left_index] + right[right_index]));
-      result.widths_px.push_back(width);
-    }
+    // A boundary point may participate in only one center sample. Reusing a
+    // stationary opposite point makes the midpoint path fold back at a corner.
+    first_right_index = best_right_index + 1U;
   }
   return result;
 }
@@ -1138,7 +1136,7 @@ std::vector<cv::Point2d> offsetSingleBoundary(
   const std::vector<cv::Point2d> & boundary_input,
   const bool is_left,
   const double lane_width_px,
-  const cv::Point2d & learned_bias,
+  const double learned_lateral_bias_px,
   const BevLaneSeedDetectorConfig & config)
 {
   const std::vector<cv::Point2d> boundary = resamplePolyline(
@@ -1154,8 +1152,8 @@ std::vector<cv::Point2d> offsetSingleBoundary(
     const cv::Point2d center_direction = is_left ?
       right_normal : -right_normal;
     centers.push_back(
-      boundary[index] + 0.5 * lane_width_px * center_direction +
-      learned_bias);
+      boundary[index] +
+      (0.5 * lane_width_px + learned_lateral_bias_px) * center_direction);
   }
   return centers;
 }
@@ -1185,70 +1183,244 @@ std::vector<cv::Point2d> removeIsolatedCenterlineBumps(
   return result;
 }
 
-double localCurvatureRadPerPx(
-  const std::vector<cv::Point2d> & points,
-  const std::size_t index)
+double cross2d(const cv::Point2d & first, const cv::Point2d & second)
 {
-  if (index == 0U || index + 1U >= points.size()) {
-    return 0.0;
-  }
-  const cv::Point2d incoming = normalized(points[index] - points[index - 1U]);
-  const cv::Point2d outgoing = normalized(points[index + 1U] - points[index]);
-  if (cv::norm(incoming) <= 0.0 || cv::norm(outgoing) <= 0.0) {
-    return 0.0;
-  }
-  const double angle = std::acos(std::clamp(incoming.dot(outgoing), -1.0, 1.0));
-  const double distance = 0.5 * (
-    cv::norm(points[index] - points[index - 1U]) +
-    cv::norm(points[index + 1U] - points[index]));
-  return distance > 1.0e-9 ? angle / distance : 0.0;
+  return first.x * second.y - first.y * second.x;
 }
 
-bool fitLocalQuadratic(
-  const std::vector<cv::Point2d> & points,
-  const std::vector<double> & arc,
-  const std::size_t center_index,
-  const double window_px,
-  cv::Point2d * fitted)
+double pointSegmentDistance(
+  const cv::Point2d & point,
+  const cv::Point2d & first,
+  const cv::Point2d & last)
 {
-  if (fitted == nullptr || points.size() != arc.size() || points.size() < 3) {
+  const cv::Point2d segment = last - first;
+  const double length_squared = segment.dot(segment);
+  if (length_squared <= 1.0e-9) {
+    return cv::norm(point - first);
+  }
+  const double ratio = std::clamp(
+    (point - first).dot(segment) / length_squared, 0.0, 1.0);
+  return cv::norm(point - (first + ratio * segment));
+}
+
+bool pointOnSegment(
+  const cv::Point2d & point,
+  const cv::Point2d & first,
+  const cv::Point2d & last)
+{
+  constexpr double epsilon = 1.0e-6;
+  return std::abs(cross2d(last - first, point - first)) <= epsilon &&
+         point.x >= std::min(first.x, last.x) - epsilon &&
+         point.x <= std::max(first.x, last.x) + epsilon &&
+         point.y >= std::min(first.y, last.y) - epsilon &&
+         point.y <= std::max(first.y, last.y) + epsilon;
+}
+
+bool segmentsIntersect(
+  const cv::Point2d & first_start,
+  const cv::Point2d & first_end,
+  const cv::Point2d & second_start,
+  const cv::Point2d & second_end)
+{
+  constexpr double epsilon = 1.0e-6;
+  const double first_side = cross2d(
+    first_end - first_start, second_start - first_start);
+  const double second_side = cross2d(
+    first_end - first_start, second_end - first_start);
+  const double third_side = cross2d(
+    second_end - second_start, first_start - second_start);
+  const double fourth_side = cross2d(
+    second_end - second_start, first_end - second_start);
+  if (
+    ((first_side > epsilon && second_side < -epsilon) ||
+    (first_side < -epsilon && second_side > epsilon)) &&
+    ((third_side > epsilon && fourth_side < -epsilon) ||
+    (third_side < -epsilon && fourth_side > epsilon)))
+  {
+    return true;
+  }
+  return (std::abs(first_side) <= epsilon &&
+         pointOnSegment(second_start, first_start, first_end)) ||
+         (std::abs(second_side) <= epsilon &&
+         pointOnSegment(second_end, first_start, first_end)) ||
+         (std::abs(third_side) <= epsilon &&
+         pointOnSegment(first_start, second_start, second_end)) ||
+         (std::abs(fourth_side) <= epsilon &&
+         pointOnSegment(first_end, second_start, second_end));
+}
+
+cv::Point2d fittedSegmentDirection(
+  const std::vector<cv::Point2d> & points,
+  const std::size_t first,
+  const std::size_t last)
+{
+  if (first >= points.size() || last >= points.size() || first >= last) {
+    return cv::Point2d();
+  }
+  cv::Point2d mean;
+  for (std::size_t index = first; index <= last; ++index) {
+    mean += points[index];
+  }
+  mean *= 1.0 / static_cast<double>(last - first + 1U);
+  double xx = 0.0;
+  double xy = 0.0;
+  double yy = 0.0;
+  for (std::size_t index = first; index <= last; ++index) {
+    const cv::Point2d centered = points[index] - mean;
+    xx += centered.x * centered.x;
+    xy += centered.x * centered.y;
+    yy += centered.y * centered.y;
+  }
+  cv::Point2d direction;
+  if (xx + yy > 1.0e-9) {
+    const double angle = 0.5 * std::atan2(2.0 * xy, xx - yy);
+    direction = cv::Point2d(std::cos(angle), std::sin(angle));
+  } else {
+    direction = normalized(points[last] - points[first]);
+  }
+  if (direction.dot(points[last] - points[first]) < 0.0) {
+    direction = -direction;
+  }
+  return normalized(direction);
+}
+
+double medianLineResidual(
+  const std::vector<cv::Point2d> & points,
+  const std::size_t first,
+  const std::size_t last,
+  const cv::Point2d & origin,
+  const cv::Point2d & direction)
+{
+  std::vector<double> residuals;
+  residuals.reserve(last - first + 1U);
+  for (std::size_t index = first; index <= last; ++index) {
+    residuals.push_back(std::abs(cross2d(direction, points[index] - origin)));
+  }
+  return median(std::move(residuals));
+}
+
+std::vector<cv::Point2d> sampleLineSegment(
+  const cv::Point2d & first,
+  const cv::Point2d & last,
+  const double spacing_px)
+{
+  const double length = cv::norm(last - first);
+  const int samples = std::max(
+    1, static_cast<int>(std::ceil(length / spacing_px)));
+  std::vector<cv::Point2d> result;
+  result.reserve(static_cast<std::size_t>(samples));
+  for (int index = 1; index <= samples; ++index) {
+    const double ratio = static_cast<double>(index) / samples;
+    result.push_back(first + ratio * (last - first));
+  }
+  return result;
+}
+
+std::vector<cv::Point2d> sampleHermiteSegment(
+  const cv::Point2d & first,
+  const cv::Point2d & last,
+  const cv::Point2d & first_direction,
+  const cv::Point2d & last_direction,
+  const BevLaneSeedDetectorConfig & config)
+{
+  const double chord_length = cv::norm(last - first);
+  const double tangent_length =
+    config.centerline_fit_hermite_tangent_scale * chord_length;
+  const cv::Point2d first_tangent = tangent_length * first_direction;
+  const cv::Point2d last_tangent = tangent_length * last_direction;
+  const int samples = std::max(
+    2, static_cast<int>(std::ceil(
+      chord_length / config.centerline_resample_spacing_px)));
+  std::vector<cv::Point2d> result;
+  result.reserve(static_cast<std::size_t>(samples));
+  for (int index = 1; index <= samples; ++index) {
+    const double ratio = static_cast<double>(index) / samples;
+    const double ratio_squared = ratio * ratio;
+    const double ratio_cubed = ratio_squared * ratio;
+    const double first_weight = 2.0 * ratio_cubed - 3.0 * ratio_squared + 1.0;
+    const double first_tangent_weight =
+      ratio_cubed - 2.0 * ratio_squared + ratio;
+    const double last_weight = -2.0 * ratio_cubed + 3.0 * ratio_squared;
+    const double last_tangent_weight = ratio_cubed - ratio_squared;
+    result.push_back(
+      first_weight * first + first_tangent_weight * first_tangent +
+      last_weight * last + last_tangent_weight * last_tangent);
+  }
+  return result;
+}
+
+double medianPolylineResidual(
+  const std::vector<cv::Point2d> & observations,
+  const std::size_t first,
+  const std::size_t last,
+  const std::vector<cv::Point2d> & model)
+{
+  if (model.size() < 2U) {
+    return std::numeric_limits<double>::infinity();
+  }
+  std::vector<double> residuals;
+  residuals.reserve(last - first + 1U);
+  for (std::size_t index = first; index <= last; ++index) {
+    double minimum_distance = std::numeric_limits<double>::infinity();
+    for (std::size_t segment = 1; segment < model.size(); ++segment) {
+      minimum_distance = std::min(
+        minimum_distance,
+        pointSegmentDistance(
+          observations[index], model[segment - 1U], model[segment]));
+    }
+    residuals.push_back(minimum_distance);
+  }
+  return median(std::move(residuals));
+}
+
+bool appendSimpleOpenSegment(
+  const std::vector<cv::Point2d> & candidate,
+  const BevLaneSeedDetectorConfig & config,
+  cv::Point2d * accepted_direction,
+  std::vector<cv::Point2d> * path)
+{
+  if (
+    candidate.empty() || accepted_direction == nullptr || path == nullptr ||
+    path->empty())
+  {
     return false;
   }
-  const double radius = std::max(1.0, 0.5 * window_px);
-  cv::Matx33d normal_matrix = cv::Matx33d::zeros();
-  cv::Vec3d column_rhs(0.0, 0.0, 0.0);
-  cv::Vec3d row_rhs(0.0, 0.0, 0.0);
-  int samples = 0;
-  for (std::size_t index = 0; index < points.size(); ++index) {
-    const double offset = arc[index] - arc[center_index];
-    const double relative = std::abs(offset) / radius;
-    if (relative > 1.0) {
+  std::vector<cv::Point2d> trial = *path;
+  cv::Point2d direction = *accepted_direction;
+  for (const cv::Point2d & point : candidate) {
+    const cv::Point2d step = point - trial.back();
+    const double step_length = cv::norm(step);
+    if (step_length <= 0.25) {
       continue;
     }
-    const double kernel = 1.0 - relative * relative * relative;
-    const double weight = kernel * kernel * kernel;
-    const cv::Vec3d basis(1.0, offset, offset * offset);
-    for (int row = 0; row < 3; ++row) {
-      for (int column = 0; column < 3; ++column) {
-        normal_matrix(row, column) +=
-          weight * basis[row] * basis[column];
-      }
-      column_rhs[row] += weight * basis[row] * points[index].x;
-      row_rhs[row] += weight * basis[row] * points[index].y;
+    const cv::Point2d step_direction = step / step_length;
+    if (
+      step_direction.dot(direction) <
+      config.centerline_fit_minimum_forward_progress_ratio ||
+      std::abs(signedTurnDegrees(direction, step_direction)) >
+      config.centerline_fit_maximum_turn_deg_per_segment)
+    {
+      return false;
     }
-    ++samples;
+    for (std::size_t index = 0; index + 2U < trial.size(); ++index) {
+      if (segmentsIntersect(
+          trial[index], trial[index + 1U], trial.back(), point))
+      {
+        return false;
+      }
+    }
+    trial.push_back(point);
+    direction = step_direction;
   }
-  if (samples < 3 || std::abs(cv::determinant(normal_matrix)) < 1.0e-9) {
+  if (trial.size() == path->size()) {
     return false;
   }
-  const cv::Matx33d inverse = normal_matrix.inv(cv::DECOMP_SVD);
-  const cv::Vec3d column_coefficients = inverse * column_rhs;
-  const cv::Vec3d row_coefficients = inverse * row_rhs;
-  *fitted = cv::Point2d(column_coefficients[0], row_coefficients[0]);
-  return std::isfinite(fitted->x) && std::isfinite(fitted->y);
+  *path = std::move(trial);
+  *accepted_direction = direction;
+  return true;
 }
 
-std::vector<cv::Point2d> smoothCenterline(
+std::vector<cv::Point2d> fitIncrementalCenterline(
   const std::vector<cv::Point2d> & input,
   const BevLaneSeedDetectorConfig & config)
 {
@@ -1256,24 +1428,134 @@ std::vector<cv::Point2d> smoothCenterline(
     input, config.centerline_resample_spacing_px);
   points = removeIsolatedCenterlineBumps(
     points, config.centerline_outlier_distance_px);
-  if (points.size() < 3) {
+  if (points.size() < 2U) {
     return points;
   }
   const std::vector<double> arc = cumulativeArcLengths(points);
-  std::vector<cv::Point2d> result = points;
-  for (std::size_t index = 0; index < points.size(); ++index) {
-    const double curvature = localCurvatureRadPerPx(points, index);
-    const double corner_weight = std::clamp(
-      curvature /
-      config.centerline_corner_curvature_threshold_rad_per_px, 0.0, 1.0);
-    const double window_px =
-      (1.0 - corner_weight) *
-      config.centerline_straight_smoothing_window_px +
-      corner_weight * config.centerline_corner_smoothing_window_px;
-    cv::Point2d fitted;
-    if (fitLocalQuadratic(points, arc, index, window_px, &fitted)) {
-      result[index] = fitted;
+  std::size_t initial_end = 1U;
+  while (
+    initial_end + 1U < points.size() &&
+    arc[initial_end] < config.centerline_fit_segment_length_px)
+  {
+    ++initial_end;
+  }
+  cv::Point2d accepted_direction = fittedSegmentDirection(
+    points, 0U, initial_end);
+  if (cv::norm(accepted_direction) <= 0.0) {
+    return {};
+  }
+
+  std::vector<cv::Point2d> result{points.front()};
+  std::size_t segment_first = 0U;
+  double previous_turn_deg = 0.0;
+  while (segment_first + 1U < points.size()) {
+    std::size_t segment_last = segment_first + 1U;
+    while (
+      segment_last + 1U < points.size() &&
+      arc[segment_last] - arc[segment_first] <
+      config.centerline_fit_segment_length_px)
+    {
+      ++segment_last;
     }
+
+    const cv::Point2d anchor = result.back();
+    const cv::Point2d target = points[segment_last];
+    const cv::Point2d chord = target - anchor;
+    const double chord_length = cv::norm(chord);
+    if (chord_length <= config.centerline_resample_spacing_px) {
+      break;
+    }
+    const cv::Point2d chord_direction = chord / chord_length;
+    if (
+      chord_direction.dot(accepted_direction) <
+      config.centerline_fit_minimum_forward_progress_ratio)
+    {
+      break;
+    }
+
+    std::size_t tail_first = segment_last;
+    while (
+      tail_first > segment_first &&
+      arc[segment_last] - arc[tail_first - 1U] <=
+      config.centerline_fit_tail_window_px)
+    {
+      --tail_first;
+    }
+    cv::Point2d desired_end_direction = fittedSegmentDirection(
+      points, tail_first, segment_last);
+    if (cv::norm(desired_end_direction) <= 0.0) {
+      desired_end_direction = chord_direction;
+    }
+
+    const double straight_residual = medianLineResidual(
+      points, segment_first, segment_last, anchor, accepted_direction);
+    const double chord_heading_deg = std::abs(signedTurnDegrees(
+        accepted_direction, chord_direction));
+    const double desired_turn_deg = signedTurnDegrees(
+      accepted_direction, desired_end_direction);
+    const bool straight =
+      straight_residual <=
+      config.centerline_fit_straight_maximum_residual_px &&
+      chord_heading_deg <=
+      config.centerline_fit_straight_maximum_heading_deg;
+
+    std::vector<cv::Point2d> candidate;
+    cv::Point2d model_end_direction = accepted_direction;
+    double applied_turn_deg = 0.0;
+    if (straight) {
+      const double forward_length = chord.dot(accepted_direction);
+      if (forward_length <= config.centerline_resample_spacing_px) {
+        break;
+      }
+      candidate = sampleLineSegment(
+        anchor, anchor + forward_length * accepted_direction,
+        config.centerline_resample_spacing_px);
+    } else {
+      if (
+        chord_heading_deg >
+        config.centerline_fit_maximum_turn_deg_per_segment)
+      {
+        break;
+      }
+      double limited_turn_deg = std::clamp(
+        desired_turn_deg,
+        -config.centerline_fit_maximum_turn_deg_per_segment,
+        config.centerline_fit_maximum_turn_deg_per_segment);
+      limited_turn_deg = std::clamp(
+        limited_turn_deg,
+        previous_turn_deg -
+        config.centerline_fit_maximum_turn_change_deg_per_segment,
+        previous_turn_deg +
+        config.centerline_fit_maximum_turn_change_deg_per_segment);
+      model_end_direction = rotateDirection(
+        accepted_direction, limited_turn_deg);
+      applied_turn_deg = limited_turn_deg;
+      candidate = sampleHermiteSegment(
+        anchor, target, accepted_direction, model_end_direction, config);
+    }
+
+    std::vector<cv::Point2d> model{anchor};
+    model.insert(model.end(), candidate.begin(), candidate.end());
+    if (
+      medianPolylineResidual(
+        points, segment_first, segment_last, model) >
+      config.centerline_fit_maximum_residual_px)
+    {
+      break;
+    }
+    cv::Point2d appended_direction = accepted_direction;
+    if (!appendSimpleOpenSegment(
+        candidate, config, &appended_direction, &result))
+    {
+      break;
+    }
+    accepted_direction = straight ? accepted_direction : model_end_direction;
+    if (cv::norm(appended_direction) > 0.0) {
+      accepted_direction = normalized(
+        accepted_direction + appended_direction);
+    }
+    previous_turn_deg = applied_turn_deg;
+    segment_first = segment_last;
   }
   return result;
 }
@@ -2308,8 +2590,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
           config_.minimum_pair_distance_px,
           config_.maximum_pair_distance_px);
 
-        std::vector<cv::Point2d> left_bias_samples;
-        std::vector<cv::Point2d> right_bias_samples;
+        std::vector<double> left_bias_samples;
+        std::vector<double> right_bias_samples;
         left_bias_samples.reserve(paired.centers.size());
         right_bias_samples.reserve(paired.centers.size());
         for (std::size_t index = 0; index < paired.centers.size(); ++index) {
@@ -2334,24 +2616,22 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
             paired.right_points[index] -
             0.5 * estimated_lane_width_px_ * right_normal;
           left_bias_samples.push_back(
-            paired.centers[index] - left_only_center);
+            (paired.centers[index] - left_only_center).dot(left_normal));
           right_bias_samples.push_back(
-            paired.centers[index] - right_only_center);
+            (paired.centers[index] - right_only_center).dot(-right_normal));
         }
         if (!left_bias_samples.empty() && !right_bias_samples.empty()) {
-          const cv::Point2d measured_left_bias = componentMedian(
-            left_bias_samples);
-          const cv::Point2d measured_right_bias = componentMedian(
-            right_bias_samples);
+          const double measured_left_bias = median(left_bias_samples);
+          const double measured_right_bias = median(right_bias_samples);
           if (!center_bias_initialized_) {
-            left_center_bias_ = measured_left_bias;
-            right_center_bias_ = measured_right_bias;
+            left_center_bias_px_ = measured_left_bias;
+            right_center_bias_px_ = measured_right_bias;
             center_bias_initialized_ = true;
           } else {
-            left_center_bias_ += config_.centerline_width_update_gain *
-              (measured_left_bias - left_center_bias_);
-            right_center_bias_ += config_.centerline_width_update_gain *
-              (measured_right_bias - right_center_bias_);
+            left_center_bias_px_ += config_.centerline_width_update_gain *
+              (measured_left_bias - left_center_bias_px_);
+            right_center_bias_px_ += config_.centerline_width_update_gain *
+              (measured_right_bias - right_center_bias_px_);
           }
         }
         raw_centerline = std::move(paired.centers);
@@ -2364,7 +2644,7 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     {
       raw_centerline = offsetSingleBoundary(
         left_curve, true, estimated_lane_width_px_,
-        center_bias_initialized_ ? left_center_bias_ : cv::Point2d(), config_);
+        center_bias_initialized_ ? left_center_bias_px_ : 0.0, config_);
       result.centerline_source = BevLaneCenterlineSource::LEFT;
     } else if (
       raw_centerline.empty() && selected_right.valid &&
@@ -2372,7 +2652,7 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     {
       raw_centerline = offsetSingleBoundary(
         right_curve, false, estimated_lane_width_px_,
-        center_bias_initialized_ ? right_center_bias_ : cv::Point2d(), config_);
+        center_bias_initialized_ ? right_center_bias_px_ : 0.0, config_);
       result.centerline_source = BevLaneCenterlineSource::RIGHT;
     }
 
@@ -2440,7 +2720,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     }
 
     if (!raw_centerline.empty()) {
-      result.centerline_points = smoothCenterline(raw_centerline, config_);
+      result.centerline_points = fitIncrementalCenterline(
+        raw_centerline, config_);
     }
     if (result.centerline_points.size() < 2U) {
       result.centerline_points.clear();

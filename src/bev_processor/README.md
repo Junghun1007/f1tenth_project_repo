@@ -133,11 +133,12 @@ enhanced = max(top_hat - noise_floor, 0) * gain
     쌓고 각 창의 Top-hat 밝기 가중 무게중심 한 점을 추가한다.
 11. ROI 시드와 슬라이딩 윈도우 점을 호 길이 간격으로 균일 재샘플링한다.
 12. 양쪽 차선은 국소 접선에 수직인 대응점을 찾아 중점을 만들고 실측
-    도로 폭과 좌·우 단독 중심 오차를 갱신한다.
+    도로 폭과 좌·우 법선 방향의 단독 중심 오차를 갱신한다.
 13. 한쪽만 보이면 기억한 도로 폭의 절반만큼 국소 법선 방향으로 이동하고,
     양쪽에서 한쪽으로 전환될 때 남는 위치·방향 차이를 짧게 제한한다.
-14. 고립 돌출점을 제거하고 곡률 적응형 국소 2차 피팅을 적용한다. 직선은
-    넓게 평활화하고 급커브는 좁은 구간으로 피팅해 형상을 보존한다.
+14. 차량 가까운 점부터 짧은 구간을 직선 또는 접선 연속 Hermite
+    곡선으로 피팅해 누적한다. 진행 반전, 회전량 급변, 자기교차를
+    발견하면 이후 원거리 구간은 연결하지 않는다.
 
 출력 토픽은 다음과 같다.
 
@@ -199,13 +200,15 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_seed_sliding_window_heading_update_gain:=0.50
 ```
 
-중심선 폭·평활화·전환값도 같은 방법으로 조절한다.
+중심선 폭·구간 피팅·전환값도 같은 방법으로 조절한다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
   lane_centerline_nominal_lane_width_px:=62.0 \
-  lane_centerline_straight_smoothing_window_px:=15.0 \
-  lane_centerline_corner_smoothing_window_px:=5.0 \
+  lane_centerline_fit_segment_length_px:=12.0 \
+  lane_centerline_fit_straight_maximum_residual_px:=1.5 \
+  lane_centerline_fit_maximum_turn_deg_per_segment:=28.0 \
+  lane_centerline_fit_maximum_turn_change_deg_per_segment:=10.0 \
   lane_centerline_transition_frames:=4 \
   lane_centerline_maximum_lateral_jump_px:=3.0
 ```
@@ -257,11 +260,24 @@ ros2 launch bev_processor bev_processor.launch.py \
   실측한 도로 폭과 단일 차선별 중심 bias의 갱신 비율
 - `lane_centerline_resample_spacing_px`:
   ROI 시드와 성긴 슬라이딩 윈도우 점을 동일 비중으로 만들 재샘플 간격
-- `lane_centerline_*_smoothing_window_px`,
-  `lane_centerline_corner_curvature_threshold_rad_per_px`:
-  직선/급커브의 국소 2차 피팅 범위와 급커브 판정 곡률
 - `lane_centerline_outlier_distance_px`:
   이웃을 잇는 선분에서 벗어난 고립 중심점을 교정할 거리
+- `lane_centerline_fit_segment_length_px`,
+  `lane_centerline_fit_tail_window_px`:
+  가까운 쪽부터 순차적으로 확정할 피팅 구간 길이와 구간 끝
+  접선을 계산할 관측 길이
+- `lane_centerline_fit_straight_maximum_residual_px`,
+  `lane_centerline_fit_straight_maximum_heading_deg`:
+  현재 직선을 그대로 연장할 최대 중앙 잔차와 방향 차이
+- `lane_centerline_fit_maximum_residual_px`,
+  `lane_centerline_fit_hermite_tangent_scale`:
+  구간 곡선과 관측점의 최대 중앙 잔차, Hermite 접선 길이 비율
+- `lane_centerline_fit_maximum_turn_deg_per_segment`,
+  `lane_centerline_fit_maximum_turn_change_deg_per_segment`,
+  `lane_centerline_fit_minimum_forward_progress_ratio`:
+  구간당 최대 회전각, 인접 구간 회전량 변화 제한, 직전 진행
+  방향으로 반드시 남아야 하는 최소 전진 비율. 자기교차와 되돌아가는
+  선분은 파라미터와 관계없이 발행하지 않는다.
 - `lane_centerline_transition_frames`,
   `lane_centerline_maximum_lateral_jump_px`,
   `lane_centerline_maximum_heading_jump_deg`:
