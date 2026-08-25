@@ -1378,63 +1378,41 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     // it moved beyond the single-lane temporal reacquisition gate.
     selected_left = current_pair_left;
     selected_right = current_pair_right;
-  } else {
-    const double maximum_distance =
-      config_.temporal_side_reacquire_maximum_distance_px;
-    std::size_t best_left_index = candidates.size();
-    std::size_t best_right_index = candidates.size();
-    double best_assignment_cost = std::numeric_limits<double>::infinity();
-
-    // Prefer a two-sided temporal assignment when two distinct candidates
-    // match the remembered physical left/right curves.
-    for (std::size_t left_index = 0;
-      left_index < candidates.size(); ++left_index)
-    {
-      const double left_distance = temporalTrackDistance(
-        candidates[left_index], remembered_left_);
-      if (left_distance > maximum_distance) {
-        continue;
-      }
-      for (std::size_t right_index = 0;
-        right_index < candidates.size(); ++right_index)
-      {
-        if (left_index == right_index) {
-          continue;
-        }
-        const double right_distance = temporalTrackDistance(
-          candidates[right_index], remembered_right_);
-        if (right_distance > maximum_distance) {
-          continue;
-        }
-        const double cost = left_distance + right_distance - 0.001 * (
-          candidates[left_index].score + candidates[right_index].score);
-        if (cost < best_assignment_cost) {
-          best_assignment_cost = cost;
-          best_left_index = left_index;
-          best_right_index = right_index;
+  } else if (!candidates.empty()) {
+    if (remembered_single_side_ != 0) {
+      // A lane that was already confirmed as the only visible left/right lane
+      // keeps that role through a short dropout. Pick the candidate closest to
+      // its remembered curve, but do not reject or relabel it merely because
+      // vehicle motion moved it beyond the ambiguous-side distance gate.
+      const BevLaneSeed & remembered = remembered_single_side_ < 0 ?
+        remembered_left_ : remembered_right_;
+      std::size_t best_index = 0;
+      double best_distance = temporalTrackDistance(candidates[0], remembered);
+      for (std::size_t index = 1; index < candidates.size(); ++index) {
+        const double distance = temporalTrackDistance(
+          candidates[index], remembered);
+        if (
+          distance < best_distance ||
+          (distance == best_distance &&
+          candidates[index].score > candidates[best_index].score))
+        {
+          best_index = index;
+          best_distance = distance;
         }
       }
-    }
-
-    if (
-      best_left_index != candidates.size() &&
-      best_right_index != candidates.size())
-    {
-      selected_left = candidates[best_left_index];
-      selected_right = candidates[best_right_index];
+      if (remembered_single_side_ < 0) {
+        selected_left = candidates[best_index];
+      } else {
+        selected_right = candidates[best_index];
+      }
       result.temporal_labeling_used = true;
     } else {
-      // With one visible lane, keep the role that was visible in the previous
-      // frame. If both or neither were visible, use the closer remembered
-      // curve. This also preserves the role after a short detection dropout.
-      const bool prefer_left =
-        (previous_left_visible_ && !previous_right_visible_) ||
-        (!previous_left_visible_ && !previous_right_visible_ &&
-        remembered_single_side_ < 0);
-      const bool prefer_right =
-        (previous_right_visible_ && !previous_left_visible_) ||
-        (!previous_left_visible_ && !previous_right_visible_ &&
-        remembered_single_side_ > 0);
+      // The previous reliable observation was a pair, so the first following
+      // single lane has no remembered single-side role yet. Assign only the
+      // closest candidate/side within the ambiguity gate; a new valid pair is
+      // handled by the authoritative pair branch above.
+      const double maximum_distance =
+        config_.temporal_side_reacquire_maximum_distance_px;
       std::size_t best_index = candidates.size();
       bool assign_left = false;
       double best_cost = std::numeric_limits<double>::infinity();
@@ -1444,16 +1422,14 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         const double right_distance = temporalTrackDistance(
           candidates[index], remembered_right_);
         if (
-          !prefer_right && left_distance <= maximum_distance &&
-          left_distance < best_cost)
+          left_distance <= maximum_distance && left_distance < best_cost)
         {
           best_cost = left_distance;
           best_index = index;
           assign_left = true;
         }
         if (
-          !prefer_left && right_distance <= maximum_distance &&
-          right_distance < best_cost)
+          right_distance <= maximum_distance && right_distance < best_cost)
         {
           best_cost = right_distance;
           best_index = index;
@@ -1474,8 +1450,6 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
   result.left = toPublicSeed(selected_left);
   result.right = toPublicSeed(selected_right);
   if (config_.temporal_side_lock_enabled && side_lock_initialized_) {
-    previous_left_visible_ = result.left.valid;
-    previous_right_visible_ = result.right.valid;
     if (result.left.valid && !result.right.valid) {
       remembered_single_side_ = -1;
     } else if (result.right.valid && !result.left.valid) {
@@ -1498,8 +1472,6 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         config_.temporal_side_lock_reset_frames)
       {
         side_lock_initialized_ = false;
-        previous_left_visible_ = false;
-        previous_right_visible_ = false;
         remembered_single_side_ = 0;
         both_sides_missing_frames_ = 0;
         remembered_left_ = BevLaneSeed{};

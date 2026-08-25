@@ -107,9 +107,8 @@ public:
 private:
   BevLaneSeedDetectorConfig config_;
   bool side_lock_initialized_{false};
-  bool previous_left_visible_{false};
-  bool previous_right_visible_{false};
-  // -1=left, +1=right, 0=no remembered single-side state.
+  // -1=last confirmed single lane was left, +1=right, 0=no single-side state.
+  // The role survives short detection gaps until a valid pair or lock reset.
   int remembered_single_side_{0};
   int both_sides_missing_frames_{0};
   BevLaneSeed remembered_left_;

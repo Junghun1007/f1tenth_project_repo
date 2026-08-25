@@ -259,9 +259,10 @@ bev_processor:
     lane_seed_cross_direction_merge_minimum_connector_support_ratio: 0.70
     lane_seed_cross_direction_merge_maximum_turn_angle_deg: 110.0
 
-    # 최초 유효한 좌우 쌍으로 역할을 잠근 뒤 단일 차선을 화면 중심이 아닌
-    # 직전 곡선과의 거리로 재연결한다. 양쪽이 모두 reset_frames 동안
-    # 사라질 때만 잠금을 풀고 다시 좌우 쌍을 기다린다.
+    # 유효한 좌우 쌍은 양쪽 역할을 즉시 재초기화한다. 단일 차선으로 확정된
+    # 좌/우 역할은 짧은 검출 누락 후에도 그대로 유지한다. 재탐색 거리는
+    # 직전 상태가 좌우 쌍이어서 단일 side가 아직 미확정일 때만 쓴다.
+    # 양쪽이 reset_frames 동안 사라지면 잠금을 풀고 다시 좌우 쌍을 기다린다.
     lane_seed_temporal_side_lock_enabled: true
     lane_seed_temporal_side_lock_reset_frames: 30
     lane_seed_temporal_side_reacquire_maximum_distance_px: 20.0

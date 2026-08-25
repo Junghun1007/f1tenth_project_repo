@@ -134,10 +134,11 @@ void testLeftLaneKeepsItsRoleAfterSingleLaneDropout()
   moveLeftLaneAcrossImage(&detector);
   insertMissingFrame(&detector);
 
-  const LaneImages reacquired = makeVerticalLanes(120, 300, {82});
+  // The 25px jump exceeds the normal 20px ambiguous-side reacquisition gate.
+  const LaneImages reacquired = makeVerticalLanes(120, 300, {105});
   const BevLaneSeedDetection detection = detector.detect(
     reacquired.gray, reacquired.response, false);
-  requireSeedNear(detection, true, 82.0);
+  requireSeedNear(detection, true, 105.0);
 }
 
 void testRightLaneKeepsItsRoleAfterSingleLaneDropout()
@@ -147,10 +148,11 @@ void testRightLaneKeepsItsRoleAfterSingleLaneDropout()
   moveRightLaneAcrossImage(&detector);
   insertMissingFrame(&detector);
 
-  const LaneImages reacquired = makeVerticalLanes(120, 300, {18});
+  // The 25px jump exceeds the normal 20px ambiguous-side reacquisition gate.
+  const LaneImages reacquired = makeVerticalLanes(120, 300, {45});
   const BevLaneSeedDetection detection = detector.detect(
     reacquired.gray, reacquired.response, false);
-  requireSeedNear(detection, false, 18.0);
+  requireSeedNear(detection, false, 45.0);
 }
 
 void testValidPairReinitializesBothSides()

@@ -398,7 +398,7 @@ public:
         "pair=%.1f..%.1fpx, contrast relaxation=%s(step=%.1f, retries=%d), "
         "column_tracking=%s, candidate_merge=%s(endpoint<=%.1fpx, "
         "support>=%.2f, turn<=%.1fdeg), side_lock=%s(reset=%d frames, "
-        "reacquire<=%.1fpx), preview=%s",
+        "ambiguous_reacquire<=%.1fpx), preview=%s",
         lane_seed_config_.slope_filter_enabled ? "on" : "off",
         lane_seed_config_.slope_median_window,
         lane_seed_config_.maximum_slope_change_px_per_row,

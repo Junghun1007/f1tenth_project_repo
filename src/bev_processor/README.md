@@ -212,8 +212,8 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
 - `lane_seed_cross_direction_merge_maximum_turn_angle_deg`:
   연결부에서 허용할 최대 방향 변화각
 - `lane_seed_temporal_side_lock_*`:
-  최초 좌우 쌍 후 단일 차선의 역할 유지, 잠금 초기화 프레임,
-  재탐색 최대 곡선 거리
+  유효한 좌우 쌍의 역할 재초기화, 단일 차선의 짧은 누락 후 좌/우 역할
+  유지, 잠금 초기화 프레임, 단일 side가 미확정일 때의 재탐색 최대 곡선 거리
 
 ## BEV 범위
 
