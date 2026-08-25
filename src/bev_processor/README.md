@@ -109,8 +109,8 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 
 ## 상대 대비 시드 검출
 
-기존 밝기·채도·슬라이딩 윈도우·중심선 재구성 알고리즘은 제거되었다.
-현재 시드 검출 순서는 다음과 같다.
+보수적인 ROI 시드 검출을 먼저 수행하고, 안정 트랙만 슬라이딩 윈도우로
+연장한 뒤 주행 중심선을 생성한다. 전체 순서는 다음과 같다.
 
 1. ROI 각 행에서 Top-hat 응답과 폭 조건을 통과한 ridge를 찾는다.
 2. 하단에서 상단으로 최대 횡이동량과 허용 gap을 적용해 곡선 트랙을 만든다.
@@ -129,15 +129,21 @@ enhanced = max(top_hat - noise_floor, 0) * gain
    방향에서 동일하며, 좌·우 거리는 원본 좌표계의 곡선 간 거리로 평가한다.
 9. 행·열 후보의 끝점이 설정 거리 이내에서 닿고 연결부 응답과 회전각
    기준을 통과하면 하나의 `RC` 트랙으로 이어서 점수와 시드를 다시 계산한다.
+10. 선택된 트랙의 먼 쪽 끝에서 크기가 증가하는 회전 슬라이딩 윈도우를
+    쌓고 각 창의 Top-hat 밝기 가중 무게중심 한 점을 추가한다.
+11. ROI 시드와 슬라이딩 윈도우 점을 호 길이 간격으로 균일 재샘플링한다.
+12. 양쪽 차선은 국소 접선에 수직인 대응점을 찾아 중점을 만들고 실측
+    도로 폭과 좌·우 단독 중심 오차를 갱신한다.
+13. 한쪽만 보이면 기억한 도로 폭의 절반만큼 국소 법선 방향으로 이동하고,
+    양쪽에서 한쪽으로 전환될 때 남는 위치·방향 차이를 짧게 제한한다.
+14. 고립 돌출점을 제거하고 곡률 적응형 국소 2차 피팅을 적용한다. 직선은
+    넓게 평활화하고 급커브는 좁은 구간으로 피팅해 형상을 보존한다.
 
 출력 토픽은 다음과 같다.
 
 - `/camera/image_bev` (`bgr8`): 원본 120x300 컬러 BEV
-- `/camera/image_bev_lane` (`mono8`): 선택된 왼쪽·오른쪽
-  시드 지지 곡선만 흰색인 120x300 마스크
-
-현재 단계는 시드 탐색까지만 수행한다. 주행 중심선이나 완성된 차선 곡선은
-아직 생성하지 않는다.
+- `/camera/image_bev_lane` (`mono8`): 최종 주행 중심선만 흰색인
+  120x300 마스크. 양쪽 경계 자체는 이 토픽에 포함하지 않는다.
 
 ## GUI 표시
 
@@ -145,7 +151,8 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 판정 근거를 함께 표시한다.
 
 - 노랑: ROI 상단·하단
-- 초록: 엄격 대비 통과 근거
+- 흐린 초록: 엄격 대비 통과 근거
+- 밝은 초록 2px 선: 최종 주행 중심선
 - 주황: 안정 트랙에서 완화된 대비로 통과한 근거
 - 청록: 선택된 왼쪽 시드와 지지 곡선
 - 자홍: 선택된 오른쪽 시드와 지지 곡선
@@ -155,6 +162,8 @@ enhanced = max(top_hat - noise_floor, 0) * gain
   시간 연속성으로 단일 차선의 역할을 붙였다는 뜻
 - 상태 문자 끝의 `:RC`: 행·열 통합 추적 사용
 - 흰색 원: 행·열 트랙이 실제로 병합된 연결 위치
+- `CENTER:PAIR/LEFT/RIGHT/NONE`: 중심선 생성에 사용한 차선 상태,
+  끝의 `:T`는 양쪽에서 한쪽으로 전환 보정 중이라는 뜻
 
 `lane_preview_enabled:=false`이면 원본 컬러 BEV만 프리뷰한다.
 프리뷰 창에 포커스를 둔 채 Space를 누르면 `preview_stop_topic`
@@ -188,6 +197,17 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_seed_sliding_window_maximum_turn_deg_per_window:=15.0 \
   lane_seed_sliding_window_maximum_turn_change_deg_per_window:=5.0 \
   lane_seed_sliding_window_heading_update_gain:=0.50
+```
+
+중심선 폭·평활화·전환값도 같은 방법으로 조절한다.
+
+```bash
+ros2 launch bev_processor bev_processor.launch.py \
+  lane_centerline_nominal_lane_width_px:=62.0 \
+  lane_centerline_straight_smoothing_window_px:=15.0 \
+  lane_centerline_corner_smoothing_window_px:=5.0 \
+  lane_centerline_transition_frames:=4 \
+  lane_centerline_maximum_lateral_jump_px:=3.0
 ```
 
 주요 파라미터 그룹:
@@ -231,6 +251,22 @@ ros2 launch bev_processor bev_processor.launch.py \
   `lane_seed_sliding_window_heading_update_gain`:
   연속 창 사이 회전량 급변 제한과 방향 갱신 비율. 코너 방향과 반대로
   순간 진동하는 중심선 생성을 억제한다.
+- `lane_centerline_enabled`, `lane_centerline_nominal_lane_width_px`,
+  `lane_centerline_width_update_gain`:
+  중심선 생성 여부, 양쪽 차선을 보기 전 사용할 기본 폭, 양쪽 차선에서
+  실측한 도로 폭과 단일 차선별 중심 bias의 갱신 비율
+- `lane_centerline_resample_spacing_px`:
+  ROI 시드와 성긴 슬라이딩 윈도우 점을 동일 비중으로 만들 재샘플 간격
+- `lane_centerline_*_smoothing_window_px`,
+  `lane_centerline_corner_curvature_threshold_rad_per_px`:
+  직선/급커브의 국소 2차 피팅 범위와 급커브 판정 곡률
+- `lane_centerline_outlier_distance_px`:
+  이웃을 잇는 선분에서 벗어난 고립 중심점을 교정할 거리
+- `lane_centerline_transition_frames`,
+  `lane_centerline_maximum_lateral_jump_px`,
+  `lane_centerline_maximum_heading_jump_deg`:
+  양쪽에서 한쪽 차선으로 전환될 때 허용할 짧은 보정 기간과 최초
+  중심선 횡이동·방향 변화 한계
 - `lane_seed_column_tracking_enabled`:
   행 후보와 함께 동일 기준의 열 방향 후보를 매 프레임 통합할지 여부
 - `lane_seed_cross_direction_merge_enabled`:
@@ -250,8 +286,8 @@ ros2 launch bev_processor bev_processor.launch.py \
 
 차선 프리뷰에는 선택된 좌·우 색으로 회전 슬라이딩 윈도우가 표시된다.
 통과한 창의 노란 점은 Top-hat 응답으로 계산한 밝기 가중 무게중심이며,
-빨간 창은 밝은 픽셀 부족 또는 진행 방향 조건으로 중단된 창이다. 차선
-마스크에는 통과한 창마다 무게중심 한 픽셀만 추가된다.
+빨간 창은 밝은 픽셀 부족 또는 진행 방향 조건으로 중단된 창이다. 최종
+중심선은 프리뷰의 밝은 초록색 선과 mono8 마스크로 출력된다.
 
 ## BEV 범위
 

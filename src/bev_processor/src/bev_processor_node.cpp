@@ -361,7 +361,7 @@ public:
     if (lane_seed_detection_enabled_) {
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane seed detection: output=%s mono8, CUDA gray/Top-hat, "
+        "BEV lane detection: centerline_output=%s mono8, CUDA gray/Top-hat, "
         "bands near/middle/far=%.2f/%.2f/%.2f, "
         "kernel=%dx%d/%dx%d/%dx%d, gain=%.2f/%.2f/%.2f",
         lane_output_topic_.c_str(),
@@ -438,6 +438,23 @@ public:
         lane_seed_config_.sliding_window_maximum_turn_deg_per_window,
         lane_seed_config_.sliding_window_maximum_turn_change_deg_per_window,
         lane_seed_config_.sliding_window_heading_update_gain);
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV lane centerline: %s, nominal_width=%.1fpx, width_gain=%.2f, "
+        "resample=%.1fpx, smoothing(straight/corner)=%.1f/%.1fpx, "
+        "corner_curvature>=%.4frad/px, outlier>%.1fpx, "
+        "transition=%d frames, jump<=%.1fpx/%.1fdeg",
+        lane_seed_config_.centerline_enabled ? "on" : "off",
+        lane_seed_config_.centerline_nominal_lane_width_px,
+        lane_seed_config_.centerline_width_update_gain,
+        lane_seed_config_.centerline_resample_spacing_px,
+        lane_seed_config_.centerline_straight_smoothing_window_px,
+        lane_seed_config_.centerline_corner_smoothing_window_px,
+        lane_seed_config_.centerline_corner_curvature_threshold_rad_per_px,
+        lane_seed_config_.centerline_outlier_distance_px,
+        lane_seed_config_.centerline_transition_frames,
+        lane_seed_config_.centerline_maximum_lateral_jump_px,
+        lane_seed_config_.centerline_maximum_heading_jump_deg);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -654,6 +671,22 @@ private:
       "lane_seed_sliding_window_maximum_turn_change_deg_per_window", 3.0);
     declare_parameter<double>(
       "lane_seed_sliding_window_heading_update_gain", 0.80);
+    declare_parameter<bool>("lane_centerline_enabled", true);
+    declare_parameter<double>("lane_centerline_nominal_lane_width_px", 62.0);
+    declare_parameter<double>("lane_centerline_width_update_gain", 0.10);
+    declare_parameter<double>("lane_centerline_resample_spacing_px", 2.0);
+    declare_parameter<double>(
+      "lane_centerline_straight_smoothing_window_px", 15.0);
+    declare_parameter<double>(
+      "lane_centerline_corner_smoothing_window_px", 5.0);
+    declare_parameter<double>(
+      "lane_centerline_corner_curvature_threshold_rad_per_px", 0.035);
+    declare_parameter<double>("lane_centerline_outlier_distance_px", 4.0);
+    declare_parameter<int>("lane_centerline_transition_frames", 4);
+    declare_parameter<double>(
+      "lane_centerline_maximum_lateral_jump_px", 3.0);
+    declare_parameter<double>(
+      "lane_centerline_maximum_heading_jump_deg", 5.0);
     declare_parameter<bool>("lane_seed_column_tracking_enabled", true);
     declare_parameter<bool>("lane_seed_cross_direction_merge_enabled", true);
     declare_parameter<double>(
@@ -980,6 +1013,29 @@ private:
       "lane_seed_sliding_window_maximum_turn_change_deg_per_window").as_double();
     lane_seed_config_.sliding_window_heading_update_gain = get_parameter(
       "lane_seed_sliding_window_heading_update_gain").as_double();
+    lane_seed_config_.centerline_enabled = get_parameter(
+      "lane_centerline_enabled").as_bool();
+    lane_seed_config_.centerline_nominal_lane_width_px = get_parameter(
+      "lane_centerline_nominal_lane_width_px").as_double();
+    lane_seed_config_.centerline_width_update_gain = get_parameter(
+      "lane_centerline_width_update_gain").as_double();
+    lane_seed_config_.centerline_resample_spacing_px = get_parameter(
+      "lane_centerline_resample_spacing_px").as_double();
+    lane_seed_config_.centerline_straight_smoothing_window_px = get_parameter(
+      "lane_centerline_straight_smoothing_window_px").as_double();
+    lane_seed_config_.centerline_corner_smoothing_window_px = get_parameter(
+      "lane_centerline_corner_smoothing_window_px").as_double();
+    lane_seed_config_.centerline_corner_curvature_threshold_rad_per_px =
+      get_parameter(
+        "lane_centerline_corner_curvature_threshold_rad_per_px").as_double();
+    lane_seed_config_.centerline_outlier_distance_px = get_parameter(
+      "lane_centerline_outlier_distance_px").as_double();
+    lane_seed_config_.centerline_transition_frames = static_cast<int>(
+      get_parameter("lane_centerline_transition_frames").as_int());
+    lane_seed_config_.centerline_maximum_lateral_jump_px = get_parameter(
+      "lane_centerline_maximum_lateral_jump_px").as_double();
+    lane_seed_config_.centerline_maximum_heading_jump_deg = get_parameter(
+      "lane_centerline_maximum_heading_jump_deg").as_double();
     lane_seed_config_.column_tracking_enabled = get_parameter(
       "lane_seed_column_tracking_enabled").as_bool();
     lane_seed_config_.cross_direction_merge_enabled = get_parameter(

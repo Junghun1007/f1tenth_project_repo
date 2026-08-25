@@ -1,5 +1,6 @@
 #include "bev_processor/bev_lane_seed_detector.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
@@ -13,6 +14,7 @@ namespace
 using bev_processor::BevLaneSeedDetection;
 using bev_processor::BevLaneSeedDetector;
 using bev_processor::BevLaneSeedDetectorConfig;
+using bev_processor::BevLaneCenterlineSource;
 
 struct LaneImages
 {
@@ -33,6 +35,28 @@ LaneImages makeVerticalLanes(
       for (int column = center - 1; column <= center + 1; ++column) {
         images.gray.at<unsigned char>(row, column) = 255;
         images.response.at<unsigned char>(row, column) = 255;
+      }
+    }
+  }
+  return images;
+}
+
+LaneImages makeParallelLanes(
+  const int width,
+  const int height,
+  const std::vector<int> & center_columns_by_row)
+{
+  LaneImages images{
+    cv::Mat::zeros(height, width, CV_8UC1),
+    cv::Mat::zeros(height, width, CV_8UC1)};
+  for (int row = 0; row < height; ++row) {
+    const int center = center_columns_by_row[static_cast<std::size_t>(row)];
+    for (const int lane_center : {center - 30, center + 30}) {
+      for (int column = lane_center - 1; column <= lane_center + 1; ++column) {
+        if (column >= 0 && column < width) {
+          images.gray.at<unsigned char>(row, column) = 255;
+          images.response.at<unsigned char>(row, column) = 255;
+        }
       }
     }
   }
@@ -132,6 +156,19 @@ void requireNoSeeds(
   require(!detection.left.valid && !detection.right.valid, message);
 }
 
+double centerColumnNearRow(
+  const BevLaneSeedDetection & detection,
+  const double target_row)
+{
+  require(!detection.centerline_points.empty(), "centerline is empty");
+  const auto closest = std::min_element(
+    detection.centerline_points.begin(), detection.centerline_points.end(),
+    [target_row](const cv::Point2d & first, const cv::Point2d & second) {
+      return std::abs(first.y - target_row) < std::abs(second.y - target_row);
+    });
+  return closest->x;
+}
+
 void testLeftLaneKeepsItsRoleAfterSingleLaneDropout()
 {
   BevLaneSeedDetector detector = makeDetector();
@@ -214,6 +251,142 @@ void testPairRejectsDistantReacquisition()
   requireNoSeeds(detection, "distant lane pair must not produce lane seeds");
 }
 
+void testPairProducesExplicitCenterline()
+{
+  BevLaneSeedDetector detector = makeDetector();
+  const LaneImages lanes = makeVerticalLanes(120, 300, {20, 80});
+  const BevLaneSeedDetection detection = detector.detect(
+    lanes.gray, lanes.response, false);
+  require(
+    detection.centerline_source == BevLaneCenterlineSource::PAIR,
+    "lane pair must produce a pair centerline");
+  require(
+    std::abs(centerColumnNearRow(detection, 150.0) - 50.0) <= 1.0,
+    "pair centerline is not between the two boundaries");
+  require(
+    detection.seed_mask.at<unsigned char>(150, 50) != 0U,
+    "published mono8 mask does not contain the explicit centerline");
+  require(
+    detection.seed_mask.at<unsigned char>(150, 20) == 0U &&
+    detection.seed_mask.at<unsigned char>(150, 80) == 0U,
+    "published mono8 mask still contains lane boundaries");
+}
+
+void testSingleBoundaryUsesRememberedRoadWidth()
+{
+  BevLaneSeedDetector left_detector = makeDetector();
+  initializePair(&left_detector);
+  const LaneImages left_lane = makeVerticalLanes(120, 300, {20});
+  const BevLaneSeedDetection left = left_detector.detect(
+    left_lane.gray, left_lane.response, false);
+  require(
+    left.centerline_source == BevLaneCenterlineSource::LEFT,
+    "single left boundary did not produce a left-derived centerline");
+  require(
+    std::abs(centerColumnNearRow(left, 150.0) - 50.0) <= 1.0,
+    "left boundary centerline did not use half the remembered road width");
+
+  BevLaneSeedDetector right_detector = makeDetector();
+  initializePair(&right_detector);
+  const LaneImages right_lane = makeVerticalLanes(120, 300, {80});
+  const BevLaneSeedDetection right = right_detector.detect(
+    right_lane.gray, right_lane.response, false);
+  require(
+    right.centerline_source == BevLaneCenterlineSource::RIGHT,
+    "single right boundary did not produce a right-derived centerline");
+  require(
+    std::abs(centerColumnNearRow(right, 150.0) - 50.0) <= 1.0,
+    "right boundary centerline did not use half the remembered road width");
+}
+
+void testPairToSingleTransitionLimitsLateralJump()
+{
+  BevLaneSeedDetector detector = makeDetector();
+  initializePair(&detector);
+  const LaneImages shifted_left = makeVerticalLanes(120, 300, {25});
+  const BevLaneSeedDetection detection = detector.detect(
+    shifted_left.gray, shifted_left.response, false);
+  require(detection.centerline_transition_used, "pair-to-single transition unused");
+  require(
+    std::abs(centerColumnNearRow(detection, 150.0) - 50.0) <= 3.1,
+    "pair-to-single centerline exceeded the configured lateral jump");
+}
+
+void testAdaptiveSmoothingPreservesStraightToCurve()
+{
+  BevLaneSeedDetector detector = makeDetector();
+  std::vector<int> center_columns(300, 50);
+  for (int row = 0; row < 150; ++row) {
+    const double distance = static_cast<double>(150 - row);
+    center_columns[static_cast<std::size_t>(row)] = static_cast<int>(
+      std::lround(50.0 + 20.0 * distance * distance / (150.0 * 150.0)));
+  }
+  const LaneImages lanes = makeParallelLanes(120, 300, center_columns);
+  const BevLaneSeedDetection detection = detector.detect(
+    lanes.gray, lanes.response, false);
+  require(
+    detection.centerline_source == BevLaneCenterlineSource::PAIR,
+    "straight-to-curve pair did not produce a centerline");
+  require(
+    std::abs(centerColumnNearRow(detection, 250.0) - 50.0) <= 2.0,
+    "straight centerline segment was displaced");
+  require(
+    centerColumnNearRow(detection, 5.0) >= 66.0,
+    "adaptive smoothing flattened the sustained curve");
+}
+
+void testCenterlineUsesSlidingWindowExtension()
+{
+  BevLaneSeedDetectorConfig config;
+  config.roi_bottom_exclusion_ratio = 0.0;
+  config.roi_height_ratio = 0.25;
+  config.column_tracking_enabled = false;
+  config.cross_direction_merge_enabled = false;
+  BevLaneSeedDetector detector(config);
+  const LaneImages lanes = makeVerticalLanes(120, 300, {20, 80});
+  const BevLaneSeedDetection detection = detector.detect(
+    lanes.gray, lanes.response, false);
+  require(
+    detection.centerline_source == BevLaneCenterlineSource::PAIR,
+    "sliding-window lane pair did not produce a centerline");
+  const auto farthest = std::min_element(
+    detection.centerline_points.begin(), detection.centerline_points.end(),
+    [](const cv::Point2d & first, const cv::Point2d & second) {
+      return first.y < second.y;
+    });
+  require(
+    farthest != detection.centerline_points.end() && farthest->y < 150.0,
+    "centerline did not include the sliding-window extension above the ROI");
+  require(
+    std::abs(farthest->x - 50.0) <= 1.0,
+    "sliding-window extension displaced the pair centerline");
+}
+
+void testCenterlineSuppressesIsolatedBump()
+{
+  BevLaneSeedDetectorConfig config;
+  config.roi_bottom_exclusion_ratio = 0.0;
+  config.roi_height_ratio = 1.0;
+  config.maximum_lateral_step_px = 10.0;
+  config.slope_filter_enabled = false;
+  config.column_tracking_enabled = false;
+  config.cross_direction_merge_enabled = false;
+  config.sliding_window_enabled = false;
+  config.centerline_outlier_distance_px = 2.0;
+  BevLaneSeedDetector detector(config);
+  std::vector<int> center_columns(300, 50);
+  center_columns[150] = 58;
+  const LaneImages lanes = makeParallelLanes(120, 300, center_columns);
+  const BevLaneSeedDetection detection = detector.detect(
+    lanes.gray, lanes.response, false);
+  require(
+    detection.centerline_source == BevLaneCenterlineSource::PAIR,
+    "bumped lane pair did not produce a centerline");
+  require(
+    std::abs(centerColumnNearRow(detection, 150.0) - 50.0) <= 2.0,
+    "isolated centerline bump was not suppressed");
+}
+
 }  // namespace
 
 int main()
@@ -224,6 +397,12 @@ int main()
   testReacquisitionAllowanceGrowsWithMissingFrames();
   testValidPairReinitializesBothSides();
   testPairRejectsDistantReacquisition();
+  testPairProducesExplicitCenterline();
+  testSingleBoundaryUsesRememberedRoadWidth();
+  testPairToSingleTransitionLimitsLateralJump();
+  testAdaptiveSmoothingPreservesStraightToCurve();
+  testCenterlineUsesSlidingWindowExtension();
+  testCenterlineSuppressesIsolatedBump();
   std::cout << "bev_lane_seed_detector_test passed\n";
   return 0;
 }

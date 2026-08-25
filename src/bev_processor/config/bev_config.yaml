@@ -183,7 +183,7 @@ bev_processor:
 
     # 원본 컬러 BEV는 유지한다. 이 단계를 켜면 같은 CUDA stream에서 Gray와
     # 거리별 Top-hat을 생성하고 CPU에서는 ROI 시드 연결만 수행한다.
-    # lane_output_topic은 현재 선택된 시드 트랙만 흰색인 mono8 영상이다.
+    # lane_output_topic은 최종 주행 중심선만 흰색인 mono8 영상이다.
     lane_seed_detection_enabled: true
     lane_output_topic: "/camera/image_bev_lane"
     # true면 enhanced Top-hat 위에 ROI와 모든 판정 근거를 표시한다.
@@ -268,6 +268,27 @@ bev_processor:
     lane_seed_sliding_window_maximum_turn_deg_per_window: 14.0
     lane_seed_sliding_window_maximum_turn_change_deg_per_window: 3.0
     lane_seed_sliding_window_heading_update_gain: 0.80
+
+    # 선택된 좌·우 곡선(ROI 시드 + 슬라이딩 윈도우)을 중심선으로 변환한다.
+    # 양쪽 차선에서는 실측 폭과 단일 차선별 중심 오차를 갱신하고, 한쪽만
+    # 남으면 해당 곡선의 국소 법선 방향으로 실측 폭의 절반만큼 이동한다.
+    lane_centerline_enabled: true
+    lane_centerline_nominal_lane_width_px: 62.0
+    lane_centerline_width_update_gain: 0.10
+    lane_centerline_resample_spacing_px: 2.0
+
+    # 호 길이 국소 2차 피팅은 직선에서 넓게, 곡률이 큰 구간에서 좁게
+    # 적용해 요철은 억제하면서 급커브 형상은 보존한다.
+    lane_centerline_straight_smoothing_window_px: 15.0
+    lane_centerline_corner_smoothing_window_px: 5.0
+    lane_centerline_corner_curvature_threshold_rad_per_px: 0.035
+    lane_centerline_outlier_distance_px: 4.0
+
+    # 양쪽에서 한쪽 차선으로 전환될 때 학습된 side bias를 적용한 뒤에도
+    # 남는 횡/방향 점프만 짧게 제한한다. 장시간 평균은 사용하지 않는다.
+    lane_centerline_transition_frames: 4
+    lane_centerline_maximum_lateral_jump_px: 3.0
+    lane_centerline_maximum_heading_jump_deg: 5.0
 
     # 매 프레임 행·열 방향을 모두 같은 기준으로 검사하고 통합 후 시드를
     # 선택한다. 수평에 가까운 급커브도 행 검사 실패 여부와 관계없이 후보로 들어온다.

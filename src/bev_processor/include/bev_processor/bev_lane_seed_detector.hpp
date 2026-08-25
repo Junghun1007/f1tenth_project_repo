@@ -56,6 +56,21 @@ struct BevLaneSeedDetectorConfig
   double sliding_window_maximum_turn_change_deg_per_window{3.0};
   double sliding_window_heading_update_gain{0.80};
 
+  // Convert the selected boundaries into one drive centerline. Pair frames
+  // update the measured road width and per-side offset bias; a single
+  // boundary is shifted along its local normal by half that width.
+  bool centerline_enabled{true};
+  double centerline_nominal_lane_width_px{62.0};
+  double centerline_width_update_gain{0.10};
+  double centerline_resample_spacing_px{2.0};
+  double centerline_straight_smoothing_window_px{15.0};
+  double centerline_corner_smoothing_window_px{5.0};
+  double centerline_corner_curvature_threshold_rad_per_px{0.035};
+  double centerline_outlier_distance_px{4.0};
+  int centerline_transition_frames{4};
+  double centerline_maximum_lateral_jump_px{3.0};
+  double centerline_maximum_heading_jump_deg{5.0};
+
   // Run the same detector in row and column directions every frame, then
   // select seeds from the combined orientation-independent candidate set.
   bool column_tracking_enabled{true};
@@ -86,14 +101,26 @@ struct BevLaneSeed
   double score{0.0};
 };
 
+enum class BevLaneCenterlineSource
+{
+  NONE = 0,
+  PAIR,
+  LEFT,
+  RIGHT,
+};
+
 struct BevLaneSeedDetection
 {
-  // MONO8 image containing only the selected left/right seed tracks.
+  // MONO8 image containing only the generated drive centerline.
   cv::Mat seed_mask;
   // BGR preview of enhanced Top-hat with ROI, evidence and seeds overlaid.
   cv::Mat preview;
   BevLaneSeed left;
   BevLaneSeed right;
+  std::vector<cv::Point2d> centerline_points;
+  BevLaneCenterlineSource centerline_source{BevLaneCenterlineSource::NONE};
+  double estimated_lane_width_px{0.0};
+  bool centerline_transition_used{false};
   int roi_top_row{0};
   int roi_bottom_row{0};
   int accepted_track_count{0};
@@ -134,6 +161,17 @@ private:
   int right_missing_frames_{0};
   BevLaneSeed remembered_left_;
   BevLaneSeed remembered_right_;
+  double estimated_lane_width_px_{0.0};
+  bool estimated_lane_width_initialized_{false};
+  cv::Point2d left_center_bias_;
+  cv::Point2d right_center_bias_;
+  bool center_bias_initialized_{false};
+  std::vector<cv::Point2d> previous_centerline_;
+  BevLaneCenterlineSource previous_centerline_source_{
+    BevLaneCenterlineSource::NONE};
+  cv::Point2d centerline_transition_offset_;
+  double centerline_transition_heading_deg_{0.0};
+  int centerline_transition_frames_remaining_{0};
 };
 
 }  // namespace bev_processor
