@@ -613,7 +613,7 @@ private:
 
     declare_parameter<double>(
       "lane_seed_roi_bottom_exclusion_ratio", 0.09);
-    declare_parameter<double>("lane_seed_roi_height_ratio", 0.40);
+    declare_parameter<double>("lane_seed_roi_height_ratio", 0.25);
     declare_parameter<int>("lane_seed_minimum_response", 30);
     declare_parameter<int>("lane_seed_minimum_run_width_px", 2);
     declare_parameter<int>("lane_seed_maximum_run_width_px", 8);
@@ -636,24 +636,24 @@ private:
     declare_parameter<double>("lane_seed_pair_maximum_distance_px", 95.0);
     declare_parameter<bool>("lane_seed_sliding_window_enabled", true);
     declare_parameter<double>(
-      "lane_seed_sliding_window_minimum_seed_arc_length_px", 40.0);
-    declare_parameter<int>("lane_seed_sliding_window_initial_width_px", 9);
-    declare_parameter<int>("lane_seed_sliding_window_initial_height_px", 12);
-    declare_parameter<double>("lane_seed_sliding_window_growth_ratio", 1.08);
+      "lane_seed_sliding_window_minimum_seed_arc_length_px", 35.0);
+    declare_parameter<int>("lane_seed_sliding_window_initial_width_px", 6);
+    declare_parameter<int>("lane_seed_sliding_window_initial_height_px", 10);
+    declare_parameter<double>("lane_seed_sliding_window_growth_ratio", 1.04);
     declare_parameter<int>("lane_seed_sliding_window_maximum_width_px", 25);
-    declare_parameter<int>("lane_seed_sliding_window_maximum_height_px", 24);
-    declare_parameter<double>("lane_seed_sliding_window_step_ratio", 0.65);
+    declare_parameter<int>("lane_seed_sliding_window_maximum_height_px", 15);
+    declare_parameter<double>("lane_seed_sliding_window_step_ratio", 0.60);
     declare_parameter<int>("lane_seed_sliding_window_maximum_count", 24);
     declare_parameter<int>(
       "lane_seed_sliding_window_minimum_bright_pixels", 2);
     declare_parameter<int>(
       "lane_seed_sliding_window_maximum_consecutive_misses", 1);
     declare_parameter<double>(
-      "lane_seed_sliding_window_maximum_turn_deg_per_window", 12.0);
+      "lane_seed_sliding_window_maximum_turn_deg_per_window", 14.0);
     declare_parameter<double>(
-      "lane_seed_sliding_window_maximum_turn_change_deg_per_window", 4.0);
+      "lane_seed_sliding_window_maximum_turn_change_deg_per_window", 3.0);
     declare_parameter<double>(
-      "lane_seed_sliding_window_heading_update_gain", 0.65);
+      "lane_seed_sliding_window_heading_update_gain", 0.80);
     declare_parameter<bool>("lane_seed_column_tracking_enabled", true);
     declare_parameter<bool>("lane_seed_cross_direction_merge_enabled", true);
     declare_parameter<double>(
