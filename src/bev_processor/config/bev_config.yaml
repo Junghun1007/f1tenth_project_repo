@@ -295,9 +295,10 @@ bev_processor:
     lane_centerline_maximum_heading_step_deg: 14.0
     lane_centerline_maximum_gap_fill_m: 0.30
 
-    # 양쪽 차선의 방향 변화량이 enter 이상인 급코너에서는 호 길이가
-    # 더 긴 차선을 고정 기준으로 선택해 법선 오프셋만 사용한다. 방향
-    # 변화량이 exit 이하가 될 때까지 같은 차선을 유지해 전환 진동을 막는다.
+    # 양쪽 차선의 방향 변화량이 enter 이상인 급코너에서는 회전 방향의
+    # 바깥 차선(좌회전=오른쪽, 우회전=왼쪽)을 법선 오프셋 기준으로 쓴다.
+    # 한쪽을 잠시 놓쳐 다른 경계를 쓰더라도 선호 바깥 차선은 변경하지
+    # 않으며, 양쪽 재검출또는 회전 방향 반전 시 현재 방향으로 재판정한다.
     lane_centerline_corner_longer_boundary_enabled: true
     lane_centerline_corner_enter_heading_change_deg: 40.0
     lane_centerline_corner_exit_heading_change_deg: 20.0

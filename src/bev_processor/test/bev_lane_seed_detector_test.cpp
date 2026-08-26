@@ -63,6 +63,25 @@ LaneImages makeParallelLanes(
   return images;
 }
 
+LaneImages makeTurningParallelLanes(
+  const int width,
+  const int height,
+  const int straight_center_column,
+  const int signed_far_shift)
+{
+  std::vector<int> center_columns(static_cast<std::size_t>(height));
+  constexpr int kBendRows = 80;
+  for (int row = 0; row < height; ++row) {
+    const double progress = row < kBendRows ?
+      static_cast<double>(kBendRows - row) /
+      static_cast<double>(kBendRows) : 0.0;
+    center_columns[static_cast<std::size_t>(row)] =
+      straight_center_column + static_cast<int>(std::lround(
+      static_cast<double>(signed_far_shift) * progress * progress));
+  }
+  return makeParallelLanes(width, height, center_columns);
+}
+
 void require(const bool condition, const char * message)
 {
   if (!condition) {
@@ -389,6 +408,46 @@ void testCenterlineSuppressesIsolatedBump()
     "isolated centerline bump was not suppressed");
 }
 
+void testCornerUsesCurrentTurnOuterBoundaryAfterStraight()
+{
+  BevLaneSeedDetectorConfig config;
+  config.image_width = 200;
+  config.image_height = 300;
+  config.roi_bottom_exclusion_ratio = 0.0;
+  config.roi_height_ratio = 1.0;
+  config.column_tracking_enabled = false;
+  config.cross_direction_merge_enabled = false;
+  config.centerline_corner_enter_heading_change_deg = 30.0;
+  config.centerline_corner_exit_heading_change_deg = 10.0;
+  BevLaneSeedDetector detector(config);
+
+  const LaneImages left_turn = makeTurningParallelLanes(
+    config.image_width, config.image_height, 100, -50);
+  const BevLaneSeedDetection left = detector.detect(
+    left_turn.gray, left_turn.response, false);
+  require(left.centerline_corner_mode_used, "left corner mode was not entered");
+  require(
+    left.centerline_corner_reference_side == 1,
+    "left turn did not use the right outer boundary");
+
+  const LaneImages straight = makeTurningParallelLanes(
+    config.image_width, config.image_height, 100, 0);
+  const BevLaneSeedDetection middle = detector.detect(
+    straight.gray, straight.response, false);
+  require(
+    !middle.centerline_corner_mode_used,
+    "straight pair did not clear the previous corner reference");
+
+  const LaneImages right_turn = makeTurningParallelLanes(
+    config.image_width, config.image_height, 100, 50);
+  const BevLaneSeedDetection right = detector.detect(
+    right_turn.gray, right_turn.response, false);
+  require(right.centerline_corner_mode_used, "right corner mode was not entered");
+  require(
+    right.centerline_corner_reference_side == -1,
+    "right turn retained the old right reference instead of the left outer boundary");
+}
+
 void testRawSeedEvidenceIsNotUsedAsCenterline()
 {
   BevLaneSeedDetectorConfig config;
@@ -423,6 +482,7 @@ int main()
   testAdaptiveSmoothingPreservesStraightToCurve();
   testCenterlineUsesSlidingWindowTracking();
   testCenterlineSuppressesIsolatedBump();
+  testCornerUsesCurrentTurnOuterBoundaryAfterStraight();
   testRawSeedEvidenceIsNotUsedAsCenterline();
   std::cout << "bev_lane_seed_detector_test passed\n";
   return 0;

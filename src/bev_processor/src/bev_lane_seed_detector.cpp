@@ -1080,6 +1080,78 @@ double polylineHeadingRangeDegrees(
   return (maximum_heading - minimum_heading) * 180.0 / CV_PI;
 }
 
+double polylineSignedHeadingChangeDegrees(
+  const std::vector<cv::Point2d> & points)
+{
+  if (points.size() < 3U) {
+    return 0.0;
+  }
+  bool initialized = false;
+  double previous_heading = 0.0;
+  double signed_change = 0.0;
+  for (std::size_t index = 1U; index < points.size(); ++index) {
+    const cv::Point2d segment = points[index] - points[index - 1U];
+    if (cv::norm(segment) < 1.0) {
+      continue;
+    }
+    const double heading = std::atan2(segment.y, segment.x);
+    if (!initialized) {
+      previous_heading = heading;
+      initialized = true;
+      continue;
+    }
+    double change = heading - previous_heading;
+    while (change > CV_PI) {
+      change -= 2.0 * CV_PI;
+    }
+    while (change < -CV_PI) {
+      change += 2.0 * CV_PI;
+    }
+    signed_change += change;
+    previous_heading = heading;
+  }
+  return signed_change * 180.0 / CV_PI;
+}
+
+int pairTurnDirection(
+  const std::vector<cv::Point2d> & left,
+  const std::vector<cv::Point2d> & right,
+  const double minimum_heading_change_deg)
+{
+  const double left_change = polylineSignedHeadingChangeDegrees(left);
+  const double right_change = polylineSignedHeadingChangeDegrees(right);
+  const bool left_reliable =
+    std::abs(left_change) >= minimum_heading_change_deg;
+  const bool right_reliable =
+    std::abs(right_change) >= minimum_heading_change_deg;
+  if (!left_reliable && !right_reliable) {
+    return 0;
+  }
+  if (left_reliable && right_reliable) {
+    if ((left_change < 0.0) == (right_change < 0.0)) {
+      return left_change + right_change < 0.0 ? -1 : 1;
+    }
+    // If the two detected boundaries disagree, use a clearly stronger turn
+    // only. Similar opposing changes are treated as ambiguous instead of
+    // flipping the preferred outer boundary on one noisy frame.
+    const double stronger = std::max(
+      std::abs(left_change), std::abs(right_change));
+    const double weaker = std::min(
+      std::abs(left_change), std::abs(right_change));
+    if (stronger - weaker < 0.25 * stronger) {
+      return 0;
+    }
+  }
+  const double selected_change =
+    !right_reliable ||
+    (left_reliable && std::abs(left_change) >= std::abs(right_change)) ?
+    left_change : right_change;
+  // Image points are ordered from the vehicle toward the road ahead. In BEV
+  // coordinates a negative signed heading change is a vehicle-left turn and
+  // a positive change is a vehicle-right turn.
+  return selected_change < 0.0 ? -1 : 1;
+}
+
 std::vector<cv::Point2d> smoothMeasuredPoints(
   const std::vector<cv::Point2d> & points,
   const double measured_weight)
@@ -2524,6 +2596,7 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     if (!config_.centerline_corner_longer_boundary_enabled) {
       corner_mode_active_ = false;
       corner_reference_side_ = 0;
+      corner_turn_direction_ = 0;
     } else if (corner_mode_active_) {
       if (
         result.centerline_heading_change_deg <=
@@ -2532,6 +2605,27 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       {
         corner_mode_active_ = false;
         corner_reference_side_ = 0;
+        corner_turn_direction_ = 0;
+      } else if (left_valid && right_valid) {
+        const int current_turn_direction = pairTurnDirection(
+          left, right,
+          config_.centerline_corner_exit_heading_change_deg);
+        const bool confirmed_direction_reversal =
+          current_turn_direction != 0 &&
+          corner_turn_direction_ != 0 &&
+          current_turn_direction != corner_turn_direction_ &&
+          result.centerline_heading_change_deg >=
+          config_.centerline_corner_enter_heading_change_deg;
+        if (
+          current_turn_direction != 0 &&
+          (corner_turn_direction_ == 0 ||
+          current_turn_direction == corner_turn_direction_ ||
+          confirmed_direction_reversal))
+        {
+          corner_turn_direction_ = current_turn_direction;
+          // Left turn -> right outer boundary, right turn -> left outer.
+          corner_reference_side_ = -corner_turn_direction_;
+        }
       }
     } else if (
       left_valid && right_valid &&
@@ -2539,8 +2633,11 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       config_.centerline_corner_enter_heading_change_deg)
     {
       corner_mode_active_ = true;
-      corner_reference_side_ =
-        polylineArcLength(left) >= polylineArcLength(right) ? -1 : 1;
+      corner_turn_direction_ = pairTurnDirection(
+        left, right, config_.centerline_corner_exit_heading_change_deg);
+      corner_reference_side_ = corner_turn_direction_ != 0 ?
+        -corner_turn_direction_ :
+        (polylineArcLength(left) >= polylineArcLength(right) ? -1 : 1);
     }
     const int minimum_center_points = left_valid && right_valid ?
       config_.centerline_minimum_counterpart_points :
@@ -2560,15 +2657,19 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     bool centerline_from_pair = false;
     if (left_valid && right_valid) {
       if (corner_mode_active_ && corner_reference_side_ != 0) {
+        int active_corner_reference_side = corner_reference_side_;
         const OffsetLaneResult * corner_center =
-          corner_reference_side_ < 0 ?
+          active_corner_reference_side < 0 ?
           &center_from_left : &center_from_right;
         if (corner_center->points.empty()) {
           const OffsetLaneResult * alternate_center =
-            corner_reference_side_ < 0 ?
+            active_corner_reference_side < 0 ?
             &center_from_right : &center_from_left;
           if (!alternate_center->points.empty()) {
-            corner_reference_side_ = -corner_reference_side_;
+            // Use the visible inner boundary only as a temporary fallback.
+            // Do not overwrite the preferred outer side; when both boundaries
+            // are usable again the current turn direction restores it.
+            active_corner_reference_side = -active_corner_reference_side;
             corner_center = alternate_center;
           }
         }
@@ -2578,7 +2679,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
           result.centerline_normal_offset_truncated =
             corner_center->normal_offset_truncated;
           result.centerline_corner_mode_used = true;
-          result.centerline_corner_reference_side = corner_reference_side_;
+          result.centerline_corner_reference_side =
+            active_corner_reference_side;
           centerline_from_pair = true;
         }
       }

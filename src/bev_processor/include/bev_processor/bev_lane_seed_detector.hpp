@@ -183,8 +183,10 @@ private:
   double single_boundary_transition_correction_px_{0.0};
   double corner_transition_correction_px_{0.0};
   bool corner_mode_active_{false};
-  // -1=left boundary, +1=right boundary, 0=no locked corner reference.
+  // Preferred outer boundary: -1=left, +1=right, 0=not determined.
   int corner_reference_side_{0};
+  // Vehicle turn direction: -1=left, +1=right, 0=not determined.
+  int corner_turn_direction_{0};
 };
 
 }  // namespace bev_processor
