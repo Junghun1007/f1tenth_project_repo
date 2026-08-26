@@ -638,7 +638,7 @@ private:
 
     declare_parameter<double>(
       "lane_seed_roi_bottom_exclusion_ratio", 0.09);
-    declare_parameter<double>("lane_seed_roi_height_ratio", 0.20);
+    declare_parameter<double>("lane_seed_roi_height_ratio", 0.25);
     declare_parameter<int>("lane_seed_minimum_response", 30);
     declare_parameter<int>("lane_seed_minimum_run_width_px", 2);
     declare_parameter<int>("lane_seed_maximum_run_width_px", 8);
@@ -657,8 +657,8 @@ private:
     declare_parameter<int>("lane_seed_slope_median_window", 5);
     declare_parameter<double>(
       "lane_seed_maximum_slope_change_px_per_row", 2.0);
-    declare_parameter<double>("lane_seed_pair_minimum_distance_px", 50.0);
-    declare_parameter<double>("lane_seed_pair_maximum_distance_px", 95.0);
+    declare_parameter<double>("lane_seed_pair_minimum_distance_px", 45.0);
+    declare_parameter<double>("lane_seed_pair_maximum_distance_px", 100.0);
     declare_parameter<bool>("lane_seed_sliding_window_enabled", true);
     declare_parameter<double>(
       "lane_seed_sliding_window_minimum_seed_arc_length_px", 35.0);
@@ -715,13 +715,13 @@ private:
     declare_parameter<double>(
       "lane_seed_cross_direction_merge_maximum_turn_angle_deg", 110.0);
     declare_parameter<bool>("lane_seed_temporal_side_lock_enabled", true);
-    declare_parameter<int>("lane_seed_temporal_side_lock_reset_frames", 30);
+    declare_parameter<int>("lane_seed_temporal_side_lock_reset_frames", 120);
     declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_base_distance_px", 6.0);
+      "lane_seed_temporal_side_reacquire_base_distance_px", 10.0);
     declare_parameter<double>(
       "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px", 2.0);
     declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_maximum_distance_px", 20.0);
+      "lane_seed_temporal_side_reacquire_maximum_distance_px", 30.0);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 12.0);

@@ -121,7 +121,7 @@ def generate_launch_description():
         ("lane_far_kernel_width", "27", int),
         ("lane_far_kernel_height", "27", int),
         ("lane_seed_roi_bottom_exclusion_ratio", "0.09", float),
-        ("lane_seed_roi_height_ratio", "0.20", float),
+        ("lane_seed_roi_height_ratio", "0.25", float),
         ("lane_seed_minimum_response", "30", int),
         ("lane_seed_minimum_run_width_px", "2", int),
         ("lane_seed_maximum_run_width_px", "8", int),
@@ -139,8 +139,8 @@ def generate_launch_description():
         ("lane_seed_slope_filter_enabled", "true", bool),
         ("lane_seed_slope_median_window", "5", int),
         ("lane_seed_maximum_slope_change_px_per_row", "2.0", float),
-        ("lane_seed_pair_minimum_distance_px", "50.0", float),
-        ("lane_seed_pair_maximum_distance_px", "95.0", float),
+        ("lane_seed_pair_minimum_distance_px", "45.0", float),
+        ("lane_seed_pair_maximum_distance_px", "100.0", float),
         ("lane_seed_sliding_window_enabled", "true", bool),
         (
             "lane_seed_sliding_window_minimum_seed_arc_length_px",
@@ -250,10 +250,10 @@ def generate_launch_description():
             float,
         ),
         ("lane_seed_temporal_side_lock_enabled", "true", bool),
-        ("lane_seed_temporal_side_lock_reset_frames", "30", int),
+        ("lane_seed_temporal_side_lock_reset_frames", "120", int),
         (
             "lane_seed_temporal_side_reacquire_base_distance_px",
-            "6.0",
+            "10.0",
             float,
         ),
         (
@@ -263,7 +263,7 @@ def generate_launch_description():
         ),
         (
             "lane_seed_temporal_side_reacquire_maximum_distance_px",
-            "20.0",
+            "30.0",
             float,
         ),
     ]

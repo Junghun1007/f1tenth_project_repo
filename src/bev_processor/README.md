@@ -183,11 +183,15 @@ launch 인자로 실행마다 덮어쓸 수 있다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
-  lane_seed_roi_height_ratio:=0.20 \
+  lane_seed_roi_height_ratio:=0.25 \
   lane_seed_minimum_bilateral_contrast:=25.0 \
   lane_seed_maximum_slope_change_px_per_row:=2.0 \
-  lane_seed_pair_minimum_distance_px:=50.0 \
-  lane_seed_pair_maximum_distance_px:=95.0
+  lane_seed_pair_minimum_distance_px:=45.0 \
+  lane_seed_pair_maximum_distance_px:=100.0 \
+  lane_seed_temporal_side_lock_reset_frames:=120 \
+  lane_seed_temporal_side_reacquire_base_distance_px:=10.0 \
+  lane_seed_temporal_side_reacquire_distance_per_missing_frame_px:=2.0 \
+  lane_seed_temporal_side_reacquire_maximum_distance_px:=30.0
 ```
 
 전체 조절 인자는 다음 명령으로 확인한다.

@@ -219,7 +219,7 @@ bev_processor:
 
     # 하단 제외선부터 위쪽으로 ROI 높이만큼 행 후보를 연결한다.
     lane_seed_roi_bottom_exclusion_ratio: 0.09
-    lane_seed_roi_height_ratio: 0.20
+    lane_seed_roi_height_ratio: 0.25
     lane_seed_minimum_response: 30
     lane_seed_minimum_run_width_px: 2
     lane_seed_maximum_run_width_px: 8
@@ -245,8 +245,8 @@ bev_processor:
     lane_seed_maximum_slope_change_px_per_row: 2.0
 
     # 1cm/px BEV 기준 좌우 시드 간 허용 거리다.
-    lane_seed_pair_minimum_distance_px: 50.0
-    lane_seed_pair_maximum_distance_px: 95.0
+    lane_seed_pair_minimum_distance_px: 45.0
+    lane_seed_pair_maximum_distance_px: 100.0
 
     # 안정적으로 선택된 ROI 트랙은 차량 근접 초기 시드와 방향만 제공한다.
     # 첫 시드부터 전체 BEV를 창으로 다시 추적하고, 중심선은 각 창의
@@ -316,11 +316,12 @@ bev_processor:
     # 역할을 유지한다. 단, 양쪽과 단일 차선 모두 마지막 유효 곡선에서
     # base + 누락 프레임 수 * per_missing_frame 거리 안에 있을 때만 재연결한다.
     # 양쪽이 reset_frames 동안 사라지면 잠금을 풀고 다시 좌우 쌍을 기다린다.
+    # 80FPS에서 120프레임은 약 1.5초로, 코너의 일시적 양쪽 유실에도 역할을 유지한다.
     lane_seed_temporal_side_lock_enabled: true
-    lane_seed_temporal_side_lock_reset_frames: 30
-    lane_seed_temporal_side_reacquire_base_distance_px: 6.0
+    lane_seed_temporal_side_lock_reset_frames: 120
+    lane_seed_temporal_side_reacquire_base_distance_px: 10.0
     lane_seed_temporal_side_reacquire_distance_per_missing_frame_px: 2.0
-    lane_seed_temporal_side_reacquire_maximum_distance_px: 20.0
+    lane_seed_temporal_side_reacquire_maximum_distance_px: 30.0
 
     status_log_interval_sec: 5.0
     startup_timeout_sec: 12.0

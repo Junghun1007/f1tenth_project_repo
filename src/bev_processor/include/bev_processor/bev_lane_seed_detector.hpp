@@ -14,7 +14,7 @@ struct BevLaneSeedDetectorConfig
   int image_height{300};
 
   double roi_bottom_exclusion_ratio{0.09};
-  double roi_height_ratio{0.20};
+  double roi_height_ratio{0.25};
   int minimum_top_hat_response{30};
   int minimum_run_width_px{2};
   int maximum_run_width_px{8};
@@ -36,8 +36,8 @@ struct BevLaneSeedDetectorConfig
   int slope_median_window{5};
   double maximum_slope_change_px_per_row{2.0};
 
-  double minimum_pair_distance_px{50.0};
-  double maximum_pair_distance_px{95.0};
+  double minimum_pair_distance_px{45.0};
+  double maximum_pair_distance_px{100.0};
 
   // Use an accepted seed track only to initialize a vehicle-near sliding
   // window tracker. Each accepted window emits one intensity-weighted point;
@@ -96,10 +96,10 @@ struct BevLaneSeedDetectorConfig
   // Lock left/right roles after the first valid pair. A temporarily missing
   // single lane is then labelled by temporal continuity, not screen center.
   bool temporal_side_lock_enabled{true};
-  int temporal_side_lock_reset_frames{30};
-  double temporal_side_reacquire_base_distance_px{6.0};
+  int temporal_side_lock_reset_frames{120};
+  double temporal_side_reacquire_base_distance_px{10.0};
   double temporal_side_reacquire_distance_per_missing_frame_px{2.0};
-  double temporal_side_reacquire_maximum_distance_px{20.0};
+  double temporal_side_reacquire_maximum_distance_px{30.0};
 };
 
 struct BevLaneSeed
