@@ -1,7 +1,7 @@
 AUTO CONTROL 파라미터 조정 가이드
 =================================
 
-현재 기준 설정 (2026-08-16)
+현재 기준 설정 (2026-08-26)
 ----------------------------
 아래 값은 auto_drive.launch.py와 auto_control.yaml의 기본값이므로 평소에는
 추가 인자 없이 다음 명령만 실행하면 된다.
@@ -26,7 +26,16 @@ AUTO CONTROL 파라미터 조정 가이드
     maximum_duty:=0.065 \
     minimum_speed_mps:=0.6 \
     maximum_speed_mps:=0.9 \
-    maximum_lateral_acceleration_mps2:=0.6
+    maximum_lateral_acceleration_mps2:=0.6 \
+    electrical_brake_enabled:=true \
+    brake_entry_speed_error_mps:=0.10 \
+    brake_exit_speed_error_mps:=0.03 \
+    brake_minimum_vehicle_speed_mps:=0.20 \
+    brake_minimum_current_amps:=1.0 \
+    brake_maximum_current_amps:=4.0 \
+    brake_current_gain_amps_per_mps:=8.0 \
+    brake_current_rise_amps_per_sec:=8.0 \
+    brake_current_fall_amps_per_sec:=16.0
 
 
 안전한 조정 순서
@@ -35,7 +44,8 @@ AUTO CONTROL 파라미터 조정 가이드
 2. 값을 10~20%씩만 바꾸고 동일 위치를 여러 번 주행한다.
 3. 바퀴를 띄운 상태에서 좌/우 조향 방향을 먼저 확인한다.
 4. /auto/steering_angle_rad, /auto/path_curvature, /auto/target_speed,
-   /auto/current_speed, /auto/current_duty와 auto_control 상태 로그를 함께 본다.
+   /auto/current_speed, /auto/current_duty, /auto/current_brake_current와
+   auto_control 상태 로그를 함께 본다.
 5. centerline_missing 정지는 조향 한계가 아니라 경로 유효성 조건 문제다.
 
 
@@ -165,6 +175,35 @@ maximum_lateral_acceleration_mps2 (현재 0.6m/s^2)
   높이기: 완만한 곡선에서도 과하게 감속할 때. 예: 0.6 -> 0.7~0.9.
   주의: 조향 시점이나 조향각은 바꾸지 않고 목표 속도만 바꾼다.
 
+electrical_brake_enabled (현재 true)
+  역할: 실제 속도가 목표보다 높을 때 양의 duty 대신 VESC 전기제동을 사용한다.
+  false: 기존 duty-only 감속과 비교할 때만 사용한다.
+
+brake_entry_speed_error_mps (현재 0.10m/s)
+  역할: 실제 속도-목표 속도가 이 값 이상이면 전기제동을 시작한다.
+  높이기: 작은 ERPM 노이즈에도 제동이 자주 걸릴 때. 예: 0.10 -> 0.12~0.16.
+  낮추기: 코너 진입 감속이 느릴 때. 예: 0.10 -> 0.07~0.09.
+
+brake_exit_speed_error_mps (현재 0.03m/s)
+  역할: 제동 시작 후 속도 오차가 이 값 이하가 되면 제동을 해제한다.
+  주의: 반드시 brake_entry_speed_error_mps보다 작게 설정한다.
+
+brake_minimum_vehicle_speed_mps (현재 0.20m/s)
+  역할: 저속에서 제동을 해제해 모터 정지 근방의 턱타를 막는다.
+
+brake_minimum_current_amps / brake_maximum_current_amps (현재 1.0A / 4.0A)
+  역할: 자동 제동 중 사용할 최소/최대 전류다.
+  제동이 강함: 최대를 0.5~1.0A씩 낮춘다.
+  제동이 약함: 바퀴를 띄운 상태에서 확인 후 최대를 소폭 높인다.
+  주의: VESC bridge의 max_brake_current_amps(8A)보다 높게 설정해도 8A로 제한된다.
+
+brake_current_gain_amps_per_mps (현재 8.0A/(m/s))
+  역할: 속도 초과량을 제동 전류로 바꾼다. 높을수록 같은 오차에서 더 강하다.
+
+brake_current_rise_amps_per_sec / brake_current_fall_amps_per_sec (현재 8.0 / 16.0)
+  역할: 제동력이 걸리고 풀리는 변화율을 제한한다.
+  제동 진입이 튀면 rise를 낮추고, 제동 후 재가속이 느리면 fall을 높인다.
+
 
 증상별 빠른 선택
 ------------------
@@ -192,6 +231,15 @@ maximum_lateral_acceleration_mps2 (현재 0.6m/s^2)
 코너 속도가 너무 빠름:
   maximum_lateral_acceleration_mps2를 낮춘다. 최저 속도도 빠르면
   minimum_speed_mps와 minimum_duty를 함께 소폭 낮춘다.
+
+코너 진입 전기제동이 너무 자주/강하게 걸림:
+  brake_entry_speed_error_mps를 먼저 높인다. 여전히 강하면
+  brake_current_gain_amps_per_mps와 brake_maximum_current_amps를 순서대로 낮춘다.
+
+코너 진입 감속이 너무 늦거나 약함:
+  brake_entry_speed_error_mps를 소폭 낮추고, 그래도 약하면
+  brake_current_gain_amps_per_mps를 높인다. 목표 속도가 느리게 낮아지면
+  maximum_lateral_acceleration_mps2를 먼저 조정한다.
 
 경로는 있는데 차량이 정지함:
   /auto/target_speed와 /auto/current_duty를 확인한다. minimum_duty가 실제 출발

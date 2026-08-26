@@ -1,8 +1,8 @@
 # auto_control
 
 `auto_control_node` follows the drive centerline published by `bev_processor`
-and writes directly to the same VESC duty and servo topics used by manual
-driving. Do not run `manual_drive.launch.py` at the same time.
+and writes directly to the same VESC duty, brake-current, and servo topics used
+by manual driving. Do not run `manual_drive.launch.py` at the same time.
 
 ## Control pipeline
 
@@ -17,12 +17,22 @@ driving. Do not run `manual_drive.launch.py` at the same time.
    lateral acceleration.
 7. Convert VESC measured ERPM to vehicle speed and apply PID plus a linear
    duty feed-forward, bounded to `0.055..0.065`.
+8. When measured speed exceeds target by the configured entry threshold,
+   replace duty control with ramp-limited `COMM_SET_CURRENT_BRAKE`. Release at
+   the lower exit threshold, send brake current zero for one cycle, and only
+   then resume positive duty.
 
 The drive command becomes exactly zero and steering returns to center when the
 centerline is missing/short/stale, measured ERPM is stale, the VESC reports a
 disconnect, the node is disabled, or the node shuts down. When all inputs are
 valid, the configured `0.055` start duty is applied in the same way as manual
 driving and subsequent changes are rate limited.
+
+Automatic electrical braking defaults to a conservative `4A` maximum. It
+enters at `current_speed - target_speed >= 0.10m/s`, remains active down to
+`0.03m/s`, and is disabled below `0.20m/s`. Invalid/stale input safety stops
+release brake current and send duty zero; they do not command an emergency
+brake.
 
 Vehicle conversion defaults match `camera_driver`: 109.5mm tire diameter,
 two motor pole pairs, 13/54 motor gearing, and 13/37 differential gearing
@@ -50,6 +60,21 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
   preview_enabled:=false \
   auto_enabled:=false
 ```
+
+Tune electrical braking without editing YAML:
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  brake_entry_speed_error_mps:=0.12 \
+  brake_exit_speed_error_mps:=0.04 \
+  brake_maximum_current_amps:=3.0 \
+  brake_current_gain_amps_per_mps:=6.0 \
+  brake_current_rise_amps_per_sec:=6.0 \
+  brake_current_fall_amps_per_sec:=16.0
+```
+
+Set `electrical_brake_enabled:=false` to compare against the previous
+duty-only speed control.
 
 Enable or stop an already running node:
 
@@ -93,8 +118,17 @@ The complete Korean symptom-based tuning guide is installed as
   limit on gentler curves.
 - `curvature_percentile`: smaller values ignore more isolated curvature spikes.
 - `speed_pid_kp`, `speed_pid_ki`, `speed_pid_kd`: measured-speed PID gains.
+- `brake_entry_speed_error_mps`: overspeed required to enter electrical
+  braking; increase it if braking triggers too often.
+- `brake_exit_speed_error_mps`: lower hysteresis boundary used to release the
+  brake; it must stay below the entry threshold.
+- `brake_minimum_current_amps`, `brake_maximum_current_amps`: brake-current
+  bounds while braking is requested.
+- `brake_current_gain_amps_per_mps`: converts speed overshoot into amperes.
+- `brake_current_rise_amps_per_sec`, `brake_current_fall_amps_per_sec`: limit
+  brake application and release rates.
 - `speed_scale_correction`: calibrates ERPM speed using measured travel distance.
 
-Diagnostic topics are `/auto/current_duty`, `/auto/target_speed`,
-`/auto/current_speed`, `/auto/path_curvature`, and
+Diagnostic topics are `/auto/current_duty`, `/auto/current_brake_current`,
+`/auto/target_speed`, `/auto/current_speed`, `/auto/path_curvature`, and
 `/auto/steering_angle_rad`.

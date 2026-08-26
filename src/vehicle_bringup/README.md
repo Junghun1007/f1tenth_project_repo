@@ -59,7 +59,7 @@ ros2 launch vehicle_bringup vesc_only.launch.py \
 - `config/manual_vesc_config.yaml`: manual accelerator, 0..8 A LT electrical
   brake ramp, and steering.
 - `auto_control/config/auto_control.yaml`: Stanley, speed PID, vehicle, and
-  autonomous actuator parameters.
+  autonomous duty/electrical-brake actuator parameters.
 - `config/controller_keymap.yaml`: 8BitDo controller mapping.
 
 The previous empty `joy.yaml` was removed because `joy_initializer` already
@@ -69,8 +69,8 @@ owns the joystick node defaults.
 
 The autonomous launch follows `/camera/image_bev_lane`, starts as soon as a
 valid centerline and fresh VESC telemetry are present, and uses the same
-`/vesc/duty` and `/vesc/servo_position` interface as manual driving. Never run
-the manual and autonomous launches together.
+`/vesc/duty`, `/vesc/brake_current`, and `/vesc/servo_position` interfaces as
+manual driving. Never run the manual and autonomous launches together.
 
 By default the preview contains only the lane-recognition result. Disable the
 window completely with:

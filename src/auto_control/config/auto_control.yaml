@@ -9,9 +9,11 @@ auto_control:
     measured_erpm_topic: "/vesc/measured_erpm"
     connection_status_topic: "/vesc/connected"
     duty_topic: "/vesc/duty"
+    brake_current_topic: "/vesc/brake_current"
     servo_position_topic: "/vesc/servo_position"
 
     command_duty_topic: "/auto/current_duty"
+    command_brake_current_topic: "/auto/current_brake_current"
     target_speed_topic: "/auto/target_speed"
     current_speed_topic: "/auto/current_speed"
     curvature_topic: "/auto/path_curvature"
@@ -84,6 +86,20 @@ auto_control:
     speed_pid_kd: 0.0
     speed_pid_integral_limit: 1.0
     speed_filter_time_constant_sec: 0.05
+
+    # 실제 속도가 목표 속도보다 0.10m/s 이상 높으면 duty를 즉시 버리고
+    # COMM_SET_CURRENT_BRAKE로 전환한다. 오차가 0.03m/s 이하가 될 때까지
+    # 제동을 유지해 경계에서 duty/브레이크가 반복 전환되는 것을 막는다.
+    # 기본 최대 4A는 수동 LT의 8A와 VESC 설정 한도보다 보수적인 값이다.
+    electrical_brake_enabled: true
+    brake_entry_speed_error_mps: 0.10
+    brake_exit_speed_error_mps: 0.03
+    brake_minimum_vehicle_speed_mps: 0.20
+    brake_minimum_current_amps: 1.0
+    brake_maximum_current_amps: 4.0
+    brake_current_gain_amps_per_mps: 8.0
+    brake_current_rise_amps_per_sec: 8.0
+    brake_current_fall_amps_per_sec: 16.0
 
     # Traxxas Slash 4X4 Ultimate 순정 구동계와 기존 camera_driver 값.
     wheel_diameter_m: 0.1095

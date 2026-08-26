@@ -12,6 +12,10 @@ from rclpy.time import Time
 from sensor_msgs.msg import Image
 from std_msgs.msg import Bool, Float32, Int32
 
+from auto_control.automatic_brake_profile import (
+    AutomaticBrakeProfile,
+    AutomaticBrakeProfileConfig,
+)
 from auto_control.control_core import (
     PathModel,
     SpeedPid,
@@ -48,11 +52,17 @@ class AutoControlNode(Node):
         self._duty_pub = self.create_publisher(
             Float32, self.duty_topic, command_qos
         )
+        self._brake_current_pub = self.create_publisher(
+            Float32, self.brake_current_topic, command_qos
+        )
         self._servo_pub = self.create_publisher(
             Float32, self.servo_position_topic, command_qos
         )
         self._command_duty_pub = self.create_publisher(
             Float32, self.command_duty_topic, command_qos
+        )
+        self._command_brake_current_pub = self.create_publisher(
+            Float32, self.command_brake_current_topic, command_qos
         )
         self._target_speed_pub = self.create_publisher(
             Float32, self.target_speed_topic, command_qos
@@ -90,6 +100,9 @@ class AutoControlNode(Node):
         self._current_speed_mps = 0.0
         self._vesc_connected = False
         self._command_duty = 0.0
+        self._command_brake_current = 0.0
+        self._brake_mode_active = False
+        self._last_motor_mode = "stop"
         self._steering_angle_rad = 0.0
         self._last_control_time = self.get_clock().now()
         self._last_stop_reason = "startup"
@@ -107,6 +120,26 @@ class AutoControlNode(Node):
             minimum_duty=self.minimum_duty,
             maximum_duty=self.maximum_duty,
         )
+        self._brake_profile = AutomaticBrakeProfile(
+            AutomaticBrakeProfileConfig(
+                entry_speed_error_mps=self.brake_entry_speed_error_mps,
+                exit_speed_error_mps=self.brake_exit_speed_error_mps,
+                minimum_vehicle_speed_mps=(
+                    self.brake_minimum_vehicle_speed_mps
+                ),
+                minimum_brake_current_amps=(
+                    self.brake_minimum_current_amps
+                ),
+                maximum_brake_current_amps=(
+                    self.brake_maximum_current_amps
+                ),
+                current_gain_amps_per_mps=(
+                    self.brake_current_gain_amps_per_mps
+                ),
+                rise_amps_per_sec=self.brake_current_rise_amps_per_sec,
+                fall_amps_per_sec=self.brake_current_fall_amps_per_sec,
+            )
+        )
         self._control_timer = self.create_timer(
             1.0 / self.control_rate_hz, self._on_control_timer
         )
@@ -120,13 +153,15 @@ class AutoControlNode(Node):
         )
         self.get_logger().info(
             "Auto control ready: lane=%s, speed=%.2f..%.2fm/s, "
-            "duty=%.3f..%.3f, rate=%.1fHz"
+            "duty=%.3f..%.3f, auto_brake=%s/%.1fA, rate=%.1fHz"
             % (
                 self.lane_topic,
                 self.minimum_speed_mps,
                 self.maximum_speed_mps,
                 self.minimum_duty,
                 self.maximum_duty,
+                "on" if self.electrical_brake_enabled else "off",
+                self.brake_maximum_current_amps,
                 self.control_rate_hz,
             )
         )
@@ -138,10 +173,14 @@ class AutoControlNode(Node):
         self.declare_parameter("measured_erpm_topic", "/vesc/measured_erpm")
         self.declare_parameter("connection_status_topic", "/vesc/connected")
         self.declare_parameter("duty_topic", "/vesc/duty")
+        self.declare_parameter("brake_current_topic", "/vesc/brake_current")
         self.declare_parameter(
             "servo_position_topic", "/vesc/servo_position"
         )
         self.declare_parameter("command_duty_topic", "/auto/current_duty")
+        self.declare_parameter(
+            "command_brake_current_topic", "/auto/current_brake_current"
+        )
         self.declare_parameter("target_speed_topic", "/auto/target_speed")
         self.declare_parameter("current_speed_topic", "/auto/current_speed")
         self.declare_parameter("curvature_topic", "/auto/path_curvature")
@@ -203,6 +242,15 @@ class AutoControlNode(Node):
         self.declare_parameter("speed_pid_kd", 0.0)
         self.declare_parameter("speed_pid_integral_limit", 1.0)
         self.declare_parameter("speed_filter_time_constant_sec", 0.05)
+        self.declare_parameter("electrical_brake_enabled", True)
+        self.declare_parameter("brake_entry_speed_error_mps", 0.10)
+        self.declare_parameter("brake_exit_speed_error_mps", 0.03)
+        self.declare_parameter("brake_minimum_vehicle_speed_mps", 0.20)
+        self.declare_parameter("brake_minimum_current_amps", 1.0)
+        self.declare_parameter("brake_maximum_current_amps", 4.0)
+        self.declare_parameter("brake_current_gain_amps_per_mps", 8.0)
+        self.declare_parameter("brake_current_rise_amps_per_sec", 8.0)
+        self.declare_parameter("brake_current_fall_amps_per_sec", 16.0)
 
         self.declare_parameter("wheel_diameter_m", 0.1095)
         self.declare_parameter("motor_pole_pairs", 2)
@@ -220,8 +268,10 @@ class AutoControlNode(Node):
             "measured_erpm_topic",
             "connection_status_topic",
             "duty_topic",
+            "brake_current_topic",
             "servo_position_topic",
             "command_duty_topic",
+            "command_brake_current_topic",
             "target_speed_topic",
             "current_speed_topic",
             "curvature_topic",
@@ -269,6 +319,14 @@ class AutoControlNode(Node):
             "speed_pid_kd",
             "speed_pid_integral_limit",
             "speed_filter_time_constant_sec",
+            "brake_entry_speed_error_mps",
+            "brake_exit_speed_error_mps",
+            "brake_minimum_vehicle_speed_mps",
+            "brake_minimum_current_amps",
+            "brake_maximum_current_amps",
+            "brake_current_gain_amps_per_mps",
+            "brake_current_rise_amps_per_sec",
+            "brake_current_fall_amps_per_sec",
             "wheel_diameter_m",
             "erpm_direction_sign",
             "speed_scale_correction",
@@ -283,6 +341,9 @@ class AutoControlNode(Node):
             "differential_ring_teeth",
         )
         self.enabled = bool(self.get_parameter("enabled").value)
+        self.electrical_brake_enabled = bool(
+            self.get_parameter("electrical_brake_enabled").value
+        )
         self.steering_servo_inverted = bool(
             self.get_parameter("steering_servo_inverted").value
         )
@@ -449,7 +510,12 @@ class AutoControlNode(Node):
         self.enabled = bool(message.data)
         if not self.enabled:
             self._stop_control("disabled")
-            self._publish_commands(0.0, self.servo_center)
+            self._publish_commands(
+                duty=0.0,
+                brake_current=0.0,
+                servo_position=self.servo_center,
+                motor_mode="stop",
+            )
         self.get_logger().warn(
             f"Automatic control {'enabled' if self.enabled else 'disabled'}."
         )
@@ -467,7 +533,12 @@ class AutoControlNode(Node):
         stop_reason = self._stop_reason(now)
         if stop_reason is not None:
             self._stop_control(stop_reason)
-            self._publish_commands(0.0, self.servo_center)
+            self._publish_commands(
+                duty=0.0,
+                brake_current=0.0,
+                servo_position=self.servo_center,
+                motor_mode="stop",
+            )
             return
 
         assert self._path is not None
@@ -530,31 +601,57 @@ class AutoControlNode(Node):
             inverted=self.steering_servo_inverted,
         )
 
-        feedforward_duty = speed_feedforward_duty(
-            target_speed_mps,
-            minimum_speed_mps=self.minimum_speed_mps,
-            maximum_speed_mps=self.maximum_speed_mps,
-            minimum_duty=self.minimum_duty,
-            maximum_duty=self.maximum_duty,
-        )
-        desired_duty = self._speed_pid.update(
-            target_speed_mps=target_speed_mps,
-            current_speed_mps=self._current_speed_mps,
-            feedforward_duty=feedforward_duty,
-            dt_sec=max(dt_sec, nominal_period_sec),
-        )
-        if self._command_duty < self.minimum_duty:
-            # Match manual driving's start-duty behavior when a path appears.
-            self._command_duty = self.minimum_duty
+        if self.electrical_brake_enabled:
+            self._command_brake_current = self._brake_profile.update(
+                target_speed_mps=target_speed_mps,
+                current_speed_mps=self._current_speed_mps,
+                dt_sec=max(dt_sec, nominal_period_sec),
+            )
         else:
-            rate = (
-                self.duty_rise_rate_per_sec
-                if desired_duty >= self._command_duty
-                else self.duty_fall_rate_per_sec
+            self._brake_profile.reset()
+            self._command_brake_current = 0.0
+
+        if self._command_brake_current > 0.0:
+            # Brake current owns the VESC motor mode. Discard propulsion PID
+            # state so positive duty can never fight an active brake command.
+            self._command_duty = 0.0
+            self._speed_pid.reset()
+            motor_mode = "brake"
+            self._brake_mode_active = True
+        elif self._brake_mode_active:
+            # Explicitly release COMM_SET_CURRENT_BRAKE, then wait one control
+            # cycle before returning to positive duty.
+            self._command_duty = 0.0
+            self._speed_pid.reset()
+            motor_mode = "brake_release"
+            self._brake_mode_active = False
+        else:
+            feedforward_duty = speed_feedforward_duty(
+                target_speed_mps,
+                minimum_speed_mps=self.minimum_speed_mps,
+                maximum_speed_mps=self.maximum_speed_mps,
+                minimum_duty=self.minimum_duty,
+                maximum_duty=self.maximum_duty,
             )
-            self._command_duty = move_toward(
-                self._command_duty, desired_duty, rate * dt_sec
+            desired_duty = self._speed_pid.update(
+                target_speed_mps=target_speed_mps,
+                current_speed_mps=self._current_speed_mps,
+                feedforward_duty=feedforward_duty,
+                dt_sec=max(dt_sec, nominal_period_sec),
             )
+            if self._command_duty < self.minimum_duty:
+                # Match manual driving's start-duty behavior when a path appears.
+                self._command_duty = self.minimum_duty
+            else:
+                rate = (
+                    self.duty_rise_rate_per_sec
+                    if desired_duty >= self._command_duty
+                    else self.duty_fall_rate_per_sec
+                )
+                self._command_duty = move_toward(
+                    self._command_duty, desired_duty, rate * dt_sec
+                )
+            motor_mode = "duty"
 
         self._last_stop_reason = "running"
         self._latest_target_speed_mps = target_speed_mps
@@ -564,7 +661,12 @@ class AutoControlNode(Node):
         self._latest_direction_guard_used = (
             stanley.direction_guard_used or corner_sign_reset_used
         )
-        self._publish_commands(self._command_duty, servo_position)
+        self._publish_commands(
+            duty=self._command_duty,
+            brake_current=self._command_brake_current,
+            servo_position=servo_position,
+            motor_mode=motor_mode,
+        )
 
     def _stop_reason(self, now: Time) -> str | None:
         if not self.enabled:
@@ -591,6 +693,8 @@ class AutoControlNode(Node):
 
     def _stop_control(self, reason: str) -> None:
         self._command_duty = 0.0
+        self._command_brake_current = 0.0
+        self._brake_mode_active = False
         self._steering_angle_rad = 0.0
         self._latest_target_speed_mps = 0.0
         self._latest_curvature_per_m = 0.0
@@ -598,16 +702,42 @@ class AutoControlNode(Node):
         self._latest_heading_error_rad = 0.0
         self._latest_direction_guard_used = False
         self._speed_pid.reset()
+        self._brake_profile.reset()
         if reason != self._last_stop_reason:
             self.get_logger().warn(
-                f"Automatic drive stopped: {reason}. Sending duty 0."
+                f"Automatic drive stopped: {reason}. Releasing motor command."
             )
         self._last_stop_reason = reason
 
-    def _publish_commands(self, duty: float, servo_position: float) -> None:
-        self._duty_pub.publish(Float32(data=float(duty)))
+    def _publish_commands(
+        self,
+        *,
+        duty: float,
+        brake_current: float,
+        servo_position: float,
+        motor_mode: str,
+    ) -> None:
+        if motor_mode == "duty":
+            self._duty_pub.publish(Float32(data=float(duty)))
+        elif motor_mode == "brake":
+            self._brake_current_pub.publish(
+                Float32(data=float(brake_current))
+            )
+        elif motor_mode == "brake_release":
+            self._brake_current_pub.publish(Float32(data=0.0))
+        elif motor_mode == "stop":
+            # Either zero command safely supersedes a previous drive mode.
+            # Publish both so the bridge state and diagnostics are explicit.
+            self._brake_current_pub.publish(Float32(data=0.0))
+            self._duty_pub.publish(Float32(data=0.0))
+        else:
+            raise ValueError(f"unsupported motor mode: {motor_mode}")
+        self._last_motor_mode = motor_mode
         self._servo_pub.publish(Float32(data=float(servo_position)))
         self._command_duty_pub.publish(Float32(data=float(duty)))
+        self._command_brake_current_pub.publish(
+            Float32(data=float(brake_current))
+        )
         self._target_speed_pub.publish(
             Float32(data=float(self._latest_target_speed_mps))
         )
@@ -626,7 +756,7 @@ class AutoControlNode(Node):
         self.get_logger().info(
             "Auto status | state=%s | path_points=%d | speed=%.2f/%.2fm/s | "
             "curvature=%.3f/m | cte=%+.3fm | heading=%+.1fdeg | guard=%s | "
-            "steering=%+.1fdeg | duty=%.4f"
+            "steering=%+.1fdeg | motor=%s | duty=%.4f | brake=%.2fA"
             % (
                 self._last_stop_reason,
                 path_points,
@@ -637,7 +767,9 @@ class AutoControlNode(Node):
                 math.degrees(self._latest_heading_error_rad),
                 "on" if self._latest_direction_guard_used else "off",
                 math.degrees(self._steering_angle_rad),
+                self._last_motor_mode,
                 self._command_duty,
+                self._command_brake_current,
             )
         )
 
@@ -649,7 +781,12 @@ class AutoControlNode(Node):
         self._control_timer.cancel()
         self._status_timer.cancel()
         self._stop_control("shutdown")
-        self._publish_commands(0.0, self.servo_center)
+        self._publish_commands(
+            duty=0.0,
+            brake_current=0.0,
+            servo_position=self.servo_center,
+            motor_mode="stop",
+        )
 
 
 def main(args: list[str] | None = None) -> None:
