@@ -121,7 +121,7 @@ def generate_launch_description():
         ("lane_far_kernel_width", "27", int),
         ("lane_far_kernel_height", "27", int),
         ("lane_seed_roi_bottom_exclusion_ratio", "0.09", float),
-        ("lane_seed_roi_height_ratio", "0.25", float),
+        ("lane_seed_roi_height_ratio", "0.20", float),
         ("lane_seed_minimum_response", "30", int),
         ("lane_seed_minimum_run_width_px", "2", int),
         ("lane_seed_maximum_run_width_px", "8", int),
@@ -153,7 +153,7 @@ def generate_launch_description():
         ("lane_seed_sliding_window_maximum_width_px", "25", int),
         ("lane_seed_sliding_window_maximum_height_px", "15", int),
         ("lane_seed_sliding_window_step_ratio", "0.60", float),
-        ("lane_seed_sliding_window_maximum_count", "48", int),
+        ("lane_seed_sliding_window_maximum_count", "40", int),
         (
             "lane_seed_sliding_window_minimum_bright_pixels",
             "2",
@@ -161,7 +161,7 @@ def generate_launch_description():
         ),
         (
             "lane_seed_sliding_window_maximum_consecutive_misses",
-            "1",
+            "2",
             int,
         ),
         (
@@ -176,7 +176,7 @@ def generate_launch_description():
         ),
         (
             "lane_seed_sliding_window_heading_update_gain",
-            "0.80",
+            "0.90",
             float,
         ),
         ("lane_centerline_enabled", "true", bool),
@@ -190,7 +190,7 @@ def generate_launch_description():
         ),
         (
             "lane_centerline_measured_point_smoothing_weight",
-            "0.60",
+            "0.70",
             float,
         ),
         (
@@ -213,9 +213,9 @@ def generate_launch_description():
             "0.70",
             float,
         ),
-        ("lane_centerline_tangent_window_m", "0.20", float),
-        ("lane_centerline_maximum_curvature_per_m", "1.25", float),
-        ("lane_centerline_maximum_heading_step_deg", "8.0", float),
+        ("lane_centerline_tangent_window_m", "0.12", float),
+        ("lane_centerline_maximum_curvature_per_m", "1.8", float),
+        ("lane_centerline_maximum_heading_step_deg", "14.0", float),
         ("lane_centerline_maximum_gap_fill_m", "0.30", float),
         (
             "lane_centerline_corner_longer_boundary_enabled",
@@ -224,12 +224,12 @@ def generate_launch_description():
         ),
         (
             "lane_centerline_corner_enter_heading_change_deg",
-            "50.0",
+            "40.0",
             float,
         ),
         (
             "lane_centerline_corner_exit_heading_change_deg",
-            "30.0",
+            "20.0",
             float,
         ),
         ("lane_seed_column_tracking_enabled", "true", bool),

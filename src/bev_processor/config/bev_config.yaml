@@ -219,7 +219,7 @@ bev_processor:
 
     # 하단 제외선부터 위쪽으로 ROI 높이만큼 행 후보를 연결한다.
     lane_seed_roi_bottom_exclusion_ratio: 0.09
-    lane_seed_roi_height_ratio: 0.25
+    lane_seed_roi_height_ratio: 0.20
     lane_seed_minimum_response: 30
     lane_seed_minimum_run_width_px: 2
     lane_seed_maximum_run_width_px: 8
@@ -260,15 +260,15 @@ bev_processor:
     lane_seed_sliding_window_maximum_width_px: 25
     lane_seed_sliding_window_maximum_height_px: 15
     lane_seed_sliding_window_step_ratio: 0.60
-    lane_seed_sliding_window_maximum_count: 48
+    lane_seed_sliding_window_maximum_count: 40
     lane_seed_sliding_window_minimum_bright_pixels: 2
-    lane_seed_sliding_window_maximum_consecutive_misses: 1
+    lane_seed_sliding_window_maximum_consecutive_misses: 2
 
     # 창당 회전각과 연속 창 사이 회전각 변화량을 함께 제한하고 gain으로
     # 방향을 완만하게 갱신해 코너에서 좌우로 진동하는 경로를 억제한다.
     lane_seed_sliding_window_maximum_turn_deg_per_window: 14.0
     lane_seed_sliding_window_maximum_turn_change_deg_per_window: 3.0
-    lane_seed_sliding_window_heading_update_gain: 0.80
+    lane_seed_sliding_window_heading_update_gain: 0.90
 
     # reference 재구성 방식으로 중심선을 만든다. 양쪽이 보이는 구간은
     # 반대 차선 선분에 수직 투영한 실제 중점을 사용하고, 대응점이 없는
@@ -278,7 +278,7 @@ bev_processor:
     lane_centerline_width_tolerance_m: 0.08
     lane_centerline_minimum_points: 6
     lane_centerline_minimum_counterpart_points: 3
-    lane_centerline_measured_point_smoothing_weight: 0.60
+    lane_centerline_measured_point_smoothing_weight: 0.70
     lane_centerline_midpoint_smoothing_weight: 0.45
 
     # 연속 pair 중앙선은 이전 프레임과 혼합하고, pair에서 단일 차선으로
@@ -289,17 +289,17 @@ bev_processor:
 
     # 넓은 거리 구간으로 접선을 구해 한 점 노이즈가 법선 전체를 돌리지
     # 않게 한다. 오프셋이 뒤집히는 급곡선에서는 가장 긴 안전 구간만 쓴다.
-    lane_centerline_tangent_window_m: 0.20
-    lane_centerline_maximum_curvature_per_m: 1.25
-    lane_centerline_maximum_heading_step_deg: 8.0
+    lane_centerline_tangent_window_m: 0.12
+    lane_centerline_maximum_curvature_per_m: 1.8
+    lane_centerline_maximum_heading_step_deg: 14.0
     lane_centerline_maximum_gap_fill_m: 0.30
 
     # 양쪽 차선의 방향 변화량이 enter 이상인 급코너에서는 호 길이가
     # 더 긴 차선을 고정 기준으로 선택해 법선 오프셋만 사용한다. 방향
     # 변화량이 exit 이하가 될 때까지 같은 차선을 유지해 전환 진동을 막는다.
     lane_centerline_corner_longer_boundary_enabled: true
-    lane_centerline_corner_enter_heading_change_deg: 50.0
-    lane_centerline_corner_exit_heading_change_deg: 30.0
+    lane_centerline_corner_enter_heading_change_deg: 40.0
+    lane_centerline_corner_exit_heading_change_deg: 20.0
 
     # 매 프레임 행·열 방향을 모두 같은 기준으로 검사하고 통합 후 시드를
     # 선택한다. 수평에 가까운 급커브도 행 검사 실패 여부와 관계없이 후보로 들어온다.

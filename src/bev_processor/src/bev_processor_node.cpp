@@ -638,7 +638,7 @@ private:
 
     declare_parameter<double>(
       "lane_seed_roi_bottom_exclusion_ratio", 0.09);
-    declare_parameter<double>("lane_seed_roi_height_ratio", 0.25);
+    declare_parameter<double>("lane_seed_roi_height_ratio", 0.20);
     declare_parameter<int>("lane_seed_minimum_response", 30);
     declare_parameter<int>("lane_seed_minimum_run_width_px", 2);
     declare_parameter<int>("lane_seed_maximum_run_width_px", 8);
@@ -668,24 +668,24 @@ private:
     declare_parameter<int>("lane_seed_sliding_window_maximum_width_px", 25);
     declare_parameter<int>("lane_seed_sliding_window_maximum_height_px", 15);
     declare_parameter<double>("lane_seed_sliding_window_step_ratio", 0.60);
-    declare_parameter<int>("lane_seed_sliding_window_maximum_count", 48);
+    declare_parameter<int>("lane_seed_sliding_window_maximum_count", 40);
     declare_parameter<int>(
       "lane_seed_sliding_window_minimum_bright_pixels", 2);
     declare_parameter<int>(
-      "lane_seed_sliding_window_maximum_consecutive_misses", 1);
+      "lane_seed_sliding_window_maximum_consecutive_misses", 2);
     declare_parameter<double>(
       "lane_seed_sliding_window_maximum_turn_deg_per_window", 14.0);
     declare_parameter<double>(
       "lane_seed_sliding_window_maximum_turn_change_deg_per_window", 3.0);
     declare_parameter<double>(
-      "lane_seed_sliding_window_heading_update_gain", 0.80);
+      "lane_seed_sliding_window_heading_update_gain", 0.90);
     declare_parameter<bool>("lane_centerline_enabled", true);
     declare_parameter<double>("lane_centerline_expected_width_m", 0.65);
     declare_parameter<double>("lane_centerline_width_tolerance_m", 0.08);
     declare_parameter<int>("lane_centerline_minimum_points", 6);
     declare_parameter<int>("lane_centerline_minimum_counterpart_points", 3);
     declare_parameter<double>(
-      "lane_centerline_measured_point_smoothing_weight", 0.60);
+      "lane_centerline_measured_point_smoothing_weight", 0.70);
     declare_parameter<double>(
       "lane_centerline_midpoint_smoothing_weight", 0.45);
     declare_parameter<double>(
@@ -694,18 +694,18 @@ private:
       "lane_centerline_transition_maximum_correction_m", 0.15);
     declare_parameter<double>(
       "lane_centerline_transition_correction_decay", 0.70);
-    declare_parameter<double>("lane_centerline_tangent_window_m", 0.20);
+    declare_parameter<double>("lane_centerline_tangent_window_m", 0.12);
     declare_parameter<double>(
-      "lane_centerline_maximum_curvature_per_m", 1.25);
+      "lane_centerline_maximum_curvature_per_m", 1.8);
     declare_parameter<double>(
-      "lane_centerline_maximum_heading_step_deg", 8.0);
+      "lane_centerline_maximum_heading_step_deg", 14.0);
     declare_parameter<double>("lane_centerline_maximum_gap_fill_m", 0.30);
     declare_parameter<bool>(
       "lane_centerline_corner_longer_boundary_enabled", true);
     declare_parameter<double>(
-      "lane_centerline_corner_enter_heading_change_deg", 50.0);
+      "lane_centerline_corner_enter_heading_change_deg", 40.0);
     declare_parameter<double>(
-      "lane_centerline_corner_exit_heading_change_deg", 30.0);
+      "lane_centerline_corner_exit_heading_change_deg", 20.0);
     declare_parameter<bool>("lane_seed_column_tracking_enabled", true);
     declare_parameter<bool>("lane_seed_cross_direction_merge_enabled", true);
     declare_parameter<double>(

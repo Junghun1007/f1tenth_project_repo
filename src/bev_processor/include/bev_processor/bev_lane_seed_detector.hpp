@@ -14,7 +14,7 @@ struct BevLaneSeedDetectorConfig
   int image_height{300};
 
   double roi_bottom_exclusion_ratio{0.09};
-  double roi_height_ratio{0.25};
+  double roi_height_ratio{0.20};
   int minimum_top_hat_response{30};
   int minimum_run_width_px{2};
   int maximum_run_width_px{8};
@@ -50,12 +50,12 @@ struct BevLaneSeedDetectorConfig
   int sliding_window_maximum_width_px{25};
   int sliding_window_maximum_height_px{15};
   double sliding_window_step_ratio{0.60};
-  int sliding_window_maximum_count{48};
+  int sliding_window_maximum_count{40};
   int sliding_window_minimum_bright_pixels{2};
-  int sliding_window_maximum_consecutive_misses{1};
+  int sliding_window_maximum_consecutive_misses{2};
   double sliding_window_maximum_turn_deg_per_window{14.0};
   double sliding_window_maximum_turn_change_deg_per_window{3.0};
-  double sliding_window_heading_update_gain{0.80};
+  double sliding_window_heading_update_gain{0.90};
 
   // Convert the selected boundaries into one drive centerline using the
   // reference reconstructor geometry. Real perpendicular pair midpoints take
@@ -67,20 +67,20 @@ struct BevLaneSeedDetectorConfig
   double centerline_lane_width_tolerance_m{0.08};
   int centerline_minimum_points{6};
   int centerline_minimum_counterpart_points{3};
-  double centerline_measured_point_smoothing_weight{0.60};
+  double centerline_measured_point_smoothing_weight{0.70};
   double centerline_midpoint_smoothing_weight{0.45};
   double centerline_temporal_current_weight{0.60};
   double centerline_transition_maximum_correction_m{0.15};
   double centerline_transition_correction_decay{0.70};
-  double centerline_tangent_window_m{0.20};
-  double centerline_maximum_curvature_per_m{1.25};
-  double centerline_maximum_heading_step_deg{8.0};
+  double centerline_tangent_window_m{0.12};
+  double centerline_maximum_curvature_per_m{1.8};
+  double centerline_maximum_heading_step_deg{14.0};
   double centerline_maximum_gap_fill_m{0.30};
   // Sharp pair corners use one locked boundary for the whole corner instead
   // of switching between ambiguous perpendicular correspondences.
   bool centerline_corner_longer_boundary_enabled{true};
-  double centerline_corner_enter_heading_change_deg{50.0};
-  double centerline_corner_exit_heading_change_deg{30.0};
+  double centerline_corner_enter_heading_change_deg{40.0};
+  double centerline_corner_exit_heading_change_deg{20.0};
 
   // Run the same detector in row and column directions every frame, then
   // select seeds from the combined orientation-independent candidate set.

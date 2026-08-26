@@ -183,7 +183,7 @@ launch 인자로 실행마다 덮어쓸 수 있다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
-  lane_seed_roi_height_ratio:=0.40 \
+  lane_seed_roi_height_ratio:=0.20 \
   lane_seed_minimum_bilateral_contrast:=25.0 \
   lane_seed_maximum_slope_change_px_per_row:=2.0 \
   lane_seed_pair_minimum_distance_px:=50.0 \
@@ -200,11 +200,12 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
-  lane_seed_sliding_window_maximum_count:=48 \
-  lane_seed_sliding_window_growth_ratio:=1.12 \
-  lane_seed_sliding_window_maximum_turn_deg_per_window:=15.0 \
-  lane_seed_sliding_window_maximum_turn_change_deg_per_window:=5.0 \
-  lane_seed_sliding_window_heading_update_gain:=0.50
+  lane_seed_sliding_window_maximum_count:=40 \
+  lane_seed_sliding_window_maximum_consecutive_misses:=2 \
+  lane_seed_sliding_window_growth_ratio:=1.04 \
+  lane_seed_sliding_window_maximum_turn_deg_per_window:=14.0 \
+  lane_seed_sliding_window_maximum_turn_change_deg_per_window:=3.0 \
+  lane_seed_sliding_window_heading_update_gain:=0.90
 ```
 
 중심선의 도로 폭·수직 투영·보정값도 같은 방법으로 조절한다.
@@ -213,15 +214,16 @@ ros2 launch bev_processor bev_processor.launch.py \
 ros2 launch bev_processor bev_processor.launch.py \
   lane_centerline_expected_width_m:=0.65 \
   lane_centerline_width_tolerance_m:=0.08 \
-  lane_centerline_measured_point_smoothing_weight:=0.60 \
+  lane_centerline_measured_point_smoothing_weight:=0.70 \
   lane_centerline_midpoint_smoothing_weight:=0.45 \
   lane_centerline_temporal_current_weight:=0.60 \
   lane_centerline_transition_maximum_correction_m:=0.15 \
-  lane_centerline_tangent_window_m:=0.20 \
-  lane_centerline_maximum_heading_step_deg:=8.0 \
+  lane_centerline_tangent_window_m:=0.12 \
+  lane_centerline_maximum_curvature_per_m:=1.8 \
+  lane_centerline_maximum_heading_step_deg:=14.0 \
   lane_centerline_corner_longer_boundary_enabled:=true \
-  lane_centerline_corner_enter_heading_change_deg:=50.0 \
-  lane_centerline_corner_exit_heading_change_deg:=30.0
+  lane_centerline_corner_enter_heading_change_deg:=40.0 \
+  lane_centerline_corner_exit_heading_change_deg:=20.0
 ```
 
 주요 파라미터 그룹:
