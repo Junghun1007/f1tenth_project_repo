@@ -663,7 +663,7 @@ private:
     declare_parameter<int>("lane_seed_sliding_window_maximum_width_px", 25);
     declare_parameter<int>("lane_seed_sliding_window_maximum_height_px", 15);
     declare_parameter<double>("lane_seed_sliding_window_step_ratio", 0.60);
-    declare_parameter<int>("lane_seed_sliding_window_maximum_count", 24);
+    declare_parameter<int>("lane_seed_sliding_window_maximum_count", 48);
     declare_parameter<int>(
       "lane_seed_sliding_window_minimum_bright_pixels", 2);
     declare_parameter<int>(

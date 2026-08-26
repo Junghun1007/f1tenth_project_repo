@@ -39,8 +39,9 @@ struct BevLaneSeedDetectorConfig
   double minimum_pair_distance_px{50.0};
   double maximum_pair_distance_px{95.0};
 
-  // Extend an already accepted seed track toward the far end of the BEV.
-  // Each rotated window emits one intensity-weighted centroid point.
+  // Use an accepted seed track only to initialize a vehicle-near sliding
+  // window tracker. Each accepted window emits one intensity-weighted point;
+  // centerline reconstruction consumes these points instead of raw seed runs.
   bool sliding_window_enabled{true};
   double sliding_window_minimum_seed_arc_length_px{35.0};
   int sliding_window_initial_width_px{6};
@@ -49,7 +50,7 @@ struct BevLaneSeedDetectorConfig
   int sliding_window_maximum_width_px{25};
   int sliding_window_maximum_height_px{15};
   double sliding_window_step_ratio{0.60};
-  int sliding_window_maximum_count{24};
+  int sliding_window_maximum_count{48};
   int sliding_window_minimum_bright_pixels{2};
   int sliding_window_maximum_consecutive_misses{1};
   double sliding_window_maximum_turn_deg_per_window{14.0};

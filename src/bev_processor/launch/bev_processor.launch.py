@@ -153,7 +153,7 @@ def generate_launch_description():
         ("lane_seed_sliding_window_maximum_width_px", "25", int),
         ("lane_seed_sliding_window_maximum_height_px", "15", int),
         ("lane_seed_sliding_window_step_ratio", "0.60", float),
-        ("lane_seed_sliding_window_maximum_count", "24", int),
+        ("lane_seed_sliding_window_maximum_count", "48", int),
         (
             "lane_seed_sliding_window_minimum_bright_pixels",
             "2",

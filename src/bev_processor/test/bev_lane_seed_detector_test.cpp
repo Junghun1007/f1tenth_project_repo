@@ -338,7 +338,7 @@ void testAdaptiveSmoothingPreservesStraightToCurve()
     "adaptive smoothing flattened the sustained curve");
 }
 
-void testCenterlineUsesSlidingWindowExtension()
+void testCenterlineUsesSlidingWindowTracking()
 {
   BevLaneSeedDetectorConfig config;
   config.roi_bottom_exclusion_ratio = 0.0;
@@ -359,10 +359,10 @@ void testCenterlineUsesSlidingWindowExtension()
     });
   require(
     farthest != detection.centerline_points.end() && farthest->y < 150.0,
-    "centerline did not include the sliding-window extension above the ROI");
+    "sliding-window tracking did not carry the centerline above the ROI");
   require(
     std::abs(farthest->x - 50.0) <= 1.0,
-    "sliding-window extension displaced the pair centerline");
+    "sliding-window tracking displaced the pair centerline");
 }
 
 void testCenterlineSuppressesIsolatedBump()
@@ -374,7 +374,6 @@ void testCenterlineSuppressesIsolatedBump()
   config.slope_filter_enabled = false;
   config.column_tracking_enabled = false;
   config.cross_direction_merge_enabled = false;
-  config.sliding_window_enabled = false;
   config.centerline_midpoint_smoothing_weight = 0.10;
   BevLaneSeedDetector detector(config);
   std::vector<int> center_columns(300, 50);
@@ -388,6 +387,24 @@ void testCenterlineSuppressesIsolatedBump()
   require(
     std::abs(centerColumnNearRow(detection, 150.0) - 50.0) <= 2.0,
     "isolated centerline bump was not suppressed");
+}
+
+void testRawSeedEvidenceIsNotUsedAsCenterline()
+{
+  BevLaneSeedDetectorConfig config;
+  config.roi_bottom_exclusion_ratio = 0.0;
+  config.roi_height_ratio = 1.0;
+  config.column_tracking_enabled = false;
+  config.cross_direction_merge_enabled = false;
+  config.sliding_window_enabled = false;
+  BevLaneSeedDetector detector(config);
+  const LaneImages lanes = makeVerticalLanes(120, 300, {20, 80});
+  const BevLaneSeedDetection detection = detector.detect(
+    lanes.gray, lanes.response, false);
+  require(
+    detection.centerline_source == BevLaneCenterlineSource::NONE &&
+    detection.centerline_points.empty(),
+    "raw seed evidence entered centerline reconstruction");
 }
 
 }  // namespace
@@ -404,8 +421,9 @@ int main()
   testSingleBoundaryUsesConfiguredRoadWidth();
   testPairToSingleTransitionLimitsLateralJump();
   testAdaptiveSmoothingPreservesStraightToCurve();
-  testCenterlineUsesSlidingWindowExtension();
+  testCenterlineUsesSlidingWindowTracking();
   testCenterlineSuppressesIsolatedBump();
+  testRawSeedEvidenceIsNotUsedAsCenterline();
   std::cout << "bev_lane_seed_detector_test passed\n";
   return 0;
 }

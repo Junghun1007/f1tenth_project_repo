@@ -109,8 +109,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 
 ## 상대 대비 시드 검출
 
-보수적인 ROI 시드 검출을 먼저 수행하고, 안정 트랙만 슬라이딩 윈도우로
-연장한 뒤 주행 중심선을 생성한다. 전체 순서는 다음과 같다.
+보수적인 ROI 시드 검출을 먼저 수행하고, 안정 트랙의 첫 시드에서
+슬라이딩 윈도우 추적을 다시 시작해 주행 중심선을 생성한다. 전체 순서는
+다음과 같다.
 
 1. ROI 각 행에서 Top-hat 응답과 폭 조건을 통과한 ridge를 찾는다.
 2. 하단에서 상단으로 최대 횡이동량과 허용 gap을 적용해 곡선 트랙을 만든다.
@@ -129,16 +130,17 @@ enhanced = max(top_hat - noise_floor, 0) * gain
    방향에서 동일하며, 좌·우 거리는 원본 좌표계의 곡선 간 거리로 평가한다.
 9. 행·열 후보의 끝점이 설정 거리 이내에서 닿고 연결부 응답과 회전각
    기준을 통과하면 하나의 `RC` 트랙으로 이어서 점수와 시드를 다시 계산한다.
-10. 선택된 트랙의 먼 쪽 끝에서 크기가 증가하는 회전 슬라이딩 윈도우를
-    쌓고 각 창의 Top-hat 밝기 가중 무게중심 한 점을 추가한다.
-11. ROI 시드와 슬라이딩 윈도우 점을 호 길이 간격으로 균일 재샘플링한다.
-12. 양쪽 차선은 국소 접선에 수직인 대응점을 찾아 중점을 만들고 실측
-    도로 폭과 좌·우 법선 방향의 단독 중심 오차를 갱신한다.
-13. 한쪽만 보이면 기억한 도로 폭의 절반만큼 국소 법선 방향으로 이동하고,
-    양쪽에서 한쪽으로 전환될 때 남는 위치·방향 차이를 짧게 제한한다.
-14. 차량 가까운 점부터 짧은 구간을 직선 또는 접선 연속 Hermite
-    곡선으로 피팅해 누적한다. 진행 반전, 회전량 급변, 자기교차를
-    발견하면 이후 원거리 구간은 연결하지 않는다.
+10. 선택된 ROI 트랙은 좌·우 역할과 차량 근접 초기 위치·방향만
+    제공한다. 첫 시드 위치에서 크기가 증가하는 회전 슬라이딩 윈도우로
+    전체 BEV 차선을 다시 추적한다.
+11. 중심선 재구성에는 원시 ROI 시드 곡선을 넣지 않고, 승인된 각
+    윈도우에서 Top-hat 밝기로 계산한 무게중심 한 점만 사용한다.
+12. 양쪽 차선은 반대 경계 선분에 수직 투영한 실측 중점을 사용하고,
+    대응점이 없는 구간은 더 긴 차선을 기준으로 법선 오프셋해 보충한다.
+13. 한쪽만 보이면 설정된 도로 폭의 절반만큼 국소 법선 방향으로 이동하고,
+    양쪽에서 한쪽으로 전환될 때 이전 중심선과의 가로 오차를 점진적으로 감쇠한다.
+14. 검출점·중점·이전 프레임 평활화를 적용하고, 법선 오프셋이 뒤집히거나
+    차량 진행 방향으로 되돌아가는 급곡선은 가장 긴 안전 구간만 유지한다.
 
 출력 토픽은 다음과 같다.
 
@@ -194,6 +196,7 @@ ros2 launch bev_processor bev_processor.launch.py --show-args
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
+  lane_seed_sliding_window_maximum_count:=48 \
   lane_seed_sliding_window_growth_ratio:=1.12 \
   lane_seed_sliding_window_maximum_turn_deg_per_window:=15.0 \
   lane_seed_sliding_window_maximum_turn_change_deg_per_window:=5.0 \
@@ -236,8 +239,9 @@ ros2 launch bev_processor bev_processor.launch.py \
   MAD 이상치 제거 후 좌우 시드 평균 간격
 - `lane_seed_sliding_window_enabled`,
   `lane_seed_sliding_window_minimum_seed_arc_length_px`:
-  기존 ROI 검출을 통과한 안정 트랙만 먼 쪽 끝에서 슬라이딩 윈도우로
-  연장할지 여부와 연장을 시작할 최소 곡선 길이
+  ROI 검출을 통과한 안정 트랙의 첫 시드부터 슬라이딩 윈도우로
+  전체 경계를 다시 추적할지 여부와 추적을 시작할 최소 시드 곡선 길이.
+  중심선에는 원시 시드 곡선 대신 승인된 창의 무게중심만 들어간다.
 - `lane_seed_sliding_window_initial_*`,
   `lane_seed_sliding_window_growth_ratio`,
   `lane_seed_sliding_window_maximum_*`:
