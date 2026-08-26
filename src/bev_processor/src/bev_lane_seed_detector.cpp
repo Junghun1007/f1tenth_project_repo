@@ -990,6 +990,50 @@ std::vector<cv::Point2d> orderedSlidingWindowPoints(
   return points;
 }
 
+bool hasCenterlineSizedSlidingTrack(
+  const TrackCandidate & candidate,
+  const BevLaneSeedDetectorConfig & config)
+{
+  if (!candidate.valid) {
+    return false;
+  }
+  if (!config.centerline_enabled) {
+    return true;
+  }
+  return candidate.sliding_window_points.size() >=
+         static_cast<std::size_t>(config.centerline_minimum_points);
+}
+
+bool preferTemporalCandidate(
+  const TrackCandidate & candidate,
+  const double distance,
+  const TrackCandidate * best_candidate,
+  const double best_distance,
+  const BevLaneSeedDetectorConfig & config)
+{
+  if (best_candidate == nullptr) {
+    return true;
+  }
+  const bool candidate_has_centerline =
+    hasCenterlineSizedSlidingTrack(candidate, config);
+  const bool best_has_centerline =
+    hasCenterlineSizedSlidingTrack(*best_candidate, config);
+  if (candidate_has_centerline != best_has_centerline) {
+    return candidate_has_centerline;
+  }
+  if (std::abs(distance - best_distance) > 1.0e-9) {
+    return distance < best_distance;
+  }
+  if (
+    candidate.sliding_window_points.size() !=
+    best_candidate->sliding_window_points.size())
+  {
+    return candidate.sliding_window_points.size() >
+           best_candidate->sliding_window_points.size();
+  }
+  return candidate.score > best_candidate->score;
+}
+
 double polylineArcLength(const std::vector<cv::Point2d> & points)
 {
   double length_px = 0.0;
@@ -1917,8 +1961,16 @@ double temporalTrackDistance(
     }
     distances.push_back(nearest);
   }
-  const double seed_distance = cv::norm(
-    candidateSeedOriginal(candidate) - remembered.image_point);
+  const cv::Point2d candidate_seed = candidateSeedOriginal(candidate);
+  double seed_distance = cv::norm(candidate_seed - remembered.image_point);
+  // A temporarily fragmented lane may lose its vehicle-near arm. Its new seed
+  // is then farther from the old seed even though it still lies on the same
+  // remembered boundary. Match that seed to the remembered curve so the long
+  // usable arm is not rejected in favour of a short near-seed fragment.
+  for (const cv::Point2d & previous : remembered.support_points) {
+    seed_distance = std::min(
+      seed_distance, cv::norm(candidate_seed - previous));
+  }
   if (!distances.empty()) {
     // Both the full support curve and its near seed must remain close. This
     // prevents a partially overlapping but abruptly relocated track from
@@ -2019,6 +2071,22 @@ BevLaneSeed toPublicSeed(const TrackCandidate & candidate)
   // Temporal side matching keeps using the conservative seed evidence. The
   // sliding-window centroids are reserved for geometric centerline input.
   seed.support_points = orderedSeedEvidencePoints(candidate);
+  return seed;
+}
+
+BevLaneSeed toRememberedSeed(const TrackCandidate & candidate)
+{
+  BevLaneSeed seed = toPublicSeed(candidate);
+  const std::vector<cv::Point2d> tracked =
+    orderedSlidingWindowPoints(candidate);
+  if (tracked.size() >= 2U) {
+    // Keep the full successfully retracked boundary for the next frame. This
+    // lets a newly fragmented arm match any still-visible portion of the last
+    // physical lane instead of only the conservative ROI seed fragment.
+    seed.image_point = tracked.front();
+    seed.support_points = tracked;
+    seed.arc_length_px = polylineArcLength(tracked);
+  }
   return seed;
 }
 
@@ -2314,31 +2382,36 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
   } else if (!candidates.empty()) {
     if (remembered_single_side_ != 0) {
       // A lane that was already confirmed as the only visible left/right lane
-      // keeps that role through a short dropout. Pick the candidate closest to
-      // its remembered curve, but do not reject or relabel it merely because
-      // vehicle motion moved it beyond the ambiguous-side distance gate.
+      // keeps that role through a short dropout. Prefer a temporally matching
+      // candidate that can actually grow a centerline over a closer short
+      // fragment that would otherwise keep the side lock alive at CENTER:NONE.
       const BevLaneSeed & remembered = remembered_single_side_ < 0 ?
         remembered_left_ : remembered_right_;
-      std::size_t best_index = 0;
-      double best_distance = temporalTrackDistance(candidates[0], remembered);
-      for (std::size_t index = 1; index < candidates.size(); ++index) {
+      const int missing_frames = remembered_single_side_ < 0 ?
+        left_missing_frames_ : right_missing_frames_;
+      const double maximum_distance = temporalReacquireDistanceLimit(
+        config_, missing_frames);
+      std::size_t best_index = candidates.size();
+      double best_distance = std::numeric_limits<double>::infinity();
+      for (std::size_t index = 0; index < candidates.size(); ++index) {
         const double distance = temporalTrackDistance(
           candidates[index], remembered);
-        if (
-          distance < best_distance ||
-          (distance == best_distance &&
-          candidates[index].score > candidates[best_index].score))
+        if (distance > maximum_distance) {
+          continue;
+        }
+        trackWithSlidingWindows(
+          enhanced_top_hat, config_, &candidates[index]);
+        const TrackCandidate * best_candidate = best_index < candidates.size() ?
+          &candidates[best_index] : nullptr;
+        if (preferTemporalCandidate(
+            candidates[index], distance, best_candidate, best_distance,
+            config_))
         {
           best_index = index;
           best_distance = distance;
         }
       }
-      const int missing_frames = remembered_single_side_ < 0 ?
-        left_missing_frames_ : right_missing_frames_;
-      if (
-        best_distance <=
-        temporalReacquireDistanceLimit(config_, missing_frames))
-      {
+      if (best_index < candidates.size()) {
         if (remembered_single_side_ < 0) {
           selected_left = candidates[best_index];
         } else {
@@ -2364,15 +2437,30 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         const double right_distance = temporalTrackDistance(
           candidates[index], remembered_right_);
         if (
-          left_distance <= left_maximum_distance && left_distance < best_cost)
+          left_distance <= left_maximum_distance ||
+          right_distance <= right_maximum_distance)
+        {
+          trackWithSlidingWindows(
+            enhanced_top_hat, config_, &candidates[index]);
+        }
+        const TrackCandidate * best_candidate = best_index < candidates.size() ?
+          &candidates[best_index] : nullptr;
+        if (
+          left_distance <= left_maximum_distance &&
+          preferTemporalCandidate(
+            candidates[index], left_distance, best_candidate, best_cost,
+            config_))
         {
           best_cost = left_distance;
           best_index = index;
           assign_left = true;
+          best_candidate = &candidates[best_index];
         }
         if (
           right_distance <= right_maximum_distance &&
-          right_distance < best_cost)
+          preferTemporalCandidate(
+            candidates[index], right_distance, best_candidate, best_cost,
+            config_))
         {
           best_cost = right_distance;
           best_index = index;
@@ -2393,8 +2481,12 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
   // The conservative ROI detector remains the authority for lane identity and
   // initial heading. Growing windows then retrack the entire boundary from its
   // vehicle-near seed; raw seed runs never enter centerline reconstruction.
-  trackWithSlidingWindows(enhanced_top_hat, config_, &selected_left);
-  trackWithSlidingWindows(enhanced_top_hat, config_, &selected_right);
+  if (selected_left.sliding_windows.empty()) {
+    trackWithSlidingWindows(enhanced_top_hat, config_, &selected_left);
+  }
+  if (selected_right.sliding_windows.empty()) {
+    trackWithSlidingWindows(enhanced_top_hat, config_, &selected_right);
+  }
   result.left = toPublicSeed(selected_left);
   result.right = toPublicSeed(selected_right);
 
@@ -2611,15 +2703,29 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
   }
 
   if (config_.temporal_side_lock_enabled && side_lock_initialized_) {
-    if (result.left.valid && !result.right.valid) {
+    const bool pair_centerline =
+      result.centerline_source == BevLaneCenterlineSource::PAIR;
+    const std::size_t single_minimum_points = static_cast<std::size_t>(
+      config_.centerline_minimum_points);
+    const std::size_t pair_minimum_points = static_cast<std::size_t>(
+      config_.centerline_minimum_counterpart_points);
+    const bool left_track_reliable = result.left.valid &&
+      (!config_.centerline_enabled ||
+      selected_left.sliding_window_points.size() >=
+      (pair_centerline ? pair_minimum_points : single_minimum_points));
+    const bool right_track_reliable = result.right.valid &&
+      (!config_.centerline_enabled ||
+      selected_right.sliding_window_points.size() >=
+      (pair_centerline ? pair_minimum_points : single_minimum_points));
+    if (left_track_reliable && !right_track_reliable) {
       remembered_single_side_ = -1;
-    } else if (result.right.valid && !result.left.valid) {
+    } else if (right_track_reliable && !left_track_reliable) {
       remembered_single_side_ = 1;
-    } else if (result.left.valid && result.right.valid) {
+    } else if (left_track_reliable && right_track_reliable) {
       remembered_single_side_ = 0;
     }
-    if (result.left.valid) {
-      remembered_left_ = result.left;
+    if (left_track_reliable) {
+      remembered_left_ = toRememberedSeed(selected_left);
       left_missing_frames_ = 0;
     } else if (remembered_left_.valid) {
       ++left_missing_frames_;
@@ -2632,8 +2738,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         }
       }
     }
-    if (result.right.valid) {
-      remembered_right_ = result.right;
+    if (right_track_reliable) {
+      remembered_right_ = toRememberedSeed(selected_right);
       right_missing_frames_ = 0;
     } else if (remembered_right_.valid) {
       ++right_missing_frames_;
@@ -2646,7 +2752,7 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         }
       }
     }
-    if (result.left.valid || result.right.valid) {
+    if (left_track_reliable || right_track_reliable) {
       both_sides_missing_frames_ = 0;
     } else {
       ++both_sides_missing_frames_;

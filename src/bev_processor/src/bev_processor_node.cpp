@@ -661,7 +661,7 @@ private:
     declare_parameter<double>("lane_seed_pair_maximum_distance_px", 100.0);
     declare_parameter<bool>("lane_seed_sliding_window_enabled", true);
     declare_parameter<double>(
-      "lane_seed_sliding_window_minimum_seed_arc_length_px", 35.0);
+      "lane_seed_sliding_window_minimum_seed_arc_length_px", 20.0);
     declare_parameter<int>("lane_seed_sliding_window_initial_width_px", 6);
     declare_parameter<int>("lane_seed_sliding_window_initial_height_px", 10);
     declare_parameter<double>("lane_seed_sliding_window_growth_ratio", 1.04);

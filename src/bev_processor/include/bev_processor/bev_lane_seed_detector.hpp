@@ -43,7 +43,7 @@ struct BevLaneSeedDetectorConfig
   // window tracker. Each accepted window emits one intensity-weighted point;
   // centerline reconstruction consumes these points instead of raw seed runs.
   bool sliding_window_enabled{true};
-  double sliding_window_minimum_seed_arc_length_px{35.0};
+  double sliding_window_minimum_seed_arc_length_px{20.0};
   int sliding_window_initial_width_px{6};
   int sliding_window_initial_height_px{10};
   double sliding_window_growth_ratio{1.04};

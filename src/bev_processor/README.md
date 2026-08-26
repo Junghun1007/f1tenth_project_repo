@@ -254,6 +254,8 @@ ros2 launch bev_processor bev_processor.launch.py \
   `lane_seed_sliding_window_minimum_seed_arc_length_px`:
   ROI 검출을 통과한 안정 트랙의 첫 시드부터 슬라이딩 윈도우로
   전체 경계를 다시 추적할지 여부와 추적을 시작할 최소 시드 곡선 길이.
+  기본값 20 px은 시드 트랙 자체의 최소 통과 길이와 맞춰서, 코너에서
+  아래쪽 짧은 수직 조각만 남아도 즉시 윈도우 추적을 시작하게 한다.
   중심선에는 원시 시드 곡선 대신 승인된 창의 무게중심만 들어간다.
 - `lane_seed_sliding_window_initial_*`,
   `lane_seed_sliding_window_growth_ratio`,

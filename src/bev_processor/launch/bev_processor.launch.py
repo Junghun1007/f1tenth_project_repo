@@ -144,7 +144,7 @@ def generate_launch_description():
         ("lane_seed_sliding_window_enabled", "true", bool),
         (
             "lane_seed_sliding_window_minimum_seed_arc_length_px",
-            "35.0",
+            "20.0",
             float,
         ),
         ("lane_seed_sliding_window_initial_width_px", "6", int),
