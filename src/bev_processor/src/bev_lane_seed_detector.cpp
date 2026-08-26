@@ -1247,10 +1247,7 @@ OffsetLaneResult retainLongestSafeNormalOffsetSegment(
     const bool same_curve_direction =
       reference_length >= 1.0 && offset_length >= 1.0 &&
       reference_segment.dot(offset_segment) > 0.0;
-    // Image rows decrease as vehicle-forward distance increases.
-    const bool forward_in_vehicle_frame =
-      offset[index].y <= offset[index - 1U].y + 1.0;
-    if (!same_curve_direction || !forward_in_vehicle_frame) {
+    if (!same_curve_direction) {
       keepCurrentSegment(index);
       current_first = index;
       current_arc_length = 0.0;

@@ -140,8 +140,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
     코너가 끝날 때까지 같은 차선의 법선 오프셋만 중심선으로 사용한다.
 13. 한쪽만 보이면 설정된 도로 폭의 절반만큼 국소 법선 방향으로 이동하고,
     양쪽에서 한쪽으로 전환될 때 이전 중심선과의 가로 오차를 점진적으로 감쇠한다.
-14. 검출점·중점·이전 프레임 평활화를 적용하고, 법선 오프셋이 뒤집히거나
-    차량 진행 방향으로 되돌아가는 급곡선은 가장 긴 안전 구간만 유지한다.
+14. 검출점·중점·이전 프레임 평활화를 적용하고, 법선 오프셋이 기준 차선과
+    반대 방향으로 뒤집히는 급곡선은 가장 긴 안전 구간만 유지한다. 차선이
+    이상적인 Y 단조 형태가 아닐 수 있으므로 이미지 Y 진행 방향은 제한하지 않는다.
 
 출력 토픽은 다음과 같다.
 
@@ -287,7 +288,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   `lane_centerline_maximum_curvature_per_m`,
   `lane_centerline_maximum_heading_step_deg`:
   단일 경계의 법선 이동에 사용할 접선 측정 거리, 최대 곡률, 인접 점간
-  방향 변화 한계. 되돌아가거나 자기 교차할 수 있는 법선 이동 구간은 잘라낸다.
+  방향 변화 한계. 기준 차선과 반대로 뒤집히는 법선 이동 구간은 잘라낸다.
 - `lane_centerline_maximum_gap_fill_m`:
   중심선 마스크와 프리뷰에서 두 점 사이를 선으로 이을 최대 거리
 - `lane_centerline_corner_longer_boundary_enabled`,
