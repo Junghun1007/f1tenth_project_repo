@@ -121,20 +121,28 @@ def centerline_points_from_mono8(
     *,
     x_max_m: float,
     y_max_m: float,
-    lateral_margin_m: float,
     meter_per_pixel: float,
     threshold: int = 1,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return one metric center point per occupied image row.
 
     The BEV image is ordered with +X toward the top and +Y toward the left.
-    The published lane image includes ``lateral_margin_m`` on both sides.
+    The lane image has the same metric extent as the BEV image. Its horizontal
+    center is vehicle Y=0; no additional lateral image margin is present.
     """
 
     if image.ndim != 2:
         raise ValueError("centerline image must be two-dimensional")
     if meter_per_pixel <= 0.0:
         raise ValueError("meter_per_pixel must be positive")
+    expected_height = int(round(x_max_m / meter_per_pixel))
+    expected_width = int(round(2.0 * y_max_m / meter_per_pixel))
+    if image.shape != (expected_height, expected_width):
+        raise ValueError(
+            "centerline image dimensions do not match BEV geometry: "
+            f"received {image.shape[1]}x{image.shape[0]}, expected "
+            f"{expected_width}x{expected_height}"
+        )
 
     rows, columns = np.nonzero(image >= threshold)
     if rows.size == 0:
@@ -152,7 +160,6 @@ def centerline_points_from_mono8(
     x_m = x_max_m - (occupied_rows.astype(float) + 0.5) * meter_per_pixel
     y_m = (
         y_max_m
-        + lateral_margin_m
         - (center_columns + 0.5) * meter_per_pixel
     )
 

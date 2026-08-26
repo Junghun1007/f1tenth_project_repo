@@ -131,4 +131,6 @@ The complete Korean symptom-based tuning guide is installed as
 
 Diagnostic topics are `/auto/current_duty`, `/auto/current_brake_current`,
 `/auto/target_speed`, `/auto/current_speed`, `/auto/path_curvature`, and
-`/auto/steering_angle_rad`.
+`/auto/steering_angle_rad`. Stanley steering diagnostics are available at
+`/auto/cross_track_error_m`, `/auto/heading_error_rad`,
+`/auto/raw_steering_angle_rad`, and `/auto/current_servo_position`.

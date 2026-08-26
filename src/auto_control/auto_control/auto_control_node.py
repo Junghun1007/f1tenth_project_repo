@@ -76,6 +76,18 @@ class AutoControlNode(Node):
         self._steering_angle_pub = self.create_publisher(
             Float32, self.steering_angle_topic, command_qos
         )
+        self._cross_track_error_pub = self.create_publisher(
+            Float32, self.cross_track_error_topic, command_qos
+        )
+        self._heading_error_pub = self.create_publisher(
+            Float32, self.heading_error_topic, command_qos
+        )
+        self._raw_steering_angle_pub = self.create_publisher(
+            Float32, self.raw_steering_angle_topic, command_qos
+        )
+        self._command_servo_position_pub = self.create_publisher(
+            Float32, self.command_servo_position_topic, command_qos
+        )
 
         self._lane_sub = self.create_subscription(
             Image, self.lane_topic, self._on_lane_image, sensor_qos
@@ -110,6 +122,8 @@ class AutoControlNode(Node):
         self._latest_curvature_per_m = 0.0
         self._latest_cross_track_error_m = 0.0
         self._latest_heading_error_rad = 0.0
+        self._latest_raw_steering_angle_rad = 0.0
+        self._latest_servo_position = self.servo_center
         self._latest_direction_guard_used = False
 
         self._speed_pid = SpeedPid(
@@ -187,6 +201,18 @@ class AutoControlNode(Node):
         self.declare_parameter(
             "steering_angle_topic", "/auto/steering_angle_rad"
         )
+        self.declare_parameter(
+            "cross_track_error_topic", "/auto/cross_track_error_m"
+        )
+        self.declare_parameter(
+            "heading_error_topic", "/auto/heading_error_rad"
+        )
+        self.declare_parameter(
+            "raw_steering_angle_topic", "/auto/raw_steering_angle_rad"
+        )
+        self.declare_parameter(
+            "command_servo_position_topic", "/auto/current_servo_position"
+        )
 
         self.declare_parameter("control_rate_hz", 80.0)
         self.declare_parameter("status_log_rate_hz", 2.0)
@@ -196,7 +222,6 @@ class AutoControlNode(Node):
 
         self.declare_parameter("bev_x_max_m", 3.0)
         self.declare_parameter("bev_y_max_m", 0.60)
-        self.declare_parameter("bev_lateral_margin_m", 0.70)
         self.declare_parameter("bev_meter_per_pixel", 0.01)
         self.declare_parameter("lane_pixel_threshold", 128)
         self.declare_parameter("path_minimum_x_m", 0.05)
@@ -276,6 +301,10 @@ class AutoControlNode(Node):
             "current_speed_topic",
             "curvature_topic",
             "steering_angle_topic",
+            "cross_track_error_topic",
+            "heading_error_topic",
+            "raw_steering_angle_topic",
+            "command_servo_position_topic",
         )
         float_parameters = (
             "control_rate_hz",
@@ -285,7 +314,6 @@ class AutoControlNode(Node):
             "erpm_timeout_sec",
             "bev_x_max_m",
             "bev_y_max_m",
-            "bev_lateral_margin_m",
             "bev_meter_per_pixel",
             "path_minimum_x_m",
             "path_maximum_x_m",
@@ -370,6 +398,8 @@ class AutoControlNode(Node):
             self.path_timeout_sec,
             self.path_capture_maximum_age_sec,
             self.erpm_timeout_sec,
+            self.bev_x_max_m,
+            self.bev_y_max_m,
             self.bev_meter_per_pixel,
             self.path_minimum_span_m,
             self.path_local_smoothing_window_m,
@@ -443,7 +473,6 @@ class AutoControlNode(Node):
                 image,
                 x_max_m=self.bev_x_max_m,
                 y_max_m=self.bev_y_max_m,
-                lateral_margin_m=self.bev_lateral_margin_m,
                 meter_per_pixel=self.bev_meter_per_pixel,
                 threshold=self.lane_pixel_threshold,
             )
@@ -658,6 +687,7 @@ class AutoControlNode(Node):
         self._latest_curvature_per_m = curvature_per_m
         self._latest_cross_track_error_m = stanley.cross_track_error_m
         self._latest_heading_error_rad = stanley.heading_error_rad
+        self._latest_raw_steering_angle_rad = stanley.steering_angle_rad
         self._latest_direction_guard_used = (
             stanley.direction_guard_used or corner_sign_reset_used
         )
@@ -700,6 +730,8 @@ class AutoControlNode(Node):
         self._latest_curvature_per_m = 0.0
         self._latest_cross_track_error_m = 0.0
         self._latest_heading_error_rad = 0.0
+        self._latest_raw_steering_angle_rad = 0.0
+        self._latest_servo_position = self.servo_center
         self._latest_direction_guard_used = False
         self._speed_pid.reset()
         self._brake_profile.reset()
@@ -733,6 +765,7 @@ class AutoControlNode(Node):
         else:
             raise ValueError(f"unsupported motor mode: {motor_mode}")
         self._last_motor_mode = motor_mode
+        self._latest_servo_position = float(servo_position)
         self._servo_pub.publish(Float32(data=float(servo_position)))
         self._command_duty_pub.publish(Float32(data=float(duty)))
         self._command_brake_current_pub.publish(
@@ -750,13 +783,26 @@ class AutoControlNode(Node):
         self._steering_angle_pub.publish(
             Float32(data=float(self._steering_angle_rad))
         )
+        self._cross_track_error_pub.publish(
+            Float32(data=float(self._latest_cross_track_error_m))
+        )
+        self._heading_error_pub.publish(
+            Float32(data=float(self._latest_heading_error_rad))
+        )
+        self._raw_steering_angle_pub.publish(
+            Float32(data=float(self._latest_raw_steering_angle_rad))
+        )
+        self._command_servo_position_pub.publish(
+            Float32(data=self._latest_servo_position)
+        )
 
     def _log_status(self) -> None:
         path_points = self._path.point_count if self._path is not None else 0
         self.get_logger().info(
             "Auto status | state=%s | path_points=%d | speed=%.2f/%.2fm/s | "
             "curvature=%.3f/m | cte=%+.3fm | heading=%+.1fdeg | guard=%s | "
-            "steering=%+.1fdeg | motor=%s | duty=%.4f | brake=%.2fA"
+            "raw/final_steering=%+.1f/%+.1fdeg | servo=%.3f | "
+            "motor=%s | duty=%.4f | brake=%.2fA"
             % (
                 self._last_stop_reason,
                 path_points,
@@ -766,7 +812,9 @@ class AutoControlNode(Node):
                 self._latest_cross_track_error_m,
                 math.degrees(self._latest_heading_error_rad),
                 "on" if self._latest_direction_guard_used else "off",
+                math.degrees(self._latest_raw_steering_angle_rad),
                 math.degrees(self._steering_angle_rad),
+                self._latest_servo_position,
                 self._last_motor_mode,
                 self._command_duty,
                 self._command_brake_current,

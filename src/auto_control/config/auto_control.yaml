@@ -18,6 +18,10 @@ auto_control:
     current_speed_topic: "/auto/current_speed"
     curvature_topic: "/auto/path_curvature"
     steering_angle_topic: "/auto/steering_angle_rad"
+    cross_track_error_topic: "/auto/cross_track_error_m"
+    heading_error_topic: "/auto/heading_error_rad"
+    raw_steering_angle_topic: "/auto/raw_steering_angle_rad"
+    command_servo_position_topic: "/auto/current_servo_position"
 
     control_rate_hz: 80.0
     status_log_rate_hz: 2.0
@@ -26,11 +30,10 @@ auto_control:
     path_capture_maximum_age_sec: 0.20
     erpm_timeout_sec: 0.15
 
-    # bev_processor 기본 좌표계. lane_output_lateral_margin_m을 바꾸면
-    # bev_lateral_margin_m도 반드시 같은 값으로 바꾼다.
+    # bev_processor가 발행하는 120x300 중앙선 mask는 별도의 좌우 margin 없이
+    # 원본 BEV와 같은 -0.60..+0.60m, 0..3.0m 좌표계를 사용한다.
     bev_x_max_m: 3.0
     bev_y_max_m: 0.60
-    bev_lateral_margin_m: 0.70
     bev_meter_per_pixel: 0.01
     lane_pixel_threshold: 128
 

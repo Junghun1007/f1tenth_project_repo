@@ -43,7 +43,9 @@ AUTO CONTROL 파라미터 조정 가이드
 1. 한 번에 한 종류만 바꾼다: 경로 유효성, 조향, 속도 중 하나.
 2. 값을 10~20%씩만 바꾸고 동일 위치를 여러 번 주행한다.
 3. 바퀴를 띄운 상태에서 좌/우 조향 방향을 먼저 확인한다.
-4. /auto/steering_angle_rad, /auto/path_curvature, /auto/target_speed,
+4. /auto/steering_angle_rad, /auto/raw_steering_angle_rad,
+   /auto/cross_track_error_m, /auto/heading_error_rad,
+   /auto/current_servo_position, /auto/path_curvature, /auto/target_speed,
    /auto/current_speed, /auto/current_duty, /auto/current_brake_current와
    auto_control 상태 로그를 함께 본다.
 5. centerline_missing 정지는 조향 한계가 아니라 경로 유효성 조건 문제다.

@@ -18,14 +18,13 @@ from auto_control.control_core import (
 
 class ControlCoreTest(unittest.TestCase):
     def test_centerline_image_uses_bev_vehicle_coordinates(self) -> None:
-        image = np.zeros((300, 260), dtype=np.uint8)
-        image[150:260, 129:131] = 255
+        image = np.zeros((300, 120), dtype=np.uint8)
+        image[150:260, 59:61] = 255
 
         x_m, y_m = centerline_points_from_mono8(
             image,
             x_max_m=3.0,
             y_max_m=0.60,
-            lateral_margin_m=0.70,
             meter_per_pixel=0.01,
             threshold=128,
         )
@@ -33,6 +32,60 @@ class ControlCoreTest(unittest.TestCase):
         self.assertAlmostEqual(float(x_m[0]), 0.405)
         self.assertAlmostEqual(float(x_m[-1]), 1.495)
         self.assertTrue(np.allclose(y_m, 0.0))
+
+    def test_centerline_image_rejects_stale_lateral_margin_width(self) -> None:
+        image = np.zeros((300, 260), dtype=np.uint8)
+
+        with self.assertRaisesRegex(ValueError, "expected 120x300"):
+            centerline_points_from_mono8(
+                image,
+                x_max_m=3.0,
+                y_max_m=0.60,
+                meter_per_pixel=0.01,
+                threshold=128,
+            )
+
+    def test_straight_centerline_steers_toward_its_image_side(self) -> None:
+        for center_column, expected_sign in ((49, 1.0), (69, -1.0)):
+            with self.subTest(center_column=center_column):
+                image = np.zeros((300, 120), dtype=np.uint8)
+                end_column = center_column + 2
+                image[80:280, center_column:end_column] = 255
+                x_m, y_m = centerline_points_from_mono8(
+                    image,
+                    x_max_m=3.0,
+                    y_max_m=0.60,
+                    meter_per_pixel=0.01,
+                    threshold=128,
+                )
+                path = build_path_model(
+                    x_m,
+                    y_m,
+                    minimum_points=20,
+                    minimum_span_m=0.35,
+                    minimum_x_m=0.20,
+                    maximum_x_m=2.2,
+                    local_smoothing_window_m=0.08,
+                    outlier_threshold_m=0.04,
+                    geometry_window_m=0.14,
+                )
+                self.assertIsNotNone(path)
+
+                result = stanley_control(
+                    path,
+                    speed_mps=0.8,
+                    gain=1.5,
+                    softening_speed_mps=0.35,
+                    heading_lookahead_m=0.22,
+                    maximum_steering_angle_rad=math.radians(30.0),
+                    corner_heading_threshold_rad=math.radians(6.0),
+                    corner_opposing_correction_ratio=0.80,
+                )
+
+                self.assertGreater(
+                    expected_sign * result.cross_track_error_m, 0.0
+                )
+                self.assertGreater(expected_sign * result.steering_angle_rad, 0.0)
 
     def test_direct_path_and_stanley_steer_toward_left_path(self) -> None:
         x_m = np.linspace(0.3, 2.0, 80)
