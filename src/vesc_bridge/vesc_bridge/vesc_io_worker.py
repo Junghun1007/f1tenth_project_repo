@@ -9,7 +9,7 @@ from typing import Literal
 from vesc_bridge.vesc_driver import VescDriver
 
 
-Operation = Literal["duty", "erpm", "servo", "telemetry"]
+Operation = Literal["duty", "brake", "erpm", "servo", "telemetry"]
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,9 @@ class VescIoWorker:
     def submit_duty(self, duty: float) -> None:
         self._submit_drive("duty", float(duty))
 
+    def submit_brake_current(self, brake_current_amps: float) -> None:
+        self._submit_drive("brake", float(brake_current_amps))
+
     def submit_erpm(self, erpm: int) -> None:
         self._submit_drive("erpm", int(erpm))
 
@@ -108,8 +111,8 @@ class VescIoWorker:
         with self._condition:
             if self._stop_requested:
                 return
-            # Duty and ERPM are mutually exclusive drive modes. Retain only the
-            # newest state across both topics.
+            # Duty, brake current and ERPM are mutually exclusive motor modes.
+            # Retain only the newest state across all three topics.
             self._pending_drive = (operation, value)
             self._condition.notify()
 
@@ -197,6 +200,9 @@ class VescIoWorker:
     ) -> float | int | None:
         if operation == "duty":
             self._driver.set_duty(float(value))
+            return value
+        if operation == "brake":
+            self._driver.set_brake_current(float(value))
             return value
         if operation == "erpm":
             self._driver.set_erpm(int(value))

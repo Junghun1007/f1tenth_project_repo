@@ -58,6 +58,28 @@ class VescDriverTest(unittest.TestCase):
             [VescDriver.make_packet(bytes([5]) + struct.pack(">i", -100000))],
         )
 
+    def test_set_brake_current_encodes_scaled_brake_payload(self) -> None:
+        fake_serial = FakeSerial()
+        driver = make_driver(fake_serial)
+
+        driver.set_brake_current(8.0)
+
+        self.assertEqual(
+            fake_serial.writes,
+            [VescDriver.make_packet(bytes([7]) + struct.pack(">i", 8000))],
+        )
+
+    def test_set_brake_current_clamps_negative_magnitude_to_zero(self) -> None:
+        fake_serial = FakeSerial()
+        driver = make_driver(fake_serial)
+
+        driver.set_brake_current(-1.0)
+
+        self.assertEqual(
+            fake_serial.writes,
+            [VescDriver.make_packet(bytes([7]) + struct.pack(">i", 0))],
+        )
+
     def test_get_firmware_version_requires_a_valid_vesc_response(self) -> None:
         response = VescDriver.make_packet(bytes([0, 6, 5]))
         fake_serial = FakeSerial(response=response)

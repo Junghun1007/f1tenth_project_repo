@@ -11,7 +11,7 @@ from typing import Any, Callable
 @dataclass(frozen=True)
 class VescCommandIds:
     set_duty: int = 5
-    # 현재는 비활성화. 안전 정책이 정해진 뒤 사용한다.
+    # Propulsion current mode remains disabled; brake-current mode is enabled.
     set_current: int = 6
     set_current_brake: int = 7
 
@@ -25,7 +25,7 @@ class VescCommandIds:
 @dataclass(frozen=True)
 class VescScales:
     duty: int = 100000
-    # 현재는 비활성화. 나중에 다시 켤 때 설정 구조를 유지하려고 남겨둔다.
+    # Propulsion current mode remains disabled.
     current: int = 1000
     brake_current: int = 1000
 
@@ -136,15 +136,12 @@ class VescDriver:
         raise VescDriverError("Current 명령은 비활성화되어 있습니다. ERPM 명령을 사용하세요.")
 
     def set_brake_current(self, brake_current_amps: float) -> None:
-        # 현재 brake current 명령은 비활성화한다.
-        # 정지는 우선 ERPM 0 또는 상위 안전 정책에서 처리한다.
-        # 기존 구현은 나중에 다시 켤 수 있도록 주석으로 남겨둔다.
-        # value = int(brake_current_amps * self.scales.brake_current)
-        # payload = bytes([self.command_ids.set_current_brake]) + struct.pack(">i", value)
-        # self.write_payload(payload)
-        raise VescDriverError(
-            "Brake current 명령은 비활성화되어 있습니다. ERPM 명령을 사용하세요."
+        brake_current_amps = max(0.0, float(brake_current_amps))
+        value = int(brake_current_amps * self.scales.brake_current)
+        payload = bytes([self.command_ids.set_current_brake]) + struct.pack(
+            ">i", value
         )
+        self.write_payload(payload)
 
     def set_erpm(self, erpm: int | float) -> None:
         # VESC set_rpm expects ERPM, not wheel RPM. ERPM is electrical RPM.

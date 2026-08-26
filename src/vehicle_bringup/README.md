@@ -56,7 +56,8 @@ ros2 launch vehicle_bringup vesc_only.launch.py \
 ## Configuration
 
 - `config/vesc_config.yaml`: serial transport, command limits, and telemetry.
-- `config/manual_vesc_config.yaml`: manual accelerator, brake, and steering.
+- `config/manual_vesc_config.yaml`: manual accelerator, 0..8 A LT electrical
+  brake ramp, and steering.
 - `auto_control/config/auto_control.yaml`: Stanley, speed PID, vehicle, and
   autonomous actuator parameters.
 - `config/controller_keymap.yaml`: 8BitDo controller mapping.

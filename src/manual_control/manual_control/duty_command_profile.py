@@ -17,7 +17,6 @@ class DutyProfileConfig:
     reverse_start_duty: float
     acceleration_duty_per_sec: float
     coast_deceleration_duty_per_sec: float
-    brake_duty_per_sec: float
     pedal_deadzone: float
     immediate_stop_on_accelerator_release: bool
 
@@ -42,8 +41,6 @@ class DutyProfileConfig:
             raise ValueError(
                 "coast_deceleration_duty_per_sec must be positive"
             )
-        if self.brake_duty_per_sec <= 0.0:
-            raise ValueError("brake_duty_per_sec must be positive")
         if not 0.0 <= self.pedal_deadzone <= 1.0:
             raise ValueError("pedal_deadzone must be between 0 and 1")
 
@@ -58,18 +55,11 @@ class DutyCommandProfile:
     def command_duty(self) -> float:
         return self.current_duty
 
-    def update(self, accelerator: float, brake: float, dt_sec: float) -> float:
+    def update(self, accelerator: float, dt_sec: float) -> float:
         accelerator = self._pedal_value(accelerator)
-        brake = self._pedal_value(brake)
         dt_sec = max(0.0, float(dt_sec))
 
-        if brake > 0.0:
-            self.current_duty = self._move_toward(
-                self.current_duty,
-                0.0,
-                brake * self.config.brake_duty_per_sec * dt_sec,
-            )
-        elif accelerator > 0.0:
+        if accelerator > 0.0:
             target_duty = self.gear.value * self._gear_limit()
             start_duty = self._gear_start_duty()
             if abs(self.current_duty) < start_duty:

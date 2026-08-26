@@ -10,8 +10,10 @@ actuator_commander_node:
     joy_trigger_released: 0.0
     joy_trigger_pressed: 1.0
     current_duty_topic: "/manual/current_duty"     # 현재 duty 명령
+    current_brake_current_topic: "/manual/current_brake_current"
     gear_state_topic: "/manual/gear"               # FORWARD 또는 REVERSE
     duty_topic: "/vesc/duty"
+    brake_current_topic: "/vesc/brake_current"
     servo_position_topic: "/vesc/servo_position"
 
     forward_max_duty: 0.10
@@ -21,7 +23,11 @@ actuator_commander_node:
     acceleration_duty_per_sec: 0.03     # 최대 전진 duty까지 약 1.7초
     # immediate_stop_on_accelerator_release=false일 때만 사용하는 자연 감속률
     coast_deceleration_duty_per_sec: 0.04
-    brake_duty_per_sec: 0.08
+    # VESC 한도(-69.67A motor/-60A regen)보다 보수적인 LT 전기제동값.
+    # LT 100%에서 8A, 약 0.5초에 도달하고 0.25초에 해제한다.
+    maximum_brake_current_amps: 8.0
+    brake_current_rise_amps_per_sec: 16.0
+    brake_current_fall_amps_per_sec: 32.0
     control_rate_hz: 80.0
     status_log_rate_hz: 2.0
     input_timeout_sec: 0.30

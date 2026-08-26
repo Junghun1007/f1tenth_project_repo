@@ -9,6 +9,10 @@ from rclpy.time import Time
 from sensor_msgs.msg import Joy
 from std_msgs.msg import Float32, String
 
+from manual_control.brake_current_profile import (
+    BrakeCurrentProfile,
+    BrakeCurrentProfileConfig,
+)
 from manual_control.duty_command_profile import (
     DutyCommandProfile,
     DutyProfileConfig,
@@ -27,8 +31,12 @@ class ActuatorCommanderNode(Node):
         self.declare_parameter("joy_trigger_released", 0.0)
         self.declare_parameter("joy_trigger_pressed", 1.0)
         self.declare_parameter("current_duty_topic", "/manual/current_duty")
+        self.declare_parameter(
+            "current_brake_current_topic", "/manual/current_brake_current"
+        )
         self.declare_parameter("gear_state_topic", "/manual/gear")
         self.declare_parameter("duty_topic", "/vesc/duty")
+        self.declare_parameter("brake_current_topic", "/vesc/brake_current")
         self.declare_parameter("servo_position_topic", "/vesc/servo_position")
 
         self.declare_parameter("forward_max_duty", 0.10)
@@ -37,7 +45,9 @@ class ActuatorCommanderNode(Node):
         self.declare_parameter("reverse_start_duty", 0.05)
         self.declare_parameter("acceleration_duty_per_sec", 0.03)
         self.declare_parameter("coast_deceleration_duty_per_sec", 0.005)
-        self.declare_parameter("brake_duty_per_sec", 0.07)
+        self.declare_parameter("maximum_brake_current_amps", 8.0)
+        self.declare_parameter("brake_current_rise_amps_per_sec", 16.0)
+        self.declare_parameter("brake_current_fall_amps_per_sec", 32.0)
         self.declare_parameter("control_rate_hz", 80.0)
         self.declare_parameter("status_log_rate_hz", 2.0)
         self.declare_parameter("input_timeout_sec", 0.3)
@@ -69,8 +79,14 @@ class ActuatorCommanderNode(Node):
             self.get_parameter("joy_trigger_pressed").value
         )
         current_duty_topic = str(self.get_parameter("current_duty_topic").value)
+        current_brake_current_topic = str(
+            self.get_parameter("current_brake_current_topic").value
+        )
         gear_state_topic = str(self.get_parameter("gear_state_topic").value)
         duty_topic = str(self.get_parameter("duty_topic").value)
+        brake_current_topic = str(
+            self.get_parameter("brake_current_topic").value
+        )
         servo_topic = str(self.get_parameter("servo_position_topic").value)
 
         self.control_rate_hz = max(
@@ -90,6 +106,9 @@ class ActuatorCommanderNode(Node):
         self.servo_right = float(self.get_parameter("servo_right").value)
         self.steering_deadzone = float(
             self.get_parameter("steering_deadzone").value
+        )
+        self.pedal_deadzone = float(
+            self.get_parameter("pedal_deadzone").value
         )
 
         self.duty_profile = DutyCommandProfile(
@@ -112,17 +131,30 @@ class ActuatorCommanderNode(Node):
                         "coast_deceleration_duty_per_sec"
                     ).value
                 ),
-                brake_duty_per_sec=float(
-                    self.get_parameter("brake_duty_per_sec").value
-                ),
-                pedal_deadzone=float(
-                    self.get_parameter("pedal_deadzone").value
-                ),
+                pedal_deadzone=self.pedal_deadzone,
                 immediate_stop_on_accelerator_release=bool(
                     self.get_parameter(
                         "immediate_stop_on_accelerator_release"
                     ).value
                 ),
+            )
+        )
+        self.brake_profile = BrakeCurrentProfile(
+            BrakeCurrentProfileConfig(
+                maximum_brake_current_amps=float(
+                    self.get_parameter("maximum_brake_current_amps").value
+                ),
+                rise_amps_per_sec=float(
+                    self.get_parameter(
+                        "brake_current_rise_amps_per_sec"
+                    ).value
+                ),
+                fall_amps_per_sec=float(
+                    self.get_parameter(
+                        "brake_current_fall_amps_per_sec"
+                    ).value
+                ),
+                pedal_deadzone=self.pedal_deadzone,
             )
         )
 
@@ -137,6 +169,7 @@ class ActuatorCommanderNode(Node):
         self._steering_input_timed_out = True
         self._gear_button_was_pressed = False
         self._invalid_joy_layout_reported = False
+        self._brake_mode_active = False
 
         # Manual commands are state values. Intermediate samples may be
         # discarded; every consumer should act on the newest sample only.
@@ -148,9 +181,19 @@ class ActuatorCommanderNode(Node):
             duty_topic,
             latest_command_qos,
         )
+        self.brake_current_pub = self.create_publisher(
+            Float32,
+            brake_current_topic,
+            latest_command_qos,
+        )
         self.servo_pub = self.create_publisher(
             Float32,
             servo_topic,
+            latest_command_qos,
+        )
+        self.current_brake_current_pub = self.create_publisher(
+            Float32,
+            current_brake_current_topic,
             latest_command_qos,
         )
         self.current_duty_pub = self.create_publisher(
@@ -189,7 +232,8 @@ class ActuatorCommanderNode(Node):
             f"LT=axis{self.joy_brake_axis}, "
             f"steering=axis{self.joy_steering_axis}, "
             f"gear=button{self.joy_gear_button}; "
-            f"initial_gear={self.duty_profile.gear.name}, command_duty=0"
+            f"initial_gear={self.duty_profile.gear.name}, command_duty=0, "
+            f"LT_max_brake={self.brake_profile.config.maximum_brake_current_amps:.1f}A"
         )
         self._publish_gear_state()
 
@@ -249,7 +293,14 @@ class ActuatorCommanderNode(Node):
         if not gear_toggle_requested:
             return
 
-        if self.duty_profile.toggle_gear():
+        if (
+            self._brake >= self.pedal_deadzone or
+            self.brake_profile.command_current_amps > 0.0
+        ):
+            self.get_logger().warn(
+                "Gear change rejected while electrical brake is active."
+            )
+        elif self.duty_profile.toggle_gear():
             self.get_logger().info(
                 f"Gear changed: {self.duty_profile.gear.name}"
             )
@@ -278,12 +329,34 @@ class ActuatorCommanderNode(Node):
         if self._pedal_inputs_are_stale(now):
             self._handle_pedal_input_timeout()
             command_duty = 0.0
+            command_brake_current = 0.0
+            self.brake_current_pub.publish(Float32(data=0.0))
+            self._brake_mode_active = False
         else:
-            command_duty = self.duty_profile.update(
-                self._accelerator,
-                self._brake,
-                dt_sec,
+            command_brake_current = self.brake_profile.update(
+                self._brake, dt_sec
             )
+            if command_brake_current > 0.0:
+                # Electrical braking owns the VESC motor-control mode. Clear
+                # stored propulsion immediately so RT can never fight LT.
+                self.duty_profile.reset_speed()
+                command_duty = 0.0
+                self.brake_current_pub.publish(
+                    Float32(data=command_brake_current)
+                )
+                self._brake_mode_active = True
+            elif self._brake_mode_active:
+                # Send one explicit zero-current command before returning to
+                # duty mode on the next control cycle.
+                self.duty_profile.reset_speed()
+                command_duty = 0.0
+                self.brake_current_pub.publish(Float32(data=0.0))
+                self._brake_mode_active = False
+            else:
+                command_duty = self.duty_profile.update(
+                    self._accelerator, dt_sec
+                )
+                self.duty_pub.publish(Float32(data=command_duty))
 
         if self._input_is_stale(self._last_steering_time, now):
             self._handle_steering_input_timeout()
@@ -291,8 +364,10 @@ class ActuatorCommanderNode(Node):
         else:
             servo_position = self._steering_to_servo(self._steering)
 
-        self.duty_pub.publish(Float32(data=command_duty))
         self.current_duty_pub.publish(Float32(data=command_duty))
+        self.current_brake_current_pub.publish(
+            Float32(data=command_brake_current)
+        )
         self.servo_pub.publish(Float32(data=servo_position))
 
     def _pedal_inputs_are_stale(self, now: Time) -> bool:
@@ -311,12 +386,13 @@ class ActuatorCommanderNode(Node):
         if not self._pedal_input_timed_out:
             self.get_logger().warn(
                 f"Pedal input timeout ({self.input_timeout_sec:.2f}s). "
-                "Sending duty 0."
+                "Releasing the motor command."
             )
         self._pedal_input_timed_out = True
         self._accelerator = 0.0
         self._brake = 0.0
         self.duty_profile.reset_speed()
+        self.brake_profile.reset()
 
     def _handle_steering_input_timeout(self) -> None:
         if not self._steering_input_timed_out:
@@ -331,7 +407,8 @@ class ActuatorCommanderNode(Node):
         self._publish_gear_state()
         self.get_logger().info(
             f"Manual status | gear={self.duty_profile.gear.name} | "
-            f"command_duty={self.duty_profile.command_duty:.5f}"
+            f"command_duty={self.duty_profile.command_duty:.5f} | "
+            f"brake_current={self.brake_profile.command_current_amps:.2f}A"
         )
 
     def _publish_gear_state(self) -> None:
@@ -343,8 +420,11 @@ class ActuatorCommanderNode(Node):
         self.control_timer.cancel()
         self.status_timer.cancel()
         self.duty_profile.reset_speed()
+        self.brake_profile.reset()
+        self.brake_current_pub.publish(Float32(data=0.0))
         self.duty_pub.publish(Float32(data=0.0))
         self.current_duty_pub.publish(Float32(data=0.0))
+        self.current_brake_current_pub.publish(Float32(data=0.0))
         self.servo_pub.publish(Float32(data=self.servo_center))
         self._publish_gear_state()
 

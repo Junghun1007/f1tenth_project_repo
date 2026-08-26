@@ -10,13 +10,17 @@ in `vehicle_bringup/config/vesc_config.yaml`.
 
 ## Topics
 
-- Subscribes: `/vesc/duty`, `/vesc/erpm`, `/vesc/servo_position`
+- Subscribes: `/vesc/duty`, `/vesc/brake_current`, `/vesc/erpm`,
+  `/vesc/servo_position`
 - Publishes: `/vesc/measured_erpm`, `/vesc/connected`
 
 Measured ERPM is selectively requested at 80 Hz by a dedicated UART worker.
-Duty/ERPM and servo callbacks only replace the newest pending state, so a slow
+Duty/brake-current/ERPM and servo callbacks only replace the newest pending state, so a slow
 telemetry response does not block the ROS executor or replay superseded control
-commands. Drive and steering writes are handled before telemetry. The periodic
+commands. The three motor command modes are mutually exclusive in the UART
+worker. Brake current is clamped to the configured non-negative
+`max_brake_current_amps` before `COMM_SET_CURRENT_BRAKE` is sent. Drive and
+steering writes are handled before telemetry. The periodic
 status log reports requested/actual telemetry Hz, UART round-trip average/max,
 and failed queries for on-vehicle verification.
 

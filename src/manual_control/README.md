@@ -7,7 +7,9 @@ Published topics:
 
 ```text
 /manual/current_duty      std_msgs/msg/Float32
+/manual/current_brake_current std_msgs/msg/Float32  amperes
 /vesc/duty                std_msgs/msg/Float32  -1.0 to 1.0
+/vesc/brake_current       std_msgs/msg/Float32  non-negative amperes
 /vesc/measured_erpm       std_msgs/msg/Int32  VESC-estimated ERPM
 /manual/gear              std_msgs/msg/String
 ```
@@ -16,17 +18,18 @@ Current mapping:
 
 ```text
 RT axis 5 (0.0 released, 1.0 pressed) -> acceleration
-LT axis 4 (0.0 released, 1.0 pressed) -> deceleration toward duty 0
+LT axis 4 (0.0 released, 1.0 pressed) -> VESC electrical brake current
 left stick X axis 0 -> steering angle
 RB button 10 -> forward/reverse toggle while stopped
 ```
 
 `actuator_commander_node` starts stopped in forward gear. RT increases the
-command duty, LT reduces duty toward zero, and RB toggles forward/reverse while
-stopped. With the configured `immediate_stop_on_accelerator_release: false`,
+command duty, LT takes priority and switches the VESC to brake-current mode,
+and RB toggles forward/reverse while stopped. With the configured
+`immediate_stop_on_accelerator_release: false`,
 releasing RT follows the coast deceleration rate. Current gear and command duty are
-published on `/manual/gear` and
-`/manual/current_duty`. The VESC node publishes measured ERPM on
+published on `/manual/gear` and `/manual/current_duty`; the ramped electrical
+brake command is published on `/manual/current_brake_current`. The VESC node publishes measured ERPM on
 `/vesc/measured_erpm` and logs target duty and measured ERPM together.
 
 `actuator_commander_node` reads all four controls directly from the same `/joy`
@@ -49,10 +52,15 @@ start_duty: 0.05
 reverse_start_duty: 0.05
 acceleration_duty_per_sec: 0.03
 coast_deceleration_duty_per_sec: 0.04
-brake_duty_per_sec: 0.08
+maximum_brake_current_amps: 8.0
+brake_current_rise_amps_per_sec: 16.0
+brake_current_fall_amps_per_sec: 32.0
 immediate_stop_on_accelerator_release: false
 ```
 
 `coast_deceleration_duty_per_sec` is used only when
-`immediate_stop_on_accelerator_release` is `false`. LT does not request VESC
-brake current; it ramps the duty command toward zero.
+`immediate_stop_on_accelerator_release` is `false`. Full LT reaches 8 A in
+approximately 0.5 seconds and releases it in approximately 0.25 seconds.
+While any brake current remains, propulsion duty is cleared and not published.
+The 8 A ROS limit is intentionally far below the supplied VESC motor-brake and
+battery-regen limits; first powered checks must still be done at low speed.

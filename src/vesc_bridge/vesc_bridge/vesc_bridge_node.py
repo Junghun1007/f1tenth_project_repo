@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 
 import rclpy
@@ -32,12 +33,14 @@ class VescBridgeNode(Node):
         self.declare_parameter("verify_firmware_on_startup", True)
 
         self.declare_parameter("duty_topic", "/vesc/duty")
+        self.declare_parameter("brake_current_topic", "/vesc/brake_current")
         self.declare_parameter("erpm_topic", "/vesc/erpm")
         self.declare_parameter("measured_erpm_topic", "/vesc/measured_erpm")
         self.declare_parameter("servo_position_topic", "/vesc/servo_position")
         self.declare_parameter("connection_status_topic", "/vesc/connected")
         self.declare_parameter("min_duty", -1.0)
         self.declare_parameter("max_duty", 1.0)
+        self.declare_parameter("max_brake_current_amps", 8.0)
         self.declare_parameter("min_erpm", -100000)
         self.declare_parameter("max_erpm", 100000)
         self.declare_parameter("servo_min", 0.0)
@@ -50,12 +53,17 @@ class VescBridgeNode(Node):
         self.declare_parameter("packet.comm_get_firmware_version", 0)
         self.declare_parameter("packet.comm_get_values_selective", 50)
         self.declare_parameter("packet.comm_set_duty", 5)
+        self.declare_parameter("packet.comm_set_current_brake", 7)
         self.declare_parameter("packet.comm_set_erpm", 8)
         self.declare_parameter("packet.comm_set_servo_pos", 12)
         self.declare_parameter("packet.duty_scale", 100000)
+        self.declare_parameter("packet.brake_current_scale", 1000)
         self.declare_parameter("packet.servo_scale", 1000)
 
         duty_topic = str(self.get_parameter("duty_topic").value)
+        brake_current_topic = str(
+            self.get_parameter("brake_current_topic").value
+        )
         erpm_topic = str(self.get_parameter("erpm_topic").value)
         measured_erpm_topic = str(
             self.get_parameter("measured_erpm_topic").value
@@ -67,6 +75,14 @@ class VescBridgeNode(Node):
 
         self.min_duty = float(self.get_parameter("min_duty").value)
         self.max_duty = float(self.get_parameter("max_duty").value)
+        self.max_brake_current_amps = float(
+            self.get_parameter("max_brake_current_amps").value
+        )
+        if (
+            not math.isfinite(self.max_brake_current_amps) or
+            self.max_brake_current_amps <= 0.0
+        ):
+            raise ValueError("max_brake_current_amps must be positive")
         self.min_erpm = int(self.get_parameter("min_erpm").value)
         self.max_erpm = int(self.get_parameter("max_erpm").value)
         self.servo_min = float(self.get_parameter("servo_min").value)
@@ -87,6 +103,8 @@ class VescBridgeNode(Node):
 
         self._last_duty_time: Time | None = None
         self._last_duty_command = 0.0
+        self._last_brake_time: Time | None = None
+        self._last_brake_current = 0.0
         self._last_erpm_time: Time | None = None
         self._last_erpm_command = 0
         self._last_command_mode: str | None = None
@@ -126,6 +144,11 @@ class VescBridgeNode(Node):
                     self.get_parameter("packet.comm_get_values_selective").value
                 ),
                 set_duty=int(self.get_parameter("packet.comm_set_duty").value),
+                set_current_brake=int(
+                    self.get_parameter(
+                        "packet.comm_set_current_brake"
+                    ).value
+                ),
                 set_erpm=int(self.get_parameter("packet.comm_set_erpm").value),
                 set_servo_pos=int(
                     self.get_parameter("packet.comm_set_servo_pos").value
@@ -133,6 +156,9 @@ class VescBridgeNode(Node):
             ),
             scales=VescScales(
                 duty=int(self.get_parameter("packet.duty_scale").value),
+                brake_current=int(
+                    self.get_parameter("packet.brake_current_scale").value
+                ),
                 servo=int(self.get_parameter("packet.servo_scale").value),
             ),
         )
@@ -143,9 +169,9 @@ class VescBridgeNode(Node):
         self.io_worker = VescIoWorker(self.driver, self.telemetry_rate_hz)
         self.io_worker.start()
 
-        # Duty/ERPM/servo commands are desired current states. If serial I/O
-        # pauses the executor, discard superseded commands instead of replaying
-        # them after the operator has released or changed an input.
+        # Duty/brake/ERPM/servo commands are desired current states. If serial
+        # I/O pauses the executor, discard superseded commands instead of
+        # replaying them after the operator has released or changed an input.
         latest_command_qos = QoSProfile(depth=1)
         latest_command_qos.reliability = ReliabilityPolicy.BEST_EFFORT
         latest_command_qos.durability = DurabilityPolicy.VOLATILE
@@ -153,6 +179,12 @@ class VescBridgeNode(Node):
             Float32,
             duty_topic,
             self._on_duty,
+            latest_command_qos,
+        )
+        self.brake_current_sub = self.create_subscription(
+            Float32,
+            brake_current_topic,
+            self._on_brake_current,
             latest_command_qos,
         )
         self.erpm_sub = self.create_subscription(
@@ -182,6 +214,8 @@ class VescBridgeNode(Node):
 
         self.get_logger().info(
             f"VESC bridge ready. duty_topic={duty_topic}, "
+            f"brake_current_topic={brake_current_topic} "
+            f"(max={self.max_brake_current_amps:.1f}A), "
             f"erpm_topic={erpm_topic}, "
             f"measured_erpm_topic={measured_erpm_topic}, "
             f"servo_position_topic={servo_topic}, "
@@ -230,6 +264,17 @@ class VescBridgeNode(Node):
         self._last_duty_command = target_duty
         self._last_command_mode = "duty"
         self.io_worker.submit_duty(target_duty)
+
+    def _on_brake_current(self, msg: Float32) -> None:
+        target_brake_current = self._clamp_float(
+            float(msg.data),
+            0.0,
+            self.max_brake_current_amps,
+        )
+        self._last_brake_time = self.get_clock().now()
+        self._last_brake_current = target_brake_current
+        self._last_command_mode = "brake"
+        self.io_worker.submit_brake_current(target_brake_current)
 
     def _on_erpm(self, msg: Int32) -> None:
         target_erpm = self._clamp_int(
@@ -310,6 +355,8 @@ class VescBridgeNode(Node):
         )
         if self._last_command_mode == "erpm":
             target_text = f"target_erpm={self._last_erpm_command}"
+        elif self._last_command_mode == "brake":
+            target_text = f"brake_current={self._last_brake_current:.2f}A"
         else:
             target_text = f"target_duty={self._last_duty_command:.5f}"
         self.get_logger().info(
@@ -329,6 +376,9 @@ class VescBridgeNode(Node):
         if self._last_command_mode == "duty":
             last_time = self._last_duty_time
             command_is_zero = self._last_duty_command == 0.0
+        elif self._last_command_mode == "brake":
+            last_time = self._last_brake_time
+            command_is_zero = self._last_brake_current == 0.0
         elif self._last_command_mode == "erpm":
             last_time = self._last_erpm_time
             command_is_zero = self._last_erpm_command == 0
@@ -352,6 +402,15 @@ class VescBridgeNode(Node):
             self._last_duty_time = self.get_clock().now()
             self._last_duty_command = 0.0
             self.io_worker.submit_duty(0.0)
+        elif self._last_command_mode == "brake":
+            self.get_logger().warn(
+                f"Brake-current command timeout ({elapsed_sec:.2f}s). "
+                "Releasing brake current.",
+                throttle_duration_sec=1.0,
+            )
+            self._last_brake_time = self.get_clock().now()
+            self._last_brake_current = 0.0
+            self.io_worker.submit_brake_current(0.0)
         else:
             self.get_logger().warn(
                 f"ERPM command timeout ({elapsed_sec:.2f}s). Sending ERPM 0.",
@@ -389,6 +448,8 @@ class VescBridgeNode(Node):
 
     @staticmethod
     def _clamp_float(value: float, minimum: float, maximum: float) -> float:
+        if not math.isfinite(value):
+            return 0.0
         return max(minimum, min(maximum, value))
 
 

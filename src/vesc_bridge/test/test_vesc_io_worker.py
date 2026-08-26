@@ -16,6 +16,9 @@ class RecordingDriver:
     def set_duty(self, value: float) -> None:
         self.operations.append(("duty", value))
 
+    def set_brake_current(self, value: float) -> None:
+        self.operations.append(("brake", value))
+
     def set_erpm(self, value: int) -> None:
         self.operations.append(("erpm", value))
 
@@ -78,6 +81,21 @@ class VescIoWorkerTest(unittest.TestCase):
         self.assertTrue(worker.stop(send_duty_zero=False))
         self.assertEqual(driver.operations, [("duty", 0.0)])
         self.assertTrue(driver.closed)
+
+    def test_brake_current_replaces_pending_propulsion_command(self) -> None:
+        driver = RecordingDriver()
+        worker = VescIoWorker(driver, telemetry_rate_hz=0.0)
+        worker.submit_duty(0.08)
+        worker.submit_brake_current(4.0)
+        worker.start()
+
+        results = wait_for_results(worker, 1)
+        self.assertEqual(
+            [(item.operation, item.value) for item in results],
+            [("brake", 4.0)],
+        )
+        self.assertTrue(worker.stop(send_duty_zero=False))
+        self.assertEqual(driver.operations, [("brake", 4.0)])
 
     def test_drive_and_steering_commands_precede_due_telemetry(self) -> None:
         driver = RecordingDriver()

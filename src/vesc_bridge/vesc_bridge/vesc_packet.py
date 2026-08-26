@@ -98,17 +98,12 @@ def make_brake_current_packet(
     command_ids: VescCommandIds | None = None,
     scales: VescScales | None = None,
 ) -> bytes:
-    # 현재 brake current 패킷 생성은 비활성화한다.
-    # 정지는 우선 ERPM 0 또는 상위 안전 정책에서 처리한다.
-    # 기존 구현은 나중에 다시 켤 수 있도록 주석으로 남겨둔다.
-    # command_ids = command_ids or VescCommandIds()
-    # scales = scales or VescScales()
-    # value = int(brake_current_amps * scales.brake_current)
-    # payload = bytes([command_ids.set_current_brake]) + struct.pack(">i", value)
-    # return make_packet(payload)
-    raise VescPacketError(
-        "Brake current 패킷 생성은 비활성화되어 있습니다. ERPM 명령을 사용하세요."
-    )
+    command_ids = command_ids or VescCommandIds()
+    scales = scales or VescScales()
+    brake_current_amps = max(0.0, float(brake_current_amps))
+    value = int(brake_current_amps * scales.brake_current)
+    payload = bytes([command_ids.set_current_brake]) + struct.pack(">i", value)
+    return make_packet(payload)
 
 
 def make_erpm_packet(
