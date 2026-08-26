@@ -443,7 +443,8 @@ public:
         "BEV lane centerline: %s reference geometry, width=%.2f+/-%.2fm, "
         "points=%d/%d, smooth(measured/midpoint/temporal)=%.2f/%.2f/%.2f, "
         "transition<=%.2fm decay=%.2f, tangent=%.2fm, "
-        "curvature<=%.2f/m, heading_step<=%.1fdeg, gap<=%.2fm",
+        "curvature<=%.2f/m, heading_step<=%.1fdeg, gap<=%.2fm, "
+        "corner_long=%s enter/exit=%.1f/%.1fdeg",
         lane_seed_config_.centerline_enabled ? "on" : "off",
         lane_seed_config_.centerline_expected_lane_width_m,
         lane_seed_config_.centerline_lane_width_tolerance_m,
@@ -457,7 +458,11 @@ public:
         lane_seed_config_.centerline_tangent_window_m,
         lane_seed_config_.centerline_maximum_curvature_per_m,
         lane_seed_config_.centerline_maximum_heading_step_deg,
-        lane_seed_config_.centerline_maximum_gap_fill_m);
+        lane_seed_config_.centerline_maximum_gap_fill_m,
+        lane_seed_config_.centerline_corner_longer_boundary_enabled ?
+          "on" : "off",
+        lane_seed_config_.centerline_corner_enter_heading_change_deg,
+        lane_seed_config_.centerline_corner_exit_heading_change_deg);
     }
     RCLCPP_INFO(
       get_logger(),
@@ -695,6 +700,12 @@ private:
     declare_parameter<double>(
       "lane_centerline_maximum_heading_step_deg", 8.0);
     declare_parameter<double>("lane_centerline_maximum_gap_fill_m", 0.30);
+    declare_parameter<bool>(
+      "lane_centerline_corner_longer_boundary_enabled", true);
+    declare_parameter<double>(
+      "lane_centerline_corner_enter_heading_change_deg", 50.0);
+    declare_parameter<double>(
+      "lane_centerline_corner_exit_heading_change_deg", 30.0);
     declare_parameter<bool>("lane_seed_column_tracking_enabled", true);
     declare_parameter<bool>("lane_seed_cross_direction_merge_enabled", true);
     declare_parameter<double>(
@@ -1050,6 +1061,12 @@ private:
       "lane_centerline_maximum_heading_step_deg").as_double();
     lane_seed_config_.centerline_maximum_gap_fill_m = get_parameter(
       "lane_centerline_maximum_gap_fill_m").as_double();
+    lane_seed_config_.centerline_corner_longer_boundary_enabled = get_parameter(
+      "lane_centerline_corner_longer_boundary_enabled").as_bool();
+    lane_seed_config_.centerline_corner_enter_heading_change_deg = get_parameter(
+      "lane_centerline_corner_enter_heading_change_deg").as_double();
+    lane_seed_config_.centerline_corner_exit_heading_change_deg = get_parameter(
+      "lane_centerline_corner_exit_heading_change_deg").as_double();
     lane_seed_config_.column_tracking_enabled = get_parameter(
       "lane_seed_column_tracking_enabled").as_bool();
     lane_seed_config_.cross_direction_merge_enabled = get_parameter(

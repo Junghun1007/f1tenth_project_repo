@@ -196,7 +196,16 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
     config.centerline_maximum_heading_step_deg <= 0.0 ||
     config.centerline_maximum_heading_step_deg > 180.0 ||
     !std::isfinite(config.centerline_maximum_gap_fill_m) ||
-    config.centerline_maximum_gap_fill_m <= 0.0)
+    config.centerline_maximum_gap_fill_m <= 0.0 ||
+    !std::isfinite(
+      config.centerline_corner_enter_heading_change_deg) ||
+    config.centerline_corner_enter_heading_change_deg <= 0.0 ||
+    config.centerline_corner_enter_heading_change_deg > 180.0 ||
+    !std::isfinite(
+      config.centerline_corner_exit_heading_change_deg) ||
+    config.centerline_corner_exit_heading_change_deg < 0.0 ||
+    config.centerline_corner_exit_heading_change_deg >=
+    config.centerline_corner_enter_heading_change_deg)
   {
     throw std::invalid_argument("lane centerline settings are invalid");
   }
@@ -988,6 +997,43 @@ double polylineArcLength(const std::vector<cv::Point2d> & points)
     length_px += cv::norm(points[index] - points[index - 1U]);
   }
   return length_px;
+}
+
+double polylineHeadingRangeDegrees(
+  const std::vector<cv::Point2d> & points)
+{
+  if (points.size() < 3U) {
+    return 0.0;
+  }
+  bool initialized = false;
+  double previous_heading = 0.0;
+  double unwrapped_heading = 0.0;
+  double minimum_heading = 0.0;
+  double maximum_heading = 0.0;
+  for (std::size_t index = 1U; index < points.size(); ++index) {
+    const cv::Point2d segment = points[index] - points[index - 1U];
+    if (cv::norm(segment) < 1.0) {
+      continue;
+    }
+    const double heading = std::atan2(segment.y, segment.x);
+    if (!initialized) {
+      previous_heading = heading;
+      initialized = true;
+      continue;
+    }
+    double change = heading - previous_heading;
+    while (change > CV_PI) {
+      change -= 2.0 * CV_PI;
+    }
+    while (change < -CV_PI) {
+      change += 2.0 * CV_PI;
+    }
+    unwrapped_heading += change;
+    minimum_heading = std::min(minimum_heading, unwrapped_heading);
+    maximum_heading = std::max(maximum_heading, unwrapped_heading);
+    previous_heading = heading;
+  }
+  return (maximum_heading - minimum_heading) * 180.0 / CV_PI;
 }
 
 std::vector<cv::Point2d> smoothMeasuredPoints(
@@ -2380,6 +2426,33 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       smoothMeasuredPoints(
       right_curve, config_.centerline_measured_point_smoothing_weight) :
       std::vector<cv::Point2d>();
+    const double left_heading_change_deg = left_valid ?
+      polylineHeadingRangeDegrees(left) : 0.0;
+    const double right_heading_change_deg = right_valid ?
+      polylineHeadingRangeDegrees(right) : 0.0;
+    result.centerline_heading_change_deg = std::max(
+      left_heading_change_deg, right_heading_change_deg);
+    if (!config_.centerline_corner_longer_boundary_enabled) {
+      corner_mode_active_ = false;
+      corner_reference_side_ = 0;
+    } else if (corner_mode_active_) {
+      if (
+        result.centerline_heading_change_deg <=
+        config_.centerline_corner_exit_heading_change_deg ||
+        (!left_valid && !right_valid))
+      {
+        corner_mode_active_ = false;
+        corner_reference_side_ = 0;
+      }
+    } else if (
+      left_valid && right_valid &&
+      result.centerline_heading_change_deg >=
+      config_.centerline_corner_enter_heading_change_deg)
+    {
+      corner_mode_active_ = true;
+      corner_reference_side_ =
+        polylineArcLength(left) >= polylineArcLength(right) ? -1 : 1;
+    }
     const int minimum_center_points = left_valid && right_valid ?
       config_.centerline_minimum_counterpart_points :
       config_.centerline_minimum_points;
@@ -2397,21 +2470,39 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
 
     bool centerline_from_pair = false;
     if (left_valid && right_valid) {
-      PairCenterlineResult paired = centerlineFromMeasuredPair(
-        left, right, center_from_left, center_from_right, config_);
-      result.centerline_points = std::move(paired.points);
-      result.centerline_direct_midpoint_count = paired.direct_midpoint_count;
-      result.centerline_normal_offset_truncated =
-        paired.normal_offset_truncated;
-      centerline_from_pair = !result.centerline_points.empty();
-      if (centerline_from_pair) {
-        result.centerline_source = BevLaneCenterlineSource::PAIR;
-        if (previous_centerline_from_pair_) {
-          result.centerline_points = smoothCenterlineAgainstPrevious(
-            result.centerline_points, previous_centerline_,
-            config_.centerline_temporal_current_weight);
+      if (corner_mode_active_ && corner_reference_side_ != 0) {
+        const OffsetLaneResult * corner_center =
+          corner_reference_side_ < 0 ?
+          &center_from_left : &center_from_right;
+        if (corner_center->points.empty()) {
+          const OffsetLaneResult * alternate_center =
+            corner_reference_side_ < 0 ?
+            &center_from_right : &center_from_left;
+          if (!alternate_center->points.empty()) {
+            corner_reference_side_ = -corner_reference_side_;
+            corner_center = alternate_center;
+          }
         }
-      } else {
+        if (!corner_center->points.empty()) {
+          result.centerline_points = corner_center->points;
+          result.centerline_source = BevLaneCenterlineSource::PAIR;
+          result.centerline_normal_offset_truncated =
+            corner_center->normal_offset_truncated;
+          result.centerline_corner_mode_used = true;
+          result.centerline_corner_reference_side = corner_reference_side_;
+          centerline_from_pair = true;
+        }
+      }
+      if (!centerline_from_pair) {
+        PairCenterlineResult paired = centerlineFromMeasuredPair(
+          left, right, center_from_left, center_from_right, config_);
+        result.centerline_points = std::move(paired.points);
+        result.centerline_direct_midpoint_count = paired.direct_midpoint_count;
+        result.centerline_normal_offset_truncated =
+          paired.normal_offset_truncated;
+        centerline_from_pair = !result.centerline_points.empty();
+      }
+      if (!centerline_from_pair) {
         const bool use_left =
           polylineArcLength(center_from_left.points) >=
           polylineArcLength(center_from_right.points);
@@ -2433,6 +2524,47 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       result.centerline_source = BevLaneCenterlineSource::RIGHT;
       result.centerline_normal_offset_truncated =
         center_from_right.normal_offset_truncated;
+    }
+
+    if (centerline_from_pair) {
+      result.centerline_source = BevLaneCenterlineSource::PAIR;
+      const bool same_pair_mode = previous_centerline_from_pair_ &&
+        previous_centerline_corner_mode_ ==
+        result.centerline_corner_mode_used;
+      // Row-to-column correspondence is ambiguous on a nearly horizontal
+      // sharp corner, so use it only while both frames are normal pair mode.
+      if (same_pair_mode && !result.centerline_corner_mode_used) {
+        result.centerline_points = smoothCenterlineAgainstPrevious(
+          result.centerline_points, previous_centerline_,
+          config_.centerline_temporal_current_weight);
+      }
+      if (previous_centerline_from_pair_) {
+        if (
+          previous_centerline_corner_mode_ !=
+          result.centerline_corner_mode_used)
+        {
+          const double maximum_correction_px =
+            config_.centerline_transition_maximum_correction_m /
+            config_.centerline_meter_per_pixel;
+          corner_transition_correction_px_ = std::clamp(
+            centerlineLateralCorrection(
+              previous_centerline_, result.centerline_points),
+            -maximum_correction_px, maximum_correction_px);
+        } else {
+          corner_transition_correction_px_ *=
+            config_.centerline_transition_correction_decay;
+        }
+      } else {
+        corner_transition_correction_px_ = 0.0;
+      }
+      if (std::abs(corner_transition_correction_px_) > 1.0e-9) {
+        result.centerline_transition_used = true;
+        for (auto & point : result.centerline_points) {
+          point.x += corner_transition_correction_px_;
+        }
+      }
+    } else {
+      corner_transition_correction_px_ = 0.0;
     }
 
     const bool single_centerline =
@@ -2464,14 +2596,20 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       result.centerline_points.clear();
       result.centerline_source = BevLaneCenterlineSource::NONE;
       result.centerline_transition_used = false;
+      result.centerline_corner_mode_used = false;
+      result.centerline_corner_reference_side = 0;
     }
     if (!result.centerline_points.empty()) {
       previous_centerline_ = result.centerline_points;
       previous_centerline_from_pair_ = centerline_from_pair;
+      previous_centerline_corner_mode_ =
+        centerline_from_pair && result.centerline_corner_mode_used;
     } else {
       previous_centerline_.clear();
       previous_centerline_from_pair_ = false;
+      previous_centerline_corner_mode_ = false;
       single_boundary_transition_correction_px_ = 0.0;
+      corner_transition_correction_px_ = 0.0;
     }
   }
 
@@ -2608,8 +2746,11 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
         cv::FONT_HERSHEY_SIMPLEX, 0.30, cv::Scalar(255, 255, 255),
         1, cv::LINE_AA);
     }
+    const std::string corner_text = result.centerline_corner_mode_used ?
+      (result.centerline_corner_reference_side < 0 ? ":C-L" : ":C-R") : "";
     const std::string centerline_text = std::string("CENTER:") +
       centerlineSourceName(result.centerline_source) +
+      corner_text +
       (result.centerline_transition_used ? ":T" : "") +
       (result.centerline_normal_offset_truncated ? ":TRIM" : "");
     cv::putText(

@@ -135,8 +135,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
     전체 BEV 차선을 다시 추적한다.
 11. 중심선 재구성에는 원시 ROI 시드 곡선을 넣지 않고, 승인된 각
     윈도우에서 Top-hat 밝기로 계산한 무게중심 한 점만 사용한다.
-12. 양쪽 차선은 반대 경계 선분에 수직 투영한 실측 중점을 사용하고,
-    대응점이 없는 구간은 더 긴 차선을 기준으로 법선 오프셋해 보충한다.
+12. 양쪽 차선은 반대 경계 선분에 수직 투영한 실측 중점을 사용한다.
+    설정각 이상의 급코너에 진입하면 호 길이가 더 긴 차선을 한 번 선택하고,
+    코너가 끝날 때까지 같은 차선의 법선 오프셋만 중심선으로 사용한다.
 13. 한쪽만 보이면 설정된 도로 폭의 절반만큼 국소 법선 방향으로 이동하고,
     양쪽에서 한쪽으로 전환될 때 이전 중심선과의 가로 오차를 점진적으로 감쇠한다.
 14. 검출점·중점·이전 프레임 평활화를 적용하고, 법선 오프셋이 뒤집히거나
@@ -166,7 +167,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 - 상태 문자 끝의 `:RC`: 행·열 통합 추적 사용
 - 흰색 원: 행·열 트랙이 실제로 병합된 연결 위치
 - `CENTER:PAIR/LEFT/RIGHT/NONE`: 중심선 생성에 사용한 차선 상태,
-  끝의 `:T`는 양쪽에서 한쪽으로 전환 보정 중이라는 뜻
+  `:C-L/:C-R`은 급코너에서 왼쪽/오른쪽 긴 차선을 고정 기준으로
+  사용 중이라는 뜻. 끝의 `:T`는 중심선 모드 전환 보정, `:TRIM`은
+  안전하지 않은 법선 오프셋 구간을 제거했다는 뜻
 
 `lane_preview_enabled:=false`이면 원본 컬러 BEV만 프리뷰한다.
 프리뷰 창에 포커스를 둔 채 Space를 누르면 `preview_stop_topic`
@@ -214,7 +217,10 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_centerline_temporal_current_weight:=0.60 \
   lane_centerline_transition_maximum_correction_m:=0.15 \
   lane_centerline_tangent_window_m:=0.20 \
-  lane_centerline_maximum_heading_step_deg:=8.0
+  lane_centerline_maximum_heading_step_deg:=8.0 \
+  lane_centerline_corner_longer_boundary_enabled:=true \
+  lane_centerline_corner_enter_heading_change_deg:=50.0 \
+  lane_centerline_corner_exit_heading_change_deg:=30.0
 ```
 
 주요 파라미터 그룹:
@@ -284,6 +290,12 @@ ros2 launch bev_processor bev_processor.launch.py \
   방향 변화 한계. 되돌아가거나 자기 교차할 수 있는 법선 이동 구간은 잘라낸다.
 - `lane_centerline_maximum_gap_fill_m`:
   중심선 마스크와 프리뷰에서 두 점 사이를 선으로 이을 최대 거리
+- `lane_centerline_corner_longer_boundary_enabled`,
+  `lane_centerline_corner_enter_heading_change_deg`,
+  `lane_centerline_corner_exit_heading_change_deg`:
+  급코너에서 호 길이가 긴 차선을 고정 기준으로 사용할지 여부와 코너
+  모드 진입·이탈 방향 변화각. 진입각보다 이탈각을 작게 설정해
+  프레임별 기준 차선 전환 진동을 방지한다.
 - `lane_seed_column_tracking_enabled`:
   행 후보와 함께 동일 기준의 열 방향 후보를 매 프레임 통합할지 여부
 - `lane_seed_cross_direction_merge_enabled`:

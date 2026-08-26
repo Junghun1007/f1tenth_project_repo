@@ -76,6 +76,11 @@ struct BevLaneSeedDetectorConfig
   double centerline_maximum_curvature_per_m{1.25};
   double centerline_maximum_heading_step_deg{8.0};
   double centerline_maximum_gap_fill_m{0.30};
+  // Sharp pair corners use one locked boundary for the whole corner instead
+  // of switching between ambiguous perpendicular correspondences.
+  bool centerline_corner_longer_boundary_enabled{true};
+  double centerline_corner_enter_heading_change_deg{50.0};
+  double centerline_corner_exit_heading_change_deg{30.0};
 
   // Run the same detector in row and column directions every frame, then
   // select seeds from the combined orientation-independent candidate set.
@@ -128,6 +133,10 @@ struct BevLaneSeedDetection
   bool centerline_transition_used{false};
   bool centerline_normal_offset_truncated{false};
   int centerline_direct_midpoint_count{0};
+  bool centerline_corner_mode_used{false};
+  // -1=left boundary, +1=right boundary, 0=not in pair-corner mode.
+  int centerline_corner_reference_side{0};
+  double centerline_heading_change_deg{0.0};
   int roi_top_row{0};
   int roi_bottom_row{0};
   int accepted_track_count{0};
@@ -170,7 +179,12 @@ private:
   BevLaneSeed remembered_right_;
   std::vector<cv::Point2d> previous_centerline_;
   bool previous_centerline_from_pair_{false};
+  bool previous_centerline_corner_mode_{false};
   double single_boundary_transition_correction_px_{0.0};
+  double corner_transition_correction_px_{0.0};
+  bool corner_mode_active_{false};
+  // -1=left boundary, +1=right boundary, 0=no locked corner reference.
+  int corner_reference_side_{0};
 };
 
 }  // namespace bev_processor

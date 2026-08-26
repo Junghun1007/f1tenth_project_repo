@@ -294,6 +294,13 @@ bev_processor:
     lane_centerline_maximum_heading_step_deg: 8.0
     lane_centerline_maximum_gap_fill_m: 0.30
 
+    # 양쪽 차선의 방향 변화량이 enter 이상인 급코너에서는 호 길이가
+    # 더 긴 차선을 고정 기준으로 선택해 법선 오프셋만 사용한다. 방향
+    # 변화량이 exit 이하가 될 때까지 같은 차선을 유지해 전환 진동을 막는다.
+    lane_centerline_corner_longer_boundary_enabled: true
+    lane_centerline_corner_enter_heading_change_deg: 50.0
+    lane_centerline_corner_exit_heading_change_deg: 30.0
+
     # 매 프레임 행·열 방향을 모두 같은 기준으로 검사하고 통합 후 시드를
     # 선택한다. 수평에 가까운 급커브도 행 검사 실패 여부와 관계없이 후보로 들어온다.
     lane_seed_column_tracking_enabled: true

@@ -217,6 +217,21 @@ def generate_launch_description():
         ("lane_centerline_maximum_curvature_per_m", "1.25", float),
         ("lane_centerline_maximum_heading_step_deg", "8.0", float),
         ("lane_centerline_maximum_gap_fill_m", "0.30", float),
+        (
+            "lane_centerline_corner_longer_boundary_enabled",
+            "true",
+            bool,
+        ),
+        (
+            "lane_centerline_corner_enter_heading_change_deg",
+            "50.0",
+            float,
+        ),
+        (
+            "lane_centerline_corner_exit_heading_change_deg",
+            "30.0",
+            float,
+        ),
         ("lane_seed_column_tracking_enabled", "true", bool),
         ("lane_seed_cross_direction_merge_enabled", "true", bool),
         (
