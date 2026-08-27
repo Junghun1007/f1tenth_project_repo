@@ -228,6 +228,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_centerline_maximum_curvature_per_m:=1.8 \
   lane_centerline_maximum_heading_step_deg:=14.0 \
   lane_centerline_corner_longer_boundary_enabled:=true \
+  lane_centerline_corner_outward_bias_m:=0.05 \
   lane_centerline_corner_enter_heading_change_deg:=40.0 \
   lane_centerline_corner_exit_heading_change_deg:=20.0
 ```
@@ -302,11 +303,14 @@ ros2 launch bev_processor bev_processor.launch.py \
 - `lane_centerline_maximum_gap_fill_m`:
   중심선 마스크와 프리뷰에서 두 점 사이를 선으로 이을 최대 거리
 - `lane_centerline_corner_longer_boundary_enabled`,
+  `lane_centerline_corner_outward_bias_m`,
   `lane_centerline_corner_enter_heading_change_deg`,
   `lane_centerline_corner_exit_heading_change_deg`:
   급코너에서 회전 방향의 바깥 차선을 기준으로 사용할지 여부와 코너
-  모드 진입·이탈 방향 변화각. 기존 parameter 이름은 launch 호환을 위해
-  유지한다. 좌회전은 오른쪽, 우회전은 왼쪽 경계가 바깥 차선이다.
+  중심선을 바깥쪽으로 이동할 거리, 코너 모드 진입·이탈 방향 변화각.
+  편향값은 차선 쌍의 도로 폭 검증에는 영향을 주지 않는다. 기존
+  parameter 이름은 launch 호환을 위해 유지한다. 좌회전은 오른쪽,
+  우회전은 왼쪽 경계가 바깥 차선이다.
 - `lane_seed_column_tracking_enabled`:
   행 후보와 함께 동일 기준의 열 방향 후보를 매 프레임 통합할지 여부
 - `lane_seed_cross_direction_merge_enabled`:

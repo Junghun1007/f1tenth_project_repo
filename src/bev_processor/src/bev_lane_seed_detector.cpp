@@ -197,6 +197,9 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
     config.centerline_maximum_heading_step_deg > 180.0 ||
     !std::isfinite(config.centerline_maximum_gap_fill_m) ||
     config.centerline_maximum_gap_fill_m <= 0.0 ||
+    !finiteNonNegative(config.centerline_corner_outward_bias_m) ||
+    config.centerline_corner_outward_bias_m >=
+    0.5 * config.centerline_expected_lane_width_m ||
     !std::isfinite(
       config.centerline_corner_enter_heading_change_deg) ||
     config.centerline_corner_enter_heading_change_deg <= 0.0 ||
@@ -2642,16 +2645,30 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
     const int minimum_center_points = left_valid && right_valid ?
       config_.centerline_minimum_counterpart_points :
       config_.centerline_minimum_points;
-    const double center_offset_px =
+    const double half_width_px =
       0.5 * config_.centerline_expected_lane_width_m /
       config_.centerline_meter_per_pixel;
+    const bool apply_corner_outward_bias =
+      corner_mode_active_ && corner_turn_direction_ != 0;
+    const int outer_boundary_side = -corner_turn_direction_;
+    const double outward_bias_px = apply_corner_outward_bias ?
+      config_.centerline_corner_outward_bias_m /
+      config_.centerline_meter_per_pixel : 0.0;
+    // Left boundary offsets are positive and right boundary offsets are
+    // negative. Moving the target toward the corner's outer boundary means a
+    // smaller offset from that boundary, or a larger offset if the inner
+    // boundary is temporarily the only usable reference.
+    const double left_offset_px = half_width_px +
+      (outer_boundary_side == -1 ? -outward_bias_px : outward_bias_px);
+    const double right_offset_px = half_width_px +
+      (outer_boundary_side == 1 ? -outward_bias_px : outward_bias_px);
     const OffsetLaneResult center_from_left = left_valid ?
       offsetFromReference(
-      left, center_offset_px, config_, minimum_center_points) :
+      left, left_offset_px, config_, minimum_center_points) :
       OffsetLaneResult();
     const OffsetLaneResult center_from_right = right_valid ?
       offsetFromReference(
-      right, -center_offset_px, config_, minimum_center_points) :
+      right, -right_offset_px, config_, minimum_center_points) :
       OffsetLaneResult();
 
     bool centerline_from_pair = false;

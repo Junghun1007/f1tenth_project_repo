@@ -77,8 +77,11 @@ struct BevLaneSeedDetectorConfig
   double centerline_maximum_heading_step_deg{14.0};
   double centerline_maximum_gap_fill_m{0.30};
   // Sharp pair corners use one locked boundary for the whole corner instead
-  // of switching between ambiguous perpendicular correspondences.
+  // of switching between ambiguous perpendicular correspondences. The
+  // centerline can be biased toward that outer boundary without changing the
+  // expected road width used to validate lane pairs.
   bool centerline_corner_longer_boundary_enabled{true};
+  double centerline_corner_outward_bias_m{0.05};
   double centerline_corner_enter_heading_change_deg{40.0};
   double centerline_corner_exit_heading_change_deg{20.0};
 

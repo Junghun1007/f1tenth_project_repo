@@ -10,6 +10,9 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
     preview_enabled = LaunchConfiguration("preview_enabled")
+    centerline_corner_outward_bias_m = LaunchConfiguration(
+        "lane_centerline_corner_outward_bias_m"
+    )
     controller_arguments = [
         ("auto_enabled", "true", "enabled", bool),
         ("minimum_duty", "0.055", "minimum_duty", float),
@@ -180,6 +183,9 @@ def generate_launch_description():
             "lane_preview_enabled": "true",
             "lane_preview_result_only_enabled": "true",
             "lane_preview_sliding_windows_enabled": "false",
+            "lane_centerline_corner_outward_bias_m": (
+                centerline_corner_outward_bias_m
+            ),
         }.items(),
     )
 
@@ -210,6 +216,14 @@ def generate_launch_description():
                 default_value="true",
                 description=(
                     "Show result-only BEV lane preview. Set false for no GUI."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "lane_centerline_corner_outward_bias_m",
+                default_value="0.05",
+                description=(
+                    "Shift corner centerlines toward the outer boundary in "
+                    "meters without changing lane-width validation."
                 ),
             ),
             *[

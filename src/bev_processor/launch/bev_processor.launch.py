@@ -223,6 +223,11 @@ def generate_launch_description():
             bool,
         ),
         (
+            "lane_centerline_corner_outward_bias_m",
+            "0.05",
+            float,
+        ),
+        (
             "lane_centerline_corner_enter_heading_change_deg",
             "40.0",
             float,

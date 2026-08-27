@@ -448,6 +448,40 @@ void testCornerUsesCurrentTurnOuterBoundaryAfterStraight()
     "right turn retained the old right reference instead of the left outer boundary");
 }
 
+void testCornerOutwardBiasShiftsCenterlineTowardOuterBoundary()
+{
+  BevLaneSeedDetectorConfig unbiased_config;
+  unbiased_config.image_width = 200;
+  unbiased_config.image_height = 300;
+  unbiased_config.roi_bottom_exclusion_ratio = 0.0;
+  unbiased_config.roi_height_ratio = 1.0;
+  unbiased_config.column_tracking_enabled = false;
+  unbiased_config.cross_direction_merge_enabled = false;
+  unbiased_config.centerline_corner_enter_heading_change_deg = 30.0;
+  unbiased_config.centerline_corner_exit_heading_change_deg = 10.0;
+  unbiased_config.centerline_corner_outward_bias_m = 0.0;
+  BevLaneSeedDetector unbiased_detector(unbiased_config);
+
+  BevLaneSeedDetectorConfig biased_config = unbiased_config;
+  biased_config.centerline_corner_outward_bias_m = 0.05;
+  BevLaneSeedDetector biased_detector(biased_config);
+
+  const LaneImages right_turn = makeTurningParallelLanes(
+    unbiased_config.image_width, unbiased_config.image_height, 100, 50);
+  const BevLaneSeedDetection unbiased = unbiased_detector.detect(
+    right_turn.gray, right_turn.response, false);
+  const BevLaneSeedDetection biased = biased_detector.detect(
+    right_turn.gray, right_turn.response, false);
+  require(
+    unbiased.centerline_corner_reference_side == -1 &&
+    biased.centerline_corner_reference_side == -1,
+    "right corner did not use the left outer boundary");
+  require(
+    centerColumnNearRow(biased, 250.0) <=
+    centerColumnNearRow(unbiased, 250.0) - 4.0,
+    "corner outward bias did not move the centerline toward the outer lane");
+}
+
 void testRawSeedEvidenceIsNotUsedAsCenterline()
 {
   BevLaneSeedDetectorConfig config;
@@ -483,6 +517,7 @@ int main()
   testCenterlineUsesSlidingWindowTracking();
   testCenterlineSuppressesIsolatedBump();
   testCornerUsesCurrentTurnOuterBoundaryAfterStraight();
+  testCornerOutwardBiasShiftsCenterlineTowardOuterBoundary();
   testRawSeedEvidenceIsNotUsedAsCenterline();
   std::cout << "bev_lane_seed_detector_test passed\n";
   return 0;
