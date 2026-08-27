@@ -22,7 +22,7 @@ bev_processor:
     # publish_max_fps가 0이면 처리된 프레임을 별도 속도 제한 없이 발행한다.
     publish_enabled: true
     publish_max_fps: 0.0
-    preview_enabled: true
+    preview_enabled: false
     preview_max_fps: 60.0
     preview_window_name: "BEV image"
     # 프리뷰 창에 포커스를 둔 채 Space를 누르면 false를 발행해 자동주행을 정지한다.
