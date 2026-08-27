@@ -301,7 +301,7 @@ bev_processor:
     # 않으며, 양쪽 재검출또는 회전 방향 반전 시 현재 방향으로 재판정한다.
     # outward_bias는 폭 검증값은 바꾸지 않고 코너 중심선만 바깥쪽으로 옮긴다.
     lane_centerline_corner_longer_boundary_enabled: true
-    lane_centerline_corner_outward_bias_m: 0.05
+    lane_centerline_corner_outward_bias_m: 0.01
     lane_centerline_corner_enter_heading_change_deg: 40.0
     lane_centerline_corner_exit_heading_change_deg: 20.0
 
@@ -320,12 +320,12 @@ bev_processor:
     # 역할을 유지한다. 단, 양쪽과 단일 차선 모두 마지막 유효 곡선에서
     # base + 누락 프레임 수 * per_missing_frame 거리 안에 있을 때만 재연결한다.
     # 양쪽이 reset_frames 동안 사라지면 잠금을 풀고 다시 좌우 쌍을 기다린다.
-    # 80FPS에서 100프레임은 약 1.25초로, 코너의 일시적 양쪽 유실에도 역할을 유지한다.
+    # 80FPS에서 90프레임은 약 1.13초로, 코너의 일시적 양쪽 유실에도 역할을 유지한다.
     lane_seed_temporal_side_lock_enabled: true
-    lane_seed_temporal_side_lock_reset_frames: 100
-    lane_seed_temporal_side_reacquire_base_distance_px: 45.0
-    lane_seed_temporal_side_reacquire_distance_per_missing_frame_px: 3.0
-    lane_seed_temporal_side_reacquire_maximum_distance_px: 63.0
+    lane_seed_temporal_side_lock_reset_frames: 90
+    lane_seed_temporal_side_reacquire_base_distance_px: 38.0
+    lane_seed_temporal_side_reacquire_distance_per_missing_frame_px: 2.0
+    lane_seed_temporal_side_reacquire_maximum_distance_px: 50.0
 
     status_log_interval_sec: 5.0
     startup_timeout_sec: 12.0
