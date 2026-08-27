@@ -13,10 +13,10 @@ by manual driving. Do not run `manual_drive.launch.py` at the same time.
 4. Calculate Stanley cross-track error as the signed normal distance from the
    real front-axle origin and heading from a short local centerline chord.
 5. Calculate representative forward curvature over `X=0.5..1.6m`.
-6. Convert curvature to a `0.6..0.9m/s` target using the configured maximum
+6. Convert curvature to a `0.8..1.8m/s` target using the configured maximum
    lateral acceleration.
 7. Convert VESC measured ERPM to vehicle speed and apply PID plus a linear
-   duty feed-forward, bounded to `0.055..0.065`.
+   duty feed-forward, bounded to `0.070..0.090`.
 8. When measured speed exceeds target by the configured entry threshold,
    replace duty control with ramp-limited `COMM_SET_CURRENT_BRAKE`. Release at
    the lower exit threshold, send brake current zero for one cycle, and only
@@ -25,10 +25,10 @@ by manual driving. Do not run `manual_drive.launch.py` at the same time.
 The drive command becomes exactly zero and steering returns to center when the
 centerline is missing/short/stale, measured ERPM is stale, the VESC reports a
 disconnect, the node is disabled, or the node shuts down. When all inputs are
-valid, the configured `0.055` start duty is applied in the same way as manual
+valid, the configured `0.070` start duty is applied in the same way as manual
 driving and subsequent changes are rate limited.
 
-Automatic electrical braking defaults to a conservative `4A` maximum. It
+Automatic electrical braking defaults to a conservative `2.5A` maximum. It
 enters at `current_speed - target_speed >= 0.10m/s`, remains active down to
 `0.03m/s`, and is disabled below `0.20m/s`. Invalid/stale input safety stops
 release brake current and send duty zero; they do not command an emergency

@@ -10,43 +10,57 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
     preview_enabled = LaunchConfiguration("preview_enabled")
-    centerline_corner_outward_bias_m = LaunchConfiguration(
-        "lane_centerline_corner_outward_bias_m"
-    )
+    bev_arguments = [
+        ("lane_seed_roi_height_ratio", "0.25"),
+        ("lane_seed_temporal_side_lock_reset_frames", "100"),
+        ("lane_seed_temporal_side_reacquire_base_distance_px", "45.0"),
+        (
+            "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px",
+            "3.0",
+        ),
+        ("lane_seed_temporal_side_reacquire_maximum_distance_px", "63.0"),
+        ("lane_seed_pair_minimum_distance_px", "45.0"),
+        ("lane_seed_pair_maximum_distance_px", "100.0"),
+        ("lane_seed_sliding_window_minimum_seed_arc_length_px", "15.0"),
+        ("lane_centerline_corner_outward_bias_m", "0.05"),
+    ]
+    bev_overrides = {
+        name: LaunchConfiguration(name) for name, _ in bev_arguments
+    }
     controller_arguments = [
         ("auto_enabled", "true", "enabled", bool),
-        ("minimum_duty", "0.055", "minimum_duty", float),
-        ("maximum_duty", "0.065", "maximum_duty", float),
-        ("minimum_speed_mps", "0.6", "minimum_speed_mps", float),
-        ("maximum_speed_mps", "0.9", "maximum_speed_mps", float),
-        ("stanley_gain", "1.5", "stanley_gain", float),
+        ("minimum_duty", "0.070", "minimum_duty", float),
+        ("maximum_duty", "0.090", "maximum_duty", float),
+        ("minimum_speed_mps", "0.80", "minimum_speed_mps", float),
+        ("maximum_speed_mps", "1.8", "maximum_speed_mps", float),
+        ("stanley_gain", "1.40", "stanley_gain", float),
         (
             "stanley_softening_speed_mps",
-            "0.35",
+            "0.40",
             "stanley_softening_speed_mps",
             float,
         ),
         (
             "stanley_heading_lookahead_m",
-            "0.22",
+            "0.15",
             "stanley_heading_lookahead_m",
             float,
         ),
         (
             "stanley_corner_heading_threshold_deg",
-            "6.0",
+            "4.0",
             "stanley_corner_heading_threshold_deg",
             float,
         ),
         (
             "stanley_corner_opposing_correction_ratio",
-            "0.80",
+            "0.45",
             "stanley_corner_opposing_correction_ratio",
             float,
         ),
         (
             "steering_current_weight",
-            "0.65",
+            "0.47",
             "steering_current_weight",
             float,
         ),
@@ -92,25 +106,25 @@ def generate_launch_description():
         ),
         (
             "brake_minimum_current_amps",
-            "1.0",
+            "0.5",
             "brake_minimum_current_amps",
             float,
         ),
         (
             "brake_maximum_current_amps",
-            "4.0",
+            "2.5",
             "brake_maximum_current_amps",
             float,
         ),
         (
             "brake_current_gain_amps_per_mps",
-            "8.0",
+            "6.0",
             "brake_current_gain_amps_per_mps",
             float,
         ),
         (
             "brake_current_rise_amps_per_sec",
-            "8.0",
+            "6.0",
             "brake_current_rise_amps_per_sec",
             float,
         ),
@@ -183,9 +197,7 @@ def generate_launch_description():
             "lane_preview_enabled": "true",
             "lane_preview_result_only_enabled": "true",
             "lane_preview_sliding_windows_enabled": "false",
-            "lane_centerline_corner_outward_bias_m": (
-                centerline_corner_outward_bias_m
-            ),
+            **bev_overrides,
         }.items(),
     )
 
@@ -218,14 +230,10 @@ def generate_launch_description():
                     "Show result-only BEV lane preview. Set false for no GUI."
                 ),
             ),
-            DeclareLaunchArgument(
-                "lane_centerline_corner_outward_bias_m",
-                default_value="0.05",
-                description=(
-                    "Shift corner centerlines toward the outer boundary in "
-                    "meters without changing lane-width validation."
-                ),
-            ),
+            *[
+                DeclareLaunchArgument(name, default_value=default)
+                for name, default in bev_arguments
+            ],
             *[
                 DeclareLaunchArgument(argument_name, default_value=default)
                 for argument_name, default, _, _ in controller_arguments

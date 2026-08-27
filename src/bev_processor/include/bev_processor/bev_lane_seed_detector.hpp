@@ -43,7 +43,7 @@ struct BevLaneSeedDetectorConfig
   // window tracker. Each accepted window emits one intensity-weighted point;
   // centerline reconstruction consumes these points instead of raw seed runs.
   bool sliding_window_enabled{true};
-  double sliding_window_minimum_seed_arc_length_px{20.0};
+  double sliding_window_minimum_seed_arc_length_px{15.0};
   int sliding_window_initial_width_px{6};
   int sliding_window_initial_height_px{10};
   double sliding_window_growth_ratio{1.04};
@@ -99,10 +99,10 @@ struct BevLaneSeedDetectorConfig
   // Lock left/right roles after the first valid pair. A temporarily missing
   // single lane is then labelled by temporal continuity, not screen center.
   bool temporal_side_lock_enabled{true};
-  int temporal_side_lock_reset_frames{120};
-  double temporal_side_reacquire_base_distance_px{10.0};
-  double temporal_side_reacquire_distance_per_missing_frame_px{2.0};
-  double temporal_side_reacquire_maximum_distance_px{30.0};
+  int temporal_side_lock_reset_frames{100};
+  double temporal_side_reacquire_base_distance_px{45.0};
+  double temporal_side_reacquire_distance_per_missing_frame_px{3.0};
+  double temporal_side_reacquire_maximum_distance_px{63.0};
 };
 
 struct BevLaneSeed

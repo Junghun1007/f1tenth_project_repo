@@ -232,17 +232,17 @@ class AutoControlNode(Node):
         self.declare_parameter("path_outlier_threshold_m", 0.04)
         self.declare_parameter("path_geometry_window_m", 0.14)
 
-        self.declare_parameter("stanley_gain", 1.5)
-        self.declare_parameter("stanley_softening_speed_mps", 0.35)
-        self.declare_parameter("stanley_heading_lookahead_m", 0.22)
+        self.declare_parameter("stanley_gain", 1.40)
+        self.declare_parameter("stanley_softening_speed_mps", 0.40)
+        self.declare_parameter("stanley_heading_lookahead_m", 0.15)
         self.declare_parameter(
-            "stanley_corner_heading_threshold_deg", 6.0
+            "stanley_corner_heading_threshold_deg", 4.0
         )
         self.declare_parameter(
-            "stanley_corner_opposing_correction_ratio", 0.80
+            "stanley_corner_opposing_correction_ratio", 0.45
         )
         self.declare_parameter("maximum_steering_angle_deg", 30.0)
-        self.declare_parameter("steering_current_weight", 0.65)
+        self.declare_parameter("steering_current_weight", 0.47)
         self.declare_parameter("steering_rate_limit_deg_per_sec", 240.0)
         self.declare_parameter("servo_left", 0.98)
         self.declare_parameter("servo_center", 0.46)
@@ -252,14 +252,14 @@ class AutoControlNode(Node):
         # only the final actuator mapping.
         self.declare_parameter("steering_servo_inverted", True)
 
-        self.declare_parameter("minimum_speed_mps", 0.6)
-        self.declare_parameter("maximum_speed_mps", 0.9)
+        self.declare_parameter("minimum_speed_mps", 0.80)
+        self.declare_parameter("maximum_speed_mps", 1.8)
         self.declare_parameter("maximum_lateral_acceleration_mps2", 0.6)
         self.declare_parameter("curvature_lookahead_minimum_x_m", 0.50)
         self.declare_parameter("curvature_lookahead_maximum_x_m", 1.60)
         self.declare_parameter("curvature_percentile", 90.0)
-        self.declare_parameter("minimum_duty", 0.055)
-        self.declare_parameter("maximum_duty", 0.065)
+        self.declare_parameter("minimum_duty", 0.070)
+        self.declare_parameter("maximum_duty", 0.090)
         self.declare_parameter("duty_rise_rate_per_sec", 0.04)
         self.declare_parameter("duty_fall_rate_per_sec", 0.08)
         self.declare_parameter("speed_pid_kp", 0.012)
@@ -271,10 +271,10 @@ class AutoControlNode(Node):
         self.declare_parameter("brake_entry_speed_error_mps", 0.10)
         self.declare_parameter("brake_exit_speed_error_mps", 0.03)
         self.declare_parameter("brake_minimum_vehicle_speed_mps", 0.20)
-        self.declare_parameter("brake_minimum_current_amps", 1.0)
-        self.declare_parameter("brake_maximum_current_amps", 4.0)
-        self.declare_parameter("brake_current_gain_amps_per_mps", 8.0)
-        self.declare_parameter("brake_current_rise_amps_per_sec", 8.0)
+        self.declare_parameter("brake_minimum_current_amps", 0.5)
+        self.declare_parameter("brake_maximum_current_amps", 2.5)
+        self.declare_parameter("brake_current_gain_amps_per_mps", 6.0)
+        self.declare_parameter("brake_current_rise_amps_per_sec", 6.0)
         self.declare_parameter("brake_current_fall_amps_per_sec", 16.0)
 
         self.declare_parameter("wheel_diameter_m", 0.1095)

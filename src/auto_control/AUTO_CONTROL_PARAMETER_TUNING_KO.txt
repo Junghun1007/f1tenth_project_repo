@@ -1,7 +1,7 @@
 AUTO CONTROL 파라미터 조정 가이드
 =================================
 
-현재 기준 설정 (2026-08-26)
+현재 기준 설정 (2026-08-27)
 ----------------------------
 아래 값은 auto_drive.launch.py와 auto_control.yaml의 기본값이므로 평소에는
 추가 인자 없이 다음 명령만 실행하면 된다.
@@ -18,23 +18,25 @@ AUTO CONTROL 파라미터 조정 가이드
     path_local_smoothing_window_m:=0.08 \
     path_outlier_threshold_m:=0.04 \
     path_geometry_window_m:=0.14 \
-    stanley_heading_lookahead_m:=0.22 \
-    stanley_gain:=1.5 \
-    stanley_softening_speed_mps:=0.35 \
-    steering_current_weight:=0.65 \
-    minimum_duty:=0.055 \
-    maximum_duty:=0.065 \
-    minimum_speed_mps:=0.6 \
-    maximum_speed_mps:=0.9 \
+    stanley_heading_lookahead_m:=0.15 \
+    stanley_gain:=1.40 \
+    stanley_softening_speed_mps:=0.40 \
+    stanley_corner_heading_threshold_deg:=4.0 \
+    stanley_corner_opposing_correction_ratio:=0.45 \
+    steering_current_weight:=0.47 \
+    minimum_duty:=0.070 \
+    maximum_duty:=0.090 \
+    minimum_speed_mps:=0.80 \
+    maximum_speed_mps:=1.8 \
     maximum_lateral_acceleration_mps2:=0.6 \
     electrical_brake_enabled:=true \
     brake_entry_speed_error_mps:=0.10 \
     brake_exit_speed_error_mps:=0.03 \
     brake_minimum_vehicle_speed_mps:=0.20 \
-    brake_minimum_current_amps:=1.0 \
-    brake_maximum_current_amps:=4.0 \
-    brake_current_gain_amps_per_mps:=8.0 \
-    brake_current_rise_amps_per_sec:=8.0 \
+    brake_minimum_current_amps:=0.5 \
+    brake_maximum_current_amps:=2.5 \
+    brake_current_gain_amps_per_mps:=6.0 \
+    brake_current_rise_amps_per_sec:=6.0 \
     brake_current_fall_amps_per_sec:=16.0
 
 
@@ -117,56 +119,56 @@ path_geometry_window_m (현재 0.14m)
 
 [Stanley 조향]
 
-stanley_heading_lookahead_m (현재 0.22m)
+stanley_heading_lookahead_m (현재 0.15m)
   역할: 현재 경로의 최근접점보다 얼마 앞의 접선 방향을 선수각 오차로 사용할지 정한다.
   높이기: 코너 조향이 늦고 코너 앞까지 직진하다 멈추거나 바깥으로 밀릴 때.
-          예: 0.22 -> 0.25~0.32.
-  낮추기: 코너가 멀리 있는데 너무 일찍 꺾을 때. 예: 0.22 -> 0.14~0.19.
+          예: 0.15 -> 0.20~0.28.
+  낮추기: 코너가 멀리 있는데 너무 일찍 꺾을 때. 예: 0.15 -> 0.10~0.13.
   부작용: 너무 높으면 먼 경로 오검출에도 미리 반응한다.
 
-stanley_gain (현재 1.5)
+stanley_gain (현재 1.40)
   역할: 차량과 중앙선 사이 횡방향 오차를 되돌리는 힘이다.
   높이기: 직선에서 한쪽으로 치우친 뒤 중앙으로 천천히 돌아올 때.
-          예: 1.5 -> 1.7~2.0.
+          예: 1.40 -> 1.6~1.9.
   낮추기: 중앙선을 중심으로 좌우 왕복하거나 코너에서 횡오차 보정이 너무 강할 때.
-          예: 1.5 -> 1.1~1.3.
+          예: 1.40 -> 1.1~1.25.
   주의: 코너 진행 방향 자체는 heading 항이 담당한다. gain만 크게 하면 코너 안쪽에서
         heading과 횡오차 보정이 서로 싸울 수 있다.
 
-stanley_softening_speed_mps (현재 0.35m/s)
+stanley_softening_speed_mps (현재 0.40m/s)
   역할: 횡오차 보정의 분모에 더해 저속에서 보정이 과도해지는 것을 막는다.
-  낮추기: 저속에서 중앙 복귀가 약할 때. 예: 0.35 -> 0.25~0.30.
-  높이기: 출발 직후 또는 저속 코너에서 조향이 과격할 때. 예: 0.35 -> 0.45~0.60.
+  낮추기: 저속에서 중앙 복귀가 약할 때. 예: 0.40 -> 0.30~0.35.
+  높이기: 출발 직후 또는 저속 코너에서 조향이 과격할 때. 예: 0.40 -> 0.50~0.60.
   관계: 작을수록 Stanley 횡오차 보정이 강해지고, 클수록 약해진다.
 
-steering_current_weight (현재 0.65)
-  역할: 새 조향값 65%와 직전 조향값 35%를 섞는다.
-  높이기: 조향 반응이 늦을 때. 예: 0.65 -> 0.72~0.85.
-  낮추기: 서보가 잘게 떨거나 좌우 조향이 꿈틀거릴 때. 예: 0.65 -> 0.45~0.60.
+steering_current_weight (현재 0.47)
+  역할: 새 조향값 47%와 직전 조향값 53%를 섞는다.
+  높이기: 조향 반응이 늦을 때. 예: 0.47 -> 0.60~0.75.
+  낮추기: 서보가 잘게 떨거나 좌우 조향이 꿈틀거릴 때. 예: 0.47 -> 0.35~0.42.
   부작용: 너무 낮으면 급코너 진입이 늦고, 너무 높으면 인식 노이즈가 바로 전달된다.
 
 
 [속도와 감속]
 
-minimum_duty (현재 0.055)
+minimum_duty (현재 0.070)
   역할: 유효 경로가 있을 때 VESC에 보내는 최소 구동 duty다.
-  높이기: 모터가 소리만 나거나 출발하지 못할 때. 예: 0.055 -> 0.058~0.062.
+  높이기: 모터가 소리만 나거나 출발하지 못할 때. 예: 0.070 -> 0.075~0.080.
   낮추기: 출발이 튀거나 코너 최저 속도가 너무 빠를 때. 단, 정지 마찰보다 낮으면
           차량이 멈춘 뒤 다시 출발하지 못한다.
 
-maximum_duty (현재 0.065)
+maximum_duty (현재 0.090)
   역할: PID를 포함한 최종 duty의 상한이다.
-  높이기: 직선 최고 속도가 부족할 때. 예: 0.065 -> 0.070부터 소폭 조정.
+  높이기: 직선 최고 속도가 부족할 때. 예: 0.090 -> 0.095부터 소폭 조정.
   낮추기: 전체 주행이 빠르거나 제동 여유가 부족할 때.
   주의: minimum_duty 이하로 설정할 수 없다.
 
-minimum_speed_mps (현재 0.6m/s)
+minimum_speed_mps (현재 0.80m/s)
   역할: 곡률 기반 목표 속도의 하한이며 minimum_duty에 대응한다.
   낮추기: 급코너 목표 속도를 더 낮추고 싶을 때.
   높이기: 코너에서 지나치게 느려 모터가 불안정하거나 멈출 때.
   주의: 실제 속도의 직접 하한은 아니다. duty/마찰/ERPM 보정이 맞아야 한다.
 
-maximum_speed_mps (현재 0.9m/s)
+maximum_speed_mps (현재 1.8m/s)
   역할: 직선 목표 속도의 상한이며 maximum_duty에 대응한다.
   낮추기: 직선 주행이 너무 빠를 때. 높이기: 직선에서 더 빠르게 달릴 때.
   주의: maximum_duty가 낮으면 이 값을 높여도 실제 속도가 오르지 않는다.
@@ -193,16 +195,16 @@ brake_exit_speed_error_mps (현재 0.03m/s)
 brake_minimum_vehicle_speed_mps (현재 0.20m/s)
   역할: 저속에서 제동을 해제해 모터 정지 근방의 턱타를 막는다.
 
-brake_minimum_current_amps / brake_maximum_current_amps (현재 1.0A / 4.0A)
+brake_minimum_current_amps / brake_maximum_current_amps (현재 0.5A / 2.5A)
   역할: 자동 제동 중 사용할 최소/최대 전류다.
   제동이 강함: 최대를 0.5~1.0A씩 낮춘다.
   제동이 약함: 바퀴를 띄운 상태에서 확인 후 최대를 소폭 높인다.
   주의: VESC bridge의 max_brake_current_amps(8A)보다 높게 설정해도 8A로 제한된다.
 
-brake_current_gain_amps_per_mps (현재 8.0A/(m/s))
+brake_current_gain_amps_per_mps (현재 6.0A/(m/s))
   역할: 속도 초과량을 제동 전류로 바꾼다. 높을수록 같은 오차에서 더 강하다.
 
-brake_current_rise_amps_per_sec / brake_current_fall_amps_per_sec (현재 8.0 / 16.0)
+brake_current_rise_amps_per_sec / brake_current_fall_amps_per_sec (현재 6.0 / 16.0)
   역할: 제동력이 걸리고 풀리는 변화율을 제한한다.
   제동 진입이 튀면 rise를 낮추고, 제동 후 재가속이 느리면 fall을 높인다.
 

@@ -662,7 +662,7 @@ private:
     declare_parameter<double>("lane_seed_pair_maximum_distance_px", 100.0);
     declare_parameter<bool>("lane_seed_sliding_window_enabled", true);
     declare_parameter<double>(
-      "lane_seed_sliding_window_minimum_seed_arc_length_px", 20.0);
+      "lane_seed_sliding_window_minimum_seed_arc_length_px", 15.0);
     declare_parameter<int>("lane_seed_sliding_window_initial_width_px", 6);
     declare_parameter<int>("lane_seed_sliding_window_initial_height_px", 10);
     declare_parameter<double>("lane_seed_sliding_window_growth_ratio", 1.04);
@@ -718,13 +718,13 @@ private:
     declare_parameter<double>(
       "lane_seed_cross_direction_merge_maximum_turn_angle_deg", 110.0);
     declare_parameter<bool>("lane_seed_temporal_side_lock_enabled", true);
-    declare_parameter<int>("lane_seed_temporal_side_lock_reset_frames", 120);
+    declare_parameter<int>("lane_seed_temporal_side_lock_reset_frames", 100);
     declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_base_distance_px", 10.0);
+      "lane_seed_temporal_side_reacquire_base_distance_px", 45.0);
     declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px", 2.0);
+      "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px", 3.0);
     declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_maximum_distance_px", 30.0);
+      "lane_seed_temporal_side_reacquire_maximum_distance_px", 63.0);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 12.0);

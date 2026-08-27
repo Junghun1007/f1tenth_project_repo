@@ -254,7 +254,7 @@ bev_processor:
     # growth_ratio가 1보다 클수록 원거리 창의 폭/높이가 빠르게 증가한다.
     lane_seed_sliding_window_enabled: true
     # 유효 차선 시드가 짧게 조각나도 첫 시드부터 즉시 추적을 시작한다.
-    lane_seed_sliding_window_minimum_seed_arc_length_px: 20.0
+    lane_seed_sliding_window_minimum_seed_arc_length_px: 15.0
     lane_seed_sliding_window_initial_width_px: 6
     lane_seed_sliding_window_initial_height_px: 10
     lane_seed_sliding_window_growth_ratio: 1.04
@@ -320,12 +320,12 @@ bev_processor:
     # 역할을 유지한다. 단, 양쪽과 단일 차선 모두 마지막 유효 곡선에서
     # base + 누락 프레임 수 * per_missing_frame 거리 안에 있을 때만 재연결한다.
     # 양쪽이 reset_frames 동안 사라지면 잠금을 풀고 다시 좌우 쌍을 기다린다.
-    # 80FPS에서 120프레임은 약 1.5초로, 코너의 일시적 양쪽 유실에도 역할을 유지한다.
+    # 80FPS에서 100프레임은 약 1.25초로, 코너의 일시적 양쪽 유실에도 역할을 유지한다.
     lane_seed_temporal_side_lock_enabled: true
-    lane_seed_temporal_side_lock_reset_frames: 120
-    lane_seed_temporal_side_reacquire_base_distance_px: 10.0
-    lane_seed_temporal_side_reacquire_distance_per_missing_frame_px: 2.0
-    lane_seed_temporal_side_reacquire_maximum_distance_px: 30.0
+    lane_seed_temporal_side_lock_reset_frames: 100
+    lane_seed_temporal_side_reacquire_base_distance_px: 45.0
+    lane_seed_temporal_side_reacquire_distance_per_missing_frame_px: 3.0
+    lane_seed_temporal_side_reacquire_maximum_distance_px: 63.0
 
     status_log_interval_sec: 5.0
     startup_timeout_sec: 12.0

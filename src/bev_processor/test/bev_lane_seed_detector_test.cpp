@@ -110,6 +110,10 @@ BevLaneSeedDetector makeDetector()
   config.roi_height_ratio = 1.0;
   config.column_tracking_enabled = false;
   config.cross_direction_merge_enabled = false;
+  // Keep dropout-gating tests independent from vehicle tuning defaults.
+  config.temporal_side_reacquire_base_distance_px = 10.0;
+  config.temporal_side_reacquire_distance_per_missing_frame_px = 2.0;
+  config.temporal_side_reacquire_maximum_distance_px = 30.0;
   return BevLaneSeedDetector(config);
 }
 
@@ -235,7 +239,7 @@ void testReacquisitionAllowanceGrowsWithMissingFrames()
   selectSingleLeftLane(&detector);
   insertMissingFrames(&detector, 3);
 
-  // 6px base + 3 missing frames * 2px permits this 12px displacement.
+  // The explicit 10px base plus missing-frame growth permits this 12px move.
   const LaneImages reacquired = makeVerticalLanes(120, 300, {37});
   const BevLaneSeedDetection detection = detector.detect(
     reacquired.gray, reacquired.response, false);

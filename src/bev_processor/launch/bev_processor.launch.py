@@ -144,7 +144,7 @@ def generate_launch_description():
         ("lane_seed_sliding_window_enabled", "true", bool),
         (
             "lane_seed_sliding_window_minimum_seed_arc_length_px",
-            "20.0",
+            "15.0",
             float,
         ),
         ("lane_seed_sliding_window_initial_width_px", "6", int),
@@ -255,20 +255,20 @@ def generate_launch_description():
             float,
         ),
         ("lane_seed_temporal_side_lock_enabled", "true", bool),
-        ("lane_seed_temporal_side_lock_reset_frames", "120", int),
+        ("lane_seed_temporal_side_lock_reset_frames", "100", int),
         (
             "lane_seed_temporal_side_reacquire_base_distance_px",
-            "10.0",
+            "45.0",
             float,
         ),
         (
             "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px",
-            "2.0",
+            "3.0",
             float,
         ),
         (
             "lane_seed_temporal_side_reacquire_maximum_distance_px",
-            "30.0",
+            "63.0",
             float,
         ),
     ]

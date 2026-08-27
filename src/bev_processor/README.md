@@ -190,10 +190,10 @@ ros2 launch bev_processor bev_processor.launch.py \
   lane_seed_maximum_slope_change_px_per_row:=2.0 \
   lane_seed_pair_minimum_distance_px:=45.0 \
   lane_seed_pair_maximum_distance_px:=100.0 \
-  lane_seed_temporal_side_lock_reset_frames:=120 \
-  lane_seed_temporal_side_reacquire_base_distance_px:=10.0 \
-  lane_seed_temporal_side_reacquire_distance_per_missing_frame_px:=2.0 \
-  lane_seed_temporal_side_reacquire_maximum_distance_px:=30.0
+  lane_seed_temporal_side_lock_reset_frames:=100 \
+  lane_seed_temporal_side_reacquire_base_distance_px:=45.0 \
+  lane_seed_temporal_side_reacquire_distance_per_missing_frame_px:=3.0 \
+  lane_seed_temporal_side_reacquire_maximum_distance_px:=63.0
 ```
 
 전체 조절 인자는 다음 명령으로 확인한다.
@@ -257,7 +257,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   `lane_seed_sliding_window_minimum_seed_arc_length_px`:
   ROI 검출을 통과한 안정 트랙의 첫 시드부터 슬라이딩 윈도우로
   전체 경계를 다시 추적할지 여부와 추적을 시작할 최소 시드 곡선 길이.
-  기본값 20 px은 시드 트랙 자체의 최소 통과 길이와 맞춰서, 코너에서
+  기본값 15 px은 코너에서
   아래쪽 짧은 수직 조각만 남아도 즉시 윈도우 추적을 시작하게 한다.
   중심선에는 원시 시드 곡선 대신 승인된 창의 무게중심만 들어간다.
 - `lane_seed_sliding_window_initial_*`,
