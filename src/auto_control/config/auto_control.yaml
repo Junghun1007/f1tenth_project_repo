@@ -63,9 +63,9 @@ auto_control:
     # 현재 계산 조향 47%, 직전 명령 53%와 조향 변화율 제한을 함께 적용한다.
     steering_current_weight: 0.47
     steering_rate_limit_deg_per_sec: 240.0
-    servo_left: 0.98
+    servo_left: 1.0
     servo_center: 0.46
-    servo_right: 0.02
+    servo_right: 0.0
     # 수동주행에서 확인한 실차 서보 링크 방향에 맞춰 최종 출력만 반전한다.
     # /auto/steering_angle_rad의 +는 계속 차량 좌회전 의미를 유지한다.
     steering_servo_inverted: true

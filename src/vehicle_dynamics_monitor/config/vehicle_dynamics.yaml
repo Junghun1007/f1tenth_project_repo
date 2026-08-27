@@ -74,6 +74,6 @@ vehicle_dynamics_node:
     wheelbase_m: 0.324
     maximum_left_steering_angle_deg: 30.0
     maximum_right_steering_angle_deg: 30.0
-    servo_left: 0.98
+    servo_left: 1.0
     servo_center: 0.46
-    servo_right: 0.02
+    servo_right: 0.0

@@ -53,9 +53,9 @@ class ActuatorCommanderNode(Node):
         self.declare_parameter("input_timeout_sec", 0.3)
         self.declare_parameter("immediate_stop_on_accelerator_release", True)
 
-        self.declare_parameter("servo_left", 0.98)
+        self.declare_parameter("servo_left", 1.0)
         self.declare_parameter("servo_center", 0.46)
-        self.declare_parameter("servo_right", 0.02)
+        self.declare_parameter("servo_right", 0.0)
         self.declare_parameter("pedal_deadzone", 0.01)
         self.declare_parameter("steering_deadzone", 0.04)
 

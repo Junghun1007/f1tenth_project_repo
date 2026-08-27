@@ -35,8 +35,8 @@ actuator_commander_node:
     # false: 아래 coast_deceleration_duty_per_sec 속도로 천천히 0까지 줄인다.
     immediate_stop_on_accelerator_release: false
 
-    servo_left: 0.98
+    servo_left: 1.0
     servo_center: 0.46
-    servo_right: 0.02
+    servo_right: 0.0
     pedal_deadzone: 0.01
     steering_deadzone: 0.04

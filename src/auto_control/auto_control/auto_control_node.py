@@ -244,9 +244,9 @@ class AutoControlNode(Node):
         self.declare_parameter("maximum_steering_angle_deg", 30.0)
         self.declare_parameter("steering_current_weight", 0.47)
         self.declare_parameter("steering_rate_limit_deg_per_sec", 240.0)
-        self.declare_parameter("servo_left", 0.98)
+        self.declare_parameter("servo_left", 1.0)
         self.declare_parameter("servo_center", 0.46)
-        self.declare_parameter("servo_right", 0.02)
+        self.declare_parameter("servo_right", 0.0)
         # The installed servo linkage reverses the mathematical steering
         # direction. Keep desired vehicle steering signs unchanged and invert
         # only the final actuator mapping.

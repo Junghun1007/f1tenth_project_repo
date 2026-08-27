@@ -28,9 +28,9 @@ class EstimatorConfig:
     wheelbase_m: float = 0.324
     maximum_left_steering_angle_deg: float = 30.0
     maximum_right_steering_angle_deg: float = 30.0
-    servo_left: float = 0.98
+    servo_left: float = 1.0
     servo_center: float = 0.46
-    servo_right: float = 0.02
+    servo_right: float = 0.0
 
     def validate(self) -> None:
         positive_values = {
