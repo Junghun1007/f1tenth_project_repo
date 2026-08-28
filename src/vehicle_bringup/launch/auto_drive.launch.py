@@ -66,6 +66,18 @@ def generate_launch_description():
         ("auto_enabled", "true", "enabled", bool),
         ("minimum_duty", "0.070", "minimum_duty", float),
         ("maximum_duty", "0.090", "maximum_duty", float),
+        (
+            "duty_rise_rate_per_sec",
+            "0.04",
+            "duty_rise_rate_per_sec",
+            float,
+        ),
+        (
+            "duty_fall_rate_per_sec",
+            "0.08",
+            "duty_fall_rate_per_sec",
+            float,
+        ),
         ("minimum_speed_mps", "0.80", "minimum_speed_mps", float),
         ("maximum_speed_mps", "1.8", "maximum_speed_mps", float),
         ("stanley_gain", "1.40", "stanley_gain", float),
@@ -115,6 +127,18 @@ def generate_launch_description():
         ("speed_pid_kp", "0.012", "speed_pid_kp", float),
         ("speed_pid_ki", "0.004", "speed_pid_ki", float),
         ("speed_pid_kd", "0.0", "speed_pid_kd", float),
+        (
+            "speed_pid_integral_limit",
+            "1.0",
+            "speed_pid_integral_limit",
+            float,
+        ),
+        (
+            "speed_filter_time_constant_sec",
+            "0.05",
+            "speed_filter_time_constant_sec",
+            float,
+        ),
         (
             "electrical_brake_enabled",
             "true",
