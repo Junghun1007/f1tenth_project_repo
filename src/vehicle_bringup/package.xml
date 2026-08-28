@@ -9,12 +9,14 @@
 
   <buildtool_depend>ament_python</buildtool_depend>
 
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>joy_initializer</exec_depend>
   <exec_depend>auto_control</exec_depend>
   <exec_depend>bev_processor</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>manual_control</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>vehicle_dynamics_monitor</exec_depend>
   <exec_depend>vesc_bridge</exec_depend>

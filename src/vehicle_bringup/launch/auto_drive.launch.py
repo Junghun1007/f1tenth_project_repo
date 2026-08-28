@@ -1,16 +1,45 @@
+import os
+
+import yaml
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
-from launch_ros.substitutions import FindPackageShare
+
+
+def _ros_parameters(config_path, node_name):
+    with open(config_path, encoding="utf-8") as config_file:
+        config = yaml.safe_load(config_file) or {}
+    return config.get(node_name, {}).get("ros__parameters", {})
+
+
+def _launch_default(parameters, name, fallback):
+    value = parameters.get(name, fallback)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 def generate_launch_description():
+    bev_share = get_package_share_directory("bev_processor")
+    auto_control_share = get_package_share_directory("auto_control")
+    vehicle_bringup_share = get_package_share_directory("vehicle_bringup")
+    bev_config = os.path.join(bev_share, "config", "bev_config.yaml")
+    auto_control_config = os.path.join(
+        auto_control_share, "config", "auto_control.yaml"
+    )
+    vesc_config = os.path.join(
+        vehicle_bringup_share, "config", "vesc_config.yaml"
+    )
+    bev_defaults = _ros_parameters(bev_config, "bev_processor")
+    controller_defaults = _ros_parameters(auto_control_config, "auto_control")
+
     vesc_port = LaunchConfiguration("vesc_port")
     preview_enabled = LaunchConfiguration("preview_enabled")
-    bev_arguments = [
+    bev_argument_fallbacks = [
         ("lane_seed_roi_height_ratio", "0.25"),
         ("lane_seed_temporal_side_lock_reset_frames", "100"),
         ("lane_seed_temporal_side_reacquire_base_distance_px", "45.0"),
@@ -24,10 +53,16 @@ def generate_launch_description():
         ("lane_seed_sliding_window_minimum_seed_arc_length_px", "15.0"),
         ("lane_centerline_corner_outward_bias_m", "0.05"),
     ]
+    # YAML is the single source of default values. A value supplied through
+    # `ros2 launch ... name:=value` still replaces the declared default.
+    bev_arguments = [
+        (name, _launch_default(bev_defaults, name, fallback))
+        for name, fallback in bev_argument_fallbacks
+    ]
     bev_overrides = {
         name: LaunchConfiguration(name) for name, _ in bev_arguments
     }
-    controller_arguments = [
+    controller_argument_fallbacks = [
         ("auto_enabled", "true", "enabled", bool),
         ("minimum_duty", "0.070", "minimum_duty", float),
         ("maximum_duty", "0.090", "maximum_duty", float),
@@ -171,6 +206,20 @@ def generate_launch_description():
             float,
         ),
     ]
+    controller_arguments = [
+        (
+            argument_name,
+            _launch_default(controller_defaults, parameter_name, fallback),
+            parameter_name,
+            value_type,
+        )
+        for (
+            argument_name,
+            fallback,
+            parameter_name,
+            value_type,
+        ) in controller_argument_fallbacks
+    ]
     controller_overrides = {
         parameter_name: ParameterValue(
             LaunchConfiguration(argument_name), value_type=value_type
@@ -178,14 +227,8 @@ def generate_launch_description():
         for argument_name, _, parameter_name, value_type in controller_arguments
     }
 
-    bev_launch_path = PathJoinSubstitution(
-        [FindPackageShare("bev_processor"), "launch", "bev_processor.launch.py"]
-    )
-    auto_control_config = PathJoinSubstitution(
-        [FindPackageShare("auto_control"), "config", "auto_control.yaml"]
-    )
-    vesc_config = PathJoinSubstitution(
-        [FindPackageShare("vehicle_bringup"), "config", "vesc_config.yaml"]
+    bev_launch_path = os.path.join(
+        bev_share, "launch", "bev_processor.launch.py"
     )
 
     bev_launch = IncludeLaunchDescription(
@@ -225,7 +268,9 @@ def generate_launch_description():
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument(
                 "preview_enabled",
-                default_value="true",
+                default_value=_launch_default(
+                    bev_defaults, "preview_enabled", "true"
+                ),
                 description=(
                     "Show result-only BEV lane preview. Set false for no GUI."
                 ),
