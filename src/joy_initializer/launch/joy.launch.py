@@ -6,6 +6,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
+    vehicle_namespace = LaunchConfiguration("vehicle_namespace")
     device_id = LaunchConfiguration("device_id")
     device_name_contains = LaunchConfiguration("device_name_contains")
     deadzone = LaunchConfiguration("deadzone")
@@ -18,6 +19,7 @@ def generate_launch_description():
         package="joy_initializer",
         executable="joy_input_node",
         name="joy_node",
+        namespace=vehicle_namespace,
         output="screen",
         parameters=[
             {
@@ -42,6 +44,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("vehicle_namespace", default_value=""),
             DeclareLaunchArgument("device_id", default_value="0"),
             DeclareLaunchArgument(
                 "device_name_contains",

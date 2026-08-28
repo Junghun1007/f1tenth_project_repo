@@ -1,4 +1,4 @@
-actuator_commander_node:
+/**:
   ros__parameters:
     # /joy를 직접 읽는다: RT 가속, LT 감속, 왼쪽 스틱 조향, RB 전후진 전환.
     joy_topic: "/joy"

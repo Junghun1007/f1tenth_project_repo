@@ -1,4 +1,4 @@
-vesc_bridge_node:
+/**:
   ros__parameters:
     port: "/dev/ttyTHS1"      # Jetson UART 장치 경로
     baudrate: 115200          # VESC와 통신할 시리얼 속도

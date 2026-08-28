@@ -1,4 +1,4 @@
-vehicle_dynamics_node:
+/**:
   ros__parameters:
     # Current vehicle default: vesc_bridge reads VESC telemetry through UART.
     # "slcan" reads CANable 2 directly with python-can when the Jetson kernel

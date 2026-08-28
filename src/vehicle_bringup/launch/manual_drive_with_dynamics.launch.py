@@ -6,6 +6,7 @@ from launch_ros.substitutions import FindPackageShare
 
 
 def generate_launch_description():
+    vehicle_namespace = LaunchConfiguration("vehicle_namespace")
     vesc_port = LaunchConfiguration("vesc_port")
     controller_name_contains = LaunchConfiguration("controller_name_contains")
     input_mode = LaunchConfiguration("input_mode")
@@ -25,6 +26,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
+            "vehicle_namespace": vehicle_namespace,
             "vesc_port": vesc_port,
             "controller_name_contains": controller_name_contains,
         }.items(),
@@ -40,6 +42,7 @@ def generate_launch_description():
             )
         ),
         launch_arguments={
+            "vehicle_namespace": vehicle_namespace,
             "input_mode": input_mode,
             "can_interface": can_interface,
             "can_controller_id": can_controller_id,
@@ -50,6 +53,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "vehicle_namespace",
+                default_value="autopilot03",
+                description="Vehicle-unique ROS namespace.",
+            ),
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument(
                 "controller_name_contains", default_value="8BitDo"

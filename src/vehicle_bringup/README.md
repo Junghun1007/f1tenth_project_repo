@@ -24,6 +24,17 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py
 ros2 launch vehicle_bringup auto_drive.launch.py
 ```
 
+Manual driving defaults to the vehicle-unique `/autopilot03` namespace for
+all three nodes and the `/autopilot03/joy`, `/autopilot03/manual/*`, and
+`/autopilot03/vesc/*` topics. This prevents another vehicle on the same ROS
+domain from publishing actuator commands into this vehicle. Override the
+identifier when required:
+
+```bash
+ros2 launch vehicle_bringup manual_drive.launch.py \
+  vehicle_namespace:=autopilot03
+```
+
 The dynamics launch defaults to the current UART VESC telemetry path. To use
 VESC CAN STATUS broadcasts directly, bring up `can0` first and launch with
 `input_mode:=socketcan`. See `vehicle_dynamics_monitor/README.md` for CAN and
