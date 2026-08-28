@@ -1,12 +1,66 @@
 import os
 
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+_PARAMETER_FILE_DEFAULT = "__PARAMETER_FILE_DEFAULT__"
+
+
+def _ros_parameters(config_path, node_name):
+    with open(config_path, encoding="utf-8") as config_file:
+        config = yaml.safe_load(config_file) or {}
+    return config.get(node_name, {}).get("ros__parameters", {})
+
+
+def _launch_default(parameters, name, fallback):
+    value = parameters.get(name, fallback)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+def _merged_parameters(base_path, selected_path, node_name):
+    parameters = _ros_parameters(base_path, node_name)
+    selected_path = os.path.abspath(selected_path)
+    if not os.path.isfile(selected_path):
+        raise RuntimeError(f"parameter file does not exist: {selected_path}")
+    if os.path.realpath(selected_path) != os.path.realpath(base_path):
+        overrides = _ros_parameters(selected_path, node_name)
+        if not overrides:
+            raise RuntimeError(
+                f"{selected_path} has no {node_name}.ros__parameters section"
+            )
+        parameters.update(overrides)
+    return parameters
+
+
+def _apply_parameter_file_defaults(
+    context,
+    *,
+    bev_params,
+    launch_parameter_defaults,
+):
+    parameters = _merged_parameters(
+        bev_params,
+        LaunchConfiguration("bev_params_file").perform(context),
+        "bev_processor",
+    )
+    for launch_name, parameter_name, fallback in launch_parameter_defaults:
+        if (
+            context.launch_configurations[launch_name]
+            == _PARAMETER_FILE_DEFAULT
+        ):
+            context.launch_configurations[launch_name] = _launch_default(
+                parameters, parameter_name, fallback
+            )
+    return []
 
 
 def generate_launch_description():
@@ -94,8 +148,7 @@ def generate_launch_description():
     )
 
     # Keep every lane tuning value overridable from `ros2 launch ... name:=x`.
-    # Defaults below mirror the documented YAML baseline. They are explicit
-    # launch-time overrides so field tuning never requires rebuilding.
+    # When omitted, each value is resolved from bev_params_file at launch time.
     lane_parameters = [
         ("capture_directory", ".", str),
         ("lane_seed_detection_enabled", "true", bool),
@@ -272,13 +325,24 @@ def generate_launch_description():
             float,
         ),
     ]
+    launch_parameter_defaults = [
+        (
+            "performance_measurement_enabled",
+            "performance_measurement_enabled",
+            "false",
+        ),
+        ("bev_input_bottom_fraction", "input_bottom_fraction", "0.70"),
+        ("preview_enabled", "preview_enabled", "true"),
+        ("bev_interpolation", "bev_interpolation", "bilinear"),
+        *[(name, name, fallback) for name, fallback, _ in lane_parameters],
+    ]
     lane_launch_arguments = [
         DeclareLaunchArgument(
             name,
-            default_value=default,
+            default_value=_PARAMETER_FILE_DEFAULT,
             description=f"Override bev_processor parameter '{name}'.",
         )
-        for name, default, _ in lane_parameters
+        for name, _, _ in lane_parameters
     ]
     lane_parameter_overrides = {
         name: ParameterValue(LaunchConfiguration(name), value_type=value_type)
@@ -301,7 +365,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "performance_measurement_enabled",
-                default_value="false",
+                default_value=_PARAMETER_FILE_DEFAULT,
                 description=(
                     "Disable GUI previews and print stabilized/BEV pipeline "
                     "performance measurements."
@@ -380,7 +444,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "bev_input_bottom_fraction",
-                default_value="0.70",
+                default_value=_PARAMETER_FILE_DEFAULT,
                 description=(
                     "Bottom fraction of the rectified camera frame sent to "
                     "the fused CUDA stabilization/BEV path."
@@ -388,16 +452,22 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "preview_enabled",
-                default_value="true",
+                default_value=_PARAMETER_FILE_DEFAULT,
                 description="Show or completely disable the BEV GUI preview.",
             ),
             DeclareLaunchArgument(
                 "bev_interpolation",
-                default_value="bilinear",
-                choices=["bilinear", "bicubic", "adaptive"],
+                default_value=_PARAMETER_FILE_DEFAULT,
                 description="Interpolation used by the CUDA NV12-to-BEV warp.",
             ),
             *lane_launch_arguments,
+            OpaqueFunction(
+                function=_apply_parameter_file_defaults,
+                kwargs={
+                    "bev_params": bev_params,
+                    "launch_parameter_defaults": launch_parameter_defaults,
+                },
+            ),
             ComposableNodeContainer(
                 name="bev_processor_container",
                 namespace="",
@@ -412,6 +482,7 @@ def generate_launch_description():
                         plugin="bev_processor::BevProcessorNode",
                         name="bev_processor",
                         parameters=[
+                            bev_params,
                             LaunchConfiguration("bev_params_file"),
                             {
                                 "performance_measurement_enabled": (

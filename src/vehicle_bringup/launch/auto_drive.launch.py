@@ -3,11 +3,18 @@ import os
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+_PARAMETER_FILE_DEFAULT = "__PARAMETER_FILE_DEFAULT__"
 
 
 def _ros_parameters(config_path, node_name):
@@ -21,6 +28,62 @@ def _launch_default(parameters, name, fallback):
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def _merged_parameters(base_path, selected_path, node_name):
+    parameters = _ros_parameters(base_path, node_name)
+    selected_path = os.path.abspath(selected_path)
+    if not os.path.isfile(selected_path):
+        raise RuntimeError(f"parameter file does not exist: {selected_path}")
+    if os.path.realpath(selected_path) != os.path.realpath(base_path):
+        overrides = _ros_parameters(selected_path, node_name)
+        if not overrides:
+            raise RuntimeError(
+                f"{selected_path} has no {node_name}.ros__parameters section"
+            )
+        parameters.update(overrides)
+    return parameters
+
+
+def _apply_parameter_file_defaults(
+    context,
+    *,
+    bev_config,
+    auto_control_config,
+    bev_arguments,
+    controller_arguments,
+):
+    bev_defaults = _merged_parameters(
+        bev_config,
+        LaunchConfiguration("bev_params_file").perform(context),
+        "bev_processor",
+    )
+    controller_defaults = _merged_parameters(
+        auto_control_config,
+        LaunchConfiguration("auto_control_params_file").perform(context),
+        "auto_control",
+    )
+    if (
+        context.launch_configurations["preview_enabled"]
+        == _PARAMETER_FILE_DEFAULT
+    ):
+        context.launch_configurations["preview_enabled"] = _launch_default(
+            bev_defaults, "preview_enabled", "true"
+        )
+    for name, fallback in bev_arguments:
+        if context.launch_configurations[name] == _PARAMETER_FILE_DEFAULT:
+            context.launch_configurations[name] = _launch_default(
+                bev_defaults, name, fallback
+            )
+    for argument_name, fallback, parameter_name, _ in controller_arguments:
+        if (
+            context.launch_configurations[argument_name]
+            == _PARAMETER_FILE_DEFAULT
+        ):
+            context.launch_configurations[argument_name] = _launch_default(
+                controller_defaults, parameter_name, fallback
+            )
+    return []
 
 
 def generate_launch_description():
@@ -38,6 +101,8 @@ def generate_launch_description():
     controller_defaults = _ros_parameters(auto_control_config, "auto_control")
 
     vesc_port = LaunchConfiguration("vesc_port")
+    bev_params_file = LaunchConfiguration("bev_params_file")
+    auto_control_params_file = LaunchConfiguration("auto_control_params_file")
     preview_enabled = LaunchConfiguration("preview_enabled")
     bev_argument_fallbacks = [
         ("lane_seed_roi_height_ratio", "0.25"),
@@ -258,6 +323,7 @@ def generate_launch_description():
     bev_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(bev_launch_path),
         launch_arguments={
+            "bev_params_file": bev_params_file,
             # Autonomous mode shows only measured lanes and the centerline.
             # preview_enabled:=false disables the OpenCV window completely.
             "preview_enabled": preview_enabled,
@@ -275,6 +341,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             auto_control_config,
+            auto_control_params_file,
             controller_overrides,
         ],
     )
@@ -291,22 +358,43 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument(
+                "bev_params_file",
+                default_value=bev_config,
+                description="BEV parameter override YAML",
+            ),
+            DeclareLaunchArgument(
+                "auto_control_params_file",
+                default_value=auto_control_config,
+                description="Auto-control parameter override YAML",
+            ),
+            DeclareLaunchArgument(
                 "preview_enabled",
-                default_value=_launch_default(
-                    bev_defaults, "preview_enabled", "true"
-                ),
+                default_value=_PARAMETER_FILE_DEFAULT,
                 description=(
                     "Show result-only BEV lane preview. Set false for no GUI."
                 ),
             ),
             *[
-                DeclareLaunchArgument(name, default_value=default)
-                for name, default in bev_arguments
+                DeclareLaunchArgument(
+                    name, default_value=_PARAMETER_FILE_DEFAULT
+                )
+                for name, _ in bev_arguments
             ],
             *[
-                DeclareLaunchArgument(argument_name, default_value=default)
-                for argument_name, default, _, _ in controller_arguments
+                DeclareLaunchArgument(
+                    argument_name, default_value=_PARAMETER_FILE_DEFAULT
+                )
+                for argument_name, _, _, _ in controller_arguments
             ],
+            OpaqueFunction(
+                function=_apply_parameter_file_defaults,
+                kwargs={
+                    "bev_config": bev_config,
+                    "auto_control_config": auto_control_config,
+                    "bev_arguments": bev_arguments,
+                    "controller_arguments": controller_arguments,
+                },
+            ),
             bev_launch,
             vesc_bridge_node,
             auto_control_node,
