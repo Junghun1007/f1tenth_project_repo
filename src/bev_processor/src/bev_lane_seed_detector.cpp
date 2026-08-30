@@ -2590,6 +2590,8 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
       smoothMeasuredPoints(
       right_curve, config_.centerline_measured_point_smoothing_weight) :
       std::vector<cv::Point2d>();
+    result.left_boundary_points = left;
+    result.right_boundary_points = right;
     const double left_heading_change_deg = left_valid ?
       polylineHeadingRangeDegrees(left) : 0.0;
     const double right_heading_change_deg = right_valid ?

@@ -105,6 +105,9 @@ def generate_launch_description():
     auto_control_params_file = LaunchConfiguration("auto_control_params_file")
     preview_enabled = LaunchConfiguration("preview_enabled")
     bev_argument_fallbacks = [
+        ("lane_centerline_path_topic", "/camera/path_bev_lane"),
+        ("lane_left_boundary_path_topic", "/camera/path_bev_lane_left"),
+        ("lane_right_boundary_path_topic", "/camera/path_bev_lane_right"),
         ("lane_seed_roi_height_ratio", "0.25"),
         ("lane_seed_temporal_side_lock_reset_frames", "100"),
         ("lane_seed_temporal_side_reacquire_base_distance_px", "45.0"),
@@ -116,7 +119,7 @@ def generate_launch_description():
         ("lane_seed_pair_minimum_distance_px", "45.0"),
         ("lane_seed_pair_maximum_distance_px", "100.0"),
         ("lane_seed_sliding_window_minimum_seed_arc_length_px", "15.0"),
-        ("lane_centerline_corner_outward_bias_m", "0.05"),
+        ("lane_centerline_corner_outward_bias_m", "0.00"),
     ]
     # YAML is the single source of default values. A value supplied through
     # `ros2 launch ... name:=value` still replaces the declared default.
@@ -129,6 +132,21 @@ def generate_launch_description():
     }
     controller_argument_fallbacks = [
         ("auto_enabled", "true", "enabled", bool),
+        ("path_input_mode", "ordered_path", "path_input_mode", str),
+        ("lane_path_topic", "/camera/path_bev_lane", "lane_path_topic", str),
+        (
+            "lane_left_boundary_path_topic",
+            "/camera/path_bev_lane_left",
+            "lane_left_boundary_path_topic",
+            str,
+        ),
+        (
+            "lane_right_boundary_path_topic",
+            "/camera/path_bev_lane_right",
+            "lane_right_boundary_path_topic",
+            str,
+        ),
+        ("planned_path_topic", "/auto/planned_path", "planned_path_topic", str),
         ("minimum_duty", "0.070", "minimum_duty", float),
         ("maximum_duty", "0.090", "maximum_duty", float),
         (
@@ -277,9 +295,141 @@ def generate_launch_description():
             float,
         ),
         (
+            "local_path_planner_enabled",
+            "true",
+            "local_path_planner_enabled",
+            bool,
+        ),
+        (
+            "local_path_expected_lane_width_m",
+            "0.65",
+            "local_path_expected_lane_width_m",
+            float,
+        ),
+        (
+            "local_path_vehicle_width_m",
+            "0.30",
+            "local_path_vehicle_width_m",
+            float,
+        ),
+        (
+            "local_path_vehicle_wheelbase_m",
+            "0.324",
+            "local_path_vehicle_wheelbase_m",
+            float,
+        ),
+        (
+            "local_path_safety_margin_m",
+            "0.08",
+            "local_path_safety_margin_m",
+            float,
+        ),
+        (
+            "local_path_minimum_half_width_m",
+            "0.24",
+            "local_path_minimum_half_width_m",
+            float,
+        ),
+        (
+            "local_path_maximum_half_width_m",
+            "0.48",
+            "local_path_maximum_half_width_m",
+            float,
+        ),
+        (
+            "local_path_width_smoothing_window_m",
+            "0.20",
+            "local_path_width_smoothing_window_m",
+            float,
+        ),
+        (
+            "local_path_maximum_center_correction_m",
+            "0.08",
+            "local_path_maximum_center_correction_m",
+            float,
+        ),
+        (
+            "local_path_resample_interval_m",
+            "0.02",
+            "local_path_resample_interval_m",
+            float,
+        ),
+        (
+            "local_path_corner_curvature_threshold_per_m",
+            "0.45",
+            "local_path_corner_curvature_threshold_per_m",
+            float,
+        ),
+        (
+            "local_path_corner_curvature_smoothing_window_m",
+            "0.16",
+            "local_path_corner_curvature_smoothing_window_m",
+            float,
+        ),
+        (
+            "local_path_corner_minimum_heading_change_deg",
+            "20.0",
+            "local_path_corner_minimum_heading_change_deg",
+            float,
+        ),
+        (
+            "local_path_corner_approach_length_m",
+            "0.35",
+            "local_path_corner_approach_length_m",
+            float,
+        ),
+        (
+            "local_path_corner_exit_length_m",
+            "0.40",
+            "local_path_corner_exit_length_m",
+            float,
+        ),
+        (
+            "local_path_outside_offset_fraction",
+            "0.25",
+            "local_path_outside_offset_fraction",
+            float,
+        ),
+        (
+            "local_path_apex_offset_fraction",
+            "0.35",
+            "local_path_apex_offset_fraction",
+            float,
+        ),
+        (
+            "local_path_maximum_offset_m",
+            "0.08",
+            "local_path_maximum_offset_m",
+            float,
+        ),
+        (
+            "local_path_maximum_offset_slope",
+            "0.70",
+            "local_path_maximum_offset_slope",
+            float,
+        ),
+        (
+            "local_path_racing_line_weight",
+            "0.20",
+            "local_path_racing_line_weight",
+            float,
+        ),
+        (
+            "local_path_maximum_curvature_per_m",
+            "1.8",
+            "local_path_maximum_curvature_per_m",
+            float,
+        ),
+        (
             "path_minimum_x_m",
             "0.05",
             "path_minimum_x_m",
+            float,
+        ),
+        (
+            "path_maximum_x_m",
+            "2.95",
+            "path_maximum_x_m",
             float,
         ),
         (
@@ -292,6 +442,54 @@ def generate_launch_description():
             "path_minimum_span_m",
             "0.12",
             "path_minimum_span_m",
+            float,
+        ),
+        (
+            "spatial_speed_profile_enabled",
+            "true",
+            "spatial_speed_profile_enabled",
+            bool,
+        ),
+        (
+            "speed_profile_maximum_longitudinal_acceleration_mps2",
+            "1.2",
+            "speed_profile_maximum_longitudinal_acceleration_mps2",
+            float,
+        ),
+        (
+            "speed_profile_maximum_longitudinal_deceleration_mps2",
+            "1.8",
+            "speed_profile_maximum_longitudinal_deceleration_mps2",
+            float,
+        ),
+        (
+            "speed_profile_minimum_combined_braking_ratio",
+            "0.20",
+            "speed_profile_minimum_combined_braking_ratio",
+            float,
+        ),
+        (
+            "speed_profile_lookahead_minimum_s_m",
+            "0.05",
+            "speed_profile_lookahead_minimum_s_m",
+            float,
+        ),
+        (
+            "speed_profile_lookahead_maximum_s_m",
+            "2.8",
+            "speed_profile_lookahead_maximum_s_m",
+            float,
+        ),
+        (
+            "speed_profile_sample_interval_m",
+            "0.04",
+            "speed_profile_sample_interval_m",
+            float,
+        ),
+        (
+            "speed_profile_acceleration_control_distance_m",
+            "0.20",
+            "speed_profile_acceleration_control_distance_m",
             float,
         ),
     ]

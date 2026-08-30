@@ -14,7 +14,11 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (
             f"share/{package_name}",
-            ["package.xml", "AUTO_CONTROL_PARAMETER_TUNING_KO.txt"],
+            [
+                "package.xml",
+                "AUTO_CONTROL_PARAMETER_TUNING_KO.txt",
+                "LOCAL_PATH_PLANNER_PARAMETER_TUNING_KO.txt",
+            ],
         ),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
     ],

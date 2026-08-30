@@ -153,6 +153,17 @@ def generate_launch_description():
         ("capture_directory", ".", str),
         ("lane_seed_detection_enabled", "true", bool),
         ("lane_output_topic", "/camera/image_bev_lane", str),
+        ("lane_centerline_path_topic", "/camera/path_bev_lane", str),
+        (
+            "lane_left_boundary_path_topic",
+            "/camera/path_bev_lane_left",
+            str,
+        ),
+        (
+            "lane_right_boundary_path_topic",
+            "/camera/path_bev_lane_right",
+            str,
+        ),
         ("lane_preview_enabled", "true", bool),
         ("lane_gray_mode", "0", int),
         ("lane_top_hat_shape", "1", int),
@@ -277,7 +288,7 @@ def generate_launch_description():
         ),
         (
             "lane_centerline_corner_outward_bias_m",
-            "0.05",
+            "0.00",
             float,
         ),
         (

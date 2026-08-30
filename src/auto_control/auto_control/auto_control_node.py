@@ -6,6 +6,8 @@ import math
 
 import numpy as np
 import rclpy
+from geometry_msgs.msg import PoseStamped
+from nav_msgs.msg import Path
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -29,6 +31,15 @@ from auto_control.control_core import (
     speed_feedforward_duty,
     stanley_control,
     steering_angle_to_servo,
+)
+from auto_control.local_path_planner import (
+    LocalPathPlannerConfig,
+    OrderedPathModel,
+    SpeedProfileConfig,
+    build_ordered_path_model,
+    plan_local_racing_path,
+    spatial_speed_plan,
+    stanley_control_ordered,
 )
 
 
@@ -88,9 +99,27 @@ class AutoControlNode(Node):
         self._command_servo_position_pub = self.create_publisher(
             Float32, self.command_servo_position_topic, command_qos
         )
+        self._planned_path_pub = self.create_publisher(
+            Path, self.planned_path_topic, sensor_qos
+        )
 
         self._lane_sub = self.create_subscription(
             Image, self.lane_topic, self._on_lane_image, sensor_qos
+        )
+        self._lane_path_sub = self.create_subscription(
+            Path, self.lane_path_topic, self._on_lane_path, sensor_qos
+        )
+        self._left_boundary_path_sub = self.create_subscription(
+            Path,
+            self.lane_left_boundary_path_topic,
+            self._on_left_boundary_path,
+            sensor_qos,
+        )
+        self._right_boundary_path_sub = self.create_subscription(
+            Path,
+            self.lane_right_boundary_path_topic,
+            self._on_right_boundary_path,
+            sensor_qos,
         )
         self._erpm_sub = self.create_subscription(
             Int32, self.measured_erpm_topic, self._on_measured_erpm, sensor_qos
@@ -105,7 +134,11 @@ class AutoControlNode(Node):
             Bool, self.enable_topic, self._on_enable, command_qos
         )
 
-        self._path: PathModel | None = None
+        self._path: PathModel | OrderedPathModel | None = None
+        self._ordered_centerline: tuple[int, np.ndarray, object] | None = None
+        self._ordered_left_boundary: tuple[int, np.ndarray] | None = None
+        self._ordered_right_boundary: tuple[int, np.ndarray] | None = None
+        self._latest_planner_corner_count = 0
         self._last_path_received_time: Time | None = None
         self._path_capture_time: Time | None = None
         self._last_erpm_time: Time | None = None
@@ -154,6 +187,68 @@ class AutoControlNode(Node):
                 fall_amps_per_sec=self.brake_current_fall_amps_per_sec,
             )
         )
+        kinematic_curvature_limit = math.tan(
+            self.maximum_steering_angle_rad
+        ) / self.local_path_vehicle_wheelbase_m
+        self._local_path_planner_config = LocalPathPlannerConfig(
+            enabled=self.local_path_planner_enabled,
+            expected_lane_width_m=self.local_path_expected_lane_width_m,
+            vehicle_width_m=self.local_path_vehicle_width_m,
+            safety_margin_m=self.local_path_safety_margin_m,
+            minimum_half_width_m=self.local_path_minimum_half_width_m,
+            maximum_half_width_m=self.local_path_maximum_half_width_m,
+            width_smoothing_window_m=(
+                self.local_path_width_smoothing_window_m
+            ),
+            maximum_center_correction_m=(
+                self.local_path_maximum_center_correction_m
+            ),
+            resample_interval_m=self.local_path_resample_interval_m,
+            corner_curvature_threshold_per_m=(
+                self.local_path_corner_curvature_threshold_per_m
+            ),
+            corner_curvature_smoothing_window_m=(
+                self.local_path_corner_curvature_smoothing_window_m
+            ),
+            corner_minimum_heading_change_deg=(
+                self.local_path_corner_minimum_heading_change_deg
+            ),
+            corner_approach_length_m=self.local_path_corner_approach_length_m,
+            corner_exit_length_m=self.local_path_corner_exit_length_m,
+            outside_offset_fraction=self.local_path_outside_offset_fraction,
+            apex_offset_fraction=self.local_path_apex_offset_fraction,
+            maximum_offset_m=self.local_path_maximum_offset_m,
+            maximum_offset_slope=self.local_path_maximum_offset_slope,
+            racing_line_weight=self.local_path_racing_line_weight,
+            maximum_path_curvature_per_m=min(
+                self.local_path_maximum_curvature_per_m,
+                kinematic_curvature_limit,
+            ),
+        )
+        self._speed_profile_config = SpeedProfileConfig(
+            enabled=self.spatial_speed_profile_enabled,
+            minimum_speed_mps=self.minimum_speed_mps,
+            maximum_speed_mps=self.maximum_speed_mps,
+            maximum_lateral_acceleration_mps2=(
+                self.maximum_lateral_acceleration_mps2
+            ),
+            maximum_longitudinal_acceleration_mps2=(
+                self.speed_profile_maximum_longitudinal_acceleration_mps2
+            ),
+            maximum_longitudinal_deceleration_mps2=(
+                self.speed_profile_maximum_longitudinal_deceleration_mps2
+            ),
+            minimum_combined_braking_ratio=(
+                self.speed_profile_minimum_combined_braking_ratio
+            ),
+            lookahead_minimum_s_m=self.speed_profile_lookahead_minimum_s_m,
+            lookahead_maximum_s_m=self.speed_profile_lookahead_maximum_s_m,
+            sample_interval_m=self.speed_profile_sample_interval_m,
+            acceleration_control_distance_m=(
+                self.speed_profile_acceleration_control_distance_m
+            ),
+            curvature_percentile=self.curvature_percentile,
+        )
         self._control_timer = self.create_timer(
             1.0 / self.control_rate_hz, self._on_control_timer
         )
@@ -183,7 +278,15 @@ class AutoControlNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter("enabled", True)
         self.declare_parameter("enable_topic", "/auto/enabled")
+        self.declare_parameter("path_input_mode", "ordered_path")
         self.declare_parameter("lane_topic", "/camera/image_bev_lane")
+        self.declare_parameter("lane_path_topic", "/camera/path_bev_lane")
+        self.declare_parameter(
+            "lane_left_boundary_path_topic", "/camera/path_bev_lane_left"
+        )
+        self.declare_parameter(
+            "lane_right_boundary_path_topic", "/camera/path_bev_lane_right"
+        )
         self.declare_parameter("measured_erpm_topic", "/vesc/measured_erpm")
         self.declare_parameter("connection_status_topic", "/vesc/connected")
         self.declare_parameter("duty_topic", "/vesc/duty")
@@ -213,6 +316,7 @@ class AutoControlNode(Node):
         self.declare_parameter(
             "command_servo_position_topic", "/auto/current_servo_position"
         )
+        self.declare_parameter("planned_path_topic", "/auto/planned_path")
 
         self.declare_parameter("control_rate_hz", 80.0)
         self.declare_parameter("status_log_rate_hz", 2.0)
@@ -225,12 +329,41 @@ class AutoControlNode(Node):
         self.declare_parameter("bev_meter_per_pixel", 0.01)
         self.declare_parameter("lane_pixel_threshold", 128)
         self.declare_parameter("path_minimum_x_m", 0.05)
-        self.declare_parameter("path_maximum_x_m", 2.20)
+        self.declare_parameter("path_maximum_x_m", 2.95)
         self.declare_parameter("path_minimum_points", 8)
         self.declare_parameter("path_minimum_span_m", 0.12)
         self.declare_parameter("path_local_smoothing_window_m", 0.08)
         self.declare_parameter("path_outlier_threshold_m", 0.04)
         self.declare_parameter("path_geometry_window_m", 0.14)
+
+        # Ordered-path corridor and conservative out-in-out local planning.
+        self.declare_parameter("local_path_planner_enabled", True)
+        self.declare_parameter("local_path_expected_lane_width_m", 0.65)
+        self.declare_parameter("local_path_vehicle_width_m", 0.30)
+        self.declare_parameter("local_path_vehicle_wheelbase_m", 0.324)
+        self.declare_parameter("local_path_safety_margin_m", 0.08)
+        self.declare_parameter("local_path_minimum_half_width_m", 0.24)
+        self.declare_parameter("local_path_maximum_half_width_m", 0.48)
+        self.declare_parameter("local_path_width_smoothing_window_m", 0.20)
+        self.declare_parameter("local_path_maximum_center_correction_m", 0.08)
+        self.declare_parameter("local_path_resample_interval_m", 0.02)
+        self.declare_parameter(
+            "local_path_corner_curvature_threshold_per_m", 0.45
+        )
+        self.declare_parameter(
+            "local_path_corner_curvature_smoothing_window_m", 0.16
+        )
+        self.declare_parameter(
+            "local_path_corner_minimum_heading_change_deg", 20.0
+        )
+        self.declare_parameter("local_path_corner_approach_length_m", 0.35)
+        self.declare_parameter("local_path_corner_exit_length_m", 0.40)
+        self.declare_parameter("local_path_outside_offset_fraction", 0.25)
+        self.declare_parameter("local_path_apex_offset_fraction", 0.35)
+        self.declare_parameter("local_path_maximum_offset_m", 0.08)
+        self.declare_parameter("local_path_maximum_offset_slope", 0.70)
+        self.declare_parameter("local_path_racing_line_weight", 0.20)
+        self.declare_parameter("local_path_maximum_curvature_per_m", 1.8)
 
         self.declare_parameter("stanley_gain", 1.40)
         self.declare_parameter("stanley_softening_speed_mps", 0.40)
@@ -258,6 +391,22 @@ class AutoControlNode(Node):
         self.declare_parameter("curvature_lookahead_minimum_x_m", 0.50)
         self.declare_parameter("curvature_lookahead_maximum_x_m", 1.60)
         self.declare_parameter("curvature_percentile", 90.0)
+        self.declare_parameter("spatial_speed_profile_enabled", True)
+        self.declare_parameter(
+            "speed_profile_maximum_longitudinal_acceleration_mps2", 1.2
+        )
+        self.declare_parameter(
+            "speed_profile_maximum_longitudinal_deceleration_mps2", 1.8
+        )
+        self.declare_parameter(
+            "speed_profile_minimum_combined_braking_ratio", 0.20
+        )
+        self.declare_parameter("speed_profile_lookahead_minimum_s_m", 0.05)
+        self.declare_parameter("speed_profile_lookahead_maximum_s_m", 2.8)
+        self.declare_parameter("speed_profile_sample_interval_m", 0.04)
+        self.declare_parameter(
+            "speed_profile_acceleration_control_distance_m", 0.20
+        )
         self.declare_parameter("minimum_duty", 0.070)
         self.declare_parameter("maximum_duty", 0.090)
         self.declare_parameter("duty_rise_rate_per_sec", 0.04)
@@ -289,7 +438,11 @@ class AutoControlNode(Node):
     def _read_parameters(self) -> None:
         string_parameters = (
             "enable_topic",
+            "path_input_mode",
             "lane_topic",
+            "lane_path_topic",
+            "lane_left_boundary_path_topic",
+            "lane_right_boundary_path_topic",
             "measured_erpm_topic",
             "connection_status_topic",
             "duty_topic",
@@ -305,6 +458,7 @@ class AutoControlNode(Node):
             "heading_error_topic",
             "raw_steering_angle_topic",
             "command_servo_position_topic",
+            "planned_path_topic",
         )
         float_parameters = (
             "control_rate_hz",
@@ -321,6 +475,26 @@ class AutoControlNode(Node):
             "path_local_smoothing_window_m",
             "path_outlier_threshold_m",
             "path_geometry_window_m",
+            "local_path_expected_lane_width_m",
+            "local_path_vehicle_width_m",
+            "local_path_vehicle_wheelbase_m",
+            "local_path_safety_margin_m",
+            "local_path_minimum_half_width_m",
+            "local_path_maximum_half_width_m",
+            "local_path_width_smoothing_window_m",
+            "local_path_maximum_center_correction_m",
+            "local_path_resample_interval_m",
+            "local_path_corner_curvature_threshold_per_m",
+            "local_path_corner_curvature_smoothing_window_m",
+            "local_path_corner_minimum_heading_change_deg",
+            "local_path_corner_approach_length_m",
+            "local_path_corner_exit_length_m",
+            "local_path_outside_offset_fraction",
+            "local_path_apex_offset_fraction",
+            "local_path_maximum_offset_m",
+            "local_path_maximum_offset_slope",
+            "local_path_racing_line_weight",
+            "local_path_maximum_curvature_per_m",
             "stanley_gain",
             "stanley_softening_speed_mps",
             "stanley_heading_lookahead_m",
@@ -338,6 +512,13 @@ class AutoControlNode(Node):
             "curvature_lookahead_minimum_x_m",
             "curvature_lookahead_maximum_x_m",
             "curvature_percentile",
+            "speed_profile_maximum_longitudinal_acceleration_mps2",
+            "speed_profile_maximum_longitudinal_deceleration_mps2",
+            "speed_profile_minimum_combined_braking_ratio",
+            "speed_profile_lookahead_minimum_s_m",
+            "speed_profile_lookahead_maximum_s_m",
+            "speed_profile_sample_interval_m",
+            "speed_profile_acceleration_control_distance_m",
             "minimum_duty",
             "maximum_duty",
             "duty_rise_rate_per_sec",
@@ -372,6 +553,12 @@ class AutoControlNode(Node):
         self.electrical_brake_enabled = bool(
             self.get_parameter("electrical_brake_enabled").value
         )
+        self.local_path_planner_enabled = bool(
+            self.get_parameter("local_path_planner_enabled").value
+        )
+        self.spatial_speed_profile_enabled = bool(
+            self.get_parameter("spatial_speed_profile_enabled").value
+        )
         self.steering_servo_inverted = bool(
             self.get_parameter("steering_servo_inverted").value
         )
@@ -404,17 +591,69 @@ class AutoControlNode(Node):
             self.path_minimum_span_m,
             self.path_local_smoothing_window_m,
             self.path_geometry_window_m,
+            self.local_path_expected_lane_width_m,
+            self.local_path_vehicle_width_m,
+            self.local_path_vehicle_wheelbase_m,
+            self.local_path_minimum_half_width_m,
+            self.local_path_maximum_half_width_m,
+            self.local_path_width_smoothing_window_m,
+            self.local_path_resample_interval_m,
+            self.local_path_corner_curvature_threshold_per_m,
+            self.local_path_corner_curvature_smoothing_window_m,
+            self.local_path_corner_minimum_heading_change_deg,
+            self.local_path_corner_approach_length_m,
+            self.local_path_corner_exit_length_m,
+            self.local_path_maximum_offset_slope,
+            self.local_path_maximum_curvature_per_m,
             self.maximum_steering_angle_rad,
             self.minimum_speed_mps,
             self.maximum_lateral_acceleration_mps2,
             self.duty_rise_rate_per_sec,
             self.duty_fall_rate_per_sec,
             self.speed_filter_time_constant_sec,
+            self.speed_profile_maximum_longitudinal_acceleration_mps2,
+            self.speed_profile_maximum_longitudinal_deceleration_mps2,
+            self.speed_profile_lookahead_maximum_s_m,
+            self.speed_profile_sample_interval_m,
+            self.speed_profile_acceleration_control_distance_m,
             self.wheel_diameter_m,
         ) <= 0.0:
             raise ValueError("positive auto-control parameter is not positive")
         if self.maximum_speed_mps < self.minimum_speed_mps:
             raise ValueError("maximum_speed_mps must be >= minimum_speed_mps")
+        if self.path_input_mode not in ("ordered_path", "image"):
+            raise ValueError("path_input_mode must be 'ordered_path' or 'image'")
+        if self.local_path_safety_margin_m < 0.0:
+            raise ValueError("local_path_safety_margin_m must not be negative")
+        if self.local_path_maximum_center_correction_m < 0.0:
+            raise ValueError(
+                "local_path_maximum_center_correction_m must not be negative"
+            )
+        if self.local_path_maximum_half_width_m < self.local_path_minimum_half_width_m:
+            raise ValueError("local path half-width limits are reversed")
+        if (
+            0.5 * self.local_path_vehicle_width_m + self.local_path_safety_margin_m
+            >= self.local_path_maximum_half_width_m
+        ):
+            raise ValueError("vehicle half-width plus safety margin leaves no corridor")
+        if not 0.0 <= self.local_path_outside_offset_fraction <= 1.0:
+            raise ValueError("local_path_outside_offset_fraction must be in [0, 1]")
+        if not 0.0 <= self.local_path_apex_offset_fraction <= 1.0:
+            raise ValueError("local_path_apex_offset_fraction must be in [0, 1]")
+        if not 0.0 <= self.local_path_racing_line_weight <= 1.0:
+            raise ValueError("local_path_racing_line_weight must be in [0, 1]")
+        if self.local_path_maximum_offset_m < 0.0:
+            raise ValueError("local_path_maximum_offset_m must not be negative")
+        if not 0.0 < self.speed_profile_minimum_combined_braking_ratio <= 1.0:
+            raise ValueError(
+                "speed_profile_minimum_combined_braking_ratio must be in (0, 1]"
+            )
+        if (
+            self.speed_profile_lookahead_minimum_s_m < 0.0
+            or self.speed_profile_lookahead_maximum_s_m
+            <= self.speed_profile_lookahead_minimum_s_m
+        ):
+            raise ValueError("speed profile lookahead limits are invalid")
         if not 0.0 < self.minimum_duty <= self.maximum_duty <= 1.0:
             raise ValueError("duty limits must satisfy 0 < minimum <= maximum <= 1")
         if not 0.0 < self.steering_current_weight <= 1.0:
@@ -450,7 +689,109 @@ class AutoControlNode(Node):
         ) <= 0:
             raise ValueError("motor and gear parameters must be positive")
 
+    @staticmethod
+    def _header_stamp_ns(message: Path) -> int:
+        return int(message.header.stamp.sec) * 1_000_000_000 + int(
+            message.header.stamp.nanosec
+        )
+
+    @staticmethod
+    def _points_from_path(message: Path) -> np.ndarray:
+        if not message.poses:
+            return np.empty((0, 2), dtype=float)
+        return np.asarray(
+            [
+                (pose.pose.position.x, pose.pose.position.y)
+                for pose in message.poses
+            ],
+            dtype=float,
+        )
+
+    def _on_left_boundary_path(self, message: Path) -> None:
+        if self.path_input_mode != "ordered_path":
+            return
+        stamp = self._header_stamp_ns(message)
+        self._ordered_left_boundary = (stamp, self._points_from_path(message))
+        self._rebuild_ordered_path(stamp)
+
+    def _on_right_boundary_path(self, message: Path) -> None:
+        if self.path_input_mode != "ordered_path":
+            return
+        stamp = self._header_stamp_ns(message)
+        self._ordered_right_boundary = (stamp, self._points_from_path(message))
+        self._rebuild_ordered_path(stamp)
+
+    def _on_lane_path(self, message: Path) -> None:
+        if self.path_input_mode != "ordered_path":
+            return
+        stamp = self._header_stamp_ns(message)
+        self._ordered_centerline = (
+            stamp,
+            self._points_from_path(message),
+            message.header,
+        )
+        self._rebuild_ordered_path(stamp)
+
+    def _matching_boundary(
+        self, observation: tuple[int, np.ndarray] | None, stamp: int
+    ) -> np.ndarray | None:
+        if observation is None or observation[0] != stamp:
+            return None
+        return observation[1]
+
+    def _rebuild_ordered_path(self, stamp: int) -> None:
+        if self._ordered_centerline is None:
+            return
+        center_stamp, center_points, header = self._ordered_centerline
+        if center_stamp != stamp:
+            return
+        base_path = build_ordered_path_model(
+            center_points,
+            minimum_points=self.path_minimum_points,
+            minimum_span_m=self.path_minimum_span_m,
+            minimum_x_m=self.path_minimum_x_m,
+            maximum_x_m=self.path_maximum_x_m,
+            local_smoothing_window_m=self.path_local_smoothing_window_m,
+            outlier_threshold_m=self.path_outlier_threshold_m,
+            geometry_window_m=self.path_geometry_window_m,
+            resample_interval_m=self.local_path_resample_interval_m,
+        )
+        now = self.get_clock().now()
+        self._last_path_received_time = now
+        self._path_capture_time = self._stamp_or_none(header.stamp)
+        if base_path is None:
+            self._path = None
+            self._latest_planner_corner_count = 0
+            self._publish_planned_path(None, header)
+            return
+        left = self._matching_boundary(self._ordered_left_boundary, stamp)
+        right = self._matching_boundary(self._ordered_right_boundary, stamp)
+        planned = plan_local_racing_path(
+            base_path, left, right, self._local_path_planner_config
+        )
+        self._path = planned.path
+        self._latest_planner_corner_count = planned.detected_corner_count
+        self._publish_planned_path(planned.path, header)
+
+    def _publish_planned_path(self, path: OrderedPathModel | None, header) -> None:
+        message = Path()
+        message.header = header
+        if path is not None:
+            tangent = path.tangent_at_s(path.arc_length_m)
+            for point, direction in zip(path.points_m, tangent):
+                pose = PoseStamped()
+                pose.header = header
+                pose.pose.position.x = float(point[0])
+                pose.pose.position.y = float(point[1])
+                yaw = math.atan2(float(direction[1]), float(direction[0]))
+                pose.pose.orientation.z = math.sin(0.5 * yaw)
+                pose.pose.orientation.w = math.cos(0.5 * yaw)
+                message.poses.append(pose)
+        self._planned_path_pub.publish(message)
+
     def _on_lane_image(self, message: Image) -> None:
+        if self.path_input_mode != "image":
+            return
         now = self.get_clock().now()
         self._last_path_received_time = now
         self._path_capture_time = self._message_time_or_none(message)
@@ -497,10 +838,13 @@ class AutoControlNode(Node):
             )
 
     def _message_time_or_none(self, message: Image) -> Time | None:
-        if message.header.stamp.sec == 0 and message.header.stamp.nanosec == 0:
+        return self._stamp_or_none(message.header.stamp)
+
+    def _stamp_or_none(self, stamp) -> Time | None:
+        if stamp.sec == 0 and stamp.nanosec == 0:
             return None
         return Time.from_msg(
-            message.header.stamp,
+            stamp,
             clock_type=self.get_clock().clock_type,
         )
 
@@ -571,34 +915,57 @@ class AutoControlNode(Node):
             return
 
         assert self._path is not None
-        curvature_per_m = representative_curvature(
-            self._path,
-            lookahead_minimum_x_m=self.curvature_lookahead_minimum_x_m,
-            lookahead_maximum_x_m=self.curvature_lookahead_maximum_x_m,
-            percentile=self.curvature_percentile,
-        )
-        target_speed_mps = curvature_target_speed(
-            curvature_per_m,
-            maximum_lateral_acceleration_mps2=(
-                self.maximum_lateral_acceleration_mps2
-            ),
-            minimum_speed_mps=self.minimum_speed_mps,
-            maximum_speed_mps=self.maximum_speed_mps,
-        )
-        stanley = stanley_control(
-            self._path,
-            speed_mps=self._current_speed_mps,
-            gain=self.stanley_gain,
-            softening_speed_mps=self.stanley_softening_speed_mps,
-            heading_lookahead_m=self.stanley_heading_lookahead_m,
-            maximum_steering_angle_rad=self.maximum_steering_angle_rad,
-            corner_heading_threshold_rad=(
-                self.stanley_corner_heading_threshold_rad
-            ),
-            corner_opposing_correction_ratio=(
-                self.stanley_corner_opposing_correction_ratio
-            ),
-        )
+        if isinstance(self._path, OrderedPathModel):
+            speed_plan = spatial_speed_plan(
+                self._path,
+                current_speed_mps=self._current_speed_mps,
+                config=self._speed_profile_config,
+            )
+            curvature_per_m = speed_plan.representative_curvature_per_m
+            target_speed_mps = speed_plan.target_speed_mps
+            stanley = stanley_control_ordered(
+                self._path,
+                speed_mps=self._current_speed_mps,
+                gain=self.stanley_gain,
+                softening_speed_mps=self.stanley_softening_speed_mps,
+                heading_lookahead_m=self.stanley_heading_lookahead_m,
+                maximum_steering_angle_rad=self.maximum_steering_angle_rad,
+                corner_heading_threshold_rad=(
+                    self.stanley_corner_heading_threshold_rad
+                ),
+                corner_opposing_correction_ratio=(
+                    self.stanley_corner_opposing_correction_ratio
+                ),
+            )
+        else:
+            curvature_per_m = representative_curvature(
+                self._path,
+                lookahead_minimum_x_m=self.curvature_lookahead_minimum_x_m,
+                lookahead_maximum_x_m=self.curvature_lookahead_maximum_x_m,
+                percentile=self.curvature_percentile,
+            )
+            target_speed_mps = curvature_target_speed(
+                curvature_per_m,
+                maximum_lateral_acceleration_mps2=(
+                    self.maximum_lateral_acceleration_mps2
+                ),
+                minimum_speed_mps=self.minimum_speed_mps,
+                maximum_speed_mps=self.maximum_speed_mps,
+            )
+            stanley = stanley_control(
+                self._path,
+                speed_mps=self._current_speed_mps,
+                gain=self.stanley_gain,
+                softening_speed_mps=self.stanley_softening_speed_mps,
+                heading_lookahead_m=self.stanley_heading_lookahead_m,
+                maximum_steering_angle_rad=self.maximum_steering_angle_rad,
+                corner_heading_threshold_rad=(
+                    self.stanley_corner_heading_threshold_rad
+                ),
+                corner_opposing_correction_ratio=(
+                    self.stanley_corner_opposing_correction_ratio
+                ),
+            )
 
         corner_sign_reset_used = (
             abs(stanley.heading_error_rad)
@@ -800,7 +1167,8 @@ class AutoControlNode(Node):
         path_points = self._path.point_count if self._path is not None else 0
         self.get_logger().info(
             "Auto status | state=%s | path_points=%d | speed=%.2f/%.2fm/s | "
-            "curvature=%.3f/m | cte=%+.3fm | heading=%+.1fdeg | guard=%s | "
+            "curvature=%.3f/m | planner_corners=%d | cte=%+.3fm | "
+            "heading=%+.1fdeg | guard=%s | "
             "raw/final_steering=%+.1f/%+.1fdeg | servo=%.3f | "
             "motor=%s | duty=%.4f | brake=%.2fA"
             % (
@@ -809,6 +1177,7 @@ class AutoControlNode(Node):
                 self._current_speed_mps,
                 self._latest_target_speed_mps,
                 self._latest_curvature_per_m,
+                self._latest_planner_corner_count,
                 self._latest_cross_track_error_m,
                 math.degrees(self._latest_heading_error_rad),
                 "on" if self._latest_direction_guard_used else "off",

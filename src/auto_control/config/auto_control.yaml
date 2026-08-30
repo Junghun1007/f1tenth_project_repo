@@ -5,7 +5,12 @@ auto_control:
     # 로 언제든 duty 0과 중앙 조향으로 전환할 수 있다.
     enabled: true
     enable_topic: "/auto/enabled"
+    # ordered_path가 기본이다. 이전 mono8 행 평균 경로는 비교용 image 모드다.
+    path_input_mode: "ordered_path"
     lane_topic: "/camera/image_bev_lane"
+    lane_path_topic: "/camera/path_bev_lane"
+    lane_left_boundary_path_topic: "/camera/path_bev_lane_left"
+    lane_right_boundary_path_topic: "/camera/path_bev_lane_right"
     measured_erpm_topic: "/vesc/measured_erpm"
     connection_status_topic: "/vesc/connected"
     duty_topic: "/vesc/duty"
@@ -22,6 +27,7 @@ auto_control:
     heading_error_topic: "/auto/heading_error_rad"
     raw_steering_angle_topic: "/auto/raw_steering_angle_rad"
     command_servo_position_topic: "/auto/current_servo_position"
+    planned_path_topic: "/auto/planned_path"
 
     control_rate_hz: 80.0
     status_log_rate_hz: 2.0
@@ -43,12 +49,36 @@ auto_control:
     # 급코너에서 중앙선이 짧게 남아도 정지하지 않도록 X=5cm부터
     # 8개 점과 12cm span만 확보되면 경로로 허용한다.
     path_minimum_x_m: 0.05
-    path_maximum_x_m: 2.20
+    path_maximum_x_m: 2.95
     path_minimum_points: 8
     path_minimum_span_m: 0.12
     path_local_smoothing_window_m: 0.08
     path_outlier_threshold_m: 0.04
     path_geometry_window_m: 0.12
+
+    # 양쪽 경계 곡률이 같다고 가정하지 않고 각 경계까지 거리를 독립 측정한다.
+    local_path_planner_enabled: true
+    local_path_expected_lane_width_m: 0.65
+    local_path_vehicle_width_m: 0.30
+    local_path_vehicle_wheelbase_m: 0.324
+    local_path_safety_margin_m: 0.08
+    local_path_minimum_half_width_m: 0.24
+    local_path_maximum_half_width_m: 0.48
+    local_path_width_smoothing_window_m: 0.20
+    local_path_maximum_center_correction_m: 0.08
+    local_path_resample_interval_m: 0.02
+    local_path_corner_curvature_threshold_per_m: 0.45
+    local_path_corner_curvature_smoothing_window_m: 0.16
+    local_path_corner_minimum_heading_change_deg: 20.0
+    local_path_corner_approach_length_m: 0.35
+    local_path_corner_exit_length_m: 0.40
+    local_path_outside_offset_fraction: 0.25
+    local_path_apex_offset_fraction: 0.35
+    local_path_maximum_offset_m: 0.08
+    local_path_maximum_offset_slope: 0.70
+    # 실차 검증 전 보수적으로 계산 오프셋의 20%만 적용한다.
+    local_path_racing_line_weight: 0.20
+    local_path_maximum_curvature_per_m: 1.8
 
     # Stanley: +조향각은 차량 좌표 +Y인 좌회전이다.
     stanley_gain: 1.55
@@ -77,6 +107,17 @@ auto_control:
     curvature_lookahead_minimum_x_m: 0.50
     curvature_lookahead_maximum_x_m: 1.60
     curvature_percentile: 90.0
+
+    # 전방 곡률 제한속도에 backward braking pass와 friction-circle 제한을
+    # 적용해 진입 감속 후 apex로 갈수록 제동 여유를 줄인다.
+    spatial_speed_profile_enabled: true
+    speed_profile_maximum_longitudinal_acceleration_mps2: 1.2
+    speed_profile_maximum_longitudinal_deceleration_mps2: 1.8
+    speed_profile_minimum_combined_braking_ratio: 0.20
+    speed_profile_lookahead_minimum_s_m: 0.05
+    speed_profile_lookahead_maximum_s_m: 2.80
+    speed_profile_sample_interval_m: 0.04
+    speed_profile_acceleration_control_distance_m: 0.20
 
     # 유효 경로가 생기면 manual_control과 같이 start duty를 즉시 적용한 뒤
     # PID+feed-forward 목표까지 rate limit으로 이동한다. 경로 유실은 즉시 0이다.

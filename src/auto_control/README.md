@@ -6,17 +6,22 @@ by manual driving. Do not run `manual_drive.launch.py` at the same time.
 
 ## Control pipeline
 
-1. Subscribe to `/camera/image_bev_lane` (`mono8`).
-2. Convert each occupied row to vehicle coordinates (`+X` forward, `+Y` left).
-3. Keep the measured centerline polyline and suppress only local bumps with a
-   short robust straight-segment smoother; no global polynomial is fitted.
-4. Calculate Stanley cross-track error as the signed normal distance from the
+1. Subscribe to the ordered center/left/right `nav_msgs/Path` outputs from
+   `bev_processor`. `path_input_mode:=image` retains the previous mono8 mode.
+2. Preserve arc-length order through horizontal sharp corners instead of
+   reducing the path to one point per image row.
+3. Measure left/right boundary clearance independently, correct a biased BEV
+   center where both boundaries are valid, and build a vehicle-width-aware
+   corridor. No equal boundary-curvature assumption is made.
+4. Apply a smooth, corridor-clamped outside-inside-outside offset and publish
+   the path actually followed as `/auto/planned_path`.
+5. Calculate Stanley cross-track error as the signed normal distance from the
    real front-axle origin and heading from a short local centerline chord.
-5. Calculate representative forward curvature over `X=0.5..1.6m`.
-6. Convert curvature to a `0.8..1.8m/s` target using the configured maximum
-   lateral acceleration.
+6. Build a spatial curvature speed limit, run a backward braking pass, and
+   reduce available longitudinal deceleration toward the apex using a combined
+   lateral/longitudinal acceleration constraint.
 7. Convert VESC measured ERPM to vehicle speed and apply PID plus a linear
-   duty feed-forward, bounded to `0.070..0.090`.
+   duty feed-forward within the configured bounds.
 8. When measured speed exceeds target by the configured entry threshold,
    replace duty control with ramp-limited `COMM_SET_CURRENT_BRAKE`. Release at
    the lower exit threshold, send brake current zero for one cycle, and only
@@ -51,6 +56,16 @@ Run without any GUI preview:
 
 ```bash
 ros2 launch vehicle_bringup auto_drive.launch.py preview_enabled:=false
+```
+
+Supply independent test YAML files to the two nodes. Explicit launch arguments
+after these paths override the selected YAML values for that run:
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  bev_params_file:=/path/to/bev_test.yaml \
+  auto_control_params_file:=/path/to/auto_control_test.yaml \
+  local_path_racing_line_weight:=0.20
 ```
 
 Start disarmed for actuator/diagnostic checks:
@@ -94,7 +109,9 @@ hardware power cutoff reachable.
 ## Main tuning parameters
 
 The complete Korean symptom-based tuning guide is installed as
-`share/auto_control/AUTO_CONTROL_PARAMETER_TUNING_KO.txt`.
+`share/auto_control/AUTO_CONTROL_PARAMETER_TUNING_KO.txt`. Corridor, racing
+line, and spatial-speed parameters are covered separately in
+`share/auto_control/LOCAL_PATH_PLANNER_PARAMETER_TUNING_KO.txt`.
 
 - `stanley_gain`: larger values correct lateral displacement more strongly.
 - `stanley_heading_lookahead_m`: larger values use a farther, smoother heading.
@@ -131,6 +148,8 @@ The complete Korean symptom-based tuning guide is installed as
 
 Diagnostic topics are `/auto/current_duty`, `/auto/current_brake_current`,
 `/auto/target_speed`, `/auto/current_speed`, `/auto/path_curvature`, and
-`/auto/steering_angle_rad`. Stanley steering diagnostics are available at
+`/auto/steering_angle_rad`. The ordered inputs are `/camera/path_bev_lane`,
+`/camera/path_bev_lane_left`, and `/camera/path_bev_lane_right`; the selected
+route is `/auto/planned_path`. Stanley steering diagnostics are available at
 `/auto/cross_track_error_m`, `/auto/heading_error_rad`,
 `/auto/raw_steering_angle_rad`, and `/auto/current_servo_position`.

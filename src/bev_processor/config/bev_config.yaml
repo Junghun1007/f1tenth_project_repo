@@ -186,6 +186,11 @@ bev_processor:
     # lane_output_topic은 최종 주행 중심선만 흰색인 mono8 영상이다.
     lane_seed_detection_enabled: true
     lane_output_topic: "/camera/image_bev_lane"
+    # 순서가 보존된 중앙선과 실제 좌우 경계를 함께 발행한다. auto_control은
+    # 이 Path들을 사용하므로 수평 급코너를 행 평균으로 다시 축약하지 않는다.
+    lane_centerline_path_topic: "/camera/path_bev_lane"
+    lane_left_boundary_path_topic: "/camera/path_bev_lane_left"
+    lane_right_boundary_path_topic: "/camera/path_bev_lane_right"
     # true면 enhanced Top-hat 위에 ROI와 모든 판정 근거를 표시한다.
     # 노랑=ROI, 초록=엄격 대비, 주황=완화 대비, 청록=왼쪽, 자홍=오른쪽,
     # 빨간 X=기울기 급변 절단점이다.
@@ -301,7 +306,8 @@ bev_processor:
     # 않으며, 양쪽 재검출또는 회전 방향 반전 시 현재 방향으로 재판정한다.
     # outward_bias는 폭 검증값은 바꾸지 않고 코너 중심선만 바깥쪽으로 옮긴다.
     lane_centerline_corner_longer_boundary_enabled: true
-    lane_centerline_corner_outward_bias_m: 0.01
+    # 아웃-인-아웃 오프셋은 auto_control의 corridor planner가 적용한다.
+    lane_centerline_corner_outward_bias_m: 0.00
     lane_centerline_corner_enter_heading_change_deg: 40.0
     lane_centerline_corner_exit_heading_change_deg: 20.0
 

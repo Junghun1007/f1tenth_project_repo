@@ -287,6 +287,10 @@ void testPairProducesExplicitCenterline()
     detection.centerline_direct_midpoint_count >= 3,
     "lane pair did not use perpendicular midpoint correspondences");
   require(
+    detection.left_boundary_points.size() >= 3U &&
+    detection.right_boundary_points.size() >= 3U,
+    "ordered sliding-window boundaries were not exposed for planning");
+  require(
     std::abs(centerColumnNearRow(detection, 150.0) - 50.0) <= 1.0,
     "pair centerline is not between the two boundaries");
   require(

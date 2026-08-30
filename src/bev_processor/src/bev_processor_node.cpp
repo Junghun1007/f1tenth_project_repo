@@ -21,7 +21,9 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
+#include <nav_msgs/msg/path.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
@@ -49,6 +51,9 @@ struct BevFrame
   cv::Mat image;
   cv::Mat lane_mask;
   cv::Mat lane_preview;
+  std::vector<cv::Point2d> lane_centerline_points;
+  std::vector<cv::Point2d> lane_left_boundary_points;
+  std::vector<cv::Point2d> lane_right_boundary_points;
   std_msgs::msg::Header header;
   SteadyClock::time_point input_received_at;
   std::uint64_t generation{0U};
@@ -123,6 +128,48 @@ std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
       static_cast<std::size_t>(row) * message->step,
       frame.image.ptr(row),
       message->step);
+  }
+  return message;
+}
+
+cv::Point2d bevPixelToVehicle(
+  const cv::Point2d & point,
+  const BevConfig & config)
+{
+  return {
+    config.x_max_m - (point.y + 0.5) * config.meter_per_pixel,
+    config.y_max_m - (point.x + 0.5) * config.meter_per_pixel};
+}
+
+std::unique_ptr<nav_msgs::msg::Path> makePathMessage(
+  const BevFrame & frame,
+  const std::vector<cv::Point2d> & image_points,
+  const BevConfig & config,
+  const std::string & frame_id)
+{
+  auto message = std::make_unique<nav_msgs::msg::Path>();
+  message->header = frame.header;
+  message->header.frame_id = frame_id;
+  message->poses.reserve(image_points.size());
+  for (std::size_t index = 0U; index < image_points.size(); ++index) {
+    const cv::Point2d vehicle = bevPixelToVehicle(image_points[index], config);
+    std::size_t first = index > 0U ? index - 1U : index;
+    std::size_t last = index + 1U < image_points.size() ? index + 1U : index;
+    cv::Point2d tangent(1.0, 0.0);
+    if (first != last) {
+      tangent =
+        bevPixelToVehicle(image_points[last], config) -
+        bevPixelToVehicle(image_points[first], config);
+    }
+    const double yaw = std::atan2(tangent.y, tangent.x);
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header = message->header;
+    pose.pose.position.x = vehicle.x;
+    pose.pose.position.y = vehicle.y;
+    pose.pose.position.z = 0.0;
+    pose.pose.orientation.z = std::sin(0.5 * yaw);
+    pose.pose.orientation.w = std::cos(0.5 * yaw);
+    message->poses.push_back(std::move(pose));
   }
   return message;
 }
@@ -280,6 +327,14 @@ public:
     if (lane_seed_detection_enabled_) {
       lane_output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
         lane_output_topic_, image_qos);
+      lane_centerline_path_publisher_ = create_publisher<nav_msgs::msg::Path>(
+        lane_centerline_path_topic_, image_qos);
+      lane_left_boundary_path_publisher_ =
+        create_publisher<nav_msgs::msg::Path>(
+        lane_left_boundary_path_topic_, image_qos);
+      lane_right_boundary_path_publisher_ =
+        create_publisher<nav_msgs::msg::Path>(
+        lane_right_boundary_path_topic_, image_qos);
     }
     preview_stop_publisher_ = create_publisher<std_msgs::msg::Bool>(
       preview_stop_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
@@ -616,6 +671,12 @@ private:
     declare_parameter<bool>("lane_seed_detection_enabled", true);
     declare_parameter<std::string>(
       "lane_output_topic", "/camera/image_bev_lane");
+    declare_parameter<std::string>(
+      "lane_centerline_path_topic", "/camera/path_bev_lane");
+    declare_parameter<std::string>(
+      "lane_left_boundary_path_topic", "/camera/path_bev_lane_left");
+    declare_parameter<std::string>(
+      "lane_right_boundary_path_topic", "/camera/path_bev_lane_right");
     declare_parameter<bool>("lane_preview_enabled", true);
     declare_parameter<int>("lane_gray_mode", 0);
     declare_parameter<int>("lane_top_hat_shape", 1);
@@ -917,6 +978,12 @@ private:
     lane_seed_detection_enabled_ =
       get_parameter("lane_seed_detection_enabled").as_bool();
     lane_output_topic_ = get_parameter("lane_output_topic").as_string();
+    lane_centerline_path_topic_ =
+      get_parameter("lane_centerline_path_topic").as_string();
+    lane_left_boundary_path_topic_ =
+      get_parameter("lane_left_boundary_path_topic").as_string();
+    lane_right_boundary_path_topic_ =
+      get_parameter("lane_right_boundary_path_topic").as_string();
     lane_preview_enabled_ =
       get_parameter("lane_preview_enabled").as_bool();
     lane_preprocess_config_.enabled = lane_seed_detection_enabled_;
@@ -1138,10 +1205,15 @@ private:
               "capture directory/topic must not be empty and button must "
               "be non-negative");
     }
-    if (lane_seed_detection_enabled_ && lane_output_topic_.empty()) {
+    if (
+      lane_seed_detection_enabled_ &&
+      (lane_output_topic_.empty() || lane_centerline_path_topic_.empty() ||
+      lane_left_boundary_path_topic_.empty() ||
+      lane_right_boundary_path_topic_.empty()))
+    {
       throw std::invalid_argument(
-              "lane_output_topic must not be empty when lane seed detection "
-              "is enabled");
+              "lane image and ordered path topics must not be empty when "
+              "lane seed detection is enabled");
     }
     if (
       camera_model_.image_width <= 1 ||
@@ -1532,6 +1604,11 @@ private:
           updateMaximum(lane_process_ns_max_interval_, lane_process_ns);
           output->lane_mask = std::move(lane.seed_mask);
           output->lane_preview = std::move(lane.preview);
+          output->lane_centerline_points = std::move(lane.centerline_points);
+          output->lane_left_boundary_points =
+            std::move(lane.left_boundary_points);
+          output->lane_right_boundary_points =
+            std::move(lane.right_boundary_points);
           latest_lane_track_count_.store(
             lane.accepted_track_count, std::memory_order_relaxed);
           latest_lane_row_track_count_.store(
@@ -1641,6 +1718,20 @@ private:
         if (lane_seed_detection_enabled_) {
           lane_output_publisher_->publish(
             makeMono8Message(*frame, output_frame_id_));
+          // Boundaries are sent first. The centerline is the synchronization
+          // edge used by auto_control to rebuild a corridor for this stamp.
+          lane_left_boundary_path_publisher_->publish(
+            makePathMessage(
+              *frame, frame->lane_left_boundary_points,
+              bev_config_, output_frame_id_));
+          lane_right_boundary_path_publisher_->publish(
+            makePathMessage(
+              *frame, frame->lane_right_boundary_points,
+              bev_config_, output_frame_id_));
+          lane_centerline_path_publisher_->publish(
+            makePathMessage(
+              *frame, frame->lane_centerline_points,
+              bev_config_, output_frame_id_));
         }
         const auto published_at = SteadyClock::now();
         recordPipelineLatency(
@@ -2160,6 +2251,9 @@ private:
   std::atomic<bool> capture_joy_button_pressed_{false};
   bool lane_seed_detection_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
+  std::string lane_centerline_path_topic_{"/camera/path_bev_lane"};
+  std::string lane_left_boundary_path_topic_{"/camera/path_bev_lane_left"};
+  std::string lane_right_boundary_path_topic_{"/camera/path_bev_lane_right"};
   bool lane_preview_enabled_{true};
   CudaLanePreprocessConfig lane_preprocess_config_{};
   BevLaneSeedDetectorConfig lane_seed_config_{};
@@ -2187,6 +2281,12 @@ private:
     input_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr lane_output_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr
+    lane_centerline_path_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr
+    lane_left_boundary_path_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr
+    lane_right_boundary_path_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr preview_stop_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr
     capture_joy_subscription_;

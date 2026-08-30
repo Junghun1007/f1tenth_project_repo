@@ -25,6 +25,7 @@ find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(depthai 3.6 CONFIG QUIET)
@@ -126,6 +127,7 @@ ament_target_dependencies(bev_processor_component
   rclcpp
   rclcpp_components
   geometry_msgs
+  nav_msgs
   sensor_msgs
   std_msgs
 )
@@ -193,5 +195,5 @@ install(
 
 ament_export_include_directories(include)
 ament_export_dependencies(
-  camera_driver OpenCV rclcpp_components geometry_msgs)
+  camera_driver OpenCV rclcpp_components geometry_msgs nav_msgs)
 ament_package()

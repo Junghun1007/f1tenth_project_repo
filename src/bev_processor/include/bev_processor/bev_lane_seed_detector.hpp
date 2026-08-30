@@ -131,6 +131,12 @@ struct BevLaneSeedDetection
   cv::Mat preview;
   BevLaneSeed left;
   BevLaneSeed right;
+  // Ordered sliding-window boundary centroids used by centerline geometry.
+  // Points run from the vehicle-near end toward the visible road ahead.  They
+  // are exposed separately from the conservative seed evidence so downstream
+  // planning does not have to recover a polyline from a raster mask.
+  std::vector<cv::Point2d> left_boundary_points;
+  std::vector<cv::Point2d> right_boundary_points;
   std::vector<cv::Point2d> centerline_points;
   BevLaneCenterlineSource centerline_source{BevLaneCenterlineSource::NONE};
   bool centerline_transition_used{false};
