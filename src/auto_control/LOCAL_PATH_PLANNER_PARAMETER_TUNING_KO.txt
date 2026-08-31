@@ -105,12 +105,31 @@ local_path_corner_minimum_heading_change_deg: 20.0
 ------------------------
 
 local_path_corner_approach_length_m: 0.35
-  코너 시작 전부터 바깥쪽으로 이동하는 거리. 조향이 늦으면 증가하고, 코너를 너무
-  일찍 돌아 차선을 밟으면 감소한다. 현재 카메라 시야와 속도에서 0.25~0.60m 권장.
+  중앙에서 바깥쪽으로 이동하는 전환 거리다. 실제 바깥 위치 도달점은 아래의
+  pre_turn_outside_hold만큼 코너 시작보다 앞이다. 조향이 늦으면 증가하고, 너무
+  먼 직선부터 움직이면 감소한다. 현재 카메라 시야에서 0.35~0.80m 권장.
+
+local_path_corner_setup_transition_length_m: 0.0
+  위 approach의 새 명시적 이름이다. 0이면 기존 approach 값을 사용해 이전 테스트
+  YAML과 호환된다. 0보다 크게 지정하면 이 값이 우선하며 0.50~0.80m부터 시험한다.
+
+local_path_corner_pre_turn_outside_hold_m: 0.25
+  코너 시작 전에 바깥 위치에 완전히 도달한 뒤 그 위치를 유지하는 거리다.
+  0이면 이전처럼 코너 시작점에서야 바깥 위치에 도달한다. 진입 준비가 늦으면
+  0.20~0.40m로 늘리고, 다음 반대 방향 코너와 충돌하면 줄인다.
 
 local_path_corner_exit_length_m: 0.40
-  코너 종료 후 바깥쪽에서 기준 중앙으로 복귀하는 거리. 탈출 조향이 급하면 증가,
-  다음 코너 대응이 늦으면 감소한다.
+  아래 post-corner 유지 거리가 끝난 뒤 바깥쪽에서 기준 중앙으로 복귀하는 거리다.
+  중앙 복귀가 급하면 증가하고, 긴 직선에서 중앙 복귀가 지나치게 늦으면 감소한다.
+
+local_path_post_corner_offset_hold_distance_m: 0.50
+  코너 종료 후 바깥 탈출 위치를 그대로 유지하는 주행거리다. 코너가 BEV 시야에서
+  사라져도 ERPM 실측 속도를 적분한 누적거리로 유지한다. 0은 상태 유지를 끈다.
+
+local_path_same_direction_corner_link_maximum_gap_m: 1.50
+  같은 방향 연속 코너 사이 간격이 이 값 이하면 이전 코너의 바깥 탈출 위치와
+  다음 코너의 바깥 진입 위치를 연결한다. 중간에 중앙으로 들어갔다 다시 나가는
+  불필요한 조향이 있으면 늘린다. S자처럼 방향이 반대인 코너에는 적용되지 않는다.
 
 local_path_outside_offset_fraction: 0.25
   진입/탈출에서 사용할 수 있는 측면 여유 중 몇 %를 바깥쪽으로 사용할지 결정한다.
@@ -182,7 +201,9 @@ electrical_brake_enabled
 ----------------------
 
 1) 차량 정지/dry-run: /auto/planned_path를 RViz로 보고 좌회전은
-   바깥 오른쪽 -> apex 왼쪽 -> 탈출 오른쪽인지 확인한다. 우회전은 반대다.
+   바깥 오른쪽 도달 및 유지 -> apex -> 탈출 오른쪽 유지인지 확인한다.
+   우회전은 반대다. 같은 방향 연속 코너 사이에서는 노란 계획 경로가 중앙으로
+   돌아오지 않는지도 확인한다.
 2) local_path_racing_line_weight=0.0, spatial_speed_profile_enabled=false로
    ordered Path가 기존 중앙선 주행과 같은 방향인지 확인한다.
 3) weight=0.2, minimum speed로 차선 여유와 횡오차를 기록한다.

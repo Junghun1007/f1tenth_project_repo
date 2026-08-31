@@ -70,8 +70,20 @@ auto_control:
     local_path_corner_curvature_threshold_per_m: 0.45
     local_path_corner_curvature_smoothing_window_m: 0.16
     local_path_corner_minimum_heading_change_deg: 20.0
+    # 코너 시작 25cm 전까지 바깥 위치에 도달하도록 그보다 approach
+    # 길이만큼 더 앞에서 이동을 시작하고, 바깥 위치를 유지한 뒤 turn-in한다.
     local_path_corner_approach_length_m: 0.35
+    # 0이면 기존 approach 값을 전환 거리로 사용한다. 0보다 크면 이 값이
+    # 우선되어 기존 테스트 YAML을 유지하면서 새 이름으로 조정할 수 있다.
+    local_path_corner_setup_transition_length_m: 0.0
+    local_path_corner_pre_turn_outside_hold_m: 0.25
+    # 코너가 전방 BEV에서 사라져도 주행거리 50cm 동안 바깥 위치를
+    # 기억한다. 이후 exit 길이에 걸쳐 중앙으로 천천히 복귀한다.
     local_path_corner_exit_length_m: 0.40
+    local_path_post_corner_offset_hold_distance_m: 0.50
+    # 같은 방향 다음 코너가 1.5m 이내면 중간에 중앙으로 복귀하지 않고
+    # 이전 코너의 바깥 탈출 위치를 다음 코너의 바깥 진입과 연결한다.
+    local_path_same_direction_corner_link_maximum_gap_m: 1.50
     local_path_outside_offset_fraction: 0.25
     local_path_apex_offset_fraction: 0.35
     local_path_maximum_offset_m: 0.08

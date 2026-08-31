@@ -104,7 +104,11 @@ class LocalPathPlannerConfig:
     corner_curvature_smoothing_window_m: float = 0.16
     corner_minimum_heading_change_deg: float = 20.0
     corner_approach_length_m: float = 0.35
+    corner_setup_transition_length_m: float = 0.0
+    corner_pre_turn_outside_hold_m: float = 0.25
     corner_exit_length_m: float = 0.40
+    post_corner_offset_hold_distance_m: float = 0.50
+    same_direction_corner_link_maximum_gap_m: float = 1.50
     outside_offset_fraction: float = 0.25
     apex_offset_fraction: float = 0.35
     maximum_offset_m: float = 0.08
@@ -122,6 +126,108 @@ class PlannedPath:
     left_half_width_m: np.ndarray
     right_half_width_m: np.ndarray
     detected_corner_count: int
+    detected_corners: tuple["DetectedCorner", ...]
+
+
+@dataclass(frozen=True)
+class DetectedCorner:
+    start_s_m: float
+    apex_s_m: float
+    end_s_m: float
+    turn_direction: int
+
+
+class CornerOffsetMemory:
+    """Retain a passed corner's outside side across local BEV replans."""
+
+    def __init__(
+        self,
+        *,
+        activation_distance_m: float,
+        same_direction_link_maximum_gap_m: float,
+    ) -> None:
+        self.activation_distance_m = max(0.0, activation_distance_m)
+        self.same_direction_link_maximum_gap_m = max(
+            0.0, same_direction_link_maximum_gap_m
+        )
+        self.reset()
+
+    def reset(self) -> None:
+        self._active_turn_direction = 0
+        self._retained_turn_direction = 0
+        self._retained_started_distance_m = 0.0
+
+    def retained_state(
+        self,
+        cumulative_travel_distance_m: float,
+        *,
+        hold_distance_m: float,
+        return_length_m: float,
+    ) -> tuple[int, float]:
+        if self._retained_turn_direction == 0:
+            return 0, 0.0
+        traveled = max(
+            0.0,
+            cumulative_travel_distance_m - self._retained_started_distance_m,
+        )
+        maximum_retention = max(0.0, hold_distance_m) + max(
+            0.0, return_length_m
+        )
+        if traveled >= maximum_retention:
+            self._retained_turn_direction = 0
+            return 0, 0.0
+        return self._retained_turn_direction, traveled
+
+    def observe(
+        self,
+        corners: tuple[DetectedCorner, ...],
+        cumulative_travel_distance_m: float,
+    ) -> bool:
+        before = (
+            self._active_turn_direction,
+            self._retained_turn_direction,
+            self._retained_started_distance_m,
+        )
+        first = corners[0] if corners else None
+
+        # A retained outside side must not fight an approaching opposite turn.
+        opposite_approaching = (
+            first is not None
+            and (
+                first.turn_direction != self._retained_turn_direction
+                if self._retained_turn_direction != 0
+                else first.turn_direction != self._active_turn_direction
+            )
+            and first.start_s_m
+            <= self.same_direction_link_maximum_gap_m
+        )
+        if opposite_approaching and self._retained_turn_direction != 0:
+            self._retained_turn_direction = 0
+
+        near = (
+            first
+            if first is not None
+            and first.start_s_m <= self.activation_distance_m
+            else None
+        )
+        if near is not None:
+            self._active_turn_direction = near.turn_direction
+        elif self._active_turn_direction != 0:
+            if opposite_approaching:
+                self._retained_turn_direction = 0
+            else:
+                self._retained_turn_direction = self._active_turn_direction
+                self._retained_started_distance_m = max(
+                    0.0, cumulative_travel_distance_m
+                )
+            self._active_turn_direction = 0
+
+        after = (
+            self._active_turn_direction,
+            self._retained_turn_direction,
+            self._retained_started_distance_m,
+        )
+        return after != before
 
 
 @dataclass(frozen=True)
@@ -434,6 +540,9 @@ def plan_local_racing_path(
     left_boundary_m: np.ndarray | None,
     right_boundary_m: np.ndarray | None,
     config: LocalPathPlannerConfig,
+    *,
+    retained_outside_turn_direction: int = 0,
+    retained_outside_distance_traveled_m: float = 0.0,
 ) -> PlannedPath:
     raw_points = base_path.points_m
     s = base_path.arc_length_m
@@ -469,6 +578,7 @@ def plan_local_racing_path(
             left_half_width_m=left_width,
             right_half_width_m=right_width,
             detected_corner_count=0,
+            detected_corners=(),
         )
 
     # The reconstructed BEV center can remain biased toward the boundary that
@@ -537,7 +647,7 @@ def plan_local_racing_path(
     )
     corner_mask = np.abs(curvature) >= config.corner_curvature_threshold_per_m
     normalized_offset = np.zeros(points.shape[0])
-    corners = 0
+    detected_corners: list[DetectedCorner] = []
     index = 0
     while index < corner_mask.size:
         if not corner_mask[index]:
@@ -566,24 +676,156 @@ def plan_local_racing_path(
             continue
         turn_direction = 1.0 if float(np.sum(segment_curvature)) >= 0.0 else -1.0
         apex = first + int(np.argmax(np.abs(segment_curvature)))
-        approach_start = max(0.0, s[first] - config.corner_approach_length_m)
+        detected_corners.append(
+            DetectedCorner(
+                start_s_m=float(s[first]),
+                apex_s_m=float(s[apex]),
+                end_s_m=float(s[last]),
+                turn_direction=int(turn_direction),
+            )
+        )
+        outside_reached = max(
+            0.0,
+            s[first] - config.corner_pre_turn_outside_hold_m,
+        )
+        setup_transition_length = (
+            config.corner_setup_transition_length_m
+            if config.corner_setup_transition_length_m > 0.0
+            else config.corner_approach_length_m
+        )
+        approach_start = max(
+            0.0,
+            outside_reached - setup_transition_length,
+        )
+        post_corner_hold_end = min(
+            centered_path.total_length_m,
+            s[last] + config.post_corner_offset_hold_distance_m,
+        )
         exit_end = min(
             centered_path.total_length_m,
-            s[last] + config.corner_exit_length_m,
+            post_corner_hold_end + config.corner_exit_length_m,
         )
         outside = -turn_direction * config.outside_offset_fraction
         inside = turn_direction * config.apex_offset_fraction
         anchors: list[tuple[float, float]] = []
-        anchors.append((approach_start, 0.0 if approach_start < s[first] else outside))
-        anchors.extend(
-            ((float(s[first]), outside), (float(s[apex]), inside), (float(s[last]), outside))
+        anchors.append(
+            (
+                approach_start,
+                0.0 if approach_start < outside_reached else outside,
+            )
         )
-        anchors.append((exit_end, 0.0 if exit_end > s[last] else outside))
+        anchors.extend(
+            (
+                (float(outside_reached), outside),
+                (float(s[first]), outside),
+                (float(s[apex]), inside),
+                (float(s[last]), outside),
+                (float(post_corner_hold_end), outside),
+            )
+        )
+        anchors.append(
+            (
+                exit_end,
+                0.0 if exit_end > post_corner_hold_end else outside,
+            )
+        )
         candidate = _profile_from_anchors(s, anchors)
         use = np.abs(candidate) > np.abs(normalized_offset)
         normalized_offset[use] = candidate[use]
-        corners += 1
         index += 1
+
+    # Do not return toward the center between nearby same-direction corners.
+    # The first corner's outside exit is already the correct setup side for
+    # the next corner, so bridge the gap at the full normalized outside value.
+    for first_corner, next_corner in zip(
+        detected_corners[:-1], detected_corners[1:]
+    ):
+        gap_m = next_corner.start_s_m - first_corner.end_s_m
+        if (
+            first_corner.turn_direction != next_corner.turn_direction
+            or gap_m < 0.0
+            or gap_m > config.same_direction_corner_link_maximum_gap_m
+        ):
+            continue
+        next_outside_reached = max(
+            first_corner.end_s_m,
+            next_corner.start_s_m - config.corner_pre_turn_outside_hold_m,
+        )
+        selected = (s >= first_corner.end_s_m) & (
+            s <= next_outside_reached
+        )
+        outside = (
+            -float(first_corner.turn_direction)
+            * config.outside_offset_fraction
+        )
+        normalized_offset[selected] = outside
+
+    retained_direction = int(np.sign(retained_outside_turn_direction))
+    if retained_direction != 0:
+        retained_travel = max(0.0, retained_outside_distance_traveled_m)
+        retained_outside = (
+            -float(retained_direction) * config.outside_offset_fraction
+        )
+        next_same_direction = next(
+            (
+                corner
+                for corner in detected_corners
+                if corner.turn_direction == retained_direction
+                and corner.start_s_m
+                <= config.same_direction_corner_link_maximum_gap_m
+            ),
+            None,
+        )
+        if next_same_direction is not None:
+            next_outside_reached = max(
+                0.0,
+                next_same_direction.start_s_m
+                - config.corner_pre_turn_outside_hold_m,
+            )
+            link_end = max(
+                next_outside_reached,
+                next_same_direction.start_s_m,
+            )
+            retained_candidate = _profile_from_anchors(
+                s,
+                [(0.0, retained_outside), (link_end, retained_outside)],
+            )
+        else:
+            hold_remaining = max(
+                0.0,
+                config.post_corner_offset_hold_distance_m - retained_travel,
+            )
+            return_elapsed = max(
+                0.0,
+                retained_travel - config.post_corner_offset_hold_distance_m,
+            )
+            return_length = max(config.corner_exit_length_m, 1.0e-6)
+            if hold_remaining > 0.0:
+                retained_candidate = _profile_from_anchors(
+                    s,
+                    [
+                        (0.0, retained_outside),
+                        (hold_remaining, retained_outside),
+                        (hold_remaining + return_length, 0.0),
+                    ],
+                )
+            else:
+                return_progress = clamp(
+                    return_elapsed / return_length, 0.0, 1.0
+                )
+                start_scale = 1.0 - float(
+                    _smoothstep(np.asarray([return_progress]))[0]
+                )
+                return_remaining = max(0.0, return_length - return_elapsed)
+                retained_candidate = _profile_from_anchors(
+                    s,
+                    [
+                        (0.0, retained_outside * start_scale),
+                        (return_remaining, 0.0),
+                    ],
+                )
+        use = np.abs(retained_candidate) > np.abs(normalized_offset)
+        normalized_offset[use] = retained_candidate[use]
 
     available = np.where(normalized_offset >= 0.0, available_left, available_right)
     offset = normalized_offset * np.minimum(config.maximum_offset_m, available)
@@ -624,7 +866,8 @@ def plan_local_racing_path(
         center_correction_m=center_correction,
         left_half_width_m=left_width,
         right_half_width_m=right_width,
-        detected_corner_count=corners,
+        detected_corner_count=len(detected_corners),
+        detected_corners=tuple(detected_corners),
     )
 
 

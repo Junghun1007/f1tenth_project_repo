@@ -113,6 +113,16 @@ The complete Korean symptom-based tuning guide is installed as
 line, and spatial-speed parameters are covered separately in
 `share/auto_control/LOCAL_PATH_PLANNER_PARAMETER_TUNING_KO.txt`.
 
+- `local_path_corner_approach_length_m`: distance used to move from the
+  center toward the outside setup position.
+- `local_path_corner_setup_transition_length_m`: explicit replacement for
+  the approach transition; zero keeps legacy `corner_approach_length_m`.
+- `local_path_corner_pre_turn_outside_hold_m`: distance that the outside
+  setup position is held before turn-in begins.
+- `local_path_post_corner_offset_hold_distance_m`: measured travel distance
+  that preserves the outside exit position after the corner leaves the BEV.
+- `local_path_same_direction_corner_link_maximum_gap_m`: maximum gap over
+  which same-direction corners share one continuous outside setup line.
 - `stanley_gain`: larger values correct lateral displacement more strongly.
 - `stanley_heading_lookahead_m`: larger values use a farther, smoother heading.
 - `path_local_smoothing_window_m`: larger values reject wider centerline

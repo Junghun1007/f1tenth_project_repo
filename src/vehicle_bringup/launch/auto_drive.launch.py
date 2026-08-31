@@ -383,9 +383,33 @@ def generate_launch_description():
             float,
         ),
         (
+            "local_path_corner_setup_transition_length_m",
+            "0.0",
+            "local_path_corner_setup_transition_length_m",
+            float,
+        ),
+        (
+            "local_path_corner_pre_turn_outside_hold_m",
+            "0.25",
+            "local_path_corner_pre_turn_outside_hold_m",
+            float,
+        ),
+        (
             "local_path_corner_exit_length_m",
             "0.40",
             "local_path_corner_exit_length_m",
+            float,
+        ),
+        (
+            "local_path_post_corner_offset_hold_distance_m",
+            "0.50",
+            "local_path_post_corner_offset_hold_distance_m",
+            float,
+        ),
+        (
+            "local_path_same_direction_corner_link_maximum_gap_m",
+            "1.50",
+            "local_path_same_direction_corner_link_maximum_gap_m",
             float,
         ),
         (

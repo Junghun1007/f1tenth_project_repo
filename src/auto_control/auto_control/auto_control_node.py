@@ -33,6 +33,7 @@ from auto_control.control_core import (
     steering_angle_to_servo,
 )
 from auto_control.local_path_planner import (
+    CornerOffsetMemory,
     LocalPathPlannerConfig,
     OrderedPathModel,
     SpeedProfileConfig,
@@ -158,6 +159,7 @@ class AutoControlNode(Node):
         self._latest_raw_steering_angle_rad = 0.0
         self._latest_servo_position = self.servo_center
         self._latest_direction_guard_used = False
+        self._planner_travel_distance_m = 0.0
 
         self._speed_pid = SpeedPid(
             kp=self.speed_pid_kp,
@@ -214,7 +216,19 @@ class AutoControlNode(Node):
                 self.local_path_corner_minimum_heading_change_deg
             ),
             corner_approach_length_m=self.local_path_corner_approach_length_m,
+            corner_setup_transition_length_m=(
+                self.local_path_corner_setup_transition_length_m
+            ),
+            corner_pre_turn_outside_hold_m=(
+                self.local_path_corner_pre_turn_outside_hold_m
+            ),
             corner_exit_length_m=self.local_path_corner_exit_length_m,
+            post_corner_offset_hold_distance_m=(
+                self.local_path_post_corner_offset_hold_distance_m
+            ),
+            same_direction_corner_link_maximum_gap_m=(
+                self.local_path_same_direction_corner_link_maximum_gap_m
+            ),
             outside_offset_fraction=self.local_path_outside_offset_fraction,
             apex_offset_fraction=self.local_path_apex_offset_fraction,
             maximum_offset_m=self.local_path_maximum_offset_m,
@@ -223,6 +237,12 @@ class AutoControlNode(Node):
             maximum_path_curvature_per_m=min(
                 self.local_path_maximum_curvature_per_m,
                 kinematic_curvature_limit,
+            ),
+        )
+        self._corner_offset_memory = CornerOffsetMemory(
+            activation_distance_m=self.local_path_vehicle_wheelbase_m,
+            same_direction_link_maximum_gap_m=(
+                self.local_path_same_direction_corner_link_maximum_gap_m
             ),
         )
         self._speed_profile_config = SpeedProfileConfig(
@@ -357,7 +377,19 @@ class AutoControlNode(Node):
             "local_path_corner_minimum_heading_change_deg", 20.0
         )
         self.declare_parameter("local_path_corner_approach_length_m", 0.35)
+        self.declare_parameter(
+            "local_path_corner_setup_transition_length_m", 0.0
+        )
+        self.declare_parameter(
+            "local_path_corner_pre_turn_outside_hold_m", 0.25
+        )
         self.declare_parameter("local_path_corner_exit_length_m", 0.40)
+        self.declare_parameter(
+            "local_path_post_corner_offset_hold_distance_m", 0.50
+        )
+        self.declare_parameter(
+            "local_path_same_direction_corner_link_maximum_gap_m", 1.50
+        )
         self.declare_parameter("local_path_outside_offset_fraction", 0.25)
         self.declare_parameter("local_path_apex_offset_fraction", 0.35)
         self.declare_parameter("local_path_maximum_offset_m", 0.08)
@@ -488,7 +520,11 @@ class AutoControlNode(Node):
             "local_path_corner_curvature_smoothing_window_m",
             "local_path_corner_minimum_heading_change_deg",
             "local_path_corner_approach_length_m",
+            "local_path_corner_setup_transition_length_m",
+            "local_path_corner_pre_turn_outside_hold_m",
             "local_path_corner_exit_length_m",
+            "local_path_post_corner_offset_hold_distance_m",
+            "local_path_same_direction_corner_link_maximum_gap_m",
             "local_path_outside_offset_fraction",
             "local_path_apex_offset_fraction",
             "local_path_maximum_offset_m",
@@ -629,6 +665,15 @@ class AutoControlNode(Node):
             raise ValueError(
                 "local_path_maximum_center_correction_m must not be negative"
             )
+        if min(
+            self.local_path_corner_pre_turn_outside_hold_m,
+            self.local_path_post_corner_offset_hold_distance_m,
+            self.local_path_same_direction_corner_link_maximum_gap_m,
+            self.local_path_corner_setup_transition_length_m,
+        ) < 0.0:
+            raise ValueError(
+                "local path corner hold/link distances must not be negative"
+            )
         if self.local_path_maximum_half_width_m < self.local_path_minimum_half_width_m:
             raise ValueError("local path half-width limits are reversed")
         if (
@@ -766,9 +811,45 @@ class AutoControlNode(Node):
             return
         left = self._matching_boundary(self._ordered_left_boundary, stamp)
         right = self._matching_boundary(self._ordered_right_boundary, stamp)
-        planned = plan_local_racing_path(
-            base_path, left, right, self._local_path_planner_config
+        retained_direction, retained_travel = (
+            self._corner_offset_memory.retained_state(
+                self._planner_travel_distance_m,
+                hold_distance_m=(
+                    self.local_path_post_corner_offset_hold_distance_m
+                ),
+                return_length_m=self.local_path_corner_exit_length_m,
+            )
         )
+        planned = plan_local_racing_path(
+            base_path,
+            left,
+            right,
+            self._local_path_planner_config,
+            retained_outside_turn_direction=retained_direction,
+            retained_outside_distance_traveled_m=retained_travel,
+        )
+        memory_changed = self._corner_offset_memory.observe(
+            planned.detected_corners,
+            self._planner_travel_distance_m,
+        )
+        if memory_changed:
+            retained_direction, retained_travel = (
+                self._corner_offset_memory.retained_state(
+                    self._planner_travel_distance_m,
+                    hold_distance_m=(
+                        self.local_path_post_corner_offset_hold_distance_m
+                    ),
+                    return_length_m=self.local_path_corner_exit_length_m,
+                )
+            )
+            planned = plan_local_racing_path(
+                base_path,
+                left,
+                right,
+                self._local_path_planner_config,
+                retained_outside_turn_direction=retained_direction,
+                retained_outside_distance_traveled_m=retained_travel,
+            )
         self._path = planned.path
         self._latest_planner_corner_count = planned.detected_corner_count
         self._publish_planned_path(planned.path, header)
@@ -902,6 +983,14 @@ class AutoControlNode(Node):
             2.0 * nominal_period_sec,
         )
         self._last_control_time = now
+        if (
+            self._last_erpm_time is not None
+            and self._elapsed_sec(self._last_erpm_time, now)
+            <= self.erpm_timeout_sec
+        ):
+            self._planner_travel_distance_m += (
+                abs(self._current_speed_mps) * dt_sec
+            )
 
         stop_reason = self._stop_reason(now)
         if stop_reason is not None:
