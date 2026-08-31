@@ -1,0 +1,77 @@
+front_lane_detector:
+  ros__parameters:
+    image_topic: "/camera/image_rect"
+    mask_topic: "/front_lane/mask"
+    overlay_topic: "/front_lane/overlay"
+    model_topic: "/front_lane/model"
+    preview_enabled: true
+    preview_window_name: "Front lane detection"
+    # OpenCV WINDOW_NORMAL size. The 16:9 ratio matches the camera image.
+    preview_window_width_px: 960
+    preview_window_height_px: 540
+    preview_fps: 30.0
+    processing_fps: 30.0
+    publish_debug_images: false
+
+    # Camera-mount baseline: ROI extends to the image bottom.  The former
+    # bottom exclusion (16% of height) is applied as a uniform downward shift
+    # to the top line, seed line, vehicle point, CLOSE and FAR targets.
+    roi_top_ratio: 0.56
+    roi_bottom_ratio: 1.00
+    white_threshold: 180
+    seed_row_ratio: 0.75
+    seed_band_height_px: 24
+    # Reject wide white floor/tile regions when selecting the initial seed.
+    seed_max_component_width_px: 160
+    seed_max_component_pixels: 2000
+    seed_history_max_shift_px: 180
+
+    # Sliding-window tracking around each left/right histogram seed.
+    window_count: 20
+    window_margin_px: 90
+    minimum_window_pixels: 20
+    maximum_missing_windows: 2
+    maximum_component_pixels: 700
+    maximum_component_width_px: 70
+
+    # Strong-curve tracking: predict the next window from the local tangent.
+    curve_slope_trigger: 0.65
+    curve_window_height_px: 10
+    curve_search_extra_px: 50
+    wide_component_max_width_px: 280
+    wide_component_max_pixels: 3000
+    wide_component_orientation_tolerance_deg: 35.0
+    show_diagnostic_windows: true
+
+    # Centre/target guidance values sent to the lane-assist controller.
+    show_center_guidance: true
+    close_target_y_ratio: 0.70
+    far_target_y_ratio: 0.60
+    # Autonomous control becomes valid when CLOSE can be selected from enough
+    # actual or virtual centre points. FAR is diagnostic for this stage.
+    minimum_control_center_points: 5
+
+    # White tape at the centre of the front bumper (image-coordinate ratio).
+    vehicle_reference_x_ratio: 0.501
+    vehicle_reference_y_ratio: 0.955
+
+    # Learn perspective-aware lane width from stable two-lane frames.
+    width_profile_required_frames: 40
+    width_profile_min_pairs_per_frame: 6
+    width_profile_min_samples_per_bin: 12
+    width_profile_max_samples_per_bin: 80
+    width_profile_min_ratio: 0.10
+    width_profile_max_ratio: 0.98
+
+    # One-sided sharp-curve centre: offset the visible lane along its normal.
+    one_side_min_points: 5
+    # Keep the latest measured boundary-to-centre translation for short
+    # one-sided intervals. At 20 FPS, 60 frames is about three seconds.
+    virtual_center_max_age_frames: 60
+    virtual_offset_match_max_y_px: 80
+    virtual_tangent_span_windows: 2
+    virtual_normal_min_horizontal_ratio: 0.30
+    virtual_normal_max_vertical_shift_px: 120
+    # Keep a one-sided trusted boundary until the opposite boundary has
+    # enough matched pairs to prove it is the real opposite lane.
+    side_reacquire_min_pairs: 8
