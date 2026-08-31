@@ -141,6 +141,68 @@ cv::Point2d bevPixelToVehicle(
     config.y_max_m - (point.x + 0.5) * config.meter_per_pixel};
 }
 
+cv::Point2d vehicleToBevPixel(
+  const double x_m,
+  const double y_m,
+  const BevConfig & config)
+{
+  return {
+    (config.y_max_m - y_m) / config.meter_per_pixel - 0.5,
+    (config.x_max_m - x_m) / config.meter_per_pixel - 0.5};
+}
+
+std::int64_t stampNanoseconds(const std_msgs::msg::Header & header)
+{
+  constexpr std::int64_t nanoseconds_per_second = 1000000000LL;
+  return
+    static_cast<std::int64_t>(header.stamp.sec) * nanoseconds_per_second +
+    static_cast<std::int64_t>(header.stamp.nanosec);
+}
+
+bool drawPlannedPathPreview(
+  cv::Mat & preview,
+  const nav_msgs::msg::Path & path,
+  const BevConfig & config,
+  const int thickness_px)
+{
+  if (preview.empty() || path.poses.empty()) {
+    return false;
+  }
+
+  std::vector<cv::Point> image_points;
+  image_points.reserve(path.poses.size());
+  for (const auto & pose : path.poses) {
+    const double x_m = pose.pose.position.x;
+    const double y_m = pose.pose.position.y;
+    if (!std::isfinite(x_m) || !std::isfinite(y_m)) {
+      continue;
+    }
+    const cv::Point2d image_point = vehicleToBevPixel(x_m, y_m, config);
+    image_points.emplace_back(
+      cvRound(image_point.x), cvRound(image_point.y));
+  }
+  if (image_points.empty()) {
+    return false;
+  }
+
+  const cv::Scalar planned_path_yellow(0, 255, 255);
+  if (image_points.size() == 1U) {
+    cv::circle(
+      preview, image_points.front(), std::max(1, thickness_px),
+      planned_path_yellow, cv::FILLED, cv::LINE_AA);
+  } else {
+    for (std::size_t index = 1U; index < image_points.size(); ++index) {
+      cv::line(
+        preview, image_points[index - 1U], image_points[index],
+        planned_path_yellow, thickness_px, cv::LINE_AA);
+    }
+  }
+  cv::putText(
+    preview, "PLAN:OUT-IN-OUT", cv::Point(2, 36),
+    cv::FONT_HERSHEY_SIMPLEX, 0.35, planned_path_yellow, 1, cv::LINE_AA);
+  return true;
+}
+
 std::unique_ptr<nav_msgs::msg::Path> makePathMessage(
   const BevFrame & frame,
   const std::vector<cv::Point2d> & image_points,
@@ -335,6 +397,16 @@ public:
       lane_right_boundary_path_publisher_ =
         create_publisher<nav_msgs::msg::Path>(
         lane_right_boundary_path_topic_, image_qos);
+    }
+    if (lane_preview_planned_path_enabled_) {
+      lane_preview_planned_path_subscription_ =
+        create_subscription<nav_msgs::msg::Path>(
+        lane_preview_planned_path_topic_, image_qos,
+        [this](nav_msgs::msg::Path::ConstSharedPtr message) {
+          std::atomic_store_explicit(
+            &latest_planned_path_, std::move(message),
+            std::memory_order_release);
+        });
     }
     preview_stop_publisher_ = create_publisher<std_msgs::msg::Bool>(
       preview_stop_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
@@ -678,6 +750,12 @@ private:
     declare_parameter<std::string>(
       "lane_right_boundary_path_topic", "/camera/path_bev_lane_right");
     declare_parameter<bool>("lane_preview_enabled", true);
+    declare_parameter<bool>("lane_preview_planned_path_enabled", true);
+    declare_parameter<std::string>(
+      "lane_preview_planned_path_topic", "/auto/planned_path");
+    declare_parameter<double>(
+      "lane_preview_planned_path_maximum_age_sec", 0.20);
+    declare_parameter<int>("lane_preview_planned_path_thickness_px", 2);
     declare_parameter<int>("lane_gray_mode", 0);
     declare_parameter<int>("lane_top_hat_shape", 1);
     declare_parameter<int>("lane_top_hat_iterations", 1);
@@ -986,6 +1064,14 @@ private:
       get_parameter("lane_right_boundary_path_topic").as_string();
     lane_preview_enabled_ =
       get_parameter("lane_preview_enabled").as_bool();
+    lane_preview_planned_path_enabled_ =
+      get_parameter("lane_preview_planned_path_enabled").as_bool();
+    lane_preview_planned_path_topic_ =
+      get_parameter("lane_preview_planned_path_topic").as_string();
+    lane_preview_planned_path_maximum_age_sec_ =
+      get_parameter("lane_preview_planned_path_maximum_age_sec").as_double();
+    lane_preview_planned_path_thickness_px_ = static_cast<int>(
+      get_parameter("lane_preview_planned_path_thickness_px").as_int());
     lane_preprocess_config_.enabled = lane_seed_detection_enabled_;
     lane_preprocess_config_.gray_mode = static_cast<int>(
       get_parameter("lane_gray_mode").as_int());
@@ -1214,6 +1300,22 @@ private:
       throw std::invalid_argument(
               "lane image and ordered path topics must not be empty when "
               "lane seed detection is enabled");
+    }
+    if (
+      lane_preview_planned_path_enabled_ &&
+      lane_preview_planned_path_topic_.empty())
+    {
+      throw std::invalid_argument(
+              "lane_preview_planned_path_topic must not be empty when its "
+              "preview overlay is enabled");
+    }
+    if (
+      lane_preview_planned_path_maximum_age_sec_ < 0.0 ||
+      lane_preview_planned_path_thickness_px_ <= 0)
+    {
+      throw std::invalid_argument(
+              "planned-path preview maximum age must be non-negative and "
+              "thickness must be positive");
     }
     if (
       camera_model_.image_width <= 1 ||
@@ -1884,10 +1986,41 @@ private:
         const auto frame = std::atomic_load_explicit(
           &latest_output_, std::memory_order_acquire);
         if (frame) {
-          const cv::Mat & displayed_image =
+          const cv::Mat & base_image =
             lane_preview_enabled_ && !frame->lane_preview.empty() ?
             frame->lane_preview : frame->image;
-          cv::imshow(preview_window_name_, displayed_image);
+          cv::Mat planned_path_preview;
+          const cv::Mat * displayed_image = &base_image;
+          if (lane_preview_planned_path_enabled_) {
+            const auto planned_path = std::atomic_load_explicit(
+              &latest_planned_path_, std::memory_order_acquire);
+            if (planned_path && !planned_path->poses.empty()) {
+              const std::int64_t frame_stamp_ns =
+                stampNanoseconds(frame->header);
+              const std::int64_t path_stamp_ns =
+                stampNanoseconds(planned_path->header);
+              const std::int64_t stamp_delta_ns =
+                frame_stamp_ns >= path_stamp_ns ?
+                frame_stamp_ns - path_stamp_ns :
+                path_stamp_ns - frame_stamp_ns;
+              const double stamp_delta_sec =
+                static_cast<double>(stamp_delta_ns) * 1.0e-9;
+              if (
+                frame_stamp_ns > 0 && path_stamp_ns > 0 &&
+                stamp_delta_sec <=
+                lane_preview_planned_path_maximum_age_sec_)
+              {
+                planned_path_preview = base_image.clone();
+                if (drawPlannedPathPreview(
+                    planned_path_preview, *planned_path, bev_config_,
+                    lane_preview_planned_path_thickness_px_))
+                {
+                  displayed_image = &planned_path_preview;
+                }
+              }
+            }
+          }
+          cv::imshow(preview_window_name_, *displayed_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
           next_preview_at = now + preview_period;
@@ -2255,6 +2388,10 @@ private:
   std::string lane_left_boundary_path_topic_{"/camera/path_bev_lane_left"};
   std::string lane_right_boundary_path_topic_{"/camera/path_bev_lane_right"};
   bool lane_preview_enabled_{true};
+  bool lane_preview_planned_path_enabled_{true};
+  std::string lane_preview_planned_path_topic_{"/auto/planned_path"};
+  double lane_preview_planned_path_maximum_age_sec_{0.20};
+  int lane_preview_planned_path_thickness_px_{2};
   CudaLanePreprocessConfig lane_preprocess_config_{};
   BevLaneSeedDetectorConfig lane_seed_config_{};
   double status_log_interval_sec_{5.0};
@@ -2287,6 +2424,8 @@ private:
     lane_left_boundary_path_publisher_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr
     lane_right_boundary_path_publisher_;
+  rclcpp::Subscription<nav_msgs::msg::Path>::SharedPtr
+    lane_preview_planned_path_subscription_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr preview_stop_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr
     capture_joy_subscription_;
@@ -2305,6 +2444,7 @@ private:
   std::mutex output_mutex_;
   std::condition_variable output_cv_;
   std::shared_ptr<const BevFrame> latest_output_;
+  std::shared_ptr<const nav_msgs::msg::Path> latest_planned_path_;
 
   std::atomic<bool> stop_{false};
   std::thread processing_thread_;

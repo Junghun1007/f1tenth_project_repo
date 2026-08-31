@@ -195,6 +195,12 @@ bev_processor:
     # 노랑=ROI, 초록=엄격 대비, 주황=완화 대비, 청록=왼쪽, 자홍=오른쪽,
     # 빨간 X=기울기 급변 절단점이다.
     lane_preview_enabled: true
+    # auto_control이 중앙선과 좌우 경계로 계획한 아웃-인-아웃 경로를
+    # 프리뷰에 노란색으로 겹쳐 그린다. 오래된 경로는 표시하지 않는다.
+    lane_preview_planned_path_enabled: true
+    lane_preview_planned_path_topic: "/auto/planned_path"
+    lane_preview_planned_path_maximum_age_sec: 0.20
+    lane_preview_planned_path_thickness_px: 2
 
     # Gray: 0=OpenCV BGR luminance, 1=BGR 평균, 2=BGR 최댓값.
     lane_gray_mode: 0

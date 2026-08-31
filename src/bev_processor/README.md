@@ -160,6 +160,8 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 - 노랑: ROI 상단·하단
 - 흐린 초록: 엄격 대비 통과 근거
 - 밝은 초록 2px 선: 최종 주행 중심선
+- 노란 2px 선과 `PLAN:OUT-IN-OUT`: `auto_control`이 발행한 최종
+  아웃-인-아웃 계획 경로. ROI 경계선도 기존과 같이 노란색이다.
 - 주황: 안정 트랙에서 완화된 대비로 통과한 근거
 - 청록: 선택된 왼쪽 시드와 지지 곡선
 - 자홍: 선택된 오른쪽 시드와 지지 곡선
@@ -175,6 +177,9 @@ enhanced = max(top_hat - noise_floor, 0) * gain
   안전하지 않은 법선 오프셋 구간을 제거했다는 뜻
 
 `lane_preview_enabled:=false`이면 원본 컬러 BEV만 프리뷰한다.
+`lane_preview_planned_path_enabled:=false`이면 초록 중앙선은 유지하고
+노란 계획 경로만 숨긴다. 계획 경로는 `/auto/planned_path`의 timestamp가
+현재 BEV와 `lane_preview_planned_path_maximum_age_sec` 이내일 때만 표시된다.
 프리뷰 창에 포커스를 둔 채 Space를 누르면 `preview_stop_topic`
 (기본 `/auto/enabled`)으로 false를 발행한다.
 

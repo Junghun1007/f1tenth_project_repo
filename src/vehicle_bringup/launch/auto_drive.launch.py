@@ -108,6 +108,10 @@ def generate_launch_description():
         ("lane_centerline_path_topic", "/camera/path_bev_lane"),
         ("lane_left_boundary_path_topic", "/camera/path_bev_lane_left"),
         ("lane_right_boundary_path_topic", "/camera/path_bev_lane_right"),
+        ("lane_preview_planned_path_enabled", "true"),
+        ("lane_preview_planned_path_topic", "/auto/planned_path"),
+        ("lane_preview_planned_path_maximum_age_sec", "0.20"),
+        ("lane_preview_planned_path_thickness_px", "2"),
         ("lane_seed_roi_height_ratio", "0.25"),
         ("lane_seed_temporal_side_lock_reset_frames", "100"),
         ("lane_seed_temporal_side_reacquire_base_distance_px", "45.0"),
@@ -522,7 +526,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(bev_launch_path),
         launch_arguments={
             "bev_params_file": bev_params_file,
-            # Autonomous mode shows only measured lanes and the centerline.
+            # Autonomous mode also overlays the planned path in yellow.
             # preview_enabled:=false disables the OpenCV window completely.
             "preview_enabled": preview_enabled,
             "lane_preview_enabled": "true",
