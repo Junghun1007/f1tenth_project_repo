@@ -6,27 +6,28 @@ front_lane_rotated_detector:
     preview_window_name: "Front lane detection - rotated windows"
     preview_window_width_px: 960
     preview_window_height_px: 540
-    preview_fps: 30.0
-    processing_fps: 30.0
-    roi_top_ratio: 0.56
+    preview_fps: 60.0
+    processing_fps: 80.0
+    roi_top_ratio: 0.40
     roi_bottom_ratio: 1.00
     seed_row_ratio: 0.75
-    close_target_y_ratio: 0.70
-    far_target_y_ratio: 0.60
+    close_target_y_ratio: 0.80
+    far_target_y_ratio: 0.40
     vehicle_reference_y_ratio: 0.955
     # Start at the seed closest to the vehicle and track only toward the far
     # field. Width is intentionally a little longer than height.
-    rotated_window_initial_width_px: 120
-    rotated_window_initial_height_px: 90
-    rotated_window_min_width_px: 54
-    rotated_window_min_height_px: 40
-    # Each successive window is 94% of the preceding one until the minimum.
-    rotated_window_shrink_ratio: 0.94
-    # Advance by 60% of the current window height so adjacent windows overlap.
-    rotated_window_step_ratio: 0.60
+    window_count: 20
+    rotated_window_initial_width_px: 100
+    rotated_window_initial_height_px: 60
+    rotated_window_min_width_px: 70
+    rotated_window_min_height_px: 50
+    # Each successive window is 96% of the preceding one until the minimum.
+    rotated_window_shrink_ratio: 0.96
+    # Advance by 50% of the current window height so adjacent windows overlap.
+    rotated_window_step_ratio: 0.50
     rotated_max_turn_deg_per_window: 18.0
     rotated_max_turn_change_deg_per_window: 10.0
-    rotated_heading_update_gain: 0.45
+    rotated_heading_update_gain: 0.40
 
     show_diagnostic_windows: true
     show_center_guidance: true
