@@ -299,14 +299,17 @@ def stanley_control(
 
     Positive steering is left because the vehicle frame uses +Y left.
     Cross-track error is the signed normal distance from the real front-axle
-    origin to the measured centerline. Heading uses only a short local chord;
-    a far corner cannot bend the current path as a global polynomial did.
+    origin to the measured centerline. The heading lookahead is an absolute
+    vehicle-X distance from that same origin, not an offset from the closest
+    path point. If the requested X is outside the measured path, use the
+    nearest available endpoint and its short local chord.
     """
 
-    cross_track_error_m, closest_x_m = closest_path_geometry(path)
-    heading_x_m = min(
+    cross_track_error_m, _ = closest_path_geometry(path)
+    heading_x_m = clamp(
+        max(0.0, heading_lookahead_m),
+        path.minimum_x_m,
         path.maximum_x_m,
-        closest_x_m + max(0.0, heading_lookahead_m),
     )
     heading_error_rad = math.atan(float(path.first_derivative(heading_x_m)))
     correction_rad = math.atan2(

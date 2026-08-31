@@ -11,7 +11,9 @@ by manual driving. Do not run `manual_drive.launch.py` at the same time.
 3. Keep the measured centerline polyline and suppress only local bumps with a
    short robust straight-segment smoother; no global polynomial is fitted.
 4. Calculate Stanley cross-track error as the signed normal distance from the
-   real front-axle origin and heading from a short local centerline chord.
+   real front-axle origin. Measure heading at vehicle X equal to the configured
+   lookahead from that same origin, using the first available tangent when the
+   camera path starts beyond the requested X.
 5. Calculate representative forward curvature over `X=0.5..1.6m`.
 6. Convert curvature to a `0.8..1.8m/s` target using the configured maximum
    lateral acceleration.
@@ -97,7 +99,9 @@ The complete Korean symptom-based tuning guide is installed as
 `share/auto_control/AUTO_CONTROL_PARAMETER_TUNING_KO.txt`.
 
 - `stanley_gain`: larger values correct lateral displacement more strongly.
-- `stanley_heading_lookahead_m`: larger values use a farther, smoother heading.
+- `stanley_heading_lookahead_m`: absolute forward X from the front-axle origin;
+  larger values use a farther, smoother heading. It is not added to the
+  closest path point.
 - `path_local_smoothing_window_m`: larger values reject wider centerline
   roughness but can soften a very tight corner.
 - `path_outlier_threshold_m`: smaller values reject smaller isolated lateral

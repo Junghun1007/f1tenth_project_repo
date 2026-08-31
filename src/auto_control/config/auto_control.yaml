@@ -32,6 +32,7 @@ auto_control:
 
     # bev_processor가 발행하는 120x300 중앙선 mask는 별도의 좌우 margin 없이
     # 원본 BEV와 같은 -0.60..+0.60m, 0..3.0m 좌표계를 사용한다.
+    # 앞차축 지면 중심(X=0,Y=0)은 하단 경계의 59/60열 사이이다.
     bev_x_max_m: 3.0
     bev_y_max_m: 0.60
     bev_meter_per_pixel: 0.01
@@ -53,7 +54,8 @@ auto_control:
     # Stanley: +조향각은 차량 좌표 +Y인 좌회전이다.
     stanley_gain: 1.55
     stanley_softening_speed_mps: 0.35
-    # 전역 피팅 없이 실측 중앙선의 12cm 앞 접선을 조향 방향으로 사용한다.
+    # 앞차축 원점 X=0에서 12cm 전방의 실측 중앙선 접선을 사용한다.
+    # 그 위치가 카메라 사각이면 첫 유효 중앙선 접선을 사용한다.
     stanley_heading_lookahead_m: 0.12
     # 선수각 20도 이상의 급코너에서만 방향 guard를 적용하고,
     # 반대 방향 횡오차 보정을 선수각의 90%까지 허용한다.

@@ -230,6 +230,75 @@ class ControlCoreTest(unittest.TestCase):
         self.assertAlmostEqual(result.heading_error_rad, 0.0, places=4)
         self.assertAlmostEqual(result.steering_angle_rad, 0.0, places=4)
 
+    def test_heading_lookahead_is_measured_from_front_axle_origin(self) -> None:
+        # The path passes closest to the axle at X=0.40m. Its heading is right
+        # at the requested front-axle lookahead X=0.20m, but left at the old
+        # closest-point-plus-lookahead location X=0.60m.
+        x_m = np.linspace(0.10, 0.90, 81)
+        path = build_path_model(
+            x_m,
+            np.square(x_m - 0.40),
+            minimum_points=20,
+            minimum_span_m=0.35,
+            minimum_x_m=0.05,
+            maximum_x_m=1.0,
+            local_smoothing_window_m=0.0,
+            outlier_threshold_m=0.0,
+            geometry_window_m=0.08,
+        )
+        self.assertIsNotNone(path)
+
+        result = stanley_control(
+            path,
+            speed_mps=1.0,
+            gain=0.0,
+            softening_speed_mps=0.5,
+            heading_lookahead_m=0.20,
+            maximum_steering_angle_rad=math.radians(30.0),
+            corner_heading_threshold_rad=math.radians(6.0),
+            corner_opposing_correction_ratio=0.80,
+        )
+
+        self.assertLess(result.heading_error_rad, 0.0)
+
+    def test_front_axle_lookahead_uses_first_measured_tangent_in_blind_zone(
+        self,
+    ) -> None:
+        # X=0.10m is requested from the axle, but the camera path starts at
+        # X=0.30m. The controller must use the first available local tangent
+        # rather than adding another 0.10m to the blind-zone distance.
+        x_m = np.linspace(0.30, 1.00, 71)
+        path = build_path_model(
+            x_m,
+            0.25 * np.square(x_m),
+            minimum_points=20,
+            minimum_span_m=0.35,
+            minimum_x_m=0.05,
+            maximum_x_m=1.0,
+            local_smoothing_window_m=0.0,
+            outlier_threshold_m=0.0,
+            geometry_window_m=0.08,
+        )
+        self.assertIsNotNone(path)
+
+        result = stanley_control(
+            path,
+            speed_mps=1.0,
+            gain=0.0,
+            softening_speed_mps=0.5,
+            heading_lookahead_m=0.10,
+            maximum_steering_angle_rad=math.radians(30.0),
+            corner_heading_threshold_rad=math.radians(6.0),
+            corner_opposing_correction_ratio=0.80,
+        )
+        expected_heading = math.atan(float(path.first_derivative(0.30)))
+
+        self.assertAlmostEqual(
+            result.heading_error_rad,
+            expected_heading,
+            places=9,
+        )
+
     def test_isolated_centerline_bump_is_rejected(self) -> None:
         x_m = np.linspace(0.2, 1.2, 101)
         y_m = np.zeros_like(x_m)
