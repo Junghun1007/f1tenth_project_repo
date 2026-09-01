@@ -63,6 +63,26 @@ LaneImages makeParallelLanes(
   return images;
 }
 
+LaneImages makeSingleLane(
+  const int width,
+  const int height,
+  const std::vector<int> & center_columns_by_row)
+{
+  LaneImages images{
+    cv::Mat::zeros(height, width, CV_8UC1),
+    cv::Mat::zeros(height, width, CV_8UC1)};
+  for (int row = 0; row < height; ++row) {
+    const int center = center_columns_by_row[static_cast<std::size_t>(row)];
+    for (int column = center - 1; column <= center + 1; ++column) {
+      if (column >= 0 && column < width) {
+        images.gray.at<unsigned char>(row, column) = 255;
+        images.response.at<unsigned char>(row, column) = 255;
+      }
+    }
+  }
+  return images;
+}
+
 LaneImages makeTurningParallelLanes(
   const int width,
   const int height,
@@ -412,6 +432,66 @@ void testCenterlineSuppressesIsolatedBump()
     "isolated centerline bump was not suppressed");
 }
 
+void testSlopeFilterPreservesMonotonicRasterizedCurve()
+{
+  BevLaneSeedDetectorConfig config;
+  config.image_width = 160;
+  config.image_height = 60;
+  config.roi_bottom_exclusion_ratio = 0.0;
+  config.roi_height_ratio = 1.0;
+  config.column_tracking_enabled = false;
+  config.cross_direction_merge_enabled = false;
+  config.temporal_side_lock_enabled = false;
+  config.centerline_enabled = false;
+  config.sliding_window_enabled = false;
+  BevLaneSeedDetector detector(config);
+
+  std::vector<int> columns(60, 20);
+  for (std::size_t row = 1; row < columns.size(); ++row) {
+    // A thin diagonal curve is rasterized as alternating 0px/3px row steps.
+    // Its lateral direction never reverses, so slope quantization must not
+    // fragment it into sub-threshold seed tracks.
+    columns[row] = columns[row - 1] + (row % 2U == 0U ? 3 : 0);
+  }
+  const LaneImages lane = makeSingleLane(160, 60, columns);
+  const BevLaneSeedDetection detection = detector.detect(
+    lane.gray, lane.response, false);
+
+  require(
+    detection.left.valid || detection.right.valid,
+    "slope filter discarded a monotonic rasterized lane curve");
+  require(
+    detection.slope_break_count == 0,
+    "slope filter marked pixel stair steps as abrupt lane reversals");
+}
+
+void testSlopeFilterStillSplitsDirectionReversal()
+{
+  BevLaneSeedDetectorConfig config;
+  config.image_width = 200;
+  config.image_height = 61;
+  config.roi_bottom_exclusion_ratio = 0.0;
+  config.roi_height_ratio = 1.0;
+  config.column_tracking_enabled = false;
+  config.cross_direction_merge_enabled = false;
+  config.temporal_side_lock_enabled = false;
+  config.centerline_enabled = false;
+  config.sliding_window_enabled = false;
+  BevLaneSeedDetector detector(config);
+
+  std::vector<int> columns(61, 30);
+  for (std::size_t row = 1; row < columns.size(); ++row) {
+    columns[row] = columns[row - 1] + (row <= 30U ? 3 : -3);
+  }
+  const LaneImages lane = makeSingleLane(200, 61, columns);
+  const BevLaneSeedDetection detection = detector.detect(
+    lane.gray, lane.response, false);
+
+  require(
+    detection.slope_break_count == 1,
+    "slope filter did not isolate a sustained lightning-shaped reversal");
+}
+
 void testCornerUsesCurrentTurnOuterBoundaryAfterStraight()
 {
   BevLaneSeedDetectorConfig config;
@@ -520,6 +600,8 @@ int main()
   testAdaptiveSmoothingPreservesStraightToCurve();
   testCenterlineUsesSlidingWindowTracking();
   testCenterlineSuppressesIsolatedBump();
+  testSlopeFilterPreservesMonotonicRasterizedCurve();
+  testSlopeFilterStillSplitsDirectionReversal();
   testCornerUsesCurrentTurnOuterBoundaryAfterStraight();
   testCornerOutwardBiasShiftsCenterlineTowardOuterBoundary();
   testRawSeedEvidenceIsNotUsedAsCenterline();

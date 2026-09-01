@@ -188,7 +188,7 @@ bev_processor:
     lane_output_topic: "/camera/image_bev_lane"
     # true면 enhanced Top-hat 위에 ROI와 모든 판정 근거를 표시한다.
     # 노랑=ROI, 초록=엄격 대비, 주황=완화 대비, 청록=왼쪽, 자홍=오른쪽,
-    # 빨간 X=기울기 급변 절단점이다.
+    # 빨간 X=지속적인 기울기 방향 반전 절단점이다.
     lane_preview_enabled: true
 
     # Gray: 0=OpenCV BGR luminance, 1=BGR 평균, 2=BGR 최댓값.
@@ -239,7 +239,8 @@ bev_processor:
     lane_seed_contrast_relaxation_step: 5.0
     lane_seed_contrast_relaxation_retries: 5
 
-    # 중앙값 기울기의 급변을 절단해 번개 모양 노이즈를 억제한다.
+    # median_window 구간 전후의 진행 방향이 실제로 반전되는 경우만 절단한다.
+    # 정상 곡선의 0/3/0/3px 계단은 유지하고 V/번개 모양 노이즈만 억제한다.
     lane_seed_slope_filter_enabled: true
     lane_seed_slope_median_window: 5
     lane_seed_maximum_slope_change_px_per_row: 2.0

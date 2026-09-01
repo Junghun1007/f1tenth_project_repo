@@ -394,7 +394,8 @@ public:
         lane_seed_config_.maximum_background_asymmetry);
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane seed continuity: slope=%s(window=%d, delta<=%.2fpx/row), "
+        "BEV lane seed continuity: slope_reversal=%s(window=%d, "
+        "opposing_delta<=%.2fpx/row), "
         "pair=%.1f..%.1fpx, contrast relaxation=%s(step=%.1f, retries=%d), "
         "column_tracking=%s, candidate_merge=%s(endpoint<=%.1fpx, "
         "support>=%.2f, turn<=%.1fdeg), side_lock=%s(reset=%d frames, "

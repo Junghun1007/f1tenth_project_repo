@@ -391,7 +391,7 @@ std::vector<double> medianSmoothedColumns(
   return result;
 }
 
-std::vector<SeedTrack> splitAbruptSlopeChanges(
+std::vector<SeedTrack> splitAbruptSlopeReversals(
   const std::vector<SeedTrack> & tracks,
   const BevLaneSeedDetectorConfig & config,
   std::vector<cv::Point2d> * break_points)
@@ -410,28 +410,68 @@ std::vector<SeedTrack> splitAbruptSlopeChanges(
       track, config.slope_median_window);
     const bool show_break_points =
       trackArcLength(track.runs) >= config.minimum_track_arc_length_px;
-    std::vector<double> slopes;
-    slopes.reserve(track.runs.size() - 1);
-    for (std::size_t index = 1; index < track.runs.size(); ++index) {
-      const int row_gap = track.runs[index - 1].row - track.runs[index].row;
-      slopes.push_back(
-        (columns[index] - columns[index - 1]) /
-        static_cast<double>(row_gap));
+    // Comparing adjacent one-row slopes turns a rasterized diagonal into
+    // 0, 3, 0, 3 px/row and incorrectly cuts a perfectly monotonic lane at
+    // every pixel stair step.  Estimate the incoming and outgoing trends over
+    // the whole median window instead.  A split is justified only when those
+    // sustained trends point to opposite lateral directions, which retains a
+    // smooth sharp corner while still isolating a V/lightning-shaped branch.
+    const std::size_t trend_span = static_cast<std::size_t>(std::max(
+        2, config.slope_median_window));
+    struct SlopeSplit
+    {
+      std::size_t index{0};
+      double change{0.0};
+    };
+    std::vector<SlopeSplit> proposed_splits;
+    if (track.runs.size() > 2U * trend_span) {
+      for (std::size_t index = trend_span;
+        index + trend_span < track.runs.size(); ++index)
+      {
+        const std::size_t incoming_index = index - trend_span;
+        const std::size_t outgoing_index = index + trend_span;
+        const int incoming_row_gap =
+          track.runs[incoming_index].row - track.runs[index].row;
+        const int outgoing_row_gap =
+          track.runs[index].row - track.runs[outgoing_index].row;
+        if (incoming_row_gap <= 0 || outgoing_row_gap <= 0) {
+          continue;
+        }
+        const double incoming_slope =
+          (columns[index] - columns[incoming_index]) /
+          static_cast<double>(incoming_row_gap);
+        const double outgoing_slope =
+          (columns[outgoing_index] - columns[index]) /
+          static_cast<double>(outgoing_row_gap);
+        const double change = std::abs(outgoing_slope - incoming_slope);
+        if (
+          incoming_slope * outgoing_slope >= 0.0 ||
+          change <= config.maximum_slope_change_px_per_row)
+        {
+          continue;
+        }
+
+        // Several neighboring centers observe the same physical reversal.
+        // Keep only the strongest one so a single kink cannot create many
+        // short fragments and many misleading red-X preview markers.
+        if (
+          proposed_splits.empty() ||
+          index > proposed_splits.back().index + trend_span)
+        {
+          proposed_splits.push_back(SlopeSplit{index, change});
+        } else if (change > proposed_splits.back().change) {
+          proposed_splits.back() = SlopeSplit{index, change};
+        }
+      }
     }
     std::vector<std::size_t> splits;
-    for (std::size_t index = 1; index < slopes.size(); ++index) {
-      if (
-        std::abs(slopes[index] - slopes[index - 1]) >
-        config.maximum_slope_change_px_per_row)
-      {
-        const std::size_t split = index + 1;
-        splits.push_back(split);
-        if (break_points != nullptr && show_break_points) {
-          break_points->emplace_back(
-            track.runs[split].centroid_column,
-            static_cast<double>(track.runs[split].row));
-        }
-        ++index;
+    splits.reserve(proposed_splits.size());
+    for (const SlopeSplit & proposal : proposed_splits) {
+      splits.push_back(proposal.index);
+      if (break_points != nullptr && show_break_points) {
+        break_points->emplace_back(
+          track.runs[proposal.index].centroid_column,
+          static_cast<double>(track.runs[proposal.index].row));
       }
     }
     std::size_t first = 0;
@@ -882,11 +922,22 @@ void trackWithSlidingWindows(
       static_cast<float>(heading_deg));
     SlidingWindowDebug debug{
       window, predicted_center, predicted_center, false};
-    const cv::Rect search_bounds = window.boundingRect() & image_bounds;
-    if (search_bounds.empty()) {
-      candidate->sliding_windows.push_back(std::move(debug));
+    const cv::Rect window_bounds = window.boundingRect();
+    const bool touches_image_boundary =
+      window_bounds.x <= image_bounds.x ||
+      window_bounds.y <= image_bounds.y ||
+      window_bounds.x + window_bounds.width >=
+      image_bounds.x + image_bounds.width ||
+      window_bounds.y + window_bounds.height >=
+      image_bounds.y + image_bounds.height;
+    if (touches_image_boundary) {
+      // A clipped window biases its centroid toward the visible pixels and can
+      // repeatedly drag the tracker along an image edge. Stop before searching
+      // or drawing that window; the last fully contained observation remains
+      // the end of this boundary track.
       break;
     }
+    const cv::Rect search_bounds = window_bounds;
 
     const cv::Point2d normal(-direction.y, direction.x);
     double response_sum = 0.0;
@@ -1650,7 +1701,7 @@ CandidateExtraction extractCandidates(
     response, first_scan_row, last_scan_row,
     first_search_column, last_search_column, config);
   std::vector<cv::Point2d> scan_slope_break_points;
-  tracks = splitAbruptSlopeChanges(
+  tracks = splitAbruptSlopeReversals(
     tracks, config, &scan_slope_break_points);
 
   BevLaneSeedDetectorConfig strict_config = config;

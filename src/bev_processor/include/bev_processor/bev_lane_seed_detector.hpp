@@ -32,6 +32,8 @@ struct BevLaneSeedDetectorConfig
   double minimum_track_arc_length_px{20.0};
   double contrast_score_weight{0.30};
 
+  // Suppress sustained V/lightning-shaped reversals without treating the
+  // pixel stair steps of a monotonic curve as independent slope jumps.
   bool slope_filter_enabled{true};
   int slope_median_window{5};
   double maximum_slope_change_px_per_row{2.0};

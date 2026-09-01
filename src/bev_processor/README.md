@@ -115,7 +115,8 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 
 1. ROI 각 행에서 Top-hat 응답과 폭 조건을 통과한 ridge를 찾는다.
 2. 하단에서 상단으로 최대 횡이동량과 허용 gap을 적용해 곡선 트랙을 만든다.
-3. 중앙값 기울기가 급변하는 번개 모양 구간은 분리한다.
+3. median window 전후에서 횡방향 진행이 실제로 반전되는 V/번개 모양
+   구간은 분리하되, 같은 방향으로 이어지는 픽셀 계단은 유지한다.
 4. 원본 Gray에서 ridge 법선 양쪽의 배경을 샘플링해 양측 국소 대비와
    배경 비대칭을 관찰한다. 이 단계는 대비를 추가로 강화하지 않는다.
 5. 엄격한 대비와 최소 곡선 길이를 먼저 통과한 안정 트랙에만 선택적
@@ -163,7 +164,7 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 - 주황: 안정 트랙에서 완화된 대비로 통과한 근거
 - 청록: 선택된 왼쪽 시드와 지지 곡선
 - 자홍: 선택된 오른쪽 시드와 지지 곡선
-- 빨간 X: 기울기 급변으로 분리된 지점
+- 빨간 X: 지속적인 기울기 방향 반전으로 분리된 지점
 - `WAIT L+R`: 최초 좌우 시드 쌍을 기다리는 상태
 - `SIDE LOCK`: 좌우 역할 잠금, `SIDE LOCK:T`는 현재 프레임에
   시간 연속성으로 단일 차선의 역할을 붙였다는 뜻
@@ -250,7 +251,8 @@ ros2 launch bev_processor bev_processor.launch.py \
 - `lane_seed_contrast_relaxation_*`:
   안정 트랙에만 적용하는 단계적 대비 완화
 - `lane_seed_slope_*`:
-  급격한 기울기 변화 억제
+  median window 전후의 지속적인 기울기 방향 반전 억제. 같은 방향의
+  픽셀 계단이나 부드러운 급커브는 절단하지 않는다.
 - `lane_seed_pair_*_distance_px`:
   MAD 이상치 제거 후 좌우 시드 평균 간격
 - `lane_seed_sliding_window_enabled`,
