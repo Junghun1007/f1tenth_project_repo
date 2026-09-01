@@ -5,12 +5,13 @@ camera_driver:
     # 캡처/흔들림 보정 출력 FPS를 상태 로그에 출력한다.
     performance_measurement_enabled: false
 
-    # Full OV9782 sensor image used as the BEV source.
+    # CAM_A는 RGB NV12, 스테레오 CAM_B/C는 native GRAY8로 전송한다.
+    # GRAY8은 호스트에서 neutral UV를 붙여 기존 NV12 ROS/BEV API에 맞춘다.
     sensor_fps: 80.0
     width: 1280
     height: 800
 
-    camera_socket: "CAM_A"
+    camera_socket: "CAM_A" # RGB=CAM_A, stereo left/right=CAM_B/C
     # The requested output matches the full 1280x800 sensor aspect ratio.
     resize_mode: "CROP"
 
@@ -22,7 +23,7 @@ camera_driver:
     queue_blocking: false
 
     frame_id: "camera_optical_frame"
-    # Raw NV12: Y plane followed by interleaved UV plane.
+    # ROS 출력은 센서와 무관하게 NV12: Y 다음 interleaved UV plane이다.
     image_topic: "/camera/image_rect"
 
     # IMU 토픽 발행은 선택 사항이며 영상 안정화는 내부 IMU를 직접 사용한다.
@@ -113,7 +114,7 @@ camera_driver:
     imu_stabilization_maximum_frame_imu_wait_sec: 0.005
     imu_stabilization_maximum_frame_imu_age_sec: 0.012
     imu_stabilization_maximum_prediction_sec: 0.015
-    # 짧은 RGB/IMU 매칭 실패는 zoom-only로 튀지 않고 직전 정상
+    # 짧은 camera/IMU 매칭 실패는 zoom-only로 튀지 않고 직전 정상
     # homography를 두 프레임까지 유지한다.
     imu_stabilization_invalid_correction_hold_frames: 2
 
@@ -132,12 +133,13 @@ camera_driver:
 
     # 통합 BEV launch에서만 켠다. 전체 영상을 CPU warp하지 않고, 원본
     # rectified NV12의 아래쪽만 보정 행렬과 함께 CUDA BEV 단계로 전달한다.
+    # CAM_B/C 입력에서는 GRAY8 Y와 호스트에서 채운 neutral UV가 들어간다.
     fused_bev_output_enabled: false
     fused_bev_topic: "/camera/bev_input"
     # 0.70이면 1280x800 중 하단 560행을 사용한다. 실행 시 변경 가능하다.
     bev_input_bottom_fraction: 0.70
 
-    # 독립 프리뷰는 표시할 최신 NV12 프레임만 CPU에서 BGR로 바꾼다.
+    # 독립 프리뷰는 최신 NV12/GRAY8 프레임만 CPU에서 BGR로 바꾼다.
     preview_enabled: false
     preview_fps: 60.0
     preview_window_name: "OAK fixed-reference pitch-roll stabilization"

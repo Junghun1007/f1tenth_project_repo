@@ -439,7 +439,7 @@ def generate_launch_description():
                 default_value="2",
                 description=(
                     "Reuse the last valid stabilization homography for this "
-                    "many consecutive RGB/IMU matching misses."
+                    "many consecutive camera/IMU matching misses."
                 ),
             ),
             DeclareLaunchArgument(

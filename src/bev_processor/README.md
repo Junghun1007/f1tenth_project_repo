@@ -70,7 +70,7 @@ BEV의 빠른 진동 보정은 기존과 동일한 gyro 전체 대역 방식을 
 종·횡가속도를 IMU 가속도에서 제거한 잔여 중력은 주행 자세 drift를 줄이는
 저주파 persistent anchor와 비누적 bounded nudge에 사용한다. 두 CAN gain과
 nudge 강도는 `0.0~1.0`, anchor 최대 변화율은 `deg/s` 단위로 실행할 때
-조절할 수 있다. RGB/IMU 매칭이 한두 프레임 실패하면 직전 정상 보정 행렬을
+조절할 수 있다. camera/IMU 매칭이 한두 프레임 실패하면 직전 정상 보정 행렬을
 유지하고, 지정 횟수를 넘긴 연속 실패에만 zoom-only로 돌아간다.
 
 CUDA 컴파일러를 자동으로 찾지 못하면 빌드 인자에

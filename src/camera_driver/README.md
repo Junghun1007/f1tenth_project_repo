@@ -16,7 +16,7 @@ BEV와 공유한 기준이다. 단독 camera_driver launch에서는 BEV publishe
 OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패키지다.
 기본 설정은 다음과 같다.
 
-- 센서 모드: OV9782 풀 해상도 `1280x800`, `NV12`
+- 센서 모드: `1280x800`; CAM_A는 `NV12`, CAM_B/C는 native `GRAY8`
 - 기본 프리뷰/ROS 출력: 안정화된 전체 `1280x800` 프레임
 - 요청 센서 FPS: `80`
 - USB 최대 속도 요청: `SUPER` (5 Gbps)
@@ -31,8 +31,8 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 - 호스트 큐: 크기 1, non-blocking
 - 프리뷰: 캡처와 분리된 최신 프레임 방식
 
-센서 모드는 OV9782의 2-lane 1280x800 풀 해상도 출력을 사용한다.
-노드는 요청값과
+CAM_A는 OV9782의 NV12 출력을 사용한다. 스테레오 CAM_B/C는 장치에서
+GRAY8로 직접 받아 불필요한 mono-to-NV12 변환 병목을 피한다. 노드는 요청값과
 별도로 측정된 캡처 FPS와 장치 sequence gap을 주기적으로 출력한다.
 
 첫 프레임에는 resize와 장치 내부 왜곡 보정을 반영한 전체 1280x800
@@ -46,10 +46,10 @@ OAK/DepthAI 카메라 영상을 낮은 지연시간으로 받는 ROS 2 C++ 패�
 메시지 복사나 `imshow()`를 수행하지 않는다. 발행이나 프리뷰가 늦어지면
 오래된 프레임을 쌓지 않고 최신 프레임으로 건너뛴다.
 
-OAK에서 `NV12`를 생성해 Jetson으로 전송한다. BGR888i보다 전송량이 절반
-이하이므로 USB/XLink 병목을 줄인다. 캡처 스레드는 `ImgFrame` 패킷만
-보관하며 색 변환을 하지 않는다. ROS 토픽 발행을 선택한 경우 원본 NV12를
-`sensor_msgs/Image` 데이터로 한 번 복사한다.
+CAM_A는 OAK에서 `NV12`를 생성해 Jetson으로 전송한다. CAM_B/C는 native
+`GRAY8`을 전송하며, 호스트가 기존 ROS/BEV NV12 인터페이스를 유지하기 위해
+Y plane을 복사하고 UV를 중립값 128로 채운다. 캡처 스레드는 `ImgFrame`
+패킷만 보관하며 색 변환을 하지 않는다.
 
 기본 NV12 메시지는 `encoding="nv12"`, `width=1280`, `height=800`,
 `step=1280`을 사용하고, `data`에는 Y plane 800행 다음에 interleaved UV
@@ -72,8 +72,9 @@ ROS 발행은 `sensor_msgs/msg/Image`의 `UniquePtr`를 사용한다. 기본 lau
 추가 메모리 복사를 사용한다.
 
 통합 BEV launch에서는 일반 `sensor_msgs/Image` 발행을 끄고
-`camera_driver/msg/BevInput`을 사용한다. 원본 rectified NV12의 하단 70%
-(1280x560)만 복사하고, 같은 노출 시점의 원본→안정화 homography를 함께
+`camera_driver/msg/BevInput`을 사용한다. NV12 또는 GRAY8에서 만든 호환
+NV12의 하단 70%(1280x560)만 복사하고, 같은 노출 시점의 원본→안정화
+homography를 함께
 보낸다. 이 경로는 CPU Y/UV `warpPerspective()`를 수행하지 않으며, 고정 줌과
 동적 roll/pitch 보정은 BEV의 CUDA sampling에 합쳐진다. 단독 프리뷰와 일반
 이미지 토픽의 기존 CPU 안정화 경로는 호환성을 위해 유지한다.
@@ -156,8 +157,8 @@ colcon build \
 ```
 
 DepthAI는 OpenCV 지원을 켜고 빌드되어야 한다. 프리뷰를 켠 경우에만
-`ImgFrame::getCvFrame()`으로 NV12를 CPU BGR로 변환해 OpenCV 창에
-표시한다.
+`ImgFrame::getCvFrame()`으로 NV12를 CPU BGR로 변환한다. GRAY8 프리뷰는
+OpenCV에서 BGR 세 채널로 확장해 같은 창에 표시한다.
 
 ## 빌드
 
@@ -250,7 +251,7 @@ raw 가속도계를 넣지 않고 해당 가속도 샘플을 생략하며 gyro �
 
 결과 FOV는 광학 중심 기준 1.25배 고정 줌으로 유지한다. 줌 영역으로 원본
 경계를 모두 채울 수 없는 자세나 3도 보정 한계를 넘은 불확실한 자세에는
-동적 회전을 적용하지 않고 zoom-only 원본을 전달한다. 단, 일시적인 RGB/IMU
+동적 회전을 적용하지 않고 zoom-only 원본을 전달한다. 단, 일시적인 camera/IMU
 매칭 실패에는 직전 정상 homography를 기본 2프레임까지 유지해 단일 프레임
 점프를 막고, 그 이상 연속 실패할 때만 zoom-only로 전환한다.
 단독 프리뷰와 일반 이미지 발행은 CPU OpenCV 워프를 유지한다. 통합 BEV
@@ -312,6 +313,7 @@ ros2 topic info /camera/image_rect --verbose
 |---|---:|---|
 | `performance_measurement_enabled` | `false` | GUI 프리뷰 강제 비활성화 및 연산 FPS 로그 |
 | `sensor_fps` | `80.0` | OAK 센서/출력 요청 FPS |
+| `camera_socket` | `CAM_A` | RGB `CAM_A`는 NV12, stereo `CAM_B/C`는 GRAY8 전송 |
 | `width`, `height` | `1280`, `800` | OAK 입력 및 기본 출력 해상도 |
 | `undistort_enabled` | `true` | OAK 장치 내부 왜곡 보정 |
 | `queue_size` | `8` | DepthAI 호스트 큐 크기 |
@@ -359,7 +361,7 @@ ros2 topic info /camera/image_rect --verbose
 | `imu_stabilization_stationary_tilt_recovery_time_constant_sec` | `0.35` | 정지 후 시작 시점 복귀 시정수 |
 | `imu_stabilization_maximum_correction_deg` | `3.0` | 축별 최대 동적 보정각; 초과 시 zoom-only fallback |
 | `imu_stabilization_maximum_prediction_sec` | `0.015` | 마지막 gyro 기반 최대 예측 시간 |
-| `imu_stabilization_invalid_correction_hold_frames` | `2` | RGB/IMU 매칭 실패 시 직전 정상 homography 유지 프레임 수 (`0~5`) |
+| `imu_stabilization_invalid_correction_hold_frames` | `2` | camera/IMU 매칭 실패 시 직전 정상 homography 유지 프레임 수 (`0~5`) |
 | `fixed_view_zoom` | `1.25` | 고정 출력 FOV 줌 배율 |
 | `fixed_view_border_margin_px` | `1.5` | 원본 경계 bilinear 안전 여백 |
 | `output_crop_top_px` | `0` | 안정화 후 제거할 상단 행 수 (`0`이면 원본) |
@@ -378,7 +380,7 @@ ros2 topic info /camera/image_rect --verbose
 제거한 뒤, Depth 자세 정렬을 적용하기 전의 잔여값이다.
 `accel_nudge(roll/pitch)`는 기본 자이로/중력-anchor 자세에 더해진 현재 비누적
 가속도계 보정각이고, `gravity_anchor_updates`가 증가하면 주행 중 persistent
-anchor가 실제로 동작한 것이다. FPS 로그의 `held`는 RGB/IMU 매칭 실패 때
+anchor가 실제로 동작한 것이다. FPS 로그의 `held`는 camera/IMU 매칭 실패 때
 직전 정상 homography를 재사용한 누적 프레임 수다.
 
 주행 중 bounded nudge는 기본 자세 적분에 다시 넣지 않는다.
@@ -398,7 +400,8 @@ new_scale = old_scale * actual_speed / logged_speed
 시정수를 늘리고, 반응이 너무 늦으면 줄인다. 기본 횡가속도는 monitor에서
 CAN 속도와 `/camera/imu` yaw rate를 결합해 계산한다.
 
-80 FPS에서 `1280x800 NV12`의 순수 영상 데이터는 약 117 MiB/s다.
+80 FPS에서 `1280x800 NV12`의 순수 영상 데이터는 약 117 MiB/s이고,
+GRAY8은 약 78 MiB/s다.
 `BGR888i`의 약 234 MiB/s보다 작다. 외부 프로세스 구독자는 DDS 직렬화와
 추가 복사를 사용하므로, 후속 C++ 영상 처리는 같은 컴포넌트 컨테이너의
 intra-process 통신으로 구성하는 것이 좋다.

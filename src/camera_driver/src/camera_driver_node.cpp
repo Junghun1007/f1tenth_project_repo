@@ -45,8 +45,8 @@ using namespace std::chrono_literals;
 namespace
 {
 
-constexpr std::uint32_t kOv9782FullWidth = 1280U;
-constexpr std::uint32_t kOv9782FullHeight = 800U;
+constexpr std::uint32_t kFullSensorWidth = 1280U;
+constexpr std::uint32_t kFullSensorHeight = 800U;
 constexpr double kTwoPi =
   2.0 * 3.141592653589793238462643383279502884;
 
@@ -148,6 +148,13 @@ dai::CameraBoardSocket parse_camera_socket(const std::string & value)
   }
   throw std::invalid_argument(
           "camera_socket must be CAM_A, CAM_B, CAM_C, or CAM_D");
+}
+
+bool uses_gray8_transport(const dai::CameraBoardSocket socket)
+{
+  return
+    socket == dai::CameraBoardSocket::CAM_B ||
+    socket == dai::CameraBoardSocket::CAM_C;
 }
 
 dai::ImgResizeMode parse_resize_mode(const std::string & value)
@@ -839,6 +846,7 @@ private:
     }
 
     camera_socket_ = parse_camera_socket(camera_socket_name_);
+    gray8_transport_ = uses_gray8_transport(camera_socket_);
     resize_mode_ = parse_resize_mode(resize_mode_name_);
     last_valid_stabilization_homography_.setMaximumHoldFrames(
       static_cast<std::size_t>(invalid_correction_hold_frames_));
@@ -1189,18 +1197,20 @@ private:
     pipeline_ = std::make_unique<dai::Pipeline>(device);
     pipeline_->setXLinkChunkSize(0);
 
-    // Use the full OV9782 sensor image as the BEV source: 1280x800.
+    // CAM_A is the native color/NV12 path. The stereo sensors on CAM_B/C are
+    // native monochrome, so keep them GRAY8 on the device and synthesize
+    // neutral chroma only when adapting to the existing NV12 ROS/BEV API.
     auto camera = pipeline_->create<dai::node::Camera>()->build(
       camera_socket_,
-      std::make_pair(kOv9782FullWidth, kOv9782FullHeight),
+      std::make_pair(kFullSensorWidth, kFullSensorHeight),
       static_cast<float>(sensor_fps_));
+    const auto transport_type = gray8_transport_ ?
+      dai::ImgFrame::Type::GRAY8 : dai::ImgFrame::Type::NV12;
     auto * output = camera->requestOutput(
       std::make_pair(
         static_cast<std::uint32_t>(width_),
         static_cast<std::uint32_t>(height_)),
-      // Keep the full-rate device/USB path compact. Stabilization warps the
-      // NV12 planes directly, so no full-resolution host BGR frame is needed.
-      dai::ImgFrame::Type::NV12,
+      transport_type,
       resize_mode_,
       static_cast<float>(sensor_fps_),
       undistort_enabled_);
@@ -1278,9 +1288,11 @@ private:
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "OAK: full sensor %dx%d @ %.1f FPS, USB=%s, "
-      "transport=NV12, XLink chunks=off, XLink device queue=1/non-blocking",
-      width_, height_, sensor_fps_, usb_speed_name(device->getUsbSpeed()));
+      "OAK: full sensor %dx%d @ %.1f FPS on %s, USB=%s, "
+      "transport=%s, XLink chunks=off, XLink device queue=1/non-blocking",
+      width_, height_, sensor_fps_, camera_socket_name_.c_str(),
+      usb_speed_name(device->getUsbSpeed()),
+      gray8_transport_ ? "GRAY8 (host neutral-chroma NV12 adapter)" : "NV12");
     RCLCPP_INFO(
       node_.get_logger(),
       "Options: undistort=%s, image_publish=%s, fused_bev_publish=%s, "
@@ -1406,7 +1418,7 @@ private:
         }
 
         const auto received_at = std::chrono::steady_clock::now();
-        // Stabilization is synchronized to the middle of RGB exposure, not
+        // Stabilization is synchronized to the middle of camera exposure, not
         // host arrival time or the beginning/end of exposure.
         const auto sensor_timestamp = packet->getTimestamp(
           dai::CameraExposureOffset::MIDDLE);
@@ -1433,16 +1445,18 @@ private:
         received_interval_.fetch_add(1, std::memory_order_relaxed);
 
         if (publish_enabled_ || fused_bev_output_enabled_ || preview_enabled_) {
-          const bool valid_nv12 =
-            packet->getType() == dai::ImgFrame::Type::NV12 &&
+          const auto expected_type = gray8_transport_ ?
+            dai::ImgFrame::Type::GRAY8 : dai::ImgFrame::Type::NV12;
+          const bool valid_frame =
+            packet->getType() == expected_type &&
             static_cast<int>(packet->getWidth()) == width_ &&
             static_cast<int>(packet->getHeight()) == height_;
-          if (!valid_nv12) {
+          if (!valid_frame) {
             invalid_frames_total_.fetch_add(1);
             RCLCPP_ERROR_THROTTLE(
               node_.get_logger(), *node_.get_clock(), 1000,
-              "Expected a %dx%d NV12 frame from DepthAI.",
-              width_, height_);
+              "Expected a %dx%d %s frame from DepthAI.",
+              width_, height_, gray8_transport_ ? "GRAY8" : "NV12");
             continue;
           }
 
@@ -1588,7 +1602,7 @@ private:
       stabilization_missed_total_.fetch_add(1U);
       RCLCPP_ERROR_THROTTLE(
         node_.get_logger(), *node_.get_clock(), 5000,
-        "RGB/IMU timestamps are not in the same clock domain.");
+        "Camera/IMU timestamps are not in the same clock domain.");
       return held_or_zoom_only();
     }
 
@@ -1633,38 +1647,51 @@ private:
     return StabilizationTransform{output_homography, true, true};
   }
 
-  bool copy_nv12_to_message(
+  bool copy_frame_to_nv12_message(
     dai::ImgFrame & packet,
     const StabilizationTransform & transform,
     sensor_msgs::msg::Image & message)
   {
-    const auto & nv12 = packet.getData();
+    const auto & frame_data = packet.getData();
     const auto stride =
       packet.getStride() > 0U ? packet.getStride() : packet.getWidth();
-    const auto nv12_rows =
-      static_cast<std::size_t>(packet.getHeight()) * 3U / 2U;
-    const auto expected_bytes =
-      static_cast<std::size_t>(stride) * nv12_rows;
-    if (nv12.size() < expected_bytes) {
-      throw std::runtime_error(
-              "DepthAI returned an undersized NV12 frame");
-    }
-
     const int frame_width = static_cast<int>(packet.getWidth());
     const int frame_height = static_cast<int>(packet.getHeight());
+    const bool input_has_chroma =
+      packet.getType() == dai::ImgFrame::Type::NV12;
+    const bool input_is_gray8 =
+      packet.getType() == dai::ImgFrame::Type::GRAY8;
+    if (!input_has_chroma && !input_is_gray8) {
+      throw std::runtime_error(
+              "DepthAI returned neither an NV12 nor a GRAY8 frame");
+    }
+    const auto source_rows = input_has_chroma ?
+      static_cast<std::size_t>(frame_height) * 3U / 2U :
+      static_cast<std::size_t>(frame_height);
+    const auto expected_bytes =
+      static_cast<std::size_t>(stride) * source_rows;
+    if (frame_data.size() < expected_bytes) {
+      throw std::runtime_error(
+              "DepthAI returned an undersized camera frame");
+    }
+
     cv::Mat input_y(
       frame_height,
       frame_width,
       CV_8UC1,
-      const_cast<std::uint8_t *>(nv12.data()),
+      const_cast<std::uint8_t *>(frame_data.data()),
       stride);
-    cv::Mat input_uv(
-      frame_height / 2,
-      frame_width / 2,
-      CV_8UC2,
-      const_cast<std::uint8_t *>(
-        nv12.data() + stride * static_cast<std::size_t>(frame_height)),
-      stride);
+    cv::Mat input_uv;
+    if (input_has_chroma) {
+      input_uv = cv::Mat(
+        frame_height / 2,
+        frame_width / 2,
+        CV_8UC2,
+        const_cast<std::uint8_t *>(
+          frame_data.data() +
+          stride * static_cast<std::size_t>(frame_height)),
+        stride);
+    }
     cv::Mat stabilized_y;
     cv::Mat stabilized_uv;
     cv::Mat processed_y = input_y;
@@ -1672,7 +1699,6 @@ private:
 
     if (transform.homography) {
       stabilized_y.create(frame_height, frame_width, CV_8UC1);
-      stabilized_uv.create(frame_height / 2, frame_width / 2, CV_8UC2);
       cv::warpPerspective(
         input_y,
         stabilized_y,
@@ -1682,38 +1708,44 @@ private:
         cv::BORDER_CONSTANT,
         cv::Scalar(0));
 
-      const cv::Matx33d half_scale(
-        0.5, 0.0, 0.0,
-        0.0, 0.5, 0.0,
-        0.0, 0.0, 1.0);
-      const cv::Matx33d double_scale(
-        2.0, 0.0, 0.0,
-        0.0, 2.0, 0.0,
-        0.0, 0.0, 1.0);
-      const cv::Matx33d uv_homography =
-        half_scale * (*transform.homography) * double_scale;
-      cv::warpPerspective(
-        input_uv,
-        stabilized_uv,
-        cv::Mat(uv_homography),
-        stabilized_uv.size(),
-        cv::INTER_LINEAR,
-        cv::BORDER_CONSTANT,
-        cv::Scalar(128, 128));
       processed_y = stabilized_y;
-      processed_uv = stabilized_uv;
+      if (input_has_chroma) {
+        stabilized_uv.create(frame_height / 2, frame_width / 2, CV_8UC2);
+        const cv::Matx33d half_scale(
+          0.5, 0.0, 0.0,
+          0.0, 0.5, 0.0,
+          0.0, 0.0, 1.0);
+        const cv::Matx33d double_scale(
+          2.0, 0.0, 0.0,
+          0.0, 2.0, 0.0,
+          0.0, 0.0, 1.0);
+        const cv::Matx33d uv_homography =
+          half_scale * (*transform.homography) * double_scale;
+        cv::warpPerspective(
+          input_uv,
+          stabilized_uv,
+          cv::Mat(uv_homography),
+          stabilized_uv.size(),
+          cv::INTER_LINEAR,
+          cv::BORDER_CONSTANT,
+          cv::Scalar(128, 128));
+        processed_uv = stabilized_uv;
+      }
       stabilized_frames_total_.fetch_add(1U);
     }
 
     const int output_height = frame_height - output_crop_top_px_;
     const cv::Mat cropped_y = processed_y(
       cv::Rect(0, output_crop_top_px_, frame_width, output_height));
-    const cv::Mat cropped_uv = processed_uv(
-      cv::Rect(
-        0,
-        output_crop_top_px_ / 2,
-        frame_width / 2,
-        output_height / 2));
+    cv::Mat cropped_uv;
+    if (input_has_chroma) {
+      cropped_uv = processed_uv(
+        cv::Rect(
+          0,
+          output_crop_top_px_ / 2,
+          frame_width / 2,
+          output_height / 2));
+    }
 
     message.width = static_cast<std::uint32_t>(frame_width);
     message.height = static_cast<std::uint32_t>(output_height);
@@ -1731,32 +1763,51 @@ private:
         cropped_y.ptr(row),
         static_cast<std::size_t>(frame_width));
     }
-    for (int row = 0; row < cropped_uv.rows; ++row) {
-      std::memcpy(
-        message.data.data() + y_bytes +
-        static_cast<std::size_t>(row) *
-        static_cast<std::size_t>(frame_width),
-        cropped_uv.ptr(row),
-        static_cast<std::size_t>(frame_width));
+    if (input_has_chroma) {
+      for (int row = 0; row < cropped_uv.rows; ++row) {
+        std::memcpy(
+          message.data.data() + y_bytes +
+          static_cast<std::size_t>(row) *
+          static_cast<std::size_t>(frame_width),
+          cropped_uv.ptr(row),
+          static_cast<std::size_t>(frame_width));
+      }
+    } else {
+      std::fill_n(
+        message.data.data() + y_bytes,
+        uv_bytes,
+        static_cast<std::uint8_t>(128));
     }
     return true;
   }
 
-  bool copy_nv12_to_bev_input(
+  bool copy_frame_to_bev_input(
     dai::ImgFrame & packet,
     const StabilizationTransform & transform,
     camera_driver::msg::BevInput & message)
   {
-    const auto & nv12 = packet.getData();
+    const auto & frame_data = packet.getData();
     const auto source_stride =
       packet.getStride() > 0U ? packet.getStride() : packet.getWidth();
     const int frame_width = static_cast<int>(packet.getWidth());
     const int frame_height = static_cast<int>(packet.getHeight());
-    const std::size_t source_rows =
-      static_cast<std::size_t>(frame_height) * 3U / 2U;
-    if (nv12.size() < static_cast<std::size_t>(source_stride) * source_rows) {
+    const bool input_has_chroma =
+      packet.getType() == dai::ImgFrame::Type::NV12;
+    const bool input_is_gray8 =
+      packet.getType() == dai::ImgFrame::Type::GRAY8;
+    if (!input_has_chroma && !input_is_gray8) {
       throw std::runtime_error(
-              "DepthAI returned an undersized NV12 frame");
+              "DepthAI returned neither an NV12 nor a GRAY8 frame");
+    }
+    const std::size_t source_rows = input_has_chroma ?
+      static_cast<std::size_t>(frame_height) * 3U / 2U :
+      static_cast<std::size_t>(frame_height);
+    if (
+      frame_data.size() <
+      static_cast<std::size_t>(source_stride) * source_rows)
+    {
+      throw std::runtime_error(
+              "DepthAI returned an undersized camera frame");
     }
 
     message.source_width = static_cast<std::uint32_t>(frame_width);
@@ -1784,12 +1835,8 @@ private:
       static_cast<std::size_t>(fused_bev_crop_height_);
     message.nv12.resize(output_y_bytes + output_y_bytes / 2U);
     const std::uint8_t * source_y =
-      nv12.data() +
+      frame_data.data() +
       static_cast<std::size_t>(fused_bev_crop_top_) * source_stride;
-    const std::uint8_t * source_uv =
-      nv12.data() +
-      static_cast<std::size_t>(frame_height) * source_stride +
-      static_cast<std::size_t>(fused_bev_crop_top_ / 2) * source_stride;
     for (int row = 0; row < fused_bev_crop_height_; ++row) {
       std::memcpy(
         message.nv12.data() +
@@ -1797,12 +1844,23 @@ private:
         source_y + static_cast<std::size_t>(row) * source_stride,
         static_cast<std::size_t>(frame_width));
     }
-    for (int row = 0; row < fused_bev_crop_height_ / 2; ++row) {
-      std::memcpy(
-        message.nv12.data() + output_y_bytes +
-        static_cast<std::size_t>(row) * static_cast<std::size_t>(frame_width),
-        source_uv + static_cast<std::size_t>(row) * source_stride,
-        static_cast<std::size_t>(frame_width));
+    if (input_has_chroma) {
+      const std::uint8_t * source_uv =
+        frame_data.data() +
+        static_cast<std::size_t>(frame_height) * source_stride +
+        static_cast<std::size_t>(fused_bev_crop_top_ / 2) * source_stride;
+      for (int row = 0; row < fused_bev_crop_height_ / 2; ++row) {
+        std::memcpy(
+          message.nv12.data() + output_y_bytes +
+          static_cast<std::size_t>(row) * static_cast<std::size_t>(frame_width),
+          source_uv + static_cast<std::size_t>(row) * source_stride,
+          static_cast<std::size_t>(frame_width));
+      }
+    } else {
+      std::fill_n(
+        message.nv12.data() + output_y_bytes,
+        output_y_bytes / 2U,
+        static_cast<std::uint8_t>(128));
     }
     if (transform.homography) {
       stabilized_frames_total_.fetch_add(1U);
@@ -2057,7 +2115,7 @@ private:
             image_message->width = snapshot->packet->getWidth();
             image_message->encoding = "nv12";
             image_message->is_bigendian = false;
-            output_available = copy_nv12_to_message(
+            output_available = copy_frame_to_nv12_message(
               *snapshot->packet, transform, *image_message) ||
               output_available;
           }
@@ -2067,7 +2125,7 @@ private:
             bev_message = std::make_unique<camera_driver::msg::BevInput>();
             bev_message->header.stamp = snapshot->ros_stamp;
             bev_message->header.frame_id = frame_id_;
-            output_available = copy_nv12_to_bev_input(
+            output_available = copy_frame_to_bev_input(
               *snapshot->packet, transform, *bev_message) ||
               output_available;
           }
@@ -2307,9 +2365,18 @@ private:
             stabilization_output_drops_total_.fetch_add(1U);
           } else {
             auto preview_frame = snapshot->packet->getCvFrame();
-            if (preview_frame.empty() || preview_frame.type() != CV_8UC3) {
+            if (preview_frame.empty()) {
               throw std::runtime_error(
-                      "DepthAI could not convert the NV12 preview to BGR");
+                      "DepthAI returned an empty camera preview");
+            }
+            if (preview_frame.type() == CV_8UC1) {
+              cv::Mat preview_bgr;
+              cv::cvtColor(
+                preview_frame, preview_bgr, cv::COLOR_GRAY2BGR);
+              preview_frame = std::move(preview_bgr);
+            } else if (preview_frame.type() != CV_8UC3) {
+              throw std::runtime_error(
+                      "DepthAI returned an unsupported camera preview type");
             }
             if (transform.homography) {
               cv::Mat stabilized;
@@ -2781,6 +2848,7 @@ private:
   double startup_timeout_sec_{5.0};
   double status_log_interval_sec_{1.0};
   dai::CameraBoardSocket camera_socket_{dai::CameraBoardSocket::CAM_A};
+  bool gray8_transport_{false};
   dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::CROP};
 
   std::unique_ptr<dai::Pipeline> pipeline_;
