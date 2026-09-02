@@ -309,11 +309,11 @@ private:
         dai::StereoDepthConfig::AlgorithmControl::DepthAlign::CENTER);
       stereo->initialConfig->algorithmControl.centerAlignmentShiftFactor =
         static_cast<float>(virtual_camera_position_ratio_);
-      // Standard integer disparity without LR-check or post filters is the
-      // fastest 800P RVC2 configuration and keeps the disparity image RAW8.
+      // CENTER alignment requires LR-check. Keep subpixel and post filters
+      // disabled so the 800P disparity path remains as light as possible.
       stereo->setSubpixel(false);
       stereo->setExtendedDisparity(false);
-      stereo->setLeftRightCheck(false);
+      stereo->setLeftRightCheck(true);
       stereo->initialConfig->postProcessing.median =
         dai::node::StereoDepth::MedianFilter::MEDIAN_OFF;
       stereo->initialConfig->postProcessing.holeFilling.enable = false;

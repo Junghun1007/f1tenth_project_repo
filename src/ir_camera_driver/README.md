@@ -52,7 +52,8 @@ r = (0 - y_left) / (y_right - y_left)
 
 - 중앙 재투영: `1280x800 @ 50 FPS`
   - RVC2 800P stereo의 가장 빠른 integer disparity 구성
-  - subpixel, left-right check, 후처리 필터 비활성화
+  - CENTER 정렬에 필수인 left-right check 활성화
+  - subpixel과 추가 후처리 필터 비활성화
   - 중앙 합성은 Jetson CUDA에서 수행
 - 단일 렌즈: `1280x800 @ 129 FPS`
   - OV9282 full-resolution 센서 최대 요청값
