@@ -1,0 +1,39 @@
+ir_camera_driver:
+  ros__parameters:
+    # true: CAM_B/C rectified images and center-aligned disparity are combined
+    # into one virtual-camera preview. false: selected_camera is previewed.
+    reprojection_enabled: true
+    selected_camera: "LEFT"  # LEFT/CAM_B or RIGHT/CAM_C
+
+    # Position between the rectified stereo optical centers.
+    # 0.0=LEFT/CAM_B, 0.5=stereo midpoint, 1.0=RIGHT/CAM_C.
+    virtual_camera_position_ratio: 0.5
+
+    # OAK-D Pro W OV9282 full sensor resolution. Reprojection is limited by
+    # RVC2 full-resolution stereo (50 FPS); one camera can run at 129 FPS.
+    width: 1280
+    height: 800
+    reprojection_fps: 50.0
+    single_camera_fps: 129.0
+    undistort_single_camera: true
+    sync_threshold_ms: 2.0
+
+    # OAK-D Pro W emitters. The dot projector supports stereo matching; the
+    # flood light uniformly illuminates a dark scene and is optional here.
+    ir_enabled: true
+    ir_dot_projector_intensity: 1.0
+    ir_flood_light_intensity: 0.0
+
+    # Keep auto exposure for the first tunnel preview. Enable manual exposure
+    # for controlled IR OFF/ON comparisons. Exposure must fit inside one frame.
+    manual_exposure_enabled: false
+    manual_exposure_us: 5000
+    manual_sensitivity_iso: 800
+
+    # Preview is not rate-limited. These values only resize the GUI window;
+    # camera and reprojection resolution remains 1280x800.
+    preview_window_name: "OAK IR center preview"
+    preview_max_width: 1280
+    preview_max_height: 800
+    capture_directory: "."
+    status_log_interval_sec: 1.0
