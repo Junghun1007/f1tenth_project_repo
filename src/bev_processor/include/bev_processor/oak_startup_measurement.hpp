@@ -30,6 +30,8 @@ struct OakStartupMeasurementConfig
 
   int roi_width{456};
   int roi_height{228};
+  int roi_vertical_offset_px{80};
+  bool roi_preview_enabled{true};
   int point_sample_step{2};
   int minimum_valid_points{5080};
   double minimum_depth_m{0.30};

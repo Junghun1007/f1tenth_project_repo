@@ -111,10 +111,15 @@ target_include_directories(bev_startup_measurement
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+    ${OpenCV_INCLUDE_DIRS}
 )
 target_link_libraries(
   bev_startup_measurement
-  PUBLIC depthai::core bev_ground_plane bev_startup_attitude)
+  PUBLIC
+    depthai::core
+    bev_ground_plane
+    bev_startup_attitude
+    ${OpenCV_LIBS})
 
 add_library(bev_processor_component SHARED
   src/bev_processor_node.cpp

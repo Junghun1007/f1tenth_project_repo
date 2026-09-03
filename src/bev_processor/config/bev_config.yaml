@@ -95,6 +95,10 @@ bev_processor:
     # 너무 크면 차체·벽·장애물이 섞이고, 너무 작으면 평면 포인트가 부족해진다.
     measurement_roi_width: 456
     measurement_roi_height: 228
+    # 중앙 기준 세로 이동량이다. 양수는 아래, 음수는 위로 이동한다.
+    measurement_roi_vertical_offset_px: 80
+    # 시작 depth 측정 중에만 ROI 프리뷰를 띄우고 완료 시 자동으로 닫는다.
+    measurement_roi_preview_enabled: true
     # 1은 모든 픽셀, 2는 가로·세로 한 칸씩 건너뛴다. 작을수록 정확하지만 느리다.
     measurement_point_sample_step: 2
     # 유효 포인트 최소값은 ROI와 sample_step을 바꿀 때 함께 비례 조정한다.

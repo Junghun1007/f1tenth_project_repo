@@ -355,6 +355,14 @@ output_height = round((x_max_m - x_min_m) / meter_per_pixel)
 사용한다. 측정에 실패하면 임의 외부 파라미터로 계속하지 않고 노드 시작을
 중단한다.
 
+`measurement_roi_vertical_offset_px`는 영상 중앙을 기준으로 ROI를
+세로로 이동한다. 양수는 아래쪽, 음수는 위쪽이며 기본값 `80`은
+ROI를 80px 아래로 내린다. `measurement_roi_preview_enabled:=true`이면
+시작 depth 측정 동안 회색 depth 영상에 ROI를 1px 빨간색 테두리로
+표시하고, 측정이 끝나면 창을 자동으로 닫는다. 그래픽 화면이 없거나
+`performance_measurement_enabled:=true`인 경우에는 프리뷰를 끄고 측정을
+계속한다.
+
 측정 후 사용한 지면 법선은 `/camera/startup_ground_normal`에
 reliable + transient-local QoS로 한 번 발행한다. `camera_driver`도
 같은 기준을 받아 프레임별 안정화 행렬을 만든다. LUT 생성 후에는 주행 중

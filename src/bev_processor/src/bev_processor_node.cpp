@@ -145,10 +145,20 @@ public:
     }
 
     if (performance_measurement_enabled_) {
+      startup_measurement_config_.roi_preview_enabled = false;
       RCLCPP_INFO(
         get_logger(),
         "Performance measurement mode enabled: all GUI previews are off; "
         "stabilized-input and BEV-ready pipeline metrics will be reported.");
+    } else if (
+      startup_measurement_config_.roi_preview_enabled &&
+      !graphicalDisplayAvailable())
+    {
+      startup_measurement_config_.roi_preview_enabled = false;
+      RCLCPP_WARN(
+        get_logger(),
+        "Startup measurement ROI preview disabled because "
+        "DISPLAY/WAYLAND_DISPLAY is unavailable.");
     }
 
     if (startup_measurement_config_.manual_camera_height_enabled) {
@@ -174,7 +184,8 @@ public:
         get_logger(),
         "Measurement quality: warmup=%.1fs, IR-dot=%.2f, IMU=%d samples, "
         "stereo=%dx%d@%.1fHz/5-bit-subpixel/shift=%d, "
-        "depth ROI=%dx%d step=%d (%d valid points minimum), "
+        "depth ROI=%dx%d offset_y=%+dpx preview=%s step=%d "
+        "(%d valid points minimum), "
         "RANSAC=%d iterations, stable planes=%d frames, attitude=%s.",
         startup_measurement_config_.warmup_sec,
         startup_measurement_config_.ir_dot_projector_intensity,
@@ -185,6 +196,8 @@ public:
         startup_measurement_config_.stereo_disparity_shift,
         startup_measurement_config_.roi_width,
         startup_measurement_config_.roi_height,
+        startup_measurement_config_.roi_vertical_offset_px,
+        startup_measurement_config_.roi_preview_enabled ? "on" : "off",
         startup_measurement_config_.point_sample_step,
         startup_measurement_config_.minimum_valid_points,
         startup_measurement_config_.plane_ransac_iterations,
@@ -562,6 +575,8 @@ private:
     declare_parameter<double>("manual_camera_height_m", 0.20);
     declare_parameter<int>("measurement_roi_width", 456);
     declare_parameter<int>("measurement_roi_height", 228);
+    declare_parameter<int>("measurement_roi_vertical_offset_px", 80);
+    declare_parameter<bool>("measurement_roi_preview_enabled", true);
     declare_parameter<int>("measurement_point_sample_step", 2);
     declare_parameter<int>("measurement_minimum_valid_points", 5080);
     declare_parameter<double>("measurement_minimum_depth_m", 0.30);
@@ -828,6 +843,10 @@ private:
       get_parameter("measurement_roi_width").as_int());
     startup_measurement_config_.roi_height = static_cast<int>(
       get_parameter("measurement_roi_height").as_int());
+    startup_measurement_config_.roi_vertical_offset_px = static_cast<int>(
+      get_parameter("measurement_roi_vertical_offset_px").as_int());
+    startup_measurement_config_.roi_preview_enabled =
+      get_parameter("measurement_roi_preview_enabled").as_bool();
     startup_measurement_config_.point_sample_step = static_cast<int>(
       get_parameter("measurement_point_sample_step").as_int());
     startup_measurement_config_.minimum_valid_points = static_cast<int>(
