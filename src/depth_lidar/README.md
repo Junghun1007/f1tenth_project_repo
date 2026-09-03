@@ -15,7 +15,7 @@ OAK 계열 스테레오 Depth 카메라를 직접 열어, 선택한 영상 ROI�
 
 ## 빌드 및 실행
 
-DepthAI C++ 라이브러리, OpenCV 및 ROS 2가 설치되어 있어야 합니다. OAK 장치는 이 노드가
+DepthAI C++ 3.x 라이브러리, OpenCV 및 ROS 2가 설치되어 있어야 합니다. OAK 장치는 이 노드가
 직접 점유하므로 같은 장치를 쓰는 다른 카메라 노드를 먼저 종료합니다.
 
 ```bash
@@ -23,6 +23,33 @@ cd <workspace>
 colcon build --packages-select depth_lidar --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ros2 launch depth_lidar depth_lidar.launch.py
+```
+
+다른 실험용 YAML을 실행 시점에 전달하려면 절대 경로를 사용합니다.
+
+```bash
+ros2 launch depth_lidar depth_lidar.launch.py \
+  config_file:=/absolute/path/to/experiment.yaml
+```
+
+Launch를 거치지 않고 노드를 직접 실행할 때도 YAML을 전달할 수 있습니다.
+
+```bash
+ros2 run depth_lidar depth_lidar_node --ros-args \
+  --params-file /absolute/path/to/experiment.yaml
+```
+
+YAML의 루트 키는 아래처럼 노드 이름인 `depth_lidar`여야 합니다.
+
+```yaml
+depth_lidar:
+  ros__parameters:
+    camera.fps: 60.0
+    camera.resolution: "400p"
+    roi.width_ratio: 1.0
+    roi.height_ratio: 0.10
+    roi.bottom_offset_ratio: 0.35
+    range.max_m: 8.0
 ```
 
 RViz2에서는 `/depth_lidar/scan`을 `LaserScan`으로 추가합니다. 프리뷰는 다음처럼 확인할 수

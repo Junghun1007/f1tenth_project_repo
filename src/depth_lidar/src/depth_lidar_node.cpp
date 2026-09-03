@@ -118,19 +118,19 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   return validateProjectionConfig(config.projection, reason);
 }
 
-dai::MonoCameraProperties::SensorResolution parseResolution(const std::string & value)
+std::pair<std::uint32_t, std::uint32_t> parseResolution(const std::string & value)
 {
   if (value == "400p") {
-    return dai::MonoCameraProperties::SensorResolution::THE_400_P;
+    return {640U, 400U};
   }
   if (value == "480p") {
-    return dai::MonoCameraProperties::SensorResolution::THE_480_P;
+    return {640U, 480U};
   }
   if (value == "720p") {
-    return dai::MonoCameraProperties::SensorResolution::THE_720_P;
+    return {1280U, 720U};
   }
   if (value == "800p") {
-    return dai::MonoCameraProperties::SensorResolution::THE_800_P;
+    return {1280U, 800U};
   }
   throw std::invalid_argument("unsupported camera resolution: " + value);
 }
@@ -141,27 +141,27 @@ dai::node::StereoDepth::PresetMode parseDepthMode(const std::string & value)
     return dai::node::StereoDepth::PresetMode::DEFAULT;
   }
   if (value == "high_accuracy") {
-    return dai::node::StereoDepth::PresetMode::HIGH_ACCURACY;
+    return dai::node::StereoDepth::PresetMode::FAST_ACCURACY;
   }
   if (value == "high_density") {
-    return dai::node::StereoDepth::PresetMode::HIGH_DENSITY;
+    return dai::node::StereoDepth::PresetMode::FAST_DENSITY;
   }
   throw std::invalid_argument("unsupported depth mode: " + value);
 }
 
-dai::MedianFilter parseMedianFilter(const std::string & value)
+dai::StereoDepthConfig::MedianFilter parseMedianFilter(const std::string & value)
 {
   if (value == "off") {
-    return dai::MedianFilter::MEDIAN_OFF;
+    return dai::StereoDepthConfig::MedianFilter::MEDIAN_OFF;
   }
   if (value == "3x3") {
-    return dai::MedianFilter::KERNEL_3x3;
+    return dai::StereoDepthConfig::MedianFilter::KERNEL_3x3;
   }
   if (value == "5x5") {
-    return dai::MedianFilter::KERNEL_5x5;
+    return dai::StereoDepthConfig::MedianFilter::KERNEL_5x5;
   }
   if (value == "7x7") {
-    return dai::MedianFilter::KERNEL_7x7;
+    return dai::StereoDepthConfig::MedianFilter::KERNEL_7x7;
   }
   throw std::invalid_argument("unsupported median filter: " + value);
 }
@@ -425,35 +425,27 @@ private:
 
   void configurePipeline(
     dai::Pipeline & pipeline, const NodeConfig & config,
-    std::shared_ptr<dai::node::MonoCamera> & left,
-    std::shared_ptr<dai::node::MonoCamera> & right,
+    std::shared_ptr<dai::node::Camera> & left,
+    std::shared_ptr<dai::node::Camera> & right,
     std::shared_ptr<dai::node::StereoDepth> & stereo)
   {
-    left = pipeline.create<dai::node::MonoCamera>();
-    right = pipeline.create<dai::node::MonoCamera>();
+    const auto resolution = parseResolution(config.camera_resolution);
+    const float camera_fps = static_cast<float>(config.camera_fps);
+    left = pipeline.create<dai::node::Camera>();
+    right = pipeline.create<dai::node::Camera>();
+    left->build(dai::CameraBoardSocket::CAM_B, resolution, camera_fps);
+    right->build(dai::CameraBoardSocket::CAM_C, resolution, camera_fps);
+    auto * left_output = left->requestOutput(resolution);
+    auto * right_output = right->requestOutput(resolution);
     stereo = pipeline.create<dai::node::StereoDepth>();
-    auto output = pipeline.create<dai::node::XLinkOut>();
-
-    output->setStreamName("depth");
-    output->input.setBlocking(false);
-    output->input.setQueueSize(1);
-    left->setBoardSocket(dai::CameraBoardSocket::CAM_B);
-    right->setBoardSocket(dai::CameraBoardSocket::CAM_C);
-    left->setResolution(parseResolution(config.camera_resolution));
-    right->setResolution(parseResolution(config.camera_resolution));
-    left->setFps(config.camera_fps);
-    right->setFps(config.camera_fps);
-
-    stereo->setDefaultProfilePreset(parseDepthMode(config.depth_mode));
-    stereo->initialConfig.setConfidenceThreshold(config.confidence_threshold);
-    stereo->initialConfig.setMedianFilter(parseMedianFilter(config.median_filter));
+    stereo->build(*left_output, *right_output, parseDepthMode(config.depth_mode));
+    stereo->initialConfig->setConfidenceThreshold(config.confidence_threshold);
+    stereo->initialConfig->setMedianFilter(parseMedianFilter(config.median_filter));
     stereo->setLeftRightCheck(config.left_right_check);
     stereo->setSubpixel(config.subpixel);
     stereo->setExtendedDisparity(config.extended_disparity);
-
-    left->out.link(stereo->left);
-    right->out.link(stereo->right);
-    stereo->depth.link(output->input);
+    stereo->setDepthAlign(
+      dai::StereoDepthConfig::AlgorithmControl::DepthAlign::CENTER);
   }
 
   void cameraLoop()
@@ -462,14 +454,15 @@ private:
       restart_requested_.store(false);
       const NodeConfig startup_config = configSnapshot();
       try {
-        dai::Pipeline pipeline;
-        std::shared_ptr<dai::node::MonoCamera> left;
-        std::shared_ptr<dai::node::MonoCamera> right;
+        auto device = std::make_shared<dai::Device>();
+        dai::Pipeline pipeline(device);
+        std::shared_ptr<dai::node::Camera> left;
+        std::shared_ptr<dai::node::Camera> right;
         std::shared_ptr<dai::node::StereoDepth> stereo;
         configurePipeline(pipeline, startup_config, left, right, stereo);
 
-        dai::Device device(pipeline);
-        auto depth_queue = device.getOutputQueue("depth", 1, false);
+        auto depth_queue = stereo->depth.createOutputQueue(1, false);
+        pipeline.start();
         RCLCPP_INFO(
           get_logger(), "DepthAI started: %s @ %.1f FPS, mode=%s",
           startup_config.camera_resolution.c_str(), startup_config.camera_fps,
@@ -508,7 +501,7 @@ private:
           }
 
           if (!intrinsics_ready) {
-            const auto intrinsics = device.readCalibration().getCameraIntrinsics(
+            const auto intrinsics = device->readCalibration().getCameraIntrinsics(
               dai::CameraBoardSocket::CAM_C, depth_width, depth_height);
             fx = static_cast<double>(intrinsics.at(0).at(0));
             cx = static_cast<double>(intrinsics.at(0).at(2));
@@ -588,6 +581,7 @@ private:
             metric_processing_sum_ms = 0.0;
           }
         }
+        pipeline.stop();
       } catch (const std::exception & error) {
         RCLCPP_ERROR(get_logger(), "DepthAI pipeline error: %s", error.what());
         for (int i = 0; i < 10 && rclcpp::ok() && !stop_requested_.load(); ++i) {
