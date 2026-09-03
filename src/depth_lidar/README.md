@@ -8,7 +8,8 @@ OAK 계열 스테레오 Depth 카메라를 직접 열어, 선택한 영상 ROI�
 
 - `~/scan` (`/depth_lidar/scan`): x축 전방, y축 좌측인 `LaserScan`
 - `~/preview` (`/depth_lidar/preview`): 흰 배경, 빨간 점, 거리 원과 방사형 축을 표시한 Top-view
-- 터미널: 처리 FPS, 카메라 촬영 시각부터 출력 완료까지의 delay, 순수 처리 시간
+- 터미널: 목표/실제 FPS와 달성률, 카메라 촬영 시각부터 출력 완료까지의
+  delay, 순수 처리 시간
 
 프리뷰 창이 필요하면 `preview.gui:=true`를 사용합니다. 기본값은 화면이 없는 Jetson에서도
 동작하도록 이미지 토픽만 발행합니다.
@@ -118,3 +119,9 @@ Depth 모드 및 필터 파라미터는 장치 파이프라인을 자동으로 �
 - 처리 시간이 크면 `scan.pixel_stride`를 2로 올리거나 프리뷰를 끕니다.
 - 더 안정적인 깊이가 필요할 때만 `high_accuracy`, subpixel 또는 큰 median filter를 켭니다.
 - 터미널의 `delay`는 카메라 프레임 타임스탬프부터 LaserScan/프리뷰 처리 완료까지의 시간입니다.
+
+카메라가 실행 중일 때 터미널 출력은 다음 형식입니다.
+
+```text
+target FPS 60.0 | actual FPS 58.7 | achievement 97.8% | delay 18.20 ms | processing 1.42 ms | ...
+```

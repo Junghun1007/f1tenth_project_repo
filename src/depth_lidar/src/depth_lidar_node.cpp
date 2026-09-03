@@ -570,10 +570,14 @@ private:
             measured_delay_ms = metric_delay_sum_ms / static_cast<double>(metric_frames);
             const double processing_average_ms =
               metric_processing_sum_ms / static_cast<double>(metric_frames);
+            const double fps_achievement_percent =
+              measured_fps / startup_config.camera_fps * 100.0;
             RCLCPP_INFO(
               get_logger(),
-              "FPS %.1f | delay %.2f ms | processing %.2f ms | valid bins %zu/%d | ROI %dx%d",
-              measured_fps, measured_delay_ms, processing_average_ms, last_valid_bins,
+              "target FPS %.1f | actual FPS %.1f | achievement %.1f%% | delay %.2f ms | "
+              "processing %.2f ms | valid bins %zu/%d | ROI %dx%d",
+              startup_config.camera_fps, measured_fps, fps_achievement_percent,
+              measured_delay_ms, processing_average_ms, last_valid_bins,
               current.projection.scan_bins, projection.roi.width, projection.roi.height);
             metrics_start = processing_end;
             metric_frames = 0;
