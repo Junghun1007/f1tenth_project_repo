@@ -1,0 +1,30 @@
+depth_lidar:
+  ros__parameters:
+    # Camera pipeline parameters. Changes restart only this package's camera pipeline.
+    camera.fps: 60.0
+    camera.resolution: "400p"       # 400p, 480p, 720p, 800p
+
+    depth.mode: "high_density"      # default, high_density, high_accuracy
+    depth.confidence_threshold: 200
+    depth.left_right_check: true
+    depth.subpixel: false
+    depth.extended_disparity: false
+    depth.median_filter: "3x3"      # off, 3x3, 5x5, 7x7
+
+    # Centered ROI. Its bottom edge is this ratio above the image bottom.
+    roi.width_ratio: 1.0
+    roi.height_ratio: 0.10
+    roi.bottom_offset_ratio: 0.35
+
+    range.min_m: 0.20
+    range.max_m: 8.0
+    scan.bins: 360
+    scan.pixel_stride: 1
+    scan.min_points_per_bin: 1
+
+    preview.enabled: true
+    preview.gui: false
+    preview.fps: 10.0
+    preview.size_px: 700
+    metrics.print_interval_sec: 1.0
+    frame_id: "depth_lidar"
