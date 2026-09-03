@@ -518,7 +518,7 @@ private:
           const auto projection = projectDepthToScan(
             reinterpret_cast<const std::uint16_t *>(depth_data.data()), depth_width, depth_height,
             static_cast<std::size_t>(depth_width), fx, cx, current.projection);
-          const auto ros_stamp = now().to_msg();
+          const builtin_interfaces::msg::Time ros_stamp = now();
 
           sensor_msgs::msg::LaserScan scan;
           scan.header.stamp = ros_stamp;
