@@ -24,6 +24,7 @@ struct ProjectionConfig
   double roi_bottom_offset_ratio{0.35};
   double min_range_m{0.20};
   double max_range_m{8.0};
+  double range_offset_m{0.0};
   int scan_bins{360};
   int pixel_stride{1};
   int min_points_per_bin{1};

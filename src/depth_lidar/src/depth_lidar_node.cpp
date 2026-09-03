@@ -184,18 +184,16 @@ cv::Mat makeTopView(
   const cv::Point origin(size / 2, size - 35);
   const double usable_radius = static_cast<double>(size - 70);
   const double pixels_per_meter = usable_radius / config.projection.max_range_m;
-  const cv::Scalar grid_color(205, 205, 205);
-  const cv::Scalar axis_color(90, 90, 90);
+  const cv::Scalar grid_color(215, 215, 215);
+  const cv::Scalar major_grid_color(170, 170, 170);
+  const cv::Scalar axis_color(65, 65, 65);
 
   for (int ring = 1; ring <= 4; ++ring) {
     const double range_m = config.projection.max_range_m * static_cast<double>(ring) / 4.0;
     const int radius = static_cast<int>(std::lround(range_m * pixels_per_meter));
-    cv::ellipse(image, origin, cv::Size(radius, radius), 0.0, 180.0, 360.0, grid_color, 1);
-    std::ostringstream label;
-    label << std::fixed << std::setprecision(1) << range_m << "m";
-    cv::putText(
-      image, label.str(), cv::Point(origin.x + 5, origin.y - radius + 15),
-      cv::FONT_HERSHEY_SIMPLEX, 0.42, axis_color, 1, cv::LINE_AA);
+    cv::ellipse(
+      image, origin, cv::Size(radius, radius), 0.0, 180.0, 360.0,
+      major_grid_color, 1, cv::LINE_AA);
   }
 
   for (int degrees = -75; degrees <= 75; degrees += 15) {
@@ -204,17 +202,64 @@ cv::Mat makeTopView(
       origin, pixels_per_meter,
       config.projection.max_range_m * std::cos(angle),
       config.projection.max_range_m * std::sin(angle));
-    cv::line(image, origin, end, grid_color, 1, cv::LINE_AA);
+    const bool major_bearing = degrees % 30 == 0;
+    cv::line(
+      image, origin, end, major_bearing ? major_grid_color : grid_color,
+      major_bearing ? 2 : 1, cv::LINE_AA);
   }
+
+  cv::arrowedLine(
+    image, cv::Point(size - 10, origin.y), cv::Point(10, origin.y),
+    axis_color, 2, cv::LINE_AA, 0, 0.025);
   cv::arrowedLine(
     image, origin, topViewPoint(origin, pixels_per_meter, config.projection.max_range_m, 0.0),
     axis_color, 2, cv::LINE_AA, 0, 0.025);
+
+  const double range_tick_m = config.projection.max_range_m <= 5.0 ? 0.5 :
+    (config.projection.max_range_m <= 10.0 ? 1.0 : 2.0);
+  for (double range_m = range_tick_m;
+    range_m <= config.projection.max_range_m + 1.0e-9; range_m += range_tick_m)
+  {
+    const cv::Point tick = topViewPoint(origin, pixels_per_meter, range_m, 0.0);
+    cv::line(
+      image, cv::Point(tick.x - 5, tick.y), cv::Point(tick.x + 5, tick.y),
+      axis_color, 1, cv::LINE_AA);
+    std::ostringstream tick_label;
+    tick_label << std::fixed << std::setprecision(range_tick_m < 1.0 ? 1 : 0) <<
+      range_m << "m";
+    cv::putText(
+      image, tick_label.str(), cv::Point(tick.x + 8, tick.y + 4),
+      cv::FONT_HERSHEY_SIMPLEX, 0.32, axis_color, 1, cv::LINE_AA);
+  }
+
+  constexpr double bearing_label_radius_px = 70.0;
+  for (const int degrees : {-60, -30, 0, 30, 60}) {
+    const double angle = static_cast<double>(degrees) * kPi / 180.0;
+    const cv::Point label_center(
+      static_cast<int>(std::lround(origin.x - bearing_label_radius_px * std::sin(angle))),
+      static_cast<int>(std::lround(origin.y - bearing_label_radius_px * std::cos(angle))));
+    const std::string label = degrees > 0 ? "+" + std::to_string(degrees) :
+      std::to_string(degrees);
+    int baseline = 0;
+    const cv::Size text_size = cv::getTextSize(
+      label, cv::FONT_HERSHEY_SIMPLEX, 0.32, 1, &baseline);
+    cv::putText(
+      image, label,
+      cv::Point(label_center.x - text_size.width / 2, label_center.y + text_size.height / 2),
+      cv::FONT_HERSHEY_SIMPLEX, 0.32, axis_color, 1, cv::LINE_AA);
+  }
   cv::putText(
     image, "x: forward", cv::Point(origin.x + 8, 23), cv::FONT_HERSHEY_SIMPLEX,
     0.48, axis_color, 1, cv::LINE_AA);
   cv::putText(
-    image, "y: left", cv::Point(12, origin.y - 8), cv::FONT_HERSHEY_SIMPLEX,
+    image, "+y: left", cv::Point(12, origin.y - 8), cv::FONT_HERSHEY_SIMPLEX,
     0.48, axis_color, 1, cv::LINE_AA);
+  cv::putText(
+    image, "-y: right", cv::Point(size - 85, origin.y - 8), cv::FONT_HERSHEY_SIMPLEX,
+    0.48, axis_color, 1, cv::LINE_AA);
+  cv::putText(
+    image, "bearing [deg]", cv::Point(origin.x + 8, origin.y - 82),
+    cv::FONT_HERSHEY_SIMPLEX, 0.32, axis_color, 1, cv::LINE_AA);
 
   for (std::size_t i = 0; i < projection.ranges.size(); ++i) {
     const float range = projection.ranges[i];
@@ -235,7 +280,8 @@ cv::Mat makeTopView(
 
   std::ostringstream status;
   status << std::fixed << std::setprecision(1) << "FPS " << measured_fps << "  delay " <<
-    measured_delay_ms << " ms";
+    measured_delay_ms << " ms  offset " << std::setprecision(3) <<
+    config.projection.range_offset_m << " m";
   cv::putText(
     image, status.str(), cv::Point(12, size - 10), cv::FONT_HERSHEY_SIMPLEX,
     0.48, cv::Scalar(30, 30, 30), 1, cv::LINE_AA);
@@ -291,6 +337,8 @@ public:
       declare_parameter<double>("range.min_m", config_.projection.min_range_m);
     config_.projection.max_range_m =
       declare_parameter<double>("range.max_m", config_.projection.max_range_m);
+    config_.projection.range_offset_m =
+      declare_parameter<double>("range.offset_m", config_.projection.range_offset_m);
     config_.projection.scan_bins =
       declare_parameter<int>("scan.bins", config_.projection.scan_bins);
     config_.projection.pixel_stride =
@@ -374,6 +422,8 @@ private:
           next.projection.min_range_m = parameter.as_double();
         } else if (name == "range.max_m") {
           next.projection.max_range_m = parameter.as_double();
+        } else if (name == "range.offset_m") {
+          next.projection.range_offset_m = parameter.as_double();
         } else if (name == "scan.bins") {
           next.projection.scan_bins = static_cast<int>(parameter.as_int());
         } else if (name == "scan.pixel_stride") {
@@ -575,9 +625,10 @@ private:
             RCLCPP_INFO(
               get_logger(),
               "target FPS %.1f | actual FPS %.1f | achievement %.1f%% | delay %.2f ms | "
-              "processing %.2f ms | valid bins %zu/%d | ROI %dx%d",
+              "processing %.2f ms | range offset %+.3f m | valid bins %zu/%d | ROI %dx%d",
               startup_config.camera_fps, measured_fps, fps_achievement_percent,
-              measured_delay_ms, processing_average_ms, last_valid_bins,
+              measured_delay_ms, processing_average_ms, current.projection.range_offset_m,
+              last_valid_bins,
               current.projection.scan_bins, projection.roi.width, projection.roi.height);
             metrics_start = processing_end;
             metric_frames = 0;

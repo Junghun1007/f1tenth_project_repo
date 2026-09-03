@@ -51,6 +51,7 @@ depth_lidar:
     roi.height_ratio: 0.10
     roi.bottom_offset_ratio: 0.35
     range.max_m: 8.0
+    range.offset_m: 0.0
 ```
 
 RViz2에서는 `/depth_lidar/scan`을 `LaserScan`으로 추가합니다. 프리뷰는 다음처럼 확인할 수
@@ -83,6 +84,7 @@ ros2 param set /depth_lidar roi.width_ratio 0.8
 ros2 param set /depth_lidar roi.height_ratio 0.06
 ros2 param set /depth_lidar roi.bottom_offset_ratio 0.40
 ros2 param set /depth_lidar range.max_m 6.0
+ros2 param set /depth_lidar range.offset_m -0.05
 ros2 param set /depth_lidar preview.fps 5.0
 ros2 param set /depth_lidar depth.mode high_accuracy
 ros2 param set /depth_lidar camera.resolution 720p
@@ -106,11 +108,44 @@ Depth 모드 및 필터 파라미터는 장치 파이프라인을 자동으로 �
 | `roi.height_ratio` | ROI 세로 비율 |
 | `roi.bottom_offset_ratio` | 화면 하단에서 ROI 아래 경계까지의 비율 |
 | `range.min_m`, `range.max_m` | 유효 깊이 범위 |
-| `scan.bins` | LaserScan 각도 bin 개수 |
+| `range.offset_m` | 거리 보정값. 음수는 가깝게, 양수는 멀게 보정 |
+| `scan.bins` | ROI 횡방향 시야각을 나누는 LaserScan 각도 구간 개수 |
 | `scan.pixel_stride` | ROI 픽셀 샘플 간격; 클수록 빠르지만 성긴 결과 |
 | `scan.min_points_per_bin` | bin을 유효하게 만드는 최소 픽셀 수 |
 | `preview.enabled`, `preview.gui` | 프리뷰 토픽/GUI 사용 여부 |
 | `preview.fps`, `preview.size_px` | 프리뷰 갱신률과 정사각 이미지 크기 |
+
+### 거리 offset
+
+카메라 기울기나 설치 위치를 완전한 3D 자세 추정 대신 상수 거리로 근사 보정합니다.
+
+```text
+최종 LaserScan 거리 = 카메라 측정 거리 + range.offset_m
+```
+
+예를 들어 실제 1.00m 장애물을 카메라가 1.05m로 측정한다면 `-0.05`를 설정합니다.
+반대로 0.97m로 측정한다면 `+0.03`을 설정합니다. 보정값은 다음 프레임부터
+즉시 반영되며 카메라 파이프라인은 재시작하지 않습니다.
+
+### scan.bins와 연산량
+
+`scan.bins`는 ROI의 횡방향 시야각을 몇 개의 각도 구간으로 표현할지 결정합니다.
+값이 크면 각도 분해능은 높아지지만 `LaserScan.ranges` 배열과 프리뷰 점이 많아집니다.
+
+현재 구현은 `scan.bins`와 관계없이 ROI의 샘플 픽셀을 모두 순회합니다. 따라서 bin을
+360에서 180으로 줄여도 메인 Depth 투영 연산량은 거의 같고, 배열 초기화·ROS 전송·
+프리뷰 출력 비용만 조금 줄어듭니다. FPS를 크게 올리려면 다음 순서가 더 효과적입니다.
+
+1. `scan.pixel_stride`를 1에서 2로 올립니다.
+2. `roi.height_ratio`나 `roi.width_ratio`를 줄입니다.
+3. `preview.fps` 또는 `preview.size_px`를 줄입니다.
+4. 필요하면 `camera.resolution`을 낮추습니다.
+
+권장 상한은 다음과 같습니다.
+
+```text
+scan.bins <= ceil(ROI 폭 / scan.pixel_stride)
+```
 
 ## 저지연 설정 팁
 

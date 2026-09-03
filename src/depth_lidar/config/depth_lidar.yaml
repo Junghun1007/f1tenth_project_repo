@@ -18,6 +18,8 @@ depth_lidar:
 
     range.min_m: 0.20
     range.max_m: 8.0
+    # corrected range = measured range + offset. Negative values make obstacles closer.
+    range.offset_m: 0.0
     scan.bins: 360
     scan.pixel_stride: 1
     scan.min_points_per_bin: 1

@@ -29,6 +29,10 @@ bool validateProjectionConfig(const ProjectionConfig & config, std::string & rea
     reason = "range.max_m must be greater than range.min_m > 0.0";
     return false;
   }
+  if (!std::isfinite(config.range_offset_m)) {
+    reason = "range.offset_m must be finite";
+    return false;
+  }
   if (config.scan_bins < 2 || config.scan_bins > 4096) {
     reason = "scan.bins must be in [2, 4096]";
     return false;
@@ -128,9 +132,10 @@ ScanProjection projectDepthToScan(
 
       const double forward_m = static_cast<double>(raw_depth_mm) * 0.001;
       const double left_m = -(static_cast<double>(u) - cx) * forward_m / fx;
-      const double range_m = std::hypot(forward_m, left_m);
-      if (!std::isfinite(range_m) || range_m < config.min_range_m ||
-        range_m > config.max_range_m)
+      const double measured_range_m = std::hypot(forward_m, left_m);
+      const double corrected_range_m = measured_range_m + config.range_offset_m;
+      if (!std::isfinite(corrected_range_m) || corrected_range_m < config.min_range_m ||
+        corrected_range_m > config.max_range_m)
       {
         continue;
       }
@@ -144,7 +149,8 @@ ScanProjection projectDepthToScan(
       }
 
       const std::size_t index = static_cast<std::size_t>(bin);
-      output.ranges[index] = std::min(output.ranges[index], static_cast<float>(range_m));
+      output.ranges[index] =
+        std::min(output.ranges[index], static_cast<float>(corrected_range_m));
       ++point_counts[index];
       ++output.valid_input_points;
     }
