@@ -434,9 +434,10 @@ public:
         lane_preview_enabled_ ? "on" : "off");
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane sliding windows: %s, stable_arc>=%.1fpx, "
+        "BEV lane sliding windows: %s, shape=ellipse, stable_arc>=%.1fpx, "
         "initial=%dx%dpx, growth=%.3f, maximum=%dx%dpx, step=%.2f, "
         "count<=%d, bright_pixels>=%d, misses<=%d, "
+        "centroid_edge_margin=%.1fpx, "
         "turn<=%.1fdeg/window, turn_change<=%.1fdeg/window, gain=%.2f",
         lane_seed_config_.sliding_window_enabled ? "on" : "off",
         lane_seed_config_.sliding_window_minimum_seed_arc_length_px,
@@ -449,6 +450,7 @@ public:
         lane_seed_config_.sliding_window_maximum_count,
         lane_seed_config_.sliding_window_minimum_bright_pixels,
         lane_seed_config_.sliding_window_maximum_consecutive_misses,
+        lane_seed_config_.sliding_window_centroid_boundary_margin_px,
         lane_seed_config_.sliding_window_maximum_turn_deg_per_window,
         lane_seed_config_.sliding_window_maximum_turn_change_deg_per_window,
         lane_seed_config_.sliding_window_heading_update_gain);
@@ -690,6 +692,8 @@ private:
       "lane_seed_sliding_window_minimum_bright_pixels", 2);
     declare_parameter<int>(
       "lane_seed_sliding_window_maximum_consecutive_misses", 2);
+    declare_parameter<double>(
+      "lane_seed_sliding_window_centroid_boundary_margin_px", 2.0);
     declare_parameter<double>(
       "lane_seed_sliding_window_maximum_turn_deg_per_window", 14.0);
     declare_parameter<double>(
@@ -1047,6 +1051,9 @@ private:
     lane_seed_config_.sliding_window_maximum_consecutive_misses =
       static_cast<int>(get_parameter(
           "lane_seed_sliding_window_maximum_consecutive_misses").as_int());
+    lane_seed_config_.sliding_window_centroid_boundary_margin_px =
+      get_parameter(
+      "lane_seed_sliding_window_centroid_boundary_margin_px").as_double();
     lane_seed_config_.sliding_window_maximum_turn_deg_per_window =
       get_parameter(
       "lane_seed_sliding_window_maximum_turn_deg_per_window").as_double();

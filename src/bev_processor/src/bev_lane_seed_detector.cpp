@@ -47,7 +47,7 @@ struct RunEvidence
 
 struct SlidingWindowDebug
 {
-  cv::RotatedRect rectangle;
+  cv::RotatedRect ellipse;
   cv::Point2d predicted_center;
   cv::Point2d centroid;
   bool accepted{false};
@@ -146,6 +146,11 @@ void validateConfig(const BevLaneSeedDetectorConfig & config)
     config.sliding_window_maximum_count < 1 ||
     config.sliding_window_minimum_bright_pixels < 1 ||
     config.sliding_window_maximum_consecutive_misses < 0 ||
+    !finiteNonNegative(
+      config.sliding_window_centroid_boundary_margin_px) ||
+    config.sliding_window_centroid_boundary_margin_px >=
+    0.5 * static_cast<double>(
+      std::min(config.image_width, config.image_height)) ||
     !std::isfinite(
       config.sliding_window_maximum_turn_deg_per_window) ||
     config.sliding_window_maximum_turn_deg_per_window <= 0.0 ||
@@ -912,6 +917,9 @@ void trackWithSlidingWindows(
       anchor : anchor + step * direction;
     const double heading_deg = std::atan2(direction.y, direction.x) *
       180.0 / CV_PI;
+    // Keep the previous rectangular window's full width and height as the
+    // ellipse diameters. This preserves its outer reach while excluding the
+    // corner pixels that are least relevant to the current lane direction.
     const cv::RotatedRect window(
       cv::Point2f(
         static_cast<float>(predicted_center.x),
@@ -923,23 +931,14 @@ void trackWithSlidingWindows(
     SlidingWindowDebug debug{
       window, predicted_center, predicted_center, false};
     const cv::Rect window_bounds = window.boundingRect();
-    const bool touches_image_boundary =
-      window_bounds.x <= image_bounds.x ||
-      window_bounds.y <= image_bounds.y ||
-      window_bounds.x + window_bounds.width >=
-      image_bounds.x + image_bounds.width ||
-      window_bounds.y + window_bounds.height >=
-      image_bounds.y + image_bounds.height;
-    if (touches_image_boundary) {
-      // A clipped window biases its centroid toward the visible pixels and can
-      // repeatedly drag the tracker along an image edge. Stop before searching
-      // or drawing that window; the last fully contained observation remains
-      // the end of this boundary track.
+    const cv::Rect search_bounds = window_bounds & image_bounds;
+    if (search_bounds.empty()) {
       break;
     }
-    const cv::Rect search_bounds = window_bounds;
 
     const cv::Point2d normal(-direction.y, direction.x);
+    const double longitudinal_radius = 0.5 * window_height;
+    const double lateral_radius = 0.5 * window_width;
     double response_sum = 0.0;
     double weighted_column_sum = 0.0;
     double weighted_row_sum = 0.0;
@@ -958,9 +957,13 @@ void trackWithSlidingWindows(
         const cv::Point2d offset(
           static_cast<double>(column) - predicted_center.x,
           static_cast<double>(row) - predicted_center.y);
+        const double normalized_longitudinal =
+          offset.dot(direction) / longitudinal_radius;
+        const double normalized_lateral =
+          offset.dot(normal) / lateral_radius;
         if (
-          std::abs(offset.dot(direction)) > 0.5 * window_height ||
-          std::abs(offset.dot(normal)) > 0.5 * window_width)
+          normalized_longitudinal * normalized_longitudinal +
+          normalized_lateral * normalized_lateral > 1.0)
         {
           continue;
         }
@@ -1028,6 +1031,25 @@ void trackWithSlidingWindows(
       candidate->sliding_window_points.push_back(centroid);
     }
     anchor = centroid;
+
+    // A partially visible ellipse is still searched. Stop only after its
+    // measured intensity-weighted point reaches an image edge while the
+    // tracker is heading out of the image. The accepted edge point remains
+    // part of the reconstructed boundary.
+    const double boundary_margin =
+      config.sliding_window_centroid_boundary_margin_px;
+    const double maximum_centroid_x =
+      static_cast<double>(response.cols - 1) - boundary_margin;
+    const double maximum_centroid_y =
+      static_cast<double>(response.rows - 1) - boundary_margin;
+    const bool centroid_reaches_outward_boundary =
+      (centroid.x <= boundary_margin && direction.x < 0.0) ||
+      (centroid.x >= maximum_centroid_x && direction.x > 0.0) ||
+      (centroid.y <= boundary_margin && direction.y < 0.0) ||
+      (centroid.y >= maximum_centroid_y && direction.y > 0.0);
+    if (centroid_reaches_outward_boundary) {
+      break;
+    }
   }
 }
 
@@ -2262,15 +2284,10 @@ void drawCandidate(
     }
   }
   for (const SlidingWindowDebug & window : candidate.sliding_windows) {
-    cv::Point2f vertices[4];
-    window.rectangle.points(vertices);
     const cv::Scalar window_color = window.accepted ?
       color : cv::Scalar(0, 0, 255);
-    for (int index = 0; index < 4; ++index) {
-      cv::line(
-        *image, vertices[index], vertices[(index + 1) % 4],
-        window_color, 1, cv::LINE_AA);
-    }
+    cv::ellipse(
+      *image, window.ellipse, window_color, 1, cv::LINE_AA);
     if (window.accepted) {
       cv::circle(
         *image,

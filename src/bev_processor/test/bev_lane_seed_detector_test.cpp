@@ -401,8 +401,9 @@ void testCenterlineUsesSlidingWindowTracking()
       return first.y < second.y;
     });
   require(
-    farthest != detection.centerline_points.end() && farthest->y < 150.0,
-    "sliding-window tracking did not carry the centerline above the ROI");
+    farthest != detection.centerline_points.end() &&
+    farthest->y <= config.sliding_window_centroid_boundary_margin_px + 1.0,
+    "sliding-window tracking did not retain a centroid at the image edge");
   require(
     std::abs(farthest->x - 50.0) <= 1.0,
     "sliding-window tracking displaced the pair centerline");

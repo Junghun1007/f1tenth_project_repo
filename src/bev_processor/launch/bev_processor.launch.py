@@ -218,6 +218,11 @@ def generate_launch_description():
             int,
         ),
         (
+            "lane_seed_sliding_window_centroid_boundary_margin_px",
+            "2.0",
+            float,
+        ),
+        (
             "lane_seed_sliding_window_maximum_turn_deg_per_window",
             "14.0",
             float,

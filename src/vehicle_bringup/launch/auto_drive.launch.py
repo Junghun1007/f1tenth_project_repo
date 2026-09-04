@@ -116,6 +116,10 @@ def generate_launch_description():
         ("lane_seed_pair_minimum_distance_px", "45.0"),
         ("lane_seed_pair_maximum_distance_px", "100.0"),
         ("lane_seed_sliding_window_minimum_seed_arc_length_px", "15.0"),
+        (
+            "lane_seed_sliding_window_centroid_boundary_margin_px",
+            "2.0",
+        ),
         ("lane_centerline_corner_outward_bias_m", "0.05"),
     ]
     # YAML is the single source of default values. A value supplied through
