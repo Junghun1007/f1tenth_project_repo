@@ -434,7 +434,7 @@ public:
         lane_preview_enabled_ ? "on" : "off");
       RCLCPP_INFO(
         get_logger(),
-        "BEV lane sliding windows: %s, shape=ellipse, stable_arc>=%.1fpx, "
+        "BEV lane sliding windows: %s, shape=rectangle, stable_arc>=%.1fpx, "
         "initial=%dx%dpx, growth=%.3f, maximum=%dx%dpx, step=%.2f, "
         "count<=%d, bright_pixels>=%d, misses<=%d, "
         "centroid_edge_margin=%.1fpx, "

@@ -47,7 +47,7 @@ struct RunEvidence
 
 struct SlidingWindowDebug
 {
-  cv::RotatedRect ellipse;
+  cv::RotatedRect rectangle;
   cv::Point2d predicted_center;
   cv::Point2d centroid;
   bool accepted{false};
@@ -917,9 +917,6 @@ void trackWithSlidingWindows(
       anchor : anchor + step * direction;
     const double heading_deg = std::atan2(direction.y, direction.x) *
       180.0 / CV_PI;
-    // Keep the previous rectangular window's full width and height as the
-    // ellipse diameters. This preserves its outer reach while excluding the
-    // corner pixels that are least relevant to the current lane direction.
     const cv::RotatedRect window(
       cv::Point2f(
         static_cast<float>(predicted_center.x),
@@ -937,8 +934,6 @@ void trackWithSlidingWindows(
     }
 
     const cv::Point2d normal(-direction.y, direction.x);
-    const double longitudinal_radius = 0.5 * window_height;
-    const double lateral_radius = 0.5 * window_width;
     double response_sum = 0.0;
     double weighted_column_sum = 0.0;
     double weighted_row_sum = 0.0;
@@ -957,13 +952,9 @@ void trackWithSlidingWindows(
         const cv::Point2d offset(
           static_cast<double>(column) - predicted_center.x,
           static_cast<double>(row) - predicted_center.y);
-        const double normalized_longitudinal =
-          offset.dot(direction) / longitudinal_radius;
-        const double normalized_lateral =
-          offset.dot(normal) / lateral_radius;
         if (
-          normalized_longitudinal * normalized_longitudinal +
-          normalized_lateral * normalized_lateral > 1.0)
+          std::abs(offset.dot(direction)) > 0.5 * window_height ||
+          std::abs(offset.dot(normal)) > 0.5 * window_width)
         {
           continue;
         }
@@ -1032,7 +1023,7 @@ void trackWithSlidingWindows(
     }
     anchor = centroid;
 
-    // A partially visible ellipse is still searched. Stop only after its
+    // A partially visible rectangle is still searched. Stop only after its
     // measured intensity-weighted point reaches an image edge while the
     // tracker is heading out of the image. The accepted edge point remains
     // part of the reconstructed boundary.
@@ -2284,10 +2275,15 @@ void drawCandidate(
     }
   }
   for (const SlidingWindowDebug & window : candidate.sliding_windows) {
+    cv::Point2f vertices[4];
+    window.rectangle.points(vertices);
     const cv::Scalar window_color = window.accepted ?
       color : cv::Scalar(0, 0, 255);
-    cv::ellipse(
-      *image, window.ellipse, window_color, 1, cv::LINE_AA);
+    for (int index = 0; index < 4; ++index) {
+      cv::line(
+        *image, vertices[index], vertices[(index + 1) % 4],
+        window_color, 1, cv::LINE_AA);
+    }
     if (window.accepted) {
       cv::circle(
         *image,

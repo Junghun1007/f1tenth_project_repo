@@ -42,9 +42,8 @@ struct BevLaneSeedDetectorConfig
   double maximum_pair_distance_px{100.0};
 
   // Use an accepted seed track only to initialize a vehicle-near sliding
-  // elliptical window tracker. Each accepted window emits one
-  // intensity-weighted point; centerline reconstruction consumes these points
-  // instead of raw seed runs.
+  // window tracker. Each accepted window emits one intensity-weighted point;
+  // centerline reconstruction consumes these points instead of raw seed runs.
   bool sliding_window_enabled{true};
   double sliding_window_minimum_seed_arc_length_px{15.0};
   int sliding_window_initial_width_px{6};

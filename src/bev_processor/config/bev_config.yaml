@@ -254,10 +254,9 @@ bev_processor:
     lane_seed_pair_maximum_distance_px: 100.0
 
     # 안정적으로 선택된 ROI 트랙은 차량 근접 초기 시드와 방향만 제공한다.
-    # 첫 시드부터 전체 BEV를 회전 타원 창으로 다시 추적하고, 중심선은 각 창의
+    # 첫 시드부터 전체 BEV를 회전 사각 창으로 다시 추적하고, 중심선은 각 창의
     # Top-hat 밝기 가중 무게중심만 사용한다.
     # growth_ratio가 1보다 클수록 원거리 창의 폭/높이가 빠르게 증가한다.
-    # 폭/높이는 기존 사각 창과 같은 외곽 크기를 갖는 타원의 전체 지름이다.
     lane_seed_sliding_window_enabled: true
     # 유효 차선 시드가 짧게 조각나도 첫 시드부터 즉시 추적을 시작한다.
     lane_seed_sliding_window_minimum_seed_arc_length_px: 15.0
@@ -270,7 +269,7 @@ bev_processor:
     lane_seed_sliding_window_maximum_count: 40
     lane_seed_sliding_window_minimum_bright_pixels: 2
     lane_seed_sliding_window_maximum_consecutive_misses: 2
-    # 타원 자체가 경계에 닿아도 계속 찾고, 가중 중심점이 이 여백 안에서
+    # 사각 창 자체가 경계에 닿아도 계속 찾고, 가중 중심점이 이 여백 안에서
     # 영상 바깥 방향으로 진행할 때 그 점을 마지막으로 채택하고 종료한다.
     lane_seed_sliding_window_centroid_boundary_margin_px: 2.0
 

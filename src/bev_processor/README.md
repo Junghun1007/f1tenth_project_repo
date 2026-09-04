@@ -266,9 +266,8 @@ ros2 launch bev_processor bev_processor.launch.py \
 - `lane_seed_sliding_window_initial_*`,
   `lane_seed_sliding_window_growth_ratio`,
   `lane_seed_sliding_window_maximum_*`:
-  회전 타원 첫 창의 폭/높이, 창마다 적용할 증가 비율, 최대 폭/높이.
-  폭/높이는 기존 사각 창과 같은 외곽 크기의 전체 지름이며, 원거리에서
-  굵어지는 차선에 맞춰 함께 증가한다.
+  회전 사각 창의 첫 폭/높이, 창마다 적용할 증가 비율, 최대 폭/높이.
+  원거리에서 굵어지는 차선에 맞춰 폭과 높이가 함께 증가한다.
 - `lane_seed_sliding_window_step_ratio`,
   `lane_seed_sliding_window_maximum_count`:
   현재 창 높이 대비 다음 창 이동 거리와 한 차선당 최대 창 개수
@@ -276,7 +275,7 @@ ros2 launch bev_processor bev_processor.launch.py \
   `lane_seed_sliding_window_maximum_consecutive_misses`:
   창 안에서 무게중심을 계산할 최소 밝은 픽셀 수와 연결 중 허용할 빈 창 수
 - `lane_seed_sliding_window_centroid_boundary_margin_px`:
-  타원이 영상 경계와 겹쳐도 교차 영역에서 계속 찾는다. 승인된 밝기 가중
+  사각 창이 영상 경계와 겹쳐도 교차 영역에서 계속 찾는다. 승인된 밝기 가중
   중심점이 지정한 경계 여백 안에 있고 진행 방향이 영상 바깥쪽이면 그 점을
   마지막으로 채택하고 추적을 끝낸다.
 - `lane_seed_sliding_window_maximum_turn_deg_per_window`:
