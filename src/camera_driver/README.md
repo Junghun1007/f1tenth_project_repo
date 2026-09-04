@@ -203,6 +203,10 @@ ros2 launch camera_driver camera_driver.launch.py \
 
 프리뷰 창에 포커스를 두고 키보드 `A`를 누르거나, 컨트롤러 A
 버튼(SDL button 0)을 누르면 `capture_directory`에 PNG를 저장한다.
+저장 영상은 안정화·crop이 적용된 카메라 픽셀만 깊은 복사하며,
+프리뷰 격자나 GUI 창 요소는 포함하지 않는다. 컨트롤러는 상승
+에지에서만 저장하고 모든 캡처 입력에 `capture_debounce_sec` 기본
+0.30초를 공통 적용한다.
 수동주행 launch의 기본 차량 namespace를 같이 쓰는 경우 컨트롤러
 토픽은 `/autopilot03/joy`이므로 다음처럼 지정한다.
 
@@ -339,6 +343,7 @@ ros2 topic info /camera/image_rect --verbose
 | `capture_directory` | `.` | A 버튼 카메라 PNG 저장 경로 |
 | `capture_joy_topic` | `/joy` | 카메라 캡처에 사용할 Joy 토픽 |
 | `capture_joy_button` | `0` | 카메라 캡처 버튼; SDL A=0 |
+| `capture_debounce_sec` | `0.30` | 모든 캡처 입력의 최소 허용 간격 |
 | `imu_bridge_enabled` | `false` | 가속도+자이로 ROS 발행; 기본 launch는 CAN 횡가속도 계산을 위해 `true` override |
 | `imu_rate_hz` | `400.0` | calibrated accel+gyro 요청/발행 rate |
 | `imu_max_batch_reports` | `5` | 장치측 IMU 묶음 전송 상한 |

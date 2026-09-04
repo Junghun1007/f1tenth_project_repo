@@ -17,6 +17,7 @@ def generate_launch_description():
     capture_directory = LaunchConfiguration("capture_directory")
     capture_joy_topic = LaunchConfiguration("capture_joy_topic")
     capture_joy_button = LaunchConfiguration("capture_joy_button")
+    capture_debounce_sec = LaunchConfiguration("capture_debounce_sec")
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
@@ -80,6 +81,11 @@ def generate_launch_description():
                 "capture_joy_button",
                 default_value="0",
                 description="Joy button index used for camera capture (A=0).",
+            ),
+            DeclareLaunchArgument(
+                "capture_debounce_sec",
+                default_value="0.30",
+                description="Minimum interval between camera captures.",
             ),
             DeclareLaunchArgument(
                 "imu_stabilization_enabled",
@@ -177,6 +183,9 @@ def generate_launch_description():
                                 "capture_joy_topic": capture_joy_topic,
                                 "capture_joy_button": ParameterValue(
                                     capture_joy_button, value_type=int
+                                ),
+                                "capture_debounce_sec": ParameterValue(
+                                    capture_debounce_sec, value_type=float
                                 ),
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_enabled

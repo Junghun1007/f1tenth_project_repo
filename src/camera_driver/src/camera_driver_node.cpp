@@ -322,10 +322,12 @@ public:
         });
       RCLCPP_INFO(
         node_.get_logger(),
-        "Camera capture: directory=%s, joy=%s button=%d (A), keyboard=A.",
+        "Camera capture: directory=%s, joy=%s button=%d (A), keyboard=A, "
+        "debounce=%.2fs, clean image only.",
         capture_directory_.c_str(),
         capture_joy_topic_.c_str(),
-        capture_joy_button_);
+        capture_joy_button_,
+        capture_debounce_sec_);
     }
 
     if (publish_enabled_) {
@@ -641,6 +643,8 @@ private:
       node_.declare_parameter<std::string>("capture_joy_topic", "/joy");
     capture_joy_button_ =
       node_.declare_parameter<int>("capture_joy_button", 0);
+    capture_debounce_sec_ =
+      node_.declare_parameter<double>("capture_debounce_sec", 0.30);
     startup_timeout_sec_ =
       node_.declare_parameter<double>("startup_timeout_sec", 5.0);
     status_log_interval_sec_ =
@@ -838,11 +842,12 @@ private:
     require_positive(preview_grid_spacing_px_, "preview_grid_spacing_px");
     if (
       capture_directory_.empty() || capture_joy_topic_.empty() ||
-      capture_joy_button_ < 0)
+      capture_joy_button_ < 0 ||
+      !std::isfinite(capture_debounce_sec_) || capture_debounce_sec_ < 0.0)
     {
       throw std::invalid_argument(
               "capture directory/topic must not be empty and button must "
-              "be non-negative");
+              "be non-negative; debounce must be finite/non-negative");
     }
 
     camera_socket_ = parse_camera_socket(camera_socket_name_);
@@ -2246,7 +2251,7 @@ private:
     cv::Mat camera_image;
     {
       std::lock_guard<std::mutex> lock(latest_capture_frame_mutex_);
-      camera_image = latest_capture_frame_;
+      camera_image = latest_capture_frame_.clone();
     }
     if (camera_image.empty()) {
       RCLCPP_WARN(
@@ -2254,6 +2259,20 @@ private:
         "%s capture requested before a camera frame was available.",
         trigger);
       return;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    {
+      std::lock_guard<std::mutex> lock(capture_debounce_mutex_);
+      const auto debounce_duration = std::chrono::duration<double>(
+        capture_debounce_sec_);
+      if (
+        last_capture_at_.time_since_epoch().count() != 0 &&
+        now - last_capture_at_ < debounce_duration)
+      {
+        return;
+      }
+      last_capture_at_ = now;
     }
 
     try {
@@ -2399,11 +2418,11 @@ private:
                   preview_frame.cols,
                   preview_frame.rows - output_crop_top_px_)).clone();
             }
-            cv::Mat capture_frame = preview_grid_enabled_ ?
-              preview_frame.clone() : preview_frame;
             {
               std::lock_guard<std::mutex> lock(latest_capture_frame_mutex_);
-              latest_capture_frame_ = std::move(capture_frame);
+              // Always own an immutable clean frame. Preview-only grids and
+              // OpenCV window decorations must never enter the saved PNG.
+              latest_capture_frame_ = preview_frame.clone();
             }
             if (preview_grid_enabled_) {
               draw_preview_grid(preview_frame);
@@ -2844,6 +2863,7 @@ private:
   std::string capture_directory_{"."};
   std::string capture_joy_topic_{"/joy"};
   int capture_joy_button_{0};
+  double capture_debounce_sec_{0.30};
   std::atomic<bool> capture_joy_button_pressed_{false};
   double startup_timeout_sec_{5.0};
   double status_log_interval_sec_{1.0};
@@ -2883,6 +2903,8 @@ private:
   std::shared_ptr<const FrameSnapshot> latest_frame_;
   std::mutex latest_capture_frame_mutex_;
   cv::Mat latest_capture_frame_;
+  std::mutex capture_debounce_mutex_;
+  std::chrono::steady_clock::time_point last_capture_at_{};
   std::optional<std::int64_t> last_device_sequence_;
   cv::Matx33d calibrated_imu_output_to_camera_rotation_{
     cv::Matx33d::eye()};

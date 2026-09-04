@@ -153,6 +153,8 @@ camera_driver:
     capture_joy_topic: "/joy"
     # SDL GameController 표준: A=0, B=1.
     capture_joy_button: 0
+    # 컨트롤러 버튼 바운스·키보드 자동 반복의 중복 저장을 막는다.
+    capture_debounce_sec: 0.30
 
     startup_timeout_sec: 5.0
     status_log_interval_sec: 1.0
