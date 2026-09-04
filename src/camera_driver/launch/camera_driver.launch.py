@@ -15,6 +15,8 @@ def generate_launch_description():
     preview_enabled = LaunchConfiguration("preview_enabled")
     preview_grid_enabled = LaunchConfiguration("preview_grid_enabled")
     capture_directory = LaunchConfiguration("capture_directory")
+    capture_joy_topic = LaunchConfiguration("capture_joy_topic")
+    capture_joy_button = LaunchConfiguration("capture_joy_button")
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
@@ -65,9 +67,19 @@ def generate_launch_description():
                 "capture_directory",
                 default_value=".",
                 description=(
-                    "Directory for B-button camera captures; default is the "
+                    "Directory for A-button camera captures; default is the "
                     "launch working directory."
                 ),
+            ),
+            DeclareLaunchArgument(
+                "capture_joy_topic",
+                default_value="/joy",
+                description="Joy topic used by the camera A-button capture.",
+            ),
+            DeclareLaunchArgument(
+                "capture_joy_button",
+                default_value="0",
+                description="Joy button index used for camera capture (A=0).",
             ),
             DeclareLaunchArgument(
                 "imu_stabilization_enabled",
@@ -162,6 +174,10 @@ def generate_launch_description():
                                 "preview_enabled": preview_enabled,
                                 "preview_grid_enabled": preview_grid_enabled,
                                 "capture_directory": capture_directory,
+                                "capture_joy_topic": capture_joy_topic,
+                                "capture_joy_button": ParameterValue(
+                                    capture_joy_button, value_type=int
+                                ),
                                 "imu_stabilization_enabled": (
                                     imu_stabilization_enabled
                                 ),

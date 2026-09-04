@@ -322,7 +322,7 @@ public:
         });
       RCLCPP_INFO(
         node_.get_logger(),
-        "Camera capture: directory=%s, joy=%s button=%d (B), keyboard=B.",
+        "Camera capture: directory=%s, joy=%s button=%d (A), keyboard=A.",
         capture_directory_.c_str(),
         capture_joy_topic_.c_str(),
         capture_joy_button_);
@@ -640,7 +640,7 @@ private:
     capture_joy_topic_ =
       node_.declare_parameter<std::string>("capture_joy_topic", "/joy");
     capture_joy_button_ =
-      node_.declare_parameter<int>("capture_joy_button", 1);
+      node_.declare_parameter<int>("capture_joy_button", 0);
     startup_timeout_sec_ =
       node_.declare_parameter<double>("startup_timeout_sec", 5.0);
     status_log_interval_sec_ =
@@ -2314,7 +2314,7 @@ private:
       return;
     }
     if (pressed && !was_pressed) {
-      capture_camera_frame("controller B");
+      capture_camera_frame("controller A");
     }
   }
 
@@ -2416,8 +2416,8 @@ private:
         }
 
         const auto key = cv::waitKey(1) & 0xff;
-        if (key == 'b' || key == 'B') {
-          capture_camera_frame("keyboard B");
+        if (key == 'a' || key == 'A') {
+          capture_camera_frame("keyboard A");
         }
         const auto visible = cv::getWindowProperty(
           preview_window_name_, cv::WND_PROP_VISIBLE);
@@ -2843,7 +2843,7 @@ private:
   int preview_grid_spacing_px_{20};
   std::string capture_directory_{"."};
   std::string capture_joy_topic_{"/joy"};
-  int capture_joy_button_{1};
+  int capture_joy_button_{0};
   std::atomic<bool> capture_joy_button_pressed_{false};
   double startup_timeout_sec_{5.0};
   double status_log_interval_sec_{1.0};

@@ -152,7 +152,7 @@ camera_driver:
     capture_directory: "."
     capture_joy_topic: "/joy"
     # SDL GameController 표준: A=0, B=1.
-    capture_joy_button: 1
+    capture_joy_button: 0
 
     startup_timeout_sec: 5.0
     status_log_interval_sec: 1.0

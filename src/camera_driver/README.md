@@ -201,6 +201,18 @@ ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true preview_grid_enabled:=true
 ```
 
+프리뷰 창에 포커스를 두고 키보드 `A`를 누르거나, 컨트롤러 A
+버튼(SDL button 0)을 누르면 `capture_directory`에 PNG를 저장한다.
+수동주행 launch의 기본 차량 namespace를 같이 쓰는 경우 컨트롤러
+토픽은 `/autopilot03/joy`이므로 다음처럼 지정한다.
+
+```bash
+ros2 launch camera_driver camera_driver.launch.py \
+  preview_enabled:=true \
+  capture_joy_topic:=/autopilot03/joy \
+  capture_directory:=./camera_captures
+```
+
 실차에서는 `auto_drive.launch.py`를 실행하지 않고, SocketCAN 차량 dynamics와
 `camera_driver` 프리뷰를 각각의 터미널에서 실행한다.
 
@@ -212,6 +224,7 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
 # 터미널 2: full-band gyro 안정화 + CAN 저주파 자세 anchor
 ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true \
+  capture_joy_topic:=/autopilot03/joy \
   imu_stabilization_enabled:=true \
   imu_stabilization_can_longitudinal_compensation_gain:=0.7 \
   imu_stabilization_can_lateral_compensation_gain:=0.7 \
@@ -323,6 +336,9 @@ ros2 topic info /camera/image_rect --verbose
 | `fused_bev_output_enabled` | `false` | 하단 NV12+보정 행렬 BEV 전용 출력; 통합 launch에서 `true` |
 | `fused_bev_topic` | `/camera/bev_input` | `camera_driver/msg/BevInput` 출력 |
 | `bev_input_bottom_fraction` | `0.70` | BEV 변환 전에 유지할 원본 영상 하단 비율 |
+| `capture_directory` | `.` | A 버튼 카메라 PNG 저장 경로 |
+| `capture_joy_topic` | `/joy` | 카메라 캡처에 사용할 Joy 토픽 |
+| `capture_joy_button` | `0` | 카메라 캡처 버튼; SDL A=0 |
 | `imu_bridge_enabled` | `false` | 가속도+자이로 ROS 발행; 기본 launch는 CAN 횡가속도 계산을 위해 `true` override |
 | `imu_rate_hz` | `400.0` | calibrated accel+gyro 요청/발행 rate |
 | `imu_max_batch_reports` | `5` | 장치측 IMU 묶음 전송 상한 |
