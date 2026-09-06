@@ -375,9 +375,14 @@ public:
       RCLCPP_INFO(
         get_logger(),
         "BEV lane detection: centerline_output=%s mono8, CUDA gray/Top-hat, "
+        "saturation_suppression=%s(S>=%d,V>=%d,dilate=%dpx), "
         "bands near/middle/far=%.2f/%.2f/%.2f, "
         "kernel=%dx%d/%dx%d/%dx%d, gain=%.2f/%.2f/%.2f",
         lane_output_topic_.c_str(),
+        lane_preprocess_config_.saturation_suppression_enabled ? "on" : "off",
+        lane_preprocess_config_.saturation_threshold,
+        lane_preprocess_config_.saturation_minimum_value,
+        lane_preprocess_config_.saturation_mask_dilation_px,
         lane_preprocess_config_.near_ratio,
         lane_preprocess_config_.middle_ratio,
         lane_preprocess_config_.far_ratio,
@@ -636,6 +641,10 @@ private:
       "lane_output_topic", "/camera/image_bev_lane");
     declare_parameter<bool>("lane_preview_enabled", true);
     declare_parameter<int>("lane_gray_mode", 0);
+    declare_parameter<bool>("lane_saturation_suppression_enabled", true);
+    declare_parameter<int>("lane_saturation_threshold", 70);
+    declare_parameter<int>("lane_saturation_minimum_value", 40);
+    declare_parameter<int>("lane_saturation_mask_dilation_px", 1);
     declare_parameter<int>("lane_top_hat_shape", 1);
     declare_parameter<int>("lane_top_hat_iterations", 1);
     declare_parameter<int>("lane_top_hat_border", 0);
@@ -946,6 +955,14 @@ private:
     lane_preprocess_config_.enabled = lane_seed_detection_enabled_;
     lane_preprocess_config_.gray_mode = static_cast<int>(
       get_parameter("lane_gray_mode").as_int());
+    lane_preprocess_config_.saturation_suppression_enabled =
+      get_parameter("lane_saturation_suppression_enabled").as_bool();
+    lane_preprocess_config_.saturation_threshold = static_cast<int>(
+      get_parameter("lane_saturation_threshold").as_int());
+    lane_preprocess_config_.saturation_minimum_value = static_cast<int>(
+      get_parameter("lane_saturation_minimum_value").as_int());
+    lane_preprocess_config_.saturation_mask_dilation_px = static_cast<int>(
+      get_parameter("lane_saturation_mask_dilation_px").as_int());
     lane_preprocess_config_.top_hat_kernel_shape = static_cast<int>(
       get_parameter("lane_top_hat_shape").as_int());
     lane_preprocess_config_.top_hat_iterations = static_cast<int>(
@@ -1135,9 +1152,9 @@ private:
 
   void validateParameters() const
   {
-    if (configuration_version_ != 2) {
+    if (configuration_version_ != 3) {
       throw std::invalid_argument(
-              "configuration_version must be 2; check that bev_config.yaml "
+              "configuration_version must be 3; check that bev_config.yaml "
               "was loaded for the bev_processor node");
     }
     if (input_topic_.empty()) {
@@ -1246,6 +1263,12 @@ private:
     if (
       lane_preprocess_config_.gray_mode < 0 ||
       lane_preprocess_config_.gray_mode > 2 ||
+      lane_preprocess_config_.saturation_threshold < 1 ||
+      lane_preprocess_config_.saturation_threshold > 255 ||
+      lane_preprocess_config_.saturation_minimum_value < 0 ||
+      lane_preprocess_config_.saturation_minimum_value > 255 ||
+      lane_preprocess_config_.saturation_mask_dilation_px < 0 ||
+      lane_preprocess_config_.saturation_mask_dilation_px > 32 ||
       !validRatio(lane_preprocess_config_.near_ratio) ||
       !validRatio(lane_preprocess_config_.middle_ratio) ||
       !validRatio(lane_preprocess_config_.far_ratio) ||

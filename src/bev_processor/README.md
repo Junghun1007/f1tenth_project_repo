@@ -90,7 +90,9 @@ Gray·Top-hat은 CUDA BEV 처리 시간에 포함된다.
 ## CUDA 전처리
 
 `lane_seed_detection_enabled:=true`이면 BGR과 Gray를 같은 BEV 커널에서
-만든 뒤 far/middle/near 영역에 설정된 morphology 커널을 적용한다.
+만든다. 차선용 Gray에서는 설정 밝기 이상의 고채도 색을 검은색으로
+제거하고, far/middle/near 영역에 설정된 morphology 커널을 적용한다.
+발행되는 원본 컬러 BEV는 채도 마스크를 적용하지 않는다.
 
 ```text
 enhanced = max(top_hat - noise_floor, 0) * gain
@@ -101,6 +103,7 @@ enhanced = max(top_hat - noise_floor, 0) * gain
 - near: 비율 0.45, gain 1.5, noise floor 17, kernel 7x7
 - middle: 비율 0.35, gain 1.6, noise floor 13, kernel 17x17
 - far: 비율 0.20, gain 1.65, noise floor 11, kernel 27x27
+- saturation suppression: S 70 이상, V 40 이상, mask dilation 1px
 - Top-hat shape 1(ellipse), iteration 1, border 0(constant)
 
 세 거리 비율의 합은 반드시 1이어야 하며 커널 폭·높이는 양의 홀수여야 한다.
@@ -239,6 +242,8 @@ ros2 launch bev_processor bev_processor.launch.py \
 
 - `lane_near_*`, `lane_middle_*`, `lane_far_*`:
   거리별 Top-hat gain, noise floor, kernel 크기와 영역 비율
+- `lane_saturation_*`:
+  차선용 Gray/Top-hat에서 제거할 고채도 픽셀의 S/V 기준과 마스크 팽창 반경
 - `lane_seed_roi_*`: 하단 제외 비율과 ROI 높이
 - `lane_seed_minimum_response`, `*_run_width_px`:
   행별 ridge 후보의 Top-hat 응답과 폭

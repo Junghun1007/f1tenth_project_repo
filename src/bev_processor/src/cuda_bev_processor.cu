@@ -399,8 +399,12 @@ __global__ void nv12ToBevKernel(
   const float bev_x_max_m,
   const float meter_per_pixel,
   const int gray_mode,
+  const bool saturation_suppression_enabled,
+  const int saturation_threshold,
+  const int saturation_minimum_value,
   std::uint8_t * output_bgr,
-  std::uint8_t * output_gray)
+  std::uint8_t * output_gray,
+  std::uint8_t * output_saturation_mask)
 {
   const int output_x = blockIdx.x * blockDim.x + threadIdx.x;
   const int output_y = blockIdx.y * blockDim.y + threadIdx.y;
@@ -419,6 +423,9 @@ __global__ void nv12ToBevKernel(
     destination[1] = 0U;
     destination[2] = 0U;
     output_gray[output_index] = 0U;
+    if (output_saturation_mask != nullptr) {
+      output_saturation_mask[output_index] = 0U;
+    }
     return;
   }
 
@@ -431,6 +438,9 @@ __global__ void nv12ToBevKernel(
     destination[1] = 0U;
     destination[2] = 0U;
     output_gray[output_index] = 0U;
+    if (output_saturation_mask != nullptr) {
+      output_saturation_mask[output_index] = 0U;
+    }
     return;
   }
   const float source_x =
@@ -452,6 +462,9 @@ __global__ void nv12ToBevKernel(
     destination[1] = 0U;
     destination[2] = 0U;
     output_gray[output_index] = 0U;
+    if (output_saturation_mask != nullptr) {
+      output_saturation_mask[output_index] = 0U;
+    }
     return;
   }
 
@@ -529,6 +542,67 @@ __global__ void nv12ToBevKernel(
   destination[2] = output_red;
   output_gray[output_index] = grayFromBgr(
     output_blue, output_green, output_red, gray_mode);
+  if (output_saturation_mask != nullptr) {
+    const int maximum = max(
+      static_cast<int>(output_blue),
+      max(static_cast<int>(output_green), static_cast<int>(output_red)));
+    const int minimum = min(
+      static_cast<int>(output_blue),
+      min(static_cast<int>(output_green), static_cast<int>(output_red)));
+    const bool suppress = saturation_suppression_enabled &&
+      maximum >= saturation_minimum_value &&
+      (maximum - minimum) * 255 >= saturation_threshold * maximum;
+    output_saturation_mask[output_index] = suppress ? 255U : 0U;
+  }
+}
+
+__global__ void dilateBinaryMaskKernel(
+  const std::uint8_t * input,
+  std::uint8_t * output,
+  const int width,
+  const int height,
+  const int radius)
+{
+  const int column = blockIdx.x * blockDim.x + threadIdx.x;
+  const int row = blockIdx.y * blockDim.y + threadIdx.y;
+  if (column >= width || row >= height) {
+    return;
+  }
+
+  for (int offset_y = -radius; offset_y <= radius; ++offset_y) {
+    const int source_y = row + offset_y;
+    if (source_y < 0 || source_y >= height) {
+      continue;
+    }
+    for (int offset_x = -radius; offset_x <= radius; ++offset_x) {
+      const int source_x = column + offset_x;
+      if (
+        source_x >= 0 && source_x < width &&
+        input[source_y * width + source_x] != 0U)
+      {
+        output[row * width + column] = 255U;
+        return;
+      }
+    }
+  }
+  output[row * width + column] = 0U;
+}
+
+__global__ void zeroMaskedPixelsKernel(
+  std::uint8_t * image,
+  const std::uint8_t * mask,
+  const int width,
+  const int height)
+{
+  const int column = blockIdx.x * blockDim.x + threadIdx.x;
+  const int row = blockIdx.y * blockDim.y + threadIdx.y;
+  if (column >= width || row >= height) {
+    return;
+  }
+  const int index = row * width + column;
+  if (mask[index] != 0U) {
+    image[index] = 0U;
+  }
 }
 
 __global__ void morphologyPassKernel(
@@ -609,6 +683,16 @@ void validateLanePreprocess(const CudaLanePreprocessConfig & config)
     };
   if (config.gray_mode < 0 || config.gray_mode > 2) {
     throw std::invalid_argument("lane gray mode must be 0, 1, or 2");
+  }
+  if (
+    config.saturation_threshold < 1 || config.saturation_threshold > 255 ||
+    config.saturation_minimum_value < 0 ||
+    config.saturation_minimum_value > 255 ||
+    config.saturation_mask_dilation_px < 0 ||
+    config.saturation_mask_dilation_px > 32)
+  {
+    throw std::invalid_argument(
+            "lane saturation suppression settings are invalid");
   }
   const double ratio_sum =
     config.near_ratio + config.middle_ratio + config.far_ratio;
@@ -758,6 +842,18 @@ public:
           mono_bytes),
         "cudaMalloc BEV gray output");
       if (lane_preprocess_config_.enabled) {
+        if (lane_preprocess_config_.saturation_suppression_enabled) {
+          checkCuda(
+            cudaMalloc(
+              reinterpret_cast<void **>(&device_saturation_mask_),
+              mono_bytes),
+            "cudaMalloc lane saturation mask");
+          checkCuda(
+            cudaMalloc(
+              reinterpret_cast<void **>(&device_saturation_mask_dilated_),
+              mono_bytes),
+            "cudaMalloc dilated lane saturation mask");
+        }
         checkCuda(
           cudaMalloc(
             reinterpret_cast<void **>(&device_morphology_a_),
@@ -913,11 +1009,33 @@ public:
       static_cast<float>(edge_adaptive_config_.bev_x_max_m),
       static_cast<float>(edge_adaptive_config_.meter_per_pixel),
       lane_preprocess_config_.gray_mode,
+      lane_preprocess_config_.saturation_suppression_enabled,
+      lane_preprocess_config_.saturation_threshold,
+      lane_preprocess_config_.saturation_minimum_value,
       device_output_,
-      device_gray_);
+      device_gray_,
+      device_saturation_mask_);
     checkCuda(cudaGetLastError(), "launch NV12-to-BEV kernel");
 
     if (lane_preprocess_config_.enabled) {
+      const std::uint8_t * saturation_mask = nullptr;
+      if (lane_preprocess_config_.saturation_suppression_enabled) {
+        saturation_mask = device_saturation_mask_;
+        if (lane_preprocess_config_.saturation_mask_dilation_px > 0) {
+          dilateBinaryMaskKernel<<<grid, block, 0, stream_>>>(
+            device_saturation_mask_, device_saturation_mask_dilated_,
+            output_width_, output_height_,
+            lane_preprocess_config_.saturation_mask_dilation_px);
+          checkCuda(
+            cudaGetLastError(), "launch lane saturation mask dilation kernel");
+          saturation_mask = device_saturation_mask_dilated_;
+        }
+        zeroMaskedPixelsKernel<<<grid, block, 0, stream_>>>(
+          device_gray_, saturation_mask, output_width_, output_height_);
+        checkCuda(
+          cudaGetLastError(), "launch lane gray saturation suppression kernel");
+      }
+
       const auto processBand = [this, &block, &grid](
           const std::size_t kernel_index,
           const int kernel_width,
@@ -995,6 +1113,14 @@ public:
         middle_end, output_height_,
         lane_preprocess_config_.near_noise_floor,
         lane_preprocess_config_.near_gain);
+      if (saturation_mask != nullptr) {
+        zeroMaskedPixelsKernel<<<grid, block, 0, stream_>>>(
+          device_enhanced_top_hat_, saturation_mask,
+          output_width_, output_height_);
+        checkCuda(
+          cudaGetLastError(),
+          "launch lane Top-hat saturation suppression kernel");
+      }
     }
 
     CudaBevResult output;
@@ -1049,6 +1175,14 @@ private:
     if (device_enhanced_top_hat_ != nullptr) {
       cudaFree(device_enhanced_top_hat_);
       device_enhanced_top_hat_ = nullptr;
+    }
+    if (device_saturation_mask_dilated_ != nullptr) {
+      cudaFree(device_saturation_mask_dilated_);
+      device_saturation_mask_dilated_ = nullptr;
+    }
+    if (device_saturation_mask_ != nullptr) {
+      cudaFree(device_saturation_mask_);
+      device_saturation_mask_ = nullptr;
     }
     if (device_morphology_b_ != nullptr) {
       cudaFree(device_morphology_b_);
@@ -1106,6 +1240,8 @@ private:
   std::uint8_t * device_morphology_a_{nullptr};
   std::uint8_t * device_morphology_b_{nullptr};
   std::uint8_t * device_enhanced_top_hat_{nullptr};
+  std::uint8_t * device_saturation_mask_{nullptr};
+  std::uint8_t * device_saturation_mask_dilated_{nullptr};
   std::array<std::uint8_t *, 3> device_kernel_masks_{};
   std::mutex stream_mutex_;
 };

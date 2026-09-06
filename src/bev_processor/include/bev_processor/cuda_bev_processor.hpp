@@ -36,6 +36,13 @@ struct CudaLanePreprocessConfig
   bool enabled{true};
   int gray_mode{0};
 
+  // Suppress sufficiently bright, saturated colors only in the lane
+  // preprocessing path. The published color BEV remains unchanged.
+  bool saturation_suppression_enabled{true};
+  int saturation_threshold{70};
+  int saturation_minimum_value{40};
+  int saturation_mask_dilation_px{1};
+
   double near_ratio{0.45};
   double middle_ratio{0.35};
   double far_ratio{0.20};
