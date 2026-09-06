@@ -134,6 +134,10 @@ struct BevLaneSeedDetection
   cv::Mat preview;
   BevLaneSeed left;
   BevLaneSeed right;
+  // Full selected boundary centroids from the sliding-window tracker. These
+  // are kept separate from the conservative ROI support_points above.
+  std::vector<cv::Point2d> left_lane_points;
+  std::vector<cv::Point2d> right_lane_points;
   std::vector<cv::Point2d> centerline_points;
   BevLaneCenterlineSource centerline_source{BevLaneCenterlineSource::NONE};
   bool centerline_transition_used{false};

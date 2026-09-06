@@ -105,6 +105,11 @@ def generate_launch_description():
     auto_control_params_file = LaunchConfiguration("auto_control_params_file")
     preview_enabled = LaunchConfiguration("preview_enabled")
     bev_argument_fallbacks = [
+        ("dataset_collection_enabled", "false"),
+        ("dataset_collection_root_directory", "datasets"),
+        ("dataset_collection_fps", "10.0"),
+        ("dataset_collection_target_count", "1000"),
+        ("dataset_collection_stop_auto_on_complete", "true"),
         ("lane_seed_roi_height_ratio", "0.25"),
         ("lane_seed_temporal_side_lock_reset_frames", "100"),
         ("lane_seed_temporal_side_reacquire_base_distance_px", "45.0"),

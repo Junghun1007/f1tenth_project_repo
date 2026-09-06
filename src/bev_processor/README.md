@@ -33,6 +33,57 @@ source install/setup.bash
 ros2 launch bev_processor bev_processor.launch.py
 ```
 
+## 학습 데이터 수집
+
+`dataset_collection_enabled:=true`로 실행하면 지정한 root의 기존
+`dataset_숫자` 폴더를 검색해 다음 번호를 생성한다. 수집을 새로
+시작할 때마다 `dataset_001`, `dataset_002`, ... 순서로 늘어난다.
+
+```text
+datasets/dataset_001/
+├── origin_bev/<capture_time_ns>_<matching_number>.png
+├── filtered_bev/<capture_time_ns>_<matching_number>.png
+└── label/<capture_time_ns>_<matching_number>.json
+```
+
+PNG는 프리뷰나 오버레이 없이 BEV 영상만 저장한다. 기본 BEV는
+세로 300행×가로 120열이며 `origin_bev`는 BGR, `filtered_bev`는
+Gray+Top-hat 결과다. 같은 stem의 JSON은 `left_lane`과 `right_lane`에
+`[x, y]` 형식의 1px 차선 좌표를 저장하며, 검출되지 않은 쪽은 빈
+배열이다.
+
+```json
+{
+  "capture_time_ns": 1788488318338722352,
+  "matching_number": 1,
+  "image_width": 120,
+  "image_height": 300,
+  "left_lane": [[31,299],[31,298]],
+  "right_lane": []
+}
+```
+
+자동주행에서는 기존 명령에 수집 인자만 추가하면 된다. 값을
+`bev_params_file`의 `bev_processor.ros__parameters`에 넣어도 동일하다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  bev_params_file:=/absolute/path/bev_config_test.yaml \
+  auto_control_params_file:=/absolute/path/auto_control_test.yaml \
+  auto_enabled:=true \
+  preview_enabled:=true \
+  dataset_collection_enabled:=true \
+  dataset_collection_root_directory:=/absolute/path/datasets \
+  dataset_collection_fps:=10.0 \
+  dataset_collection_target_count:=1000
+```
+
+목표 개수를 채우면 수집 스레드가 종료되고, 기본값으로
+`/auto/enabled=false`를 발행해 자동주행을 정지한다. 이 발행이 필요
+없으면 `dataset_collection_stop_auto_on_complete:=false`로 지정한다.
+수동주행은 별도 터미널에서 위 `bev_processor` 수집 명령과
+`ros2 launch vehicle_bringup manual_drive.launch.py`를 같이 실행하면 된다.
+
 CAN과 주행 중 가속도계 보정을 모두 끄고 gyro 고주파 진동만 억제하려면:
 
 ```bash

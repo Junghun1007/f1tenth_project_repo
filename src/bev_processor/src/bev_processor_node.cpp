@@ -8,9 +8,12 @@
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -47,8 +50,11 @@ using SteadyClock = std::chrono::steady_clock;
 struct BevFrame
 {
   cv::Mat image;
+  cv::Mat filtered_image;
   cv::Mat lane_mask;
   cv::Mat lane_preview;
+  std::vector<cv::Point2d> left_lane_points;
+  std::vector<cv::Point2d> right_lane_points;
   std_msgs::msg::Header header;
   SteadyClock::time_point input_received_at;
   std::uint64_t generation{0U};
@@ -309,12 +315,19 @@ public:
         get_logger(),
         "Preview disabled because DISPLAY/WAYLAND_DISPLAY is unavailable.");
     }
+    if (dataset_collection_enabled_) {
+      initializeDatasetCollection();
+    }
     processing_thread_ = std::thread(&BevProcessorNode::processingLoop, this);
     if (publish_enabled_ || lane_seed_detection_enabled_) {
       publishing_thread_ = std::thread(&BevProcessorNode::publishingLoop, this);
     }
     if (preview_enabled_) {
       preview_thread_ = std::thread(&BevProcessorNode::previewLoop, this);
+    }
+    if (dataset_collection_enabled_) {
+      dataset_collection_thread_ = std::thread(
+        &BevProcessorNode::datasetCollectionLoop, this);
     }
 
     status_started_at_ = SteadyClock::now();
@@ -520,6 +533,9 @@ public:
     if (preview_thread_.joinable()) {
       preview_thread_.join();
     }
+    if (dataset_collection_thread_.joinable()) {
+      dataset_collection_thread_.join();
+    }
   }
 
 private:
@@ -551,6 +567,12 @@ private:
     declare_parameter<std::string>("capture_directory", ".");
     declare_parameter<std::string>("capture_joy_topic", "/joy");
     declare_parameter<int>("capture_joy_button", 1);
+    declare_parameter<bool>("dataset_collection_enabled", false);
+    declare_parameter<std::string>(
+      "dataset_collection_root_directory", "datasets");
+    declare_parameter<double>("dataset_collection_fps", 10.0);
+    declare_parameter<int>("dataset_collection_target_count", 1000);
+    declare_parameter<bool>("dataset_collection_stop_auto_on_complete", true);
 
     declare_parameter<int>("input_width", 1280);
     declare_parameter<int>("input_height", 800);
@@ -792,6 +814,16 @@ private:
     capture_joy_topic_ = get_parameter("capture_joy_topic").as_string();
     capture_joy_button_ =
       static_cast<int>(get_parameter("capture_joy_button").as_int());
+    dataset_collection_enabled_ =
+      get_parameter("dataset_collection_enabled").as_bool();
+    dataset_collection_root_directory_ =
+      get_parameter("dataset_collection_root_directory").as_string();
+    dataset_collection_fps_ =
+      get_parameter("dataset_collection_fps").as_double();
+    dataset_collection_target_count_ =
+      get_parameter("dataset_collection_target_count").as_int();
+    dataset_collection_stop_auto_on_complete_ =
+      get_parameter("dataset_collection_stop_auto_on_complete").as_bool();
     if (performance_measurement_enabled_) {
       preview_enabled_ = false;
     }
@@ -1152,9 +1184,9 @@ private:
 
   void validateParameters() const
   {
-    if (configuration_version_ != 3) {
+    if (configuration_version_ != 4) {
       throw std::invalid_argument(
-              "configuration_version must be 3; check that bev_config.yaml "
+              "configuration_version must be 4; check that bev_config.yaml "
               "was loaded for the bev_processor node");
     }
     if (input_topic_.empty()) {
@@ -1181,6 +1213,26 @@ private:
       throw std::invalid_argument(
               "capture directory/topic must not be empty and button must "
               "be non-negative");
+    }
+    if (dataset_collection_root_directory_.empty()) {
+      throw std::invalid_argument(
+              "dataset_collection_root_directory must not be empty");
+    }
+    if (
+      !std::isfinite(dataset_collection_fps_) ||
+      dataset_collection_fps_ <= 0.0)
+    {
+      throw std::invalid_argument(
+              "dataset_collection_fps must be finite and positive");
+    }
+    if (dataset_collection_target_count_ <= 0) {
+      throw std::invalid_argument(
+              "dataset_collection_target_count must be positive");
+    }
+    if (dataset_collection_enabled_ && !lane_seed_detection_enabled_) {
+      throw std::invalid_argument(
+              "lane_seed_detection_enabled must be true while dataset "
+              "collection is enabled");
     }
     if (lane_seed_detection_enabled_ && lane_output_topic_.empty()) {
       throw std::invalid_argument(
@@ -1582,6 +1634,8 @@ private:
           updateMaximum(lane_process_ns_max_interval_, lane_process_ns);
           output->lane_mask = std::move(lane.seed_mask);
           output->lane_preview = std::move(lane.preview);
+          output->left_lane_points = std::move(lane.left_lane_points);
+          output->right_lane_points = std::move(lane.right_lane_points);
           latest_lane_track_count_.store(
             lane.accepted_track_count, std::memory_order_relaxed);
           latest_lane_row_track_count_.store(
@@ -1625,6 +1679,7 @@ private:
             lane_invalid_interval_.fetch_add(1U, std::memory_order_relaxed);
           }
         }
+        output->filtered_image = std::move(cuda_result.enhanced_top_hat);
         output->header = input->header;
         output->input_received_at = input_received_at;
         output->generation = generation;
@@ -1765,6 +1820,310 @@ private:
         get_logger(),
         "Failed to capture BEV image: %s",
         exception.what());
+    }
+  }
+
+  static std::string zeroPaddedNumber(
+    const std::uint64_t value,
+    const int minimum_width)
+  {
+    std::ostringstream stream;
+    stream << std::setfill('0') << std::setw(minimum_width) << value;
+    return stream.str();
+  }
+
+  void initializeDatasetCollection()
+  {
+    namespace fs = std::filesystem;
+
+    const fs::path root(dataset_collection_root_directory_);
+    fs::create_directories(root);
+
+    const std::string prefix = "dataset_";
+    std::uint64_t maximum_index = 0U;
+    for (const fs::directory_entry & entry : fs::directory_iterator(root)) {
+      if (!entry.is_directory()) {
+        continue;
+      }
+      const std::string name = entry.path().filename().string();
+      if (name.compare(0, prefix.size(), prefix) != 0) {
+        continue;
+      }
+      const std::string suffix = name.substr(prefix.size());
+      if (
+        suffix.empty() ||
+        !std::all_of(
+          suffix.begin(), suffix.end(),
+          [](const char character) {
+            return character >= '0' && character <= '9';
+          }))
+      {
+        continue;
+      }
+      try {
+        maximum_index = std::max(
+          maximum_index,
+          static_cast<std::uint64_t>(std::stoull(suffix)));
+      } catch (const std::exception &) {
+        // Ignore unrelated directories with an out-of-range numeric suffix.
+      }
+    }
+
+    std::uint64_t next_index = maximum_index + 1U;
+    while (true) {
+      const fs::path candidate = root /
+        (prefix + zeroPaddedNumber(next_index, 3));
+      if (fs::create_directory(candidate)) {
+        dataset_collection_directory_ = fs::absolute(candidate);
+        break;
+      }
+      ++next_index;
+    }
+
+    fs::create_directories(dataset_collection_directory_ / "origin_bev");
+    fs::create_directories(dataset_collection_directory_ / "filtered_bev");
+    fs::create_directories(dataset_collection_directory_ / "label");
+    RCLCPP_INFO(
+      get_logger(),
+      "BEV dataset collection enabled: directory=%s, rate=%.2fHz, "
+      "target=%lld frames, stop_auto_on_complete=%s.",
+      dataset_collection_directory_.string().c_str(),
+      dataset_collection_fps_,
+      static_cast<long long>(dataset_collection_target_count_),
+      dataset_collection_stop_auto_on_complete_ ? "true" : "false");
+  }
+
+  std::vector<cv::Point> rasterizeLanePixels(
+    const std::vector<cv::Point2d> & points) const
+  {
+    cv::Mat lane = cv::Mat::zeros(
+      bev_config_.output_height, bev_config_.output_width, CV_8UC1);
+    const double maximum_gap_px =
+      lane_seed_config_.centerline_maximum_gap_fill_m /
+      lane_seed_config_.centerline_meter_per_pixel;
+    cv::Point previous;
+    bool previous_valid = false;
+    for (const cv::Point2d & point : points) {
+      if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+        previous_valid = false;
+        continue;
+      }
+      const cv::Point pixel(
+        static_cast<int>(std::lround(point.x)),
+        static_cast<int>(std::lround(point.y)));
+      if (
+        pixel.x < 0 || pixel.x >= lane.cols ||
+        pixel.y < 0 || pixel.y >= lane.rows)
+      {
+        previous_valid = false;
+        continue;
+      }
+      if (
+        previous_valid &&
+        cv::norm(cv::Point2d(pixel) - cv::Point2d(previous)) <= maximum_gap_px)
+      {
+        cv::line(lane, previous, pixel, cv::Scalar(255), 1, cv::LINE_8);
+      } else {
+        lane.at<std::uint8_t>(pixel) = 255U;
+      }
+      previous = pixel;
+      previous_valid = true;
+    }
+
+    std::vector<cv::Point> pixels;
+    cv::findNonZero(lane, pixels);
+    return pixels;
+  }
+
+  static void writeLanePixelArray(
+    std::ostream & stream,
+    const char * name,
+    const std::vector<cv::Point> & pixels,
+    const bool trailing_comma)
+  {
+    stream << "  \"" << name << "\": [";
+    for (std::size_t index = 0; index < pixels.size(); ++index) {
+      if (index > 0U) {
+        stream << ',';
+      }
+      stream << '[' << pixels[index].x << ',' << pixels[index].y << ']';
+    }
+    stream << ']';
+    if (trailing_comma) {
+      stream << ',';
+    }
+    stream << '\n';
+  }
+
+  std::int64_t captureTimeNanoseconds(const BevFrame & frame) const
+  {
+    const std::int64_t timestamp =
+      static_cast<std::int64_t>(frame.header.stamp.sec) * 1000000000LL +
+      static_cast<std::int64_t>(frame.header.stamp.nanosec);
+    return timestamp > 0 ? timestamp : get_clock()->now().nanoseconds();
+  }
+
+  void saveDatasetFrame(
+    const BevFrame & frame,
+    const std::uint64_t matching_number)
+  {
+    namespace fs = std::filesystem;
+
+    if (
+      frame.image.type() != CV_8UC3 ||
+      frame.filtered_image.type() != CV_8UC1 ||
+      frame.image.size() != frame.filtered_image.size() ||
+      frame.image.cols != bev_config_.output_width ||
+      frame.image.rows != bev_config_.output_height)
+    {
+      throw std::runtime_error(
+              "dataset frame does not contain matching BGR and filtered BEV images");
+    }
+
+    const std::int64_t capture_time_ns = captureTimeNanoseconds(frame);
+    const std::string stem = std::to_string(capture_time_ns) + "_" +
+      zeroPaddedNumber(matching_number, 6);
+    const fs::path origin_path =
+      dataset_collection_directory_ / "origin_bev" / (stem + ".png");
+    const fs::path filtered_path =
+      dataset_collection_directory_ / "filtered_bev" / (stem + ".png");
+    const fs::path label_path =
+      dataset_collection_directory_ / "label" / (stem + ".json");
+    const fs::path origin_temporary =
+      dataset_collection_directory_ / "origin_bev" / (stem + ".tmp.png");
+    const fs::path filtered_temporary =
+      dataset_collection_directory_ / "filtered_bev" / (stem + ".tmp.png");
+    const fs::path label_temporary =
+      dataset_collection_directory_ / "label" / (stem + ".tmp.json");
+
+    const std::vector<cv::Point> left_pixels =
+      rasterizeLanePixels(frame.left_lane_points);
+    const std::vector<cv::Point> right_pixels =
+      rasterizeLanePixels(frame.right_lane_points);
+
+    auto remove_sample_files = [&]() {
+        std::error_code error;
+        fs::remove(origin_temporary, error);
+        error.clear();
+        fs::remove(filtered_temporary, error);
+        error.clear();
+        fs::remove(label_temporary, error);
+        error.clear();
+        fs::remove(origin_path, error);
+        error.clear();
+        fs::remove(filtered_path, error);
+        error.clear();
+        fs::remove(label_path, error);
+      };
+
+    try {
+      if (!cv::imwrite(origin_temporary.string(), frame.image)) {
+        throw std::runtime_error("failed to encode origin BEV PNG");
+      }
+      if (!cv::imwrite(filtered_temporary.string(), frame.filtered_image)) {
+        throw std::runtime_error("failed to encode filtered BEV PNG");
+      }
+      {
+        std::ofstream label(label_temporary);
+        if (!label) {
+          throw std::runtime_error("failed to open dataset label JSON");
+        }
+        label << "{\n";
+        label << "  \"capture_time_ns\": " << capture_time_ns << ",\n";
+        label << "  \"matching_number\": " << matching_number << ",\n";
+        label << "  \"image_width\": " << frame.image.cols << ",\n";
+        label << "  \"image_height\": " << frame.image.rows << ",\n";
+        writeLanePixelArray(label, "left_lane", left_pixels, true);
+        writeLanePixelArray(label, "right_lane", right_pixels, false);
+        label << "}\n";
+        label.close();
+        if (!label) {
+          throw std::runtime_error("failed to write dataset label JSON");
+        }
+      }
+
+      fs::rename(origin_temporary, origin_path);
+      fs::rename(filtered_temporary, filtered_path);
+      fs::rename(label_temporary, label_path);
+    } catch (...) {
+      remove_sample_files();
+      throw;
+    }
+  }
+
+  void requestAutomaticStop(const char * reason)
+  {
+    std_msgs::msg::Bool enabled_message;
+    enabled_message.data = false;
+    preview_stop_publisher_->publish(enabled_message);
+    RCLCPP_WARN(
+      get_logger(),
+      "%s Requested automatic duty 0 on %s.",
+      reason,
+      preview_stop_topic_.c_str());
+  }
+
+  void datasetCollectionLoop()
+  {
+    const auto minimum_period =
+      std::chrono::duration_cast<SteadyClock::duration>(
+      std::chrono::duration<double>(1.0 / dataset_collection_fps_));
+    const std::uint64_t target_count =
+      static_cast<std::uint64_t>(dataset_collection_target_count_);
+    std::uint64_t last_generation = 0U;
+    std::uint64_t saved_count = 0U;
+    SteadyClock::time_point last_saved_at{};
+
+    while (
+      !stop_.load(std::memory_order_acquire) &&
+      saved_count < target_count)
+    {
+      const auto frame = waitForNewOutput(last_generation);
+      if (!frame) {
+        continue;
+      }
+      last_generation = frame->generation;
+
+      const auto now = SteadyClock::now();
+      if (
+        last_saved_at.time_since_epoch().count() != 0 &&
+        now - last_saved_at < minimum_period)
+      {
+        continue;
+      }
+
+      try {
+        saveDatasetFrame(*frame, saved_count + 1U);
+      } catch (const std::exception & exception) {
+        dataset_collection_failed_.store(true, std::memory_order_release);
+        RCLCPP_ERROR(
+          get_logger(),
+          "BEV dataset collection stopped after %llu/%llu frames: %s",
+          static_cast<unsigned long long>(saved_count),
+          static_cast<unsigned long long>(target_count),
+          exception.what());
+        if (dataset_collection_stop_auto_on_complete_) {
+          requestAutomaticStop("Dataset write failed.");
+        }
+        return;
+      }
+
+      ++saved_count;
+      dataset_collection_saved_total_.store(
+        saved_count, std::memory_order_release);
+      last_saved_at = SteadyClock::now();
+    }
+
+    if (saved_count == target_count) {
+      dataset_collection_complete_.store(true, std::memory_order_release);
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV dataset collection completed: %llu frames saved in %s.",
+        static_cast<unsigned long long>(saved_count),
+        dataset_collection_directory_.string().c_str());
+      if (dataset_collection_stop_auto_on_complete_) {
+        requestAutomaticStop("Dataset target reached.");
+      }
     }
   }
 
@@ -2167,6 +2526,22 @@ private:
         lane_output_topic_.c_str());
     }
 
+    if (dataset_collection_enabled_) {
+      const char * state =
+        dataset_collection_failed_.load(std::memory_order_relaxed) ?
+        "failed" :
+        dataset_collection_complete_.load(std::memory_order_relaxed) ?
+        "complete" : "collecting";
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV dataset: %llu/%lld frames, state=%s, directory=%s",
+        static_cast<unsigned long long>(
+          dataset_collection_saved_total_.load(std::memory_order_relaxed)),
+        static_cast<long long>(dataset_collection_target_count_),
+        state,
+        dataset_collection_directory_.string().c_str());
+    }
+
     if (
       received_total_.load(std::memory_order_relaxed) == 0U &&
       std::chrono::duration<double>(now - node_started_at_).count() >=
@@ -2208,6 +2583,15 @@ private:
   std::string capture_joy_topic_{"/joy"};
   int capture_joy_button_{1};
   std::atomic<bool> capture_joy_button_pressed_{false};
+  bool dataset_collection_enabled_{false};
+  std::string dataset_collection_root_directory_{"datasets"};
+  double dataset_collection_fps_{10.0};
+  std::int64_t dataset_collection_target_count_{1000};
+  bool dataset_collection_stop_auto_on_complete_{true};
+  std::filesystem::path dataset_collection_directory_;
+  std::atomic<std::uint64_t> dataset_collection_saved_total_{0U};
+  std::atomic<bool> dataset_collection_complete_{false};
+  std::atomic<bool> dataset_collection_failed_{false};
   bool lane_seed_detection_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};
@@ -2260,6 +2644,7 @@ private:
   std::thread processing_thread_;
   std::thread publishing_thread_;
   std::thread preview_thread_;
+  std::thread dataset_collection_thread_;
 
   const SteadyClock::time_point node_started_at_{SteadyClock::now()};
   SteadyClock::time_point status_started_at_{SteadyClock::now()};

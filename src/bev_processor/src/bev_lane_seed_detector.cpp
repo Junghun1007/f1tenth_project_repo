@@ -2628,12 +2628,16 @@ BevLaneSeedDetection BevLaneSeedDetector::detect(
   }
   result.left = toPublicSeed(selected_left);
   result.right = toPublicSeed(selected_right);
+  if (result.left.valid) {
+    result.left_lane_points = orderedSlidingWindowPoints(selected_left);
+  }
+  if (result.right.valid) {
+    result.right_lane_points = orderedSlidingWindowPoints(selected_right);
+  }
 
   if (config_.centerline_enabled) {
-    const std::vector<cv::Point2d> left_curve =
-      orderedSlidingWindowPoints(selected_left);
-    const std::vector<cv::Point2d> right_curve =
-      orderedSlidingWindowPoints(selected_right);
+    const std::vector<cv::Point2d> & left_curve = result.left_lane_points;
+    const std::vector<cv::Point2d> & right_curve = result.right_lane_points;
     const LanePairGeometry geometry = measureCenterlinePairGeometry(
       left_curve, right_curve, config_);
     const int left_count = static_cast<int>(left_curve.size());
