@@ -43,14 +43,16 @@ ros2 launch bev_processor bev_processor.launch.py
 datasets/dataset_001/
 ├── origin_bev/<capture_time_ns>_<matching_number>.png
 ├── filtered_bev/<capture_time_ns>_<matching_number>.png
+├── result_bev/<capture_time_ns>_<matching_number>.png
 └── label/<capture_time_ns>_<matching_number>.json
 ```
 
-PNG는 프리뷰나 오버레이 없이 BEV 영상만 저장한다. 기본 BEV는
-세로 300행×가로 120열이며 `origin_bev`는 BGR, `filtered_bev`는
-Gray+Top-hat 결과다. 같은 stem의 JSON은 `left_lane`과 `right_lane`에
-`[x, y]` 형식의 1px 차선 좌표를 저장하며, 검출되지 않은 쪽은 빈
-배열이다.
+기본 BEV는 세로 300행×가로 120열이다. `origin_bev`는 오버레이 없는 BGR,
+`filtered_bev`는 Gray+Top-hat 결과다. `result_bev`는 `origin_bev` 위에
+JSON과 동일한 1px 차선 좌표를 겹쳐 그린 검증용 영상이며, 왼쪽 차선은
+파란색이고 오른쪽 차선은 빨간색이다. 중앙선은 표시하지 않는다. 같은
+stem의 JSON은 `left_lane`과 `right_lane`에 `[x, y]` 형식의 1px 차선
+좌표를 저장하며, 검출되지 않은 쪽은 빈 배열이다.
 
 ```json
 {

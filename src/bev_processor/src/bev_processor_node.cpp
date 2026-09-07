@@ -1882,6 +1882,7 @@ private:
 
     fs::create_directories(dataset_collection_directory_ / "origin_bev");
     fs::create_directories(dataset_collection_directory_ / "filtered_bev");
+    fs::create_directories(dataset_collection_directory_ / "result_bev");
     fs::create_directories(dataset_collection_directory_ / "label");
     RCLCPP_INFO(
       get_logger(),
@@ -1987,12 +1988,16 @@ private:
       dataset_collection_directory_ / "origin_bev" / (stem + ".png");
     const fs::path filtered_path =
       dataset_collection_directory_ / "filtered_bev" / (stem + ".png");
+    const fs::path result_path =
+      dataset_collection_directory_ / "result_bev" / (stem + ".png");
     const fs::path label_path =
       dataset_collection_directory_ / "label" / (stem + ".json");
     const fs::path origin_temporary =
       dataset_collection_directory_ / "origin_bev" / (stem + ".tmp.png");
     const fs::path filtered_temporary =
       dataset_collection_directory_ / "filtered_bev" / (stem + ".tmp.png");
+    const fs::path result_temporary =
+      dataset_collection_directory_ / "result_bev" / (stem + ".tmp.png");
     const fs::path label_temporary =
       dataset_collection_directory_ / "label" / (stem + ".tmp.json");
 
@@ -2000,6 +2005,13 @@ private:
       rasterizeLanePixels(frame.left_lane_points);
     const std::vector<cv::Point> right_pixels =
       rasterizeLanePixels(frame.right_lane_points);
+    cv::Mat result_image = frame.image.clone();
+    for (const cv::Point & pixel : left_pixels) {
+      result_image.at<cv::Vec3b>(pixel) = cv::Vec3b(255U, 0U, 0U);
+    }
+    for (const cv::Point & pixel : right_pixels) {
+      result_image.at<cv::Vec3b>(pixel) = cv::Vec3b(0U, 0U, 255U);
+    }
 
     auto remove_sample_files = [&]() {
         std::error_code error;
@@ -2007,11 +2019,15 @@ private:
         error.clear();
         fs::remove(filtered_temporary, error);
         error.clear();
+        fs::remove(result_temporary, error);
+        error.clear();
         fs::remove(label_temporary, error);
         error.clear();
         fs::remove(origin_path, error);
         error.clear();
         fs::remove(filtered_path, error);
+        error.clear();
+        fs::remove(result_path, error);
         error.clear();
         fs::remove(label_path, error);
       };
@@ -2022,6 +2038,9 @@ private:
       }
       if (!cv::imwrite(filtered_temporary.string(), frame.filtered_image)) {
         throw std::runtime_error("failed to encode filtered BEV PNG");
+      }
+      if (!cv::imwrite(result_temporary.string(), result_image)) {
+        throw std::runtime_error("failed to encode result BEV PNG");
       }
       {
         std::ofstream label(label_temporary);
@@ -2044,6 +2063,7 @@ private:
 
       fs::rename(origin_temporary, origin_path);
       fs::rename(filtered_temporary, filtered_path);
+      fs::rename(result_temporary, result_path);
       fs::rename(label_temporary, label_path);
     } catch (...) {
       remove_sample_files();
