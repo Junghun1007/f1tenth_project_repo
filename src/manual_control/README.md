@@ -1,7 +1,7 @@
 # manual_control
 
-Reads SDL-standard Bluetooth controller input from `/joy` and sends manual
-actuator commands.
+Reads SDL-standard Bluetooth controller input from `/autopilot03/joy` and sends
+manual actuator commands.
 
 Published topics:
 
@@ -32,18 +32,19 @@ published on `/manual/gear` and `/manual/current_duty`; the ramped electrical
 brake command is published on `/manual/current_brake_current`. The VESC node publishes measured ERPM on
 `/vesc/measured_erpm` and logs target duty and measured ERPM together.
 
-`actuator_commander_node` reads all four controls directly from the same `/joy`
-frame. The former intermediate converter and four manual input topics are not
-used by `manual_drive.launch.py`. RB changes gear only on its rising edge, so
-holding the button does not repeat the change.
+`actuator_commander_node` reads all four controls directly from the same
+`/autopilot03/joy` frame. The former intermediate converter and four manual
+input topics are not used by `manual_drive.launch.py`. RB changes gear only on
+its rising edge, so holding the button does not repeat the change.
 
 The manual controller runs at 80 Hz. Its configured duty limits and ramps are:
 
 Controller state and VESC command topics use `KEEP_LAST(1)` best-effort QoS.
 Holding RT or a steering input therefore replaces the pending state instead of
-accumulating old commands. When `/joy` stops, the 0.30-second watchdog sends
-duty 0 and centers steering. When serial I/O is temporarily delayed, the VESC
-node processes only the newest waiting duty/ERPM/servo command.
+accumulating old commands. When `/autopilot03/joy` stops, the 0.30-second
+watchdog sends duty 0 and centers steering. When serial I/O is temporarily
+delayed, the VESC node processes only the newest waiting duty/ERPM/servo
+command.
 
 ```yaml
 forward_max_duty: 0.10

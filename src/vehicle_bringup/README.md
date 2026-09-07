@@ -25,11 +25,13 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py
 ros2 launch vehicle_bringup auto_drive.launch.py
 ```
 
-Manual driving defaults to the root namespace. Its `/joy`, `/manual/*`,
-`/vesc/*`, and `/vehicle/dynamics/*` topics therefore match `bev_processor`
-when the two launch files are started in separate terminals. A multi-vehicle
-setup may still provide a namespace, but the BEV camera's VESC and dynamics
-input topics must then use the same prefix:
+Manual driving keeps `/manual/*`, `/vesc/*`, and `/vehicle/dynamics/*` in the
+root namespace by default so they match `bev_processor` when the two launch
+files are started in separate terminals. Controller input uses the stable
+`/autopilot03/joy` topic so the separately launched camera preview can capture
+the same A-button event. A multi-vehicle setup may still provide a namespace,
+but the BEV camera's VESC and dynamics input topics must then use the same
+prefix:
 
 ```bash
 ros2 launch vehicle_bringup manual_drive.launch.py \
@@ -114,10 +116,10 @@ Start without automatic motion for a lifted-wheel check with
 The manual launch uses the project-owned `joy_input_node` for the 8BitDo
 controller in Bluetooth D-input mode. Remove the 2.4 GHz receiver before
 launch. The node uses SDL GameController's standard layout and matches the
-`8BitDo` name substring, publishes only `/joy`, and has no haptic subsystem,
-feedback subscription, or rumble API. The actuator commander consumes `/joy`
-directly; no conversion/debug process runs between the controller and actuator
-commands.
+`8BitDo` name substring, publishes only `/autopilot03/joy`, and has no haptic
+subsystem, feedback subscription, or rumble API. The actuator commander
+consumes `/autopilot03/joy` directly; no conversion/debug process runs between
+the controller and actuator commands.
 
 The initial `Opened Bluetooth game controller` message is normal startup. If
 BlueZ or SDL removes the controller, the node stops publishing immediately so

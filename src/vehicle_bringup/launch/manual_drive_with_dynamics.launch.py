@@ -9,6 +9,7 @@ def generate_launch_description():
     vehicle_namespace = LaunchConfiguration("vehicle_namespace")
     vesc_port = LaunchConfiguration("vesc_port")
     controller_name_contains = LaunchConfiguration("controller_name_contains")
+    joy_topic = LaunchConfiguration("joy_topic")
     input_mode = LaunchConfiguration("input_mode")
     can_interface = LaunchConfiguration("can_interface")
     can_controller_id = LaunchConfiguration("can_controller_id")
@@ -29,6 +30,7 @@ def generate_launch_description():
             "vehicle_namespace": vehicle_namespace,
             "vesc_port": vesc_port,
             "controller_name_contains": controller_name_contains,
+            "joy_topic": joy_topic,
         }.items(),
     )
     dynamics_monitor = IncludeLaunchDescription(
@@ -62,6 +64,9 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
+            DeclareLaunchArgument(
+                "joy_topic", default_value="/autopilot03/joy"
+            ),
             DeclareLaunchArgument(
                 "controller_name_contains", default_value="8BitDo"
             ),

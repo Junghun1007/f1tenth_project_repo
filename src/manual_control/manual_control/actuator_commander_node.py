@@ -23,7 +23,7 @@ class ActuatorCommanderNode(Node):
     def __init__(self) -> None:
         super().__init__("actuator_commander_node")
 
-        self.declare_parameter("joy_topic", "/joy")
+        self.declare_parameter("joy_topic", "/autopilot03/joy")
         self.declare_parameter("joy_steering_axis", 0)
         self.declare_parameter("joy_accelerator_axis", 5)
         self.declare_parameter("joy_brake_axis", 4)

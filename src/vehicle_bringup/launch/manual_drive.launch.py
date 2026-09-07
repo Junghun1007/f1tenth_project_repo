@@ -10,6 +10,7 @@ def generate_launch_description():
     vehicle_namespace = LaunchConfiguration("vehicle_namespace")
     vesc_port = LaunchConfiguration("vesc_port")
     controller_name_contains = LaunchConfiguration("controller_name_contains")
+    joy_topic = LaunchConfiguration("joy_topic")
     actuator_commander_config = PathJoinSubstitution(
         [FindPackageShare("vehicle_bringup"), "config", "manual_vesc_config.yaml"]
     )
@@ -24,6 +25,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(joy_launch_path),
         launch_arguments={
             "vehicle_namespace": vehicle_namespace,
+            "joy_topic": joy_topic,
             "device_id": "0",
             "device_name_contains": controller_name_contains,
             "deadzone": "0.05",
@@ -43,7 +45,7 @@ def generate_launch_description():
         parameters=[
             actuator_commander_config,
             {
-                "joy_topic": "joy",
+                "joy_topic": joy_topic,
                 "current_duty_topic": "manual/current_duty",
                 "current_brake_current_topic": (
                     "manual/current_brake_current"
@@ -88,6 +90,9 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
+            DeclareLaunchArgument(
+                "joy_topic", default_value="/autopilot03/joy"
+            ),
             DeclareLaunchArgument(
                 "controller_name_contains", default_value="8BitDo"
             ),

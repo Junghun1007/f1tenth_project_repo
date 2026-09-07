@@ -7,6 +7,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     vehicle_namespace = LaunchConfiguration("vehicle_namespace")
+    joy_topic = LaunchConfiguration("joy_topic")
     device_id = LaunchConfiguration("device_id")
     device_name_contains = LaunchConfiguration("device_name_contains")
     deadzone = LaunchConfiguration("deadzone")
@@ -21,6 +22,7 @@ def generate_launch_description():
         name="joy_node",
         namespace=vehicle_namespace,
         output="screen",
+        remappings=[("joy", joy_topic)],
         parameters=[
             {
                 "device_id": ParameterValue(device_id, value_type=int),
@@ -45,6 +47,9 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("vehicle_namespace", default_value=""),
+            DeclareLaunchArgument(
+                "joy_topic", default_value="/autopilot03/joy"
+            ),
             DeclareLaunchArgument("device_id", default_value="0"),
             DeclareLaunchArgument(
                 "device_name_contains",

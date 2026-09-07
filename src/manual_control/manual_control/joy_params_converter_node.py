@@ -15,7 +15,7 @@ class JoyParamsConverterNode(Node):
     def __init__(self) -> None:
         super().__init__("joy_params_converter_node")
 
-        self.declare_parameter("joy_topic", "/joy")
+        self.declare_parameter("joy_topic", "/autopilot03/joy")
         self.declare_parameter("accelerator_topic", "/manual/accelerator")
         self.declare_parameter("brake_topic", "/manual/brake")
         self.declare_parameter("steering_topic", "/manual/steering")

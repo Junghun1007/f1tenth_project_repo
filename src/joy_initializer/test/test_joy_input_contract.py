@@ -44,6 +44,8 @@ def test_launch_uses_project_bluetooth_input_node() -> None:
     assert 'package="joy_initializer"' in launch_source
     assert 'executable="joy_input_node"' in launch_source
     assert 'package="joy"' not in launch_source
+    assert 'remappings=[("joy", joy_topic)]' in launch_source
+    assert 'default_value="/autopilot03/joy"' in launch_source
     assert 'device_name_contains",' in launch_source
     assert 'default_value="8BitDo"' in launch_source
     assert "8BitDo Ultimate 2 Wireless Controller for PC" not in launch_source

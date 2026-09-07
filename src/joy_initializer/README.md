@@ -15,8 +15,9 @@ database for this model.
 The default name filter accepts any SDL game controller containing `8BitDo`,
 which tolerates BlueZ/SDL naming differences. An empty filter falls back to
 `device_id`. `Opened Bluetooth game controller` is printed once for the
-initial open. A disconnect stops `/joy` publication immediately; the node then
-waits for BlueZ/SDL to reconnect the controller.
+initial open. The launch file publishes on `/autopilot03/joy` by default. A
+disconnect stops publication immediately; the node then waits for BlueZ/SDL to
+reconnect the controller.
 
 Published SDL-standard layout:
 
@@ -62,6 +63,7 @@ Run only the joystick input node:
 
 ```bash
 ros2 launch joy_initializer joy.launch.py
+ros2 topic echo /autopilot03/joy
 ```
 
 If SDL exposes a generic name without `8BitDo`, select the first recognized
