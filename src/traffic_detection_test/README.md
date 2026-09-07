@@ -9,11 +9,11 @@ FP32 YOLOX-S ONNX 모델로 추론한다.
 
 - 카메라 입력: `640x400`, 기본 80 FPS, 장치 왜곡 보정 사용
 - 추론 ROI: 원본 픽셀 기준 중심 좌표와 폭·높이로 지정
-- 모델 입력: BGR FP32 `[1, 3, 640, 640]`
+- 기본 모델 입력: BGR FP32 `[1, 3, 160, 640]`
 - TensorRT 전처리: raw NV12를 GPU로 전송한 뒤 CUDA 커널 하나로
   ROI crop·resize, `NV12 -> BGR FP32 NCHW`와 114 패딩을 수행
 - CPU 전처리: 호스트 BGR에서 동일한 패딩과 FP32 NCHW 생성
-- 모델 출력: decoded `[1, 8400, 6]`
+- 기본 모델 출력: decoded `[1, 2100, 6]`
 - confidence: `objectness * class probability`
 - 기본 threshold: score `0.25`, NMS IoU `0.65`
 - 기본 실행 백엔드: TensorRT 직접 실행, FP32
@@ -28,7 +28,8 @@ TensorRT가 사용되면 프리뷰 표시를 위한 `getCvFrame()` BGR 변환은
 완료된 뒤 별도로 수행된다. 이 BGR 프레임은 화면 표시에만 쓰이며
 TensorRT 입력으로 다시 복사되지 않는다.
 프리뷰 캔버스는 항상 원본 `640x400`을 유지하며, ROI 밖은 검정색으로
-마스크하고 ROI 경계를 노란색으로 표시한다.
+마스크하고 ROI 경계를 노란색으로 표시한다. 검출 상태 글자는 공간이
+있으면 ROI 바로 아래의 검정 영역에 표시하므로 추론 영역을 가리지 않는다.
 
 ## 추론 ROI와 모델 크기
 
@@ -36,21 +37,21 @@ ROI는 `roi_center_x`, `roi_center_y`, `roi_width`, `roi_height`로 지정하며
 좌표와 크기는 모두 `640x400` 원본 영상 픽셀 기준이다. ROI는
 반드시 원본 영상 안에 완전히 들어와야 한다.
 
-기본 번들 모델은 고정 `640x640` 입력이다. 이 모델을 그대로 사용하면
-ROI를 줄여도 검출 범위만 줄고 TensorRT 계산량과 소비 전력은 줄지
-않는다. GPU 부하를 줄이려면 ROI와 맞는 작은 고정 입력 ONNX를 지정하고
-`model_input_width`, `model_input_height`를 그 ONNX 입력과 같게 설정해야
-한다. 모델 입력은 둘 다 32의 배수여야 한다.
+기본 번들 모델은 기존 `640x640` 체크포인트를 재학습 없이 고정
+`640x160` 입력으로 다시 export한 모델이다. 기본 ROI는 중심 `(320,145)`,
+크기 `640x160`, 즉 원본의 `y=65..224`이다. 목표 구간 `y=100..189`
+주변에 위아래 약 35픽셀 문맥을 남기면서 TensorRT 입력 면적을 기존의
+25%로 줄인다.
 
-예를 들어 상단 `640x256` ROI와 이 크기로 export한 모델을 사용하면:
+기본 설정은 별도 모델·ROI 인자 없이 실행할 수 있다.
 
 ```bash
-ros2 launch traffic_detection_test traffic_detection_test.launch.py \
-  model_path:=/absolute/path/traffic_light_yolox_s_640x256.onnx \
-  model_input_width:=640 model_input_height:=256 \
-  roi_center_x:=320 roi_center_y:=128 \
-  roi_width:=640 roi_height:=256
+ros2 launch traffic_detection_test traffic_detection_test.launch.py
 ```
+
+다른 고정 입력 ONNX를 사용하려면 `model_input_width`와
+`model_input_height`를 실제 ONNX 입력과 같게 설정해야 하며 둘 다 32의
+배수여야 한다.
 
 ROI 비율과 모델 입력 비율이 다르면 원본 비율을 유지하여 좌측 상단에
 resize하고 나머지를 114로 패딩한다. 검출 박스는 ROI offset을 다시
@@ -83,18 +84,18 @@ resize하고 나머지를 114로 패딩한다. 검출 박스는 ROI offset을 �
 기본 모델은 다음 설치 경로에서 자동으로 불러온다.
 
 ```text
-share/traffic_detection_test/models/traffic_light_yolox_s_640_batch_1.onnx
+share/traffic_detection_test/models/traffic_light_yolox_s_640x160_batch_1.onnx
 ```
 
 `model_path` launch 인자로 다른 decoded YOLOX ONNX 파일을 지정할 수 있지만,
-입출력 형식은 FP32 `[1,3,640,640]`과 `[1,N,6]`이어야 한다.
+입출력 형식은 FP32 `[1,3,H,W]`과 `[1,N,6]`이어야 한다.
 
 TensorRT는 첫 실행에서 ONNX를 현재 Jetson용 FP32 엔진으로 빌드한다. 이 작업은
 몇 분 걸릴 수 있으며, 다음 실행부터는 캐시된 엔진을 역직렬화해 바로 사용한다.
 기본 캐시 파일은 ONNX 옆에 TensorRT major 버전을 포함한 다음 형식으로 생성된다.
 
 ```text
-traffic_light_yolox_s_640_batch_1.onnx.trt<major>.fp32.engine
+traffic_light_yolox_s_640x160_batch_1.onnx.trt<major>.fp32.engine
 ```
 
 ONNX 파일이 캐시보다 새롭거나 캐시가 현재 TensorRT/GPU와 호환되지 않으면 자동으로

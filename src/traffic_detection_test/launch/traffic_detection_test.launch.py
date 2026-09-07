@@ -12,7 +12,7 @@ def generate_launch_description():
     default_params = f"{package_share}/config/traffic_detection_test.yaml"
     default_model = (
         f"{package_share}/models/"
-        "traffic_light_yolox_s_640_batch_1.onnx"
+        "traffic_light_yolox_s_640x160_batch_1.onnx"
     )
 
     params_file = LaunchConfiguration("params_file")
@@ -67,7 +67,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "model_input_height",
-                default_value="640",
+                default_value="160",
                 description="Fixed ONNX input tensor height; multiple of 32.",
             ),
             DeclareLaunchArgument(
@@ -77,7 +77,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "roi_center_y",
-                default_value="200",
+                default_value="145",
                 description="Inference ROI vertical center in source pixels.",
             ),
             DeclareLaunchArgument(
@@ -87,7 +87,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "roi_height",
-                default_value="400",
+                default_value="160",
                 description="Inference ROI height in source pixels.",
             ),
             DeclareLaunchArgument(

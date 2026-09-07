@@ -40,7 +40,7 @@ namespace
 constexpr std::uint32_t kFullSensorWidth = 1280U;
 constexpr std::uint32_t kFullSensorHeight = 800U;
 constexpr char kModelFilename[] =
-  "traffic_light_yolox_s_640_batch_1.onnx";
+  "traffic_light_yolox_s_640x160_batch_1.onnx";
 
 std::string uppercase(std::string value)
 {
@@ -270,9 +270,9 @@ private:
     width_ = node_.declare_parameter<int>("width", 640);
     height_ = node_.declare_parameter<int>("height", 400);
     roi_center_x_ = node_.declare_parameter<int>("roi_center_x", 320);
-    roi_center_y_ = node_.declare_parameter<int>("roi_center_y", 200);
+    roi_center_y_ = node_.declare_parameter<int>("roi_center_y", 145);
     roi_width_ = node_.declare_parameter<int>("roi_width", 640);
-    roi_height_ = node_.declare_parameter<int>("roi_height", 400);
+    roi_height_ = node_.declare_parameter<int>("roi_height", 160);
     sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 80.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
@@ -290,7 +290,7 @@ private:
     model_input_width_ =
       node_.declare_parameter<int>("model_input_width", 640);
     model_input_height_ =
-      node_.declare_parameter<int>("model_input_height", 640);
+      node_.declare_parameter<int>("model_input_height", 160);
     score_threshold_ = static_cast<float>(
       node_.declare_parameter<double>("score_threshold", 0.25));
     nms_threshold_ = static_cast<float>(
@@ -572,7 +572,8 @@ private:
     const double detector_total_ms,
     const cv::Rect & roi) const
   {
-    if (roi.width < 420 || roi.height < 44) {
+    constexpr int banner_height = 42;
+    if (roi.width < 420) {
       return;
     }
     float best_score = 0.0F;
@@ -580,11 +581,22 @@ private:
       best_score = std::max(best_score, detection.score);
     }
 
-    const int banner_top = std::max(roi.y, roi.y + roi.height - 42);
+    const int roi_bottom = roi.y + roi.height;
+    int banner_top = 0;
+    if (frame.rows - roi_bottom >= banner_height) {
+      banner_top = roi_bottom;
+    } else if (roi.y >= banner_height) {
+      banner_top = roi.y - banner_height;
+    } else if (roi.height >= banner_height) {
+      banner_top = roi_bottom - banner_height;
+    } else {
+      return;
+    }
     cv::rectangle(
       frame,
       cv::Point(roi.x, banner_top),
-      cv::Point(roi.x + roi.width - 1, roi.y + roi.height - 1),
+      cv::Point(
+        roi.x + roi.width - 1, banner_top + banner_height - 1),
       cv::Scalar(0, 0, 0),
       cv::FILLED);
     const std::string state = detections.empty() ?
@@ -751,13 +763,13 @@ private:
 
         const auto drawing_started_at = std::chrono::steady_clock::now();
         detector_->draw(frame, result.detections);
+        mask_outside_roi(frame);
         draw_status_overlay(
           frame,
           result.detections,
           nanoseconds_to_milliseconds(result.timing.forward_nanoseconds),
           nanoseconds_to_milliseconds(detector_total_nanoseconds),
           roi_);
-        mask_outside_roi(frame);
         cv::rectangle(
           frame, roi_, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
         const auto drawing_finished_at = std::chrono::steady_clock::now();
@@ -953,10 +965,10 @@ private:
   int width_{640};
   int height_{400};
   int roi_center_x_{320};
-  int roi_center_y_{200};
+  int roi_center_y_{145};
   int roi_width_{640};
-  int roi_height_{400};
-  cv::Rect roi_{0, 0, 640, 400};
+  int roi_height_{160};
+  cv::Rect roi_{0, 65, 640, 160};
   double sensor_fps_{80.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
@@ -965,7 +977,7 @@ private:
   std::string engine_cache_path_;
   int tensorrt_workspace_size_mb_{1024};
   int model_input_width_{640};
-  int model_input_height_{640};
+  int model_input_height_{160};
   float score_threshold_{0.25F};
   float nms_threshold_{0.65F};
   double preview_fps_{60.0};
