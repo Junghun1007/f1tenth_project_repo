@@ -1955,7 +1955,7 @@ private:
     stream << '\n';
   }
 
-  std::int64_t captureTimeNanoseconds(const BevFrame & frame) const
+  std::int64_t captureTimeNanoseconds(const BevFrame & frame)
   {
     const std::int64_t timestamp =
       static_cast<std::int64_t>(frame.header.stamp.sec) * 1000000000LL +

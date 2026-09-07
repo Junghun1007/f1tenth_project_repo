@@ -43,24 +43,49 @@ Ubuntu/Jetson의 ROS 2 Humble, DepthAI C++ 3.x와 OpenCV 4의 `dnn`,
 `highgui` 모듈이 필요하다.
 
 ```bash
-cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+cd ~/Desktop/0906ML/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 
 colcon build \
   --packages-select traffic_detection_test \
   --cmake-clean-cache \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
-source install/setup.bash
+source ~/Desktop/0906ML/f1tenth_project_repo/install/setup.bash
 ```
 
 DepthAI C++가 기본 prefix에 없다면 `camera_driver`와 같은 방식으로
 `-Ddepthai_DIR=<prefix>/lib/cmake/depthai`를 전달한다.
+
+이 프리뷰만 확인할 때는 위 명령처럼 `traffic_detection_test`만 선택한다.
+`vehicle_bringup`을 `--packages-select`에 함께 넣으면 `auto_control`,
+`joy_initializer`, `vehicle_dynamics_monitor` 등 아직 설치되지 않은 실행
+의존성이 자동으로 추가되지 않아 전체 빌드가 중단될 수 있다. 전체 주행
+패키지까지 새로 빌드해야 한다면 의존성을 포함하는 다음 명령을 사용한다.
+
+```bash
+colcon build \
+  --packages-up-to traffic_detection_test vehicle_bringup \
+  --cmake-clean-cache \
+  --cmake-args \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+source ~/Desktop/0906ML/f1tenth_project_repo/install/setup.bash
+```
+
+`CMAKE_CUDA_COMPILER`가 사용되지 않았다는 경고는 CUDA를 사용하지 않는
+`traffic_detection_test`와 `camera_driver`에서는 정상이다. CUDA를 사용하는
+`bev_processor`에 전달하기 위해 전체 빌드 명령에 남겨 둔 값이다.
 
 ## 실행
 
 ```bash
 ros2 launch traffic_detection_test traffic_detection_test.launch.py
 ```
+
+`ros2 launch`가 `/opt/ros/humble`에서만 패키지를 검색하며
+`Package 'traffic_detection_test' not found`를 출력하면, 현재 터미널에서
+아직 `install/setup.bash`를 source하지 않았거나 앞선 빌드가 설치 단계 전에
+중단된 상태다. 위의 단독 빌드와 source 명령을 다시 실행한다.
 
 threshold 변경 예시는 다음과 같다.
 
