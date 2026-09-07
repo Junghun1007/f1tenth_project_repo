@@ -1,14 +1,21 @@
 cmake_minimum_required(VERSION 3.18)
-project(traffic_detection_test)
+project(traffic_detection_test LANGUAGES CXX CUDA)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CUDA_STANDARD 17)
+set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+set(CMAKE_CUDA_EXTENSIONS OFF)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+  add_compile_options(
+    $<$<COMPILE_LANGUAGE:CXX>:-Wall>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+    $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+  )
 endif()
 
 find_package(ament_cmake REQUIRED)
@@ -68,6 +75,7 @@ endif()
 find_package(Threads REQUIRED)
 
 add_library(traffic_yolox_detector STATIC
+  src/cuda_yolox_preprocessor.cu
   src/tensorrt_yolox_backend.cpp
   src/yolox_detector.cpp
 )

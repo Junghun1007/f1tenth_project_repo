@@ -107,7 +107,7 @@ YoloxDetectionResult YoloxDetector::detect(
     throw std::invalid_argument("YOLOX input must be an 8-bit BGR image");
   }
 
-  YoloxDetectionResult result;
+  YoloxStageTiming stage_timing;
   const auto preprocessing_started_at = std::chrono::steady_clock::now();
   const float ratio = std::min(
     static_cast<float>(input_height_) /
@@ -143,6 +143,8 @@ YoloxDetectionResult YoloxDetector::detect(
     network_.setInput(blob);
   }
   const auto preprocessing_finished_at = std::chrono::steady_clock::now();
+  stage_timing.preprocessing_nanoseconds = elapsed_nanoseconds(
+    preprocessing_started_at, preprocessing_finished_at);
 
   int row_count = 0;
   int column_count = 0;
@@ -156,10 +158,10 @@ YoloxDetectionResult YoloxDetector::detect(
     const auto timing = tensorrt_backend_->infer(
       blob.ptr<float>(), blob.total(), tensorrt_output_.data(),
       tensorrt_output_.size());
-    result.timing.input_transfer_nanoseconds =
+    stage_timing.input_transfer_nanoseconds =
       timing.input_transfer_nanoseconds;
-    result.timing.forward_nanoseconds = timing.execution_nanoseconds;
-    result.timing.output_transfer_nanoseconds =
+    stage_timing.forward_nanoseconds = timing.execution_nanoseconds;
+    stage_timing.output_transfer_nanoseconds =
       timing.output_transfer_nanoseconds;
     row_count = tensorrt_backend_->output_row_count();
     column_count = tensorrt_backend_->output_column_count();
@@ -167,7 +169,7 @@ YoloxDetectionResult YoloxDetector::detect(
   } else {
     output = network_.forward();
     const auto forward_finished_at = std::chrono::steady_clock::now();
-    result.timing.forward_nanoseconds = elapsed_nanoseconds(
+    stage_timing.forward_nanoseconds = elapsed_nanoseconds(
       forward_started_at, forward_finished_at);
 
     if (output.dims == 3 && output.size[0] == 1) {
@@ -190,11 +192,75 @@ YoloxDetectionResult YoloxDetector::detect(
     rows = output.ptr<float>();
   }
 
+  return decode_output(
+    rows, row_count, column_count, ratio, bgr_image.cols, bgr_image.rows,
+    stage_timing);
+}
+
+YoloxDetectionResult YoloxDetector::detect_nv12(
+  const std::uint8_t * nv12,
+  const std::size_t data_size,
+  const std::size_t source_stride,
+  const int source_width,
+  const int source_height)
+{
+  if (!tensorrt_backend_) {
+    throw std::logic_error(
+            "direct NV12 input requires the TensorRT backend");
+  }
+
+  const auto timing = tensorrt_backend_->infer_nv12(
+    nv12, data_size, source_stride, source_width, source_height,
+    tensorrt_output_.data(), tensorrt_output_.size());
+  YoloxStageTiming stage_timing;
+  stage_timing.preprocessing_nanoseconds =
+    timing.preprocessing_nanoseconds;
+  stage_timing.input_transfer_nanoseconds =
+    timing.input_transfer_nanoseconds;
+  stage_timing.forward_nanoseconds = timing.execution_nanoseconds;
+  stage_timing.output_transfer_nanoseconds =
+    timing.output_transfer_nanoseconds;
+
+  // The optimized path intentionally supports only the camera/model geometry
+  // whose letterbox ratio is exactly one. The CUDA kernel adds the 114-valued
+  // bottom padding while writing BGR FP32 NCHW directly to TensorRT input.
+  return decode_output(
+    tensorrt_output_.data(), tensorrt_backend_->output_row_count(),
+    tensorrt_backend_->output_column_count(), 1.0F, source_width,
+    source_height, stage_timing);
+}
+
+bool YoloxDetector::supports_nv12_input() const noexcept
+{
+  return tensorrt_backend_ != nullptr;
+}
+
+YoloxDetectionResult YoloxDetector::decode_output(
+  const float * rows,
+  const int row_count,
+  const int column_count,
+  const float ratio,
+  const int image_width,
+  const int image_height,
+  YoloxStageTiming timing) const
+{
+  if (
+    rows == nullptr || row_count <= 0 || column_count != 6 ||
+    !std::isfinite(ratio) || ratio <= 0.0F ||
+    image_width <= 0 || image_height <= 0)
+  {
+    throw std::invalid_argument("invalid YOLOX decoded output metadata");
+  }
+
   const auto postprocessing_started_at = std::chrono::steady_clock::now();
+  YoloxDetectionResult result;
+  result.timing = timing;
   std::vector<TrafficLightDetection> candidates;
   candidates.reserve(static_cast<std::size_t>(row_count));
   for (int index = 0; index < row_count; ++index) {
-    const float * row = rows + static_cast<std::size_t>(index) * 6U;
+    const float * row =
+      rows + static_cast<std::size_t>(index) *
+      static_cast<std::size_t>(column_count);
     const float score = row[4] * row[5];
     if (!std::isfinite(score) || score < score_threshold_) {
       continue;
@@ -204,12 +270,12 @@ YoloxDetectionResult YoloxDetector::detect(
     float top = (row[1] - row[3] * 0.5F) / ratio;
     float right = (row[0] + row[2] * 0.5F) / ratio;
     float bottom = (row[1] + row[3] * 0.5F) / ratio;
-    left = std::clamp(left, 0.0F, static_cast<float>(bgr_image.cols - 1));
-    top = std::clamp(top, 0.0F, static_cast<float>(bgr_image.rows - 1));
+    left = std::clamp(left, 0.0F, static_cast<float>(image_width - 1));
+    top = std::clamp(top, 0.0F, static_cast<float>(image_height - 1));
     right = std::clamp(
-      right, 0.0F, static_cast<float>(bgr_image.cols - 1));
+      right, 0.0F, static_cast<float>(image_width - 1));
     bottom = std::clamp(
-      bottom, 0.0F, static_cast<float>(bgr_image.rows - 1));
+      bottom, 0.0F, static_cast<float>(image_height - 1));
     if (right <= left || bottom <= top) {
       continue;
     }
@@ -225,8 +291,6 @@ YoloxDetectionResult YoloxDetector::detect(
     result.detections.push_back(candidates[index]);
   }
   const auto postprocessing_finished_at = std::chrono::steady_clock::now();
-  result.timing.preprocessing_nanoseconds = elapsed_nanoseconds(
-    preprocessing_started_at, preprocessing_finished_at);
   result.timing.postprocessing_nanoseconds = elapsed_nanoseconds(
     postprocessing_started_at, postprocessing_finished_at);
   return result;

@@ -12,6 +12,7 @@ namespace traffic_detection_test
 struct TensorRtInferenceTiming
 {
   std::uint64_t input_transfer_nanoseconds{0U};
+  std::uint64_t preprocessing_nanoseconds{0U};
   std::uint64_t execution_nanoseconds{0U};
   std::uint64_t output_transfer_nanoseconds{0U};
 };
@@ -35,6 +36,14 @@ public:
   TensorRtInferenceTiming infer(
     const float * input,
     std::size_t input_element_count,
+    float * output,
+    std::size_t output_element_count);
+  TensorRtInferenceTiming infer_nv12(
+    const std::uint8_t * nv12,
+    std::size_t data_size,
+    std::size_t source_stride,
+    int source_width,
+    int source_height,
     float * output,
     std::size_t output_element_count);
 

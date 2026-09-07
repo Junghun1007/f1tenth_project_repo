@@ -2,15 +2,16 @@
 
 `camera_driver`를 수정하지 않고 OAK 카메라의 신호등 검출 결과만 확인하는
 ROS 2 C++ 프리뷰 패키지다. OAK CAM_A의 `1280x800` 센서 영상을 `640x400`
-NV12로 받아 호스트에서 BGR로 변환하고, 학습 완료된 FP32 YOLOX-S ONNX
-모델로 추론한다.
+NV12로 받아 TensorRT 입력용 전처리를 GPU에서 수행하고, 학습 완료된
+FP32 YOLOX-S ONNX 모델로 추론한다.
 
 ## 처리 방식
 
 - 카메라 입력: `640x400`, 기본 80 FPS, 장치 왜곡 보정 사용
 - 모델 입력: BGR FP32 `[1, 3, 640, 640]`
-- 전처리: 영상은 늘리지 않고 좌측 상단에 유지하며 아래쪽 240행을 값 114로
-  패딩
+- TensorRT 전처리: raw NV12를 GPU로 전송한 뒤 CUDA 커널 하나로
+  `NV12 -> BGR FP32 NCHW`와 아래쪽 240행의 값 114 패딩을 수행
+- CPU 전처리: 호스트 BGR에서 동일한 패딩과 FP32 NCHW 생성
 - 모델 출력: decoded `[1, 8400, 6]`
 - confidence: `objectness * class probability`
 - 기본 threshold: score `0.25`, NMS IoU `0.65`
@@ -22,12 +23,18 @@ NV12로 받아 호스트에서 BGR로 변환하고, 학습 완료된 FP32 YOLOX-
 누적되지 않는다. 프리뷰에는 bounding box, confidence, 검출 개수와 추론
 시간을 표시한다. `Q` 또는 `ESC`로 종료한다.
 
+TensorRT가 사용되면 프리뷰 표시를 위한 `getCvFrame()` BGR 변환은 추론이
+완료된 뒤 별도로 수행된다. 이 BGR 프레임은 화면 표시에만 쓰이며
+TensorRT 입력으로 다시 복사되지 않는다.
+
 상태 로그는 다음 구간의 평균과 최댓값을 각각 분리한다.
 
 - 카메라 노출 중간 시점부터 Jetson 수신까지 `sensor->host`
-- DepthAI NV12 프레임의 BGR 변환
-- letterbox와 FP32 NCHW blob 생성
-- host FP32 tensor의 GPU 입력 전송 `H2D`
+- 화면 표시용 DepthAI 프레임의 BGR 변환 `preview-convert`
+- TensorRT의 GPU NV12 변환·패딩·FP32 NCHW 생성, 또는 CPU의 호스트
+  전처리 `preprocess`
+- TensorRT는 host raw NV12, 기존 호스트 경로는 FP32 tensor의 GPU 입력
+  전송 `H2D`
 - TensorRT의 순수 network 실행 `execute`
 - decoded FP32 출력의 host 전송 `D2H`
 - score, 좌표 복원과 NMS 후처리
@@ -106,11 +113,9 @@ colcon build \
 source ~/Desktop/0906ML/f1tenth_project_repo/install/setup.bash
 ```
 
-`CMAKE_CUDA_COMPILER`가 사용되지 않았다는 경고는 `.cu` 소스를 직접 컴파일하지
-않는 `traffic_detection_test`와 `camera_driver`에서는 정상이다. 검출 패키지는
-CUDA Runtime 및 TensorRT 라이브러리에 C++로 직접 연결한다. 이 CMake 값은 CUDA
-소스를 직접 빌드하는 `bev_processor`에 전달하기 위해 전체 빌드 명령에 남겨 둔
-값이다.
+`traffic_detection_test`는 NV12 전처리 CUDA 커널을 `.cu`로 직접 컴파일하므로
+`nvcc`가 필요하다. 자동 탐색이 되지 않는 환경에서는 위 명령처럼
+`-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`를 지정한다.
 
 ## 실행
 

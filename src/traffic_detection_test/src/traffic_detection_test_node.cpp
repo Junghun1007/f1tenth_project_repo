@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -398,11 +399,13 @@ private:
     RCLCPP_INFO(
       node_.get_logger(),
       "YOLOX FP32 preview: model=%s, input=%dx%d, score=%.2f, NMS=%.2f, "
-      "backend=%s",
+      "backend=%s, inference-input=%s",
       model_path_.c_str(), model_input_width_, model_input_height_,
       static_cast<double>(score_threshold_),
       static_cast<double>(nms_threshold_),
-      detector_->backend_name().c_str());
+      detector_->backend_name().c_str(),
+      !gray8_transport_ && detector_->supports_nv12_input() ?
+      "raw NV12 with fused CUDA preprocessing" : "host BGR");
     if (gray8_transport_) {
       RCLCPP_WARN(
         node_.get_logger(),
@@ -632,6 +635,19 @@ private:
       processed_generation = snapshot->generation;
 
       try {
+        const bool direct_nv12_input =
+          !gray8_transport_ && detector_->supports_nv12_input();
+        YoloxDetectionResult result;
+        if (direct_nv12_input) {
+          const auto & bytes = snapshot->packet->getData();
+          const std::size_t source_stride =
+            snapshot->packet->getStride() > 0U ?
+            static_cast<std::size_t>(snapshot->packet->getStride()) :
+            static_cast<std::size_t>(width_);
+          result = detector_->detect_nv12(
+            bytes.data(), bytes.size(), source_stride, width_, height_);
+        }
+
         const auto conversion_started_at = std::chrono::steady_clock::now();
         cv::Mat frame = snapshot->packet->getCvFrame();
         if (frame.empty()) {
@@ -649,7 +665,9 @@ private:
         conversion_stats_.record(
           conversion_finished_at - conversion_started_at);
 
-        const auto result = detector_->detect(frame);
+        if (!direct_nv12_input) {
+          result = detector_->detect(frame);
+        }
         preprocessing_stats_.record(
           result.timing.preprocessing_nanoseconds);
         input_transfer_stats_.record(
@@ -762,7 +780,7 @@ private:
     RCLCPP_INFO(
       node_.get_logger(),
       "FPS: capture=%.1f/%.1f, inference=%.1f | AVG ms: "
-      "sensor->host=%.2f, NV12->BGR=%.2f, preprocess=%.2f, "
+      "sensor->host=%.2f, preview-convert=%.2f, preprocess=%.2f, "
       "H2D=%.2f, execute=%.2f, D2H=%.2f, postprocess=%.2f, draw=%.2f, "
       "detector-total=%.2f",
       capture_hz, sensor_fps_, inference_hz,
@@ -777,7 +795,7 @@ private:
       detector_total.average_milliseconds());
     RCLCPP_INFO(
       node_.get_logger(),
-      "MAX ms: sensor->host=%.2f, NV12->BGR=%.2f, preprocess=%.2f, "
+      "MAX ms: sensor->host=%.2f, preview-convert=%.2f, preprocess=%.2f, "
       "H2D=%.2f, execute=%.2f, D2H=%.2f, postprocess=%.2f, draw=%.2f | "
       "AVG/MAX host->display=%.2f/%.2f, sensor->display=%.2f/%.2f | "
       "skipped=%lu, "

@@ -1,6 +1,7 @@
 #ifndef TRAFFIC_DETECTION_TEST__YOLOX_DETECTOR_HPP_
 #define TRAFFIC_DETECTION_TEST__YOLOX_DETECTOR_HPP_
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -53,6 +54,13 @@ public:
   YoloxDetector & operator=(const YoloxDetector &) = delete;
 
   YoloxDetectionResult detect(const cv::Mat & bgr_image);
+  YoloxDetectionResult detect_nv12(
+    const std::uint8_t * nv12,
+    std::size_t data_size,
+    std::size_t source_stride,
+    int source_width,
+    int source_height);
+  bool supports_nv12_input() const noexcept;
   void draw(
     cv::Mat & bgr_image,
     const std::vector<TrafficLightDetection> & detections) const;
@@ -64,6 +72,14 @@ private:
   static std::vector<std::size_t> nms(
     const std::vector<TrafficLightDetection> & detections,
     float threshold);
+  YoloxDetectionResult decode_output(
+    const float * rows,
+    int row_count,
+    int column_count,
+    float ratio,
+    int image_width,
+    int image_height,
+    YoloxStageTiming timing) const;
 
   cv::dnn::Net network_;
   std::unique_ptr<TensorRtYoloxBackend> tensorrt_backend_;
