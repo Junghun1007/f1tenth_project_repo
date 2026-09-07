@@ -59,7 +59,8 @@ public:
     std::size_t data_size,
     std::size_t source_stride,
     int source_width,
-    int source_height);
+    int source_height,
+    const cv::Rect & roi);
   bool supports_nv12_input() const noexcept;
   void draw(
     cv::Mat & bgr_image,
@@ -79,6 +80,8 @@ private:
     float ratio,
     int image_width,
     int image_height,
+    int image_origin_x,
+    int image_origin_y,
     YoloxStageTiming timing) const;
 
   cv::dnn::Net network_;

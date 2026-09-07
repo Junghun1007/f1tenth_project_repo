@@ -4,6 +4,12 @@ traffic_detection_test:
     camera_socket: "CAM_A"
     width: 640
     height: 400
+    # Source-pixel ROI. The preview keeps the original 640x400 canvas, draws
+    # this boundary in yellow, and masks everything outside it to black.
+    roi_center_x: 320
+    roi_center_y: 200
+    roi_width: 640
+    roi_height: 400
     sensor_fps: 80.0
     resize_mode: "CROP"
     undistort_enabled: true
@@ -14,6 +20,8 @@ traffic_detection_test:
     # Empty creates <model>.trt<major>.fp32.engine beside the ONNX file.
     engine_cache_path: ""
     tensorrt_workspace_size_mb: 1024
+    # These must match the fixed ONNX tensor. A smaller ROI reduces TensorRT
+    # work only when a matching smaller rectangular ONNX is selected.
     model_input_width: 640
     model_input_height: 640
     score_threshold: 0.25

@@ -372,6 +372,10 @@ public:
     const std::size_t source_stride,
     const int source_width,
     const int source_height,
+    const int roi_left,
+    const int roi_top,
+    const int roi_width,
+    const int roi_height,
     float * output,
     const std::size_t output_element_count)
   {
@@ -381,12 +385,14 @@ public:
     if (
       source_width <= 0 || source_height <= 0 ||
       source_width % 2 != 0 || source_height % 2 != 0 ||
-      source_width != input_width_ || source_height > input_height_ ||
-      source_stride < static_cast<std::size_t>(source_width))
+      source_stride < static_cast<std::size_t>(source_width) ||
+      roi_left < 0 || roi_top < 0 || roi_width <= 0 || roi_height <= 0 ||
+      roi_width > source_width || roi_height > source_height ||
+      roi_left > source_width - roi_width ||
+      roi_top > source_height - roi_height)
     {
       throw std::invalid_argument(
-              "NV12 input must be even-sized, unscaled, and fit the model "
-              "input");
+              "NV12 input and inference ROI geometry are invalid");
     }
     if (output_element_count != output_element_count_) {
       throw std::invalid_argument("TensorRT output element count mismatch");
@@ -411,9 +417,10 @@ public:
       "cudaEventRecord(NV12 input finish)");
 
     check_cuda(
-      launch_nv12_to_bgr_nchw(
+      launch_nv12_roi_to_bgr_nchw(
         static_cast<const std::uint8_t *>(nv12_device_.get()),
-        source_stride, source_width, source_height,
+        source_stride, source_height, roi_left, roi_top, roi_width,
+        roi_height,
         static_cast<float *>(input_device_.get()), input_width_, input_height_,
         stream_.get()),
       "launch NV12 to BGR NCHW kernel");
@@ -747,12 +754,16 @@ TensorRtInferenceTiming TensorRtYoloxBackend::infer_nv12(
   const std::size_t source_stride,
   const int source_width,
   const int source_height,
+  const int roi_left,
+  const int roi_top,
+  const int roi_width,
+  const int roi_height,
   float * output,
   const std::size_t output_element_count)
 {
   return impl_->infer_nv12(
-    nv12, data_size, source_stride, source_width, source_height, output,
-    output_element_count);
+    nv12, data_size, source_stride, source_width, source_height, roi_left,
+    roi_top, roi_width, roi_height, output, output_element_count);
 }
 
 int TensorRtYoloxBackend::output_row_count() const noexcept

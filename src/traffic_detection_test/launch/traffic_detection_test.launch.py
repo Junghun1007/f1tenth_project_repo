@@ -22,6 +22,12 @@ def generate_launch_description():
     tensorrt_workspace_size_mb = LaunchConfiguration(
         "tensorrt_workspace_size_mb"
     )
+    model_input_width = LaunchConfiguration("model_input_width")
+    model_input_height = LaunchConfiguration("model_input_height")
+    roi_center_x = LaunchConfiguration("roi_center_x")
+    roi_center_y = LaunchConfiguration("roi_center_y")
+    roi_width = LaunchConfiguration("roi_width")
+    roi_height = LaunchConfiguration("roi_height")
     score_threshold = LaunchConfiguration("score_threshold")
     nms_threshold = LaunchConfiguration("nms_threshold")
 
@@ -53,6 +59,36 @@ def generate_launch_description():
                 "tensorrt_workspace_size_mb",
                 default_value="1024",
                 description="TensorRT FP32 engine-build workspace in MiB.",
+            ),
+            DeclareLaunchArgument(
+                "model_input_width",
+                default_value="640",
+                description="Fixed ONNX input tensor width; multiple of 32.",
+            ),
+            DeclareLaunchArgument(
+                "model_input_height",
+                default_value="640",
+                description="Fixed ONNX input tensor height; multiple of 32.",
+            ),
+            DeclareLaunchArgument(
+                "roi_center_x",
+                default_value="320",
+                description="Inference ROI horizontal center in source pixels.",
+            ),
+            DeclareLaunchArgument(
+                "roi_center_y",
+                default_value="200",
+                description="Inference ROI vertical center in source pixels.",
+            ),
+            DeclareLaunchArgument(
+                "roi_width",
+                default_value="640",
+                description="Inference ROI width in source pixels.",
+            ),
+            DeclareLaunchArgument(
+                "roi_height",
+                default_value="400",
+                description="Inference ROI height in source pixels.",
             ),
             DeclareLaunchArgument(
                 "score_threshold",
@@ -87,6 +123,24 @@ def generate_launch_description():
                                 "tensorrt_workspace_size_mb": ParameterValue(
                                     tensorrt_workspace_size_mb,
                                     value_type=int,
+                                ),
+                                "model_input_width": ParameterValue(
+                                    model_input_width, value_type=int
+                                ),
+                                "model_input_height": ParameterValue(
+                                    model_input_height, value_type=int
+                                ),
+                                "roi_center_x": ParameterValue(
+                                    roi_center_x, value_type=int
+                                ),
+                                "roi_center_y": ParameterValue(
+                                    roi_center_y, value_type=int
+                                ),
+                                "roi_width": ParameterValue(
+                                    roi_width, value_type=int
+                                ),
+                                "roi_height": ParameterValue(
+                                    roi_height, value_type=int
                                 ),
                                 "score_threshold": ParameterValue(
                                     score_threshold, value_type=float

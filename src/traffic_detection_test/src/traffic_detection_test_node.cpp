@@ -269,6 +269,10 @@ private:
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
     width_ = node_.declare_parameter<int>("width", 640);
     height_ = node_.declare_parameter<int>("height", 400);
+    roi_center_x_ = node_.declare_parameter<int>("roi_center_x", 320);
+    roi_center_y_ = node_.declare_parameter<int>("roi_center_y", 200);
+    roi_width_ = node_.declare_parameter<int>("roi_width", 640);
+    roi_height_ = node_.declare_parameter<int>("roi_height", 400);
     sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 80.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
@@ -309,7 +313,7 @@ private:
     resize_mode_ = parse_resize_mode(resize_mode_name_);
   }
 
-  void validate_parameters() const
+  void validate_parameters()
   {
     if (width_ <= 0 || height_ <= 0 || width_ % 2 != 0 || height_ % 2 != 0) {
       throw std::invalid_argument(
@@ -319,10 +323,27 @@ private:
       throw std::invalid_argument(
               "this test package requires a 640x400 camera frame");
     }
-    if (model_input_width_ != 640 || model_input_height_ != 640) {
+    if (
+      model_input_width_ < 32 || model_input_height_ < 32 ||
+      model_input_width_ % 32 != 0 || model_input_height_ % 32 != 0)
+    {
       throw std::invalid_argument(
-              "the bundled YOLOX model requires a 640x640 tensor");
+              "model input dimensions must be positive multiples of 32");
     }
+    if (roi_width_ <= 0 || roi_height_ <= 0) {
+      throw std::invalid_argument("ROI width and height must be positive");
+    }
+    const int roi_left = roi_center_x_ - roi_width_ / 2;
+    const int roi_top = roi_center_y_ - roi_height_ / 2;
+    if (
+      roi_left < 0 || roi_top < 0 || roi_width_ > width_ ||
+      roi_height_ > height_ || roi_left > width_ - roi_width_ ||
+      roi_top > height_ - roi_height_)
+    {
+      throw std::invalid_argument(
+              "ROI defined by center and size must fit inside 640x400");
+    }
+    roi_ = cv::Rect(roi_left, roi_top, roi_width_, roi_height_);
     if (
       tensorrt_workspace_size_mb_ <= 0 ||
       tensorrt_workspace_size_mb_ > 16384)
@@ -399,13 +420,26 @@ private:
     RCLCPP_INFO(
       node_.get_logger(),
       "YOLOX FP32 preview: model=%s, input=%dx%d, score=%.2f, NMS=%.2f, "
-      "backend=%s, inference-input=%s",
+      "backend=%s, inference-input=%s, ROI=(center=%d,%d size=%dx%d "
+      "bounds=%d,%d,%d,%d)",
       model_path_.c_str(), model_input_width_, model_input_height_,
       static_cast<double>(score_threshold_),
       static_cast<double>(nms_threshold_),
       detector_->backend_name().c_str(),
       !gray8_transport_ && detector_->supports_nv12_input() ?
-      "raw NV12 with fused CUDA preprocessing" : "host BGR");
+      "raw NV12 with fused CUDA preprocessing" : "host BGR",
+      roi_center_x_, roi_center_y_, roi_width_, roi_height_,
+      roi_.x, roi_.y, roi_.x + roi_.width, roi_.y + roi_.height);
+    if (
+      (roi_.width != width_ || roi_.height != height_) &&
+      model_input_width_ == 640 && model_input_height_ == 640)
+    {
+      RCLCPP_WARN(
+        node_.get_logger(),
+        "ROI limits the detection field of view, but the 640x640 model keeps "
+        "the same TensorRT workload. Use a matching smaller rectangular "
+        "ONNX and model_input dimensions to reduce GPU power.");
+    }
     if (gray8_transport_) {
       RCLCPP_WARN(
         node_.get_logger(),
@@ -510,22 +544,47 @@ private:
     preview_window_sized_ = true;
   }
 
+  void mask_outside_roi(cv::Mat & frame) const
+  {
+    if (roi_.y > 0) {
+      frame.rowRange(0, roi_.y).setTo(cv::Scalar::all(0));
+    }
+    const int roi_bottom = roi_.y + roi_.height;
+    if (roi_bottom < frame.rows) {
+      frame.rowRange(roi_bottom, frame.rows).setTo(cv::Scalar::all(0));
+    }
+    if (roi_.x > 0) {
+      frame(cv::Rect(0, roi_.y, roi_.x, roi_.height)).setTo(
+        cv::Scalar::all(0));
+    }
+    const int roi_right = roi_.x + roi_.width;
+    if (roi_right < frame.cols) {
+      frame(cv::Rect(
+          roi_right, roi_.y, frame.cols - roi_right, roi_.height)).setTo(
+        cv::Scalar::all(0));
+    }
+  }
+
   void draw_status_overlay(
     cv::Mat & frame,
     const std::vector<TrafficLightDetection> & detections,
     const double forward_ms,
-    const double detector_total_ms) const
+    const double detector_total_ms,
+    const cv::Rect & roi) const
   {
+    if (roi.width < 420 || roi.height < 44) {
+      return;
+    }
     float best_score = 0.0F;
     for (const auto & detection : detections) {
       best_score = std::max(best_score, detection.score);
     }
 
-    const int banner_top = std::max(0, frame.rows - 42);
+    const int banner_top = std::max(roi.y, roi.y + roi.height - 42);
     cv::rectangle(
       frame,
-      cv::Point(0, banner_top),
-      cv::Point(frame.cols - 1, frame.rows - 1),
+      cv::Point(roi.x, banner_top),
+      cv::Point(roi.x + roi.width - 1, roi.y + roi.height - 1),
       cv::Scalar(0, 0, 0),
       cv::FILLED);
     const std::string state = detections.empty() ?
@@ -533,7 +592,8 @@ private:
     const cv::Scalar state_color = detections.empty() ?
       cv::Scalar(180, 180, 180) : cv::Scalar(255, 80, 180);
     cv::putText(
-      frame, state, cv::Point(8, banner_top + 18), cv::FONT_HERSHEY_SIMPLEX,
+      frame, state, cv::Point(roi.x + 8, banner_top + 18),
+      cv::FONT_HERSHEY_SIMPLEX,
       0.52, state_color, 1, cv::LINE_AA);
 
     const std::string details = detections.empty() ?
@@ -545,7 +605,7 @@ private:
       detections.size(), static_cast<double>(best_score),
       forward_ms, detector_total_ms);
     cv::putText(
-      frame, details, cv::Point(8, banner_top + 35),
+      frame, details, cv::Point(roi.x + 8, banner_top + 35),
       cv::FONT_HERSHEY_SIMPLEX,
       0.40, cv::Scalar(230, 230, 230), 1, cv::LINE_AA);
   }
@@ -645,7 +705,7 @@ private:
             static_cast<std::size_t>(snapshot->packet->getStride()) :
             static_cast<std::size_t>(width_);
           result = detector_->detect_nv12(
-            bytes.data(), bytes.size(), source_stride, width_, height_);
+            bytes.data(), bytes.size(), source_stride, width_, height_, roi_);
         }
 
         const auto conversion_started_at = std::chrono::steady_clock::now();
@@ -666,7 +726,11 @@ private:
           conversion_finished_at - conversion_started_at);
 
         if (!direct_nv12_input) {
-          result = detector_->detect(frame);
+          result = detector_->detect(frame(roi_));
+          for (auto & detection : result.detections) {
+            detection.box.x += static_cast<float>(roi_.x);
+            detection.box.y += static_cast<float>(roi_.y);
+          }
         }
         preprocessing_stats_.record(
           result.timing.preprocessing_nanoseconds);
@@ -691,7 +755,11 @@ private:
           frame,
           result.detections,
           nanoseconds_to_milliseconds(result.timing.forward_nanoseconds),
-          nanoseconds_to_milliseconds(detector_total_nanoseconds));
+          nanoseconds_to_milliseconds(detector_total_nanoseconds),
+          roi_);
+        mask_outside_roi(frame);
+        cv::rectangle(
+          frame, roi_, cv::Scalar(0, 255, 255), 2, cv::LINE_AA);
         const auto drawing_finished_at = std::chrono::steady_clock::now();
         drawing_stats_.record(drawing_finished_at - drawing_started_at);
 
@@ -884,6 +952,11 @@ private:
   std::string camera_socket_name_;
   int width_{640};
   int height_{400};
+  int roi_center_x_{320};
+  int roi_center_y_{200};
+  int roi_width_{640};
+  int roi_height_{400};
+  cv::Rect roi_{0, 0, 640, 400};
   double sensor_fps_{80.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};

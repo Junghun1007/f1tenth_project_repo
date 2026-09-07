@@ -8,9 +8,10 @@ FP32 YOLOX-S ONNX 모델로 추론한다.
 ## 처리 방식
 
 - 카메라 입력: `640x400`, 기본 80 FPS, 장치 왜곡 보정 사용
+- 추론 ROI: 원본 픽셀 기준 중심 좌표와 폭·높이로 지정
 - 모델 입력: BGR FP32 `[1, 3, 640, 640]`
 - TensorRT 전처리: raw NV12를 GPU로 전송한 뒤 CUDA 커널 하나로
-  `NV12 -> BGR FP32 NCHW`와 아래쪽 240행의 값 114 패딩을 수행
+  ROI crop·resize, `NV12 -> BGR FP32 NCHW`와 114 패딩을 수행
 - CPU 전처리: 호스트 BGR에서 동일한 패딩과 FP32 NCHW 생성
 - 모델 출력: decoded `[1, 8400, 6]`
 - confidence: `objectness * class probability`
@@ -26,6 +27,34 @@ FP32 YOLOX-S ONNX 모델로 추론한다.
 TensorRT가 사용되면 프리뷰 표시를 위한 `getCvFrame()` BGR 변환은 추론이
 완료된 뒤 별도로 수행된다. 이 BGR 프레임은 화면 표시에만 쓰이며
 TensorRT 입력으로 다시 복사되지 않는다.
+프리뷰 캔버스는 항상 원본 `640x400`을 유지하며, ROI 밖은 검정색으로
+마스크하고 ROI 경계를 노란색으로 표시한다.
+
+## 추론 ROI와 모델 크기
+
+ROI는 `roi_center_x`, `roi_center_y`, `roi_width`, `roi_height`로 지정하며
+좌표와 크기는 모두 `640x400` 원본 영상 픽셀 기준이다. ROI는
+반드시 원본 영상 안에 완전히 들어와야 한다.
+
+기본 번들 모델은 고정 `640x640` 입력이다. 이 모델을 그대로 사용하면
+ROI를 줄여도 검출 범위만 줄고 TensorRT 계산량과 소비 전력은 줄지
+않는다. GPU 부하를 줄이려면 ROI와 맞는 작은 고정 입력 ONNX를 지정하고
+`model_input_width`, `model_input_height`를 그 ONNX 입력과 같게 설정해야
+한다. 모델 입력은 둘 다 32의 배수여야 한다.
+
+예를 들어 상단 `640x256` ROI와 이 크기로 export한 모델을 사용하면:
+
+```bash
+ros2 launch traffic_detection_test traffic_detection_test.launch.py \
+  model_path:=/absolute/path/traffic_light_yolox_s_640x256.onnx \
+  model_input_width:=640 model_input_height:=256 \
+  roi_center_x:=320 roi_center_y:=128 \
+  roi_width:=640 roi_height:=256
+```
+
+ROI 비율과 모델 입력 비율이 다르면 원본 비율을 유지하여 좌측 상단에
+resize하고 나머지를 114로 패딩한다. 검출 박스는 ROI offset을 다시
+더해 원본 `640x400` 프리뷰 좌표로 복원한다.
 
 상태 로그는 다음 구간의 평균과 최댓값을 각각 분리한다.
 

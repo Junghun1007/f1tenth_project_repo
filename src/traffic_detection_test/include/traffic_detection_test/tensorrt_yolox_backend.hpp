@@ -44,6 +44,10 @@ public:
     std::size_t source_stride,
     int source_width,
     int source_height,
+    int roi_left,
+    int roi_top,
+    int roi_width,
+    int roi_height,
     float * output,
     std::size_t output_element_count);
 

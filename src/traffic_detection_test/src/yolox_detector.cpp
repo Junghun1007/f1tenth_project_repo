@@ -194,7 +194,7 @@ YoloxDetectionResult YoloxDetector::detect(
 
   return decode_output(
     rows, row_count, column_count, ratio, bgr_image.cols, bgr_image.rows,
-    stage_timing);
+    0, 0, stage_timing);
 }
 
 YoloxDetectionResult YoloxDetector::detect_nv12(
@@ -202,7 +202,8 @@ YoloxDetectionResult YoloxDetector::detect_nv12(
   const std::size_t data_size,
   const std::size_t source_stride,
   const int source_width,
-  const int source_height)
+  const int source_height,
+  const cv::Rect & roi)
 {
   if (!tensorrt_backend_) {
     throw std::logic_error(
@@ -211,6 +212,7 @@ YoloxDetectionResult YoloxDetector::detect_nv12(
 
   const auto timing = tensorrt_backend_->infer_nv12(
     nv12, data_size, source_stride, source_width, source_height,
+    roi.x, roi.y, roi.width, roi.height,
     tensorrt_output_.data(), tensorrt_output_.size());
   YoloxStageTiming stage_timing;
   stage_timing.preprocessing_nanoseconds =
@@ -221,13 +223,15 @@ YoloxDetectionResult YoloxDetector::detect_nv12(
   stage_timing.output_transfer_nanoseconds =
     timing.output_transfer_nanoseconds;
 
-  // The optimized path intentionally supports only the camera/model geometry
-  // whose letterbox ratio is exactly one. The CUDA kernel adds the 114-valued
-  // bottom padding while writing BGR FP32 NCHW directly to TensorRT input.
+  const float ratio = std::min(
+    static_cast<float>(input_height_) / static_cast<float>(roi.height),
+    static_cast<float>(input_width_) / static_cast<float>(roi.width));
+  // The CUDA kernel crops and resizes the ROI, adds 114-valued top-left
+  // letterbox padding, and writes BGR FP32 NCHW directly to TensorRT input.
   return decode_output(
     tensorrt_output_.data(), tensorrt_backend_->output_row_count(),
-    tensorrt_backend_->output_column_count(), 1.0F, source_width,
-    source_height, stage_timing);
+    tensorrt_backend_->output_column_count(), ratio, roi.width, roi.height,
+    roi.x, roi.y, stage_timing);
 }
 
 bool YoloxDetector::supports_nv12_input() const noexcept
@@ -242,6 +246,8 @@ YoloxDetectionResult YoloxDetector::decode_output(
   const float ratio,
   const int image_width,
   const int image_height,
+  const int image_origin_x,
+  const int image_origin_y,
   YoloxStageTiming timing) const
 {
   if (
@@ -282,7 +288,11 @@ YoloxDetectionResult YoloxDetector::decode_output(
 
     candidates.push_back(
       TrafficLightDetection{
-        cv::Rect2f(left, top, right - left, bottom - top), score});
+        cv::Rect2f(
+          left + static_cast<float>(image_origin_x),
+          top + static_cast<float>(image_origin_y),
+          right - left, bottom - top),
+        score});
   }
 
   const auto kept_indices = nms(candidates, nms_threshold_);
