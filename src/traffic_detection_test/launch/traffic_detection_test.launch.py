@@ -18,6 +18,10 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     model_path = LaunchConfiguration("model_path")
     inference_backend = LaunchConfiguration("inference_backend")
+    engine_cache_path = LaunchConfiguration("engine_cache_path")
+    tensorrt_workspace_size_mb = LaunchConfiguration(
+        "tensorrt_workspace_size_mb"
+    )
     score_threshold = LaunchConfiguration("score_threshold")
     nms_threshold = LaunchConfiguration("nms_threshold")
 
@@ -35,8 +39,20 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "inference_backend",
-                default_value="CUDA",
-                description="OpenCV DNN FP32 backend: CUDA or CPU.",
+                default_value="TENSORRT",
+                description="FP32 inference backend: TENSORRT or CPU.",
+            ),
+            DeclareLaunchArgument(
+                "engine_cache_path",
+                default_value="",
+                description=(
+                    "TensorRT engine cache path. Empty stores it beside ONNX."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "tensorrt_workspace_size_mb",
+                default_value="1024",
+                description="TensorRT FP32 engine-build workspace in MiB.",
             ),
             DeclareLaunchArgument(
                 "score_threshold",
@@ -67,6 +83,11 @@ def generate_launch_description():
                             {
                                 "model_path": model_path,
                                 "inference_backend": inference_backend,
+                                "engine_cache_path": engine_cache_path,
+                                "tensorrt_workspace_size_mb": ParameterValue(
+                                    tensorrt_workspace_size_mb,
+                                    value_type=int,
+                                ),
                                 "score_threshold": ParameterValue(
                                     score_threshold, value_type=float
                                 ),

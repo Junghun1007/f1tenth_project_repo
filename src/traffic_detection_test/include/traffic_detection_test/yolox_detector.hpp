@@ -2,6 +2,7 @@
 #define TRAFFIC_DETECTION_TEST__YOLOX_DETECTOR_HPP_
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,8 @@
 
 namespace traffic_detection_test
 {
+
+class TensorRtYoloxBackend;
 
 struct TrafficLightDetection
 {
@@ -20,7 +23,9 @@ struct TrafficLightDetection
 struct YoloxStageTiming
 {
   std::uint64_t preprocessing_nanoseconds{0U};
+  std::uint64_t input_transfer_nanoseconds{0U};
   std::uint64_t forward_nanoseconds{0U};
+  std::uint64_t output_transfer_nanoseconds{0U};
   std::uint64_t postprocessing_nanoseconds{0U};
 };
 
@@ -36,10 +41,16 @@ public:
   YoloxDetector(
     const std::string & model_path,
     const std::string & inference_backend,
+    const std::string & engine_cache_path,
     int input_width,
     int input_height,
     float score_threshold,
-    float nms_threshold);
+    float nms_threshold,
+    std::size_t tensorrt_workspace_size_bytes);
+  ~YoloxDetector();
+
+  YoloxDetector(const YoloxDetector &) = delete;
+  YoloxDetector & operator=(const YoloxDetector &) = delete;
 
   YoloxDetectionResult detect(const cv::Mat & bgr_image);
   void draw(
@@ -55,6 +66,8 @@ private:
     float threshold);
 
   cv::dnn::Net network_;
+  std::unique_ptr<TensorRtYoloxBackend> tensorrt_backend_;
+  std::vector<float> tensorrt_output_;
   int input_width_;
   int input_height_;
   float score_threshold_;

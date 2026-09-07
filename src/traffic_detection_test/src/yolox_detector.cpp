@@ -1,5 +1,7 @@
 #include "traffic_detection_test/yolox_detector.hpp"
 
+#include "traffic_detection_test/tensorrt_yolox_backend.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <chrono>
@@ -44,10 +46,12 @@ std::uint64_t elapsed_nanoseconds(
 YoloxDetector::YoloxDetector(
   const std::string & model_path,
   const std::string & inference_backend,
+  const std::string & engine_cache_path,
   const int input_width,
   const int input_height,
   const float score_threshold,
-  const float nms_threshold)
+  const float nms_threshold,
+  const std::size_t tensorrt_workspace_size_bytes)
 : input_width_(input_width),
   input_height_(input_height),
   score_threshold_(score_threshold),
@@ -69,36 +73,29 @@ YoloxDetector::YoloxDetector(
     throw std::invalid_argument("nms_threshold must be in [0, 1]");
   }
 
-  network_ = cv::dnn::readNetFromONNX(model_path);
-  if (network_.empty()) {
-    throw std::runtime_error("OpenCV could not load the ONNX model");
-  }
-
   const auto normalized_backend = uppercase(inference_backend);
-  if (normalized_backend == "CUDA") {
-    const auto available_targets = cv::dnn::getAvailableTargets(
-      cv::dnn::DNN_BACKEND_CUDA);
-    if (
-      std::find(
-        available_targets.begin(), available_targets.end(),
-        cv::dnn::DNN_TARGET_CUDA) == available_targets.end())
-    {
-      throw std::runtime_error(
-              "OpenCV DNN CUDA FP32 is unavailable. Install an OpenCV build "
-              "with CUDA and cuDNN, or launch with inference_backend:=CPU");
-    }
-    network_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
-    // DNN_TARGET_CUDA is FP32. Do not select DNN_TARGET_CUDA_FP16 here.
-    network_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
-    backend_name_ = "OpenCV DNN CUDA FP32";
+  if (normalized_backend == "TENSORRT") {
+    tensorrt_backend_ = std::make_unique<TensorRtYoloxBackend>(
+      model_path, engine_cache_path, input_width_, input_height_,
+      tensorrt_workspace_size_bytes);
+    tensorrt_output_.resize(
+      static_cast<std::size_t>(tensorrt_backend_->output_row_count()) *
+      static_cast<std::size_t>(tensorrt_backend_->output_column_count()));
+    backend_name_ = "TensorRT FP32";
   } else if (normalized_backend == "CPU") {
+    network_ = cv::dnn::readNetFromONNX(model_path);
+    if (network_.empty()) {
+      throw std::runtime_error("OpenCV could not load the ONNX model");
+    }
     network_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
     network_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
     backend_name_ = "OpenCV DNN CPU FP32";
   } else {
-    throw std::invalid_argument("inference_backend must be CUDA or CPU");
+    throw std::invalid_argument("inference_backend must be TENSORRT or CPU");
   }
 }
+
+YoloxDetector::~YoloxDetector() = default;
 
 YoloxDetectionResult YoloxDetector::detect(
   const cv::Mat & bgr_image)
@@ -142,36 +139,58 @@ YoloxDetectionResult YoloxDetector::detect(
     false,
     false,
     CV_32F);
-  network_.setInput(blob);
+  if (!tensorrt_backend_) {
+    network_.setInput(blob);
+  }
   const auto preprocessing_finished_at = std::chrono::steady_clock::now();
-
-  const auto forward_started_at = preprocessing_finished_at;
-  cv::Mat output = network_.forward();
-  const auto forward_finished_at = std::chrono::steady_clock::now();
-
-  const auto postprocessing_started_at = forward_finished_at;
 
   int row_count = 0;
   int column_count = 0;
-  if (output.dims == 3 && output.size[0] == 1) {
-    row_count = output.size[1];
-    column_count = output.size[2];
-  } else if (output.dims == 2) {
-    row_count = output.rows;
-    column_count = output.cols;
+  const float * rows = nullptr;
+  cv::Mat output;
+  const auto forward_started_at = preprocessing_finished_at;
+  if (tensorrt_backend_) {
+    if (!blob.isContinuous() || blob.type() != CV_32F) {
+      throw std::runtime_error("YOLOX FP32 input blob is not contiguous");
+    }
+    const auto timing = tensorrt_backend_->infer(
+      blob.ptr<float>(), blob.total(), tensorrt_output_.data(),
+      tensorrt_output_.size());
+    result.timing.input_transfer_nanoseconds =
+      timing.input_transfer_nanoseconds;
+    result.timing.forward_nanoseconds = timing.execution_nanoseconds;
+    result.timing.output_transfer_nanoseconds =
+      timing.output_transfer_nanoseconds;
+    row_count = tensorrt_backend_->output_row_count();
+    column_count = tensorrt_backend_->output_column_count();
+    rows = tensorrt_output_.data();
   } else {
-    throw std::runtime_error(
-            "unexpected YOLOX output rank; expected [1, N, 6]");
-  }
-  if (column_count != 6 || output.type() != CV_32F) {
-    throw std::runtime_error(
-            "unexpected YOLOX output; expected FP32 [1, N, 6]");
-  }
-  if (!output.isContinuous()) {
-    output = output.clone();
+    output = network_.forward();
+    const auto forward_finished_at = std::chrono::steady_clock::now();
+    result.timing.forward_nanoseconds = elapsed_nanoseconds(
+      forward_started_at, forward_finished_at);
+
+    if (output.dims == 3 && output.size[0] == 1) {
+      row_count = output.size[1];
+      column_count = output.size[2];
+    } else if (output.dims == 2) {
+      row_count = output.rows;
+      column_count = output.cols;
+    } else {
+      throw std::runtime_error(
+              "unexpected YOLOX output rank; expected [1, N, 6]");
+    }
+    if (column_count != 6 || output.type() != CV_32F) {
+      throw std::runtime_error(
+              "unexpected YOLOX output; expected FP32 [1, N, 6]");
+    }
+    if (!output.isContinuous()) {
+      output = output.clone();
+    }
+    rows = output.ptr<float>();
   }
 
-  const float * rows = output.ptr<float>();
+  const auto postprocessing_started_at = std::chrono::steady_clock::now();
   std::vector<TrafficLightDetection> candidates;
   candidates.reserve(static_cast<std::size_t>(row_count));
   for (int index = 0; index < row_count; ++index) {
@@ -208,8 +227,6 @@ YoloxDetectionResult YoloxDetector::detect(
   const auto postprocessing_finished_at = std::chrono::steady_clock::now();
   result.timing.preprocessing_nanoseconds = elapsed_nanoseconds(
     preprocessing_started_at, preprocessing_finished_at);
-  result.timing.forward_nanoseconds = elapsed_nanoseconds(
-    forward_started_at, forward_finished_at);
   result.timing.postprocessing_nanoseconds = elapsed_nanoseconds(
     postprocessing_started_at, postprocessing_finished_at);
   return result;

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.18)
 project(traffic_detection_test)
 
 if(NOT CMAKE_CXX_STANDARD)
@@ -16,6 +16,48 @@ find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core dnn highgui imgproc)
+find_package(CUDAToolkit REQUIRED)
+find_path(TENSORRT_INCLUDE_DIR
+  NAMES NvInfer.h
+  HINTS
+    /usr/include/aarch64-linux-gnu
+    /usr/include/x86_64-linux-gnu
+    /usr/local/TensorRT/include
+    /usr/local/include
+)
+find_library(TENSORRT_NVINFER_LIBRARY
+  NAMES nvinfer
+  HINTS
+    /usr/lib/aarch64-linux-gnu
+    /usr/lib/x86_64-linux-gnu
+    /usr/local/TensorRT/lib
+)
+find_library(TENSORRT_ONNX_PARSER_LIBRARY
+  NAMES nvonnxparser
+  HINTS
+    /usr/lib/aarch64-linux-gnu
+    /usr/lib/x86_64-linux-gnu
+    /usr/local/TensorRT/lib
+)
+find_library(TENSORRT_PLUGIN_LIBRARY
+  NAMES nvinfer_plugin
+  HINTS
+    /usr/lib/aarch64-linux-gnu
+    /usr/lib/x86_64-linux-gnu
+    /usr/local/TensorRT/lib
+)
+if(
+  NOT TENSORRT_INCLUDE_DIR OR
+  NOT TENSORRT_NVINFER_LIBRARY OR
+  NOT TENSORRT_ONNX_PARSER_LIBRARY OR
+  NOT TENSORRT_PLUGIN_LIBRARY
+)
+  message(FATAL_ERROR
+    "TensorRT headers or libraries were not found. Install the JetPack "
+    "TensorRT development packages (libnvinfer-dev, "
+    "libnvonnxparsers-dev, and libnvinfer-plugin-dev)."
+  )
+endif()
 find_package(depthai 3 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR
@@ -26,6 +68,7 @@ endif()
 find_package(Threads REQUIRED)
 
 add_library(traffic_yolox_detector STATIC
+  src/tensorrt_yolox_backend.cpp
   src/yolox_detector.cpp
 )
 set_target_properties(
@@ -35,8 +78,18 @@ target_include_directories(traffic_yolox_detector
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
     ${OpenCV_INCLUDE_DIRS}
+  PRIVATE
+    ${TENSORRT_INCLUDE_DIR}
 )
-target_link_libraries(traffic_yolox_detector PUBLIC ${OpenCV_LIBS})
+target_link_libraries(traffic_yolox_detector
+  PUBLIC
+    ${OpenCV_LIBS}
+  PRIVATE
+    CUDA::cudart
+    ${TENSORRT_NVINFER_LIBRARY}
+    ${TENSORRT_ONNX_PARSER_LIBRARY}
+    ${TENSORRT_PLUGIN_LIBRARY}
+)
 
 add_library(traffic_detection_test_component SHARED
   src/traffic_detection_test_node.cpp
@@ -94,6 +147,12 @@ install(
 )
 
 ament_export_targets(export_traffic_detection_test HAS_LIBRARY_TARGET)
-ament_export_dependencies(ament_index_cpp OpenCV rclcpp rclcpp_components)
+ament_export_dependencies(
+  ament_index_cpp
+  CUDAToolkit
+  OpenCV
+  rclcpp
+  rclcpp_components
+)
 
 ament_package()

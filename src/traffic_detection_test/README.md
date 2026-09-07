@@ -14,7 +14,7 @@ NV12로 받아 호스트에서 BGR로 변환하고, 학습 완료된 FP32 YOLOX-
 - 모델 출력: decoded `[1, 8400, 6]`
 - confidence: `objectness * class probability`
 - 기본 threshold: score `0.25`, NMS IoU `0.65`
-- 기본 실행 백엔드: OpenCV DNN CUDA, FP32
+- 기본 실행 백엔드: TensorRT 직접 실행, FP32
 - 출력: OpenCV 프리뷰 창만 사용하며 ROS 이미지나 검출 토픽은 발행하지 않음
 
 캡처 스레드는 큐를 쌓지 않고 가장 최신 프레임만 보관한다. 추론 속도가
@@ -27,7 +27,9 @@ NV12로 받아 호스트에서 BGR로 변환하고, 학습 완료된 FP32 YOLOX-
 - 카메라 노출 중간 시점부터 Jetson 수신까지 `sensor->host`
 - DepthAI NV12 프레임의 BGR 변환
 - letterbox와 FP32 NCHW blob 생성
-- 순수 `network.forward()`
+- host FP32 tensor의 GPU 입력 전송 `H2D`
+- TensorRT의 순수 network 실행 `execute`
+- decoded FP32 출력의 host 전송 `D2H`
 - score, 좌표 복원과 NMS 후처리
 - bounding box와 상태 overlay 그리기
 - host 수신 및 sensor 시점부터 `imshow()` 호출까지의 전체 지연
@@ -39,8 +41,8 @@ NV12로 받아 호스트에서 BGR로 변환하고, 학습 완료된 FP32 YOLOX-
 
 번들 모델은 학습할 때 `Red`와 `Green`을 단일 `traffic_light` 클래스로
 합쳤다. 따라서 이 패키지는 신호등의 존재와 위치만 표시하며 빨간불과
-초록불 상태를 구분하지 않는다. 기본 CUDA 경로도 FP32를 유지하며 양자화,
-FP16 및 TensorRT 변환은 포함하지 않는다.
+초록불 상태를 구분하지 않는다. 기본 TensorRT 경로는 FP16, INT8, TF32 플래그를
+모두 끄고 FP32 엔진만 생성한다. 양자화는 포함하지 않는다.
 
 기본 모델은 다음 설치 경로에서 자동으로 불러온다.
 
@@ -49,14 +51,30 @@ share/traffic_detection_test/models/traffic_light_yolox_s_640_batch_1.onnx
 ```
 
 `model_path` launch 인자로 다른 decoded YOLOX ONNX 파일을 지정할 수 있지만,
-입출력 형식은 `[1,3,640,640]`과 `[1,N,6]`이어야 한다.
+입출력 형식은 FP32 `[1,3,640,640]`과 `[1,N,6]`이어야 한다.
+
+TensorRT는 첫 실행에서 ONNX를 현재 Jetson용 FP32 엔진으로 빌드한다. 이 작업은
+몇 분 걸릴 수 있으며, 다음 실행부터는 캐시된 엔진을 역직렬화해 바로 사용한다.
+기본 캐시 파일은 ONNX 옆에 TensorRT major 버전을 포함한 다음 형식으로 생성된다.
+
+```text
+traffic_light_yolox_s_640_batch_1.onnx.trt<major>.fp32.engine
+```
+
+ONNX 파일이 캐시보다 새롭거나 캐시가 현재 TensorRT/GPU와 호환되지 않으면 자동으로
+다시 빌드한다. `engine_cache_path`로 별도 위치를 지정할 수 있다. TensorRT 엔진은
+Jetson GPU와 TensorRT 버전에 종속되므로 다른 장비에서 만든 파일을 복사해 쓰지 않는다.
 
 ## 빌드
 
-Ubuntu/Jetson의 ROS 2 Humble, DepthAI C++ 3.x와 OpenCV 4의 `dnn`,
-`highgui` 모듈이 필요하다. 기본값 `CUDA`를 사용하려면 OpenCV가 CUDA와
-cuDNN을 포함해 빌드되어 있어야 한다. CUDA가 없는 OpenCV에서는 CPU로
-조용히 전환하지 않고 시작 오류를 출력한다.
+Ubuntu/Jetson의 ROS 2 Humble, DepthAI C++ 3.x, OpenCV 4의 `dnn`,
+`highgui` 모듈, CUDA Toolkit과 TensorRT 개발 패키지가 필요하다. OpenCV 자체는
+CUDA 빌드일 필요가 없다. JetPack에 개발 패키지가 빠져 있다면 다음 라이브러리를
+설치해야 한다.
+
+```bash
+sudo apt install libnvinfer-dev libnvinfer-plugin-dev libnvonnxparsers-dev
+```
 
 ```bash
 cd ~/Desktop/0906ML/f1tenth_project_repo
@@ -88,11 +106,11 @@ colcon build \
 source ~/Desktop/0906ML/f1tenth_project_repo/install/setup.bash
 ```
 
-`CMAKE_CUDA_COMPILER`가 사용되지 않았다는 경고는 CUDA 소스를 직접 컴파일하지
+`CMAKE_CUDA_COMPILER`가 사용되지 않았다는 경고는 `.cu` 소스를 직접 컴파일하지
 않는 `traffic_detection_test`와 `camera_driver`에서는 정상이다. 검출 패키지는
-OpenCV에 이미 빌드된 CUDA DNN을 런타임에 사용한다. 이 CMake 값은 CUDA
-소스를 직접 빌드하는 `bev_processor`에 전달하기 위해 전체 빌드 명령에 남겨
-둔 값이다.
+CUDA Runtime 및 TensorRT 라이브러리에 C++로 직접 연결한다. 이 CMake 값은 CUDA
+소스를 직접 빌드하는 `bev_processor`에 전달하기 위해 전체 빌드 명령에 남겨 둔
+값이다.
 
 ## 실행
 
@@ -112,8 +130,8 @@ ros2 launch traffic_detection_test traffic_detection_test.launch.py \
   score_threshold:=0.30 nms_threshold:=0.65
 ```
 
-CUDA DNN을 사용할 수 없는 장비에서 기존 CPU 기준을 비교할 때만 다음처럼
-명시한다.
+기존 OpenCV CPU 기준과 비교할 때만 다음처럼 명시한다. `CPU`는 TensorRT 엔진
+캐시를 생성하거나 사용하지 않는다.
 
 ```bash
 ros2 launch traffic_detection_test traffic_detection_test.launch.py \

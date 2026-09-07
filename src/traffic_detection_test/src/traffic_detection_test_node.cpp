@@ -228,8 +228,9 @@ public:
       throw std::runtime_error("ONNX model not found: " + model_path_);
     }
     detector_ = std::make_unique<YoloxDetector>(
-      model_path_, inference_backend_, model_input_width_, model_input_height_,
-      score_threshold_, nms_threshold_);
+      model_path_, inference_backend_, engine_cache_path_, model_input_width_,
+      model_input_height_, score_threshold_, nms_threshold_,
+      static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U);
 
     try {
       start_pipeline();
@@ -276,7 +277,11 @@ private:
     model_path_ = node_.declare_parameter<std::string>(
       "model_path", default_model_path());
     inference_backend_ = node_.declare_parameter<std::string>(
-      "inference_backend", "CUDA");
+      "inference_backend", "TENSORRT");
+    engine_cache_path_ = node_.declare_parameter<std::string>(
+      "engine_cache_path", "");
+    tensorrt_workspace_size_mb_ = node_.declare_parameter<int>(
+      "tensorrt_workspace_size_mb", 1024);
     model_input_width_ =
       node_.declare_parameter<int>("model_input_width", 640);
     model_input_height_ =
@@ -316,6 +321,13 @@ private:
     if (model_input_width_ != 640 || model_input_height_ != 640) {
       throw std::invalid_argument(
               "the bundled YOLOX model requires a 640x640 tensor");
+    }
+    if (
+      tensorrt_workspace_size_mb_ <= 0 ||
+      tensorrt_workspace_size_mb_ > 16384)
+    {
+      throw std::invalid_argument(
+              "tensorrt_workspace_size_mb must be in [1, 16384]");
     }
     if (!std::isfinite(sensor_fps_) || sensor_fps_ <= 0.0) {
       throw std::invalid_argument("sensor_fps must be positive");
@@ -523,10 +535,10 @@ private:
 
     const std::string details = detections.empty() ?
       cv::format(
-      "forward %.1f ms | total %.1f ms | Q/ESC: quit",
+      "execute %.1f ms | total %.1f ms | Q/ESC: quit",
       forward_ms, detector_total_ms) :
       cv::format(
-      "count %zu | best %.2f | forward %.1f ms | total %.1f ms",
+      "count %zu | best %.2f | execute %.1f ms | total %.1f ms",
       detections.size(), static_cast<double>(best_score),
       forward_ms, detector_total_ms);
     cv::putText(
@@ -640,12 +652,18 @@ private:
         const auto result = detector_->detect(frame);
         preprocessing_stats_.record(
           result.timing.preprocessing_nanoseconds);
+        input_transfer_stats_.record(
+          result.timing.input_transfer_nanoseconds);
         forward_stats_.record(result.timing.forward_nanoseconds);
+        output_transfer_stats_.record(
+          result.timing.output_transfer_nanoseconds);
         postprocessing_stats_.record(
           result.timing.postprocessing_nanoseconds);
         const std::uint64_t detector_total_nanoseconds =
           result.timing.preprocessing_nanoseconds +
+          result.timing.input_transfer_nanoseconds +
           result.timing.forward_nanoseconds +
+          result.timing.output_transfer_nanoseconds +
           result.timing.postprocessing_nanoseconds;
         detector_total_stats_.record(detector_total_nanoseconds);
 
@@ -728,7 +746,9 @@ private:
     const auto sensor_to_host = sensor_to_host_stats_.take_interval();
     const auto conversion = conversion_stats_.take_interval();
     const auto preprocessing = preprocessing_stats_.take_interval();
+    const auto input_transfer = input_transfer_stats_.take_interval();
     const auto forward = forward_stats_.take_interval();
+    const auto output_transfer = output_transfer_stats_.take_interval();
     const auto postprocessing = postprocessing_stats_.take_interval();
     const auto detector_total = detector_total_stats_.take_interval();
     const auto drawing = drawing_stats_.take_interval();
@@ -743,19 +763,22 @@ private:
       node_.get_logger(),
       "FPS: capture=%.1f/%.1f, inference=%.1f | AVG ms: "
       "sensor->host=%.2f, NV12->BGR=%.2f, preprocess=%.2f, "
-      "forward=%.2f, postprocess=%.2f, draw=%.2f, detector-total=%.2f",
+      "H2D=%.2f, execute=%.2f, D2H=%.2f, postprocess=%.2f, draw=%.2f, "
+      "detector-total=%.2f",
       capture_hz, sensor_fps_, inference_hz,
       sensor_to_host.average_milliseconds(),
       conversion.average_milliseconds(),
       preprocessing.average_milliseconds(),
+      input_transfer.average_milliseconds(),
       forward.average_milliseconds(),
+      output_transfer.average_milliseconds(),
       postprocessing.average_milliseconds(),
       drawing.average_milliseconds(),
       detector_total.average_milliseconds());
     RCLCPP_INFO(
       node_.get_logger(),
       "MAX ms: sensor->host=%.2f, NV12->BGR=%.2f, preprocess=%.2f, "
-      "forward=%.2f, postprocess=%.2f, draw=%.2f | "
+      "H2D=%.2f, execute=%.2f, D2H=%.2f, postprocess=%.2f, draw=%.2f | "
       "AVG/MAX host->display=%.2f/%.2f, sensor->display=%.2f/%.2f | "
       "skipped=%lu, "
       "detected-frames=%lu, detections=%lu, errors=%lu/%lu, "
@@ -763,7 +786,9 @@ private:
       sensor_to_host.maximum_milliseconds(),
       conversion.maximum_milliseconds(),
       preprocessing.maximum_milliseconds(),
+      input_transfer.maximum_milliseconds(),
       forward.maximum_milliseconds(),
+      output_transfer.maximum_milliseconds(),
       postprocessing.maximum_milliseconds(),
       drawing.maximum_milliseconds(),
       host_to_display.average_milliseconds(),
@@ -845,7 +870,9 @@ private:
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
   std::string model_path_;
-  std::string inference_backend_{"CUDA"};
+  std::string inference_backend_{"TENSORRT"};
+  std::string engine_cache_path_;
+  int tensorrt_workspace_size_mb_{1024};
   int model_input_width_{640};
   int model_input_height_{640};
   float score_threshold_{0.25F};
@@ -891,7 +918,9 @@ private:
   DurationAccumulator sensor_to_host_stats_;
   DurationAccumulator conversion_stats_;
   DurationAccumulator preprocessing_stats_;
+  DurationAccumulator input_transfer_stats_;
   DurationAccumulator forward_stats_;
+  DurationAccumulator output_transfer_stats_;
   DurationAccumulator postprocessing_stats_;
   DurationAccumulator detector_total_stats_;
   DurationAccumulator drawing_stats_;
