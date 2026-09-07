@@ -42,6 +42,26 @@ constexpr std::uint32_t kFullSensorHeight = 800U;
 constexpr char kModelFilename[] =
   "traffic_light_yolox_s_640x160_batch_1.onnx";
 
+enum class TrafficSignalColor
+{
+  kUnknown,
+  kRed,
+  kGreen
+};
+
+const char * traffic_signal_color_name(const TrafficSignalColor color)
+{
+  switch (color) {
+    case TrafficSignalColor::kRed:
+      return "Red";
+    case TrafficSignalColor::kGreen:
+      return "Green";
+    case TrafficSignalColor::kUnknown:
+    default:
+      return "Unknown";
+  }
+}
+
 std::string uppercase(std::string value)
 {
   std::transform(
@@ -295,6 +315,10 @@ private:
       node_.declare_parameter<double>("score_threshold", 0.25));
     nms_threshold_ = static_cast<float>(
       node_.declare_parameter<double>("nms_threshold", 0.65));
+    color_min_saturation_ =
+      node_.declare_parameter<int>("color_min_saturation", 80);
+    color_min_value_ =
+      node_.declare_parameter<int>("color_min_value", 60);
 
     preview_fps_ = node_.declare_parameter<double>("preview_fps", 60.0);
     preview_window_name_ = node_.declare_parameter<std::string>(
@@ -350,6 +374,13 @@ private:
     {
       throw std::invalid_argument(
               "tensorrt_workspace_size_mb must be in [1, 16384]");
+    }
+    if (color_min_saturation_ < 0 || color_min_saturation_ > 255) {
+      throw std::invalid_argument(
+              "color_min_saturation must be in [0, 255]");
+    }
+    if (color_min_value_ < 0 || color_min_value_ > 255) {
+      throw std::invalid_argument("color_min_value must be in [0, 255]");
     }
     if (!std::isfinite(sensor_fps_) || sensor_fps_ <= 0.0) {
       throw std::invalid_argument("sensor_fps must be positive");
@@ -430,6 +461,11 @@ private:
       "raw NV12 with fused CUDA preprocessing" : "host BGR",
       roi_center_x_, roi_center_y_, roi_width_, roi_height_,
       roi_.x, roi_.y, roi_.x + roi_.width, roi_.y + roi_.height);
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "Rule-based signal color: best detection, HSV saturation >= %d, "
+      "value >= %d",
+      color_min_saturation_, color_min_value_);
     if (
       (roi_.width != width_ || roi_.height != height_) &&
       model_input_width_ == 640 && model_input_height_ == 640)
@@ -565,9 +601,94 @@ private:
     }
   }
 
+  TrafficSignalColor classify_detection_color(
+    const cv::Mat & frame,
+    const TrafficLightDetection & detection) const
+  {
+    if (frame.empty() || frame.type() != CV_8UC3) {
+      return TrafficSignalColor::kUnknown;
+    }
+    if (
+      !std::isfinite(detection.box.x) ||
+      !std::isfinite(detection.box.y) ||
+      !std::isfinite(detection.box.width) ||
+      !std::isfinite(detection.box.height))
+    {
+      return TrafficSignalColor::kUnknown;
+    }
+
+    const int left = std::clamp(
+      static_cast<int>(std::floor(detection.box.x)), 0, frame.cols);
+    const int top = std::clamp(
+      static_cast<int>(std::floor(detection.box.y)), 0, frame.rows);
+    const int right = std::clamp(
+      static_cast<int>(std::ceil(detection.box.x + detection.box.width)),
+      0, frame.cols);
+    const int bottom = std::clamp(
+      static_cast<int>(std::ceil(detection.box.y + detection.box.height)),
+      0, frame.rows);
+    if (right <= left || bottom <= top) {
+      return TrafficSignalColor::kUnknown;
+    }
+
+    cv::Mat hsv;
+    cv::cvtColor(
+      frame(cv::Rect(left, top, right - left, bottom - top)), hsv,
+      cv::COLOR_BGR2HSV);
+
+    std::uint64_t red_score = 0U;
+    std::uint64_t green_score = 0U;
+    for (int y = 0; y < hsv.rows; ++y) {
+      const auto * pixels = hsv.ptr<cv::Vec3b>(y);
+      for (int x = 0; x < hsv.cols; ++x) {
+        const int hue = pixels[x][0];
+        const int saturation = pixels[x][1];
+        const int value = pixels[x][2];
+        if (
+          saturation < color_min_saturation_ ||
+          value < color_min_value_)
+        {
+          continue;
+        }
+
+        const auto color_weight = static_cast<std::uint64_t>(
+          saturation * value);
+        if (hue <= 20 || hue >= 165) {
+          red_score += color_weight;
+        } else if (hue >= 35 && hue <= 95) {
+          green_score += color_weight;
+        }
+      }
+    }
+
+    if (red_score > green_score) {
+      return TrafficSignalColor::kRed;
+    }
+    if (green_score > red_score) {
+      return TrafficSignalColor::kGreen;
+    }
+    return TrafficSignalColor::kUnknown;
+  }
+
+  TrafficSignalColor classify_signal_color(
+    const cv::Mat & frame,
+    const std::vector<TrafficLightDetection> & detections) const
+  {
+    if (detections.empty()) {
+      return TrafficSignalColor::kUnknown;
+    }
+    const auto best_detection = std::max_element(
+      detections.begin(), detections.end(),
+      [](const auto & first, const auto & second) {
+        return first.score < second.score;
+      });
+    return classify_detection_color(frame, *best_detection);
+  }
+
   void draw_status_overlay(
     cv::Mat & frame,
     const std::vector<TrafficLightDetection> & detections,
+    const TrafficSignalColor signal_color,
     const double forward_ms,
     const double detector_total_ms,
     const cv::Rect & roi) const
@@ -599,10 +720,19 @@ private:
         roi.x + roi.width - 1, banner_top + banner_height - 1),
       cv::Scalar(0, 0, 0),
       cv::FILLED);
-    const std::string state = detections.empty() ?
-      "NOT DETECTED" : "TRAFFIC LIGHT DETECTED";
-    const cv::Scalar state_color = detections.empty() ?
-      cv::Scalar(180, 180, 180) : cv::Scalar(255, 80, 180);
+    std::string state = "NOT DETECTED";
+    cv::Scalar state_color(180, 180, 180);
+    if (!detections.empty()) {
+      state = std::string("TRAFFIC LIGHT DETECTED: ") +
+        traffic_signal_color_name(signal_color);
+      if (signal_color == TrafficSignalColor::kRed) {
+        state_color = cv::Scalar(0, 0, 255);
+      } else if (signal_color == TrafficSignalColor::kGreen) {
+        state_color = cv::Scalar(0, 255, 0);
+      } else {
+        state_color = cv::Scalar(255, 80, 180);
+      }
+    }
     cv::putText(
       frame, state, cv::Point(roi.x + 8, banner_top + 18),
       cv::FONT_HERSHEY_SIMPLEX,
@@ -762,11 +892,14 @@ private:
         detector_total_stats_.record(detector_total_nanoseconds);
 
         const auto drawing_started_at = std::chrono::steady_clock::now();
+        const auto signal_color = classify_signal_color(
+          frame, result.detections);
         detector_->draw(frame, result.detections);
         mask_outside_roi(frame);
         draw_status_overlay(
           frame,
           result.detections,
+          signal_color,
           nanoseconds_to_milliseconds(result.timing.forward_nanoseconds),
           nanoseconds_to_milliseconds(detector_total_nanoseconds),
           roi_);
@@ -980,6 +1113,8 @@ private:
   int model_input_height_{160};
   float score_threshold_{0.25F};
   float nms_threshold_{0.65F};
+  int color_min_saturation_{80};
+  int color_min_value_{60};
   double preview_fps_{60.0};
   std::string preview_window_name_;
   int preview_max_width_{1280};

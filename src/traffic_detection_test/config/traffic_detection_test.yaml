@@ -26,6 +26,10 @@ traffic_detection_test:
     model_input_height: 160
     score_threshold: 0.25
     nms_threshold: 0.65
+    # For the highest-confidence box, ignore dull/dark pixels, then compare
+    # saturation*brightness energy in fixed red and green HSV hue ranges.
+    color_min_saturation: 80
+    color_min_value: 60
 
     # Inference is latest-frame-only, so a slow detector skips old frames
     # instead of accumulating preview latency.

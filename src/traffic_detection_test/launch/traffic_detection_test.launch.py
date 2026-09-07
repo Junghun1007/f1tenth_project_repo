@@ -30,6 +30,8 @@ def generate_launch_description():
     roi_height = LaunchConfiguration("roi_height")
     score_threshold = LaunchConfiguration("score_threshold")
     nms_threshold = LaunchConfiguration("nms_threshold")
+    color_min_saturation = LaunchConfiguration("color_min_saturation")
+    color_min_value = LaunchConfiguration("color_min_value")
 
     return LaunchDescription(
         [
@@ -100,6 +102,16 @@ def generate_launch_description():
                 default_value="0.65",
                 description="Intersection-over-union threshold for NMS.",
             ),
+            DeclareLaunchArgument(
+                "color_min_saturation",
+                default_value="80",
+                description="Minimum HSV saturation for signal color pixels.",
+            ),
+            DeclareLaunchArgument(
+                "color_min_value",
+                default_value="60",
+                description="Minimum HSV brightness for signal color pixels.",
+            ),
             ComposableNodeContainer(
                 name="traffic_detection_test_container",
                 namespace="",
@@ -147,6 +159,12 @@ def generate_launch_description():
                                 ),
                                 "nms_threshold": ParameterValue(
                                     nms_threshold, value_type=float
+                                ),
+                                "color_min_saturation": ParameterValue(
+                                    color_min_saturation, value_type=int
+                                ),
+                                "color_min_value": ParameterValue(
+                                    color_min_value, value_type=int
                                 ),
                             },
                         ],

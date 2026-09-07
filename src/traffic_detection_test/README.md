@@ -17,12 +17,14 @@ FP32 YOLOX-S ONNX 모델로 추론한다.
 - confidence: `objectness * class probability`
 - 기본 threshold: score `0.25`, NMS IoU `0.65`
 - 기본 실행 백엔드: TensorRT 직접 실행, FP32
+- 신호 상태: confidence가 가장 높은 검출 박스의 원본 BGR 픽셀을 HSV로
+  변환하여 룰베이스로 `Red`, `Green`, `Unknown` 판별
 - 출력: OpenCV 프리뷰 창만 사용하며 ROS 이미지나 검출 토픽은 발행하지 않음
 
 캡처 스레드는 큐를 쌓지 않고 가장 최신 프레임만 보관한다. 추론 속도가
 카메라 속도보다 낮으면 오래된 프레임을 건너뛰므로 프리뷰 지연이 계속
-누적되지 않는다. 프리뷰에는 bounding box, confidence, 검출 개수와 추론
-시간을 표시한다. `Q` 또는 `ESC`로 종료한다.
+누적되지 않는다. 프리뷰에는 bounding box, confidence, 검출 개수, 추론
+시간과 `Red`/`Green` 상태를 표시한다. `Q` 또는 `ESC`로 종료한다.
 
 TensorRT가 사용되면 프리뷰 표시를 위한 `getCvFrame()` BGR 변환은 추론이
 완료된 뒤 별도로 수행된다. 이 BGR 프레임은 화면 표시에만 쓰이며
@@ -74,12 +76,30 @@ resize하고 나머지를 114로 패딩한다. 검출 박스는 ROI offset을 �
 `sensor->display`는 `imshow()`에 프레임을 전달한 시점까지이며 모니터의 실제
 화면 주사 완료 시각은 포함하지 않는다.
 
+## 신호 색상 판별
+
+YOLOX 모델은 신호등의 위치만 검출하고, 상태는 검출 박스 안의 원본 BGR
+영상을 HSV로 변환하여 판별한다. `color_min_saturation`과
+`color_min_value`보다 낮은 무채색·어두운 픽셀을 제외한 뒤 빨강 hue
+`0..20`, `165..179`와 초록 hue `35..95`의 `채도 x 밝기` 합을 비교한다.
+빨강 합이 크면 `Red`, 초록 합이 크면 `Green`, 유효 픽셀이 없거나 합이
+같으면 `Unknown`으로 하단 상태 글자에 표시한다. 기본 임계값은 각각
+`80`, `60`이며 OpenCV HSV 범위 `0..255` 기준이다.
+
+현장 조명에서 어두운 신호가 `Unknown`으로 자주 나오면 다음처럼 임계값을
+낮춰 확인할 수 있다.
+
+```bash
+ros2 launch traffic_detection_test traffic_detection_test.launch.py \
+  color_min_saturation:=60 color_min_value:=40
+```
+
 ## 모델 범위
 
 번들 모델은 학습할 때 `Red`와 `Green`을 단일 `traffic_light` 클래스로
-합쳤다. 따라서 이 패키지는 신호등의 존재와 위치만 표시하며 빨간불과
-초록불 상태를 구분하지 않는다. 기본 TensorRT 경로는 FP16, INT8, TF32 플래그를
-모두 끄고 FP32 엔진만 생성한다. 양자화는 포함하지 않는다.
+합쳤다. 따라서 모델 출력 자체에는 색상 클래스가 없고, 위 HSV 룰이 검출
+박스의 색상을 별도로 구분한다. 기본 TensorRT 경로는 FP16, INT8, TF32
+플래그를 모두 끄고 FP32 엔진만 생성한다. 양자화는 포함하지 않는다.
 
 기본 모델은 다음 설치 경로에서 자동으로 불러온다.
 
