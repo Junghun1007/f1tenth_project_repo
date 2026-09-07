@@ -17,6 +17,7 @@ def generate_launch_description():
 
     params_file = LaunchConfiguration("params_file")
     model_path = LaunchConfiguration("model_path")
+    inference_backend = LaunchConfiguration("inference_backend")
     score_threshold = LaunchConfiguration("score_threshold")
     nms_threshold = LaunchConfiguration("nms_threshold")
 
@@ -31,6 +32,11 @@ def generate_launch_description():
                 "model_path",
                 default_value=default_model,
                 description="Decoded FP32 YOLOX ONNX model.",
+            ),
+            DeclareLaunchArgument(
+                "inference_backend",
+                default_value="CUDA",
+                description="OpenCV DNN FP32 backend: CUDA or CPU.",
             ),
             DeclareLaunchArgument(
                 "score_threshold",
@@ -60,6 +66,7 @@ def generate_launch_description():
                             params_file,
                             {
                                 "model_path": model_path,
+                                "inference_backend": inference_backend,
                                 "score_threshold": ParameterValue(
                                     score_threshold, value_type=float
                                 ),

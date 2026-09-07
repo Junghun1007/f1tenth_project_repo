@@ -1,8 +1,11 @@
 #include "traffic_detection_test/yolox_detector.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -14,8 +17,33 @@
 namespace traffic_detection_test
 {
 
+namespace
+{
+
+std::string uppercase(std::string value)
+{
+  std::transform(
+    value.begin(), value.end(), value.begin(),
+    [](const unsigned char character) {
+      return static_cast<char>(std::toupper(character));
+    });
+  return value;
+}
+
+std::uint64_t elapsed_nanoseconds(
+  const std::chrono::steady_clock::time_point started_at,
+  const std::chrono::steady_clock::time_point finished_at)
+{
+  const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+    finished_at - started_at).count();
+  return static_cast<std::uint64_t>(std::max<std::int64_t>(0, elapsed));
+}
+
+}  // namespace
+
 YoloxDetector::YoloxDetector(
   const std::string & model_path,
+  const std::string & inference_backend,
   const int input_width,
   const int input_height,
   const float score_threshold,
@@ -46,13 +74,33 @@ YoloxDetector::YoloxDetector(
     throw std::runtime_error("OpenCV could not load the ONNX model");
   }
 
-  // Keep the reference implementation in FP32. Quantized and TensorRT
-  // variants are intentionally outside this preview-only package.
-  network_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
-  network_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+  const auto normalized_backend = uppercase(inference_backend);
+  if (normalized_backend == "CUDA") {
+    const auto available_targets = cv::dnn::getAvailableTargets(
+      cv::dnn::DNN_BACKEND_CUDA);
+    if (
+      std::find(
+        available_targets.begin(), available_targets.end(),
+        cv::dnn::DNN_TARGET_CUDA) == available_targets.end())
+    {
+      throw std::runtime_error(
+              "OpenCV DNN CUDA FP32 is unavailable. Install an OpenCV build "
+              "with CUDA and cuDNN, or launch with inference_backend:=CPU");
+    }
+    network_.setPreferableBackend(cv::dnn::DNN_BACKEND_CUDA);
+    // DNN_TARGET_CUDA is FP32. Do not select DNN_TARGET_CUDA_FP16 here.
+    network_.setPreferableTarget(cv::dnn::DNN_TARGET_CUDA);
+    backend_name_ = "OpenCV DNN CUDA FP32";
+  } else if (normalized_backend == "CPU") {
+    network_.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+    network_.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+    backend_name_ = "OpenCV DNN CPU FP32";
+  } else {
+    throw std::invalid_argument("inference_backend must be CUDA or CPU");
+  }
 }
 
-std::vector<TrafficLightDetection> YoloxDetector::detect(
+YoloxDetectionResult YoloxDetector::detect(
   const cv::Mat & bgr_image)
 {
   if (bgr_image.empty()) {
@@ -62,6 +110,8 @@ std::vector<TrafficLightDetection> YoloxDetector::detect(
     throw std::invalid_argument("YOLOX input must be an 8-bit BGR image");
   }
 
+  YoloxDetectionResult result;
+  const auto preprocessing_started_at = std::chrono::steady_clock::now();
   const float ratio = std::min(
     static_cast<float>(input_height_) /
     static_cast<float>(bgr_image.rows),
@@ -93,7 +143,13 @@ std::vector<TrafficLightDetection> YoloxDetector::detect(
     false,
     CV_32F);
   network_.setInput(blob);
+  const auto preprocessing_finished_at = std::chrono::steady_clock::now();
+
+  const auto forward_started_at = preprocessing_finished_at;
   cv::Mat output = network_.forward();
+  const auto forward_finished_at = std::chrono::steady_clock::now();
+
+  const auto postprocessing_started_at = forward_finished_at;
 
   int row_count = 0;
   int column_count = 0;
@@ -145,12 +201,23 @@ std::vector<TrafficLightDetection> YoloxDetector::detect(
   }
 
   const auto kept_indices = nms(candidates, nms_threshold_);
-  std::vector<TrafficLightDetection> detections;
-  detections.reserve(kept_indices.size());
+  result.detections.reserve(kept_indices.size());
   for (const auto index : kept_indices) {
-    detections.push_back(candidates[index]);
+    result.detections.push_back(candidates[index]);
   }
-  return detections;
+  const auto postprocessing_finished_at = std::chrono::steady_clock::now();
+  result.timing.preprocessing_nanoseconds = elapsed_nanoseconds(
+    preprocessing_started_at, preprocessing_finished_at);
+  result.timing.forward_nanoseconds = elapsed_nanoseconds(
+    forward_started_at, forward_finished_at);
+  result.timing.postprocessing_nanoseconds = elapsed_nanoseconds(
+    postprocessing_started_at, postprocessing_finished_at);
+  return result;
+}
+
+const std::string & YoloxDetector::backend_name() const noexcept
+{
+  return backend_name_;
 }
 
 void YoloxDetector::draw(

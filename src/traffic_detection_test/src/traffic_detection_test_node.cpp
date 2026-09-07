@@ -150,6 +150,61 @@ void update_maximum(
   }
 }
 
+struct DurationSummary
+{
+  std::uint64_t sample_count{0U};
+  std::uint64_t total_nanoseconds{0U};
+  std::uint64_t maximum_nanoseconds{0U};
+
+  double average_milliseconds() const
+  {
+    return sample_count > 0U ?
+      nanoseconds_to_milliseconds(total_nanoseconds) /
+      static_cast<double>(sample_count) : 0.0;
+  }
+
+  double maximum_milliseconds() const
+  {
+    return nanoseconds_to_milliseconds(maximum_nanoseconds);
+  }
+};
+
+class DurationAccumulator
+{
+public:
+  void record(const std::chrono::steady_clock::duration duration)
+  {
+    const auto nanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+    constexpr std::int64_t maximum_valid_nanoseconds =
+      60LL * 1000LL * 1000LL * 1000LL;
+    if (nanoseconds < 0 || nanoseconds > maximum_valid_nanoseconds) {
+      return;
+    }
+    record(static_cast<std::uint64_t>(nanoseconds));
+  }
+
+  void record(const std::uint64_t nanoseconds)
+  {
+    sample_count_.fetch_add(1U, std::memory_order_relaxed);
+    total_nanoseconds_.fetch_add(nanoseconds, std::memory_order_relaxed);
+    update_maximum(maximum_nanoseconds_, nanoseconds);
+  }
+
+  DurationSummary take_interval()
+  {
+    return DurationSummary{
+      sample_count_.exchange(0U, std::memory_order_relaxed),
+      total_nanoseconds_.exchange(0U, std::memory_order_relaxed),
+      maximum_nanoseconds_.exchange(0U, std::memory_order_relaxed)};
+  }
+
+private:
+  std::atomic<std::uint64_t> sample_count_{0U};
+  std::atomic<std::uint64_t> total_nanoseconds_{0U};
+  std::atomic<std::uint64_t> maximum_nanoseconds_{0U};
+};
+
 }  // namespace
 
 class TrafficDetectionTestNode::Impl
@@ -173,7 +228,7 @@ public:
       throw std::runtime_error("ONNX model not found: " + model_path_);
     }
     detector_ = std::make_unique<YoloxDetector>(
-      model_path_, model_input_width_, model_input_height_,
+      model_path_, inference_backend_, model_input_width_, model_input_height_,
       score_threshold_, nms_threshold_);
 
     try {
@@ -200,6 +255,7 @@ private:
   struct FrameSnapshot
   {
     std::shared_ptr<dai::ImgFrame> packet;
+    std::chrono::steady_clock::time_point sensor_at;
     std::chrono::steady_clock::time_point received_at;
     std::uint64_t generation;
     std::int64_t device_sequence;
@@ -219,6 +275,8 @@ private:
 
     model_path_ = node_.declare_parameter<std::string>(
       "model_path", default_model_path());
+    inference_backend_ = node_.declare_parameter<std::string>(
+      "inference_backend", "CUDA");
     model_input_width_ =
       node_.declare_parameter<int>("model_input_width", 640);
     model_input_height_ =
@@ -328,10 +386,11 @@ private:
     RCLCPP_INFO(
       node_.get_logger(),
       "YOLOX FP32 preview: model=%s, input=%dx%d, score=%.2f, NMS=%.2f, "
-      "OpenCV DNN CPU backend",
+      "backend=%s",
       model_path_.c_str(), model_input_width_, model_input_height_,
       static_cast<double>(score_threshold_),
-      static_cast<double>(nms_threshold_));
+      static_cast<double>(nms_threshold_),
+      detector_->backend_name().c_str());
     if (gray8_transport_) {
       RCLCPP_WARN(
         node_.get_logger(),
@@ -353,6 +412,10 @@ private:
           std::this_thread::sleep_for(100us);
           continue;
         }
+        const auto received_at = std::chrono::steady_clock::now();
+        const auto sensor_at = packet->getTimestamp(
+          dai::CameraExposureOffset::MIDDLE);
+        sensor_to_host_stats_.record(received_at - sensor_at);
 
         const auto expected_type = gray8_transport_ ?
           dai::ImgFrame::Type::GRAY8 : dai::ImgFrame::Type::NV12;
@@ -388,7 +451,8 @@ private:
           std::make_shared<FrameSnapshot>(
           FrameSnapshot{
             packet,
-            std::chrono::steady_clock::now(),
+            sensor_at,
+            received_at,
             generation,
             device_sequence});
         std::atomic_store_explicit(
@@ -434,7 +498,8 @@ private:
   void draw_status_overlay(
     cv::Mat & frame,
     const std::vector<TrafficLightDetection> & detections,
-    const double inference_ms) const
+    const double forward_ms,
+    const double detector_total_ms) const
   {
     float best_score = 0.0F;
     for (const auto & detection : detections) {
@@ -457,10 +522,13 @@ private:
       0.52, state_color, 1, cv::LINE_AA);
 
     const std::string details = detections.empty() ?
-      cv::format("inference %.1f ms | Q/ESC: quit", inference_ms) :
       cv::format(
-      "count %zu | best %.2f | inference %.1f ms | Q/ESC: quit",
-      detections.size(), static_cast<double>(best_score), inference_ms);
+      "forward %.1f ms | total %.1f ms | Q/ESC: quit",
+      forward_ms, detector_total_ms) :
+      cv::format(
+      "count %zu | best %.2f | forward %.1f ms | total %.1f ms",
+      detections.size(), static_cast<double>(best_score),
+      forward_ms, detector_total_ms);
     cv::putText(
       frame, details, cv::Point(8, banner_top + 35),
       cv::FONT_HERSHEY_SIMPLEX,
@@ -552,6 +620,7 @@ private:
       processed_generation = snapshot->generation;
 
       try {
+        const auto conversion_started_at = std::chrono::steady_clock::now();
         cv::Mat frame = snapshot->packet->getCvFrame();
         if (frame.empty()) {
           throw std::runtime_error("DepthAI returned an empty preview frame");
@@ -564,45 +633,47 @@ private:
           throw std::runtime_error(
                   "DepthAI returned an unsupported preview frame type");
         }
+        const auto conversion_finished_at = std::chrono::steady_clock::now();
+        conversion_stats_.record(
+          conversion_finished_at - conversion_started_at);
 
-        const auto inference_started_at = std::chrono::steady_clock::now();
-        const auto detections = detector_->detect(frame);
-        const auto inference_finished_at = std::chrono::steady_clock::now();
-        const auto inference_ns_signed =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-          inference_finished_at - inference_started_at).count();
-        const auto inference_ns = static_cast<std::uint64_t>(
-          std::max<std::int64_t>(0, inference_ns_signed));
-        inference_ns_interval_.fetch_add(
-          inference_ns, std::memory_order_relaxed);
-        update_maximum(inference_ns_max_interval_, inference_ns);
-        latest_inference_ms_.store(
-          nanoseconds_to_milliseconds(inference_ns),
-          std::memory_order_relaxed);
+        const auto result = detector_->detect(frame);
+        preprocessing_stats_.record(
+          result.timing.preprocessing_nanoseconds);
+        forward_stats_.record(result.timing.forward_nanoseconds);
+        postprocessing_stats_.record(
+          result.timing.postprocessing_nanoseconds);
+        const std::uint64_t detector_total_nanoseconds =
+          result.timing.preprocessing_nanoseconds +
+          result.timing.forward_nanoseconds +
+          result.timing.postprocessing_nanoseconds;
+        detector_total_stats_.record(detector_total_nanoseconds);
 
-        detector_->draw(frame, detections);
+        const auto drawing_started_at = std::chrono::steady_clock::now();
+        detector_->draw(frame, result.detections);
         draw_status_overlay(
-          frame, detections, nanoseconds_to_milliseconds(inference_ns));
+          frame,
+          result.detections,
+          nanoseconds_to_milliseconds(result.timing.forward_nanoseconds),
+          nanoseconds_to_milliseconds(detector_total_nanoseconds));
+        const auto drawing_finished_at = std::chrono::steady_clock::now();
+        drawing_stats_.record(drawing_finished_at - drawing_started_at);
+
         resize_preview_window(frame);
         cv::imshow(preview_window_name_, frame);
 
         inferred_total_.fetch_add(1U, std::memory_order_relaxed);
         inferred_interval_.fetch_add(1U, std::memory_order_relaxed);
         detection_total_.fetch_add(
-          static_cast<std::uint64_t>(detections.size()),
+          static_cast<std::uint64_t>(result.detections.size()),
           std::memory_order_relaxed);
-        if (!detections.empty()) {
+        if (!result.detections.empty()) {
           detected_frames_total_.fetch_add(1U, std::memory_order_relaxed);
         }
 
         const auto displayed_at = std::chrono::steady_clock::now();
-        const auto frame_age_ns_signed =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-          displayed_at - snapshot->received_at).count();
-        latest_frame_age_ms_.store(
-          nanoseconds_to_milliseconds(static_cast<std::uint64_t>(
-            std::max<std::int64_t>(0, frame_age_ns_signed))),
-          std::memory_order_relaxed);
+        host_to_display_stats_.record(displayed_at - snapshot->received_at);
+        sensor_to_display_stats_.record(displayed_at - snapshot->sensor_at);
 
         if (quit_requested_from_window(window_was_visible)) {
           request_shutdown();
@@ -654,28 +725,51 @@ private:
       received_interval_.exchange(0U, std::memory_order_relaxed);
     const auto inferred =
       inferred_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto inference_ns =
-      inference_ns_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto inference_ns_max =
-      inference_ns_max_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto sensor_to_host = sensor_to_host_stats_.take_interval();
+    const auto conversion = conversion_stats_.take_interval();
+    const auto preprocessing = preprocessing_stats_.take_interval();
+    const auto forward = forward_stats_.take_interval();
+    const auto postprocessing = postprocessing_stats_.take_interval();
+    const auto detector_total = detector_total_stats_.take_interval();
+    const auto drawing = drawing_stats_.take_interval();
+    const auto host_to_display = host_to_display_stats_.take_interval();
+    const auto sensor_to_display = sensor_to_display_stats_.take_interval();
     const double capture_hz = elapsed > 0.0 ?
       static_cast<double>(captured) / elapsed : 0.0;
     const double inference_hz = elapsed > 0.0 ?
       static_cast<double>(inferred) / elapsed : 0.0;
-    const double average_inference_ms = inferred > 0U ?
-      nanoseconds_to_milliseconds(inference_ns) /
-      static_cast<double>(inferred) : 0.0;
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "FPS: capture=%.1f/%.1f, inference=%.1f | inference=%.1fms "
-      "max=%.1fms, latest-frame-age=%.1fms | skipped=%lu, "
+      "FPS: capture=%.1f/%.1f, inference=%.1f | AVG ms: "
+      "sensor->host=%.2f, NV12->BGR=%.2f, preprocess=%.2f, "
+      "forward=%.2f, postprocess=%.2f, draw=%.2f, detector-total=%.2f",
+      capture_hz, sensor_fps_, inference_hz,
+      sensor_to_host.average_milliseconds(),
+      conversion.average_milliseconds(),
+      preprocessing.average_milliseconds(),
+      forward.average_milliseconds(),
+      postprocessing.average_milliseconds(),
+      drawing.average_milliseconds(),
+      detector_total.average_milliseconds());
+    RCLCPP_INFO(
+      node_.get_logger(),
+      "MAX ms: sensor->host=%.2f, NV12->BGR=%.2f, preprocess=%.2f, "
+      "forward=%.2f, postprocess=%.2f, draw=%.2f | "
+      "AVG/MAX host->display=%.2f/%.2f, sensor->display=%.2f/%.2f | "
+      "skipped=%lu, "
       "detected-frames=%lu, detections=%lu, errors=%lu/%lu, "
       "device-drops=%lu",
-      capture_hz, sensor_fps_, inference_hz,
-      average_inference_ms,
-      nanoseconds_to_milliseconds(inference_ns_max),
-      latest_frame_age_ms_.load(std::memory_order_relaxed),
+      sensor_to_host.maximum_milliseconds(),
+      conversion.maximum_milliseconds(),
+      preprocessing.maximum_milliseconds(),
+      forward.maximum_milliseconds(),
+      postprocessing.maximum_milliseconds(),
+      drawing.maximum_milliseconds(),
+      host_to_display.average_milliseconds(),
+      host_to_display.maximum_milliseconds(),
+      sensor_to_display.average_milliseconds(),
+      sensor_to_display.maximum_milliseconds(),
       static_cast<unsigned long>(
         inference_skips_total_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
@@ -751,6 +845,7 @@ private:
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
   std::string model_path_;
+  std::string inference_backend_{"CUDA"};
   int model_input_width_{640};
   int model_input_height_{640};
   float score_threshold_{0.25F};
@@ -793,10 +888,15 @@ private:
   std::atomic<std::uint64_t> invalid_frames_total_{0U};
   std::atomic<std::uint64_t> capture_errors_total_{0U};
   std::atomic<std::uint64_t> preview_errors_total_{0U};
-  std::atomic<std::uint64_t> inference_ns_interval_{0U};
-  std::atomic<std::uint64_t> inference_ns_max_interval_{0U};
-  std::atomic<double> latest_inference_ms_{0.0};
-  std::atomic<double> latest_frame_age_ms_{0.0};
+  DurationAccumulator sensor_to_host_stats_;
+  DurationAccumulator conversion_stats_;
+  DurationAccumulator preprocessing_stats_;
+  DurationAccumulator forward_stats_;
+  DurationAccumulator postprocessing_stats_;
+  DurationAccumulator detector_total_stats_;
+  DurationAccumulator drawing_stats_;
+  DurationAccumulator host_to_display_stats_;
+  DurationAccumulator sensor_to_display_stats_;
 
   std::chrono::steady_clock::time_point started_at_;
   std::chrono::steady_clock::time_point last_status_at_;

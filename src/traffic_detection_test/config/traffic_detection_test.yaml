@@ -9,6 +9,8 @@ traffic_detection_test:
     undistort_enabled: true
 
     # The bundled model is the decoded, batch-1 FP32 YOLOX-S export.
+    # CUDA uses OpenCV DNN CUDA in FP32; it does not enable FP16 or quantize.
+    inference_backend: "CUDA"
     model_input_width: 640
     model_input_height: 640
     score_threshold: 0.25
