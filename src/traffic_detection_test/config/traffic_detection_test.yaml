@@ -1,0 +1,25 @@
+traffic_detection_test:
+  ros__parameters:
+    # Keep the full OV9782 sensor aspect ratio while reducing the host frame.
+    camera_socket: "CAM_A"
+    width: 640
+    height: 400
+    sensor_fps: 80.0
+    resize_mode: "CROP"
+    undistort_enabled: true
+
+    # The bundled model is the decoded, batch-1 FP32 YOLOX-S export.
+    model_input_width: 640
+    model_input_height: 640
+    score_threshold: 0.25
+    nms_threshold: 0.65
+
+    # Inference is latest-frame-only, so a slow detector skips old frames
+    # instead of accumulating preview latency.
+    preview_fps: 60.0
+    preview_window_name: "Traffic light detection test"
+    preview_max_width: 1280
+    preview_max_height: 800
+
+    startup_timeout_sec: 5.0
+    status_log_interval_sec: 1.0
