@@ -207,13 +207,12 @@ ros2 launch camera_driver camera_driver.launch.py \
 프리뷰 격자나 GUI 창 요소는 포함하지 않는다. 컨트롤러는 상승
 에지에서만 저장하고 모든 캡처 입력에 `capture_debounce_sec` 기본
 0.30초를 공통 적용한다.
-수동주행 launch의 기본 차량 namespace를 같이 쓰는 경우 컨트롤러
-토픽은 `/autopilot03/joy`이므로 다음처럼 지정한다.
+수동주행 launch는 기본적으로 루트 namespace의 `/joy`를 사용하므로
+별도로 실행한 camera driver의 기본 캡처 토픽과 일치한다.
 
 ```bash
 ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true \
-  capture_joy_topic:=/autopilot03/joy \
   capture_directory:=./camera_captures
 ```
 
@@ -228,7 +227,6 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
 # 터미널 2: full-band gyro 안정화 + CAN 저주파 자세 anchor
 ros2 launch camera_driver camera_driver.launch.py \
   preview_enabled:=true \
-  capture_joy_topic:=/autopilot03/joy \
   imu_stabilization_enabled:=true \
   imu_stabilization_can_longitudinal_compensation_gain:=0.7 \
   imu_stabilization_can_lateral_compensation_gain:=0.7 \

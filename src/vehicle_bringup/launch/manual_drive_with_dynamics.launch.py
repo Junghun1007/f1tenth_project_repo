@@ -55,8 +55,11 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "vehicle_namespace",
-                default_value="autopilot03",
-                description="Vehicle-unique ROS namespace.",
+                default_value="",
+                description=(
+                    "Optional vehicle namespace. Leave empty so a separately "
+                    "launched BEV camera receives /vesc and /vehicle/dynamics."
+                ),
             ),
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument(

@@ -89,6 +89,9 @@ def _apply_parameter_file_defaults(
 def generate_launch_description():
     bev_share = get_package_share_directory("bev_processor")
     auto_control_share = get_package_share_directory("auto_control")
+    vehicle_dynamics_share = get_package_share_directory(
+        "vehicle_dynamics_monitor"
+    )
     vehicle_bringup_share = get_package_share_directory("vehicle_bringup")
     bev_config = os.path.join(bev_share, "config", "bev_config.yaml")
     auto_control_config = os.path.join(
@@ -104,6 +107,11 @@ def generate_launch_description():
     bev_params_file = LaunchConfiguration("bev_params_file")
     auto_control_params_file = LaunchConfiguration("auto_control_params_file")
     preview_enabled = LaunchConfiguration("preview_enabled")
+    input_mode = LaunchConfiguration("input_mode")
+    can_interface = LaunchConfiguration("can_interface")
+    can_controller_id = LaunchConfiguration("can_controller_id")
+    slcan_channel = LaunchConfiguration("slcan_channel")
+    slcan_bitrate = LaunchConfiguration("slcan_bitrate")
     bev_argument_fallbacks = [
         ("lane_seed_roi_height_ratio", "0.25"),
         ("lane_seed_temporal_side_lock_reset_frames", "100"),
@@ -323,6 +331,11 @@ def generate_launch_description():
     bev_launch_path = os.path.join(
         bev_share, "launch", "bev_processor.launch.py"
     )
+    dynamics_launch_path = os.path.join(
+        vehicle_dynamics_share,
+        "launch",
+        "vehicle_dynamics_monitor.launch.py",
+    )
 
     bev_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(bev_launch_path),
@@ -335,6 +348,20 @@ def generate_launch_description():
             "lane_preview_result_only_enabled": "true",
             "lane_preview_sliding_windows_enabled": "false",
             **bev_overrides,
+        }.items(),
+    )
+
+    dynamics_monitor = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(dynamics_launch_path),
+        launch_arguments={
+            # Keep shared vehicle state at the root so the BEV camera,
+            # auto_control, and the UART VESC bridge use identical topics.
+            "vehicle_namespace": "",
+            "input_mode": input_mode,
+            "can_interface": can_interface,
+            "can_controller_id": can_controller_id,
+            "slcan_channel": slcan_channel,
+            "slcan_bitrate": slcan_bitrate,
         }.items(),
     )
 
@@ -361,6 +388,19 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
+            DeclareLaunchArgument(
+                "input_mode",
+                default_value="ros_topic",
+                description=(
+                    "Vehicle dynamics input: ros_topic, socketcan, or slcan."
+                ),
+            ),
+            DeclareLaunchArgument("can_interface", default_value="can0"),
+            DeclareLaunchArgument("can_controller_id", default_value="0"),
+            DeclareLaunchArgument(
+                "slcan_channel", default_value="/dev/ttyACM0"
+            ),
+            DeclareLaunchArgument("slcan_bitrate", default_value="500000"),
             DeclareLaunchArgument(
                 "bev_params_file",
                 default_value=bev_config,
@@ -401,6 +441,7 @@ def generate_launch_description():
             ),
             bev_launch,
             vesc_bridge_node,
+            dynamics_monitor,
             auto_control_node,
         ]
     )

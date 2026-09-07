@@ -80,9 +80,11 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "vehicle_namespace",
-                default_value="autopilot03",
+                default_value="",
                 description=(
-                    "Vehicle-unique ROS namespace for nodes and control topics."
+                    "Optional vehicle namespace. The empty default keeps "
+                    "VESC and dynamics topics compatible with a separately "
+                    "launched BEV processor."
                 ),
             ),
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),

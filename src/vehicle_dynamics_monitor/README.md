@@ -51,6 +51,8 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py
 The repository currently controls and polls the VESC over Jetson UART
 `/dev/ttyTHS1`, so `ros_topic` is the default input. This mode consumes the
 transport-independent `/vesc/measured_erpm` output from `vesc_bridge`.
+The manual launch uses the root namespace by default so a separately launched
+BEV camera receives `/vehicle/dynamics/acceleration` without remapping.
 
 ## Direct SocketCAN mode
 

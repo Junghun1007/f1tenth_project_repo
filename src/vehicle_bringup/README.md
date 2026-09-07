@@ -13,8 +13,9 @@ start the F1TENTH vehicle. It replaces the former `vehicle_launcher` and
 - `manual_drive_with_dynamics.launch.py`: starts manual driving plus the
   read-only vehicle dynamics/CAN monitor, including direct CANable 2 SLCAN
   telemetry when selected.
-- `auto_drive.launch.py`: starts BEV centerline generation, Stanley/PID
-  autonomous control, and the VESC bridge.
+- `auto_drive.launch.py`: starts BEV centerline generation, the read-only
+  vehicle dynamics/CAN monitor, Stanley/PID autonomous control, and the VESC
+  bridge.
 
 ```bash
 ros2 launch vehicle_bringup joy_test.launch.py
@@ -24,11 +25,11 @@ ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py
 ros2 launch vehicle_bringup auto_drive.launch.py
 ```
 
-Manual driving defaults to the vehicle-unique `/autopilot03` namespace for
-all three nodes and the `/autopilot03/joy`, `/autopilot03/manual/*`, and
-`/autopilot03/vesc/*` topics. This prevents another vehicle on the same ROS
-domain from publishing actuator commands into this vehicle. Override the
-identifier when required:
+Manual driving defaults to the root namespace. Its `/joy`, `/manual/*`,
+`/vesc/*`, and `/vehicle/dynamics/*` topics therefore match `bev_processor`
+when the two launch files are started in separate terminals. A multi-vehicle
+setup may still provide a namespace, but the BEV camera's VESC and dynamics
+input topics must then use the same prefix:
 
 ```bash
 ros2 launch vehicle_bringup manual_drive.launch.py \
@@ -46,6 +47,18 @@ read directly without creating `can1`:
 ```bash
 python3 -m pip install 'python-can[serial]'
 ros2 launch vehicle_bringup manual_drive_with_dynamics.launch.py \
+  input_mode:=slcan \
+  slcan_channel:=/dev/ttyACM0 \
+  slcan_bitrate:=500000 \
+  can_controller_id:=112
+```
+
+The autonomous launch starts the same dynamics monitor and accepts the same
+CAN options. `auto_control` and the camera continue to share the root
+`/vesc/*` and `/vehicle/dynamics/*` topics:
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
   input_mode:=slcan \
   slcan_channel:=/dev/ttyACM0 \
   slcan_bitrate:=500000 \
@@ -81,7 +94,9 @@ owns the joystick node defaults.
 The autonomous launch follows `/camera/image_bev_lane`, starts as soon as a
 valid centerline and fresh VESC telemetry are present, and uses the same
 `/vesc/duty`, `/vesc/brake_current`, and `/vesc/servo_position` interfaces as
-manual driving. Never run the manual and autonomous launches together.
+manual driving. Its dynamics monitor publishes
+`/vehicle/dynamics/acceleration` for camera motion compensation. Never run the
+manual and autonomous launches together.
 
 By default the preview contains only the lane-recognition result. Disable the
 window completely with:
