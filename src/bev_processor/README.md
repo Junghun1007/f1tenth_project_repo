@@ -35,8 +35,9 @@ ros2 launch bev_processor bev_processor.launch.py
 
 ## 학습 데이터 수집
 
-`dataset_collection_enabled:=true`로 실행하면 지정한 root의 기존
-`dataset_숫자` 폴더를 검색해 다음 번호를 생성한다. 수집을 새로
+자동수집의 `dataset_collection_enabled:=true` 또는 수동수집의
+`dataset_collection_manual_capture_mode:=true`로 실행하면 지정한 root의
+기존 `dataset_숫자` 폴더를 검색해 다음 번호를 생성한다. 수집을 새로
 시작할 때마다 `dataset_001`, `dataset_002`, ... 순서로 늘어난다.
 
 ```text
@@ -83,8 +84,27 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 목표 개수를 채우면 수집 스레드가 종료되고, 기본값으로
 `/auto/enabled=false`를 발행해 자동주행을 정지한다. 이 발행이 필요
 없으면 `dataset_collection_stop_auto_on_complete:=false`로 지정한다.
-수동주행은 별도 터미널에서 위 `bev_processor` 수집 명령과
-`ros2 launch vehicle_bringup manual_drive.launch.py`를 같이 실행하면 된다.
+수동 버튼 수집에서는 `bev_processor`를 수동 캡처 모드로 실행한다.
+`/autopilot03/joy`의 컨트롤러 A 버튼(SDL index 0)을 누르는 상승 에지마다
+자동수집과 동일한 네 파일을 한 세트씩 저장한다. 기존 B 버튼은
+`capture_directory`에 원본 BEV 한 장만 저장하는 기능으로 그대로 남는다.
+자동 FPS 수집과 수동 캡처 모드는 동시에 활성화할 수 없다.
+
+```bash
+# 터미널 1: BEV 처리 + A 버튼 데이터셋 수집
+ros2 launch bev_processor bev_processor.launch.py \
+  preview_enabled:=true \
+  dataset_collection_manual_capture_mode:=true \
+  dataset_collection_root_directory:=/home/autopilot03/Desktop/0906ML/f1tenth_project_repo/datasets \
+  dataset_collection_target_count:=1000 \
+  capture_joy_topic:=/autopilot03/joy
+
+# 터미널 2: 조이스틱 수동주행
+ros2 launch vehicle_bringup manual_drive.launch.py \
+  vehicle_namespace:=autopilot03 \
+  vesc_port:=/dev/ttyTHS1 \
+  controller_name_contains:=8BitDo
+```
 
 CAN과 주행 중 가속도계 보정을 모두 끄고 gyro 고주파 진동만 억제하려면:
 

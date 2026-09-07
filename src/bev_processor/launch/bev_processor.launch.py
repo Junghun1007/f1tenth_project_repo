@@ -151,7 +151,11 @@ def generate_launch_description():
     # When omitted, each value is resolved from bev_params_file at launch time.
     lane_parameters = [
         ("capture_directory", ".", str),
+        ("capture_joy_topic", "/joy", str),
+        ("capture_joy_button", "1", int),
         ("dataset_collection_enabled", "false", bool),
+        ("dataset_collection_manual_capture_mode", "false", bool),
+        ("dataset_collection_manual_capture_button", "0", int),
         ("dataset_collection_root_directory", "datasets", str),
         ("dataset_collection_fps", "10.0", float),
         ("dataset_collection_target_count", "1000", int),

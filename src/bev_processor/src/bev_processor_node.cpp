@@ -315,7 +315,10 @@ public:
         get_logger(),
         "Preview disabled because DISPLAY/WAYLAND_DISPLAY is unavailable.");
     }
-    if (dataset_collection_enabled_) {
+    if (
+      dataset_collection_enabled_ ||
+      dataset_collection_manual_capture_mode_)
+    {
       initializeDatasetCollection();
     }
     processing_thread_ = std::thread(&BevProcessorNode::processingLoop, this);
@@ -568,6 +571,9 @@ private:
     declare_parameter<std::string>("capture_joy_topic", "/joy");
     declare_parameter<int>("capture_joy_button", 1);
     declare_parameter<bool>("dataset_collection_enabled", false);
+    declare_parameter<bool>(
+      "dataset_collection_manual_capture_mode", false);
+    declare_parameter<int>("dataset_collection_manual_capture_button", 0);
     declare_parameter<std::string>(
       "dataset_collection_root_directory", "datasets");
     declare_parameter<double>("dataset_collection_fps", 10.0);
@@ -816,6 +822,10 @@ private:
       static_cast<int>(get_parameter("capture_joy_button").as_int());
     dataset_collection_enabled_ =
       get_parameter("dataset_collection_enabled").as_bool();
+    dataset_collection_manual_capture_mode_ =
+      get_parameter("dataset_collection_manual_capture_mode").as_bool();
+    dataset_collection_manual_capture_button_ = static_cast<int>(
+      get_parameter("dataset_collection_manual_capture_button").as_int());
     dataset_collection_root_directory_ =
       get_parameter("dataset_collection_root_directory").as_string();
     dataset_collection_fps_ =
@@ -1218,6 +1228,19 @@ private:
       throw std::invalid_argument(
               "dataset_collection_root_directory must not be empty");
     }
+    if (dataset_collection_manual_capture_button_ < 0) {
+      throw std::invalid_argument(
+              "dataset_collection_manual_capture_button must be "
+              "non-negative");
+    }
+    if (
+      dataset_collection_enabled_ &&
+      dataset_collection_manual_capture_mode_)
+    {
+      throw std::invalid_argument(
+              "automatic and manual dataset collection modes cannot both "
+              "be enabled");
+    }
     if (
       !std::isfinite(dataset_collection_fps_) ||
       dataset_collection_fps_ <= 0.0)
@@ -1229,7 +1252,11 @@ private:
       throw std::invalid_argument(
               "dataset_collection_target_count must be positive");
     }
-    if (dataset_collection_enabled_ && !lane_seed_detection_enabled_) {
+    if (
+      (dataset_collection_enabled_ ||
+      dataset_collection_manual_capture_mode_) &&
+      !lane_seed_detection_enabled_)
+    {
       throw std::invalid_argument(
               "lane_seed_detection_enabled must be true while dataset "
               "collection is enabled");
@@ -1884,14 +1911,25 @@ private:
     fs::create_directories(dataset_collection_directory_ / "filtered_bev");
     fs::create_directories(dataset_collection_directory_ / "result_bev");
     fs::create_directories(dataset_collection_directory_ / "label");
-    RCLCPP_INFO(
-      get_logger(),
-      "BEV dataset collection enabled: directory=%s, rate=%.2fHz, "
-      "target=%lld frames, stop_auto_on_complete=%s.",
-      dataset_collection_directory_.string().c_str(),
-      dataset_collection_fps_,
-      static_cast<long long>(dataset_collection_target_count_),
-      dataset_collection_stop_auto_on_complete_ ? "true" : "false");
+    if (dataset_collection_manual_capture_mode_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV manual dataset capture enabled: directory=%s, joy=%s, "
+        "button=%d (A), target=%lld frames.",
+        dataset_collection_directory_.string().c_str(),
+        capture_joy_topic_.c_str(),
+        dataset_collection_manual_capture_button_,
+        static_cast<long long>(dataset_collection_target_count_));
+    } else {
+      RCLCPP_INFO(
+        get_logger(),
+        "BEV automatic dataset collection enabled: directory=%s, "
+        "rate=%.2fHz, target=%lld frames, stop_auto_on_complete=%s.",
+        dataset_collection_directory_.string().c_str(),
+        dataset_collection_fps_,
+        static_cast<long long>(dataset_collection_target_count_),
+        dataset_collection_stop_auto_on_complete_ ? "true" : "false");
+    }
   }
 
   std::vector<cv::Point> rasterizeLanePixels(
@@ -2083,6 +2121,66 @@ private:
       preview_stop_topic_.c_str());
   }
 
+  void captureManualDatasetFrame(const char * trigger)
+  {
+    const auto frame = std::atomic_load_explicit(
+      &latest_output_, std::memory_order_acquire);
+    if (!frame || frame->image.empty()) {
+      RCLCPP_WARN(
+        get_logger(),
+        "%s dataset capture requested before a BEV frame was available.",
+        trigger);
+      return;
+    }
+
+    std::lock_guard<std::mutex> lock(dataset_collection_save_mutex_);
+    const std::uint64_t saved_count =
+      dataset_collection_saved_total_.load(std::memory_order_relaxed);
+    const std::uint64_t target_count =
+      static_cast<std::uint64_t>(dataset_collection_target_count_);
+    if (saved_count >= target_count) {
+      dataset_collection_complete_.store(true, std::memory_order_release);
+      RCLCPP_WARN(
+        get_logger(),
+        "Manual BEV dataset target already reached: %llu/%llu frames.",
+        static_cast<unsigned long long>(saved_count),
+        static_cast<unsigned long long>(target_count));
+      return;
+    }
+
+    try {
+      saveDatasetFrame(*frame, saved_count + 1U);
+    } catch (const std::exception & exception) {
+      dataset_collection_failed_.store(true, std::memory_order_release);
+      RCLCPP_ERROR(
+        get_logger(),
+        "Manual BEV dataset capture failed at frame %llu: %s",
+        static_cast<unsigned long long>(saved_count + 1U),
+        exception.what());
+      return;
+    }
+
+    const std::uint64_t new_count = saved_count + 1U;
+    dataset_collection_saved_total_.store(
+      new_count, std::memory_order_release);
+    dataset_collection_failed_.store(false, std::memory_order_release);
+    RCLCPP_INFO(
+      get_logger(),
+      "BEV dataset frame captured by %s: %llu/%llu in %s.",
+      trigger,
+      static_cast<unsigned long long>(new_count),
+      static_cast<unsigned long long>(target_count),
+      dataset_collection_directory_.string().c_str());
+    if (new_count == target_count) {
+      dataset_collection_complete_.store(true, std::memory_order_release);
+      RCLCPP_INFO(
+        get_logger(),
+        "Manual BEV dataset capture completed: %llu frames saved in %s.",
+        static_cast<unsigned long long>(new_count),
+        dataset_collection_directory_.string().c_str());
+    }
+  }
+
   void datasetCollectionLoop()
   {
     const auto minimum_period =
@@ -2149,14 +2247,14 @@ private:
 
   void onCaptureJoy(const sensor_msgs::msg::Joy::ConstSharedPtr message)
   {
-    const bool button_available =
+    const bool bev_button_available =
       capture_joy_button_ < static_cast<int>(message->buttons.size());
-    const bool pressed =
-      button_available &&
+    const bool bev_pressed =
+      bev_button_available &&
       message->buttons[static_cast<std::size_t>(capture_joy_button_)] != 0;
-    const bool was_pressed =
-      capture_joy_button_pressed_.exchange(pressed, std::memory_order_relaxed);
-    if (!button_available) {
+    const bool bev_was_pressed = capture_joy_button_pressed_.exchange(
+      bev_pressed, std::memory_order_relaxed);
+    if (!bev_button_available) {
       RCLCPP_WARN_THROTTLE(
         get_logger(),
         *get_clock(),
@@ -2164,10 +2262,33 @@ private:
         "Joy message on %s has no capture button index %d.",
         capture_joy_topic_.c_str(),
         capture_joy_button_);
+    } else if (bev_pressed && !bev_was_pressed) {
+      captureLatestBev("controller B");
+    }
+
+    if (!dataset_collection_manual_capture_mode_) {
       return;
     }
-    if (pressed && !was_pressed) {
-      captureLatestBev("controller B");
+    const bool dataset_button_available =
+      dataset_collection_manual_capture_button_ <
+      static_cast<int>(message->buttons.size());
+    const bool dataset_pressed =
+      dataset_button_available &&
+      message->buttons[static_cast<std::size_t>(
+        dataset_collection_manual_capture_button_)] != 0;
+    const bool dataset_was_pressed =
+      dataset_collection_manual_capture_button_pressed_.exchange(
+      dataset_pressed, std::memory_order_relaxed);
+    if (!dataset_button_available) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "Joy message on %s has no manual dataset button index %d.",
+        capture_joy_topic_.c_str(),
+        dataset_collection_manual_capture_button_);
+    } else if (dataset_pressed && !dataset_was_pressed) {
+      captureManualDatasetFrame("controller A");
     }
   }
 
@@ -2546,7 +2667,10 @@ private:
         lane_output_topic_.c_str());
     }
 
-    if (dataset_collection_enabled_) {
+    if (
+      dataset_collection_enabled_ ||
+      dataset_collection_manual_capture_mode_)
+    {
       const char * state =
         dataset_collection_failed_.load(std::memory_order_relaxed) ?
         "failed" :
@@ -2554,7 +2678,8 @@ private:
         "complete" : "collecting";
       RCLCPP_INFO(
         get_logger(),
-        "BEV dataset: %llu/%lld frames, state=%s, directory=%s",
+        "BEV dataset: mode=%s, %llu/%lld frames, state=%s, directory=%s",
+        dataset_collection_manual_capture_mode_ ? "manual-A" : "automatic",
         static_cast<unsigned long long>(
           dataset_collection_saved_total_.load(std::memory_order_relaxed)),
         static_cast<long long>(dataset_collection_target_count_),
@@ -2604,6 +2729,9 @@ private:
   int capture_joy_button_{1};
   std::atomic<bool> capture_joy_button_pressed_{false};
   bool dataset_collection_enabled_{false};
+  bool dataset_collection_manual_capture_mode_{false};
+  int dataset_collection_manual_capture_button_{0};
+  std::atomic<bool> dataset_collection_manual_capture_button_pressed_{false};
   std::string dataset_collection_root_directory_{"datasets"};
   double dataset_collection_fps_{10.0};
   std::int64_t dataset_collection_target_count_{1000};
@@ -2612,6 +2740,7 @@ private:
   std::atomic<std::uint64_t> dataset_collection_saved_total_{0U};
   std::atomic<bool> dataset_collection_complete_{false};
   std::atomic<bool> dataset_collection_failed_{false};
+  std::mutex dataset_collection_save_mutex_;
   bool lane_seed_detection_enabled_{true};
   std::string lane_output_topic_{"/camera/image_bev_lane"};
   bool lane_preview_enabled_{true};

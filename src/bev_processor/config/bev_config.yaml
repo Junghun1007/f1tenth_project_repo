@@ -38,6 +38,10 @@ bev_processor:
     # true인 실행에서만 root 아래에 dataset_001, dataset_002, ...를
     # 자동 생성한다. root는 실행 명령이나 실험용 YAML에서 지정한다.
     dataset_collection_enabled: false
+    # 자동 FPS 수집 대신 Joy A 버튼의 상승 에지마다 한 세트를 저장한다.
+    # dataset_collection_enabled와 동시에 true로 설정할 수 없다.
+    dataset_collection_manual_capture_mode: false
+    dataset_collection_manual_capture_button: 0
     dataset_collection_root_directory: "datasets"
     dataset_collection_fps: 10.0
     dataset_collection_target_count: 1000
