@@ -4,13 +4,18 @@ uint8 NONE=0
 uint8 LEFT_ONLY=1
 uint8 RIGHT_ONLY=2
 uint8 BOTH=3
+# State means retained label presence, not a validated single curve per side.
 uint8 state
+uint8 BORDER_ONLY=1
+uint8 processing_mode
 uint32 source_width
 uint32 source_height
 uint32 padding_left
 uint32 padding_right
 # Original pixel: u_source = u_result - padding_left; v_source = v_result.
 # Negative/out-of-source coordinates are inferred, not newly observed camera pixels.
+# Diagnostic segments for border components and added bridges only.
+# labels/image are authoritative; disconnected in-frame components are preserved.
 line_detactor/LaneCurve left
 line_detactor/LaneCurve right
 # No camera texture/banner. Extended dimensions, black background.

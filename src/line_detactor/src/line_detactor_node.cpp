@@ -38,7 +38,7 @@ namespace
 
 constexpr int kDefaultInputWidth = 120;
 constexpr int kDefaultInputHeight = 300;
-constexpr int kBannerHeight = 114;
+constexpr int kBannerHeight = 100;
 constexpr char kModelFilename[] =
   "fast_scnn_highres_120x300_batch_1.onnx";
 
@@ -117,13 +117,10 @@ public:
       throw std::runtime_error("ONNX model not found: " + model_path_);
     }
 
-    // Fragment mode smooths ordered 2D centerlines on the CPU, not GPU image rows.
-    auto backend_smoothing = smoothing_;
-    if (connection_.enabled) {backend_smoothing.enabled = false;}
     backend_ = std::make_unique<TensorRtLaneBackend>(
       model_path_, engine_cache_path_, model_input_width_, model_input_height_,
       static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
-      mask_threshold_, overlay_alpha_, backend_smoothing, connection_.enabled);
+      mask_threshold_, overlay_alpha_, connection_.enabled);
     warm_up();
 
     const auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1))
@@ -155,12 +152,10 @@ public:
     RCLCPP_INFO(
       node_.get_logger(),
       "GPU path: pinned BGR8 H2D -> CUDA RGB FP32 NCHW -> TensorRT -> "
-      "CUDA threshold/overlay -> BGR8 D2H; engine cache=%s; smoothing=%s "
-      "limit=%s %.2f px",
-      backend_->engine_cache_path().c_str(), smoothing_.enabled ? "on" : "off",
-      smoothing_.correction_limit_enabled ? "on" : "off", smoothing_.max_correction_px);
+      "CUDA threshold/overlay -> BGR8 D2H; engine cache=%s",
+      backend_->engine_cache_path().c_str());
     RCLCPP_INFO(node_.get_logger(),
-      "Fragment connection=%s, result=%dx%d (padding=%d each side), publish=%s, topic=%s",
+      "Border interpolation=%s, result=%dx%d (padding=%d each side), publish=%s, topic=%s",
       connection_.enabled ? "on" : "off", result_width(), model_input_height_,
       connection_.padding_px, result_publisher_ ? "on" : "off", result_topic_.c_str());
   }
@@ -191,16 +186,6 @@ private:
       node_.declare_parameter<double>("mask_threshold", 0.5));
     overlay_alpha_ = static_cast<float>(
       node_.declare_parameter<double>("overlay_alpha", 0.75));
-    smoothing_.enabled = node_.declare_parameter<bool>("smoothing_enabled", true);
-    smoothing_.strength = node_.declare_parameter<double>("smoothing_strength", 8.0);
-    smoothing_.correction_limit_enabled = node_.declare_parameter<bool>(
-      "smoothing_correction_limit_enabled", true);
-    smoothing_.max_correction_px = node_.declare_parameter<double>(
-      "smoothing_max_correction_px", 2.0);
-    smoothing_.max_row_jump_px = node_.declare_parameter<double>(
-      "smoothing_max_row_jump_px", 4.0);
-    smoothing_.min_segment_rows = node_.declare_parameter<int>(
-      "smoothing_min_segment_rows", 12);
     connection_.enabled = node_.declare_parameter<bool>(
       "connection_enabled", true);
     connection_.padding_px = node_.declare_parameter<int>(
@@ -225,8 +210,8 @@ private:
       "connection_max_curvature_per_px", 0.12);
     connection_.max_arc_ratio = node_.declare_parameter<double>(
       "connection_max_arc_ratio", 1.8);
-    connection_.min_lane_length_px = node_.declare_parameter<double>(
-      "connection_min_lane_length_px", 20.0);
+    connection_.border_endpoint_distance_px = node_.declare_parameter<double>(
+      "connection_border_endpoint_distance_px", 6.0);
     connection_.line_width_px = node_.declare_parameter<int>(
       "result_line_width_px", 2);
     result_publish_enabled_ = node_.declare_parameter<bool>("result_publish_enabled", true);
@@ -249,7 +234,6 @@ private:
 
   void validate_parameters() const
   {
-    validate_lane_smoothing(smoothing_);
     validate_lane_connection(connection_);
     if (result_topic_.empty() || result_image_topic_.empty() || result_topic_ == result_image_topic_ ||
       result_topic_ == input_topic_ || result_image_topic_ == input_topic_)
@@ -384,6 +368,7 @@ private:
     line_detactor::msg::LaneResult message;
     message.header = input.header;
     message.state = result.state;
+    message.processing_mode = line_detactor::msg::LaneResult::BORDER_ONLY;
     message.source_width = input.width;
     message.source_height = input.height;
     message.padding_left = connection_.padding_px;
@@ -393,6 +378,7 @@ private:
       const auto & lane = result.lanes[side];
       curve.observed_length_px = static_cast<float>(lane.observed_length_px);
       curve.provenance = lane.interpolated;
+      curve.segment_starts = lane.segment_starts;
       curve.points.reserve(lane.points.size());
       for (const auto & point : lane.points) {
         geometry_msgs::msg::Point32 output;
@@ -438,12 +424,9 @@ private:
       {cv::format("infer %.2f ms", inference_milliseconds),
         cv::Scalar(0, 255, 255)},
       {cv::format("model %.1f FPS", model_fps), cv::Scalar(0, 255, 255)},
-      {(smoothing_.enabled || connection_.enabled) ?
+      {connection_.enabled ?
         cv::format("correct %.2f ms", correction_milliseconds) :
         "correct OFF", cv::Scalar(0, 255, 0)},
-      {smoothing_.correction_limit_enabled ?
-        cv::format("limit %.1f px", smoothing_.max_correction_px) : "limit OFF",
-        cv::Scalar(220, 220, 220)},
       {connection_.enabled ? cv::format("connect %.2f ms", connection_milliseconds) :
         "connect OFF", cv::Scalar(0, 255, 0)},
       {connection_.enabled ? std::string("lanes ") +
@@ -563,7 +546,7 @@ private:
             const auto started = std::chrono::steady_clock::now();
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
-            result = connect_lane_fragments(labels, connection_, smoothing_);
+            result = connect_lane_fragments(labels, connection_);
             connection_nanoseconds = static_cast<std::uint64_t>(
               std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started).count());
@@ -687,7 +670,6 @@ private:
   int model_input_height_{kDefaultInputHeight};
   float mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
-  LaneSmoothingConfig smoothing_;
   LaneConnectionConfig connection_;
   bool result_publish_enabled_{true};
   std::string result_topic_;

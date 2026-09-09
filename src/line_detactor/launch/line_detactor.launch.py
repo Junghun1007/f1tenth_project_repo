@@ -29,17 +29,11 @@ OVERRIDES = {
     "connection_max_turn_deg": float,
     "connection_max_curvature_per_px": float,
     "connection_max_arc_ratio": float,
-    "connection_min_lane_length_px": float,
+    "connection_border_endpoint_distance_px": float,
     "result_line_width_px": int,
     "result_publish_enabled": bool,
     "result_topic": str,
     "result_image_topic": str,
-    "smoothing_enabled": bool,
-    "smoothing_strength": float,
-    "smoothing_correction_limit_enabled": bool,
-    "smoothing_max_correction_px": float,
-    "smoothing_max_row_jump_px": float,
-    "smoothing_min_segment_rows": int,
 }
 
 

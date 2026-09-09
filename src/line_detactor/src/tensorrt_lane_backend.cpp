@@ -7,7 +7,6 @@
 #include <NvOnnxParser.h>
 #include <cuda_runtime_api.h>
 
-#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -301,7 +300,6 @@ public:
     const std::size_t workspace_size_bytes,
     const float mask_threshold,
     const float overlay_alpha,
-    const LaneSmoothingConfig & smoothing,
     const bool export_labels)
   : model_path_(model_path),
     engine_cache_path_(requested_engine_cache_path.empty() ?
@@ -316,10 +314,8 @@ public:
     input_element_count_(pixel_count_ * 3U),
     mask_threshold_(mask_threshold),
     overlay_alpha_(overlay_alpha),
-    smoothing_(smoothing),
     export_labels_(export_labels)
   {
-    validate_lane_smoothing(smoothing_);
     if (input_width <= 0 || input_height <= 0) {
       throw std::invalid_argument("TensorRT input dimensions must be positive");
     }
@@ -357,11 +353,6 @@ public:
     device_input_.allocate(input_element_count_ * sizeof(float));
     device_logits_.allocate(output_element_count_ * sizeof(float));
     device_preview_bgr_.allocate(image_byte_count_);
-    if (smoothing_.enabled) {
-      row_byte_count_ = static_cast<std::size_t>(input_height_) * 2U * sizeof(LaneRow);
-      host_rows_.allocate(row_byte_count_);
-      device_rows_.allocate(row_byte_count_);
-    }
     if (export_labels_) {
       host_labels_.allocate(pixel_count_);
       device_labels_.allocate(pixel_count_);
@@ -429,29 +420,6 @@ public:
       cudaEventRecord(execution_finished_.get(), stream_.get()),
       "cudaEventRecord(inference finish)");
 
-    std::uint64_t correction_nanoseconds = 0U;
-    if (smoothing_.enabled) {
-      // Exclude outstanding inference work from the correction wall-clock timer.
-      check_cuda(cudaEventSynchronize(execution_finished_.get()), "wait for inference");
-      const auto started = std::chrono::steady_clock::now();
-      check_cuda(
-        launch_lane_rows(
-          static_cast<const float *>(device_logits_.get()),
-          static_cast<LaneRow *>(device_rows_.get()), input_width_, input_height_,
-          mask_threshold_, stream_.get()), "extract lane rows");
-      check_cuda(
-        cudaMemcpyAsync(host_rows_.get(), device_rows_.get(), row_byte_count_,
-          cudaMemcpyDeviceToHost, stream_.get()), "copy lane rows to host");
-      check_cuda(cudaStreamSynchronize(stream_.get()), "wait for lane rows");
-      smooth_lane_rows(static_cast<LaneRow *>(host_rows_.get()), input_height_, smoothing_);
-      check_cuda(
-        cudaMemcpyAsync(device_rows_.get(), host_rows_.get(), row_byte_count_,
-          cudaMemcpyHostToDevice, stream_.get()), "copy lane corrections to device");
-      check_cuda(cudaStreamSynchronize(stream_.get()), "wait for lane corrections");
-      correction_nanoseconds = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-          std::chrono::steady_clock::now() - started).count());
-    }
     if (export_labels_) {
       check_cuda(cudaEventRecord(label_export_started_.get(), stream_.get()), "label export start");
       check_cuda(
@@ -471,7 +439,7 @@ public:
         static_cast<const float *>(device_logits_.get()),
         static_cast<std::uint8_t *>(device_preview_bgr_.get()),
         input_width_, input_height_, mask_threshold_, overlay_alpha_,
-        static_cast<const LaneRow *>(device_rows_.get()), stream_.get()),
+        stream_.get()),
       "launch lane overlay kernel");
     check_cuda(
       cudaMemcpyAsync(
@@ -490,7 +458,7 @@ public:
         preprocessing_started_.get(), preprocessing_finished_.get()),
       elapsed_cuda_nanoseconds(
         preprocessing_finished_.get(), execution_finished_.get()),
-      correction_nanoseconds,
+      0U,
       elapsed_cuda_nanoseconds(
         postprocessing_started_.get(), postprocessing_finished_.get()),
       export_labels_ ? elapsed_cuda_nanoseconds(
@@ -720,9 +688,7 @@ private:
   std::size_t output_element_count_{0U};
   float mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
-  LaneSmoothingConfig smoothing_;
   bool export_labels_{false};
-  std::size_t row_byte_count_{0U};
 
   TensorRtLogger logger_;
   TensorRtUniquePtr<nvinfer1::IRuntime> runtime_;
@@ -731,8 +697,6 @@ private:
   CudaStream stream_;
   PinnedHostBuffer host_bgr_;
   PinnedHostBuffer host_preview_bgr_;
-  PinnedHostBuffer host_rows_;
-  CudaBuffer device_rows_;
   PinnedHostBuffer host_labels_;
   CudaBuffer device_labels_;
   CudaEvent label_export_started_;
@@ -765,11 +729,10 @@ TensorRtLaneBackend::TensorRtLaneBackend(
   const std::size_t workspace_size_bytes,
   const float mask_threshold,
   const float overlay_alpha,
-  const LaneSmoothingConfig & smoothing,
   const bool export_labels)
 : impl_(std::make_unique<Impl>(
     model_path, engine_cache_path, input_width, input_height,
-    workspace_size_bytes, mask_threshold, overlay_alpha, smoothing, export_labels))
+    workspace_size_bytes, mask_threshold, overlay_alpha, export_labels))
 {
 }
 

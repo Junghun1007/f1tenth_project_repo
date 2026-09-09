@@ -140,56 +140,6 @@ std::vector<Point> component_path(const cv::Mat & mask, const cv::Point & origin
   return path;
 }
 
-std::vector<Point> resample(const std::vector<Point> & path)
-{
-  if (path.empty()) {return {};}
-  std::vector<Point> result{path.front()};
-  double accumulated = 0.0;
-  double target = 1.0;
-  for (std::size_t i = 1; i < path.size(); ++i) {
-    const double distance = length(path[i] - path[i - 1]);
-    while (distance > 0.0 && target <= accumulated + distance) {
-      result.push_back(path[i - 1] + (path[i] - path[i - 1]) *
-        static_cast<float>((target - accumulated) / distance));
-      target += 1.0;
-    }
-    accumulated += distance;
-  }
-  if (length(result.back() - path.back()) > 0.01) {
-    result.push_back(path.back());
-  } else {
-    result.back() = path.back();
-  }
-  return result;
-}
-
-void smooth_fragment(std::vector<Point> & path, const LaneSmoothingConfig & config)
-{
-  if (!config.enabled || static_cast<int>(path.size()) < config.min_segment_rows) {return;}
-  // Reuse the spline solver on uniformly sampled arc length, independently for x/y.
-  const int size = static_cast<int>(path.size());
-  std::vector<LaneRow> rows(2 * size);
-  for (int i = 0; i < size; ++i) {
-    rows[i] = LaneRow{path[i].x, 1.0F, 0.0F};
-    rows[size + i] = LaneRow{path[i].y, 1.0F, 0.0F};
-  }
-  auto settings = config;
-  settings.max_row_jump_px = 1.0e6;
-  settings.correction_limit_enabled = false;
-  smooth_lane_rows(rows.data(), size, settings);
-  double maximum = 0.0;
-  for (int i = 0; i < size; ++i) {
-    maximum = std::max(maximum, length(Point(rows[i].shift, rows[size + i].shift)));
-  }
-  const double scale = config.correction_limit_enabled && maximum > 0.0 ?
-    std::min(1.0, config.max_correction_px / maximum) : 1.0;
-  for (int i = 1; i < size - 1; ++i) {
-    // Preserve measured endpoints and taper the correction near them.
-    const double taper = std::min(1.0, std::min(i, size - 1 - i) / 3.0);
-    path[i] += Point(rows[i].shift, rows[size + i].shift) * static_cast<float>(scale * taper);
-  }
-}
-
 Point tangent(const std::vector<Point> & path, const bool at_end, const double window)
 {
   std::vector<Point> sample;
@@ -208,12 +158,12 @@ Point tangent(const std::vector<Point> & path, const bool at_end, const double w
   return unit(direction);
 }
 
-struct Fragment
+struct BorderEndpoint
 {
-  std::vector<Point> path;
-  Point entry;
-  Point exit;
-  double observed{0.0};
+  Point point;
+  Point outward;
+  int component;
+  int border;  // 0=left image edge, 1=right image edge.
 };
 
 bool intersects(const Point & a, const Point & b, const Point & c, const Point & d)
@@ -247,32 +197,33 @@ bool self_intersects(const std::vector<Point> & points)
 }
 
 std::vector<Point> bridge(
-  const Fragment & a, const Fragment & b, const LaneConnectionConfig & config,
+  const BorderEndpoint & a, const BorderEndpoint & b, const LaneConnectionConfig & config,
   const int width, const int height)
 {
-  const Point start = a.path.back();
-  const Point end = b.path.front();
+  if (a.component == b.component || a.border != b.border || config.padding_px == 0) {return {};}
+  const Point start = a.point;
+  const Point end = b.point;
   const Point chord = end - start;
   const double gap = length(chord);
-  // Forward ordering prevents loops/reuse; x is unrestricted, allowing side excursions.
-  if (gap < 0.5 || gap > config.max_gap_px || end.y > start.y + 2.0F) {return {};}
-  const double cosine = std::clamp(static_cast<double>(a.exit.dot(b.entry)), -1.0, 1.0);
+  if (gap < 1.0 || gap > config.max_gap_px) {return {};}
+  const Point entry = -b.outward;
+  // Both measured fragments must point OUT of the same image edge.
+  const float sign = a.border == 0 ? -1.0F : 1.0F;
+  if (a.outward.x * sign <= 0.05F || b.outward.x * sign <= 0.05F) {return {};}
+  const double cosine = std::clamp(static_cast<double>(a.outward.dot(entry)), -1.0, 1.0);
   if (std::acos(cosine) > config.max_turn_deg * kPi / 180.0) {return {};}
-  // Opposing tangents can describe an out-of-view semicircle. Their sum is
-  // undefined; the endpoint chord supplies the average travel direction there.
-  const Point average = length(a.exit + b.entry) < 0.2 ? unit(chord) : unit(a.exit + b.entry);
+  const Point average = length(a.outward + entry) < 0.2 ? unit(chord) : unit(a.outward + entry);
   const double corridor = config.corridor_half_width_px +
     gap * std::tan(config.direction_tolerance_deg * kPi / 180.0);
-  // A finite-width prediction corridor, not an exact intersection of thin rays.
   if (average.dot(chord) <= 0.0F || std::abs(cross(average, chord)) > corridor ||
-    a.exit.dot(chord) < -config.corridor_half_width_px ||
-    b.entry.dot(chord) < -config.corridor_half_width_px) {return {};}
+    a.outward.dot(chord) < -config.corridor_half_width_px ||
+    entry.dot(chord) < -config.corridor_half_width_px) {return {};}
 
   std::vector<Point> best;
   double best_cost = std::numeric_limits<double>::infinity();
   for (const double handle_ratio : {0.25, 0.4, 0.6, 0.9}) {
-    const Point c1 = start + a.exit * static_cast<float>(gap * handle_ratio);
-    const Point c2 = end - b.entry * static_cast<float>(gap * handle_ratio);
+    const Point c1 = start + a.outward * static_cast<float>(gap * handle_ratio);
+    const Point c2 = end - entry * static_cast<float>(gap * handle_ratio);
     // The Bezier derivative bound gives <= 1px arc steps.
     const int steps = std::max(8, static_cast<int>(std::ceil(
       3.0 * std::max({length(c1 - start), length(c2 - c1), length(end - c2)}))));
@@ -293,7 +244,8 @@ std::vector<Point> bridge(
         std::abs(cross(velocity, acceleration)) / (speed * speed * speed) :
         std::numeric_limits<double>::infinity();
       maximum_curvature = std::max(maximum_curvature, curvature);
-      if (point.x < -config.padding_px || point.x > width - 1 + config.padding_px ||
+      const bool inside_source = a.border == 0 ? point.x > 0.001F : point.x < width - 1 - 0.001F;
+      if (inside_source || point.x < -config.padding_px || point.x > width - 1 + config.padding_px ||
         point.y < 0.0F || point.y > height - 1 || curvature > config.max_curvature_per_px)
       {valid = false; break;}
       curve.push_back(point);
@@ -308,125 +260,99 @@ std::vector<Point> bridge(
   return best;
 }
 
-std::vector<Fragment> fragments(
-  const cv::Mat & labels, const int lane, const LaneConnectionConfig & config,
-  const LaneSmoothingConfig & smoothing)
+// Keep the complete model mask. Skeleton paths are metadata/direction estimates only.
+void append_segment(ConnectedLane & lane, const std::vector<Point> & path,
+  const bool inferred, const int padding)
+{
+  if (path.empty()) {return;}
+  lane.segment_starts.push_back(static_cast<std::uint32_t>(lane.points.size()));
+  for (auto point : path) {
+    point.x += padding;
+    lane.points.push_back(point);
+    lane.interpolated.push_back(inferred ? 1U : 0U);
+  }
+  if (!inferred) {lane.observed_length_px += arc_length(path);}
+}
+
+void add_endpoint(std::vector<BorderEndpoint> & endpoints, const std::vector<Point> & path,
+  const bool at_end, const cv::Mat & components, const int id,
+  const LaneConnectionConfig & config)
+{
+  const Point tip = at_end ? path.back() : path.front();
+  for (const int border : {0, 1}) {
+    const int x = border == 0 ? 0 : components.cols - 1;
+    if (std::abs(tip.x - x) > config.border_endpoint_distance_px) {continue;}
+    // Require an actual model pixel on the edge, not just a nearby interior endpoint.
+    Point contact;
+    double nearest = config.border_endpoint_distance_px;
+    bool found = false;
+    for (int y = 0; y < components.rows; ++y) {
+      if (components.at<int>(y, x) != id) {continue;}
+      const double distance = length(Point(static_cast<float>(x), static_cast<float>(y)) - tip);
+      if (distance <= nearest) {
+        nearest = distance;
+        contact = Point(static_cast<float>(x), static_cast<float>(y));
+        found = true;
+      }
+    }
+    if (found) {
+      const Point outward = tangent(path, at_end, config.tangent_window_px) * (at_end ? 1.0F : -1.0F);
+      endpoints.push_back(BorderEndpoint{contact, outward, id, border});
+      break;
+    }
+  }
+}
+
+std::vector<BorderEndpoint> retain_components(
+  const cv::Mat & input, const int side, const LaneConnectionConfig & config,
+  cv::Mat & output, ConnectedLane & lane)
 {
   cv::Mat components, stats, centroids;
   const int count = cv::connectedComponentsWithStats(
-    labels == lane + 1, components, stats, centroids, 8, CV_32S);
-  std::vector<int> candidates;
-  for (int i = 1; i < count; ++i) {
-    if (stats.at<int>(i, cv::CC_STAT_AREA) >= config.min_component_area_px) {
-      candidates.push_back(i);
-    }
+    input == side + 1, components, stats, centroids, 8, CV_32S);
+  std::vector<int> border_candidates;
+  for (int id = 1; id < count; ++id) {
+    if (stats.at<int>(id, cv::CC_STAT_AREA) < config.min_component_area_px) {continue;}
+    const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
+      stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
+    const cv::Mat mask = components(roi) == id;
+    // No thinning/repainting, minimum-length deletion, winner selection or pair rejection.
+    output(cv::Rect(roi.x + config.padding_px, roi.y, roi.width, roi.height)).setTo(side + 1, mask);
+    if (roi.x == 0 || roi.x + roi.width == input.cols) {border_candidates.push_back(id);}
   }
-  std::stable_sort(candidates.begin(), candidates.end(), [&](int a, int b) {
+  std::stable_sort(border_candidates.begin(), border_candidates.end(), [&](int a, int b) {
     return stats.at<int>(a, cv::CC_STAT_AREA) > stats.at<int>(b, cv::CC_STAT_AREA);
   });
-  if (candidates.size() > static_cast<std::size_t>(config.max_fragments)) {
-    candidates.resize(config.max_fragments);
+  if (border_candidates.size() > static_cast<std::size_t>(config.max_fragments)) {
+    border_candidates.resize(config.max_fragments);
   }
-  std::vector<Fragment> result;
-  for (const int i : candidates) {
-    const cv::Rect roi(stats.at<int>(i, cv::CC_STAT_LEFT), stats.at<int>(i, cv::CC_STAT_TOP),
-      stats.at<int>(i, cv::CC_STAT_WIDTH), stats.at<int>(i, cv::CC_STAT_HEIGHT));
-    auto path = component_path(components(roi) == i, roi.tl());
-    const double observed = arc_length(path);
-    if (observed < config.min_fragment_length_px) {continue;}
-    path = resample(path);
-    smooth_fragment(path, smoothing);
-    // Model-supported centerlines stay inside the observed image; only bridges
-    // may extend into the side padding.
-    bool inside = true;
-    for (const auto & point : path) {
-      inside = inside && point.x >= 0 &&
-        point.x <= labels.cols - 1 && point.y >= 0 && point.y <= labels.rows - 1;
-    }
-    if (!inside || self_intersects(path)) {
-      path = resample(component_path(components(roi) == i, roi.tl()));
-    }
-    result.push_back(Fragment{
-      path, tangent(path, false, config.tangent_window_px),
-      tangent(path, true, config.tangent_window_px), observed});
+  std::vector<BorderEndpoint> endpoints;
+  for (const int id : border_candidates) {
+    const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
+      stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
+    const auto path = component_path(components(roi) == id, roi.tl());
+    // Length only gates extrapolation eligibility, never removes model pixels.
+    if (arc_length(path) < config.min_fragment_length_px || path.size() < 2U) {continue;}
+    append_segment(lane, path, false, config.padding_px);
+    add_endpoint(endpoints, path, false, components, id, config);
+    add_endpoint(endpoints, path, true, components, id, config);
   }
-  std::stable_sort(result.begin(), result.end(), [](const Fragment & a, const Fragment & b) {
-    return a.path.front().y > b.path.front().y;
-  });
-  return result;
+  return endpoints;
 }
 
-ConnectedLane select_chain(
-  const std::vector<Fragment> & parts, const LaneConnectionConfig & config,
-  const int width, const int height)
-{
-  if (parts.empty()) {return {};}
-  // A DAG of fragments ordered near-to-far: one predecessor/successor, no branches.
-  std::vector<ConnectedLane> chains(parts.size());
-  std::vector<double> scores(parts.size());
-  int best = -1;
-  for (std::size_t j = 0; j < parts.size(); ++j) {
-    chains[j].points = parts[j].path;
-    chains[j].interpolated.assign(parts[j].path.size(), 0U);
-    chains[j].observed_length_px = parts[j].observed;
-    scores[j] = parts[j].observed - 0.25 * (height - 1 - parts[j].path.front().y);
-    for (std::size_t i = 0; i < j; ++i) {
-      if (parts[j].path.back().y >= parts[i].path.back().y) {continue;}
-      auto curve = bridge(parts[i], parts[j], config, width, height);
-      if (curve.empty()) {continue;}
-      const double score = scores[i] + parts[j].observed - 0.05 * arc_length(curve);
-      if (score <= scores[j]) {continue;}
-      auto combined = chains[i];
-      for (std::size_t k = 1; k + 1U < curve.size(); ++k) {
-        combined.points.push_back(curve[k]);
-        combined.interpolated.push_back(1U);
-      }
-      combined.points.insert(combined.points.end(), parts[j].path.begin(), parts[j].path.end());
-      combined.interpolated.insert(combined.interpolated.end(), parts[j].path.size(), 0U);
-      if (self_intersects(combined.points)) {continue;}
-      combined.observed_length_px += parts[j].observed;
-      chains[j] = std::move(combined);
-      scores[j] = score;
-    }
-    if (chains[j].observed_length_px >= config.min_lane_length_px &&
-      (best < 0 || scores[j] > scores[best])) {best = static_cast<int>(j);}
-  }
-  if (best < 0) {return {};}
-  auto result = std::move(chains[best]);
-  for (auto & point : result.points) {point.x += config.padding_px;}
-  return result;
-}
-
-cv::Mat lane_mask(const ConnectedLane & lane, const cv::Size & size, const int thickness)
+cv::Mat bridge_mask(const std::vector<Point> & curve, const cv::Size & size,
+  const LaneConnectionConfig & config)
 {
   cv::Mat mask = cv::Mat::zeros(size, CV_8UC1);
-  // Two passes ensure model-supported endpoints take priority over bridge pixels.
-  for (int source = 1; source >= 0; --source) {
-    for (std::size_t i = 1; i < lane.points.size(); ++i) {
-      const bool inferred = lane.interpolated[i - 1] || lane.interpolated[i];
-      if (inferred != static_cast<bool>(source)) {continue;}
-      const auto a = lane.points[i - 1] * 256.0F;
-      const auto b = lane.points[i] * 256.0F;
-      cv::line(mask, cv::Point(cvRound(a.x), cvRound(a.y)),
-        cv::Point(cvRound(b.x), cvRound(b.y)), cv::Scalar(source ? 2 : 1),
-        thickness, cv::LINE_8, 8);
-    }
+  for (std::size_t i = 1; i < curve.size(); ++i) {
+    const Point a = (curve[i - 1] + Point(static_cast<float>(config.padding_px), 0.0F)) * 256.0F;
+    const Point b = (curve[i] + Point(static_cast<float>(config.padding_px), 0.0F)) * 256.0F;
+    cv::line(mask, cv::Point(cvRound(a.x), cvRound(a.y)), cv::Point(cvRound(b.x), cvRound(b.y)),
+      cv::Scalar(255), config.line_width_px, cv::LINE_8, 8);
   }
+  // Even stroke thickness must never add/change pixels inside the original BEV.
+  mask(cv::Rect(config.padding_px, 0, size.width - 2 * config.padding_px, size.height)).setTo(0);
   return mask;
-}
-
-bool pair_conflict(const cv::Mat & left, const cv::Mat & right)
-{
-  for (int y = 0; y < left.rows; ++y) {
-    int last_left = -1;
-    int first_right = right.cols;
-    for (int x = 0; x < left.cols; ++x) {
-      if (left.at<std::uint8_t>(y, x)) {last_left = x;}
-      if (right.at<std::uint8_t>(y, x)) {first_right = std::min(first_right, x);}
-    }
-    if (last_left >= first_right) {return true;}
-  }
-  return false;
 }
 
 }  // namespace
@@ -442,46 +368,58 @@ void validate_lane_connection(const LaneConnectionConfig & config)
     config.direction_tolerance_deg >= 80 || !positive(config.max_turn_deg) ||
     config.max_turn_deg > 180 || !positive(config.max_curvature_per_px) ||
     !positive(config.max_arc_ratio) || config.max_arc_ratio < 1.0 ||
-    !positive(config.min_lane_length_px))
-  {throw std::invalid_argument("Invalid lane connection geometry/size parameters");}
+    !positive(config.border_endpoint_distance_px))
+  {throw std::invalid_argument("Invalid border interpolation geometry/size parameters");}
 }
 
 LaneConnectionResult connect_lane_fragments(
-  const cv::Mat & labels, const LaneConnectionConfig & config,
-  const LaneSmoothingConfig & smoothing)
+  const cv::Mat & labels, const LaneConnectionConfig & config)
 {
   if (labels.type() != CV_8UC1 || labels.empty()) {
     throw std::invalid_argument("Lane connector expects a nonempty mono8 label image");
   }
   LaneConnectionResult result;
   const cv::Size size(labels.cols + 2 * config.padding_px, labels.rows);
-  std::array<cv::Mat, 2> masks;
+  result.labels = cv::Mat::zeros(size, CV_8UC1);
+  struct Candidate {int side; int a; int b; std::vector<Point> curve;};
+  std::array<std::vector<BorderEndpoint>, 2> endpoints;
+  std::vector<Candidate> candidates;
   for (int side = 0; side < 2; ++side) {
-    result.lanes[side] = select_chain(fragments(labels, side, config, smoothing),
-      config, labels.cols, labels.rows);
-    masks[side] = lane_mask(result.lanes[side], size, config.line_width_px);
-  }
-  if (pair_conflict(masks[0], masks[1])) {
-    // Do not swap semantic channels. Similar support means the pair is ambiguous.
-    const double left = result.lanes[0].observed_length_px;
-    const double right = result.lanes[1].observed_length_px;
-    for (int side = 0; side < 2; ++side) {
-      const double own = side == 0 ? left : right;
-      const double other = side == 0 ? right : left;
-      if (own <= other * 1.1) {
-        result.lanes[side] = ConnectedLane{};
-        masks[side].setTo(0);
+    endpoints[side] = retain_components(labels, side, config, result.labels, result.lanes[side]);
+    const auto & tips = endpoints[side];
+    for (std::size_t a = 0; a < tips.size(); ++a) {
+      for (std::size_t b = a + 1; b < tips.size(); ++b) {
+        auto curve = bridge(tips[a], tips[b], config, labels.cols, labels.rows);
+        if (!curve.empty()) {
+          candidates.push_back(Candidate{side, static_cast<int>(a), static_cast<int>(b), std::move(curve)});
+        }
       }
     }
   }
-  result.labels = cv::Mat::zeros(size, CV_8UC1);
+  // Nearest compatible pair first; every endpoint can participate only once.
+  std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
+    return arc_length(a.curve) < arc_length(b.curve);
+  });
+  std::array<std::vector<bool>, 2> used{
+    std::vector<bool>(endpoints[0].size(), false), std::vector<bool>(endpoints[1].size(), false)};
+  for (const auto & candidate : candidates) {
+    if (used[candidate.side][candidate.a] || used[candidate.side][candidate.b]) {continue;}
+    const cv::Mat mask = bridge_mask(candidate.curve, size, config);
+    if (cv::countNonZero(mask) == 0) {continue;}
+    cv::Mat collision;
+    cv::bitwise_and(mask, result.labels != 0, collision);
+    if (cv::countNonZero(collision) != 0) {continue;}
+    result.labels.setTo(candidate.side + 3, mask);
+    append_segment(result.lanes[candidate.side], candidate.curve, true, config.padding_px);
+    used[candidate.side][candidate.a] = true;
+    used[candidate.side][candidate.b] = true;
+  }
   result.image = cv::Mat::zeros(size, CV_8UC3);
   for (int side = 0; side < 2; ++side) {
-    if (result.lanes[side].points.empty()) {continue;}
+    const cv::Mat mask = (result.labels == side + 1) | (result.labels == side + 3);
+    if (cv::countNonZero(mask) == 0) {continue;}
     result.state |= static_cast<std::uint8_t>(1U << side);
-    result.labels.setTo(side + 1, masks[side] == 1);
-    result.labels.setTo(side + 3, masks[side] == 2);
-    result.image.setTo(side == 0 ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 0, 255), masks[side]);
+    result.image.setTo(side == 0 ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 0, 255), mask);
   }
   return result;
 }

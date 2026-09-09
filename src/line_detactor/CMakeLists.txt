@@ -80,7 +80,6 @@ endif()
 
 add_library(line_tensorrt_backend STATIC
   src/cuda_lane_pipeline.cu
-  src/lane_smoothing.cpp
   src/tensorrt_lane_backend.cpp
 )
 set_target_properties(line_tensorrt_backend PROPERTIES

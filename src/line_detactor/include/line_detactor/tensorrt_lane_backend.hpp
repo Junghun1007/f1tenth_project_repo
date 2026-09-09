@@ -1,8 +1,6 @@
 #ifndef LINE_DETACTOR__TENSORRT_LANE_BACKEND_HPP_
 #define LINE_DETACTOR__TENSORRT_LANE_BACKEND_HPP_
 
-#include "line_detactor/lane_smoothing.hpp"
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -31,7 +29,6 @@ public:
     std::size_t workspace_size_bytes,
     float mask_threshold,
     float overlay_alpha,
-    const LaneSmoothingConfig & smoothing = LaneSmoothingConfig{},
     bool export_labels = false);
   ~TensorRtLaneBackend();
 
