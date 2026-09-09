@@ -1,6 +1,8 @@
 #ifndef LINE_DETACTOR__TENSORRT_LANE_BACKEND_HPP_
 #define LINE_DETACTOR__TENSORRT_LANE_BACKEND_HPP_
 
+#include "line_detactor/lane_smoothing.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -13,6 +15,7 @@ struct LaneInferenceTiming
 {
   std::uint64_t preprocessing_nanoseconds{0U};
   std::uint64_t execution_nanoseconds{0U};
+  std::uint64_t correction_nanoseconds{0U};
   std::uint64_t postprocessing_nanoseconds{0U};
 };
 
@@ -26,7 +29,8 @@ public:
     int input_height,
     std::size_t workspace_size_bytes,
     float mask_threshold,
-    float overlay_alpha);
+    float overlay_alpha,
+    const LaneSmoothingConfig & smoothing = LaneSmoothingConfig{});
   ~TensorRtLaneBackend();
 
   TensorRtLaneBackend(const TensorRtLaneBackend &) = delete;

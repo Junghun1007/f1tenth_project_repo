@@ -35,7 +35,7 @@ namespace
 
 constexpr int kDefaultInputWidth = 120;
 constexpr int kDefaultInputHeight = 300;
-constexpr int kBannerHeight = 58;
+constexpr int kBannerHeight = 86;
 constexpr char kModelFilename[] =
   "fast_scnn_highres_120x300_batch_1.onnx";
 
@@ -117,7 +117,7 @@ public:
     backend_ = std::make_unique<TensorRtLaneBackend>(
       model_path_, engine_cache_path_, model_input_width_, model_input_height_,
       static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
-      mask_threshold_, overlay_alpha_);
+      mask_threshold_, overlay_alpha_, smoothing_);
     warm_up();
 
     const auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1))
@@ -144,8 +144,10 @@ public:
     RCLCPP_INFO(
       node_.get_logger(),
       "GPU path: pinned BGR8 H2D -> CUDA RGB FP32 NCHW -> TensorRT -> "
-      "CUDA threshold/overlay -> one BGR8 D2H; engine cache=%s",
-      backend_->engine_cache_path().c_str());
+      "CUDA threshold/overlay -> BGR8 D2H; engine cache=%s; smoothing=%s "
+      "(row D2H + CPU spline + correction H2D), limit=%s %.2f px",
+      backend_->engine_cache_path().c_str(), smoothing_.enabled ? "on" : "off",
+      smoothing_.correction_limit_enabled ? "on" : "off", smoothing_.max_correction_px);
   }
 
   ~Impl()
@@ -174,6 +176,16 @@ private:
       node_.declare_parameter<double>("mask_threshold", 0.5));
     overlay_alpha_ = static_cast<float>(
       node_.declare_parameter<double>("overlay_alpha", 0.75));
+    smoothing_.enabled = node_.declare_parameter<bool>("smoothing_enabled", false);
+    smoothing_.strength = node_.declare_parameter<double>("smoothing_strength", 8.0);
+    smoothing_.correction_limit_enabled = node_.declare_parameter<bool>(
+      "smoothing_correction_limit_enabled", true);
+    smoothing_.max_correction_px = node_.declare_parameter<double>(
+      "smoothing_max_correction_px", 2.0);
+    smoothing_.max_row_jump_px = node_.declare_parameter<double>(
+      "smoothing_max_row_jump_px", 4.0);
+    smoothing_.min_segment_rows = node_.declare_parameter<int>(
+      "smoothing_min_segment_rows", 12);
     warmup_iterations_ = node_.declare_parameter<int>(
       "warmup_iterations", 10);
     preview_enabled_ = node_.declare_parameter<bool>(
@@ -190,6 +202,7 @@ private:
 
   void validate_parameters() const
   {
+    validate_lane_smoothing(smoothing_);
     if (input_topic_.empty()) {
       throw std::invalid_argument("input_topic must not be empty");
     }
@@ -293,6 +306,7 @@ private:
   cv::Mat preview_canvas(
     const cv::Mat & overlay,
     const double inference_milliseconds,
+    const double correction_milliseconds,
     const double preview_fps) const
   {
     cv::Mat banner = cv::Mat::zeros(
@@ -304,6 +318,11 @@ private:
       {cv::format("infer %.2f ms", inference_milliseconds),
         cv::Scalar(0, 255, 255)},
       {cv::format("model %.1f FPS", model_fps), cv::Scalar(0, 255, 255)},
+      {smoothing_.enabled ? cv::format("correct %.2f ms", correction_milliseconds) :
+        "correct OFF", cv::Scalar(0, 255, 0)},
+      {smoothing_.correction_limit_enabled ?
+        cv::format("limit %.1f px", smoothing_.max_correction_px) : "limit OFF",
+        cv::Scalar(220, 220, 220)},
       {cv::format("view %.1f FPS", preview_fps), cv::Scalar(255, 255, 255)}};
     for (std::size_t index = 0; index < lines.size(); ++index) {
       cv::putText(
@@ -360,6 +379,7 @@ private:
     double latest_preview_fps = 0.0;
     StageStats preprocessing;
     StageStats execution;
+    StageStats correction;
     StageStats postprocessing;
 
     try {
@@ -425,6 +445,7 @@ private:
         ++preview_interval;
         preprocessing.record(timing.preprocessing_nanoseconds);
         execution.record(timing.execution_nanoseconds);
+        correction.record(timing.correction_nanoseconds);
         postprocessing.record(timing.postprocessing_nanoseconds);
 
         if (preview_enabled_) {
@@ -434,6 +455,7 @@ private:
           const cv::Mat canvas = preview_canvas(
             overlay,
             nanoseconds_to_milliseconds(timing.execution_nanoseconds),
+            nanoseconds_to_milliseconds(timing.correction_nanoseconds),
             latest_preview_fps);
           cv::imshow(preview_window_name_, canvas);
           if (window_quit_requested(window_seen)) {
@@ -458,18 +480,20 @@ private:
             node_.get_logger(),
             "FPS: input=%.1f, preview=%.1f/%.1f | AVG/MAX ms: "
             "H2D+preprocess=%.3f/%.3f, pure-inference=%.3f/%.3f, "
-            "postprocess+D2H=%.3f/%.3f | skipped=%llu, processed=%llu",
+            "correction=%.3f/%.3f, postprocess+D2H=%.3f/%.3f | skipped=%llu, processed=%llu",
             static_cast<double>(received) / report_elapsed,
             latest_preview_fps, preview_fps_,
             preprocessing.average_milliseconds(),
             preprocessing.maximum_milliseconds(),
             execution.average_milliseconds(), execution.maximum_milliseconds(),
+            correction.average_milliseconds(), correction.maximum_milliseconds(),
             postprocessing.average_milliseconds(),
             postprocessing.maximum_milliseconds(),
             static_cast<unsigned long long>(skipped_total_),
             static_cast<unsigned long long>(processed_total_));
           preprocessing.reset();
           execution.reset();
+          correction.reset();
           postprocessing.reset();
           preview_interval = 0U;
           report_started_at = now;
@@ -512,6 +536,7 @@ private:
   int model_input_height_{kDefaultInputHeight};
   float mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
+  LaneSmoothingConfig smoothing_;
   int warmup_iterations_{10};
   bool preview_enabled_{true};
   double preview_fps_{30.0};

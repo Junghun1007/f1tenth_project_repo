@@ -12,6 +12,15 @@ line_detactor:
     overlay_alpha: 0.75
     warmup_iterations: 10
 
+    # Per-frame natural cubic smoothing spline (no temporal filtering/gap filling).
+    # Coordinates and limits are in original 120x300 BEV pixels.
+    smoothing_enabled: false
+    smoothing_strength: 8.0             # 0 preserves raw centers; larger = smoother.
+    smoothing_correction_limit_enabled: true
+    smoothing_max_correction_px: 2.0    # Maximum horizontal correction per segment.
+    smoothing_max_row_jump_px: 4.0      # Larger adjacent-row jumps split segments.
+    smoothing_min_segment_rows: 12      # Short/ambiguous/border segments stay raw.
+
     preview_enabled: true
     preview_fps: 30.0
     preview_scale: 2.0
