@@ -17,6 +17,7 @@ struct LaneInferenceTiming
   std::uint64_t execution_nanoseconds{0U};
   std::uint64_t correction_nanoseconds{0U};
   std::uint64_t postprocessing_nanoseconds{0U};
+  std::uint64_t label_export_nanoseconds{0U};
 };
 
 class TensorRtLaneBackend
@@ -30,7 +31,8 @@ public:
     std::size_t workspace_size_bytes,
     float mask_threshold,
     float overlay_alpha,
-    const LaneSmoothingConfig & smoothing = LaneSmoothingConfig{});
+    const LaneSmoothingConfig & smoothing = LaneSmoothingConfig{},
+    bool export_labels = false);
   ~TensorRtLaneBackend();
 
   TensorRtLaneBackend(const TensorRtLaneBackend &) = delete;
@@ -44,6 +46,7 @@ public:
     std::size_t source_stride);
 
   const std::uint8_t * preview_bgr_data() const noexcept;
+  const std::uint8_t * label_data() const noexcept;
   int input_width() const noexcept;
   int input_height() const noexcept;
   const std::string & engine_cache_path() const noexcept;

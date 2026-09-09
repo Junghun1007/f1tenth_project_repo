@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(line_detactor LANGUAGES CXX CUDA)
+project(line_detactor LANGUAGES C CXX CUDA)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -23,6 +23,16 @@ find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/LaneCurve.msg"
+  "msg/LaneResult.msg"
+  DEPENDENCIES std_msgs geometry_msgs sensor_msgs
+)
+rosidl_get_typesupport_target(lane_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
@@ -93,6 +103,7 @@ target_link_libraries(line_tensorrt_backend
 
 add_library(line_detactor_component SHARED
   src/line_detactor_node.cpp
+  src/lane_connector.cpp
 )
 target_compile_definitions(line_detactor_component
   PRIVATE LINE_DETACTOR_BUILDING_DLL
@@ -108,9 +119,12 @@ ament_target_dependencies(line_detactor_component
   rclcpp
   rclcpp_components
   sensor_msgs
+  std_msgs
+  geometry_msgs
 )
 target_link_libraries(line_detactor_component
   line_tensorrt_backend
+  "${lane_typesupport}"
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -147,6 +161,9 @@ install(
 
 ament_export_targets(export_line_detactor HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  rosidl_default_runtime
+  std_msgs
+  geometry_msgs
   ament_index_cpp
   CUDAToolkit
   OpenCV

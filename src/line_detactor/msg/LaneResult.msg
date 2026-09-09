@@ -1,0 +1,20 @@
+# Same timestamp and source frame_id as the input BEV. Pixel mapping is explicit below.
+std_msgs/Header header
+uint8 NONE=0
+uint8 LEFT_ONLY=1
+uint8 RIGHT_ONLY=2
+uint8 BOTH=3
+uint8 state
+uint32 source_width
+uint32 source_height
+uint32 padding_left
+uint32 padding_right
+# Original pixel: u_source = u_result - padding_left; v_source = v_result.
+# Negative/out-of-source coordinates are inferred, not newly observed camera pixels.
+line_detactor/LaneCurve left
+line_detactor/LaneCurve right
+# No camera texture/banner. Extended dimensions, black background.
+sensor_msgs/Image image
+# mono8: 0=background/unknown, 1=left model, 2=right model, 3=left bridge, 4=right bridge.
+# Background means no lane label; it does NOT indicate free space.
+sensor_msgs/Image labels

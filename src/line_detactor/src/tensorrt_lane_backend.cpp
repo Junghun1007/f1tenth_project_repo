@@ -301,7 +301,8 @@ public:
     const std::size_t workspace_size_bytes,
     const float mask_threshold,
     const float overlay_alpha,
-    const LaneSmoothingConfig & smoothing)
+    const LaneSmoothingConfig & smoothing,
+    const bool export_labels)
   : model_path_(model_path),
     engine_cache_path_(requested_engine_cache_path.empty() ?
       model_path + ".trt" + std::to_string(NV_TENSORRT_MAJOR) +
@@ -315,7 +316,8 @@ public:
     input_element_count_(pixel_count_ * 3U),
     mask_threshold_(mask_threshold),
     overlay_alpha_(overlay_alpha),
-    smoothing_(smoothing)
+    smoothing_(smoothing),
+    export_labels_(export_labels)
   {
     validate_lane_smoothing(smoothing_);
     if (input_width <= 0 || input_height <= 0) {
@@ -359,6 +361,10 @@ public:
       row_byte_count_ = static_cast<std::size_t>(input_height_) * 2U * sizeof(LaneRow);
       host_rows_.allocate(row_byte_count_);
       device_rows_.allocate(row_byte_count_);
+    }
+    if (export_labels_) {
+      host_labels_.allocate(pixel_count_);
+      device_labels_.allocate(pixel_count_);
     }
     configure_execution_bindings();
   }
@@ -446,6 +452,16 @@ public:
         std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - started).count());
     }
+    if (export_labels_) {
+      check_cuda(cudaEventRecord(label_export_started_.get(), stream_.get()), "label export start");
+      check_cuda(
+        launch_lane_labels(static_cast<const float *>(device_logits_.get()),
+          static_cast<std::uint8_t *>(device_labels_.get()), input_width_, input_height_,
+          mask_threshold_, stream_.get()), "extract lane labels");
+      check_cuda(cudaMemcpyAsync(host_labels_.get(), device_labels_.get(), pixel_count_,
+          cudaMemcpyDeviceToHost, stream_.get()), "copy lane labels to host");
+      check_cuda(cudaEventRecord(label_export_finished_.get(), stream_.get()), "label export finish");
+    }
     check_cuda(
       cudaEventRecord(postprocessing_started_.get(), stream_.get()),
       "cudaEventRecord(postprocess start)");
@@ -476,12 +492,19 @@ public:
         preprocessing_finished_.get(), execution_finished_.get()),
       correction_nanoseconds,
       elapsed_cuda_nanoseconds(
-        postprocessing_started_.get(), postprocessing_finished_.get())};
+        postprocessing_started_.get(), postprocessing_finished_.get()),
+      export_labels_ ? elapsed_cuda_nanoseconds(
+        label_export_started_.get(), label_export_finished_.get()) : 0U};
   }
 
   const std::uint8_t * preview_bgr_data() const noexcept
   {
     return static_cast<const std::uint8_t *>(host_preview_bgr_.get());
+  }
+
+  const std::uint8_t * label_data() const noexcept
+  {
+    return static_cast<const std::uint8_t *>(host_labels_.get());
   }
 
   int input_width() const noexcept
@@ -698,6 +721,7 @@ private:
   float mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
   LaneSmoothingConfig smoothing_;
+  bool export_labels_{false};
   std::size_t row_byte_count_{0U};
 
   TensorRtLogger logger_;
@@ -709,6 +733,10 @@ private:
   PinnedHostBuffer host_preview_bgr_;
   PinnedHostBuffer host_rows_;
   CudaBuffer device_rows_;
+  PinnedHostBuffer host_labels_;
+  CudaBuffer device_labels_;
+  CudaEvent label_export_started_;
+  CudaEvent label_export_finished_;
   CudaBuffer device_bgr_;
   CudaBuffer device_input_;
   CudaBuffer device_logits_;
@@ -737,10 +765,11 @@ TensorRtLaneBackend::TensorRtLaneBackend(
   const std::size_t workspace_size_bytes,
   const float mask_threshold,
   const float overlay_alpha,
-  const LaneSmoothingConfig & smoothing)
+  const LaneSmoothingConfig & smoothing,
+  const bool export_labels)
 : impl_(std::make_unique<Impl>(
     model_path, engine_cache_path, input_width, input_height,
-    workspace_size_bytes, mask_threshold, overlay_alpha, smoothing))
+    workspace_size_bytes, mask_threshold, overlay_alpha, smoothing, export_labels))
 {
 }
 
@@ -761,6 +790,11 @@ LaneInferenceTiming TensorRtLaneBackend::infer_bgr(
 const std::uint8_t * TensorRtLaneBackend::preview_bgr_data() const noexcept
 {
   return impl_->preview_bgr_data();
+}
+
+const std::uint8_t * TensorRtLaneBackend::label_data() const noexcept
+{
+  return impl_->label_data();
 }
 
 int TensorRtLaneBackend::input_width() const noexcept

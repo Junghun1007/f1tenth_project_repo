@@ -1,6 +1,8 @@
 #include "line_detactor/line_detactor_node.hpp"
 
 #include "line_detactor/tensorrt_lane_backend.hpp"
+#include "line_detactor/lane_connector.hpp"
+#include "line_detactor/msg/lane_result.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -10,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <functional>
 #include <limits>
@@ -35,7 +38,7 @@ namespace
 
 constexpr int kDefaultInputWidth = 120;
 constexpr int kDefaultInputHeight = 300;
-constexpr int kBannerHeight = 86;
+constexpr int kBannerHeight = 114;
 constexpr char kModelFilename[] =
   "fast_scnn_highres_120x300_batch_1.onnx";
 
@@ -114,15 +117,23 @@ public:
       throw std::runtime_error("ONNX model not found: " + model_path_);
     }
 
+    // Fragment mode smooths ordered 2D centerlines on the CPU, not GPU image rows.
+    auto backend_smoothing = smoothing_;
+    if (connection_.enabled) {backend_smoothing.enabled = false;}
     backend_ = std::make_unique<TensorRtLaneBackend>(
       model_path_, engine_cache_path_, model_input_width_, model_input_height_,
       static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
-      mask_threshold_, overlay_alpha_, smoothing_);
+      mask_threshold_, overlay_alpha_, backend_smoothing, connection_.enabled);
     warm_up();
 
     const auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1))
       .best_effort()
       .durability_volatile();
+    if (connection_.enabled && result_publish_enabled_) {
+      result_publisher_ = node_.create_publisher<line_detactor::msg::LaneResult>(
+        result_topic_, image_qos);
+      result_image_publisher_ = node_.create_publisher<Image>(result_image_topic_, image_qos);
+    }
     subscription_ = node_.create_subscription<sensor_msgs::msg::Image>(
       input_topic_, image_qos,
       std::bind(&Impl::on_image, this, std::placeholders::_1));
@@ -145,9 +156,13 @@ public:
       node_.get_logger(),
       "GPU path: pinned BGR8 H2D -> CUDA RGB FP32 NCHW -> TensorRT -> "
       "CUDA threshold/overlay -> BGR8 D2H; engine cache=%s; smoothing=%s "
-      "(row D2H + CPU spline + correction H2D), limit=%s %.2f px",
+      "limit=%s %.2f px",
       backend_->engine_cache_path().c_str(), smoothing_.enabled ? "on" : "off",
       smoothing_.correction_limit_enabled ? "on" : "off", smoothing_.max_correction_px);
+    RCLCPP_INFO(node_.get_logger(),
+      "Fragment connection=%s, result=%dx%d (padding=%d each side), publish=%s, topic=%s",
+      connection_.enabled ? "on" : "off", result_width(), model_input_height_,
+      connection_.padding_px, result_publisher_ ? "on" : "off", result_topic_.c_str());
   }
 
   ~Impl()
@@ -176,7 +191,7 @@ private:
       node_.declare_parameter<double>("mask_threshold", 0.5));
     overlay_alpha_ = static_cast<float>(
       node_.declare_parameter<double>("overlay_alpha", 0.75));
-    smoothing_.enabled = node_.declare_parameter<bool>("smoothing_enabled", false);
+    smoothing_.enabled = node_.declare_parameter<bool>("smoothing_enabled", true);
     smoothing_.strength = node_.declare_parameter<double>("smoothing_strength", 8.0);
     smoothing_.correction_limit_enabled = node_.declare_parameter<bool>(
       "smoothing_correction_limit_enabled", true);
@@ -186,6 +201,38 @@ private:
       "smoothing_max_row_jump_px", 4.0);
     smoothing_.min_segment_rows = node_.declare_parameter<int>(
       "smoothing_min_segment_rows", 12);
+    connection_.enabled = node_.declare_parameter<bool>(
+      "connection_enabled", true);
+    connection_.padding_px = node_.declare_parameter<int>(
+      "result_padding_px", 30);
+    connection_.min_component_area_px = node_.declare_parameter<int>(
+      "connection_min_component_area_px", 8);
+    connection_.min_fragment_length_px = node_.declare_parameter<double>(
+      "connection_min_fragment_length_px", 8.0);
+    connection_.max_fragments = node_.declare_parameter<int>(
+      "connection_max_fragments", 24);
+    connection_.tangent_window_px = node_.declare_parameter<double>(
+      "connection_tangent_window_px", 8.0);
+    connection_.max_gap_px = node_.declare_parameter<double>(
+      "connection_max_gap_px", 80.0);
+    connection_.corridor_half_width_px = node_.declare_parameter<double>(
+      "connection_corridor_half_width_px", 4.0);
+    connection_.direction_tolerance_deg = node_.declare_parameter<double>(
+      "connection_direction_tolerance_deg", 20.0);
+    connection_.max_turn_deg = node_.declare_parameter<double>(
+      "connection_max_turn_deg", 180.0);
+    connection_.max_curvature_per_px = node_.declare_parameter<double>(
+      "connection_max_curvature_per_px", 0.12);
+    connection_.max_arc_ratio = node_.declare_parameter<double>(
+      "connection_max_arc_ratio", 1.8);
+    connection_.min_lane_length_px = node_.declare_parameter<double>(
+      "connection_min_lane_length_px", 20.0);
+    connection_.line_width_px = node_.declare_parameter<int>(
+      "result_line_width_px", 2);
+    result_publish_enabled_ = node_.declare_parameter<bool>("result_publish_enabled", true);
+    result_topic_ = node_.declare_parameter<std::string>("result_topic", "/line_detactor/result");
+    result_image_topic_ = node_.declare_parameter<std::string>(
+      "result_image_topic", "/line_detactor/result_image");
     warmup_iterations_ = node_.declare_parameter<int>(
       "warmup_iterations", 10);
     preview_enabled_ = node_.declare_parameter<bool>(
@@ -203,6 +250,12 @@ private:
   void validate_parameters() const
   {
     validate_lane_smoothing(smoothing_);
+    validate_lane_connection(connection_);
+    if (result_topic_.empty() || result_image_topic_.empty() || result_topic_ == result_image_topic_ ||
+      result_topic_ == input_topic_ || result_image_topic_ == input_topic_)
+    {
+      throw std::invalid_argument("Result topics must be nonempty, distinct and different from input");
+    }
     if (input_topic_.empty()) {
       throw std::invalid_argument("input_topic must not be empty");
     }
@@ -303,14 +356,81 @@ private:
     }
   }
 
+  int result_width() const
+  {
+    return model_input_width_ + 2 * connection_.padding_px;
+  }
+
+  Image image_message(const cv::Mat & image, const Image & input, const std::string & encoding) const
+  {
+    Image message;
+    message.header = input.header;
+    message.height = static_cast<std::uint32_t>(image.rows);
+    message.width = static_cast<std::uint32_t>(image.cols);
+    message.encoding = encoding;
+    message.is_bigendian = false;
+    message.step = static_cast<std::uint32_t>(image.cols * image.elemSize());
+    message.data.resize(static_cast<std::size_t>(message.step) * image.rows);
+    for (int y = 0; y < image.rows; ++y) {
+      std::memcpy(message.data.data() + static_cast<std::size_t>(y) * message.step,
+        image.ptr(y), message.step);
+    }
+    return message;
+  }
+
+  void publish_result(const LaneConnectionResult & result, const Image & input)
+  {
+    if (!result_publisher_) {return;}
+    line_detactor::msg::LaneResult message;
+    message.header = input.header;
+    message.state = result.state;
+    message.source_width = input.width;
+    message.source_height = input.height;
+    message.padding_left = connection_.padding_px;
+    message.padding_right = connection_.padding_px;
+    for (int side = 0; side < 2; ++side) {
+      auto & curve = side == 0 ? message.left : message.right;
+      const auto & lane = result.lanes[side];
+      curve.observed_length_px = static_cast<float>(lane.observed_length_px);
+      curve.provenance = lane.interpolated;
+      curve.points.reserve(lane.points.size());
+      for (const auto & point : lane.points) {
+        geometry_msgs::msg::Point32 output;
+        output.x = point.x;
+        output.y = point.y;
+        output.z = 0.0F;
+        curve.points.push_back(output);
+      }
+    }
+    message.image = image_message(result.image, input, "bgr8");
+    message.labels = image_message(result.labels, input, "mono8");
+    result_image_publisher_->publish(message.image);
+    result_publisher_->publish(message);
+  }
+
+  cv::Mat result_overlay(const LaneConnectionResult & result, const Image & input) const
+  {
+    cv::Mat source(model_input_height_, model_input_width_, CV_8UC3,
+      const_cast<std::uint8_t *>(input.data.data()), input.step);
+    cv::Mat overlay;
+    cv::copyMakeBorder(source, overlay, 0, 0, connection_.padding_px, connection_.padding_px,
+      cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+    cv::Mat blended;
+    cv::addWeighted(overlay, 1.0 - overlay_alpha_, result.image, overlay_alpha_, 0.0, blended);
+    blended.copyTo(overlay, result.labels);
+    return overlay;
+  }
+
   cv::Mat preview_canvas(
     const cv::Mat & overlay,
     const double inference_milliseconds,
     const double correction_milliseconds,
+    const double connection_milliseconds,
+    const std::uint8_t state,
     const double preview_fps) const
   {
     cv::Mat banner = cv::Mat::zeros(
-      kBannerHeight, model_input_width_, CV_8UC3);
+      kBannerHeight, overlay.cols, CV_8UC3);
     const double model_fps = inference_milliseconds > 0.0 ?
       1000.0 / inference_milliseconds : 0.0;
     const std::vector<std::pair<std::string, cv::Scalar>> lines{
@@ -318,11 +438,17 @@ private:
       {cv::format("infer %.2f ms", inference_milliseconds),
         cv::Scalar(0, 255, 255)},
       {cv::format("model %.1f FPS", model_fps), cv::Scalar(0, 255, 255)},
-      {smoothing_.enabled ? cv::format("correct %.2f ms", correction_milliseconds) :
+      {(smoothing_.enabled || connection_.enabled) ?
+        cv::format("correct %.2f ms", correction_milliseconds) :
         "correct OFF", cv::Scalar(0, 255, 0)},
       {smoothing_.correction_limit_enabled ?
         cv::format("limit %.1f px", smoothing_.max_correction_px) : "limit OFF",
         cv::Scalar(220, 220, 220)},
+      {connection_.enabled ? cv::format("connect %.2f ms", connection_milliseconds) :
+        "connect OFF", cv::Scalar(0, 255, 0)},
+      {connection_.enabled ? std::string("lanes ") +
+        (state == 3U ? "BOTH" : state == 1U ? "LEFT" : state == 2U ? "RIGHT" : "NONE") :
+        "lanes RAW", cv::Scalar(220, 220, 220)},
       {cv::format("view %.1f FPS", preview_fps), cv::Scalar(255, 255, 255)}};
     for (std::size_t index = 0; index < lines.size(); ++index) {
       cv::putText(
@@ -364,7 +490,7 @@ private:
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
       cv::resizeWindow(
         preview_window_name_,
-        static_cast<int>(model_input_width_ * preview_scale_),
+        static_cast<int>(result_width() * preview_scale_),
         static_cast<int>((model_input_height_ + kBannerHeight) * preview_scale_));
     }
 
@@ -380,6 +506,7 @@ private:
     StageStats preprocessing;
     StageStats execution;
     StageStats correction;
+    StageStats connection;
     StageStats postprocessing;
 
     try {
@@ -426,10 +553,23 @@ private:
         processed_generation = generation;
 
         LaneInferenceTiming timing;
+        LaneConnectionResult result;
+        std::uint64_t connection_nanoseconds = 0U;
         try {
           validate_image(*message);
           timing = backend_->infer_bgr(
             message->data.data(), message->data.size(), message->step);
+          if (connection_.enabled) {
+            const auto started = std::chrono::steady_clock::now();
+            cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
+              const_cast<std::uint8_t *>(backend_->label_data()));
+            result = connect_lane_fragments(labels, connection_, smoothing_);
+            connection_nanoseconds = static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - started).count());
+            timing.correction_nanoseconds += timing.label_export_nanoseconds + connection_nanoseconds;
+            publish_result(result, *message);
+          }
         } catch (const std::exception & exception) {
           now = std::chrono::steady_clock::now();
           if (now - last_error_at >= std::chrono::seconds(5)) {
@@ -446,16 +586,24 @@ private:
         preprocessing.record(timing.preprocessing_nanoseconds);
         execution.record(timing.execution_nanoseconds);
         correction.record(timing.correction_nanoseconds);
+        connection.record(connection_nanoseconds);
         postprocessing.record(timing.postprocessing_nanoseconds);
 
         if (preview_enabled_) {
-          cv::Mat overlay(
-            model_input_height_, model_input_width_, CV_8UC3,
-            const_cast<std::uint8_t *>(backend_->preview_bgr_data()));
+          cv::Mat overlay;
+          if (connection_.enabled) {
+            overlay = result_overlay(result, *message);
+          } else {
+            const cv::Mat raw(model_input_height_, model_input_width_, CV_8UC3,
+              const_cast<std::uint8_t *>(backend_->preview_bgr_data()));
+            cv::copyMakeBorder(raw, overlay, 0, 0, connection_.padding_px, connection_.padding_px,
+              cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+          }
           const cv::Mat canvas = preview_canvas(
             overlay,
             nanoseconds_to_milliseconds(timing.execution_nanoseconds),
             nanoseconds_to_milliseconds(timing.correction_nanoseconds),
+            nanoseconds_to_milliseconds(connection_nanoseconds), result.state,
             latest_preview_fps);
           cv::imshow(preview_window_name_, canvas);
           if (window_quit_requested(window_seen)) {
@@ -480,13 +628,15 @@ private:
             node_.get_logger(),
             "FPS: input=%.1f, preview=%.1f/%.1f | AVG/MAX ms: "
             "H2D+preprocess=%.3f/%.3f, pure-inference=%.3f/%.3f, "
-            "correction=%.3f/%.3f, postprocess+D2H=%.3f/%.3f | skipped=%llu, processed=%llu",
+            "correction=%.3f/%.3f, connect=%.3f/%.3f, postprocess+D2H=%.3f/%.3f | "
+            "skipped=%llu, processed=%llu",
             static_cast<double>(received) / report_elapsed,
             latest_preview_fps, preview_fps_,
             preprocessing.average_milliseconds(),
             preprocessing.maximum_milliseconds(),
             execution.average_milliseconds(), execution.maximum_milliseconds(),
             correction.average_milliseconds(), correction.maximum_milliseconds(),
+            connection.average_milliseconds(), connection.maximum_milliseconds(),
             postprocessing.average_milliseconds(),
             postprocessing.maximum_milliseconds(),
             static_cast<unsigned long long>(skipped_total_),
@@ -494,6 +644,7 @@ private:
           preprocessing.reset();
           execution.reset();
           correction.reset();
+          connection.reset();
           postprocessing.reset();
           preview_interval = 0U;
           report_started_at = now;
@@ -537,6 +688,12 @@ private:
   float mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
   LaneSmoothingConfig smoothing_;
+  LaneConnectionConfig connection_;
+  bool result_publish_enabled_{true};
+  std::string result_topic_;
+  std::string result_image_topic_;
+  rclcpp::Publisher<line_detactor::msg::LaneResult>::SharedPtr result_publisher_;
+  rclcpp::Publisher<Image>::SharedPtr result_image_publisher_;
   int warmup_iterations_{10};
   bool preview_enabled_{true};
   double preview_fps_{30.0};

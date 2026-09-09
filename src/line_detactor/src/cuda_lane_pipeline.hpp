@@ -25,6 +25,14 @@ cudaError_t launch_lane_rows(
   float mask_threshold,
   cudaStream_t stream) noexcept;
 
+cudaError_t launch_lane_labels(
+  const float * device_logits,
+  std::uint8_t * device_labels,
+  int width,
+  int height,
+  float mask_threshold,
+  cudaStream_t stream) noexcept;
+
 cudaError_t launch_lane_overlay(
   const std::uint8_t * device_bgr,
   const float * device_logits,

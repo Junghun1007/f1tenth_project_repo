@@ -3,7 +3,7 @@
 <package format="3">
   <name>line_detactor</name>
   <version>0.1.0</version>
-  <description>Standalone TensorRT FP32 Fast-SCNN BEV lane preview.</description>
+  <description>TensorRT BEV lane inference, fragment connection and expanded lane result frames.</description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>TODO</license>
 
@@ -13,6 +13,11 @@
   <depend>rclcpp</depend>
   <depend>rclcpp_components</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <build_depend>rosidl_default_generators</build_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+  <member_of_group>rosidl_interface_packages</member_of_group>
   <depend>opencv4</depend>
 
   <exec_depend>ament_index_python</exec_depend>

@@ -62,6 +62,18 @@ __device__ float owned_logit(
   return owned ? (lane == 0 ? left : right) : -CUDART_INF_F;
 }
 
+__global__ void lane_labels_kernel(
+  const float * logits, std::uint8_t * labels, const int width, const int height,
+  const float threshold)
+{
+  const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
+  if (i >= width * height) {return;}
+  const float left = logits[i];
+  const float right = logits[width * height + i];
+  labels[i] = left >= threshold && (!(right >= threshold) || left >= right) ? 1U :
+    (right >= threshold ? 2U : 0U);
+}
+
 __global__ void lane_rows_kernel(
   const float * logits, LaneRow * rows, const int width, const int height,
   const float threshold)
@@ -244,6 +256,15 @@ cudaError_t launch_lane_rows(
 {
   lane_rows_kernel<<<(2 * height + 127) / 128, 128, 0U, stream>>>(
     device_logits, device_rows, width, height, threshold_logit(mask_threshold));
+  return cudaGetLastError();
+}
+
+cudaError_t launch_lane_labels(
+  const float * device_logits, std::uint8_t * device_labels, const int width,
+  const int height, const float mask_threshold, const cudaStream_t stream) noexcept
+{
+  lane_labels_kernel<<<(width * height + 255) / 256, 256, 0U, stream>>>(
+    device_logits, device_labels, width, height, threshold_logit(mask_threshold));
   return cudaGetLastError();
 }
 

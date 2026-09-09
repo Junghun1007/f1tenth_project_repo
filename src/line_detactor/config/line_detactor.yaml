@@ -12,14 +12,36 @@ line_detactor:
     overlay_alpha: 0.75
     warmup_iterations: 10
 
-    # Per-frame natural cubic smoothing spline (no temporal filtering/gap filling).
-    # Coordinates and limits are in original 120x300 BEV pixels.
-    smoothing_enabled: false
+    # New final-output path: model -> fragment centerlines -> optional weak spline
+    # -> tangent-matched Bezier bridges -> at most one chain per side.
+    connection_enabled: true
+    result_padding_px: 30                  # EACH side: 120 -> 180px; height stays 300.
+    connection_min_component_area_px: 8    # Remove very small mask components.
+    connection_min_fragment_length_px: 8.0 # Reject short skeleton paths.
+    connection_max_fragments: 24           # Per side, cap candidate work (largest areas first).
+    connection_tangent_window_px: 8.0      # Fit endpoint direction over this arc length.
+    connection_max_gap_px: 80.0            # Maximum endpoint-to-endpoint distance.
+    connection_corridor_half_width_px: 4.0 # Prediction tolerance, NOT rendered line thickness.
+    connection_direction_tolerance_deg: 20.0 # Corridor widens with distance.
+    connection_max_turn_deg: 180.0         # Includes opposing tangents around a side excursion.
+    connection_max_curvature_per_px: 0.12  # Minimum bridge radius ~8.3 BEV px.
+    connection_max_arc_ratio: 1.8          # Bridge length / straight endpoint distance.
+    connection_min_lane_length_px: 20.0    # Required observed length; bridges do not count.
+    result_line_width_px: 2                # Raster stroke width, independent of tolerance.
+
+    # Timestamped LaneResult contains curves + provenance + label image + BGR lane image.
+    result_publish_enabled: true
+    result_topic: "/line_detactor/result"
+    result_image_topic: "/line_detactor/result_image"
+
+    # Weak smoothing is kept INSIDE observed fragments; it does not fit across gaps.
+    # With connection OFF, these settings restore the previous per-row mask smoother.
+    smoothing_enabled: true
     smoothing_strength: 8.0             # 0 preserves raw centers; larger = smoother.
     smoothing_correction_limit_enabled: true
-    smoothing_max_correction_px: 2.0    # Maximum horizontal correction per segment.
-    smoothing_max_row_jump_px: 4.0      # Larger adjacent-row jumps split segments.
-    smoothing_min_segment_rows: 12      # Short/ambiguous/border segments stay raw.
+    smoothing_max_correction_px: 2.0    # Max 2D shift within a fragment (legacy: horizontal).
+    smoothing_max_row_jump_px: 4.0      # Legacy row mode only.
+    smoothing_min_segment_rows: 12      # Minimum samples (1px arc length; legacy: rows).
 
     preview_enabled: true
     preview_fps: 30.0
