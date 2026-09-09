@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 namespace line_detactor
 {
@@ -134,9 +135,9 @@ cudaError_t launch_lane_overlay(
 {
   float logit_threshold = 0.0F;
   if (mask_threshold <= 0.0F) {
-    logit_threshold = -CUDART_INF_F;
+    logit_threshold = -std::numeric_limits<float>::infinity();
   } else if (mask_threshold >= 1.0F) {
-    logit_threshold = CUDART_INF_F;
+    logit_threshold = std::numeric_limits<float>::infinity();
   } else {
     logit_threshold = logf(mask_threshold / (1.0F - mask_threshold));
   }
