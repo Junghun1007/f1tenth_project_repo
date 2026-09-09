@@ -1,0 +1,17 @@
+line_detactor:
+  ros__parameters:
+    # Raw color BEV published immediately after bev_processor conversion.
+    input_topic: "/camera/image_bev"
+
+    # Empty launch override uses the checkpoint installed with this package.
+    device: "cuda:0"
+    amp_enabled: true
+    mask_threshold: 0.5
+    warmup_iterations: 20
+    torch_num_threads: 2
+
+    preview_enabled: true
+    preview_fps: 30.0
+    preview_scale: 2.0
+    preview_window_name: "BEV lane model preview"
+    status_log_interval_sec: 1.0
