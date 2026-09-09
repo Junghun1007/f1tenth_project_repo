@@ -1,17 +1,19 @@
 line_detactor:
   ros__parameters:
-    # Raw color BEV published immediately after bev_processor conversion.
+    # Raw BGR8 BEV published immediately after bev_processor conversion.
     input_topic: "/camera/image_bev"
 
-    # Empty launch override uses the checkpoint installed with this package.
-    device: "cuda:0"
-    amp_enabled: true
+    # model_path defaults to the ONNX installed with this package.
+    engine_cache_path: ""
+    tensorrt_workspace_size_mb: 1024
+    model_input_width: 120
+    model_input_height: 300
     mask_threshold: 0.5
-    warmup_iterations: 20
-    torch_num_threads: 2
+    overlay_alpha: 0.75
+    warmup_iterations: 10
 
     preview_enabled: true
     preview_fps: 30.0
     preview_scale: 2.0
-    preview_window_name: "BEV lane model preview"
+    preview_window_name: "BEV lane TensorRT preview"
     status_log_interval_sec: 1.0
