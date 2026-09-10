@@ -40,6 +40,7 @@ geometry_msgs/Point32[] centerline_points
 uint8 CENTER_SINGLE=1
 uint8 CENTER_PAIRED=2
 uint8 CENTER_GAP=3
+uint8 CENTER_OUTER=4
 # Same length as points. Local construction support, not a probability.
 # Short graph edges and subsequent smoothing can mix neighboring support.
 uint8[] centerline_support

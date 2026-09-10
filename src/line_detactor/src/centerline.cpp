@@ -237,12 +237,81 @@ struct Fragment
   Path points;
   Path directions;
   std::vector<double> arc;
+  Path outer_centers;
+  Path outer_directions;
+  std::vector<double> outer_confidence;
 };
+
+// Classify geometric outer side, not whichever fragment happens to be longest.
+// Image coordinates are x-right/y-down: left turn has negative signed angle,
+// hence right boundary (side 1) is outer; right turn uses side 0.
+void prepare_outer_reference(Fragment & f, const CenterlineConfig & cfg)
+{
+  const auto count = f.points.size();
+  f.outer_confidence.assign(count, 0.0);
+  f.outer_centers = f.points;
+  f.outer_directions = f.directions;
+  if (!cfg.corner_outer_enabled || count < 5U || f.arc.back() < cfg.corner_outer_min_length_m) {return;}
+  const double ds = f.arc.back() / (count - 1U);
+  const auto filtered = gaussian(f.points, 0.04 / ds);
+  const int tangent_half = std::max(1, static_cast<int>(std::round(
+    cfg.corner_outer_tangent_window_m / (2.0 * ds))));
+  const auto direction = tangents(filtered, tangent_half);
+  // Smooth direction, but retain the actual observed boundary anchor positions.
+  for (std::size_t i = 0; i < count; ++i) {
+    const Point normal = Point(-direction[i].y, direction[i].x) * (f.side == 0 ? 1.0 : -1.0);
+    f.outer_centers[i] = f.points[i] + normal * (cfg.lane_width_m / 2.0);
+  }
+  f.outer_directions = tangents(f.outer_centers, tangent_half);
+  Path weights(count);
+  const double half_window = cfg.corner_outer_window_m / 2.0;
+  for (std::size_t i = 0; i < count; ++i) {
+    const auto lo = static_cast<std::size_t>(std::lower_bound(
+      f.arc.begin(), f.arc.end(), f.arc[i] - half_window) - f.arc.begin());
+    const auto high = std::upper_bound(f.arc.begin(), f.arc.end(), f.arc[i] + half_window);
+    const auto hi = static_cast<std::size_t>(high - f.arc.begin() - 1);
+    const double observed_span = f.arc[hi] - f.arc[lo];
+    if (observed_span < cfg.corner_outer_min_length_m) {continue;}
+    double signed_turn = 0.0;
+    double absolute_turn = 0.0;
+    for (std::size_t j = lo + 1U; j <= hi; ++j) {
+      const auto & a = direction[j - 1U];
+      const auto & b = direction[j];
+      const double turn = std::atan2(a.x * b.y - a.y * b.x, a.dot(b));
+      signed_turn += turn;
+      absolute_turn += std::abs(turn);
+    }
+    const bool outer = f.side == 1 ? signed_turn < 0.0 : signed_turn > 0.0;
+    if (!outer) {continue;}
+    const double turn_strength = std::clamp((std::abs(signed_turn) -
+      radians(cfg.corner_outer_min_turn_deg)) / radians(
+      cfg.corner_outer_full_turn_deg - cfg.corner_outer_min_turn_deg), 0.0, 1.0);
+    // Oscillating/S-shaped observations have less evidence of one turn direction.
+    const double consistency = std::abs(signed_turn) / std::max(absolute_turn, 1.0e-9);
+    const double coverage_ratio = std::clamp((observed_span - cfg.corner_outer_min_length_m) /
+      (cfg.corner_outer_window_m - cfg.corner_outer_min_length_m), 0.0, 1.0);
+    const double coverage = coverage_ratio * coverage_ratio * (3.0 - 2.0 * coverage_ratio);
+    const double endpoint = std::min(1.0, std::min(f.arc[i], f.arc.back() - f.arc[i]) /
+      (cfg.corner_outer_tangent_window_m / 2.0));
+    weights[i].x = turn_strength * consistency * coverage * endpoint;
+  }
+  weights = gaussian(weights, 0.05 / ds);
+  for (std::size_t i = 0; i < count; ++i) {
+    // Outer offset can fold at an excessively tight radius. Never prefer it.
+    const auto a = f.outer_centers[i == 0U ? 0U : i - 1U];
+    const auto b = f.outer_centers[std::min(i + 1U, count - 1U)];
+    if ((b - a).dot(direction[i]) <= 0.001 || f.outer_directions[i].dot(direction[i]) < 0.5) {continue;}
+    const double endpoint = std::min(1.0, std::min(f.arc[i], f.arc.back() - f.arc[i]) /
+      (cfg.corner_outer_tangent_window_m / 2.0));
+    f.outer_confidence[i] = std::clamp(weights[i].x * endpoint, 0.0, 1.0);
+  }
+}
 struct Candidate
 {
   Point point;
   Point direction;
   std::uint8_t support;
+  bool paired;
 };
 }  // namespace
 
@@ -252,11 +321,19 @@ void validate_centerline(const CenterlineConfig & c)
   const double values[] = {c.lane_width_m, c.bev_width_m, c.bev_height_m, c.sample_spacing_m,
     c.min_fragment_length_m, c.tangent_window_m, c.width_tolerance_m,
     c.pair_along_tolerance_m, c.max_gap_m, c.max_start_distance_m, c.min_clearance_m,
-    c.smoothing_window_m, c.smoothing_max_shift_m, c.turn_window_m};
+    c.smoothing_window_m, c.smoothing_max_shift_m, c.turn_window_m,
+    c.corner_outer_window_m, c.corner_outer_tangent_window_m, c.corner_outer_min_length_m};
   for (double v : values) {
     if (!positive(v)) {throw std::invalid_argument("Centerline distances must be finite and positive");}
   }
-  if (!std::isfinite(c.outside_margin_m) || c.outside_margin_m < 0.0 ||
+  if (!std::isfinite(c.corner_outer_weight) || c.corner_outer_weight < 0.0 || c.corner_outer_weight > 1.0 ||
+    !positive(c.corner_outer_min_turn_deg) || !positive(c.corner_outer_full_turn_deg) ||
+    c.corner_outer_full_turn_deg <= c.corner_outer_min_turn_deg || c.corner_outer_full_turn_deg >= 180.0 ||
+    c.corner_outer_window_m > 5.0 || c.corner_outer_tangent_window_m > c.corner_outer_window_m ||
+    c.corner_outer_min_length_m >= c.corner_outer_window_m ||
+    c.corner_outer_tangent_window_m < 2.0 * c.sample_spacing_m ||
+    c.corner_outer_min_length_m < 3.0 * c.sample_spacing_m ||
+    !std::isfinite(c.outside_margin_m) || c.outside_margin_m < 0.0 ||
     !std::isfinite(c.smoothing_sigma_m) || c.smoothing_sigma_m < 0.0 ||
     !std::isfinite(c.smoothing_strength) || c.smoothing_strength < 0.0 || c.smoothing_strength > 1.0 ||
     !positive(c.pair_heading_tolerance_deg) || c.pair_heading_tolerance_deg >= 90.0 ||
@@ -316,7 +393,8 @@ CenterlineResult generate_centerline(
       if (norm(points.front() - ego) > norm(points.back() - ego)) {std::reverse(points.begin(), points.end());}
       points = gaussian(resample(points, cfg.sample_spacing_m), 1.0);
       const int half = std::max(1, static_cast<int>(std::round(cfg.tangent_window_m / (2.0 * cfg.sample_spacing_m))));
-      Fragment f{side, points, tangents(points, half), arc_lengths(points)};
+      Fragment f{side, points, tangents(points, half), arc_lengths(points), {}, {}, {}};
+      prepare_outer_reference(f, cfg);
       samples += points.size();
       fragments.push_back(std::move(f));
     }
@@ -324,12 +402,17 @@ CenterlineResult generate_centerline(
   std::vector<Candidate> candidates;
   for (const auto & f : fragments) {
     Path offsets;
+    Path preferred_directions;
     std::vector<std::uint8_t> support;
+    std::vector<bool> paired;
     for (std::size_t i = 0; i < f.points.size(); ++i) {
       const auto & p = f.points[i];
       const auto & t = f.directions[i];
       const Point normal = Point(-t.y, t.x) * (f.side == 0 ? 1.0 : -1.0);
       Point center = p + normal * (cfg.lane_width_m / 2.0);
+      Point preferred_direction = t;
+      const Fragment * counterpart = nullptr;
+      std::size_t counterpart_index = 0U;
       std::uint8_t mode = 1U;
       double best = std::numeric_limits<double>::infinity();
       for (const auto & other : fragments) {
@@ -343,18 +426,53 @@ CenterlineResult generate_centerline(
             along > cfg.pair_along_tolerance_m ||
             other.directions[j].dot(t) < std::cos(radians(cfg.pair_heading_tolerance_deg))) {continue;}
           const double score = 3.0 * along + std::abs(across - cfg.lane_width_m);
-          if (score < best) {best = score; center = (p + other.points[j]) * 0.5; mode = 2U;}
+          if (score < best) {
+            best = score;
+            center = (p + other.points[j]) * 0.5;
+            mode = 2U;
+            counterpart = &other;
+            counterpart_index = j;
+          }
         }
       }
+      // Both sides' candidates converge toward the same outer-reference geometry,
+      // reducing jumps when the graph changes its source side in a corner.
+      const double own_outer = f.outer_confidence[i];
+      const double other_outer = counterpart ? counterpart->outer_confidence[counterpart_index] : 0.0;
+      const Fragment * reference = nullptr;
+      std::size_t reference_index = i;
+      // Conflicting evidence reduces the blend continuously to zero at a tie.
+      // Avoid binary switches caused by tiny opposite-turn fluctuations.
+      if (own_outer > other_outer) {reference = &f;}
+      if (other_outer > own_outer) {
+        reference = counterpart;
+        reference_index = counterpart_index;
+      }
+      if (reference) {
+        const double weight = cfg.corner_outer_weight * std::abs(own_outer - other_outer);
+        const auto target = reference->outer_centers[reference_index];
+        const auto direction = reference->outer_directions[reference_index];
+        const auto blended = center + (target - center) * weight;
+        if (weight > 1.0e-3 && direction.dot(t) > 0.5 &&
+          geometry.point_ok(target) && geometry.point_ok(blended))
+        {
+          center = blended;
+          preferred_direction = unit(t * (1.0 - weight) + direction * weight);
+          mode = 4U;
+        }
+      }
+      paired.push_back(counterpart != nullptr);
       offsets.push_back(center);
+      preferred_directions.push_back(preferred_direction);
       support.push_back(mode);
     }
     offsets = gaussian(offsets, 1.2);
     for (std::size_t i = 0; i < offsets.size(); ++i) {
       const auto a = offsets[i == 0U ? i : i - 1U];
       const auto b = offsets[std::min(i + 1U, offsets.size() - 1U)];
-      if ((b - a).dot(f.directions[i]) <= 0.001 || !geometry.point_ok(offsets[i])) {continue;}
-      candidates.push_back({offsets[i], f.directions[i], support[i]});
+      if ((b - a).dot(f.directions[i]) <= 0.001 ||
+        (b - a).dot(preferred_directions[i]) <= 0.001 || !geometry.point_ok(offsets[i])) {continue;}
+      candidates.push_back({offsets[i], preferred_directions[i], support[i], paired[i]});
     }
   }
   if (candidates.size() < 2U) {return result;}
@@ -387,7 +505,7 @@ CenterlineResult generate_centerline(
       if (aligned < 0.5 || direction.dot(candidates[j].direction) < 0.5 ||
         candidates[i].direction.dot(candidates[j].direction) < 0.5 ||
         !geometry.segment_ok(positions[i], positions[j])) {continue;}
-      double next = distance + length * (1.0 + (candidates[j].support == 1U ? 0.6 : 0.0) +
+      double next = distance + length * (1.0 + (candidates[j].paired ? 0.0 : 0.6) +
         3.0 * (1.0 - aligned));
       next += std::max(0.0, length - 0.065) * 3.0;
       if (next < cost[j]) {cost[j] = next; previous[j] = i; queue.emplace(next, j);}

@@ -164,6 +164,10 @@ public:
       centerline_.enabled && connection_.enabled ? "on" : "off", centerline_.lane_width_m,
       centerline_.bev_width_m, centerline_.bev_height_m, centerline_.smoothing_enabled ? "on" : "off",
       centerline_.smoothing_strength, centerline_.smoothing_window_m);
+    RCLCPP_INFO(node_.get_logger(),
+      "Corner outer reference=%s weight=%.2f turn window=%.2fm min support=%.2fm",
+      centerline_.corner_outer_enabled ? "on" : "off", centerline_.corner_outer_weight,
+      centerline_.corner_outer_window_m, centerline_.corner_outer_min_length_m);
   }
 
   ~Impl()
@@ -245,6 +249,20 @@ private:
       "centerline_outside_margin_m", 0.12);
     centerline_.max_samples = node_.declare_parameter<int>("centerline_max_samples", 2000);
     centerline_.line_width_px = node_.declare_parameter<int>("centerline_line_width_px", 2);
+    centerline_.corner_outer_enabled = node_.declare_parameter<bool>(
+      "centerline_corner_outer_enabled", true);
+    centerline_.corner_outer_weight = node_.declare_parameter<double>(
+      "centerline_corner_outer_weight", 0.85);
+    centerline_.corner_outer_window_m = node_.declare_parameter<double>(
+      "centerline_corner_outer_window_m", 0.60);
+    centerline_.corner_outer_tangent_window_m = node_.declare_parameter<double>(
+      "centerline_corner_outer_tangent_window_m", 0.15);
+    centerline_.corner_outer_min_length_m = node_.declare_parameter<double>(
+      "centerline_corner_outer_min_length_m", 0.30);
+    centerline_.corner_outer_min_turn_deg = node_.declare_parameter<double>(
+      "centerline_corner_outer_min_turn_deg", 8.0);
+    centerline_.corner_outer_full_turn_deg = node_.declare_parameter<double>(
+      "centerline_corner_outer_full_turn_deg", 25.0);
     centerline_.smoothing_enabled = node_.declare_parameter<bool>(
       "centerline_smoothing_enabled", true);
     centerline_.smoothing_sigma_m = node_.declare_parameter<double>(

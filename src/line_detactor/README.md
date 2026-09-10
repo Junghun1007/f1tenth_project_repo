@@ -174,7 +174,8 @@ line_detactor:
 2. 각 연결 조각에서 순서가 있는 골격 경로를 추출하고 실제 거리 좌표로 변환한다.
    조각의 방향은 아래쪽 영상 중앙(차량 근처)에서 먼 쪽으로 정한다. 폐곡선은 후보에서 제외한다.
 3. 대응되는 반대편 차선이 폭·방향 조건을 만족하면 중점, 아니면 안쪽 법선 방향으로
-   도로 폭의 절반(기본 32.5cm)을 이동한 후보를 만든다.
+   도로 폭의 절반(기본 32.5cm)을 이동한 후보를 만든다. 코너에서는 아래 설명처럼
+   관측이 충분한 바깥 차선의 오프셋 경로와 진행 방향을 더 높은 비중으로 반영한다.
 4. 차량 근처부터 거리·진행 방향·관측 경계 여유 거리가 맞는 후보들을 연결한다.
    짧은 공백은 허용하며 큰 공백은 경로를 끝낸다. 원본 좌우 차선을 하나로 강제 병합하지 않는다.
 5. 국소 Gaussian 평활화 후, 경로상 거리 기준 2차 다항식 평활화를 추가한다.
@@ -227,6 +228,13 @@ ros2 launch line_detactor line_detactor.launch.py \
 | `outside_margin_m` | 0.12 | 좌우 원본 영상 바깥의 경로 허용 범위; 결과 패딩 크기 이내로 제한 |
 | `max_samples` | 2000 | 후보 샘플 예산; 초과 프레임은 빈 경로와 경고 출력 |
 | `line_width_px` | 2 | 노란 선 두께, 1~10px |
+| `corner_outer_enabled` | true | 코너에서 바깥 차선 기준 경로 우선 반영 |
+| `corner_outer_weight` | 0.85 | 바깥 차선 기준 경로의 최대 혼합 비중, 0~1 |
+| `corner_outer_window_m` | 0.60 | 회전 방향과 관측 길이를 평가하는 거리 범위 |
+| `corner_outer_tangent_window_m` | 0.15 | 바깥 차선 기준 접선 추정 범위 |
+| `corner_outer_min_length_m` | 0.30 | 기준으로 삼을 최소 연속 관측 길이; 평가 범위보다 작아야 함 |
+| `corner_outer_min_turn_deg` | 8.0 | 바깥 차선 가중치를 올리기 시작하는 누적 회전각 |
+| `corner_outer_full_turn_deg` | 25.0 | 충분한 관측에서 최대 가중치에 도달하는 누적 회전각 |
 | `smoothing_enabled` | true | 최종 경로의 두 단계 평활화 |
 | `smoothing_sigma_m` | 0.04 | 첫 단계 국소 평활화 표준편차 |
 | `smoothing_window_m` | 0.65 | 두 번째 단계 국소 2차 다항식 계산 범위 |
@@ -248,7 +256,8 @@ ros2 launch line_detactor line_detactor.launch.py \
 
 - `centerline_points`: 가까운 곳부터 정렬된 확장 영상 픽셀 좌표, z=0. 미터/TF 좌표가 아님.
 - `centerline_support`: 점 수와 같은 길이. 1=한쪽 오프셋, 2=양쪽 중점,
-  3=6.5cm보다 긴 짧은 연결 구간. 국소 생성 근거이며 평활화 후 정확도 확률은 아님.
+  3=6.5cm보다 긴 짧은 연결 구간, 4=바깥 차선 기준 혼합(`CENTER_OUTER`).
+  국소 생성 근거이며 평활화 후 정확도 확률은 아님. 4에도 양쪽/한쪽 관측 모두 가능하다.
 - `centerline_mask`: image와 같은 크기의 `mono8` 0/255 마스크.
 - `centerline_valid`: 두 점 이상의 기하 경로가 존재함. 주행 가능 판정은 아님.
 - `centerline_sample_limit_reached`: 계산 예산 초과 여부.
@@ -259,6 +268,51 @@ ros2 launch line_detactor line_detactor.launch.py \
 픽셀·샘플 간격 여유분을 추가하지만 차량 외곽/장애물/조향 곡률 제한이나 프레임 간
 추적을 포함하지 않는다. `labels=0`은 주행 가능 공간이 아니다.
 이번 ROS 이식은 사용자 요청에 따라 빌드·테스트·젯슨 실행을 수행하지 않았다.
+
+### 코너에서 바깥 차선 형상 우선 반영
+
+코너 정점 부근에서 양쪽 경계의 중점 후보가 달라져, 경로 선택의 기준이 바뀌는 문제를
+줄이기 위해 바깥 경계의 오프셋 경로를 우선 반영한다. **좌회전은 오른쪽(빨강),
+우회전은 왼쪽(파랑)** 차선이 바깥이다. 단순히 가장 긴 조각을 바깥 차선으로 보지 않고,
+차선을 따라 측정한 부호 있는 회전각으로 판별한다.
+
+바깥 차선의 곡률 숫자를 중앙선에 그대로 복사하면 반경이 맞지 않으므로,
+그 경계를 안쪽으로 도로 폭의 절반만큼 이동한 **경로 위치와 진행 방향**을 혼합한다.
+기존 양쪽 중점 후보와 한쪽 오프셋 후보 모두 같은 바깥 기준으로 가까워지도록 해
+후보를 선택하는 쪽이 바뀌어도 경로 형태의 차이가 줄도록 구성했다.
+
+```text
+최종 후보 = (1 - 가중치) × 기존 후보 + 가중치 × 바깥 경계의 안쪽 오프셋
+가중치 상한 = centerline_corner_outer_weight (기본 0.85)
+```
+
+실제 가중치는 회전각, 국소 관측 길이, 한 방향으로 도는 일관성, 끝점까지의 여유에
+따라 0~상한 사이에서 서서히 변한다. 양쪽 회전 증거가 충돌하면 두 증거의 차이만큼만
+가중치를 적용한다. 30cm 미만의 짧은 조각, 직선, 바깥 차선 부재, 너무 작은 곡률 반경으로
+뒤집힌 오프셋, 기존 경계 여유 거리 조건 위반에서는 해당 기준의 영향력을 낮추거나 제외한다.
+짧은 조각은 경로의 다른 후보로는 계속 사용할 수 있다.
+
+이 변경은 **현재 프레임의 관측을 이용한 공간적 안정화**다. 이전 프레임 경로를 고정하거나
+시간 평균하지 않으며, 실제 검출 위치가 움직이는 경우의 흔들림까지 제거한다고 보장하지 않는다.
+주행 중 과거 경로를 재사용하려면 차량 이동 보정이 별도로 필요하다.
+
+```yaml
+line_detactor:
+  ros__parameters:
+    centerline_corner_outer_enabled: true
+    centerline_corner_outer_weight: 0.85
+    centerline_corner_outer_window_m: 0.60
+    centerline_corner_outer_tangent_window_m: 0.15
+    centerline_corner_outer_min_length_m: 0.30
+    centerline_corner_outer_min_turn_deg: 8.0
+    centerline_corner_outer_full_turn_deg: 25.0
+```
+
+바깥 차선이 안정적으로 보이면 `corner_outer_weight`를 0.85에서 0.95로 올려 비중을
+높일 수 있다. 1.0도 관측 신뢰도에 따라 실제 가중치가 낮아진다.
+기존 방식과 비교하려면 `corner_outer_enabled: false`로 실행한다.
+두 설정 파일(`line_detactor.yaml`, `centerline_preview.yaml`)과 launch 인자에 같은 값을
+연결했다. YAML 변경 후 재시작한다. 이번 코너 수정도 요청에 따라 빌드·테스트는 수행하지 않았다.
 
 ## 결과 토픽과 좌표
 

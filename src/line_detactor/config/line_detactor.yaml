@@ -58,6 +58,15 @@ line_detactor:
     centerline_outside_margin_m: 0.12
     centerline_max_samples: 2000
     centerline_line_width_px: 2
+    # Prefer the observed OUTER boundary shape in corners; fade with local support/turn.
+    centerline_corner_outer_enabled: true
+    centerline_corner_outer_weight: 0.85
+    centerline_corner_outer_window_m: 0.60
+    centerline_corner_outer_tangent_window_m: 0.15
+    centerline_corner_outer_min_length_m: 0.30
+    centerline_corner_outer_min_turn_deg: 8.0
+    centerline_corner_outer_full_turn_deg: 25.0
+
     centerline_smoothing_enabled: true
     centerline_smoothing_sigma_m: 0.04
     centerline_smoothing_window_m: 0.65
