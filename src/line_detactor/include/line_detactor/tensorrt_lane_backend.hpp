@@ -24,6 +24,7 @@ public:
   TensorRtLaneBackend(
     const std::string & model_path,
     const std::string & engine_cache_path,
+    const std::string & engine_precision,
     int input_width,
     int input_height,
     std::size_t workspace_size_bytes,

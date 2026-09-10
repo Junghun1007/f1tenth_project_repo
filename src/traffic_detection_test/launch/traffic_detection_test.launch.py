@@ -12,12 +12,13 @@ def generate_launch_description():
     default_params = f"{package_share}/config/traffic_detection_test.yaml"
     default_model = (
         f"{package_share}/models/"
-        "traffic_light_yolox_s_640x160_batch_1.onnx"
+        "traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx"
     )
 
     params_file = LaunchConfiguration("params_file")
     model_path = LaunchConfiguration("model_path")
     inference_backend = LaunchConfiguration("inference_backend")
+    engine_precision = LaunchConfiguration("engine_precision")
     engine_cache_path = LaunchConfiguration("engine_cache_path")
     tensorrt_workspace_size_mb = LaunchConfiguration(
         "tensorrt_workspace_size_mb"
@@ -43,12 +44,17 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "model_path",
                 default_value=default_model,
-                description="Decoded FP32 YOLOX ONNX model.",
+                description="Decoded YOLOX ONNX model; defaults to explicit Q/DQ INT8.",
             ),
             DeclareLaunchArgument(
                 "inference_backend",
                 default_value="TENSORRT",
-                description="FP32 inference backend: TENSORRT or CPU.",
+                description="Inference backend: TENSORRT or CPU.",
+            ),
+            DeclareLaunchArgument(
+                "engine_precision",
+                default_value="int8",
+                description="TensorRT precision: fp32, fp16, or int8.",
             ),
             DeclareLaunchArgument(
                 "engine_cache_path",
@@ -60,7 +66,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "tensorrt_workspace_size_mb",
                 default_value="1024",
-                description="TensorRT FP32 engine-build workspace in MiB.",
+                description="TensorRT engine-build workspace in MiB.",
             ),
             DeclareLaunchArgument(
                 "model_input_width",
@@ -131,6 +137,7 @@ def generate_launch_description():
                             {
                                 "model_path": model_path,
                                 "inference_backend": inference_backend,
+                                "engine_precision": engine_precision,
                                 "engine_cache_path": engine_cache_path,
                                 "tensorrt_workspace_size_mb": ParameterValue(
                                     tensorrt_workspace_size_mb,

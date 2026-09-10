@@ -119,7 +119,7 @@ public:
     }
 
     backend_ = std::make_unique<TensorRtLaneBackend>(
-      model_path_, engine_cache_path_, model_input_width_, model_input_height_,
+      model_path_, engine_cache_path_, engine_precision_, model_input_width_, model_input_height_,
       static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
       mask_threshold_, overlay_alpha_, connection_.enabled);
     warm_up();
@@ -149,9 +149,9 @@ public:
     RCLCPP_INFO(
       node_.get_logger(),
       "Line detector ready: input=%s (bgr8 %dx%d), model=%s, backend="
-      "TensorRT FP32, threshold=%.3f, preview=%s @ %.1f FPS",
+      "TensorRT %s, threshold=%.3f, preview=%s @ %.1f FPS",
       input_topic_.c_str(), model_input_width_, model_input_height_,
-      model_path_.c_str(), static_cast<double>(mask_threshold_),
+      model_path_.c_str(), engine_precision_.c_str(), static_cast<double>(mask_threshold_),
       preview_enabled_ ? "on" : "off", preview_fps_);
     RCLCPP_INFO(
       node_.get_logger(),
@@ -204,6 +204,8 @@ private:
       "model_path", default_model_path());
     engine_cache_path_ = node_.declare_parameter<std::string>(
       "engine_cache_path", "");
+    engine_precision_ = node_.declare_parameter<std::string>(
+      "engine_precision", "fp32");
     tensorrt_workspace_size_mb_ = node_.declare_parameter<int>(
       "tensorrt_workspace_size_mb", 1024);
     model_input_width_ = node_.declare_parameter<int>(
@@ -338,6 +340,11 @@ private:
     }
     if (model_path_.empty()) {
       throw std::invalid_argument("model_path must not be empty");
+    }
+    if (engine_precision_ != "fp32" && engine_precision_ != "fp16" &&
+      engine_precision_ != "int8")
+    {
+      throw std::invalid_argument("engine_precision must be fp32, fp16 or int8");
     }
     if (model_input_width_ <= 0 || model_input_height_ <= 0) {
       throw std::invalid_argument("model input dimensions must be positive");
@@ -833,6 +840,7 @@ private:
   std::string input_topic_;
   std::string model_path_;
   std::string engine_cache_path_;
+  std::string engine_precision_{"fp32"};
   int tensorrt_workspace_size_mb_{1024};
   int model_input_width_{kDefaultInputWidth};
   int model_input_height_{kDefaultInputHeight};

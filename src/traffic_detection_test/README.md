@@ -3,7 +3,7 @@
 `camera_driver`를 수정하지 않고 OAK 카메라의 신호등 검출 결과만 확인하는
 ROS 2 C++ 프리뷰 패키지다. OAK CAM_A의 `1280x800` 센서 영상을 `640x400`
 NV12로 받아 TensorRT 입력용 전처리를 GPU에서 수행하고, 학습 완료된
-FP32 YOLOX-S ONNX 모델로 추론한다.
+YOLOX-S explicit Q/DQ INT8 ONNX 모델로 추론한다.
 
 ## 처리 방식
 
@@ -16,7 +16,7 @@ FP32 YOLOX-S ONNX 모델로 추론한다.
 - 기본 모델 출력: decoded `[1, 2100, 6]`
 - confidence: `objectness * class probability`
 - 기본 threshold: score `0.25`, NMS IoU `0.65`
-- 기본 실행 백엔드: TensorRT 직접 실행, FP32
+- 기본 실행 백엔드: TensorRT 직접 실행, INT8 Q/DQ
 - 신호 상태: confidence가 가장 높은 검출 박스의 원본 BGR 픽셀을 HSV로
   변환하여 룰베이스로 `Red`, `Green`, `Unknown` 판별
 - 출력: OpenCV 프리뷰 창만 사용하며 ROS 이미지나 검출 토픽은 발행하지 않음
@@ -98,24 +98,33 @@ ros2 launch traffic_detection_test traffic_detection_test.launch.py \
 
 번들 모델은 학습할 때 `Red`와 `Green`을 단일 `traffic_light` 클래스로
 합쳤다. 따라서 모델 출력 자체에는 색상 클래스가 없고, 위 HSV 룰이 검출
-박스의 색상을 별도로 구분한다. 기본 TensorRT 경로는 FP16, INT8, TF32
-플래그를 모두 끄고 FP32 엔진만 생성한다. 양자화는 포함하지 않는다.
+박스의 색상을 별도로 구분한다. 기본 TensorRT 경로는 74개 Conv를 INT8로
+실행하고 최종 box/objectness/class 출력 Conv 9개를 FP32로 유지하는 Q/DQ
+혼합 모델을 사용한다. 모델 입출력은 기존과 동일한 FP32이다.
 
 기본 모델은 다음 설치 경로에서 자동으로 불러온다.
 
 ```text
-share/traffic_detection_test/models/traffic_light_yolox_s_640x160_batch_1.onnx
+share/traffic_detection_test/models/traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx
 ```
 
 `model_path` launch 인자로 다른 decoded YOLOX ONNX 파일을 지정할 수 있지만,
 입출력 형식은 FP32 `[1,3,H,W]`과 `[1,N,6]`이어야 한다.
 
-TensorRT는 첫 실행에서 ONNX를 현재 Jetson용 FP32 엔진으로 빌드한다. 이 작업은
+TensorRT는 첫 실행에서 ONNX를 현재 Jetson용 INT8 엔진으로 빌드한다. 이 작업은
 몇 분 걸릴 수 있으며, 다음 실행부터는 캐시된 엔진을 역직렬화해 바로 사용한다.
 기본 캐시 파일은 ONNX 옆에 TensorRT major 버전을 포함한 다음 형식으로 생성된다.
 
 ```text
-traffic_light_yolox_s_640x160_batch_1.onnx.trt<major>.fp32.engine
+traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx.trt<major>.int8.engine
+```
+
+FP32로 되돌려 비교하려면 원본 ONNX와 precision을 함께 지정한다.
+
+```bash
+ros2 launch traffic_detection_test traffic_detection_test.launch.py \
+  model_path:="$(ros2 pkg prefix traffic_detection_test)/share/traffic_detection_test/models/traffic_light_yolox_s_640x160_batch_1.onnx" \
+  engine_precision:=fp32
 ```
 
 ONNX 파일이 캐시보다 새롭거나 캐시가 현재 TensorRT/GPU와 호환되지 않으면 자동으로

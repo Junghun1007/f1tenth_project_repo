@@ -1,5 +1,7 @@
 # line_detactor
 
+INT8 PTQ 변환·검증 절차와 현재 결과는 [tools/INT8_PTQ.md](tools/INT8_PTQ.md)에 정리되어 있다.
+
 Fast-SCNN HighRes로 원본 BEV의 좌우 차선과 정지선을 추론한다. 좌우 차선 후처리는 **작은 노이즈
 성분 제거와 화면 좌우 경계에서 잘린 차선의 바깥쪽 보간**만 수행한다.
 

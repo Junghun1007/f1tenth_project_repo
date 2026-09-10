@@ -40,7 +40,7 @@ namespace
 constexpr std::uint32_t kFullSensorWidth = 1280U;
 constexpr std::uint32_t kFullSensorHeight = 800U;
 constexpr char kModelFilename[] =
-  "traffic_light_yolox_s_640x160_batch_1.onnx";
+  "traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx";
 
 enum class TrafficSignalColor
 {
@@ -249,8 +249,8 @@ public:
       throw std::runtime_error("ONNX model not found: " + model_path_);
     }
     detector_ = std::make_unique<YoloxDetector>(
-      model_path_, inference_backend_, engine_cache_path_, model_input_width_,
-      model_input_height_, score_threshold_, nms_threshold_,
+      model_path_, inference_backend_, engine_cache_path_, engine_precision_,
+      model_input_width_, model_input_height_, score_threshold_, nms_threshold_,
       static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U);
 
     try {
@@ -305,6 +305,8 @@ private:
       "inference_backend", "TENSORRT");
     engine_cache_path_ = node_.declare_parameter<std::string>(
       "engine_cache_path", "");
+    engine_precision_ = node_.declare_parameter<std::string>(
+      "engine_precision", "int8");
     tensorrt_workspace_size_mb_ = node_.declare_parameter<int>(
       "tensorrt_workspace_size_mb", 1024);
     model_input_width_ =
@@ -353,6 +355,13 @@ private:
     {
       throw std::invalid_argument(
               "model input dimensions must be positive multiples of 32");
+    }
+    if (
+      engine_precision_ != "fp32" && engine_precision_ != "fp16" &&
+      engine_precision_ != "int8")
+    {
+      throw std::invalid_argument(
+              "engine_precision must be fp32, fp16, or int8");
     }
     if (roi_width_ <= 0 || roi_height_ <= 0) {
       throw std::invalid_argument("ROI width and height must be positive");
@@ -450,10 +459,11 @@ private:
       undistort_enabled_ ? "on" : "off");
     RCLCPP_INFO(
       node_.get_logger(),
-      "YOLOX FP32 preview: model=%s, input=%dx%d, score=%.2f, NMS=%.2f, "
+      "YOLOX %s preview: model=%s, input=%dx%d, score=%.2f, NMS=%.2f, "
       "backend=%s, inference-input=%s, ROI=(center=%d,%d size=%dx%d "
       "bounds=%d,%d,%d,%d)",
-      model_path_.c_str(), model_input_width_, model_input_height_,
+      engine_precision_.c_str(), model_path_.c_str(),
+      model_input_width_, model_input_height_,
       static_cast<double>(score_threshold_),
       static_cast<double>(nms_threshold_),
       detector_->backend_name().c_str(),
@@ -1108,6 +1118,7 @@ private:
   std::string model_path_;
   std::string inference_backend_{"TENSORRT"};
   std::string engine_cache_path_;
+  std::string engine_precision_{"int8"};
   int tensorrt_workspace_size_mb_{1024};
   int model_input_width_{640};
   int model_input_height_{160};

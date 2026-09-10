@@ -44,6 +44,7 @@ OVERRIDES = {
     "model_path": str,
     "input_topic": str,
     "engine_cache_path": str,
+    "engine_precision": str,
     "tensorrt_workspace_size_mb": int,
     "model_input_width": int,
     "model_input_height": int,

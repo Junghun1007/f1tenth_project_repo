@@ -47,6 +47,7 @@ YoloxDetector::YoloxDetector(
   const std::string & model_path,
   const std::string & inference_backend,
   const std::string & engine_cache_path,
+  const std::string & engine_precision,
   const int input_width,
   const int input_height,
   const float score_threshold,
@@ -74,15 +75,29 @@ YoloxDetector::YoloxDetector(
   }
 
   const auto normalized_backend = uppercase(inference_backend);
+  const auto normalized_precision = uppercase(engine_precision);
+  if (
+    normalized_precision != "FP32" && normalized_precision != "FP16" &&
+    normalized_precision != "INT8")
+  {
+    throw std::invalid_argument(
+            "engine_precision must be fp32, fp16, or int8");
+  }
+  const auto precision_name = normalized_precision == "FP32" ? "fp32" :
+    normalized_precision == "FP16" ? "fp16" : "int8";
   if (normalized_backend == "TENSORRT") {
     tensorrt_backend_ = std::make_unique<TensorRtYoloxBackend>(
-      model_path, engine_cache_path, input_width_, input_height_,
+      model_path, engine_cache_path, precision_name, input_width_, input_height_,
       tensorrt_workspace_size_bytes);
     tensorrt_output_.resize(
       static_cast<std::size_t>(tensorrt_backend_->output_row_count()) *
       static_cast<std::size_t>(tensorrt_backend_->output_column_count()));
-    backend_name_ = "TensorRT FP32";
+    backend_name_ = "TensorRT " + normalized_precision;
   } else if (normalized_backend == "CPU") {
+    if (normalized_precision != "FP32") {
+      throw std::invalid_argument(
+              "CPU backend supports only engine_precision=fp32");
+    }
     network_ = cv::dnn::readNetFromONNX(model_path);
     if (network_.empty()) {
       throw std::runtime_error("OpenCV could not load the ONNX model");

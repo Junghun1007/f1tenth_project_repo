@@ -295,6 +295,7 @@ public:
   Impl(
     const std::string & model_path,
     const std::string & requested_engine_cache_path,
+    const std::string & engine_precision,
     const int input_width,
     const int input_height,
     const std::size_t workspace_size_bytes,
@@ -302,9 +303,10 @@ public:
     const float overlay_alpha,
     const bool export_labels)
   : model_path_(model_path),
+    engine_precision_(engine_precision),
     engine_cache_path_(requested_engine_cache_path.empty() ?
       model_path + ".trt" + std::to_string(NV_TENSORRT_MAJOR) +
-      ".fp32.engine" : requested_engine_cache_path),
+      "." + engine_precision + ".engine" : requested_engine_cache_path),
     input_width_(input_width),
     input_height_(input_height),
     pixel_count_(
@@ -316,6 +318,11 @@ public:
     overlay_alpha_(overlay_alpha),
     export_labels_(export_labels)
   {
+    if (engine_precision_ != "fp32" && engine_precision_ != "fp16" &&
+      engine_precision_ != "int8")
+    {
+      throw std::invalid_argument("TensorRT engine_precision must be fp32, fp16 or int8");
+    }
     if (input_width <= 0 || input_height <= 0) {
       throw std::invalid_argument("TensorRT input dimensions must be positive");
     }
@@ -511,7 +518,8 @@ private:
           try {
             // Reject stale two-channel caches before binding three-channel buffers.
             inspect_engine();
-            std::cerr << "[line_detactor TensorRT] Loaded FP32 engine cache: "
+            std::cerr << "[line_detactor TensorRT] Loaded " << engine_precision_
+                      << " engine cache: "
                       << engine_cache_path_ << '\n';
             return;
           } catch (const std::exception & error) {
@@ -561,6 +569,23 @@ private:
       throw std::runtime_error(message.str());
     }
 
+    bool has_quantize = false;
+    bool has_dequantize = false;
+    for (int index = 0; index < network->getNbLayers(); ++index) {
+      const auto type = network->getLayer(index)->getType();
+      has_quantize = has_quantize || type == nvinfer1::LayerType::kQUANTIZE;
+      has_dequantize = has_dequantize || type == nvinfer1::LayerType::kDEQUANTIZE;
+    }
+    if (engine_precision_ == "int8" && (!has_quantize || !has_dequantize)) {
+      throw std::runtime_error(
+              "INT8 mode requires an explicit Q/DQ ONNX model; run "
+              "tools/quantize_int8_ptq.py first");
+    }
+    if (engine_precision_ != "int8" && (has_quantize || has_dequantize)) {
+      throw std::runtime_error(
+              "Explicit Q/DQ ONNX requires engine_precision=int8");
+    }
+
     auto config = TensorRtUniquePtr<nvinfer1::IBuilderConfig>(
       builder->createBuilderConfig());
     if (!config) {
@@ -572,25 +597,44 @@ private:
 #else
     config->setMaxWorkspaceSize(workspace_size_bytes);
 #endif
-    config->clearFlag(nvinfer1::BuilderFlag::kFP16);
-    config->clearFlag(nvinfer1::BuilderFlag::kINT8);
+    if (engine_precision_ == "fp16") {
+      if (!builder->platformHasFastFp16()) {
+        throw std::runtime_error("TensorRT device does not report fast FP16 support");
+      }
+      config->setFlag(nvinfer1::BuilderFlag::kFP16);
+      config->clearFlag(nvinfer1::BuilderFlag::kINT8);
+    } else if (engine_precision_ == "int8") {
+      if (!builder->platformHasFastInt8()) {
+        throw std::runtime_error("TensorRT device does not report fast INT8 support");
+      }
+      // TensorRT 8.x requires kINT8 for explicit Q/DQ. The Q/DQ nodes, not a
+      // calibrator or per-layer constraints, define every precision boundary.
+      config->clearFlag(nvinfer1::BuilderFlag::kFP16);
+      config->setFlag(nvinfer1::BuilderFlag::kINT8);
+    } else {
+      config->clearFlag(nvinfer1::BuilderFlag::kFP16);
+      config->clearFlag(nvinfer1::BuilderFlag::kINT8);
+    }
     config->clearFlag(nvinfer1::BuilderFlag::kTF32);
 
-    std::cerr << "[line_detactor TensorRT] Building FP32 engine from "
+    std::cerr << "[line_detactor TensorRT] Building " << engine_precision_
+              << " engine from "
               << model_path_ << ". First launch can take several minutes.\n";
     auto serialized = TensorRtUniquePtr<nvinfer1::IHostMemory>(
       builder->buildSerializedNetwork(*network, *config));
     if (!serialized) {
-      throw std::runtime_error("TensorRT FP32 engine build failed");
+      throw std::runtime_error("TensorRT " + engine_precision_ + " engine build failed");
     }
     engine_.reset(runtime_->deserializeCudaEngine(
         serialized->data(), serialized->size()));
     if (!engine_) {
-      throw std::runtime_error("New TensorRT FP32 engine deserialization failed");
+      throw std::runtime_error(
+              "New TensorRT " + engine_precision_ + " engine deserialization failed");
     }
     write_engine_cache(
       engine_cache_path_, serialized->data(), serialized->size());
-    std::cerr << "[line_detactor TensorRT] FP32 engine ready; cache="
+    std::cerr << "[line_detactor TensorRT] " << engine_precision_
+              << " engine ready; cache="
               << engine_cache_path_ << '\n';
   }
 
@@ -702,6 +746,7 @@ private:
   }
 
   std::string model_path_;
+  std::string engine_precision_;
   std::string engine_cache_path_;
   int input_width_{0};
   int input_height_{0};
@@ -747,6 +792,7 @@ private:
 TensorRtLaneBackend::TensorRtLaneBackend(
   const std::string & model_path,
   const std::string & engine_cache_path,
+  const std::string & engine_precision,
   const int input_width,
   const int input_height,
   const std::size_t workspace_size_bytes,
@@ -754,7 +800,7 @@ TensorRtLaneBackend::TensorRtLaneBackend(
   const float overlay_alpha,
   const bool export_labels)
 : impl_(std::make_unique<Impl>(
-    model_path, engine_cache_path, input_width, input_height,
+    model_path, engine_cache_path, engine_precision, input_width, input_height,
     workspace_size_bytes, mask_threshold, overlay_alpha, export_labels))
 {
 }

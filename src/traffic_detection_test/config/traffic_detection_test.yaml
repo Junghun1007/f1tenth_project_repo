@@ -14,10 +14,10 @@ traffic_detection_test:
     resize_mode: "CROP"
     undistort_enabled: true
 
-    # TensorRT builds a native FP32 engine from the decoded batch-1 ONNX model.
-    # No FP16, INT8, TF32, or quantization path is enabled.
+    # The default ONNX contains explicit Q/DQ nodes and runs as TensorRT INT8.
     inference_backend: "TENSORRT"
-    # Empty creates <model>.trt<major>.fp32.engine beside the ONNX file.
+    engine_precision: "int8"
+    # Empty creates <model>.trt<major>.int8.engine beside the ONNX file.
     engine_cache_path: ""
     tensorrt_workspace_size_mb: 1024
     # These must match the fixed ONNX tensor. A smaller ROI reduces TensorRT
