@@ -128,9 +128,13 @@ def _apply_parameter_file_defaults(
         if result_only.lower() not in ("true", "false"):
             raise RuntimeError("preview_result_only_enabled must be true or false")
         detector["preview_result_only_enabled"] = result_only.lower() == "true"
-    outward_offset = LaunchConfiguration("centerline_corner_outward_offset_m").perform(context)
-    if outward_offset != _PARAMETER_FILE_DEFAULT:
-        detector["centerline_corner_outward_offset_m"] = float(outward_offset)
+    for parameter_name in (
+        "centerline_corner_outward_offset_m",
+        "centerline_corner_entry_distance_m",
+    ):
+        value = LaunchConfiguration(parameter_name).perform(context)
+        if value != _PARAMETER_FILE_DEFAULT:
+            detector[parameter_name] = float(value)
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -429,6 +433,8 @@ def generate_launch_description():
                                   description="Show lanes/path on black background; omitted uses ML YAML"),
             DeclareLaunchArgument("centerline_corner_outward_offset_m", default_value=_PARAMETER_FILE_DEFAULT,
                                   description="Corner path shift toward observed outer lane in metres; 0 disables"),
+            DeclareLaunchArgument("centerline_corner_entry_distance_m", default_value=_PARAMETER_FILE_DEFAULT,
+                                  description="Extend outward shift before observed corners in metres; 0 uses local evidence only"),
             DeclareLaunchArgument("input_mode", default_value="ros_topic"),
             DeclareLaunchArgument("can_interface", default_value="can0"),
             DeclareLaunchArgument("slcan_channel", default_value="/dev/ttyACM0"),

@@ -171,10 +171,11 @@ public:
       centerline_.bev_width_m, centerline_.bev_height_m, centerline_.smoothing_enabled ? "on" : "off",
       centerline_.smoothing_strength, centerline_.smoothing_window_m);
     RCLCPP_INFO(node_.get_logger(),
-      "Corner outer reference=%s weight=%.2f turn window=%.2fm min support=%.2fm outward offset=%.3fm",
+      "Corner outer reference=%s weight=%.2f turn window=%.2fm min support=%.2fm "
+      "outward offset=%.3fm entry distance=%.2fm",
       centerline_.corner_outer_enabled ? "on" : "off", centerline_.corner_outer_weight,
       centerline_.corner_outer_window_m, centerline_.corner_outer_min_length_m,
-      centerline_.corner_outward_offset_m);
+      centerline_.corner_outward_offset_m, centerline_.corner_entry_distance_m);
   }
 
   ~Impl()
@@ -272,6 +273,8 @@ private:
       "centerline_corner_outer_weight", 0.85);
     centerline_.corner_outward_offset_m = node_.declare_parameter<double>(
       "centerline_corner_outward_offset_m", 0.05);
+    centerline_.corner_entry_distance_m = node_.declare_parameter<double>(
+      "centerline_corner_entry_distance_m", 0.40);
     centerline_.corner_outer_window_m = node_.declare_parameter<double>(
       "centerline_corner_outer_window_m", 0.60);
     centerline_.corner_outer_tangent_window_m = node_.declare_parameter<double>(

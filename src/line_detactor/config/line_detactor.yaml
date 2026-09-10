@@ -64,9 +64,12 @@ line_detactor:
     # Prefer the observed OUTER boundary shape in corners; fade with local support/turn.
     centerline_corner_outer_enabled: true
     centerline_corner_outer_weight: 0.85
-    # Additional outward path shift in observed corners, faded by corner confidence.
+    # Additional outward path shift for observed corners and their straight entry.
     # 0 disables the shift; shape weighting above remains active. Clearance still applies.
     centerline_corner_outward_offset_m: 0.05
+    # Extend local corner evidence this far back along the observed boundary,
+    # with a smooth ramp. 0 keeps only the local corner shift; valid range 0..5m.
+    centerline_corner_entry_distance_m: 0.40
     centerline_corner_outer_window_m: 0.60
     centerline_corner_outer_tangent_window_m: 0.15
     centerline_corner_outer_min_length_m: 0.30

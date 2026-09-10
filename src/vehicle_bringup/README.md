@@ -121,10 +121,18 @@ Use `src/line_detactor/config/line_detactor.yaml` as the template, with root
 outer-boundary corner weighting, and yellow rendering. Parameters load at startup.
 
 `centerline_corner_outward_offset_m:=0.05` shifts the corner path toward the observed
-outer boundary by up to 5cm; `0.0` disables that shift. The final yellow path is the
-controller input. `preview_result_only_enabled:=true` (default) displays lanes,
+outer boundary by up to 5cm; `0.0` disables that shift.
+`centerline_corner_entry_distance_m:=0.40` (default) extends upcoming local corner
+evidence up to 40cm back along the same observed boundary, ramping the outward shift
+through the straight entry. This is additional to the existing corner detection
+window, not an exact distance from the geometric bend. Increase it to start moving
+outward earlier; `0.0` restores local corner shifting only. Shape blending retains
+local evidence; the shift uses the current boundary normal. No evidence is carried
+across missing fragments or retained from old frames.
+The final yellow path is the controller input.
+`preview_result_only_enabled:=true` (default) displays lanes,
 stop lines and the yellow path on black; `false` restores the camera overlay.
-Both arguments override the corresponding `line_detactor_params_file` values.
+These arguments override the corresponding `line_detactor_params_file` values.
 Offset magnitude fades with corner evidence and is bounded by observed-line clearance;
 it does not guarantee clearance of the full vehicle footprint.
 

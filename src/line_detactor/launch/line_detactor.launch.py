@@ -26,6 +26,7 @@ OVERRIDES = {
     "centerline_corner_outer_enabled": bool,
     "centerline_corner_outer_weight": float,
     "centerline_corner_outward_offset_m": float,
+    "centerline_corner_entry_distance_m": float,
     "centerline_corner_outer_window_m": float,
     "centerline_corner_outer_tangent_window_m": float,
     "centerline_corner_outer_min_length_m": float,

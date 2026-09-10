@@ -26,6 +26,7 @@ struct CenterlineConfig
   bool corner_outer_enabled{true};
   double corner_outer_weight{0.85};
   double corner_outward_offset_m{0.05};
+  double corner_entry_distance_m{0.40};
   double corner_outer_window_m{0.60};
   double corner_outer_tangent_window_m{0.15};
   double corner_outer_min_length_m{0.30};

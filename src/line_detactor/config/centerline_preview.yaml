@@ -27,6 +27,8 @@ line_detactor:
     centerline_corner_outer_enabled: true
     centerline_corner_outer_weight: 0.85
     centerline_corner_outward_offset_m: 0.05
+    # Ramp outward before the observed corner; 0 disables this entry extension.
+    centerline_corner_entry_distance_m: 0.40
     centerline_corner_outer_window_m: 0.60
     centerline_corner_outer_tangent_window_m: 0.15
     centerline_corner_outer_min_length_m: 0.30

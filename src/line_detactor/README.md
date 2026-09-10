@@ -230,7 +230,8 @@ ros2 launch line_detactor line_detactor.launch.py \
 | `line_width_px` | 2 | 노란 선 두께, 1~10px |
 | `corner_outer_enabled` | true | 코너에서 바깥 차선 기준 경로 우선 반영 |
 | `corner_outer_weight` | 0.85 | 바깥 차선 기준 경로의 최대 혼합 비중, 0~1 |
-| `corner_outward_offset_m` | 0.05 | 코너에서 추가로 바깥쪽으로 이동할 목표 거리(m), 0이면 이동 끔 |
+| `corner_outward_offset_m` | 0.05 | 코너 및 진입 구간에서 추가로 바깥쪽으로 이동할 목표 거리(m), 0이면 이동 끔 |
+| `corner_entry_distance_m` | 0.40 | 관측 코너 신뢰도를 차량 쪽으로 확장할 경계 호 길이(m), 0이면 진입 확장 끔, 범위 0~5 |
 | `corner_outer_window_m` | 0.60 | 회전 방향과 관측 길이를 평가하는 거리 범위 |
 | `corner_outer_tangent_window_m` | 0.15 | 바깥 차선 기준 접선 추정 범위 |
 | `corner_outer_min_length_m` | 0.30 | 기준으로 삼을 최소 연속 관측 길이; 평가 범위보다 작아야 함 |
@@ -315,7 +316,7 @@ line_detactor:
 두 설정 파일(`line_detactor.yaml`, `centerline_preview.yaml`)과 launch 인자에 같은 값을
 연결했다. YAML 변경 후 재시작한다. 이번 코너 수정도 요청에 따라 빌드·테스트는 수행하지 않았다.
 
-## 코너 바깥쪽 경로 오프셋과 결과 전용 프리뷰
+## 코너 진입 전 바깥쪽 경로 오프셋과 결과 전용 프리뷰
 
 `centerline_corner_outward_offset_m`은 기존 중앙 경로 후보를 관측된 바깥 차선
 쪽으로 이동하는 추가 거리다. 기본값은 0.05m이며, `0.0`으로 끌 수 있다.
@@ -325,7 +326,25 @@ line_detactor:
 좌회전에서는 오른쪽 바깥 경계, 우회전에서는 왼쪽 바깥 경계를 향해 이동한다.
 양쪽 차선에서 만드는 후보 모두 동일한 바깥 경계의 법선과 신뢰도를 사용한다.
 기존 코너 판별의 회전각·관측 길이·끝점 신뢰도에 따라 이동량이 0~설정값으로
-변하며, 직선이나 바깥 경계 관측이 없는 구간에서는 적용하지 않는다.
+변한다. 앞에서 코너가 관측되면 아직 직선인 진입 구간부터 바깥쪽으로 이동한다.
+
+`0822ver3`는 관측 경로 전체의 회전으로 코너 모드를 정하고, 진입부를 포함한
+경계 전체의 법선 오프셋을 변경했다. 여기서는 같은 진입 전 이동 의도를 반영하되,
+`centerline_corner_entry_distance_m`(기본 0.40m) 범위 안의 앞쪽 코너 신뢰도를
+차량 쪽으로 확장한다. 거리는 같은 연속 관측 경계를 따라 측정하며, 멀수록
+smoothstep으로 이동량을 줄여 직선에서 서서히 바깥쪽으로 붙게 한다.
+기존 코너 판별 창도 주변을 보기 때문에 이 값은 기하학적 코너 시작점 기준의
+정확한 거리보다 **기존 국소 코너 적용 범위를 앞당기는 추가 거리**를 뜻한다.
+
+이동 방향은 현재 위치의 경계 법선을 사용한다. 바깥 차선의 곡률 혼합은 기존
+국소 신뢰도를 유지한다. 확장은 앞쪽 관측만 사용하며 코너 뒤쪽으로 추가 연장하거나
+이전 프레임의 코너 상태를 유지하지 않는다. 앞쪽 코너가 보이지 않거나 같은 경계가
+중간에 끊기면 그 너머의 코너 신뢰도를 가져오지 않는다. 상충하는 좌우 증거는
+이동량을 줄인다.
+
+더 일찍 이동하려면 `centerline_corner_entry_distance_m`을 키우고, 바깥쪽으로
+더 이동하려면 `centerline_corner_outward_offset_m`을 키운다.
+진입 거리 `0.0`은 기존 국소 코너 오프셋만 적용하며, 오프셋 `0.0`은 이동 전체를 끈다.
 
 이동 구간이 관측 차선과 `centerline_min_clearance_m` 간격이나 결과 영상 범위를
 침범하면 이동량을 줄인다. 후보 평활화·연결 후에도 기존 전체 경로 검사를 수행한다.
@@ -338,6 +357,7 @@ line_detactor:
   ros__parameters:
     centerline_corner_outer_enabled: true
     centerline_corner_outward_offset_m: 0.05
+    centerline_corner_entry_distance_m: 0.40
     preview_enabled: true
     preview_result_only_enabled: true
 ```
@@ -355,6 +375,7 @@ line_detactor:
 ros2 launch vehicle_bringup auto_drive.launch.py \
   line_detactor_params_file:=/absolute/path/line_detactor_test.yaml \
   centerline_corner_outward_offset_m:=0.05 \
+  centerline_corner_entry_distance_m:=0.40 \
   preview_enabled:=true \
   preview_result_only_enabled:=true
 ```

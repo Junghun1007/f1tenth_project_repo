@@ -240,6 +240,7 @@ struct Fragment
   Path outer_centers;
   Path outer_directions;
   std::vector<double> outer_confidence;
+  std::vector<double> outward_confidence;
 };
 
 // Classify geometric outer side, not whichever fragment happens to be longest.
@@ -249,6 +250,7 @@ void prepare_outer_reference(Fragment & f, const CenterlineConfig & cfg)
 {
   const auto count = f.points.size();
   f.outer_confidence.assign(count, 0.0);
+  f.outward_confidence.assign(count, 0.0);
   f.outer_centers = f.points;
   f.outer_directions = f.directions;
   if (!cfg.corner_outer_enabled || count < 5U || f.arc.back() < cfg.corner_outer_min_length_m) {return;}
@@ -296,14 +298,32 @@ void prepare_outer_reference(Fragment & f, const CenterlineConfig & cfg)
     weights[i].x = turn_strength * consistency * coverage * endpoint;
   }
   weights = gaussian(weights, 0.05 / ds);
+  std::vector<bool> outer_usable(count, false);
   for (std::size_t i = 0; i < count; ++i) {
     // Outer offset can fold at an excessively tight radius. Never prefer it.
     const auto a = f.outer_centers[i == 0U ? 0U : i - 1U];
     const auto b = f.outer_centers[std::min(i + 1U, count - 1U)];
     if ((b - a).dot(direction[i]) <= 0.001 || f.outer_directions[i].dot(direction[i]) < 0.5) {continue;}
+    outer_usable[i] = true;
     const double endpoint = std::min(1.0, std::min(f.arc[i], f.arc.back() - f.arc[i]) /
       (cfg.corner_outer_tangent_window_m / 2.0));
     f.outer_confidence[i] = std::clamp(weights[i].x * endpoint, 0.0, 1.0);
+  }
+  // Extend observed corner evidence toward the vehicle along this fragment.
+  // Use only the original local weights: recursive propagation would shift
+  // the entire visible straight. Shape blending keeps its local confidence.
+  f.outward_confidence = f.outer_confidence;
+  if (cfg.corner_entry_distance_m <= 0.0 || cfg.corner_outward_offset_m <= 0.0) {return;}
+  for (std::size_t i = 0; i < count; ++i) {
+    if (!outer_usable[i]) {continue;}
+    for (std::size_t j = i + 1U; j < count; ++j) {
+      const double distance = f.arc[j] - f.arc[i];
+      if (distance >= cfg.corner_entry_distance_m) {break;}
+      const double ratio = 1.0 - distance / cfg.corner_entry_distance_m;
+      const double ramp = ratio * ratio * (3.0 - 2.0 * ratio);
+      f.outward_confidence[i] = std::max(
+        f.outward_confidence[i], f.outer_confidence[j] * ramp);
+    }
   }
 }
 struct Candidate
@@ -332,6 +352,9 @@ void validate_centerline(const CenterlineConfig & c)
     throw std::invalid_argument(
       "corner outward offset must be nonnegative and less than half lane width minus clearance");
   }
+  if (!std::isfinite(c.corner_entry_distance_m) || c.corner_entry_distance_m < 0.0 ||
+    c.corner_entry_distance_m > 5.0)
+  {throw std::invalid_argument("corner entry distance must be finite and within 0..5 metres");}
   if (!std::isfinite(c.corner_outer_weight) || c.corner_outer_weight < 0.0 || c.corner_outer_weight > 1.0 ||
     !positive(c.corner_outer_min_turn_deg) || !positive(c.corner_outer_full_turn_deg) ||
     c.corner_outer_full_turn_deg <= c.corner_outer_min_turn_deg || c.corner_outer_full_turn_deg >= 180.0 ||
@@ -399,7 +422,7 @@ CenterlineResult generate_centerline(
       if (norm(points.front() - ego) > norm(points.back() - ego)) {std::reverse(points.begin(), points.end());}
       points = gaussian(resample(points, cfg.sample_spacing_m), 1.0);
       const int half = std::max(1, static_cast<int>(std::round(cfg.tangent_window_m / (2.0 * cfg.sample_spacing_m))));
-      Fragment f{side, points, tangents(points, half), arc_lengths(points), {}, {}, {}};
+      Fragment f{side, points, tangents(points, half), arc_lengths(points), {}, {}, {}, {}};
       prepare_outer_reference(f, cfg);
       samples += points.size();
       fragments.push_back(std::move(f));
@@ -467,13 +490,26 @@ CenterlineResult generate_centerline(
           preferred_direction = unit(t * (1.0 - weight) + direction * weight);
           mode = 4U;
         }
-        // Translate the candidate toward the observed geometric outer boundary.
-        // This is independent of the shape-blend weight and is applied once to
-        // either side's candidate using the same outer reference. Straight and
-        // conflicting/unsupported corner evidence fade the displacement to zero.
-        const double requested_offset = cfg.corner_outward_offset_m * confidence;
+      }
+      // The upcoming corner can bias a still-straight entry segment. Select
+      // its outer side independently of the LOCAL curvature blend above, and
+      // translate along the CURRENT boundary normal, not the future tangent.
+      const double own_outward = f.outward_confidence[i];
+      const double other_outward = counterpart ?
+        counterpart->outward_confidence[counterpart_index] : 0.0;
+      const Fragment * offset_reference = nullptr;
+      std::size_t offset_index = i;
+      if (own_outward > other_outward) {offset_reference = &f;}
+      if (other_outward > own_outward) {
+        offset_reference = counterpart;
+        offset_index = counterpart_index;
+      }
+      if (offset_reference) {
+        const double requested_offset = cfg.corner_outward_offset_m *
+          std::abs(own_outward - other_outward);
         if (requested_offset > 1.0e-6 && geometry.point_ok(center)) {
-          const Point outward = unit(reference->points[reference_index] - target);
+          const Point outward = unit(offset_reference->points[offset_index] -
+            offset_reference->outer_centers[offset_index]);
           const Point displacement = outward * requested_offset;
           double fraction = 1.0;
           if (!geometry.segment_ok(center, center + displacement)) {
