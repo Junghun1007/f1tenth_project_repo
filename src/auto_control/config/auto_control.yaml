@@ -5,7 +5,9 @@ auto_control:
     # 로 언제든 duty 0과 중앙 조향으로 전환할 수 있다.
     enabled: true
     enable_topic: "/auto/enabled"
-    lane_topic: "/camera/image_bev_lane"
+    lane_result_topic: "/line_detactor/result"
+    lane_result_frame_id: "front_axle_bev"
+    path_maximum_gap_m: 0.15
     measured_erpm_topic: "/vesc/measured_erpm"
     connection_status_topic: "/vesc/connected"
     duty_topic: "/vesc/duty"
@@ -30,32 +32,25 @@ auto_control:
     path_capture_maximum_age_sec: 0.20
     erpm_timeout_sec: 0.15
 
-    # bev_processor가 발행하는 120x300 중앙선 mask는 별도의 좌우 margin 없이
-    # 원본 BEV와 같은 -0.60..+0.60m, 0..3.0m 좌표계를 사용한다.
-    # 앞차축 지면 중심(X=0,Y=0)은 하단 경계의 59/60열 사이이다.
+    # LaneResult 확장 영상의 padding_left를 제거하고 BEV 픽셀 중심을 미터로 변환한다.
+    # auto_drive는 아래 배율/원점을 bev_params_file에서 자동으로 맞춘다.
     bev_x_max_m: 3.0
     bev_y_max_m: 0.60
     bev_meter_per_pixel: 0.01
-    lane_pixel_threshold: 128
 
-    # mono8 중앙선 실측 점열을 전역 다항식으로 변형하지 않는다.
-    # 8cm 국소 직선 평활화와 4cm 이상 독립 돌출점 제거만 적용해
-    # 먼 코너가 현재 조향 구간을 미리 휘게 하는 현상을 막는다.
-    # 급코너에서 중앙선이 짧게 남아도 정지하지 않도록 X=5cm부터
-    # 8개 점과 12cm span만 확보되면 경로로 허용한다.
+    # ML 중앙선의 근거리->원거리 순서를 유지하며 재평활화/전역 피팅하지 않는다.
+    # 첫 연속 X ROI 구간만 사용한다. span은 X 폭이 아닌 경로를 따른 길이다.
+    # 인접 점 간격이 path_maximum_gap_m을 넘으면 그 앞에서 경로를 자른다.
     path_minimum_x_m: 0.05
     path_maximum_x_m: 2.20
     path_minimum_points: 8
     path_minimum_span_m: 0.12
-    path_local_smoothing_window_m: 0.08
-    path_outlier_threshold_m: 0.04
     path_geometry_window_m: 0.12
 
     # Stanley: +조향각은 차량 좌표 +Y인 좌회전이다.
     stanley_gain: 1.55
     stanley_softening_speed_mps: 0.35
-    # 앞차축 원점 X=0에서 12cm 전방의 실측 중앙선 접선을 사용한다.
-    # 그 위치가 카메라 사각이면 첫 유효 중앙선 접선을 사용한다.
+    # 앞차축에서 가장 가까운 경로 투영점부터 경로를 따라 12cm 앞의 접선을 쓴다.
     stanley_heading_lookahead_m: 0.12
     # 선수각 20도 이상의 급코너에서만 방향 guard를 적용하고,
     # 반대 방향 횡오차 보정을 선수각의 90%까지 허용한다.

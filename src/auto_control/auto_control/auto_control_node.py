@@ -9,7 +9,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from sensor_msgs.msg import Image
+from line_detactor.msg import LaneResult
 from std_msgs.msg import Bool, Float32, Int32
 
 from auto_control.automatic_brake_profile import (
@@ -17,10 +17,9 @@ from auto_control.automatic_brake_profile import (
     AutomaticBrakeProfileConfig,
 )
 from auto_control.control_core import (
-    PathModel,
+    OrderedPathModel,
     SpeedPid,
-    build_path_model,
-    centerline_points_from_mono8,
+    build_ordered_path_model,
     clamp,
     curvature_target_speed,
     erpm_to_speed_mps,
@@ -90,7 +89,7 @@ class AutoControlNode(Node):
         )
 
         self._lane_sub = self.create_subscription(
-            Image, self.lane_topic, self._on_lane_image, sensor_qos
+            LaneResult, self.lane_result_topic, self._on_lane_result, sensor_qos
         )
         self._erpm_sub = self.create_subscription(
             Int32, self.measured_erpm_topic, self._on_measured_erpm, sensor_qos
@@ -105,7 +104,7 @@ class AutoControlNode(Node):
             Bool, self.enable_topic, self._on_enable, command_qos
         )
 
-        self._path: PathModel | None = None
+        self._path: OrderedPathModel | None = None
         self._last_path_received_time: Time | None = None
         self._path_capture_time: Time | None = None
         self._last_erpm_time: Time | None = None
@@ -161,15 +160,18 @@ class AutoControlNode(Node):
             1.0 / self.status_log_rate_hz, self._log_status
         )
 
-        self.get_logger().warn(
-            "Automatic control is armed at launch. The vehicle will move when "
-            "VESC telemetry and a valid BEV centerline are both available."
-        )
+        if self.enabled:
+            self.get_logger().warn(
+                "Automatic control is armed at launch. The vehicle will move when "
+                "VESC telemetry and a valid ML centerline are both available."
+            )
+        else:
+            self.get_logger().info("Automatic control starts disabled.")
         self.get_logger().info(
             "Auto control ready: lane=%s, speed=%.2f..%.2fm/s, "
             "duty=%.3f..%.3f, auto_brake=%s/%.1fA, rate=%.1fHz"
             % (
-                self.lane_topic,
+                self.lane_result_topic,
                 self.minimum_speed_mps,
                 self.maximum_speed_mps,
                 self.minimum_duty,
@@ -183,7 +185,9 @@ class AutoControlNode(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter("enabled", True)
         self.declare_parameter("enable_topic", "/auto/enabled")
-        self.declare_parameter("lane_topic", "/camera/image_bev_lane")
+        self.declare_parameter("lane_result_topic", "/line_detactor/result")
+        self.declare_parameter("lane_result_frame_id", "front_axle_bev")
+        self.declare_parameter("path_maximum_gap_m", 0.15)
         self.declare_parameter("measured_erpm_topic", "/vesc/measured_erpm")
         self.declare_parameter("connection_status_topic", "/vesc/connected")
         self.declare_parameter("duty_topic", "/vesc/duty")
@@ -223,13 +227,10 @@ class AutoControlNode(Node):
         self.declare_parameter("bev_x_max_m", 3.0)
         self.declare_parameter("bev_y_max_m", 0.60)
         self.declare_parameter("bev_meter_per_pixel", 0.01)
-        self.declare_parameter("lane_pixel_threshold", 128)
         self.declare_parameter("path_minimum_x_m", 0.05)
         self.declare_parameter("path_maximum_x_m", 2.20)
         self.declare_parameter("path_minimum_points", 8)
         self.declare_parameter("path_minimum_span_m", 0.12)
-        self.declare_parameter("path_local_smoothing_window_m", 0.08)
-        self.declare_parameter("path_outlier_threshold_m", 0.04)
         self.declare_parameter("path_geometry_window_m", 0.14)
 
         self.declare_parameter("stanley_gain", 1.40)
@@ -289,7 +290,8 @@ class AutoControlNode(Node):
     def _read_parameters(self) -> None:
         string_parameters = (
             "enable_topic",
-            "lane_topic",
+            "lane_result_topic",
+            "lane_result_frame_id",
             "measured_erpm_topic",
             "connection_status_topic",
             "duty_topic",
@@ -318,8 +320,7 @@ class AutoControlNode(Node):
             "path_minimum_x_m",
             "path_maximum_x_m",
             "path_minimum_span_m",
-            "path_local_smoothing_window_m",
-            "path_outlier_threshold_m",
+            "path_maximum_gap_m",
             "path_geometry_window_m",
             "stanley_gain",
             "stanley_softening_speed_mps",
@@ -360,7 +361,6 @@ class AutoControlNode(Node):
             "speed_scale_correction",
         )
         int_parameters = (
-            "lane_pixel_threshold",
             "path_minimum_points",
             "motor_pole_pairs",
             "motor_pinion_teeth",
@@ -392,6 +392,10 @@ class AutoControlNode(Node):
         )
 
     def _validate_parameters(self) -> None:
+        if not self.lane_result_topic or not self.lane_result_frame_id:
+            raise ValueError("lane result topic and expected frame ID must not be empty")
+        if not math.isfinite(self.path_maximum_gap_m) or self.path_maximum_gap_m <= 0:
+            raise ValueError("path_maximum_gap_m must be finite and positive")
         if self.control_rate_hz <= 0.0 or self.status_log_rate_hz <= 0.0:
             raise ValueError("control and status rates must be positive")
         if min(
@@ -402,7 +406,6 @@ class AutoControlNode(Node):
             self.bev_y_max_m,
             self.bev_meter_per_pixel,
             self.path_minimum_span_m,
-            self.path_local_smoothing_window_m,
             self.path_geometry_window_m,
             self.maximum_steering_angle_rad,
             self.minimum_speed_mps,
@@ -439,8 +442,6 @@ class AutoControlNode(Node):
             raise ValueError("path X limits are reversed")
         if self.path_minimum_points < 3:
             raise ValueError("path_minimum_points must be at least 3")
-        if self.path_outlier_threshold_m < 0.0:
-            raise ValueError("path_outlier_threshold_m must not be negative")
         if min(
             self.motor_pole_pairs,
             self.motor_pinion_teeth,
@@ -450,59 +451,68 @@ class AutoControlNode(Node):
         ) <= 0:
             raise ValueError("motor and gear parameters must be positive")
 
-    def _on_lane_image(self, message: Image) -> None:
+    def _on_lane_result(self, message: LaneResult) -> None:
         now = self.get_clock().now()
+        # Invalid new frames must invalidate the old path immediately.
+        self._path = None
         self._last_path_received_time = now
-        self._path_capture_time = self._message_time_or_none(message)
         try:
-            if message.encoding.lower() not in ("mono8", "8uc1"):
-                raise ValueError(
-                    f"expected mono8 centerline, received {message.encoding}"
-                )
-            width = int(message.width)
-            height = int(message.height)
-            step = int(message.step)
-            if width <= 0 or height <= 0 or step < width:
-                raise ValueError("invalid lane image dimensions")
-            expected_size = height * step
-            if len(message.data) < expected_size:
-                raise ValueError("lane image data is shorter than height*step")
-            image = np.frombuffer(message.data, dtype=np.uint8, count=expected_size)
-            image = image.reshape((height, step))[:, :width]
-            x_m, y_m = centerline_points_from_mono8(
-                image,
-                x_max_m=self.bev_x_max_m,
-                y_max_m=self.bev_y_max_m,
-                meter_per_pixel=self.bev_meter_per_pixel,
-                threshold=self.lane_pixel_threshold,
-            )
-            self._path = build_path_model(
-                x_m,
-                y_m,
+            capture_time = self._message_time_or_none(message)
+            if capture_time is None:
+                raise ValueError("missing source capture timestamp")
+            age = (now - capture_time).nanoseconds / 1e9
+            if age < -0.05 or age > self.path_capture_maximum_age_sec:
+                raise ValueError("source capture timestamp is stale or in the future")
+            if self._path_capture_time is not None and capture_time.nanoseconds <= self._path_capture_time.nanoseconds:
+                raise ValueError("duplicate or out-of-order lane result")
+            self._path_capture_time = capture_time
+            if not message.centerline_valid or message.centerline_sample_limit_reached:
+                return
+            if int(message.state) not in (1, 2, 3):
+                raise ValueError("centerline has no observed lane support")
+            if message.header.frame_id != self.lane_result_frame_id:
+                raise ValueError(f"unexpected lane result frame: {message.header.frame_id}")
+            width, height = int(message.source_width), int(message.source_height)
+            pad_left, pad_right = int(message.padding_left), int(message.padding_right)
+            sx = float(message.centerline_bev_width_m) / max(1, width)
+            sy = float(message.centerline_bev_height_m) / max(1, height)
+            if width <= 0 or height <= 0 or not all(math.isfinite(v) and v > 0 for v in (sx, sy)):
+                raise ValueError("invalid source geometry")
+            if not (math.isclose(sx, self.bev_meter_per_pixel, rel_tol=1e-4) and
+                    math.isclose(sy, self.bev_meter_per_pixel, rel_tol=1e-4) and
+                    math.isclose(width*sx, 2*self.bev_y_max_m, rel_tol=1e-4) and
+                    math.isclose(height*sy, self.bev_x_max_m, rel_tol=1e-4)):
+                raise ValueError("lane result scale disagrees with the configured symmetric BEV")
+            count = len(message.centerline_points)
+            if not 2 <= count <= 10000 or len(message.centerline_support) != count:
+                raise ValueError("invalid centerline point/support lengths")
+            if any(int(v) not in (1, 2, 3, 4) for v in message.centerline_support):
+                raise ValueError("unknown centerline support value")
+            points = np.asarray([(p.x, p.y, p.z) for p in message.centerline_points], dtype=float)
+            if (not np.all(np.isfinite(points)) or np.any(np.abs(points[:, 2]) > 1e-6) or
+                    np.any(points[:, 0] < 0) or np.any(points[:, 0] >= width+pad_left+pad_right) or
+                    np.any(points[:, 1] < 0) or np.any(points[:, 1] >= height)):
+                raise ValueError("centerline points are outside their result canvas")
+            # BEV pixel centers: +X forward, +Y left. Remove output-only horizontal padding.
+            x_m = self.bev_x_max_m - (points[:, 1] + 0.5) * sy
+            y_m = self.bev_y_max_m - (points[:, 0] - pad_left + 0.5) * sx
+            self._path = build_ordered_path_model(
+                x_m, y_m,
                 minimum_points=self.path_minimum_points,
                 minimum_span_m=self.path_minimum_span_m,
                 minimum_x_m=self.path_minimum_x_m,
                 maximum_x_m=self.path_maximum_x_m,
-                local_smoothing_window_m=(
-                    self.path_local_smoothing_window_m
-                ),
-                outlier_threshold_m=self.path_outlier_threshold_m,
+                maximum_gap_m=self.path_maximum_gap_m,
                 geometry_window_m=self.path_geometry_window_m,
             )
-        except (TypeError, ValueError) as exception:
+        except (TypeError, ValueError, OverflowError) as exception:
             self._path = None
-            self.get_logger().warn(
-                f"Rejected BEV centerline: {exception}",
-                throttle_duration_sec=1.0,
-            )
+            self.get_logger().warn(f"Rejected ML centerline: {exception}", throttle_duration_sec=1.0)
 
-    def _message_time_or_none(self, message: Image) -> Time | None:
+    def _message_time_or_none(self, message: LaneResult) -> Time | None:
         if message.header.stamp.sec == 0 and message.header.stamp.nanosec == 0:
             return None
-        return Time.from_msg(
-            message.header.stamp,
-            clock_type=self.get_clock().clock_type,
-        )
+        return Time.from_msg(message.header.stamp, clock_type=self.get_clock().clock_type)
 
     def _on_measured_erpm(self, message: Int32) -> None:
         now = self.get_clock().now()

@@ -1,23 +1,20 @@
 # bev_processor
 
-`bev_processor`는 `camera_driver`가 발행하는 하단 rectified NV12와 프레임별
-IMU 보정 행렬을 받아 CUDA에서 120x300 컬러 BEV를 생성하고, 같은 CUDA
-stream에서 Gray와 거리별 white Top-hat까지 처리한다. CPU는 작은 BEV에서
-상대 대비 기반 왼쪽·오른쪽 차선 시드만 선택한다.
+`bev_processor`는 `camera_driver`의 하단 rectified NV12와 프레임별 IMU 보정
+행렬을 받아 CUDA에서 컬러 BEV를 생성한다. 차선과 중앙선은 `line_detactor`가 담당한다.
+기존 Gray/Top-hat, 상대 대비 시드, 슬라이딩 윈도우, 규칙 기반 중앙선 생성과
+관련 `lane_*` 파라미터·launch 인자는 제거했다. `/camera/image_bev_lane`도 발행하지 않는다.
+기존 외부 BEV YAML에 남은 `lane_*` 키는 읽지 않으며 삭제해도 된다.
 
 ## 처리 순서
 
-1. 시작 시 OAK stereo depth와 IMU로 카메라 높이·roll·pitch를 측정한다.
+1. 시작 시 설정에 따라 OAK stereo depth와 IMU로 카메라 높이·roll·pitch를 측정한다.
 2. 측정 자세와 설정된 카메라 X/Y/yaw로 고정 BEV LUT를 만든다.
 3. OAK 측정 파이프라인을 닫고 `camera_driver`를 시작한다.
-4. CUDA가 NV12 안정화, BEV sampling, BGR/Gray 생성을 한 번에 수행한다.
-5. CUDA가 BEV의 far/middle/near 영역에 서로 다른 커널의 Top-hat을 적용한다.
-6. CPU가 ROI 안의 ridge를 곡선 트랙으로 연결하고 국소 대비·기울기·곡선
-   길이·좌우 시드 간 거리로 시드를 선택한다.
+4. CUDA가 NV12 안정화, BEV sampling, BGR 생성을 한 번에 수행한다.
+5. `/camera/image_bev`를 딥러닝 검출기에 전달한다.
 
-차량은 시작 측정이 완료될 때까지 정지해야 한다. 시작 측정 후 차선 시드
-검출은 매 프레임 현재 BEV 좌표에서 수행하므로 차량 이동 자체를 고정된
-영상 위치로 가정하지 않는다.
+차량은 시작 측정이 완료될 때까지 정지해야 한다.
 
 ## 실행
 
@@ -42,29 +39,12 @@ ros2 launch bev_processor bev_processor.launch.py
 
 ```text
 datasets/dataset_001/
-├── origin_bev/<capture_time_ns>_<matching_number>.png
-├── filtered_bev/<capture_time_ns>_<matching_number>.png
-├── result_bev/<capture_time_ns>_<matching_number>.png
-└── label/<capture_time_ns>_<matching_number>.json
+└── origin_bev/<capture_time_ns>_<matching_number>.png
 ```
 
-기본 BEV는 세로 300행×가로 120열이다. `origin_bev`는 오버레이 없는 BGR,
-`filtered_bev`는 Gray+Top-hat 결과다. `result_bev`는 `origin_bev` 위에
-JSON과 동일한 1px 차선 좌표를 겹쳐 그린 검증용 영상이며, 왼쪽 차선은
-파란색이고 오른쪽 차선은 빨간색이다. 중앙선은 표시하지 않는다. 같은
-stem의 JSON은 `left_lane`과 `right_lane`에 `[x, y]` 형식의 1px 차선
-좌표를 저장하며, 검출되지 않은 쪽은 빈 배열이다.
-
-```json
-{
-  "capture_time_ns": 1788488318338722352,
-  "matching_number": 1,
-  "image_width": 120,
-  "image_height": 300,
-  "left_lane": [[31,299],[31,298]],
-  "right_lane": []
-}
-```
+기본 BEV는 세로 300행×가로 120열이다. `origin_bev`에 오버레이 없는 BGR만 저장한다.
+규칙 기반 검출을 제거했으므로 `filtered_bev`, `result_bev`, `label`은 새로 생성하지 않는다.
+기존 수집 폴더는 유지하며, 새 수집의 라벨링은 별도로 수행해야 한다.
 
 자동주행에서는 기존 명령에 수집 인자만 추가하면 된다. 값을
 `bev_params_file`의 `bev_processor.ros__parameters`에 넣어도 동일하다.
@@ -86,7 +66,7 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 없으면 `dataset_collection_stop_auto_on_complete:=false`로 지정한다.
 수동 버튼 수집에서는 `bev_processor`를 수동 캡처 모드로 실행한다.
 `/autopilot03/joy`의 컨트롤러 A 버튼(SDL index 0)을 누르는 상승 에지마다
-자동수집과 동일한 네 파일을 한 세트씩 저장한다. 기존 B 버튼은
+자동수집과 동일하게 원본 BEV 한 장을 저장한다. 기존 B 버튼은
 `capture_directory`에 원본 BEV 한 장만 저장하는 기능으로 그대로 남는다.
 자동 FPS 수집과 수동 캡처 모드는 동시에 활성화할 수 없다.
 
@@ -156,267 +136,29 @@ ros2 launch bev_processor bev_processor.launch.py \
   performance_measurement_enabled:=true
 ```
 
-`performance_measurement_enabled`가 true이면 카메라와 BEV GUI가 모두
-꺼진다. 상태 로그의 `CPU_seed_ms(avg/max)`는 CPU 시드 검출 시간이며,
-Gray·Top-hat은 CUDA BEV 처리 시간에 포함된다.
+`performance_measurement_enabled`가 true이면 이 launch의 카메라와 BEV GUI가
+꺼지고 CUDA 변환 FPS·지연·처리 시간을 기록한다.
 
-## CUDA 전처리
+## BEV 보간과 프리뷰
 
-`lane_seed_detection_enabled:=true`이면 BGR과 Gray를 같은 BEV 커널에서
-만든다. 차선용 Gray에서는 설정 밝기 이상의 고채도 색을 검은색으로
-제거하고, far/middle/near 영역에 설정된 morphology 커널을 적용한다.
-발행되는 원본 컬러 BEV는 채도 마스크를 적용하지 않는다.
+`bev_interpolation`은 `bilinear`, `bicubic`, `adaptive`를 지원한다.
+`edge_*`는 원거리 BEV 영상의 보간 품질에 쓰는 설정이므로 유지한다.
+이 설정은 차선 검출이나 슬라이딩 윈도우가 아니다.
 
-```text
-enhanced = max(top_hat - noise_floor, 0) * gain
-```
-
-기본값은 다음과 같다.
-
-- near: 비율 0.45, gain 1.5, noise floor 17, kernel 7x7
-- middle: 비율 0.35, gain 1.6, noise floor 13, kernel 17x17
-- far: 비율 0.20, gain 1.65, noise floor 11, kernel 27x27
-- saturation suppression: S 70 이상, V 40 이상, mask dilation 1px
-- Top-hat shape 1(ellipse), iteration 1, border 0(constant)
-
-세 거리 비율의 합은 반드시 1이어야 하며 커널 폭·높이는 양의 홀수여야 한다.
-`lane_seed_detection_enabled:=false`이면 CUDA Top-hat, CPU 시드 검출,
-시드 토픽 발행을 모두 끈다.
-
-## 상대 대비 시드 검출
-
-보수적인 ROI 시드 검출을 먼저 수행하고, 안정 트랙의 첫 시드에서
-슬라이딩 윈도우 추적을 다시 시작해 주행 중심선을 생성한다. 전체 순서는
-다음과 같다.
-
-1. ROI 각 행에서 Top-hat 응답과 폭 조건을 통과한 ridge를 찾는다.
-2. 하단에서 상단으로 최대 횡이동량과 허용 gap을 적용해 곡선 트랙을 만든다.
-3. median window 전후에서 횡방향 진행이 실제로 반전되는 V/번개 모양
-   구간은 분리하되, 같은 방향으로 이어지는 픽셀 계단은 유지한다.
-4. 원본 Gray에서 ridge 법선 양쪽의 배경을 샘플링해 양측 국소 대비와
-   배경 비대칭을 관찰한다. 이 단계는 대비를 추가로 강화하지 않는다.
-5. 엄격한 대비와 최소 곡선 길이를 먼저 통과한 안정 트랙에만 선택적
-   대비 완화를 적용한다.
-6. 좌우 트랙의 공통 행에서 간격을 구하고 MAD 이상치를 제거한 평균이
-   설정 거리 범위 안인 시드 쌍을 선택한다.
-7. 최초 유효한 좌·우 쌍으로 역할을 잠그고, 이후 단일 차선은 화면
-   중심이 아닌 직전 시드 곡선과의 거리로 좌·우를 유지한다.
-   양쪽이 모두 설정 프레임 동안 사라져야 잠금을 초기화한다.
-8. 매 프레임 행·열 방향을 모두 탐색한 뒤 후보를 하나로 통합한다.
-   응답값·폭·gap·이동량·곡선 길이·국소 대비·기울기 기준은 두
-   방향에서 동일하며, 좌·우 거리는 원본 좌표계의 곡선 간 거리로 평가한다.
-9. 행·열 후보의 끝점이 설정 거리 이내에서 닿고 연결부 응답과 회전각
-   기준을 통과하면 하나의 `RC` 트랙으로 이어서 점수와 시드를 다시 계산한다.
-10. 선택된 ROI 트랙은 좌·우 역할과 차량 근접 초기 위치·방향만
-    제공한다. 첫 시드 위치에서 크기가 증가하는 회전 슬라이딩 윈도우로
-    전체 BEV 차선을 다시 추적한다.
-11. 중심선 재구성에는 원시 ROI 시드 곡선을 넣지 않고, 승인된 각
-    윈도우에서 Top-hat 밝기로 계산한 무게중심 한 점만 사용한다.
-12. 양쪽 차선은 반대 경계 선분에 수직 투영한 실측 중점을 사용한다.
-    설정각 이상의 급코너에 진입하면 좌회전은 오른쪽, 우회전은 왼쪽의
-    바깥 차선을 선택해 법선 오프셋 중심선을 만든다. 한쪽 차선을 잠시
-    놓쳐 안쪽 차선을 임시로 사용해도 양쪽 재검출 시 현재 회전의 바깥쪽으로
-    돌아간다.
-13. 한쪽만 보이면 설정된 도로 폭의 절반만큼 국소 법선 방향으로 이동하고,
-    양쪽에서 한쪽으로 전환될 때 이전 중심선과의 가로 오차를 점진적으로 감쇠한다.
-14. 검출점·중점·이전 프레임 평활화를 적용하고, 법선 오프셋이 기준 차선과
-    반대 방향으로 뒤집히는 급곡선은 가장 긴 안전 구간만 유지한다. 차선이
-    이상적인 Y 단조 형태가 아닐 수 있으므로 이미지 Y 진행 방향은 제한하지 않는다.
-
-출력 토픽은 다음과 같다.
-
-- `/camera/image_bev` (`bgr8`): 원본 120x300 컬러 BEV
-- `/camera/image_bev_lane` (`mono8`): 최종 주행 중심선만 흰색인
-  120x300 마스크. 양쪽 경계 자체는 이 토픽에 포함하지 않는다.
-
-## GUI 표시
-
-`lane_preview_enabled:=true`이면 enhanced Top-hat 위에 ROI, 시드,
-판정 근거를 함께 표시한다.
-
-- 노랑: ROI 상단·하단
-- 흐린 초록: 엄격 대비 통과 근거
-- 밝은 초록 2px 선: 최종 주행 중심선
-- 주황: 안정 트랙에서 완화된 대비로 통과한 근거
-- 청록: 선택된 왼쪽 시드와 지지 곡선
-- 자홍: 선택된 오른쪽 시드와 지지 곡선
-- 빨간 X: 지속적인 기울기 방향 반전으로 분리된 지점
-- `WAIT L+R`: 최초 좌우 시드 쌍을 기다리는 상태
-- `SIDE LOCK`: 좌우 역할 잠금, `SIDE LOCK:T`는 현재 프레임에
-  시간 연속성으로 단일 차선의 역할을 붙였다는 뜻
-- 상태 문자 끝의 `:RC`: 행·열 통합 추적 사용
-- 흰색 원: 행·열 트랙이 실제로 병합된 연결 위치
-- `CENTER:PAIR/LEFT/RIGHT/NONE`: 중심선 생성에 사용한 차선 상태,
-  `:C-L/:C-R`은 급코너에서 현재 왼쪽/오른쪽 경계를 중심선 기준으로
-  사용 중이라는 뜻. 끝의 `:T`는 중심선 모드 전환 보정, `:TRIM`은
-  안전하지 않은 법선 오프셋 구간을 제거했다는 뜻
-
-`lane_preview_enabled:=false`이면 원본 컬러 BEV만 프리뷰한다.
-프리뷰 창에 포커스를 둔 채 Space를 누르면 `preview_stop_topic`
-(기본 `/auto/enabled`)으로 false를 발행한다.
-
-## 실행 시 파라미터 변경
-
-모든 시드·Top-hat 파라미터는 `config/bev_config.yaml`에 있고,
-launch 인자로 실행마다 덮어쓸 수 있다.
+단독 실행의 `preview_enabled:=true`는 원본 BGR BEV를 표시한다.
+자동주행 launch는 이 창을 끄고 `line_detactor`의 좌우 차선·노란 중앙선 프리뷰를 표시한다.
 
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
-  lane_seed_roi_height_ratio:=0.25 \
-  lane_seed_minimum_bilateral_contrast:=25.0 \
-  lane_seed_maximum_slope_change_px_per_row:=2.0 \
-  lane_seed_pair_minimum_distance_px:=45.0 \
-  lane_seed_pair_maximum_distance_px:=100.0 \
-  lane_seed_temporal_side_lock_reset_frames:=100 \
-  lane_seed_temporal_side_reacquire_base_distance_px:=45.0 \
-  lane_seed_temporal_side_reacquire_distance_per_missing_frame_px:=3.0 \
-  lane_seed_temporal_side_reacquire_maximum_distance_px:=63.0
+  bev_params_file:=/absolute/path/bev_config_test.yaml \
+  camera_params_file:=/absolute/path/camera_config_test.yaml \
+  publish_enabled:=true \
+  preview_enabled:=true
 ```
 
-전체 조절 인자는 다음 명령으로 확인한다.
-
-```bash
-ros2 launch bev_processor bev_processor.launch.py --show-args
-```
-
-슬라이딩 윈도우 값은 실행할 때 바로 덮어쓸 수 있다.
-
-```bash
-ros2 launch bev_processor bev_processor.launch.py \
-  lane_seed_sliding_window_maximum_count:=40 \
-  lane_seed_sliding_window_maximum_consecutive_misses:=2 \
-  lane_seed_sliding_window_centroid_boundary_margin_px:=2.0 \
-  lane_seed_sliding_window_growth_ratio:=1.04 \
-  lane_seed_sliding_window_maximum_turn_deg_per_window:=14.0 \
-  lane_seed_sliding_window_maximum_turn_change_deg_per_window:=3.0 \
-  lane_seed_sliding_window_heading_update_gain:=0.90
-```
-
-중심선의 도로 폭·수직 투영·보정값도 같은 방법으로 조절한다.
-
-```bash
-ros2 launch bev_processor bev_processor.launch.py \
-  lane_centerline_expected_width_m:=0.65 \
-  lane_centerline_width_tolerance_m:=0.08 \
-  lane_centerline_measured_point_smoothing_weight:=0.70 \
-  lane_centerline_midpoint_smoothing_weight:=0.45 \
-  lane_centerline_temporal_current_weight:=0.60 \
-  lane_centerline_transition_maximum_correction_m:=0.15 \
-  lane_centerline_tangent_window_m:=0.12 \
-  lane_centerline_maximum_curvature_per_m:=1.8 \
-  lane_centerline_maximum_heading_step_deg:=14.0 \
-  lane_centerline_corner_longer_boundary_enabled:=true \
-  lane_centerline_corner_outward_bias_m:=0.05 \
-  lane_centerline_corner_enter_heading_change_deg:=40.0 \
-  lane_centerline_corner_exit_heading_change_deg:=20.0
-```
-
-주요 파라미터 그룹:
-
-- `lane_near_*`, `lane_middle_*`, `lane_far_*`:
-  거리별 Top-hat gain, noise floor, kernel 크기와 영역 비율
-- `lane_saturation_*`:
-  차선용 Gray/Top-hat에서 제거할 고채도 픽셀의 S/V 기준과 마스크 팽창 반경
-- `lane_seed_roi_*`: 하단 제외 비율과 ROI 높이
-- `lane_seed_minimum_response`, `*_run_width_px`:
-  행별 ridge 후보의 Top-hat 응답과 폭
-- `lane_seed_maximum_lateral_step_px`, `*_gap_rows`:
-  곡선 트랙의 좌우 이동량과 누락 run/고립된 대비 실패 허용량
-- `lane_seed_minimum_track_arc_length_px`:
-  행 개수가 아닌 후보 곡선의 최소 실제 길이
-- `lane_seed_minimum_bilateral_contrast`,
-  `lane_seed_maximum_background_asymmetry`:
-  원본 Gray에서 측정하는 양측 대비와 배경 균형
-- `lane_seed_contrast_relaxation_*`:
-  안정 트랙에만 적용하는 단계적 대비 완화
-- `lane_seed_slope_*`:
-  median window 전후의 지속적인 기울기 방향 반전 억제. 같은 방향의
-  픽셀 계단이나 부드러운 급커브는 절단하지 않는다.
-- `lane_seed_pair_*_distance_px`:
-  MAD 이상치 제거 후 좌우 시드 평균 간격
-- `lane_seed_sliding_window_enabled`,
-  `lane_seed_sliding_window_minimum_seed_arc_length_px`:
-  ROI 검출을 통과한 안정 트랙의 첫 시드부터 슬라이딩 윈도우로
-  전체 경계를 다시 추적할지 여부와 추적을 시작할 최소 시드 곡선 길이.
-  기본값 15 px은 코너에서
-  아래쪽 짧은 수직 조각만 남아도 즉시 윈도우 추적을 시작하게 한다.
-  중심선에는 원시 시드 곡선 대신 승인된 창의 무게중심만 들어간다.
-- `lane_seed_sliding_window_initial_*`,
-  `lane_seed_sliding_window_growth_ratio`,
-  `lane_seed_sliding_window_maximum_*`:
-  회전 사각 창의 첫 폭/높이, 창마다 적용할 증가 비율, 최대 폭/높이.
-  원거리에서 굵어지는 차선에 맞춰 폭과 높이가 함께 증가한다.
-- `lane_seed_sliding_window_step_ratio`,
-  `lane_seed_sliding_window_maximum_count`:
-  현재 창 높이 대비 다음 창 이동 거리와 한 차선당 최대 창 개수
-- `lane_seed_sliding_window_minimum_bright_pixels`,
-  `lane_seed_sliding_window_maximum_consecutive_misses`:
-  창 안에서 무게중심을 계산할 최소 밝은 픽셀 수와 연결 중 허용할 빈 창 수
-- `lane_seed_sliding_window_centroid_boundary_margin_px`:
-  사각 창이 영상 경계와 겹쳐도 교차 영역에서 계속 찾는다. 승인된 밝기 가중
-  중심점이 지정한 경계 여백 안에 있고 진행 방향이 영상 바깥쪽이면 그 점을
-  마지막으로 채택하고 추적을 끝낸다.
-- `lane_seed_sliding_window_maximum_turn_deg_per_window`:
-  직전 진행 방향에서 다음 창으로 허용할 최대 회전각
-- `lane_seed_sliding_window_maximum_turn_change_deg_per_window`,
-  `lane_seed_sliding_window_heading_update_gain`:
-  연속 창 사이 회전량 급변 제한과 방향 갱신 비율. 코너 방향과 반대로
-  순간 진동하는 중심선 생성을 억제한다.
-- `lane_centerline_enabled`, `lane_centerline_expected_width_m`,
-  `lane_centerline_width_tolerance_m`:
-  중심선 생성 여부, 기대 도로 폭, 양쪽 경계를 서로 투영할 때
-  허용할 폭 오차. 거리 단위는 BEV와 동일하게 m이다.
-- `lane_centerline_minimum_points`,
-  `lane_centerline_minimum_counterpart_points`:
-  단일 경계로 중심선을 만들 최소 점 수와, 양쪽 직접 중점 생성을
-  시도할 상대 경계의 최소 점 수
-- `lane_centerline_measured_point_smoothing_weight`,
-  `lane_centerline_midpoint_smoothing_weight`:
-  검출 경계 점과 수직 투영으로 생성한 중점에서 현재 점을 유지하는 가중치.
-  작을수록 부드럽지만 급커브가 더 많이 완화된다.
-- `lane_centerline_temporal_current_weight`:
-  양쪽 중심선을 이전 프레임과 합성할 때 현재 프레임의 가중치
-- `lane_centerline_transition_maximum_correction_m`,
-  `lane_centerline_transition_correction_decay`:
-  양쪽에서 한쪽으로 전환될 때 이전 중심선과의 최대 가로 방향 보정량과
-  매 프레임 보정량 유지 비율
-- `lane_centerline_tangent_window_m`,
-  `lane_centerline_maximum_curvature_per_m`,
-  `lane_centerline_maximum_heading_step_deg`:
-  단일 경계의 법선 이동에 사용할 접선 측정 거리, 최대 곡률, 인접 점간
-  방향 변화 한계. 기준 차선과 반대로 뒤집히는 법선 이동 구간은 잘라낸다.
-- `lane_centerline_maximum_gap_fill_m`:
-  중심선 마스크와 프리뷰에서 두 점 사이를 선으로 이을 최대 거리
-- `lane_centerline_corner_longer_boundary_enabled`,
-  `lane_centerline_corner_outward_bias_m`,
-  `lane_centerline_corner_enter_heading_change_deg`,
-  `lane_centerline_corner_exit_heading_change_deg`:
-  급코너에서 회전 방향의 바깥 차선을 기준으로 사용할지 여부와 코너
-  중심선을 바깥쪽으로 이동할 거리, 코너 모드 진입·이탈 방향 변화각.
-  편향값은 차선 쌍의 도로 폭 검증에는 영향을 주지 않는다. 기존
-  parameter 이름은 launch 호환을 위해 유지한다. 좌회전은 오른쪽,
-  우회전은 왼쪽 경계가 바깥 차선이다.
-- `lane_seed_column_tracking_enabled`:
-  행 후보와 함께 동일 기준의 열 방향 후보를 매 프레임 통합할지 여부
-- `lane_seed_cross_direction_merge_enabled`:
-  인접한 같은 방향 조각과, 끝점이 닿거나 run 영역이 겹치는
-  행·열 후보를 하나의 트랙으로 이을지 여부
-- `lane_seed_cross_direction_merge_maximum_endpoint_distance_px`:
-  병합을 허용할 두 끝점의 최대 거리
-- `lane_seed_cross_direction_merge_minimum_connector_support_ratio`:
-  접합할 두 지점 사이에서 Top-hat 임계값을 통과해야 하는 최소 비율
-- `lane_seed_cross_direction_merge_maximum_turn_angle_deg`:
-  연결부에서 허용할 최대 방향 변화각
-- `lane_seed_temporal_side_lock_*`:
-  유효한 좌우 쌍의 역할 재초기화, 단일 차선의 짧은 누락 후 좌/우 역할
-  유지, 잠금 초기화 프레임, 마지막 유효 곡선에서 허용할 기본 거리,
-  누락 프레임당 추가 거리와 최대 거리. 단일 차선과 좌우 쌍 모두 이 동적
-  거리 범위 안에서만 재연결된다.
-
-차선 프리뷰에는 선택된 좌·우 색으로 회전 슬라이딩 윈도우가 표시된다.
-통과한 창의 노란 점은 Top-hat 응답으로 계산한 밝기 가중 무게중심이며,
-빨간 창은 밝은 픽셀 부족 또는 진행 방향 조건으로 중단된 창이다. 최종
-중심선은 프리뷰의 밝은 초록색 선과 mono8 마스크로 출력된다.
+차선 폭, 중앙선 평활화, 코너 바깥 차선 가중치는
+`line_detactor/config/line_detactor.yaml`에서 조정한다. 자동주행에서는
+`line_detactor_params_file:=/absolute/path/line_detactor_test.yaml`로 전달한다.
 
 ## BEV 범위
 
@@ -466,5 +208,5 @@ manual_camera_height_m: 0.20
 사용 파일:
 
 - launch: `launch/bev_processor.launch.py`
-- BEV/시드 설정: `config/bev_config.yaml`
+- BEV 투영·수집 설정: `config/bev_config.yaml`
 - 카메라 설정: `camera_driver/config/camera_config.yaml`

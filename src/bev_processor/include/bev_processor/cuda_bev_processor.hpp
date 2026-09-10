@@ -31,49 +31,9 @@ struct EdgeAdaptiveConfig
   double meter_per_pixel{0.01};
 };
 
-struct CudaLanePreprocessConfig
-{
-  bool enabled{true};
-  int gray_mode{0};
-
-  // Suppress sufficiently bright, saturated colors only in the lane
-  // preprocessing path. The published color BEV remains unchanged.
-  bool saturation_suppression_enabled{true};
-  int saturation_threshold{70};
-  int saturation_minimum_value{40};
-  int saturation_mask_dilation_px{1};
-
-  double near_ratio{0.45};
-  double middle_ratio{0.35};
-  double far_ratio{0.20};
-
-  double near_gain{1.5};
-  int near_noise_floor{17};
-  int near_kernel_width{7};
-  int near_kernel_height{7};
-
-  double middle_gain{1.6};
-  int middle_noise_floor{13};
-  int middle_kernel_width{17};
-  int middle_kernel_height{17};
-
-  double far_gain{1.65};
-  int far_noise_floor{11};
-  int far_kernel_width{27};
-  int far_kernel_height{27};
-
-  // Shape: 0=rectangle, 1=ellipse, 2=cross.
-  int top_hat_kernel_shape{1};
-  int top_hat_iterations{1};
-  // Border: 0=constant, 1=replicate, 2=reflect, 3=reflect101.
-  int top_hat_border_type{0};
-};
-
 struct CudaBevResult
 {
   cv::Mat bgr;
-  cv::Mat gray;
-  cv::Mat enhanced_top_hat;
 };
 
 class CudaBevProcessor
@@ -85,8 +45,7 @@ public:
     const cv::Mat & map_x,
     const cv::Mat & map_y,
     BevInterpolation interpolation,
-    const EdgeAdaptiveConfig & edge_adaptive_config,
-    const CudaLanePreprocessConfig & lane_preprocess_config);
+    const EdgeAdaptiveConfig & edge_adaptive_config);
   ~CudaBevProcessor();
 
   CudaBevProcessor(const CudaBevProcessor &) = delete;

@@ -13,8 +13,8 @@ start the F1TENTH vehicle. It replaces the former `vehicle_launcher` and
 - `manual_drive_with_dynamics.launch.py`: starts manual driving plus the
   read-only vehicle dynamics/CAN monitor, including direct CANable 2 SLCAN
   telemetry when selected.
-- `auto_drive.launch.py`: starts BEV centerline generation, Stanley/PID
-  autonomous control, and the VESC bridge.
+- `auto_drive.launch.py`: starts BEV images, ML lane/centerline detection, Stanley/PID
+  autonomous control, the VESC bridge, and the vehicle dynamics/CAN monitor.
 
 ```bash
 ros2 launch vehicle_bringup joy_test.launch.py
@@ -78,21 +78,69 @@ owns the joystick node defaults.
 
 ## Autonomous driving
 
-The autonomous launch follows `/camera/image_bev_lane`, starts as soon as a
-valid centerline and fresh VESC telemetry are present, and uses the same
-`/vesc/duty`, `/vesc/brake_current`, and `/vesc/servo_position` interfaces as
-manual driving. Never run the manual and autonomous launches together.
+The pipeline is `camera_driver -> bev_processor -> line_detactor -> auto_control`.
+The controller consumes `/line_detactor/result` centerline points, keeping their
+path order through corners. The preview displays detected lanes and the yellow
+centerline. Rule-based sliding-window detection and `/camera/image_bev_lane`
+publication have been removed.
 
-By default the preview contains only the lane-recognition result. Disable the
-window completely with:
+After pulling `0906ML`, rebuild the changed packages on the Jetson before launch:
 
 ```bash
-ros2 launch vehicle_bringup auto_drive.launch.py preview_enabled:=false
+source /opt/ros/humble/setup.bash
+colcon build --packages-select bev_processor line_detactor auto_control vehicle_bringup \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
 ```
 
-Start without automatic motion for a lifted-wheel check with
-`auto_enabled:=false`. Controller parameters are installed from
-`auto_control/config/auto_control.yaml`.
+The existing configuration-file paths and CAN arguments remain usable:
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  bev_params_file:=/home/autopilot03/Desktop/0822ver3/f1tenth_project_repo/bev_config_test.yaml \
+  auto_control_params_file:=/home/autopilot03/Desktop/0822ver3/f1tenth_project_repo/auto_control_test.yaml \
+  camera_params_file:=/home/autopilot03/Desktop/0822ver3/f1tenth_project_repo/camera_config_test.yaml \
+  auto_enabled:=true \
+  preview_enabled:=true \
+  input_mode:=slcan \
+  slcan_channel:=/dev/ttyACM0 \
+  slcan_bitrate:=500000 \
+  can_controller_id:=112
+```
+
+These are external YAML paths; replace them if the files move. To override ML
+lane/centerline settings, add
+`line_detactor_params_file:=/absolute/path/line_detactor_test.yaml`.
+Use `src/line_detactor/config/line_detactor.yaml` as the template, with root
+`line_detactor.ros__parameters`. Defaults retain 0.65m lane width, spatial smoothing,
+outer-boundary corner weighting, and yellow rendering. Parameters load at startup.
+
+`bev_params_file` remains necessary for projection geometry, startup measurement
+and capture settings. Old `lane_*` BEV keys are ignored and can be deleted.
+The launch derives ML input topic, physical extents, result topic, and controller
+scale/frame consistently. It requires X=0 at the front axle, symmetric Y bounds,
+and BEV dimensions matching the static model. It requires connection, centerline
+and result publication enabled. Individual supported launch arguments override YAML.
+Old controller `lane_topic`, `lane_pixel_threshold`, `path_local_smoothing_window_m`
+and `path_outlier_threshold_m` no longer affect this pipeline.
+
+SLCAN/SocketCAN inputs feed receive-only telemetry and camera acceleration
+compensation. Actuation and controller ERPM still use `vesc_bridge` through UART
+(`/dev/ttyTHS1`, overridable by `vesc_port`). `python-can[serial]` is required for SLCAN.
+
+`auto_enabled:=true` arms motion once fresh valid path and VESC data arrive.
+Use `auto_enabled:=false` to start disabled and `preview_enabled:=false` to hide the GUI.
+The ML preview has no BEV Space-key shortcut; disable explicitly with:
+
+```bash
+ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: false"
+```
+
+Invalid/stale path or ERPM and VESC disconnect send duty zero and centered steering.
+Stop-line detection alone does not command stopping. Never run manual and auto launches together.
+Dataset capture now saves only `origin_bev`; removed rule-based labels are not generated.
 
 ## 8BitDo Bluetooth input safety
 

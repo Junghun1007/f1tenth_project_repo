@@ -1,4 +1,5 @@
 import os
+import math
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -10,7 +11,8 @@ from launch.actions import (
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch_ros.actions import Node, ComposableNodeContainer
+from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
 
 
@@ -52,6 +54,7 @@ def _apply_parameter_file_defaults(
     auto_control_config,
     bev_arguments,
     controller_arguments,
+    line_detactor_config,
 ):
     bev_defaults = _merged_parameters(
         bev_config,
@@ -63,12 +66,44 @@ def _apply_parameter_file_defaults(
         LaunchConfiguration("auto_control_params_file").perform(context),
         "auto_control",
     )
+    detector = _merged_parameters(
+        line_detactor_config,
+        LaunchConfiguration("line_detactor_params_file").perform(context),
+        "line_detactor",
+    )
+    # One physical geometry and result topic for producer and consumer. Old BEV
+    # lane parameters in external YAML cannot reactivate the removed detector.
+    x_min, x_max = float(bev_defaults["x_min_m"]), float(bev_defaults["x_max_m"])
+    y_min, y_max = float(bev_defaults["y_min_m"]), float(bev_defaults["y_max_m"])
+    mpp = float(bev_defaults["meter_per_pixel"])
+    if not all(math.isfinite(v) for v in (x_min, x_max, y_min, y_max, mpp)) or mpp <= 0:
+        raise RuntimeError("BEV geometry must be finite with positive meter_per_pixel")
+    if abs(x_min) > 1e-6 or not math.isclose(y_min, -y_max, abs_tol=1e-6) or min(x_max, y_max) <= 0:
+        raise RuntimeError("ML auto drive requires front-axle BEV: x_min=0, symmetric +/-Y")
+    width, height = int(bev_defaults["output_width"]), int(bev_defaults["output_height"])
+    if width != round((y_max-y_min)/mpp) or height != round((x_max-x_min)/mpp):
+        raise RuntimeError("BEV output size and metric extent disagree")
+    if width != int(detector["model_input_width"]) or height != int(detector["model_input_height"]):
+        raise RuntimeError("BEV output size must match the static line_detactor model input")
+    for required in ("connection_enabled", "centerline_enabled", "result_publish_enabled"):
+        if detector.get(required) is not True:
+            raise RuntimeError(f"ML auto drive requires line_detactor {required}: true")
+    detector.update({
+        "input_topic": str(bev_defaults["output_topic"]),
+        "centerline_bev_width_m": y_max-y_min,
+        "centerline_bev_height_m": x_max-x_min,
+    })
+    context.launch_configurations["ml_lane_result_topic"] = str(detector["result_topic"])
+    context.launch_configurations["ml_lane_frame_id"] = str(bev_defaults["output_frame_id"])
+    context.launch_configurations["ml_bev_x_max_m"] = str(x_max)
+    context.launch_configurations["ml_bev_y_max_m"] = str(y_max)
+    context.launch_configurations["ml_bev_meter_per_pixel"] = str(mpp)
     if (
         context.launch_configurations["preview_enabled"]
         == _PARAMETER_FILE_DEFAULT
     ):
         context.launch_configurations["preview_enabled"] = _launch_default(
-            bev_defaults, "preview_enabled", "true"
+            detector, "preview_enabled", "true"
         )
     for name, fallback in bev_arguments:
         if context.launch_configurations[name] == _PARAMETER_FILE_DEFAULT:
@@ -83,7 +118,19 @@ def _apply_parameter_file_defaults(
             context.launch_configurations[argument_name] = _launch_default(
                 controller_defaults, parameter_name, fallback
             )
-    return []
+    preview = context.launch_configurations["preview_enabled"].lower()
+    if preview not in ("true", "false"):
+        raise RuntimeError("preview_enabled must be true or false")
+    detector["preview_enabled"] = preview == "true"
+    return [ComposableNodeContainer(
+        name="line_detactor_container", namespace="", package="rclcpp_components",
+        executable="component_container_mt", output="screen",
+        composable_node_descriptions=[ComposableNode(
+            package="line_detactor", plugin="line_detactor::LineDetactorNode",
+            name="line_detactor", parameters=[detector],
+            extra_arguments=[{"use_intra_process_comms": True}],
+        )],
+    )]
 
 
 def generate_launch_description():
@@ -91,6 +138,9 @@ def generate_launch_description():
     auto_control_share = get_package_share_directory("auto_control")
     vehicle_bringup_share = get_package_share_directory("vehicle_bringup")
     bev_config = os.path.join(bev_share, "config", "bev_config.yaml")
+    line_detactor_config = os.path.join(get_package_share_directory("line_detactor"), "config", "line_detactor.yaml")
+    camera_config = os.path.join(get_package_share_directory("camera_driver"), "config", "camera_config.yaml")
+    dynamics_config = os.path.join(get_package_share_directory("vehicle_dynamics_monitor"), "config", "vehicle_dynamics.yaml")
     auto_control_config = os.path.join(
         auto_control_share, "config", "auto_control.yaml"
     )
@@ -103,29 +153,12 @@ def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
     bev_params_file = LaunchConfiguration("bev_params_file")
     auto_control_params_file = LaunchConfiguration("auto_control_params_file")
-    preview_enabled = LaunchConfiguration("preview_enabled")
     bev_argument_fallbacks = [
         ("dataset_collection_enabled", "false"),
         ("dataset_collection_root_directory", "datasets"),
         ("dataset_collection_fps", "10.0"),
         ("dataset_collection_target_count", "1000"),
         ("dataset_collection_stop_auto_on_complete", "true"),
-        ("lane_seed_roi_height_ratio", "0.25"),
-        ("lane_seed_temporal_side_lock_reset_frames", "100"),
-        ("lane_seed_temporal_side_reacquire_base_distance_px", "45.0"),
-        (
-            "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px",
-            "3.0",
-        ),
-        ("lane_seed_temporal_side_reacquire_maximum_distance_px", "63.0"),
-        ("lane_seed_pair_minimum_distance_px", "45.0"),
-        ("lane_seed_pair_maximum_distance_px", "100.0"),
-        ("lane_seed_sliding_window_minimum_seed_arc_length_px", "15.0"),
-        (
-            "lane_seed_sliding_window_centroid_boundary_margin_px",
-            "2.0",
-        ),
-        ("lane_centerline_corner_outward_bias_m", "0.05"),
     ]
     # YAML is the single source of default values. A value supplied through
     # `ros2 launch ... name:=value` still replaces the declared default.
@@ -267,18 +300,7 @@ def generate_launch_description():
             "brake_current_fall_amps_per_sec",
             float,
         ),
-        (
-            "path_local_smoothing_window_m",
-            "0.08",
-            "path_local_smoothing_window_m",
-            float,
-        ),
-        (
-            "path_outlier_threshold_m",
-            "0.04",
-            "path_outlier_threshold_m",
-            float,
-        ),
+        ("path_maximum_gap_m", "0.15", "path_maximum_gap_m", float),
         (
             "path_geometry_window_m",
             "0.14",
@@ -333,16 +355,20 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(bev_launch_path),
         launch_arguments={
             "bev_params_file": bev_params_file,
-            # Autonomous mode shows only measured lanes and the centerline.
-            # preview_enabled:=false disables the OpenCV window completely.
-            "preview_enabled": preview_enabled,
-            "lane_preview_enabled": "true",
-            "lane_preview_result_only_enabled": "true",
-            "lane_preview_sliding_windows_enabled": "false",
+            "camera_params_file": LaunchConfiguration("camera_params_file"),
+            "preview_enabled": "false",
+            "publish_enabled": "true",
             **bev_overrides,
         }.items(),
     )
 
+    controller_overrides.update({
+        "lane_result_topic": LaunchConfiguration("ml_lane_result_topic"),
+        "lane_result_frame_id": LaunchConfiguration("ml_lane_frame_id"),
+        "bev_x_max_m": ParameterValue(LaunchConfiguration("ml_bev_x_max_m"), value_type=float),
+        "bev_y_max_m": ParameterValue(LaunchConfiguration("ml_bev_y_max_m"), value_type=float),
+        "bev_meter_per_pixel": ParameterValue(LaunchConfiguration("ml_bev_meter_per_pixel"), value_type=float),
+    })
     auto_control_node = Node(
         package="auto_control",
         executable="auto_control_node",
@@ -363,9 +389,29 @@ def generate_launch_description():
         parameters=[vesc_config, {"port": vesc_port}],
     )
 
+    dynamics_node = Node(
+        package="vehicle_dynamics_monitor", executable="vehicle_dynamics_node",
+        name="vehicle_dynamics_node", output="screen",
+        parameters=[dynamics_config, {
+            "input_mode": LaunchConfiguration("input_mode"),
+            "can_interface": LaunchConfiguration("can_interface"),
+            "slcan_channel": LaunchConfiguration("slcan_channel"),
+            "slcan_bitrate": ParameterValue(LaunchConfiguration("slcan_bitrate"), value_type=int),
+            "can_controller_id": ParameterValue(LaunchConfiguration("can_controller_id"), value_type=int),
+            "commanded_duty_topic": "/auto/current_duty",
+        }],
+    )
     return LaunchDescription(
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
+            DeclareLaunchArgument("camera_params_file", default_value=camera_config),
+            DeclareLaunchArgument("line_detactor_params_file", default_value=line_detactor_config,
+                                  description="ML lane/centerline YAML; source geometry follows BEV YAML"),
+            DeclareLaunchArgument("input_mode", default_value="ros_topic"),
+            DeclareLaunchArgument("can_interface", default_value="can0"),
+            DeclareLaunchArgument("slcan_channel", default_value="/dev/ttyACM0"),
+            DeclareLaunchArgument("slcan_bitrate", default_value="500000"),
+            DeclareLaunchArgument("can_controller_id", default_value="0"),
             DeclareLaunchArgument(
                 "bev_params_file",
                 default_value=bev_config,
@@ -380,7 +426,7 @@ def generate_launch_description():
                 "preview_enabled",
                 default_value=_PARAMETER_FILE_DEFAULT,
                 description=(
-                    "Show result-only BEV lane preview. Set false for no GUI."
+                    "Show ML lanes and yellow centerline preview. Set false for no GUI."
                 ),
             ),
             *[
@@ -402,10 +448,12 @@ def generate_launch_description():
                     "auto_control_config": auto_control_config,
                     "bev_arguments": bev_arguments,
                     "controller_arguments": controller_arguments,
+                    "line_detactor_config": line_detactor_config,
                 },
             ),
             bev_launch,
             vesc_bridge_node,
+            dynamics_node,
             auto_control_node,
         ]
     )

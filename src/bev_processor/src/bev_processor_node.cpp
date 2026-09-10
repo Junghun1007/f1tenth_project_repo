@@ -34,7 +34,6 @@
 #include <std_msgs/msg/header.hpp>
 
 #include "bev_processor/bev_geometry.hpp"
-#include "bev_processor/bev_lane_seed_detector.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
 #include "camera_driver/msg/bev_input.hpp"
@@ -50,11 +49,6 @@ using SteadyClock = std::chrono::steady_clock;
 struct BevFrame
 {
   cv::Mat image;
-  cv::Mat filtered_image;
-  cv::Mat lane_mask;
-  cv::Mat lane_preview;
-  std::vector<cv::Point2d> left_lane_points;
-  std::vector<cv::Point2d> right_lane_points;
   std_msgs::msg::Header header;
   SteadyClock::time_point input_received_at;
   std::uint64_t generation{0U};
@@ -71,36 +65,6 @@ bool graphicalDisplayAvailable()
     (display != nullptr && display[0] != '\0') ||
     (wayland_display != nullptr && wayland_display[0] != '\0');
 #endif
-}
-
-std::unique_ptr<sensor_msgs::msg::Image> makeMono8Message(
-  const BevFrame & frame,
-  const std::string & frame_id)
-{
-  if (frame.lane_mask.type() != CV_8UC1) {
-    throw std::invalid_argument("BEV lane output must be a MONO8 image");
-  }
-
-  auto message = std::make_unique<sensor_msgs::msg::Image>();
-  message->header = frame.header;
-  message->header.frame_id = frame_id;
-  message->height = static_cast<std::uint32_t>(frame.lane_mask.rows);
-  message->width = static_cast<std::uint32_t>(frame.lane_mask.cols);
-  message->encoding = sensor_msgs::image_encodings::MONO8;
-  message->is_bigendian = false;
-  message->step = static_cast<std::uint32_t>(frame.lane_mask.cols);
-  message->data.resize(
-    static_cast<std::size_t>(message->step) *
-    static_cast<std::size_t>(message->height));
-
-  for (int row = 0; row < frame.lane_mask.rows; ++row) {
-    std::memcpy(
-      message->data.data() +
-      static_cast<std::size_t>(row) * message->step,
-      frame.lane_mask.ptr(row),
-      message->step);
-  }
-  return message;
 }
 
 std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
@@ -145,10 +109,6 @@ public:
     readParameters();
     validateParameters();
     initializeInputCropGeometry();
-    if (lane_seed_detection_enabled_) {
-      lane_seed_detector_ = std::make_unique<BevLaneSeedDetector>(
-        lane_seed_config_);
-    }
 
     if (performance_measurement_enabled_) {
       startup_measurement_config_.roi_preview_enabled = false;
@@ -296,10 +256,6 @@ public:
       output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
         output_topic_, image_qos);
     }
-    if (lane_seed_detection_enabled_) {
-      lane_output_publisher_ = create_publisher<sensor_msgs::msg::Image>(
-        lane_output_topic_, image_qos);
-    }
     preview_stop_publisher_ = create_publisher<std_msgs::msg::Bool>(
       preview_stop_topic_, rclcpp::QoS(rclcpp::KeepLast(1)).reliable());
     capture_joy_subscription_ = create_subscription<sensor_msgs::msg::Joy>(
@@ -322,7 +278,7 @@ public:
       initializeDatasetCollection();
     }
     processing_thread_ = std::thread(&BevProcessorNode::processingLoop, this);
-    if (publish_enabled_ || lane_seed_detection_enabled_) {
+    if (publish_enabled_) {
       publishing_thread_ = std::thread(&BevProcessorNode::publishingLoop, this);
     }
     if (preview_enabled_) {
@@ -387,121 +343,6 @@ public:
       capture_directory_.c_str(),
       capture_joy_topic_.c_str(),
       capture_joy_button_);
-    if (lane_seed_detection_enabled_) {
-      RCLCPP_INFO(
-        get_logger(),
-        "BEV lane detection: centerline_output=%s mono8, CUDA gray/Top-hat, "
-        "saturation_suppression=%s(S>=%d,V>=%d,dilate=%dpx), "
-        "bands near/middle/far=%.2f/%.2f/%.2f, "
-        "kernel=%dx%d/%dx%d/%dx%d, gain=%.2f/%.2f/%.2f",
-        lane_output_topic_.c_str(),
-        lane_preprocess_config_.saturation_suppression_enabled ? "on" : "off",
-        lane_preprocess_config_.saturation_threshold,
-        lane_preprocess_config_.saturation_minimum_value,
-        lane_preprocess_config_.saturation_mask_dilation_px,
-        lane_preprocess_config_.near_ratio,
-        lane_preprocess_config_.middle_ratio,
-        lane_preprocess_config_.far_ratio,
-        lane_preprocess_config_.near_kernel_width,
-        lane_preprocess_config_.near_kernel_height,
-        lane_preprocess_config_.middle_kernel_width,
-        lane_preprocess_config_.middle_kernel_height,
-        lane_preprocess_config_.far_kernel_width,
-        lane_preprocess_config_.far_kernel_height,
-        lane_preprocess_config_.near_gain,
-        lane_preprocess_config_.middle_gain,
-        lane_preprocess_config_.far_gain);
-      RCLCPP_INFO(
-        get_logger(),
-        "BEV lane seed ROI: bottom_exclusion=%.2f height=%.2f, "
-        "response>=%d, run=%d..%dpx, step<=%.1fpx, gap<=%d rows, "
-        "arc>=%.1fpx, contrast>=%.1f, asymmetry<=%.1f",
-        lane_seed_config_.roi_bottom_exclusion_ratio,
-        lane_seed_config_.roi_height_ratio,
-        lane_seed_config_.minimum_top_hat_response,
-        lane_seed_config_.minimum_run_width_px,
-        lane_seed_config_.maximum_run_width_px,
-        lane_seed_config_.maximum_lateral_step_px,
-        lane_seed_config_.maximum_gap_rows,
-        lane_seed_config_.minimum_track_arc_length_px,
-        lane_seed_config_.minimum_bilateral_contrast,
-        lane_seed_config_.maximum_background_asymmetry);
-      RCLCPP_INFO(
-        get_logger(),
-        "BEV lane seed continuity: slope_reversal=%s(window=%d, "
-        "opposing_delta<=%.2fpx/row), "
-        "pair=%.1f..%.1fpx, contrast relaxation=%s(step=%.1f, retries=%d), "
-        "column_tracking=%s, candidate_merge=%s(endpoint<=%.1fpx, "
-        "support>=%.2f, turn<=%.1fdeg), side_lock=%s(reset=%d frames, "
-        "reacquire=%.1f+%.1f/miss<=%.1fpx), preview=%s",
-        lane_seed_config_.slope_filter_enabled ? "on" : "off",
-        lane_seed_config_.slope_median_window,
-        lane_seed_config_.maximum_slope_change_px_per_row,
-        lane_seed_config_.minimum_pair_distance_px,
-        lane_seed_config_.maximum_pair_distance_px,
-        lane_seed_config_.contrast_relaxation_enabled ? "on" : "off",
-        lane_seed_config_.contrast_relaxation_step,
-        lane_seed_config_.contrast_relaxation_retry_count,
-        lane_seed_config_.column_tracking_enabled ? "on" : "off",
-        lane_seed_config_.cross_direction_merge_enabled ? "on" : "off",
-        lane_seed_config_.cross_direction_merge_maximum_endpoint_distance_px,
-        lane_seed_config_.cross_direction_merge_minimum_connector_support_ratio,
-        lane_seed_config_.cross_direction_merge_maximum_turn_angle_deg,
-        lane_seed_config_.temporal_side_lock_enabled ? "on" : "off",
-        lane_seed_config_.temporal_side_lock_reset_frames,
-        lane_seed_config_.temporal_side_reacquire_base_distance_px,
-        lane_seed_config_.temporal_side_reacquire_distance_per_missing_frame_px,
-        lane_seed_config_.temporal_side_reacquire_maximum_distance_px,
-        lane_preview_enabled_ ? "on" : "off");
-      RCLCPP_INFO(
-        get_logger(),
-        "BEV lane sliding windows: %s, shape=rectangle, stable_arc>=%.1fpx, "
-        "initial=%dx%dpx, growth=%.3f, maximum=%dx%dpx, step=%.2f, "
-        "count<=%d, bright_pixels>=%d, misses<=%d, "
-        "centroid_edge_margin=%.1fpx, "
-        "turn<=%.1fdeg/window, turn_change<=%.1fdeg/window, gain=%.2f",
-        lane_seed_config_.sliding_window_enabled ? "on" : "off",
-        lane_seed_config_.sliding_window_minimum_seed_arc_length_px,
-        lane_seed_config_.sliding_window_initial_width_px,
-        lane_seed_config_.sliding_window_initial_height_px,
-        lane_seed_config_.sliding_window_growth_ratio,
-        lane_seed_config_.sliding_window_maximum_width_px,
-        lane_seed_config_.sliding_window_maximum_height_px,
-        lane_seed_config_.sliding_window_step_ratio,
-        lane_seed_config_.sliding_window_maximum_count,
-        lane_seed_config_.sliding_window_minimum_bright_pixels,
-        lane_seed_config_.sliding_window_maximum_consecutive_misses,
-        lane_seed_config_.sliding_window_centroid_boundary_margin_px,
-        lane_seed_config_.sliding_window_maximum_turn_deg_per_window,
-        lane_seed_config_.sliding_window_maximum_turn_change_deg_per_window,
-        lane_seed_config_.sliding_window_heading_update_gain);
-      RCLCPP_INFO(
-        get_logger(),
-        "BEV lane centerline: %s reference geometry, width=%.2f+/-%.2fm, "
-        "points=%d/%d, smooth(measured/midpoint/temporal)=%.2f/%.2f/%.2f, "
-        "transition<=%.2fm decay=%.2f, tangent=%.2fm, "
-        "curvature<=%.2f/m, heading_step<=%.1fdeg, gap<=%.2fm, "
-        "corner_outer=%s bias=%.2fm enter/exit=%.1f/%.1fdeg",
-        lane_seed_config_.centerline_enabled ? "on" : "off",
-        lane_seed_config_.centerline_expected_lane_width_m,
-        lane_seed_config_.centerline_lane_width_tolerance_m,
-        lane_seed_config_.centerline_minimum_points,
-        lane_seed_config_.centerline_minimum_counterpart_points,
-        lane_seed_config_.centerline_measured_point_smoothing_weight,
-        lane_seed_config_.centerline_midpoint_smoothing_weight,
-        lane_seed_config_.centerline_temporal_current_weight,
-        lane_seed_config_.centerline_transition_maximum_correction_m,
-        lane_seed_config_.centerline_transition_correction_decay,
-        lane_seed_config_.centerline_tangent_window_m,
-        lane_seed_config_.centerline_maximum_curvature_per_m,
-        lane_seed_config_.centerline_maximum_heading_step_deg,
-        lane_seed_config_.centerline_maximum_gap_fill_m,
-        lane_seed_config_.centerline_corner_longer_boundary_enabled ?
-          "on" : "off",
-        lane_seed_config_.centerline_corner_outward_bias_m,
-        lane_seed_config_.centerline_corner_enter_heading_change_deg,
-        lane_seed_config_.centerline_corner_exit_heading_change_deg);
-    }
     RCLCPP_INFO(
       get_logger(),
       "Startup extrinsics: height_source=%s, "
@@ -661,127 +502,6 @@ private:
     declare_parameter<double>("edge_gradient_high", 32.0);
     declare_parameter<double>("edge_coherence_minimum", 0.30);
     declare_parameter<double>("edge_maximum_anisotropy", 3.0);
-
-    // The CUDA warp produces Gray and distance-adaptive Top-hat in the same
-    // stream. CPU work is limited to branch-heavy seed tracking in the ROI.
-    declare_parameter<bool>("lane_seed_detection_enabled", true);
-    declare_parameter<std::string>(
-      "lane_output_topic", "/camera/image_bev_lane");
-    declare_parameter<bool>("lane_preview_enabled", true);
-    declare_parameter<int>("lane_gray_mode", 0);
-    declare_parameter<bool>("lane_saturation_suppression_enabled", true);
-    declare_parameter<int>("lane_saturation_threshold", 70);
-    declare_parameter<int>("lane_saturation_minimum_value", 40);
-    declare_parameter<int>("lane_saturation_mask_dilation_px", 1);
-    declare_parameter<int>("lane_top_hat_shape", 1);
-    declare_parameter<int>("lane_top_hat_iterations", 1);
-    declare_parameter<int>("lane_top_hat_border", 0);
-    declare_parameter<double>("lane_near_ratio", 0.45);
-    declare_parameter<double>("lane_near_gain", 1.5);
-    declare_parameter<int>("lane_near_noise_floor", 17);
-    declare_parameter<int>("lane_near_kernel_width", 7);
-    declare_parameter<int>("lane_near_kernel_height", 7);
-    declare_parameter<double>("lane_middle_ratio", 0.35);
-    declare_parameter<double>("lane_middle_gain", 1.6);
-    declare_parameter<int>("lane_middle_noise_floor", 13);
-    declare_parameter<int>("lane_middle_kernel_width", 17);
-    declare_parameter<int>("lane_middle_kernel_height", 17);
-    declare_parameter<double>("lane_far_ratio", 0.20);
-    declare_parameter<double>("lane_far_gain", 1.65);
-    declare_parameter<int>("lane_far_noise_floor", 11);
-    declare_parameter<int>("lane_far_kernel_width", 27);
-    declare_parameter<int>("lane_far_kernel_height", 27);
-
-    declare_parameter<double>(
-      "lane_seed_roi_bottom_exclusion_ratio", 0.09);
-    declare_parameter<double>("lane_seed_roi_height_ratio", 0.25);
-    declare_parameter<int>("lane_seed_minimum_response", 30);
-    declare_parameter<int>("lane_seed_minimum_run_width_px", 2);
-    declare_parameter<int>("lane_seed_maximum_run_width_px", 8);
-    declare_parameter<double>("lane_seed_maximum_lateral_step_px", 4.0);
-    declare_parameter<int>("lane_seed_maximum_gap_rows", 4);
-    declare_parameter<double>("lane_seed_minimum_track_arc_length_px", 20.0);
-    declare_parameter<double>("lane_seed_minimum_bilateral_contrast", 25.0);
-    declare_parameter<double>("lane_seed_maximum_background_asymmetry", 50.0);
-    declare_parameter<int>("lane_seed_background_gap_px", 1);
-    declare_parameter<int>("lane_seed_background_band_width_px", 5);
-    declare_parameter<double>("lane_seed_contrast_score_weight", 0.30);
-    declare_parameter<bool>("lane_seed_contrast_relaxation_enabled", true);
-    declare_parameter<double>("lane_seed_contrast_relaxation_step", 5.0);
-    declare_parameter<int>("lane_seed_contrast_relaxation_retries", 5);
-    declare_parameter<bool>("lane_seed_slope_filter_enabled", true);
-    declare_parameter<int>("lane_seed_slope_median_window", 5);
-    declare_parameter<double>(
-      "lane_seed_maximum_slope_change_px_per_row", 2.0);
-    declare_parameter<double>("lane_seed_pair_minimum_distance_px", 45.0);
-    declare_parameter<double>("lane_seed_pair_maximum_distance_px", 100.0);
-    declare_parameter<bool>("lane_seed_sliding_window_enabled", true);
-    declare_parameter<double>(
-      "lane_seed_sliding_window_minimum_seed_arc_length_px", 15.0);
-    declare_parameter<int>("lane_seed_sliding_window_initial_width_px", 6);
-    declare_parameter<int>("lane_seed_sliding_window_initial_height_px", 10);
-    declare_parameter<double>("lane_seed_sliding_window_growth_ratio", 1.04);
-    declare_parameter<int>("lane_seed_sliding_window_maximum_width_px", 25);
-    declare_parameter<int>("lane_seed_sliding_window_maximum_height_px", 15);
-    declare_parameter<double>("lane_seed_sliding_window_step_ratio", 0.60);
-    declare_parameter<int>("lane_seed_sliding_window_maximum_count", 40);
-    declare_parameter<int>(
-      "lane_seed_sliding_window_minimum_bright_pixels", 2);
-    declare_parameter<int>(
-      "lane_seed_sliding_window_maximum_consecutive_misses", 2);
-    declare_parameter<double>(
-      "lane_seed_sliding_window_centroid_boundary_margin_px", 2.0);
-    declare_parameter<double>(
-      "lane_seed_sliding_window_maximum_turn_deg_per_window", 14.0);
-    declare_parameter<double>(
-      "lane_seed_sliding_window_maximum_turn_change_deg_per_window", 3.0);
-    declare_parameter<double>(
-      "lane_seed_sliding_window_heading_update_gain", 0.90);
-    declare_parameter<bool>("lane_centerline_enabled", true);
-    declare_parameter<double>("lane_centerline_expected_width_m", 0.65);
-    declare_parameter<double>("lane_centerline_width_tolerance_m", 0.08);
-    declare_parameter<int>("lane_centerline_minimum_points", 6);
-    declare_parameter<int>("lane_centerline_minimum_counterpart_points", 3);
-    declare_parameter<double>(
-      "lane_centerline_measured_point_smoothing_weight", 0.70);
-    declare_parameter<double>(
-      "lane_centerline_midpoint_smoothing_weight", 0.45);
-    declare_parameter<double>(
-      "lane_centerline_temporal_current_weight", 0.60);
-    declare_parameter<double>(
-      "lane_centerline_transition_maximum_correction_m", 0.15);
-    declare_parameter<double>(
-      "lane_centerline_transition_correction_decay", 0.70);
-    declare_parameter<double>("lane_centerline_tangent_window_m", 0.12);
-    declare_parameter<double>(
-      "lane_centerline_maximum_curvature_per_m", 1.8);
-    declare_parameter<double>(
-      "lane_centerline_maximum_heading_step_deg", 14.0);
-    declare_parameter<double>("lane_centerline_maximum_gap_fill_m", 0.30);
-    declare_parameter<bool>(
-      "lane_centerline_corner_longer_boundary_enabled", true);
-    declare_parameter<double>(
-      "lane_centerline_corner_outward_bias_m", 0.05);
-    declare_parameter<double>(
-      "lane_centerline_corner_enter_heading_change_deg", 40.0);
-    declare_parameter<double>(
-      "lane_centerline_corner_exit_heading_change_deg", 20.0);
-    declare_parameter<bool>("lane_seed_column_tracking_enabled", true);
-    declare_parameter<bool>("lane_seed_cross_direction_merge_enabled", true);
-    declare_parameter<double>(
-      "lane_seed_cross_direction_merge_maximum_endpoint_distance_px", 3.0);
-    declare_parameter<double>(
-      "lane_seed_cross_direction_merge_minimum_connector_support_ratio", 0.70);
-    declare_parameter<double>(
-      "lane_seed_cross_direction_merge_maximum_turn_angle_deg", 110.0);
-    declare_parameter<bool>("lane_seed_temporal_side_lock_enabled", true);
-    declare_parameter<int>("lane_seed_temporal_side_lock_reset_frames", 100);
-    declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_base_distance_px", 45.0);
-    declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px", 3.0);
-    declare_parameter<double>(
-      "lane_seed_temporal_side_reacquire_maximum_distance_px", 63.0);
 
     declare_parameter<double>("status_log_interval_sec", 5.0);
     declare_parameter<double>("startup_timeout_sec", 12.0);
@@ -989,202 +709,6 @@ private:
     edge_adaptive_config_.bev_x_max_m = bev_config_.x_max_m;
     edge_adaptive_config_.meter_per_pixel = bev_config_.meter_per_pixel;
 
-    lane_seed_detection_enabled_ =
-      get_parameter("lane_seed_detection_enabled").as_bool();
-    lane_output_topic_ = get_parameter("lane_output_topic").as_string();
-    lane_preview_enabled_ =
-      get_parameter("lane_preview_enabled").as_bool();
-    lane_preprocess_config_.enabled = lane_seed_detection_enabled_;
-    lane_preprocess_config_.gray_mode = static_cast<int>(
-      get_parameter("lane_gray_mode").as_int());
-    lane_preprocess_config_.saturation_suppression_enabled =
-      get_parameter("lane_saturation_suppression_enabled").as_bool();
-    lane_preprocess_config_.saturation_threshold = static_cast<int>(
-      get_parameter("lane_saturation_threshold").as_int());
-    lane_preprocess_config_.saturation_minimum_value = static_cast<int>(
-      get_parameter("lane_saturation_minimum_value").as_int());
-    lane_preprocess_config_.saturation_mask_dilation_px = static_cast<int>(
-      get_parameter("lane_saturation_mask_dilation_px").as_int());
-    lane_preprocess_config_.top_hat_kernel_shape = static_cast<int>(
-      get_parameter("lane_top_hat_shape").as_int());
-    lane_preprocess_config_.top_hat_iterations = static_cast<int>(
-      get_parameter("lane_top_hat_iterations").as_int());
-    lane_preprocess_config_.top_hat_border_type = static_cast<int>(
-      get_parameter("lane_top_hat_border").as_int());
-    lane_preprocess_config_.near_ratio =
-      get_parameter("lane_near_ratio").as_double();
-    lane_preprocess_config_.near_gain =
-      get_parameter("lane_near_gain").as_double();
-    lane_preprocess_config_.near_noise_floor = static_cast<int>(
-      get_parameter("lane_near_noise_floor").as_int());
-    lane_preprocess_config_.near_kernel_width = static_cast<int>(
-      get_parameter("lane_near_kernel_width").as_int());
-    lane_preprocess_config_.near_kernel_height = static_cast<int>(
-      get_parameter("lane_near_kernel_height").as_int());
-    lane_preprocess_config_.middle_ratio =
-      get_parameter("lane_middle_ratio").as_double();
-    lane_preprocess_config_.middle_gain =
-      get_parameter("lane_middle_gain").as_double();
-    lane_preprocess_config_.middle_noise_floor = static_cast<int>(
-      get_parameter("lane_middle_noise_floor").as_int());
-    lane_preprocess_config_.middle_kernel_width = static_cast<int>(
-      get_parameter("lane_middle_kernel_width").as_int());
-    lane_preprocess_config_.middle_kernel_height = static_cast<int>(
-      get_parameter("lane_middle_kernel_height").as_int());
-    lane_preprocess_config_.far_ratio =
-      get_parameter("lane_far_ratio").as_double();
-    lane_preprocess_config_.far_gain =
-      get_parameter("lane_far_gain").as_double();
-    lane_preprocess_config_.far_noise_floor = static_cast<int>(
-      get_parameter("lane_far_noise_floor").as_int());
-    lane_preprocess_config_.far_kernel_width = static_cast<int>(
-      get_parameter("lane_far_kernel_width").as_int());
-    lane_preprocess_config_.far_kernel_height = static_cast<int>(
-      get_parameter("lane_far_kernel_height").as_int());
-
-    lane_seed_config_.image_width = bev_config_.output_width;
-    lane_seed_config_.image_height = bev_config_.output_height;
-    lane_seed_config_.roi_bottom_exclusion_ratio = get_parameter(
-      "lane_seed_roi_bottom_exclusion_ratio").as_double();
-    lane_seed_config_.roi_height_ratio =
-      get_parameter("lane_seed_roi_height_ratio").as_double();
-    lane_seed_config_.minimum_top_hat_response = static_cast<int>(
-      get_parameter("lane_seed_minimum_response").as_int());
-    lane_seed_config_.minimum_run_width_px = static_cast<int>(
-      get_parameter("lane_seed_minimum_run_width_px").as_int());
-    lane_seed_config_.maximum_run_width_px = static_cast<int>(
-      get_parameter("lane_seed_maximum_run_width_px").as_int());
-    lane_seed_config_.maximum_lateral_step_px = get_parameter(
-      "lane_seed_maximum_lateral_step_px").as_double();
-    lane_seed_config_.maximum_gap_rows = static_cast<int>(
-      get_parameter("lane_seed_maximum_gap_rows").as_int());
-    lane_seed_config_.minimum_track_arc_length_px = get_parameter(
-      "lane_seed_minimum_track_arc_length_px").as_double();
-    lane_seed_config_.minimum_bilateral_contrast = get_parameter(
-      "lane_seed_minimum_bilateral_contrast").as_double();
-    lane_seed_config_.maximum_background_asymmetry = get_parameter(
-      "lane_seed_maximum_background_asymmetry").as_double();
-    lane_seed_config_.background_gap_px = static_cast<int>(
-      get_parameter("lane_seed_background_gap_px").as_int());
-    lane_seed_config_.background_band_width_px = static_cast<int>(
-      get_parameter("lane_seed_background_band_width_px").as_int());
-    lane_seed_config_.contrast_score_weight = get_parameter(
-      "lane_seed_contrast_score_weight").as_double();
-    lane_seed_config_.contrast_relaxation_enabled = get_parameter(
-      "lane_seed_contrast_relaxation_enabled").as_bool();
-    lane_seed_config_.contrast_relaxation_step = get_parameter(
-      "lane_seed_contrast_relaxation_step").as_double();
-    lane_seed_config_.contrast_relaxation_retry_count = static_cast<int>(
-      get_parameter("lane_seed_contrast_relaxation_retries").as_int());
-    lane_seed_config_.slope_filter_enabled = get_parameter(
-      "lane_seed_slope_filter_enabled").as_bool();
-    lane_seed_config_.slope_median_window = static_cast<int>(
-      get_parameter("lane_seed_slope_median_window").as_int());
-    lane_seed_config_.maximum_slope_change_px_per_row = get_parameter(
-      "lane_seed_maximum_slope_change_px_per_row").as_double();
-    lane_seed_config_.minimum_pair_distance_px = get_parameter(
-      "lane_seed_pair_minimum_distance_px").as_double();
-    lane_seed_config_.maximum_pair_distance_px = get_parameter(
-      "lane_seed_pair_maximum_distance_px").as_double();
-    lane_seed_config_.sliding_window_enabled = get_parameter(
-      "lane_seed_sliding_window_enabled").as_bool();
-    lane_seed_config_.sliding_window_minimum_seed_arc_length_px = get_parameter(
-      "lane_seed_sliding_window_minimum_seed_arc_length_px").as_double();
-    lane_seed_config_.sliding_window_initial_width_px = static_cast<int>(
-      get_parameter("lane_seed_sliding_window_initial_width_px").as_int());
-    lane_seed_config_.sliding_window_initial_height_px = static_cast<int>(
-      get_parameter("lane_seed_sliding_window_initial_height_px").as_int());
-    lane_seed_config_.sliding_window_growth_ratio = get_parameter(
-      "lane_seed_sliding_window_growth_ratio").as_double();
-    lane_seed_config_.sliding_window_maximum_width_px = static_cast<int>(
-      get_parameter("lane_seed_sliding_window_maximum_width_px").as_int());
-    lane_seed_config_.sliding_window_maximum_height_px = static_cast<int>(
-      get_parameter("lane_seed_sliding_window_maximum_height_px").as_int());
-    lane_seed_config_.sliding_window_step_ratio = get_parameter(
-      "lane_seed_sliding_window_step_ratio").as_double();
-    lane_seed_config_.sliding_window_maximum_count = static_cast<int>(
-      get_parameter("lane_seed_sliding_window_maximum_count").as_int());
-    lane_seed_config_.sliding_window_minimum_bright_pixels = static_cast<int>(
-      get_parameter(
-        "lane_seed_sliding_window_minimum_bright_pixels").as_int());
-    lane_seed_config_.sliding_window_maximum_consecutive_misses =
-      static_cast<int>(get_parameter(
-          "lane_seed_sliding_window_maximum_consecutive_misses").as_int());
-    lane_seed_config_.sliding_window_centroid_boundary_margin_px =
-      get_parameter(
-      "lane_seed_sliding_window_centroid_boundary_margin_px").as_double();
-    lane_seed_config_.sliding_window_maximum_turn_deg_per_window =
-      get_parameter(
-      "lane_seed_sliding_window_maximum_turn_deg_per_window").as_double();
-    lane_seed_config_.sliding_window_maximum_turn_change_deg_per_window =
-      get_parameter(
-      "lane_seed_sliding_window_maximum_turn_change_deg_per_window").as_double();
-    lane_seed_config_.sliding_window_heading_update_gain = get_parameter(
-      "lane_seed_sliding_window_heading_update_gain").as_double();
-    lane_seed_config_.centerline_enabled = get_parameter(
-      "lane_centerline_enabled").as_bool();
-    lane_seed_config_.centerline_meter_per_pixel = bev_config_.meter_per_pixel;
-    lane_seed_config_.centerline_expected_lane_width_m = get_parameter(
-      "lane_centerline_expected_width_m").as_double();
-    lane_seed_config_.centerline_lane_width_tolerance_m = get_parameter(
-      "lane_centerline_width_tolerance_m").as_double();
-    lane_seed_config_.centerline_minimum_points = static_cast<int>(
-      get_parameter("lane_centerline_minimum_points").as_int());
-    lane_seed_config_.centerline_minimum_counterpart_points = static_cast<int>(
-      get_parameter("lane_centerline_minimum_counterpart_points").as_int());
-    lane_seed_config_.centerline_measured_point_smoothing_weight = get_parameter(
-      "lane_centerline_measured_point_smoothing_weight").as_double();
-    lane_seed_config_.centerline_midpoint_smoothing_weight = get_parameter(
-      "lane_centerline_midpoint_smoothing_weight").as_double();
-    lane_seed_config_.centerline_temporal_current_weight = get_parameter(
-      "lane_centerline_temporal_current_weight").as_double();
-    lane_seed_config_.centerline_transition_maximum_correction_m = get_parameter(
-      "lane_centerline_transition_maximum_correction_m").as_double();
-    lane_seed_config_.centerline_transition_correction_decay = get_parameter(
-      "lane_centerline_transition_correction_decay").as_double();
-    lane_seed_config_.centerline_tangent_window_m = get_parameter(
-      "lane_centerline_tangent_window_m").as_double();
-    lane_seed_config_.centerline_maximum_curvature_per_m = get_parameter(
-      "lane_centerline_maximum_curvature_per_m").as_double();
-    lane_seed_config_.centerline_maximum_heading_step_deg = get_parameter(
-      "lane_centerline_maximum_heading_step_deg").as_double();
-    lane_seed_config_.centerline_maximum_gap_fill_m = get_parameter(
-      "lane_centerline_maximum_gap_fill_m").as_double();
-    lane_seed_config_.centerline_corner_longer_boundary_enabled = get_parameter(
-      "lane_centerline_corner_longer_boundary_enabled").as_bool();
-    lane_seed_config_.centerline_corner_outward_bias_m = get_parameter(
-      "lane_centerline_corner_outward_bias_m").as_double();
-    lane_seed_config_.centerline_corner_enter_heading_change_deg = get_parameter(
-      "lane_centerline_corner_enter_heading_change_deg").as_double();
-    lane_seed_config_.centerline_corner_exit_heading_change_deg = get_parameter(
-      "lane_centerline_corner_exit_heading_change_deg").as_double();
-    lane_seed_config_.column_tracking_enabled = get_parameter(
-      "lane_seed_column_tracking_enabled").as_bool();
-    lane_seed_config_.cross_direction_merge_enabled = get_parameter(
-      "lane_seed_cross_direction_merge_enabled").as_bool();
-    lane_seed_config_.cross_direction_merge_maximum_endpoint_distance_px =
-      get_parameter(
-      "lane_seed_cross_direction_merge_maximum_endpoint_distance_px").as_double();
-    lane_seed_config_.cross_direction_merge_minimum_connector_support_ratio =
-      get_parameter(
-      "lane_seed_cross_direction_merge_minimum_connector_support_ratio").as_double();
-    lane_seed_config_.cross_direction_merge_maximum_turn_angle_deg =
-      get_parameter(
-      "lane_seed_cross_direction_merge_maximum_turn_angle_deg").as_double();
-    lane_seed_config_.temporal_side_lock_enabled = get_parameter(
-      "lane_seed_temporal_side_lock_enabled").as_bool();
-    lane_seed_config_.temporal_side_lock_reset_frames = static_cast<int>(
-      get_parameter("lane_seed_temporal_side_lock_reset_frames").as_int());
-    lane_seed_config_.temporal_side_reacquire_base_distance_px =
-      get_parameter(
-      "lane_seed_temporal_side_reacquire_base_distance_px").as_double();
-    lane_seed_config_.temporal_side_reacquire_distance_per_missing_frame_px =
-      get_parameter(
-      "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px").as_double();
-    lane_seed_config_.temporal_side_reacquire_maximum_distance_px =
-      get_parameter(
-      "lane_seed_temporal_side_reacquire_maximum_distance_px").as_double();
-
     status_log_interval_sec_ =
       get_parameter("status_log_interval_sec").as_double();
     startup_timeout_sec_ = get_parameter("startup_timeout_sec").as_double();
@@ -1255,15 +779,11 @@ private:
     if (
       (dataset_collection_enabled_ ||
       dataset_collection_manual_capture_mode_) &&
-      !lane_seed_detection_enabled_)
     {
       throw std::invalid_argument(
-              "lane_seed_detection_enabled must be true while dataset "
               "collection is enabled");
     }
-    if (lane_seed_detection_enabled_ && lane_output_topic_.empty()) {
       throw std::invalid_argument(
-              "lane_output_topic must not be empty when lane seed detection "
               "is enabled");
     }
     if (
@@ -1322,57 +842,6 @@ private:
       edge_adaptive_config_.maximum_anisotropy < 1.0)
     {
       throw std::invalid_argument("invalid edge-adaptive interpolation settings");
-    }
-    const auto oddPositive = [](const int value) {
-        return value > 0 && value % 2 == 1;
-      };
-    const double lane_ratio_sum =
-      lane_preprocess_config_.near_ratio +
-      lane_preprocess_config_.middle_ratio +
-      lane_preprocess_config_.far_ratio;
-    const auto validRatio = [](const double value) {
-        return std::isfinite(value) && value >= 0.0;
-      };
-    const auto validGain = [](const double value) {
-        return std::isfinite(value) && value > 0.0;
-      };
-    const auto validNoiseFloor = [](const int value) {
-        return value >= 0 && value <= 255;
-      };
-    if (
-      lane_preprocess_config_.gray_mode < 0 ||
-      lane_preprocess_config_.gray_mode > 2 ||
-      lane_preprocess_config_.saturation_threshold < 1 ||
-      lane_preprocess_config_.saturation_threshold > 255 ||
-      lane_preprocess_config_.saturation_minimum_value < 0 ||
-      lane_preprocess_config_.saturation_minimum_value > 255 ||
-      lane_preprocess_config_.saturation_mask_dilation_px < 0 ||
-      lane_preprocess_config_.saturation_mask_dilation_px > 32 ||
-      !validRatio(lane_preprocess_config_.near_ratio) ||
-      !validRatio(lane_preprocess_config_.middle_ratio) ||
-      !validRatio(lane_preprocess_config_.far_ratio) ||
-      !std::isfinite(lane_ratio_sum) ||
-      std::abs(lane_ratio_sum - 1.0) > 1.0e-6 ||
-      !validGain(lane_preprocess_config_.near_gain) ||
-      !validGain(lane_preprocess_config_.middle_gain) ||
-      !validGain(lane_preprocess_config_.far_gain) ||
-      !validNoiseFloor(lane_preprocess_config_.near_noise_floor) ||
-      !validNoiseFloor(lane_preprocess_config_.middle_noise_floor) ||
-      !validNoiseFloor(lane_preprocess_config_.far_noise_floor) ||
-      !oddPositive(lane_preprocess_config_.near_kernel_width) ||
-      !oddPositive(lane_preprocess_config_.near_kernel_height) ||
-      !oddPositive(lane_preprocess_config_.middle_kernel_width) ||
-      !oddPositive(lane_preprocess_config_.middle_kernel_height) ||
-      !oddPositive(lane_preprocess_config_.far_kernel_width) ||
-      !oddPositive(lane_preprocess_config_.far_kernel_height) ||
-      lane_preprocess_config_.top_hat_kernel_shape < 0 ||
-      lane_preprocess_config_.top_hat_kernel_shape > 2 ||
-      lane_preprocess_config_.top_hat_iterations < 1 ||
-      lane_preprocess_config_.top_hat_iterations > 10 ||
-      lane_preprocess_config_.top_hat_border_type < 0 ||
-      lane_preprocess_config_.top_hat_border_type > 3)
-    {
-      throw std::invalid_argument("invalid CUDA lane preprocessing settings");
     }
     if (
       expected_input_fps_ <= 0.0 ||
@@ -1445,8 +914,7 @@ private:
       BevInterpolation::Adaptive :
       bev_interpolation_ == "bicubic" ?
       BevInterpolation::Bicubic : BevInterpolation::Bilinear,
-      edge_adaptive_config_,
-      lane_preprocess_config_);
+      edge_adaptive_config_);
 
     const int valid_pixels = cv::countNonZero(lut.valid_mask);
     const int output_pixels =
@@ -1644,69 +1112,6 @@ private:
           stabilized_to_source,
           static_cast<int>(input->source_crop_top));
         output->image = std::move(cuda_result.bgr);
-        if (lane_seed_detector_) {
-          const auto lane_started_at = SteadyClock::now();
-          BevLaneSeedDetection lane = lane_seed_detector_->detect(
-            cuda_result.gray,
-            cuda_result.enhanced_top_hat,
-            preview_enabled_ && lane_preview_enabled_);
-          const auto lane_finished_at = SteadyClock::now();
-          const auto lane_process_ns = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-              lane_finished_at - lane_started_at).count());
-          lane_process_samples_interval_.fetch_add(
-            1U, std::memory_order_relaxed);
-          lane_process_ns_interval_.fetch_add(
-            lane_process_ns, std::memory_order_relaxed);
-          updateMaximum(lane_process_ns_max_interval_, lane_process_ns);
-          output->lane_mask = std::move(lane.seed_mask);
-          output->lane_preview = std::move(lane.preview);
-          output->left_lane_points = std::move(lane.left_lane_points);
-          output->right_lane_points = std::move(lane.right_lane_points);
-          latest_lane_track_count_.store(
-            lane.accepted_track_count, std::memory_order_relaxed);
-          latest_lane_row_track_count_.store(
-            lane.accepted_row_track_count, std::memory_order_relaxed);
-          latest_lane_column_track_count_.store(
-            lane.accepted_column_track_count, std::memory_order_relaxed);
-          latest_lane_merged_track_count_.store(
-            lane.merged_track_count, std::memory_order_relaxed);
-          latest_lane_strict_evidence_count_.store(
-            lane.strict_evidence_count, std::memory_order_relaxed);
-          latest_lane_relaxed_evidence_count_.store(
-            lane.relaxed_evidence_count, std::memory_order_relaxed);
-          latest_lane_slope_break_count_.store(
-            lane.slope_break_count, std::memory_order_relaxed);
-          latest_lane_left_valid_.store(
-            lane.left.valid, std::memory_order_relaxed);
-          latest_lane_right_valid_.store(
-            lane.right.valid, std::memory_order_relaxed);
-          latest_lane_pair_valid_.store(
-            lane.pair_valid, std::memory_order_relaxed);
-          latest_lane_side_lock_initialized_.store(
-            lane.side_lock_initialized, std::memory_order_relaxed);
-          latest_lane_temporal_labeling_used_.store(
-            lane.temporal_labeling_used, std::memory_order_relaxed);
-          latest_lane_column_tracking_used_.store(
-            lane.column_tracking_used, std::memory_order_relaxed);
-          latest_lane_pair_distance_centi_px_.store(
-            static_cast<int>(std::lround(100.0 * lane.pair_distance_px)),
-            std::memory_order_relaxed);
-          latest_lane_left_arc_centi_px_.store(
-            static_cast<int>(std::lround(100.0 * lane.left.arc_length_px)),
-            std::memory_order_relaxed);
-          latest_lane_right_arc_centi_px_.store(
-            static_cast<int>(std::lround(100.0 * lane.right.arc_length_px)),
-            std::memory_order_relaxed);
-          if (lane.left.valid || lane.right.valid) {
-            lane_valid_total_.fetch_add(1U, std::memory_order_relaxed);
-            lane_valid_interval_.fetch_add(1U, std::memory_order_relaxed);
-          } else {
-            lane_invalid_total_.fetch_add(1U, std::memory_order_relaxed);
-            lane_invalid_interval_.fetch_add(1U, std::memory_order_relaxed);
-          }
-        }
-        output->filtered_image = std::move(cuda_result.enhanced_top_hat);
         output->header = input->header;
         output->input_received_at = input_received_at;
         output->generation = generation;
@@ -1769,10 +1174,6 @@ private:
         if (publish_enabled_) {
           output_publisher_->publish(
             makeBgr8Message(*frame, output_frame_id_));
-        }
-        if (lane_seed_detection_enabled_) {
-          lane_output_publisher_->publish(
-            makeMono8Message(*frame, output_frame_id_));
         }
         const auto published_at = SteadyClock::now();
         recordPipelineLatency(
@@ -1908,9 +1309,6 @@ private:
     }
 
     fs::create_directories(dataset_collection_directory_ / "origin_bev");
-    fs::create_directories(dataset_collection_directory_ / "filtered_bev");
-    fs::create_directories(dataset_collection_directory_ / "result_bev");
-    fs::create_directories(dataset_collection_directory_ / "label");
     if (dataset_collection_manual_capture_mode_) {
       RCLCPP_INFO(
         get_logger(),
@@ -1932,68 +1330,6 @@ private:
     }
   }
 
-  std::vector<cv::Point> rasterizeLanePixels(
-    const std::vector<cv::Point2d> & points) const
-  {
-    cv::Mat lane = cv::Mat::zeros(
-      bev_config_.output_height, bev_config_.output_width, CV_8UC1);
-    const double maximum_gap_px =
-      lane_seed_config_.centerline_maximum_gap_fill_m /
-      lane_seed_config_.centerline_meter_per_pixel;
-    cv::Point previous;
-    bool previous_valid = false;
-    for (const cv::Point2d & point : points) {
-      if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
-        previous_valid = false;
-        continue;
-      }
-      const cv::Point pixel(
-        static_cast<int>(std::lround(point.x)),
-        static_cast<int>(std::lround(point.y)));
-      if (
-        pixel.x < 0 || pixel.x >= lane.cols ||
-        pixel.y < 0 || pixel.y >= lane.rows)
-      {
-        previous_valid = false;
-        continue;
-      }
-      if (
-        previous_valid &&
-        cv::norm(cv::Point2d(pixel) - cv::Point2d(previous)) <= maximum_gap_px)
-      {
-        cv::line(lane, previous, pixel, cv::Scalar(255), 1, cv::LINE_8);
-      } else {
-        lane.at<std::uint8_t>(pixel) = 255U;
-      }
-      previous = pixel;
-      previous_valid = true;
-    }
-
-    std::vector<cv::Point> pixels;
-    cv::findNonZero(lane, pixels);
-    return pixels;
-  }
-
-  static void writeLanePixelArray(
-    std::ostream & stream,
-    const char * name,
-    const std::vector<cv::Point> & pixels,
-    const bool trailing_comma)
-  {
-    stream << "  \"" << name << "\": [";
-    for (std::size_t index = 0; index < pixels.size(); ++index) {
-      if (index > 0U) {
-        stream << ',';
-      }
-      stream << '[' << pixels[index].x << ',' << pixels[index].y << ']';
-    }
-    stream << ']';
-    if (trailing_comma) {
-      stream << ',';
-    }
-    stream << '\n';
-  }
-
   std::int64_t captureTimeNanoseconds(const BevFrame & frame)
   {
     const std::int64_t timestamp =
@@ -2002,109 +1338,28 @@ private:
     return timestamp > 0 ? timestamp : get_clock()->now().nanoseconds();
   }
 
-  void saveDatasetFrame(
-    const BevFrame & frame,
-    const std::uint64_t matching_number)
+  // BEV capture remains available; legacy automatic lane labels are no longer produced.
+  void saveDatasetFrame(const BevFrame & frame, const std::uint64_t matching_number)
   {
     namespace fs = std::filesystem;
-
     if (
-      frame.image.type() != CV_8UC3 ||
-      frame.filtered_image.type() != CV_8UC1 ||
-      frame.image.size() != frame.filtered_image.size() ||
-      frame.image.cols != bev_config_.output_width ||
+      frame.image.type() != CV_8UC3 || frame.image.cols != bev_config_.output_width ||
       frame.image.rows != bev_config_.output_height)
     {
-      throw std::runtime_error(
-              "dataset frame does not contain matching BGR and filtered BEV images");
+      throw std::runtime_error("dataset frame has invalid BGR BEV dimensions");
     }
-
-    const std::int64_t capture_time_ns = captureTimeNanoseconds(frame);
-    const std::string stem = std::to_string(capture_time_ns) + "_" +
+    const auto stem = std::to_string(captureTimeNanoseconds(frame)) + "_" +
       zeroPaddedNumber(matching_number, 6);
-    const fs::path origin_path =
-      dataset_collection_directory_ / "origin_bev" / (stem + ".png");
-    const fs::path filtered_path =
-      dataset_collection_directory_ / "filtered_bev" / (stem + ".png");
-    const fs::path result_path =
-      dataset_collection_directory_ / "result_bev" / (stem + ".png");
-    const fs::path label_path =
-      dataset_collection_directory_ / "label" / (stem + ".json");
-    const fs::path origin_temporary =
-      dataset_collection_directory_ / "origin_bev" / (stem + ".tmp.png");
-    const fs::path filtered_temporary =
-      dataset_collection_directory_ / "filtered_bev" / (stem + ".tmp.png");
-    const fs::path result_temporary =
-      dataset_collection_directory_ / "result_bev" / (stem + ".tmp.png");
-    const fs::path label_temporary =
-      dataset_collection_directory_ / "label" / (stem + ".tmp.json");
-
-    const std::vector<cv::Point> left_pixels =
-      rasterizeLanePixels(frame.left_lane_points);
-    const std::vector<cv::Point> right_pixels =
-      rasterizeLanePixels(frame.right_lane_points);
-    cv::Mat result_image = frame.image.clone();
-    for (const cv::Point & pixel : left_pixels) {
-      result_image.at<cv::Vec3b>(pixel) = cv::Vec3b(255U, 0U, 0U);
-    }
-    for (const cv::Point & pixel : right_pixels) {
-      result_image.at<cv::Vec3b>(pixel) = cv::Vec3b(0U, 0U, 255U);
-    }
-
-    auto remove_sample_files = [&]() {
-        std::error_code error;
-        fs::remove(origin_temporary, error);
-        error.clear();
-        fs::remove(filtered_temporary, error);
-        error.clear();
-        fs::remove(result_temporary, error);
-        error.clear();
-        fs::remove(label_temporary, error);
-        error.clear();
-        fs::remove(origin_path, error);
-        error.clear();
-        fs::remove(filtered_path, error);
-        error.clear();
-        fs::remove(result_path, error);
-        error.clear();
-        fs::remove(label_path, error);
-      };
-
+    const fs::path output = dataset_collection_directory_ / "origin_bev" / (stem + ".png");
+    const fs::path temporary = dataset_collection_directory_ / "origin_bev" / (stem + ".tmp.png");
     try {
-      if (!cv::imwrite(origin_temporary.string(), frame.image)) {
+      if (!cv::imwrite(temporary.string(), frame.image)) {
         throw std::runtime_error("failed to encode origin BEV PNG");
       }
-      if (!cv::imwrite(filtered_temporary.string(), frame.filtered_image)) {
-        throw std::runtime_error("failed to encode filtered BEV PNG");
-      }
-      if (!cv::imwrite(result_temporary.string(), result_image)) {
-        throw std::runtime_error("failed to encode result BEV PNG");
-      }
-      {
-        std::ofstream label(label_temporary);
-        if (!label) {
-          throw std::runtime_error("failed to open dataset label JSON");
-        }
-        label << "{\n";
-        label << "  \"capture_time_ns\": " << capture_time_ns << ",\n";
-        label << "  \"matching_number\": " << matching_number << ",\n";
-        label << "  \"image_width\": " << frame.image.cols << ",\n";
-        label << "  \"image_height\": " << frame.image.rows << ",\n";
-        writeLanePixelArray(label, "left_lane", left_pixels, true);
-        writeLanePixelArray(label, "right_lane", right_pixels, false);
-        label << "}\n";
-        label.close();
-        if (!label) {
-          throw std::runtime_error("failed to write dataset label JSON");
-        }
-      }
-
-      fs::rename(origin_temporary, origin_path);
-      fs::rename(filtered_temporary, filtered_path);
-      fs::rename(result_temporary, result_path);
-      fs::rename(label_temporary, label_path);
+      fs::rename(temporary, output);
     } catch (...) {
-      remove_sample_files();
+      std::error_code error;
+      fs::remove(temporary, error);
       throw;
     }
   }
@@ -2343,9 +1598,7 @@ private:
         const auto frame = std::atomic_load_explicit(
           &latest_output_, std::memory_order_acquire);
         if (frame) {
-          const cv::Mat & displayed_image =
-            lane_preview_enabled_ && !frame->lane_preview.empty() ?
-            frame->lane_preview : frame->image;
+          const cv::Mat & displayed_image = frame->image;
           cv::imshow(preview_window_name_, displayed_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
@@ -2488,20 +1741,6 @@ private:
       published_interval_.exchange(0U, std::memory_order_relaxed);
     const auto previewed =
       previewed_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto lane_valid =
-      lane_valid_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto lane_invalid =
-      lane_invalid_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto lane_process_samples =
-      lane_process_samples_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto lane_process_ns =
-      lane_process_ns_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto lane_process_ns_max =
-      lane_process_ns_max_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto process_ns =
-      process_ns_interval_.exchange(0U, std::memory_order_relaxed);
-    const auto process_ns_max =
-      process_ns_max_interval_.exchange(0U, std::memory_order_relaxed);
     const auto stabilized_latency_samples =
       stabilized_latency_samples_interval_.exchange(
       0U, std::memory_order_relaxed);
@@ -2539,11 +1778,6 @@ private:
       processed > 0U ?
       static_cast<double>(process_ns) /
       static_cast<double>(processed) / 1.0e6 :
-      0.0;
-    const double average_lane_process_ms =
-      lane_process_samples > 0U ?
-      static_cast<double>(lane_process_ns) /
-      static_cast<double>(lane_process_samples) / 1.0e6 :
       0.0;
     const double average_stabilized_latency_ms =
       stabilized_latency_samples > 0U ?
@@ -2623,49 +1857,6 @@ private:
           publish_error_total_.load(std::memory_order_relaxed)));
     }
 
-    if (lane_seed_detection_enabled_) {
-      RCLCPP_INFO(
-        get_logger(),
-        "BEV lane seeds: valid/invalid=%.1f/%.1fHz "
-        "(%llu/%llu total), tracks=%d(R=%d,C=%d,merged=%d), "
-        "selected=L:%s/R:%s, pair=%s "
-        "distance=%.2fpx, arc=L:%.2f/R:%.2fpx, "
-        "evidence=strict:%d/relaxed:%d, slope_breaks=%d, "
-        "side_lock=%s, temporal_label=%s, column_tracking=%s, "
-        "CPU_seed_ms(avg/max)=%.3f/%.3f, output=%s",
-        static_cast<double>(lane_valid) / elapsed_sec,
-        static_cast<double>(lane_invalid) / elapsed_sec,
-        static_cast<unsigned long long>(
-          lane_valid_total_.load(std::memory_order_relaxed)),
-        static_cast<unsigned long long>(
-          lane_invalid_total_.load(std::memory_order_relaxed)),
-        latest_lane_track_count_.load(std::memory_order_relaxed),
-        latest_lane_row_track_count_.load(std::memory_order_relaxed),
-        latest_lane_column_track_count_.load(std::memory_order_relaxed),
-        latest_lane_merged_track_count_.load(std::memory_order_relaxed),
-        latest_lane_left_valid_.load(std::memory_order_relaxed) ? "yes" : "no",
-        latest_lane_right_valid_.load(std::memory_order_relaxed) ? "yes" : "no",
-        latest_lane_pair_valid_.load(std::memory_order_relaxed) ? "yes" : "no",
-        static_cast<double>(latest_lane_pair_distance_centi_px_.load(
-          std::memory_order_relaxed)) / 100.0,
-        static_cast<double>(latest_lane_left_arc_centi_px_.load(
-          std::memory_order_relaxed)) / 100.0,
-        static_cast<double>(latest_lane_right_arc_centi_px_.load(
-          std::memory_order_relaxed)) / 100.0,
-        latest_lane_strict_evidence_count_.load(std::memory_order_relaxed),
-        latest_lane_relaxed_evidence_count_.load(std::memory_order_relaxed),
-        latest_lane_slope_break_count_.load(std::memory_order_relaxed),
-        !lane_seed_config_.temporal_side_lock_enabled ? "off" :
-        latest_lane_side_lock_initialized_.load(std::memory_order_relaxed) ?
-        "locked" : "waiting_pair",
-        latest_lane_temporal_labeling_used_.load(std::memory_order_relaxed) ?
-        "yes" : "no",
-        latest_lane_column_tracking_used_.load(std::memory_order_relaxed) ?
-        "yes" : "no",
-        average_lane_process_ms,
-        static_cast<double>(lane_process_ns_max) / 1.0e6,
-        lane_output_topic_.c_str());
-    }
 
     if (
       dataset_collection_enabled_ ||
@@ -2741,11 +1932,6 @@ private:
   std::atomic<bool> dataset_collection_complete_{false};
   std::atomic<bool> dataset_collection_failed_{false};
   std::mutex dataset_collection_save_mutex_;
-  bool lane_seed_detection_enabled_{true};
-  std::string lane_output_topic_{"/camera/image_bev_lane"};
-  bool lane_preview_enabled_{true};
-  CudaLanePreprocessConfig lane_preprocess_config_{};
-  BevLaneSeedDetectorConfig lane_seed_config_{};
   double status_log_interval_sec_{5.0};
   double startup_timeout_sec_{12.0};
   double stabilization_settle_sec_{5.5};
@@ -2764,12 +1950,10 @@ private:
   std::atomic<double> applied_roll_deg_{0.0};
   std::atomic<double> applied_pitch_down_deg_{14.0};
   std::shared_ptr<CudaBevProcessor> gpu_processor_;
-  std::unique_ptr<BevLaneSeedDetector> lane_seed_detector_;
 
   rclcpp::Subscription<camera_driver::msg::BevInput>::SharedPtr
     input_subscription_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr lane_output_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr preview_stop_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr
     capture_joy_subscription_;
@@ -2809,35 +1993,12 @@ private:
   std::atomic<std::uint64_t> stabilization_settle_total_{0U};
   std::atomic<std::uint64_t> processing_error_total_{0U};
   std::atomic<std::uint64_t> publish_error_total_{0U};
-  std::atomic<std::uint64_t> lane_valid_total_{0U};
-  std::atomic<std::uint64_t> lane_invalid_total_{0U};
-  std::atomic<int> latest_lane_track_count_{0};
-  std::atomic<int> latest_lane_row_track_count_{0};
-  std::atomic<int> latest_lane_column_track_count_{0};
-  std::atomic<int> latest_lane_merged_track_count_{0};
-  std::atomic<int> latest_lane_strict_evidence_count_{0};
-  std::atomic<int> latest_lane_relaxed_evidence_count_{0};
-  std::atomic<int> latest_lane_slope_break_count_{0};
-  std::atomic<bool> latest_lane_left_valid_{false};
-  std::atomic<bool> latest_lane_right_valid_{false};
-  std::atomic<bool> latest_lane_pair_valid_{false};
-  std::atomic<bool> latest_lane_side_lock_initialized_{false};
-  std::atomic<bool> latest_lane_temporal_labeling_used_{false};
-  std::atomic<bool> latest_lane_column_tracking_used_{false};
-  std::atomic<int> latest_lane_pair_distance_centi_px_{0};
-  std::atomic<int> latest_lane_left_arc_centi_px_{0};
-  std::atomic<int> latest_lane_right_arc_centi_px_{0};
   std::atomic<std::uint64_t> received_interval_{0U};
   std::atomic<std::uint64_t> accepted_interval_{0U};
   std::atomic<std::uint64_t> processed_interval_{0U};
   std::atomic<std::uint64_t> skipped_interval_{0U};
   std::atomic<std::uint64_t> published_interval_{0U};
   std::atomic<std::uint64_t> previewed_interval_{0U};
-  std::atomic<std::uint64_t> lane_valid_interval_{0U};
-  std::atomic<std::uint64_t> lane_invalid_interval_{0U};
-  std::atomic<std::uint64_t> lane_process_samples_interval_{0U};
-  std::atomic<std::uint64_t> lane_process_ns_interval_{0U};
-  std::atomic<std::uint64_t> lane_process_ns_max_interval_{0U};
   std::atomic<std::uint64_t> process_ns_interval_{0U};
   std::atomic<std::uint64_t> process_ns_max_interval_{0U};
   std::atomic<std::uint64_t> stabilized_latency_samples_interval_{0U};

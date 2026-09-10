@@ -1,44 +1,39 @@
 # auto_control
 
-`auto_control_node` follows the drive centerline published by `bev_processor`
-and writes directly to the same VESC duty, brake-current, and servo topics used
-by manual driving. Do not run `manual_drive.launch.py` at the same time.
+`auto_control_node` follows the yellow centerline published by `line_detactor`
+as `line_detactor/msg/LaneResult`. It writes to the VESC duty, brake-current,
+and servo topics used by manual driving. Do not run manual and auto driving together.
 
 ## Control pipeline
 
-1. Subscribe to `/camera/image_bev_lane` (`mono8`).
-2. Convert each occupied row to vehicle coordinates (`+X` forward, `+Y` left).
-3. Keep the measured centerline polyline and suppress only local bumps with a
-   short robust straight-segment smoother; no global polynomial is fitted.
-4. Calculate Stanley cross-track error as the signed normal distance from the
-   real front-axle origin. Measure heading at vehicle X equal to the configured
-   lookahead from that same origin, using the first available tangent when the
-   camera path starts beyond the requested X.
-5. Calculate representative forward curvature over `X=0.5..1.6m`.
-6. Convert curvature to a `0.8..1.8m/s` target using the configured maximum
-   lateral acceleration.
-7. Convert VESC measured ERPM to vehicle speed and apply PID plus a linear
-   duty feed-forward, bounded to `0.070..0.090`.
-8. When measured speed exceeds target by the configured entry threshold,
-   replace duty control with ramp-limited `COMM_SET_CURRENT_BRAKE`. Release at
-   the lower exit threshold, send brake current zero for one cycle, and only
-   then resume positive duty.
+1. Subscribe to `/line_detactor/result`; validate the source timestamp, frame,
+   centerline validity, sample limit, point/support arrays, and metric scale.
+2. Remove `padding_left` from result pixels and convert pixel centers to metres:
+   `X = x_max - (v + 0.5) * mpp`, `Y = y_max - (u - padding_left + 0.5) * mpp`.
+3. Preserve near-to-far point order, including sideways corners. Keep the first
+   contiguous forward-X ROI segment; stop at an excessive adjacent-point gap.
+   `path_minimum_span_m` measures distance along the path, not its X extent.
+   Spatial smoothing and outer-boundary weighting happen in `line_detactor`.
+4. Calculate Stanley cross-track error from the front-axle origin and heading
+   at the closest path projection plus `stanley_heading_lookahead_m` along the path.
+5. Estimate curvature using three points spaced along the path and take the
+   configured percentile in the forward-X lookahead region (available path if empty).
+6. Apply curvature-based target speed, ERPM feedback, PID and duty limits from YAML.
+   Optional electrical braking replaces positive duty during overspeed.
 
-The drive command becomes exactly zero and steering returns to center when the
-centerline is missing/short/stale, measured ERPM is stale, the VESC reports a
-disconnect, the node is disabled, or the node shuts down. When all inputs are
-valid, the configured `0.070` start duty is applied in the same way as manual
-driving and subsequent changes are rate limited.
+Missing, invalid, short, duplicate, out-of-order or stale centerlines invalidate
+control. Stale ERPM, VESC disconnect, disable and shutdown also send duty zero
+and centered steering. These stops release electrical brake current. Existing
+freshness thresholds are retained; camera capture age includes ML inference time.
+`stop_line_mask` is diagnostic and does not trigger automatic stop-line handling.
 
-Automatic electrical braking defaults to a conservative `2.5A` maximum. It
-enters at `current_speed - target_speed >= 0.10m/s`, remains active down to
-`0.03m/s`, and is disabled below `0.20m/s`. Invalid/stale input safety stops
-release brake current and send duty zero; they do not command an emergency
-brake.
+Default BEV is 120x300, X=0..3m and Y=-0.6..0.6m. The integrated launch checks
+that output size matches the static model and derives producer/consumer geometry
+from the BEV YAML. Direct node launches must provide the same geometry and frame.
 
-Vehicle conversion defaults match `camera_driver`: 109.5mm tire diameter,
-two motor pole pairs, 13/54 motor gearing, and 13/37 differential gearing
-(approximately 11.82:1 total).
+Vehicle conversion defaults: 109.5mm tires, two motor pole pairs, 13/54 motor
+gearing, and 13/37 differential gearing. Speed, duty and brake defaults are listed
+in `config/auto_control.yaml`; electrical braking defaults to disabled.
 
 ## Launch
 
@@ -48,6 +43,11 @@ yellow centerline, without the original camera image:
 ```bash
 ros2 launch vehicle_bringup auto_drive.launch.py
 ```
+
+Existing BEV/controller/camera YAML arguments and CAN arguments are supported.
+Add `line_detactor_params_file:=/absolute/path/line_detactor_test.yaml` to tune
+65cm lane width, yellow-line smoothing and outer-boundary weighting. See
+[the full launch command](../vehicle_bringup/README.md#autonomous-driving).
 
 Run without any GUI preview:
 
@@ -75,8 +75,7 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
   brake_current_fall_amps_per_sec:=16.0
 ```
 
-Set `electrical_brake_enabled:=false` to compare against the previous
-duty-only speed control.
+Set `electrical_brake_enabled:=true` to enable the configured overspeed braking.
 
 Enable or stop an already running node:
 
@@ -85,9 +84,8 @@ ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: true"
 ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: false"
 ```
 
-With the BEV preview focused, pressing `Space` publishes the same disable
-command and immediately sends duty zero. It stays disabled until `true` is
-published explicitly.
+The ML preview does not provide the old BEV Space-key disable shortcut.
+Use `/auto/enabled` to explicitly disable control.
 
 The default launch is armed and starts when a valid centerline, VESC connection,
 and fresh ERPM have all arrived. Lift the wheels for the first test and keep a
@@ -99,17 +97,15 @@ The complete Korean symptom-based tuning guide is installed as
 `share/auto_control/AUTO_CONTROL_PARAMETER_TUNING_KO.txt`.
 
 - `stanley_gain`: larger values correct lateral displacement more strongly.
-- `stanley_heading_lookahead_m`: absolute forward X from the front-axle origin;
-  larger values use a farther, smoother heading. It is not added to the
-  closest path point.
-- `path_local_smoothing_window_m`: larger values reject wider centerline
-  roughness but can soften a very tight corner.
-- `path_outlier_threshold_m`: smaller values reject smaller isolated lateral
-  bumps; it does not change a continuous corner.
+- `stanley_heading_lookahead_m`: distance along the path from the closest
+  front-axle projection; larger values use a farther heading.
+- `path_maximum_gap_m`: stop retaining points at a larger adjacent-point gap.
+- `centerline_smoothing_*` in the **line_detactor YAML**: spatial smoothing.
+  Legacy `path_local_smoothing_window_m` and `path_outlier_threshold_m` are unused.
 - `path_geometry_window_m`: larger values make local heading and curvature less
   sensitive to centimetre-scale steps.
 - `path_minimum_x_m`, `path_minimum_points`, `path_minimum_span_m`: minimum
-  directly measured centerline coverage accepted by the controller. Smaller
+  ML centerline coverage accepted by the controller. Smaller
   values keep tight, mostly lateral corners valid but reduce path confidence.
 - `stanley_corner_heading_threshold_deg`: enables the corner direction guard
   above this absolute path heading.

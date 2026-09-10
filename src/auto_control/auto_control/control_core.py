@@ -109,6 +109,81 @@ class PathModel:
 
 
 @dataclass(frozen=True)
+class OrderedPathModel:
+    """Near-to-far polyline: preserve corners even when vehicle X stops increasing."""
+
+    x_m: np.ndarray
+    y_m: np.ndarray
+    arc_m: np.ndarray
+    geometry_window_m: float
+
+    @property
+    def point_count(self) -> int:
+        return int(self.x_m.size)
+
+    def point(self, arc_m):
+        return np.stack((np.interp(arc_m, self.arc_m, self.x_m),
+                         np.interp(arc_m, self.arc_m, self.y_m)), axis=-1)
+
+    def heading(self, arc_m: float) -> float:
+        half = self.geometry_window_m / 2.0
+        lo = max(0.0, arc_m - half)
+        hi = min(float(self.arc_m[-1]), arc_m + half)
+        if hi - lo < half:
+            lo = max(0.0, hi - self.geometry_window_m)
+            hi = min(float(self.arc_m[-1]), lo + self.geometry_window_m)
+        delta = self.point(hi) - self.point(lo)
+        return math.atan2(float(delta[1]), float(delta[0]))
+
+    def curvature(self, arc_m):
+        query = np.asarray(arc_m, dtype=float)
+        window = min(self.geometry_window_m, float(self.arc_m[-1]) / 2.0)
+        middle_s = np.clip(query, window, self.arc_m[-1] - window)
+        first = self.point(middle_s - window)
+        middle = self.point(middle_s)
+        last = self.point(middle_s + window)
+        a, b = middle - first, last - first
+        denominator = (np.linalg.norm(a, axis=-1) * np.linalg.norm(last-middle, axis=-1)
+                       * np.linalg.norm(b, axis=-1))
+        value = np.divide(2.0 * (a[..., 0]*b[..., 1] - a[..., 1]*b[..., 0]),
+                          denominator, out=np.zeros_like(query), where=denominator > 1e-9)
+        return float(value) if query.ndim == 0 else value
+
+
+def build_ordered_path_model(
+    x_m, y_m, *, minimum_points: int, minimum_span_m: float,
+    minimum_x_m: float, maximum_x_m: float, maximum_gap_m: float,
+    geometry_window_m: float,
+) -> OrderedPathModel | None:
+    x, y = np.asarray(x_m, dtype=float), np.asarray(y_m, dtype=float)
+    if x.ndim != 1 or x.shape != y.shape or not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        raise ValueError("ordered centerline must contain finite matching coordinate arrays")
+    # Only retain the first contiguous forward ROI segment; never sort X or
+    # join across cropped/gapped regions. Sideways and curved segments stay ordered.
+    points = []
+    for point in zip(x, y):
+        if not minimum_x_m <= point[0] <= maximum_x_m:
+            if points:
+                break
+            continue
+        if points:
+            gap = float(np.linalg.norm(np.asarray(point) - points[-1]))
+            if gap < 1e-5:
+                continue
+            if gap > maximum_gap_m:
+                break
+        points.append(point)
+    if len(points) < minimum_points:
+        return None
+    xy = np.asarray(points)
+    arc = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(xy, axis=0), axis=1))]
+    if arc[-1] < minimum_span_m:
+        return None
+    # Spatial smoothing already happens in line_detactor; do not refit it as y(X).
+    return OrderedPathModel(xy[:, 0], xy[:, 1], arc, geometry_window_m)
+
+
+@dataclass(frozen=True)
 class StanleyResult:
     steering_angle_rad: float
     cross_track_error_m: float
@@ -255,8 +330,8 @@ def build_path_model(
     )
 
 
-def closest_path_geometry(path: PathModel) -> tuple[float, float]:
-    """Return signed front-axle cross-track error and closest path X."""
+def closest_path_geometry(path: PathModel | OrderedPathModel) -> tuple[float, float]:
+    """Return signed cross-track error and closest arc length (legacy model: X)."""
 
     start_x = path.x_m[:-1]
     start_y = path.y_m[:-1]
@@ -281,11 +356,14 @@ def closest_path_geometry(path: PathModel) -> tuple[float, float]:
         -tangent_y * float(closest_x[segment])
         + tangent_x * float(closest_y[segment])
     )
+    if isinstance(path, OrderedPathModel):
+        closest_s = path.arc_m[segment] + projection[segment] * segment_length
+        return cross_track_error_m, float(closest_s)
     return cross_track_error_m, float(closest_x[segment])
 
 
 def stanley_control(
-    path: PathModel,
+    path: PathModel | OrderedPathModel,
     *,
     speed_mps: float,
     gain: float,
@@ -299,19 +377,19 @@ def stanley_control(
 
     Positive steering is left because the vehicle frame uses +Y left.
     Cross-track error is the signed normal distance from the real front-axle
-    origin to the measured centerline. The heading lookahead is an absolute
-    vehicle-X distance from that same origin, not an offset from the closest
-    path point. If the requested X is outside the measured path, use the
-    nearest available endpoint and its short local chord.
+    origin to the centerline. Ordered ML paths use arc-length lookahead from
+    the closest projection; the legacy X-based model uses absolute vehicle X.
+    Heading is clamped to the available path instead of extrapolated.
     """
 
-    cross_track_error_m, _ = closest_path_geometry(path)
-    heading_x_m = clamp(
-        max(0.0, heading_lookahead_m),
-        path.minimum_x_m,
-        path.maximum_x_m,
-    )
-    heading_error_rad = math.atan(float(path.first_derivative(heading_x_m)))
+    cross_track_error_m, closest_coordinate = closest_path_geometry(path)
+    if isinstance(path, OrderedPathModel):
+        # Arc lookahead from the closest front-axle projection handles 90-degree corners.
+        heading_s = min(float(path.arc_m[-1]), closest_coordinate + max(0.0, heading_lookahead_m))
+        heading_error_rad = path.heading(heading_s)
+    else:
+        heading_x_m = clamp(max(0.0, heading_lookahead_m), path.minimum_x_m, path.maximum_x_m)
+        heading_error_rad = math.atan(float(path.first_derivative(heading_x_m)))
     correction_rad = math.atan2(
         max(0.0, gain) * cross_track_error_m,
         max(0.0, abs(speed_mps)) + max(0.0, softening_speed_mps),
@@ -346,13 +424,23 @@ def stanley_control(
 
 
 def representative_curvature(
-    path: PathModel,
+    path: PathModel | OrderedPathModel,
     *,
     lookahead_minimum_x_m: float,
     lookahead_maximum_x_m: float,
     percentile: float,
     sample_count: int = 32,
 ) -> float:
+    if isinstance(path, OrderedPathModel):
+        samples = np.linspace(0.0, float(path.arc_m[-1]), max(2, sample_count))
+        forward_x = path.point(samples)[:, 0]
+        selected = (forward_x >= lookahead_minimum_x_m) & (forward_x <= lookahead_maximum_x_m)
+        if np.any(selected):
+            samples = samples[selected]
+        values = np.abs(path.curvature(samples))
+        if not np.all(np.isfinite(values)):
+            raise ValueError("nonfinite ordered path curvature")
+        return float(np.percentile(values, clamp(percentile, 0.0, 100.0)))
     minimum_x_m = max(path.minimum_x_m, lookahead_minimum_x_m)
     maximum_x_m = min(path.maximum_x_m, lookahead_maximum_x_m)
     if maximum_x_m <= minimum_x_m:

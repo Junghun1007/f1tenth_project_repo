@@ -94,7 +94,7 @@ source install/setup.bash
 ```bash
 ros2 launch bev_processor bev_processor.launch.py \
   preview_enabled:=false \
-  lane_seed_detection_enabled:=false
+  publish_enabled:=true
 ```
 
 터미널 2: 저장소 루트에서 파라미터 파일을 지정한다.
@@ -348,7 +348,10 @@ v_source = v_result
 
 미터 변환에는 실제 `bev_processor` 배율/원점을 사용한다. 검은 여백/라벨 0은
 자유 공간을 뜻하지 않는다. 입력 중단/프레임 처리 실패 시 새 메시지가 없으므로
-소비자는 timestamp로 최신성을 확인해야 한다. 경로계획 소비자 연결은 포함하지 않는다.
+소비자는 timestamp로 최신성을 확인해야 한다.
+`vehicle_bringup auto_drive.launch.py`는 이 결과의 중앙선 점열을 `auto_control`에 연결한다.
+`line_detactor_params_file`로 차선·중앙선 YAML을 지정하며, BEV 배율은 `bev_params_file`에서
+검출기와 제어기에 함께 적용한다. 정지선 검출은 이 주행 제어의 정지 명령으로 사용하지 않는다.
 
 ## 속도와 기타
 

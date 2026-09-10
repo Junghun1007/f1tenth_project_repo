@@ -147,12 +147,13 @@ def generate_launch_description():
         value_type=int,
     )
 
-    # Keep every lane tuning value overridable from `ros2 launch ... name:=x`.
+    # Keep capture/publication settings overridable from `ros2 launch ... name:=x`.
     # When omitted, each value is resolved from bev_params_file at launch time.
-    lane_parameters = [
+    runtime_parameters = [
         ("capture_directory", ".", str),
         ("capture_joy_topic", "/joy", str),
         ("capture_joy_button", "1", int),
+        ("publish_enabled", "true", bool),
         ("dataset_collection_enabled", "false", bool),
         ("dataset_collection_manual_capture_mode", "false", bool),
         ("dataset_collection_manual_capture_button", "0", int),
@@ -160,188 +161,6 @@ def generate_launch_description():
         ("dataset_collection_fps", "10.0", float),
         ("dataset_collection_target_count", "1000", int),
         ("dataset_collection_stop_auto_on_complete", "true", bool),
-        ("lane_seed_detection_enabled", "true", bool),
-        ("lane_output_topic", "/camera/image_bev_lane", str),
-        ("lane_preview_enabled", "true", bool),
-        ("lane_gray_mode", "0", int),
-        ("lane_saturation_suppression_enabled", "true", bool),
-        ("lane_saturation_threshold", "70", int),
-        ("lane_saturation_minimum_value", "40", int),
-        ("lane_saturation_mask_dilation_px", "1", int),
-        ("lane_top_hat_shape", "1", int),
-        ("lane_top_hat_iterations", "1", int),
-        ("lane_top_hat_border", "0", int),
-        ("lane_near_ratio", "0.45", float),
-        ("lane_near_gain", "1.5", float),
-        ("lane_near_noise_floor", "17", int),
-        ("lane_near_kernel_width", "7", int),
-        ("lane_near_kernel_height", "7", int),
-        ("lane_middle_ratio", "0.35", float),
-        ("lane_middle_gain", "1.6", float),
-        ("lane_middle_noise_floor", "13", int),
-        ("lane_middle_kernel_width", "17", int),
-        ("lane_middle_kernel_height", "17", int),
-        ("lane_far_ratio", "0.20", float),
-        ("lane_far_gain", "1.65", float),
-        ("lane_far_noise_floor", "11", int),
-        ("lane_far_kernel_width", "27", int),
-        ("lane_far_kernel_height", "27", int),
-        ("lane_seed_roi_bottom_exclusion_ratio", "0.09", float),
-        ("lane_seed_roi_height_ratio", "0.25", float),
-        ("lane_seed_minimum_response", "30", int),
-        ("lane_seed_minimum_run_width_px", "2", int),
-        ("lane_seed_maximum_run_width_px", "8", int),
-        ("lane_seed_maximum_lateral_step_px", "4.0", float),
-        ("lane_seed_maximum_gap_rows", "4", int),
-        ("lane_seed_minimum_track_arc_length_px", "20.0", float),
-        ("lane_seed_minimum_bilateral_contrast", "25.0", float),
-        ("lane_seed_maximum_background_asymmetry", "50.0", float),
-        ("lane_seed_background_gap_px", "1", int),
-        ("lane_seed_background_band_width_px", "5", int),
-        ("lane_seed_contrast_score_weight", "0.30", float),
-        ("lane_seed_contrast_relaxation_enabled", "true", bool),
-        ("lane_seed_contrast_relaxation_step", "5.0", float),
-        ("lane_seed_contrast_relaxation_retries", "5", int),
-        ("lane_seed_slope_filter_enabled", "true", bool),
-        ("lane_seed_slope_median_window", "5", int),
-        ("lane_seed_maximum_slope_change_px_per_row", "2.0", float),
-        ("lane_seed_pair_minimum_distance_px", "45.0", float),
-        ("lane_seed_pair_maximum_distance_px", "100.0", float),
-        ("lane_seed_sliding_window_enabled", "true", bool),
-        (
-            "lane_seed_sliding_window_minimum_seed_arc_length_px",
-            "15.0",
-            float,
-        ),
-        ("lane_seed_sliding_window_initial_width_px", "6", int),
-        ("lane_seed_sliding_window_initial_height_px", "10", int),
-        ("lane_seed_sliding_window_growth_ratio", "1.04", float),
-        ("lane_seed_sliding_window_maximum_width_px", "25", int),
-        ("lane_seed_sliding_window_maximum_height_px", "15", int),
-        ("lane_seed_sliding_window_step_ratio", "0.60", float),
-        ("lane_seed_sliding_window_maximum_count", "40", int),
-        (
-            "lane_seed_sliding_window_minimum_bright_pixels",
-            "2",
-            int,
-        ),
-        (
-            "lane_seed_sliding_window_maximum_consecutive_misses",
-            "2",
-            int,
-        ),
-        (
-            "lane_seed_sliding_window_centroid_boundary_margin_px",
-            "2.0",
-            float,
-        ),
-        (
-            "lane_seed_sliding_window_maximum_turn_deg_per_window",
-            "14.0",
-            float,
-        ),
-        (
-            "lane_seed_sliding_window_maximum_turn_change_deg_per_window",
-            "3.0",
-            float,
-        ),
-        (
-            "lane_seed_sliding_window_heading_update_gain",
-            "0.90",
-            float,
-        ),
-        ("lane_centerline_enabled", "true", bool),
-        ("lane_centerline_expected_width_m", "0.65", float),
-        ("lane_centerline_width_tolerance_m", "0.08", float),
-        ("lane_centerline_minimum_points", "6", int),
-        (
-            "lane_centerline_minimum_counterpart_points",
-            "3",
-            int,
-        ),
-        (
-            "lane_centerline_measured_point_smoothing_weight",
-            "0.70",
-            float,
-        ),
-        (
-            "lane_centerline_midpoint_smoothing_weight",
-            "0.45",
-            float,
-        ),
-        (
-            "lane_centerline_temporal_current_weight",
-            "0.60",
-            float,
-        ),
-        (
-            "lane_centerline_transition_maximum_correction_m",
-            "0.15",
-            float,
-        ),
-        (
-            "lane_centerline_transition_correction_decay",
-            "0.70",
-            float,
-        ),
-        ("lane_centerline_tangent_window_m", "0.12", float),
-        ("lane_centerline_maximum_curvature_per_m", "1.8", float),
-        ("lane_centerline_maximum_heading_step_deg", "14.0", float),
-        ("lane_centerline_maximum_gap_fill_m", "0.30", float),
-        (
-            "lane_centerline_corner_longer_boundary_enabled",
-            "true",
-            bool,
-        ),
-        (
-            "lane_centerline_corner_outward_bias_m",
-            "0.05",
-            float,
-        ),
-        (
-            "lane_centerline_corner_enter_heading_change_deg",
-            "40.0",
-            float,
-        ),
-        (
-            "lane_centerline_corner_exit_heading_change_deg",
-            "20.0",
-            float,
-        ),
-        ("lane_seed_column_tracking_enabled", "true", bool),
-        ("lane_seed_cross_direction_merge_enabled", "true", bool),
-        (
-            "lane_seed_cross_direction_merge_maximum_endpoint_distance_px",
-            "3.0",
-            float,
-        ),
-        (
-            "lane_seed_cross_direction_merge_minimum_connector_support_ratio",
-            "0.70",
-            float,
-        ),
-        (
-            "lane_seed_cross_direction_merge_maximum_turn_angle_deg",
-            "110.0",
-            float,
-        ),
-        ("lane_seed_temporal_side_lock_enabled", "true", bool),
-        ("lane_seed_temporal_side_lock_reset_frames", "100", int),
-        (
-            "lane_seed_temporal_side_reacquire_base_distance_px",
-            "45.0",
-            float,
-        ),
-        (
-            "lane_seed_temporal_side_reacquire_distance_per_missing_frame_px",
-            "3.0",
-            float,
-        ),
-        (
-            "lane_seed_temporal_side_reacquire_maximum_distance_px",
-            "63.0",
-            float,
-        ),
     ]
     launch_parameter_defaults = [
         (
@@ -352,19 +171,19 @@ def generate_launch_description():
         ("bev_input_bottom_fraction", "input_bottom_fraction", "0.70"),
         ("preview_enabled", "preview_enabled", "true"),
         ("bev_interpolation", "bev_interpolation", "bilinear"),
-        *[(name, name, fallback) for name, fallback, _ in lane_parameters],
+        *[(name, name, fallback) for name, fallback, _ in runtime_parameters],
     ]
-    lane_launch_arguments = [
+    runtime_launch_arguments = [
         DeclareLaunchArgument(
             name,
             default_value=_PARAMETER_FILE_DEFAULT,
             description=f"Override bev_processor parameter '{name}'.",
         )
-        for name, _, _ in lane_parameters
+        for name, _, _ in runtime_parameters
     ]
-    lane_parameter_overrides = {
+    runtime_parameter_overrides = {
         name: ParameterValue(LaunchConfiguration(name), value_type=value_type)
-        for name, _, value_type in lane_parameters
+        for name, _, value_type in runtime_parameters
     }
 
     return LaunchDescription(
@@ -478,7 +297,7 @@ def generate_launch_description():
                 default_value=_PARAMETER_FILE_DEFAULT,
                 description="Interpolation used by the CUDA NV12-to-BEV warp.",
             ),
-            *lane_launch_arguments,
+            *runtime_launch_arguments,
             OpaqueFunction(
                 function=_apply_parameter_file_defaults,
                 kwargs={
@@ -519,7 +338,7 @@ def generate_launch_description():
                                     value_type=str,
                                 ),
                             },
-                            lane_parameter_overrides,
+                            runtime_parameter_overrides,
                         ],
                         extra_arguments=[
                             {"use_intra_process_comms": True},
