@@ -120,6 +120,14 @@ Use `src/line_detactor/config/line_detactor.yaml` as the template, with root
 `line_detactor.ros__parameters`. Defaults retain 0.65m lane width, spatial smoothing,
 outer-boundary corner weighting, and yellow rendering. Parameters load at startup.
 
+`centerline_corner_outward_offset_m:=0.05` shifts the corner path toward the observed
+outer boundary by up to 5cm; `0.0` disables that shift. The final yellow path is the
+controller input. `preview_result_only_enabled:=true` (default) displays lanes,
+stop lines and the yellow path on black; `false` restores the camera overlay.
+Both arguments override the corresponding `line_detactor_params_file` values.
+Offset magnitude fades with corner evidence and is bounded by observed-line clearance;
+it does not guarantee clearance of the full vehicle footprint.
+
 `bev_params_file` remains necessary for projection geometry, startup measurement
 and capture settings. Old `lane_*` BEV keys are ignored and can be deleted.
 The launch derives ML input topic, physical extents, result topic, and controller

@@ -230,6 +230,7 @@ ros2 launch line_detactor line_detactor.launch.py \
 | `line_width_px` | 2 | 노란 선 두께, 1~10px |
 | `corner_outer_enabled` | true | 코너에서 바깥 차선 기준 경로 우선 반영 |
 | `corner_outer_weight` | 0.85 | 바깥 차선 기준 경로의 최대 혼합 비중, 0~1 |
+| `corner_outward_offset_m` | 0.05 | 코너에서 추가로 바깥쪽으로 이동할 목표 거리(m), 0이면 이동 끔 |
 | `corner_outer_window_m` | 0.60 | 회전 방향과 관측 길이를 평가하는 거리 범위 |
 | `corner_outer_tangent_window_m` | 0.15 | 바깥 차선 기준 접선 추정 범위 |
 | `corner_outer_min_length_m` | 0.30 | 기준으로 삼을 최소 연속 관측 길이; 평가 범위보다 작아야 함 |
@@ -313,6 +314,53 @@ line_detactor:
 기존 방식과 비교하려면 `corner_outer_enabled: false`로 실행한다.
 두 설정 파일(`line_detactor.yaml`, `centerline_preview.yaml`)과 launch 인자에 같은 값을
 연결했다. YAML 변경 후 재시작한다. 이번 코너 수정도 요청에 따라 빌드·테스트는 수행하지 않았다.
+
+## 코너 바깥쪽 경로 오프셋과 결과 전용 프리뷰
+
+`centerline_corner_outward_offset_m`은 기존 중앙 경로 후보를 관측된 바깥 차선
+쪽으로 이동하는 추가 거리다. 기본값은 0.05m이며, `0.0`으로 끌 수 있다.
+`centerline_corner_outer_weight`는 기존 형상 혼합 비중이고, 새 오프셋은 거리다.
+두 값은 별개이며 `centerline_corner_outer_enabled: true`가 필요하다.
+
+좌회전에서는 오른쪽 바깥 경계, 우회전에서는 왼쪽 바깥 경계를 향해 이동한다.
+양쪽 차선에서 만드는 후보 모두 동일한 바깥 경계의 법선과 신뢰도를 사용한다.
+기존 코너 판별의 회전각·관측 길이·끝점 신뢰도에 따라 이동량이 0~설정값으로
+변하며, 직선이나 바깥 경계 관측이 없는 구간에서는 적용하지 않는다.
+
+이동 구간이 관측 차선과 `centerline_min_clearance_m` 간격이나 결과 영상 범위를
+침범하면 이동량을 줄인다. 후보 평활화·연결 후에도 기존 전체 경로 검사를 수행한다.
+설정값은 목표 이동 거리이지 최소 이동량이나 바깥 차선과의 고정 간격 보장이 아니다.
+간격 검사는 경로점 기준이며 차량 폭·후륜 궤적까지 검사하는 기능은 아니다.
+최종 이동한 경로를 노란색으로 표시하고 그대로 `auto_control`에 전달한다.
+
+```yaml
+line_detactor:
+  ros__parameters:
+    centerline_corner_outer_enabled: true
+    centerline_corner_outward_offset_m: 0.05
+    preview_enabled: true
+    preview_result_only_enabled: true
+```
+
+`preview_result_only_enabled: true`는 검은 배경에 좌우 차선·정지선·노란 경로와
+성능 배너만 표시한다. 원본 BEV 패딩·알파 합성을 생략한다. `false`는 원본 BEV 위에
+결과를 겹쳐 표시한다. `connection_enabled: false`인 raw 모드에서는 이 옵션을
+적용하지 않고 기존 raw 추론 프리뷰를 표시한다.
+연결 모드에서는 사용되지 않던 GPU 원본 오버레이 생성과 해당 D2H 복사도 생략한다.
+모델 추론·중앙선 생성·ROS 결과 메시지의 계산량은 그대로다. 실제 속도 향상은 미측정이다.
+
+자동주행에서도 YAML 또는 명시적 launch 인자로 조절할 수 있다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  line_detactor_params_file:=/absolute/path/line_detactor_test.yaml \
+  centerline_corner_outward_offset_m:=0.05 \
+  preview_enabled:=true \
+  preview_result_only_enabled:=true
+```
+
+기존 BEV/auto_control/CAN 인자를 함께 전달할 수 있다. 명시한 launch 값이
+YAML보다 우선하며 변경 후 재실행한다.
 
 ## 결과 토픽과 좌표
 

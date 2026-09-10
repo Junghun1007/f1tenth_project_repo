@@ -34,6 +34,8 @@ line_detactor:
     result_image_topic: "/line_detactor/result_image"
 
     preview_enabled: true
+    # Black background with lanes/stop line/yellow path; skip source-image blending.
+    preview_result_only_enabled: true
     # GUI refresh only. Inference/result publication run whenever a new BEV arrives.
     preview_fps: 30.0
     preview_scale: 2.0
@@ -62,6 +64,9 @@ line_detactor:
     # Prefer the observed OUTER boundary shape in corners; fade with local support/turn.
     centerline_corner_outer_enabled: true
     centerline_corner_outer_weight: 0.85
+    # Additional outward path shift in observed corners, faded by corner confidence.
+    # 0 disables the shift; shape weighting above remains active. Clearance still applies.
+    centerline_corner_outward_offset_m: 0.05
     centerline_corner_outer_window_m: 0.60
     centerline_corner_outer_tangent_window_m: 0.15
     centerline_corner_outer_min_length_m: 0.30

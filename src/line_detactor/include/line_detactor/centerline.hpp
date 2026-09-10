@@ -25,6 +25,7 @@ struct CenterlineConfig
   int line_width_px{2};
   bool corner_outer_enabled{true};
   double corner_outer_weight{0.85};
+  double corner_outward_offset_m{0.05};
   double corner_outer_window_m{0.60};
   double corner_outer_tangent_window_m{0.15};
   double corner_outer_min_length_m{0.30};
@@ -43,7 +44,7 @@ struct CenterlineResult
 {
   // Ordered extended-image pixels (x right, y down). No TF/vehicle frame implied.
   std::vector<cv::Point2f> points;
-  // 1=single-side offset, 2=paired midpoint, 3=short gap, 4=outer-reference blend; support before smoothing.
+  // 1=single-side offset, 2=paired midpoint, 3=short gap, 4=outer-reference blend/shift; before smoothing.
   std::vector<std::uint8_t> support;
   cv::Mat mask;
   bool sample_limit_reached{false};

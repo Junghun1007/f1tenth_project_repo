@@ -433,19 +433,23 @@ public:
     check_cuda(
       cudaEventRecord(postprocessing_started_.get(), stream_.get()),
       "cudaEventRecord(postprocess start)");
-    check_cuda(
-      launch_lane_overlay(
-        static_cast<const std::uint8_t *>(device_bgr_.get()),
-        static_cast<const float *>(device_logits_.get()),
-        static_cast<std::uint8_t *>(device_preview_bgr_.get()),
-        input_width_, input_height_, mask_threshold_, overlay_alpha_,
-        stream_.get()),
-      "launch lane overlay kernel");
-    check_cuda(
-      cudaMemcpyAsync(
-        host_preview_bgr_.get(), device_preview_bgr_.get(), image_byte_count_,
-        cudaMemcpyDeviceToHost, stream_.get()),
-      "cudaMemcpyAsync(preview device to host)");
+    // Connected mode renders from CPU labels/results. This raw camera overlay
+    // would be unused, including in result-only and headless autonomous driving.
+    if (!export_labels_) {
+      check_cuda(
+        launch_lane_overlay(
+          static_cast<const std::uint8_t *>(device_bgr_.get()),
+          static_cast<const float *>(device_logits_.get()),
+          static_cast<std::uint8_t *>(device_preview_bgr_.get()),
+          input_width_, input_height_, mask_threshold_, overlay_alpha_,
+          stream_.get()),
+        "launch lane overlay kernel");
+      check_cuda(
+        cudaMemcpyAsync(
+          host_preview_bgr_.get(), device_preview_bgr_.get(), image_byte_count_,
+          cudaMemcpyDeviceToHost, stream_.get()),
+        "cudaMemcpyAsync(preview device to host)");
+    }
     check_cuda(
       cudaEventRecord(postprocessing_finished_.get(), stream_.get()),
       "cudaEventRecord(postprocess finish)");

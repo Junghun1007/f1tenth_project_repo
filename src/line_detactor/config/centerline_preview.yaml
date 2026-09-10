@@ -6,6 +6,7 @@ line_detactor:
     connection_enabled: true
     result_padding_px: 30
     preview_enabled: true
+    preview_result_only_enabled: true
     preview_scale: 2.0
     result_publish_enabled: true
 
@@ -25,6 +26,7 @@ line_detactor:
     # Prefer the observed OUTER boundary shape in corners; fade with local support/turn.
     centerline_corner_outer_enabled: true
     centerline_corner_outer_weight: 0.85
+    centerline_corner_outward_offset_m: 0.05
     centerline_corner_outer_window_m: 0.60
     centerline_corner_outer_tangent_window_m: 0.15
     centerline_corner_outer_min_length_m: 0.30

@@ -156,8 +156,11 @@ public:
     RCLCPP_INFO(
       node_.get_logger(),
       "GPU path: pinned BGR8 H2D -> CUDA RGB FP32 NCHW -> TensorRT -> "
-      "CUDA threshold/overlay -> BGR8 D2H; engine cache=%s",
+      "%s; engine cache=%s",
+      connection_.enabled ? "CUDA labels D2H (raw overlay skipped)" : "CUDA overlay BGR8 D2H",
       backend_->engine_cache_path().c_str());
+    RCLCPP_INFO(node_.get_logger(), "Preview content=%s",
+      connection_.enabled && preview_result_only_enabled_ ? "results only" : "camera overlay");
     RCLCPP_INFO(node_.get_logger(),
       "Border interpolation=%s, result=%dx%d (padding=%d each side), publish=%s, topic=%s",
       connection_.enabled ? "on" : "off", result_width(), model_input_height_,
@@ -168,9 +171,10 @@ public:
       centerline_.bev_width_m, centerline_.bev_height_m, centerline_.smoothing_enabled ? "on" : "off",
       centerline_.smoothing_strength, centerline_.smoothing_window_m);
     RCLCPP_INFO(node_.get_logger(),
-      "Corner outer reference=%s weight=%.2f turn window=%.2fm min support=%.2fm",
+      "Corner outer reference=%s weight=%.2f turn window=%.2fm min support=%.2fm outward offset=%.3fm",
       centerline_.corner_outer_enabled ? "on" : "off", centerline_.corner_outer_weight,
-      centerline_.corner_outer_window_m, centerline_.corner_outer_min_length_m);
+      centerline_.corner_outer_window_m, centerline_.corner_outer_min_length_m,
+      centerline_.corner_outward_offset_m);
   }
 
   ~Impl()
@@ -266,6 +270,8 @@ private:
       "centerline_corner_outer_enabled", true);
     centerline_.corner_outer_weight = node_.declare_parameter<double>(
       "centerline_corner_outer_weight", 0.85);
+    centerline_.corner_outward_offset_m = node_.declare_parameter<double>(
+      "centerline_corner_outward_offset_m", 0.05);
     centerline_.corner_outer_window_m = node_.declare_parameter<double>(
       "centerline_corner_outer_window_m", 0.60);
     centerline_.corner_outer_tangent_window_m = node_.declare_parameter<double>(
@@ -299,6 +305,8 @@ private:
       "warmup_iterations", 10);
     preview_enabled_ = node_.declare_parameter<bool>(
       "preview_enabled", true);
+    preview_result_only_enabled_ = node_.declare_parameter<bool>(
+      "preview_result_only_enabled", true);
     preview_fps_ = node_.declare_parameter<double>(
       "preview_fps", 30.0);
     preview_scale_ = node_.declare_parameter<double>(
@@ -664,7 +672,9 @@ private:
 
         if (preview_enabled_) {
           auto snapshot = std::make_shared<PreviewFrame>();
-          snapshot->input = message;
+          if (connection_.enabled && !preview_result_only_enabled_) {
+            snapshot->input = message;
+          }
           snapshot->result = std::move(result);
           snapshot->timing = timing;
           snapshot->connection_nanoseconds = connection_nanoseconds;
@@ -757,7 +767,8 @@ private:
         if (frame && frame->generation != displayed_generation) {
           cv::Mat overlay;
           if (connection_.enabled) {
-            overlay = result_overlay(frame->result, *frame->input);
+            overlay = preview_result_only_enabled_ ? frame->result.image :
+              result_overlay(frame->result, *frame->input);
           } else {
             cv::copyMakeBorder(frame->raw, overlay, 0, 0,
               connection_.padding_px, connection_.padding_px,
@@ -833,6 +844,7 @@ private:
   rclcpp::Publisher<Image>::SharedPtr result_image_publisher_;
   int warmup_iterations_{10};
   bool preview_enabled_{true};
+  bool preview_result_only_enabled_{true};
   double preview_fps_{30.0};
   double preview_scale_{2.0};
   std::string preview_window_name_;

@@ -326,6 +326,12 @@ void validate_centerline(const CenterlineConfig & c)
   for (double v : values) {
     if (!positive(v)) {throw std::invalid_argument("Centerline distances must be finite and positive");}
   }
+  if (!std::isfinite(c.corner_outward_offset_m) || c.corner_outward_offset_m < 0.0 ||
+    c.corner_outward_offset_m >= c.lane_width_m / 2.0 - c.min_clearance_m)
+  {
+    throw std::invalid_argument(
+      "corner outward offset must be nonnegative and less than half lane width minus clearance");
+  }
   if (!std::isfinite(c.corner_outer_weight) || c.corner_outer_weight < 0.0 || c.corner_outer_weight > 1.0 ||
     !positive(c.corner_outer_min_turn_deg) || !positive(c.corner_outer_full_turn_deg) ||
     c.corner_outer_full_turn_deg <= c.corner_outer_min_turn_deg || c.corner_outer_full_turn_deg >= 180.0 ||
@@ -449,7 +455,8 @@ CenterlineResult generate_centerline(
         reference_index = counterpart_index;
       }
       if (reference) {
-        const double weight = cfg.corner_outer_weight * std::abs(own_outer - other_outer);
+        const double confidence = std::abs(own_outer - other_outer);
+        const double weight = cfg.corner_outer_weight * confidence;
         const auto target = reference->outer_centers[reference_index];
         const auto direction = reference->outer_directions[reference_index];
         const auto blended = center + (target - center) * weight;
@@ -459,6 +466,30 @@ CenterlineResult generate_centerline(
           center = blended;
           preferred_direction = unit(t * (1.0 - weight) + direction * weight);
           mode = 4U;
+        }
+        // Translate the candidate toward the observed geometric outer boundary.
+        // This is independent of the shape-blend weight and is applied once to
+        // either side's candidate using the same outer reference. Straight and
+        // conflicting/unsupported corner evidence fade the displacement to zero.
+        const double requested_offset = cfg.corner_outward_offset_m * confidence;
+        if (requested_offset > 1.0e-6 && geometry.point_ok(center)) {
+          const Point outward = unit(reference->points[reference_index] - target);
+          const Point displacement = outward * requested_offset;
+          double fraction = 1.0;
+          if (!geometry.segment_ok(center, center + displacement)) {
+            double lo = 0.0;
+            double hi = 1.0;
+            for (int iteration = 0; iteration < 8; ++iteration) {
+              const double mid = (lo + hi) / 2.0;
+              if (geometry.segment_ok(center, center + displacement * mid)) {lo = mid;}
+              else {hi = mid;}
+            }
+            fraction = lo;
+          }
+          if (requested_offset * fraction > 1.0e-6) {
+            center += displacement * fraction;
+            mode = 4U;
+          }
         }
       }
       paired.push_back(counterpart != nullptr);
