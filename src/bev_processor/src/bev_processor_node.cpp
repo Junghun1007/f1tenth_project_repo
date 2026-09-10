@@ -1731,6 +1731,10 @@ private:
       published_interval_.exchange(0U, std::memory_order_relaxed);
     const auto previewed =
       previewed_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto process_ns =
+      process_ns_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto process_ns_max =
+      process_ns_max_interval_.exchange(0U, std::memory_order_relaxed);
     const auto stabilized_latency_samples =
       stabilized_latency_samples_interval_.exchange(
       0U, std::memory_order_relaxed);
