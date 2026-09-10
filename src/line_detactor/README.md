@@ -1,16 +1,51 @@
 # line_detactor
 
-Fast-SCNN HighRes로 원본 BEV의 좌우 차선을 추론한다. 후처리는 **작은 노이즈
+Fast-SCNN HighRes로 원본 BEV의 좌우 차선과 정지선을 추론한다. 좌우 차선 후처리는 **작은 노이즈
 성분 제거와 화면 좌우 경계에서 잘린 차선의 바깥쪽 보간**만 수행한다.
 
 원본 `/camera/image_bev`, BEV 변환, 모델 입력은 **120×300 그대로**다.
 프리뷰/결과 도화지에만 좌우 30px씩 검은 여백을 추가해 **180×300**으로 만든다.
-좌우 차선은 파란색/빨간색이다. 기존 경로계획·조향 제어는 변경하지 않는다.
+좌우 차선은 파란색/빨간색, 정지선은 초록색이다. 기존 경로계획·조향 제어는 변경하지 않는다.
+
+## 정지선 모델 적용 순서
+
+현재 기본 모델은 **`models/fast_scnn_stop_line_120x300_batch_1.onnx`**다.
+기존 2채널 ONNX는 보존하지만 새 노드에서 사용하지 않는다. 진행 중인 0910 학습이
+끝나면 **PC에서** 아래 명령으로 최종 best.pt를 변환한 뒤 이 패키지를 젯슨으로 옮긴다.
+현재 코드 수정 시점에는 학습이 진행 중이므로 최종 배포 ONNX를 자동으로 확정하지 않았다.
+
+현재 Windows 작업공간 `C:\Users\godld\Desktop\traffic`에서:
+
+```powershell
+line_detector/.venv-export/Scripts/python.exe line_detactor_ros/tools/export_stop_line_onnx.py
+```
+
+기본적으로 옆 `line_detector/training/highres/stop_line_0910/runs`의 최신 best.pt를
+선택한다. 특정 모델은 `--checkpoint "실제/best.pt"`로 지정한다. 기존 학습 환경을
+변경하지 않도록 별도 `.venv-export`를 준비했다. 다른 PC에서는 별도 가상환경에
+`tools/requirements-export.txt`를 설치하면 된다. 모델 정의는 tools/model_definitions에
+포함되어 있어 --checkpoint를 지정하면 원래 학습 코드 없이도 변환할 수 있다.
+
+변환은 정적 FP32 입력/출력 `[1,3,300,120]`, opset17, 로짓 출력이다. 고정 입력의
+비균등 adaptive pooling을 같은 구간의 AvgPool/평균 연산으로 표현하고 ONNX checker와
+ONNX Runtime CPU로 PyTorch 출력과 비교한다. 최종 테스트26장은 변환 검증에 사용하지 않는다.
+`*.onnx` 옆 `*.json`에 원본 체크포인트 epoch/SHA256와 수치 검증 결과를 기록한다.
+변환에만 PyTorch가 필요하며 **젯슨 노드 실행에는 PyTorch/ONNX Runtime이 필요 없다.**
+
+명시적으로 예전 `model_path`를 지정한 YAML은 새 ONNX 경로로 수정한다. 기본 경로를
+사용한다면 YAML 변경은 필요 없다. 새 ONNX는 다른 이름이므로 기존 엔진 캐시와 분리된다.
+명시된 엔진 캐시가 2채널이면 새 엔진으로 재생성한다. 학습 후 ONNX를 다시 갱신했다면
+이전 캐시보다 새 수정 시간이 유지되어야 하며, 파일 시간을 보존하며 복사한 경우 해당
+캐시를 제거하고 재생성한다. 엔진은 배포할 젯슨에서 생성한다.
+
+공식 참고: [PyTorch ONNX export](https://docs.pytorch.org/docs/stable/onnx),
+[TensorRT 엔진 호환성](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/engine-compatibility.html).
 
 ## 후처리 범위
 
-1. 모델 출력의 좌우 채널에 독립 sigmoid threshold를 적용한다. 중복 픽셀은
-   로짓이 큰 쪽에 배정한다. 입력 RGB `[1,3,300,120]`, 출력 `[1,2,300,120]`이다.
+1. 모델 출력의 좌우/정지선 채널에 독립 sigmoid threshold를 적용한다. 좌우 중복은
+   기존처럼 로짓이 큰 쪽에 배정한다. 정지선은 독립 마스크에 남겨 좌우와의 교차점을
+   보존한다. 입력 RGB `[1,3,300,120]`, 출력 로짓 `[1,3,300,120]`이다.
 2. 좌우 마스크 각각에서 `connection_min_component_area_px`보다 작은 연결
    성분만 삭제한다. 그 외 성분은 위치·두께·모양·분리 상태를 그대로 유지한다.
 3. **실제로 원본 영상의 x=0 또는 x=width-1에 닿은 성분만** 보간 후보로 조사한다.
@@ -22,6 +57,11 @@ Fast-SCNN HighRes로 원본 BEV의 좌우 차선을 추론한다. 후처리는 *
    추가 선의 두께가 원본 영역을 침범하지 않도록 래스터화 후에도 원본 영역을
    마스킹한다. 새 선끼리 겹치면 후순위 연결은 제외한다. 짧은 후보부터 선택하며
    한 끝점은 한 번만 사용한다.
+
+정지선에는 위 성분 제거·경계 보간을 적용하지 않는다. 정지선 마스크는 별도로 패딩만
+추가하고, 화면 밖 패딩은 항상 0이다. 결과 영상에서는 정지선의 초록색이 겹친 차선보다
+우선 표시되지만 기존 좌우 라벨/상태는 변하지 않는다. 원본에서 흰색이 보이지 않는다는
+이유로 모델이 복원한 정지선을 지우지 않는다.
 
 **내부 끊김 연결, 스플라인 평활화, 차선을 한 개로 강제 선택하기, 좌우 순서에
 따른 차선 전체 삭제는 제거했다.** 결과적으로 같은 쪽 차선 조각이 여러 개 남을
@@ -112,7 +152,7 @@ line_detactor:
 | `connection_max_arc_ratio` | `1.8` | 보간 길이/끝점 직선거리 상한 |
 | `result_line_width_px` | `2` | 바깥 보간 선의 두께만 변경. 모델 차선 두께는 유지 |
 | `result_publish_enabled` | `true` | 결과 메시지/영상 발행 |
-| `mask_threshold` | `0.5` | 모델 좌우 sigmoid 임계값 |
+| `mask_threshold` | `0.5` | 좌우/정지선 각각의 sigmoid 임계값 |
 | `overlay_alpha` | `0.75` | 프리뷰 오버레이 불투명도 |
 | `preview_fps` | `30.0` | 최대 처리 빈도 |
 | `preview_scale` | `2.0` | 프리뷰 확대 배율. 좌표/파라미터에 영향 없음 |
@@ -124,9 +164,13 @@ line_detactor:
 - `/line_detactor/result`: `line_detactor/msg/LaneResult`
 - `/line_detactor/result_image`: `sensor_msgs/msg/Image`, `bgr8`, 차선만 그린 검은 영상
 
-`LaneResult.image`는 같은 BGR 결과이고 `labels`는 `mono8`이다.
+`LaneResult.image`는 같은 BGR 결과이고 `labels`는 기존 좌우 차선용 `mono8`이다.
 라벨은 `0=배경`, `1=왼쪽 모델`, `2=오른쪽 모델`, `3=왼쪽 바깥 보간`,
-`4=오른쪽 바깥 보간`이다. 검출이 없으면 검은 영상과 NONE을 발행한다.
+`4=오른쪽 바깥 보간`이다. `stop_line_mask`는 별도의 `mono8` 0/255 정지선 마스크이며
+image/labels와 같은 180×300(기본 패딩)의 좌표를 쓴다. 교차점은 labels와 stop_line_mask
+양쪽에 동시에 남을 수 있다. `stop_line_present`는 정지선 픽셀이 1개 이상인지를 나타내며
+확정된 정지 명령은 아니다. 정지선만 있으면 state=NONE이어도 stop_line_present=true다.
+세 종류 모두 없으면 검은 영상, NONE, 빈 정지선 마스크를 발행한다.
 원본 timestamp/frame_id를 유지하며 QoS는 best effort, volatile, KeepLast(1)이다.
 
 `processing_mode=BORDER_ONLY`이다. `state`는 **남아 있는 마스크의 좌우 존재 여부**
@@ -138,7 +182,7 @@ line_detactor:
 `segment_starts`의 각 시작 오프셋에서 다음 오프셋 직전(마지막은 배열 끝)까지가
 한 구간이며 **서로 다른 구간을 선으로 잇지 않는다**. 점별 provenance는
 `0=모델 지지`, `1=보간`이다. 관측 길이도 진단에 사용한 경계 성분만 집계한다.
-유지된 전체 검출 결과는 `labels/image`가 기준이다.
+전체 좌우 검출은 `labels`, 정지선 검출은 `stop_line_mask`가 기준이며 `image`는 합성 표시다.
 
 점은 확장 영상의 픽셀 좌표(x 오른쪽, y 아래쪽, z=0)이며 미터/TF 위치가 아니다.
 
@@ -159,9 +203,18 @@ GPU 라벨 생성/D2H까지 포함한 후처리 시간이다. `connect`는 `corr
 프리뷰 합성/창 표시, ROS 직렬화·발행은 해당 측정에 포함하지 않는다.
 `view FPS`는 전체 처리 빈도다. 로그에는 단계별 평균/최대 ms가 표시된다.
 
-logits 전체는 CPU에 복사하지 않고 120×300 mono8 라벨을 전달한다. ONNX 기본
-경로는 패키지의 `fast_scnn_highres_120x300_batch_1.onnx`다. 최초 실행 시 장치별
+logits 전체는 CPU에 복사하지 않고 120×300 mono8 두 장(좌우 라벨 + 정지선 마스크)을
+한 번에 전달한다. 36KB에서 72KB로 늘며 CUDA stream, pinned memory, GPU 전처리·threshold·
+오버레이 경로는 유지한다. FP16/INT8로 정밀도를 바꾸지 않고 기존 TensorRT FP32를 유지한다.
+ONNX 기본 경로는 패키지의 `fast_scnn_stop_line_120x300_batch_1.onnx`다. 최초 실행 시 장치별
 FP32 TensorRT 엔진을 생성하고 ONNX 옆 `*.trt<TensorRT-major>.fp32.engine`를 재사용한다.
 `Q`/`ESC`/창 닫기로 종료한다. 자동주행·조향 명령은 발행하지 않는다.
 
-이번 변경의 빌드·실행·테스트는 요청에 따라 수행하지 않았다.
+Windows에서 ONNX checker/ONNX Runtime CPU 수치 비교를 수행했다. 변경 시점의 best(epoch10)
+스냅샷으로 검증 입력10개(검증 이미지8장+합성2개)에서 세 채널 마스크가 모두 일치했고,
+로짓 최대 절대오차는 약0.000290이었다. 해당 ONNX는 원본 작업공간의
+`line_detector/training/highres/stop_line_0910/onnx_checks/current_best_snapshot.onnx`에 있는
+검증용이며 최종 배포 모델이 아니다. 학습이 끝나면 위 변환 명령을 다시 실행한다.
+
+사용자 지침에 따라 **ROS 빌드·노드 실행·젯슨 TensorRT 엔진 검증은 수행하지 않았다.**
+새 메시지 필드가 있으므로 실제 젯슨에서 패키지와 관련 소비자를 재빌드해야 한다.

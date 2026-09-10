@@ -54,6 +54,8 @@ __global__ void lane_labels_kernel(
   const float right = logits[width * height + i];
   labels[i] = left >= threshold && (!(right >= threshold) || left >= right) ? 1U :
     (right >= threshold ? 2U : 0U);
+  // Keep stop-line membership independent: crossing pixels can also be lanes.
+  labels[width * height + i] = logits[2 * width * height + i] >= threshold ? 255U : 0U;
 }
 
 __global__ void lane_overlay_kernel(
@@ -81,11 +83,16 @@ __global__ void lane_overlay_kernel(
   const float right_logit = logits[plane + pixel];
   const bool left = left_logit >= logit_threshold;
   const bool right = right_logit >= logit_threshold;
+  const bool stop_line = logits[2U * plane + pixel] >= logit_threshold;
 
   float blue = static_cast<float>(bgr[bgr_index]);
   float green = static_cast<float>(bgr[bgr_index + 1U]);
   float red = static_cast<float>(bgr[bgr_index + 2U]);
-  if (left && (!right || left_logit >= right_logit)) {
+  if (stop_line) {
+    blue = 0.0F;
+    green = 255.0F;
+    red = 0.0F;
+  } else if (left && (!right || left_logit >= right_logit)) {
     blue = 255.0F;
     green = 0.0F;
     red = 0.0F;

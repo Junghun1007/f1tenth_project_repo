@@ -44,6 +44,7 @@ public:
 
   const std::uint8_t * preview_bgr_data() const noexcept;
   const std::uint8_t * label_data() const noexcept;
+  const std::uint8_t * stop_line_mask_data() const noexcept;
   int input_width() const noexcept;
   int input_height() const noexcept;
   const std::string & engine_cache_path() const noexcept;

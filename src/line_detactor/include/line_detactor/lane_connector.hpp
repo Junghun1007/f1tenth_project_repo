@@ -40,7 +40,8 @@ struct LaneConnectionResult
 {
   std::array<ConnectedLane, 2> lanes;
   cv::Mat labels;  // mono8: 0=background, 1/2=left/right model, 3/4=left/right bridge.
-  cv::Mat image;   // bgr8: retained raw masks plus border bridges, black background.
+  cv::Mat image;   // bgr8: lanes/bridges; the node composites stop lines in green afterward.
+  cv::Mat stop_line_mask;  // Independent mono8 0/255; original ROI only, no lane cleanup/bridges.
   std::uint8_t state{0U};  // 0=NONE, 1=LEFT_ONLY, 2=RIGHT_ONLY, 3=BOTH.
 };
 

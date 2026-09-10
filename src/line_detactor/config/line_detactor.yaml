@@ -1,12 +1,13 @@
 line_detactor:
   ros__parameters:
     input_topic: "/camera/image_bev"
-    # model_path defaults to the ONNX installed with this package.
+    # model_path defaults to fast_scnn_stop_line_120x300_batch_1.onnx (3 channels).
+    # Run tools/export_stop_line_onnx.py after training before copying/building this package.
     engine_cache_path: ""
     tensorrt_workspace_size_mb: 1024
     model_input_width: 120
     model_input_height: 300
-    mask_threshold: 0.5
+    mask_threshold: 0.5                  # Independent sigmoid threshold for left/right/stop_line.
     overlay_alpha: 0.75
     warmup_iterations: 10
 

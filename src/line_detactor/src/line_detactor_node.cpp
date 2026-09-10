@@ -40,7 +40,7 @@ constexpr int kDefaultInputWidth = 120;
 constexpr int kDefaultInputHeight = 300;
 constexpr int kBannerHeight = 100;
 constexpr char kModelFilename[] =
-  "fast_scnn_highres_120x300_batch_1.onnx";
+  "fast_scnn_stop_line_120x300_batch_1.onnx";
 
 bool graphical_display_available()
 {
@@ -114,7 +114,8 @@ public:
               "Preview is enabled but DISPLAY/WAYLAND_DISPLAY is unavailable");
     }
     if (!std::filesystem::is_regular_file(model_path_)) {
-      throw std::runtime_error("ONNX model not found: " + model_path_);
+      throw std::runtime_error("Three-channel ONNX model not found: " + model_path_ +
+        ". Export the trained checkpoint with tools/export_stop_line_onnx.py first.");
     }
 
     backend_ = std::make_unique<TensorRtLaneBackend>(
@@ -390,6 +391,8 @@ private:
     }
     message.image = image_message(result.image, input, "bgr8");
     message.labels = image_message(result.labels, input, "mono8");
+    message.stop_line_mask = image_message(result.stop_line_mask, input, "mono8");
+    message.stop_line_present = cv::countNonZero(result.stop_line_mask) > 0;
     result_image_publisher_->publish(message.image);
     result_publisher_->publish(message);
   }
@@ -403,7 +406,9 @@ private:
       cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
     cv::Mat blended;
     cv::addWeighted(overlay, 1.0 - overlay_alpha_, result.image, overlay_alpha_, 0.0, blended);
-    blended.copyTo(overlay, result.labels);
+    cv::Mat visible;
+    cv::bitwise_or(result.labels, result.stop_line_mask, visible);
+    blended.copyTo(overlay, visible);
     return overlay;
   }
 
@@ -420,7 +425,7 @@ private:
     const double model_fps = inference_milliseconds > 0.0 ?
       1000.0 / inference_milliseconds : 0.0;
     const std::vector<std::pair<std::string, cv::Scalar>> lines{
-      {"left:B right:R", cv::Scalar(220, 220, 220)},
+      {"left:B right:R stop:G", cv::Scalar(220, 220, 220)},
       {cv::format("infer %.2f ms", inference_milliseconds),
         cv::Scalar(0, 255, 255)},
       {cv::format("model %.1f FPS", model_fps), cv::Scalar(0, 255, 255)},
@@ -547,6 +552,13 @@ private:
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
             result = connect_lane_fragments(labels, connection_);
+            // Stop lines never enter the left/right connector. Retain overlaps
+            // in independent masks, painting green only in the display image.
+            cv::Mat stop_mask(model_input_height_, model_input_width_, CV_8UC1,
+              const_cast<std::uint8_t *>(backend_->stop_line_mask_data()));
+            cv::copyMakeBorder(stop_mask, result.stop_line_mask, 0, 0,
+              connection_.padding_px, connection_.padding_px, cv::BORDER_CONSTANT, cv::Scalar(0));
+            result.image.setTo(cv::Scalar(0, 255, 0), result.stop_line_mask);
             connection_nanoseconds = static_cast<std::uint64_t>(
               std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started).count());

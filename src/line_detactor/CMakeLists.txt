@@ -139,7 +139,7 @@ target_link_libraries(line_detactor_node line_detactor_component)
 
 install(DIRECTORY include/ DESTINATION include)
 install(
-  DIRECTORY config launch models
+  DIRECTORY config launch models tools
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
   PATTERN "*.pyc" EXCLUDE

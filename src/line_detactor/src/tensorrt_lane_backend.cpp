@@ -354,8 +354,8 @@ public:
     device_logits_.allocate(output_element_count_ * sizeof(float));
     device_preview_bgr_.allocate(image_byte_count_);
     if (export_labels_) {
-      host_labels_.allocate(pixel_count_);
-      device_labels_.allocate(pixel_count_);
+      host_labels_.allocate(pixel_count_ * 2U);
+      device_labels_.allocate(pixel_count_ * 2U);
     }
     configure_execution_bindings();
   }
@@ -426,7 +426,7 @@ public:
         launch_lane_labels(static_cast<const float *>(device_logits_.get()),
           static_cast<std::uint8_t *>(device_labels_.get()), input_width_, input_height_,
           mask_threshold_, stream_.get()), "extract lane labels");
-      check_cuda(cudaMemcpyAsync(host_labels_.get(), device_labels_.get(), pixel_count_,
+      check_cuda(cudaMemcpyAsync(host_labels_.get(), device_labels_.get(), pixel_count_ * 2U,
           cudaMemcpyDeviceToHost, stream_.get()), "copy lane labels to host");
       check_cuda(cudaEventRecord(label_export_finished_.get(), stream_.get()), "label export finish");
     }
@@ -475,6 +475,11 @@ public:
     return static_cast<const std::uint8_t *>(host_labels_.get());
   }
 
+  const std::uint8_t * stop_line_mask_data() const noexcept
+  {
+    return export_labels_ ? static_cast<const std::uint8_t *>(host_labels_.get()) + pixel_count_ : nullptr;
+  }
+
   int input_width() const noexcept
   {
     return input_width_;
@@ -499,9 +504,16 @@ private:
         engine_.reset(runtime_->deserializeCudaEngine(
             cached_engine.data(), cached_engine.size()));
         if (engine_) {
-          std::cerr << "[line_detactor TensorRT] Loaded FP32 engine cache: "
-                    << engine_cache_path_ << '\n';
-          return;
+          try {
+            // Reject stale two-channel caches before binding three-channel buffers.
+            inspect_engine();
+            std::cerr << "[line_detactor TensorRT] Loaded FP32 engine cache: "
+                      << engine_cache_path_ << '\n';
+            return;
+          } catch (const std::exception & error) {
+            std::cerr << "[line_detactor TensorRT] Cache I/O mismatch: " << error.what() << '\n';
+            engine_.reset();
+          }
         }
         std::cerr << "[line_detactor TensorRT] Incompatible engine cache; "
                   << "rebuilding from ONNX.\n";
@@ -580,6 +592,13 @@ private:
 
   void inspect_engine()
   {
+#if NV_TENSORRT_MAJOR >= 10
+    input_name_.clear();
+    output_name_.clear();
+#else
+    input_binding_index_ = -1;
+    output_binding_index_ = -1;
+#endif
     nvinfer1::Dims input_dimensions{};
     nvinfer1::Dims output_dimensions{};
     nvinfer1::DataType input_type{};
@@ -649,14 +668,14 @@ private:
     }
     output_element_count_ = dimensions_volume(output_dimensions);
     if (output_dimensions.nbDims != 4 ||
-      output_dimensions.d[0] != 1 || output_dimensions.d[1] != 2 ||
+      output_dimensions.d[0] != 1 || output_dimensions.d[1] != 3 ||
       output_dimensions.d[2] != input_height_ ||
       output_dimensions.d[3] != input_width_ ||
-      output_element_count_ != pixel_count_ * 2U)
+      output_element_count_ != pixel_count_ * 3U)
     {
       throw std::runtime_error(
               "Unexpected TensorRT output shape " +
-              dimensions_string(output_dimensions) + "; expected [1,2," +
+              dimensions_string(output_dimensions) + "; expected [1,3," +
               std::to_string(input_height_) + "," +
               std::to_string(input_width_) + "]");
     }
@@ -758,6 +777,11 @@ const std::uint8_t * TensorRtLaneBackend::preview_bgr_data() const noexcept
 const std::uint8_t * TensorRtLaneBackend::label_data() const noexcept
 {
   return impl_->label_data();
+}
+
+const std::uint8_t * TensorRtLaneBackend::stop_line_mask_data() const noexcept
+{
+  return impl_->stop_line_mask_data();
 }
 
 int TensorRtLaneBackend::input_width() const noexcept

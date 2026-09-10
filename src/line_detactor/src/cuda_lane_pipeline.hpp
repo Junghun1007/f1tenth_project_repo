@@ -17,6 +17,7 @@ cudaError_t launch_bgr_to_rgb_nchw(
 
 cudaError_t launch_lane_labels(
   const float * device_logits,
+  // Two uint8 planes: legacy left/right labels, then independent 0/255 stop mask.
   std::uint8_t * device_labels,
   int width,
   int height,
