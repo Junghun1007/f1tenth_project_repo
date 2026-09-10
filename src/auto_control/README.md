@@ -76,6 +76,20 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
   auto_enabled:=false
 ```
 
+Measure lateral and heading errors while pushing the vehicle by hand without
+publishing duty, brake-current or servo actuator commands:
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  auto_control_mode:=monitor_only
+```
+
+Use `auto_control_mode:=steering_only` to publish automatic servo commands while
+leaving duty and brake-current topics entirely to a manual controller. Passive
+modes publish zero motor-command diagnostics but do not publish suppressed VESC
+actuator topics. `monitor_only` also computes path diagnostics without requiring
+VESC connection or fresh ERPM.
+
 Tune electrical braking without editing YAML:
 
 ```bash

@@ -193,6 +193,7 @@ def generate_launch_description():
     }
     controller_argument_fallbacks = [
         ("auto_enabled", "true", "enabled", bool),
+        ("auto_control_mode", "drive", "control_mode", str),
         ("minimum_duty", "0.070", "minimum_duty", float),
         ("maximum_duty", "0.090", "maximum_duty", float),
         (

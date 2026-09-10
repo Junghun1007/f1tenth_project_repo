@@ -164,17 +164,23 @@ class AutoControlNode(Node):
             1.0 / self.status_log_rate_hz, self._log_status
         )
 
-        if self.enabled:
+        if self.enabled and self.control_mode == "drive":
             self.get_logger().warn(
                 "Automatic control is armed at launch. The vehicle will move when "
                 "VESC telemetry and a valid ML centerline are both available."
             )
+        elif self.enabled:
+            self.get_logger().warn(
+                "Automatic control starts in %s mode; suppressed actuator topics "
+                "will not be published." % self.control_mode
+            )
         else:
             self.get_logger().info("Automatic control starts disabled.")
         self.get_logger().info(
-            "Auto control ready: lane=%s, speed=%.2f..%.2fm/s, "
+            "Auto control ready: mode=%s, lane=%s, speed=%.2f..%.2fm/s, "
             "duty=%.3f..%.3f, auto_brake=%s/%.1fA, control=on_lane_result, watchdog=%.1fHz"
             % (
+                self.control_mode,
                 self.lane_result_topic,
                 self.minimum_speed_mps,
                 self.maximum_speed_mps,
@@ -188,6 +194,7 @@ class AutoControlNode(Node):
 
     def _declare_parameters(self) -> None:
         self.declare_parameter("enabled", True)
+        self.declare_parameter("control_mode", "drive")
         self.declare_parameter("enable_topic", "/auto/enabled")
         self.declare_parameter("lane_result_topic", "/line_detactor/result")
         self.declare_parameter("lane_result_frame_id", "front_axle_bev")
@@ -293,6 +300,7 @@ class AutoControlNode(Node):
 
     def _read_parameters(self) -> None:
         string_parameters = (
+            "control_mode",
             "enable_topic",
             "lane_result_topic",
             "lane_result_frame_id",
@@ -396,6 +404,10 @@ class AutoControlNode(Node):
         )
 
     def _validate_parameters(self) -> None:
+        if self.control_mode not in ("drive", "steering_only", "monitor_only"):
+            raise ValueError(
+                "control_mode must be drive, steering_only, or monitor_only"
+            )
         if not self.lane_result_topic or not self.lane_result_frame_id:
             raise ValueError("lane result topic and expected frame ID must not be empty")
         if not math.isfinite(self.path_maximum_gap_m) or self.path_maximum_gap_m <= 0:
@@ -676,7 +688,16 @@ class AutoControlNode(Node):
             inverted=self.steering_servo_inverted,
         )
 
-        if self.electrical_brake_enabled:
+        if self.control_mode != "drive":
+            # Passive modes must never contend with a manual controller for the
+            # motor topics. Keep command diagnostics explicitly at zero.
+            self._command_duty = 0.0
+            self._command_brake_current = 0.0
+            self._brake_mode_active = False
+            self._speed_pid.reset()
+            self._brake_profile.reset()
+            motor_mode = "suppressed"
+        elif self.electrical_brake_enabled:
             self._command_brake_current = self._brake_profile.update(
                 target_speed_mps=target_speed_mps,
                 current_speed_mps=self._current_speed_mps,
@@ -747,12 +768,15 @@ class AutoControlNode(Node):
     def _stop_reason(self, now: Time) -> str | None:
         if not self.enabled:
             return "disabled"
-        if not self._vesc_connected:
-            return "vesc_disconnected"
-        if self._last_erpm_time is None:
-            return "waiting_for_erpm"
-        if self._elapsed_sec(self._last_erpm_time, now) > self.erpm_timeout_sec:
-            return "erpm_timeout"
+        # Lateral-error monitoring is camera/path based. It intentionally stays
+        # available while the vehicle is pushed by hand without VESC telemetry.
+        if self.control_mode != "monitor_only":
+            if not self._vesc_connected:
+                return "vesc_disconnected"
+            if self._last_erpm_time is None:
+                return "waiting_for_erpm"
+            if self._elapsed_sec(self._last_erpm_time, now) > self.erpm_timeout_sec:
+                return "erpm_timeout"
         if self._path is None or self._last_path_received_time is None:
             return "centerline_missing"
         if (
@@ -797,24 +821,28 @@ class AutoControlNode(Node):
         servo_position: float,
         motor_mode: str,
     ) -> None:
-        if motor_mode == "duty":
-            self._duty_pub.publish(Float32(data=float(duty)))
-        elif motor_mode == "brake":
-            self._brake_current_pub.publish(
-                Float32(data=float(brake_current))
-            )
-        elif motor_mode == "brake_release":
-            self._brake_current_pub.publish(Float32(data=0.0))
-        elif motor_mode == "stop":
-            # Either zero command safely supersedes a previous drive mode.
-            # Publish both so the bridge state and diagnostics are explicit.
-            self._brake_current_pub.publish(Float32(data=0.0))
-            self._duty_pub.publish(Float32(data=0.0))
-        else:
-            raise ValueError(f"unsupported motor mode: {motor_mode}")
+        if self.control_mode == "drive":
+            if motor_mode == "duty":
+                self._duty_pub.publish(Float32(data=float(duty)))
+            elif motor_mode == "brake":
+                self._brake_current_pub.publish(
+                    Float32(data=float(brake_current))
+                )
+            elif motor_mode == "brake_release":
+                self._brake_current_pub.publish(Float32(data=0.0))
+            elif motor_mode == "stop":
+                # Either zero command safely supersedes a previous drive mode.
+                # Publish both so the bridge state and diagnostics are explicit.
+                self._brake_current_pub.publish(Float32(data=0.0))
+                self._duty_pub.publish(Float32(data=0.0))
+            else:
+                raise ValueError(f"unsupported motor mode: {motor_mode}")
+        elif motor_mode not in ("suppressed", "stop"):
+            raise ValueError(f"unsupported passive motor mode: {motor_mode}")
         self._last_motor_mode = motor_mode
         self._latest_servo_position = float(servo_position)
-        self._servo_pub.publish(Float32(data=float(servo_position)))
+        if self.control_mode != "monitor_only":
+            self._servo_pub.publish(Float32(data=float(servo_position)))
         self._command_duty_pub.publish(Float32(data=float(duty)))
         self._command_brake_current_pub.publish(
             Float32(data=float(brake_current))

@@ -4,6 +4,9 @@ auto_control:
     # 주행 중 `ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: false"`
     # 로 언제든 duty 0과 중앙 조향으로 전환할 수 있다.
     enabled: true
+    # drive: duty/brake/servo output, steering_only: servo output only,
+    # monitor_only: actuator output 없이 lateral/heading 오차만 계산 및 발행
+    control_mode: "drive"
     enable_topic: "/auto/enabled"
     lane_result_topic: "/line_detactor/result"
     lane_result_frame_id: "front_axle_bev"
