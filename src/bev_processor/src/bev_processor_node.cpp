@@ -777,16 +777,6 @@ private:
               "dataset_collection_target_count must be positive");
     }
     if (
-      (dataset_collection_enabled_ ||
-      dataset_collection_manual_capture_mode_) &&
-    {
-      throw std::invalid_argument(
-              "collection is enabled");
-    }
-      throw std::invalid_argument(
-              "is enabled");
-    }
-    if (
       camera_model_.image_width <= 1 ||
       camera_model_.image_height <= 1 ||
       camera_model_.fx <= 0.0 ||
