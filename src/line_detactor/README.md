@@ -5,7 +5,7 @@ Fast-SCNN HighRes로 원본 BEV의 좌우 차선과 정지선을 추론한다. �
 
 원본 `/camera/image_bev`, BEV 변환, 모델 입력은 **120×300 그대로**다.
 프리뷰/결과 도화지에만 좌우 30px씩 검은 여백을 추가해 **180×300**으로 만든다.
-좌우 차선은 파란색/빨간색, 정지선은 초록색이다. 기존 경로계획·조향 제어는 변경하지 않는다.
+좌우 차선은 파란색/빨간색, 정지선은 초록색, 중앙 경로는 노란색이다. 기존 경로계획·조향 제어는 변경하지 않는다.
 
 ## 정지선 모델 적용 순서
 
@@ -60,15 +60,17 @@ ONNX Runtime CPU로 PyTorch 출력과 비교한다. 최종 테스트26장은 변
 
 정지선에는 위 성분 제거·경계 보간을 적용하지 않는다. 정지선 마스크는 별도로 패딩만
 추가하고, 화면 밖 패딩은 항상 0이다. 결과 영상에서는 정지선의 초록색이 겹친 차선보다
-우선 표시되지만 기존 좌우 라벨/상태는 변하지 않는다. 원본에서 흰색이 보이지 않는다는
+우선 표시된다. 노란 중앙 경로는 마지막에 덧그리지만 기존 좌우 라벨/정지선 마스크/상태는 변하지 않는다. 원본에서 흰색이 보이지 않는다는
 이유로 모델이 복원한 정지선을 지우지 않는다.
 
 **내부 끊김 연결, 스플라인 평활화, 차선을 한 개로 강제 선택하기, 좌우 순서에
 따른 차선 전체 삭제는 제거했다.** 결과적으로 같은 쪽 차선 조각이 여러 개 남을
-수 있다. 이번 모드는 검출을 보존하는 영상 후처리이며 단일 경로 생성기가 아니다.
+수 있다. 이 정책은 차선 마스크에 적용된다. 별도 중앙 경로 생성기는 관측 라벨 `1/2`로
+경로 후보를 만들고 연결·평활화하며, 그 결과로 차선 마스크를 수정하지 않는다.
 
 노이즈 제거는 영상 전체의 작은 연결 성분에만 적용한다. 화면 밖은 원래 검출
-입력이 없으므로 확장 여백에는 승인된 보간 선만 생긴다. 한쪽 끝점만 있으면
+입력이 없으므로 확장 여백의 차선 라벨에는 승인된 보간 선만 생긴다.
+노란 중앙 경로는 관측 차선에서 안쪽으로 이동한 결과가 여백에 들어올 수 있다. 한쪽 끝점만 있으면
 무작정 연장하지 않는다. 상하 경계 잘림, BEV 내부의 검은 유효영역 경계, 일반적인
 가림/내부 검출 공백은 이 보간의 대상이 아니다. 화면 밖 보간은 관측이 아닌 추정이다.
 
@@ -76,7 +78,8 @@ ONNX Runtime CPU로 PyTorch 출력과 비교한다. 최종 테스트26장은 변
 
 Jetson의 CUDA·TensorRT 개발 패키지, OpenCV, ROS 2 Humble,
 `rosidl_default_generators`가 필요하다. PyTorch는 사용하지 않는다.
-이번 변경에는 ROS 메시지 필드 변경도 있으므로 재빌드 후 환경을 다시 읽는다.
+이번 변경에는 `LaneResult` 중앙 경로 필드 추가가 있으므로 발행/구독 환경 모두
+같은 메시지 버전으로 재빌드하고 환경을 다시 읽는다.
 
 ```bash
 cd ~/Desktop/0906ML/f1tenth_project_repo
@@ -159,10 +162,108 @@ line_detactor:
 | `warmup_iterations` | `10` | TensorRT 워밍업 횟수 |
 | `status_log_interval_sec` | `1.0` | 로그 간격 |
 
+## 노란 중앙 경로와 YAML 조정
+
+`centerline_enabled: true`가 기본이다. `connection_enabled: true`에서 동작한다.
+`connection_enabled: false`는 기존 raw 프리뷰 모드이며 중앙 경로/결과 메시지를 생성하지 않는다.
+`centerline_enabled: false`로 중앙 경로만 끌 수 있다.
+
+중앙 경로 생성은 다음 순서다.
+
+1. 작은 성분 제거 후 **관측 라벨 1/2만** 사용한다. 정지선과 바깥 보간 라벨 3/4는 제외한다.
+2. 각 연결 조각에서 순서가 있는 골격 경로를 추출하고 실제 거리 좌표로 변환한다.
+   조각의 방향은 아래쪽 영상 중앙(차량 근처)에서 먼 쪽으로 정한다. 폐곡선은 후보에서 제외한다.
+3. 대응되는 반대편 차선이 폭·방향 조건을 만족하면 중점, 아니면 안쪽 법선 방향으로
+   도로 폭의 절반(기본 32.5cm)을 이동한 후보를 만든다.
+4. 차량 근처부터 거리·진행 방향·관측 경계 여유 거리가 맞는 후보들을 연결한다.
+   짧은 공백은 허용하며 큰 공백은 경로를 끝낸다. 원본 좌우 차선을 하나로 강제 병합하지 않는다.
+5. 국소 Gaussian 평활화 후, 경로상 거리 기준 2차 다항식 평활화를 추가한다.
+   직선에 가까운 곳은 강하게, 코너는 약하게 적용한다. 각 단계에서 이동량을 제한하고
+   시작/끝점을 고정한다. 여유 거리/진행 방향 조건을 위반하면 강도를 낮춰 재시도한다.
+6. 프리뷰와 `result_image`에 **노란색(BGR 0,255,255)**으로 표시한다.
+   노란 선은 `overlay_alpha`와 무관하게 표시되며, 정지선과 겹쳐도 정지선 마스크는 보존한다.
+
+검토한 Python 미리보기의 계산 방식을 C++/OpenCV로 이식했다. ROS에서는 스크린샷 색 추출을
+하지 않고 실제 라벨을 사용하며, 경계까지의 거리도 골격 대신 관측 마스크 픽셀로 확인한다.
+골격 추출/거리 샘플링과 경계 처리 차이 때문에 미리보기와 픽셀 단위로 같은 출력은 보장하지 않는다.
+추가 Python/SciPy 런타임 의존성은 없다.
+
+튜닝용 예제 YAML을 복사하고 실행한다. BEV 노드가 먼저 이미지를 발행해야 한다.
+
+```bash
+cp src/line_detactor/config/centerline_preview.yaml /tmp/centerline_preview.yaml
+ros2 launch line_detactor line_detactor.launch.py \
+  params_file:=/tmp/centerline_preview.yaml
+```
+
+노드 이름은 YAML의 `line_detactor.ros__parameters`와 일치해야 한다. 파일에 없는 값은
+노드 기본값을 사용한다. **YAML은 시작 시 읽으므로 수정 후 노드를 재시작한다.**
+`ros2 param set`으로 이 계산 설정을 실시간 갱신하는 기능은 구현하지 않았다.
+명시적 launch 인자는 YAML보다 우선한다.
+
+```bash
+ros2 launch line_detactor line_detactor.launch.py \
+  params_file:=/tmp/centerline_preview.yaml \
+  centerline_smoothing_strength:=0.7 \
+  centerline_smoothing_window_m:=0.65
+```
+
+아래 표의 이름에는 모두 `centerline_` 접두사를 붙인다.
+
+| 파라미터 | 기본값 | 의미 |
+|---|---:|---|
+| `enabled` | true | 중앙 경로 계산·표시 |
+| `lane_width_m` | 0.65 | 차선 사이 도로 폭 |
+| `bev_width_m`, `bev_height_m` | 1.2, 3.0 | **패딩 제외 원본** BEV 실제 가로/전방 범위 |
+| `sample_spacing_m` | 0.015 | 차선 골격 후보의 거리 간격, 0.005~0.10m |
+| `min_fragment_length_m` | 0.08 | 후보로 사용할 조각 최소 길이 |
+| `tangent_window_m` | 0.06 | 차선 진행 방향을 계산하는 거리 범위 |
+| `width_tolerance_m` | 0.12 | 양쪽 대응 시 도로 폭 허용 오차 |
+| `pair_along_tolerance_m` | 0.055 | 양쪽 대응 시 진행 방향 위치 오차 |
+| `pair_heading_tolerance_deg` | 40.0 | 양쪽 대응 시 접선 방향 차이 |
+| `max_gap_m` | 0.12 | 후보 사이 연결 거리 상한 |
+| `max_start_distance_m` | 0.65 | 영상 아래 중앙에서 첫 경로 후보까지 허용 거리 |
+| `min_clearance_m` | 0.16 | 관측 차선 마스크와 경로 사이 최소 여유 거리 |
+| `outside_margin_m` | 0.12 | 좌우 원본 영상 바깥의 경로 허용 범위; 결과 패딩 크기 이내로 제한 |
+| `max_samples` | 2000 | 후보 샘플 예산; 초과 프레임은 빈 경로와 경고 출력 |
+| `line_width_px` | 2 | 노란 선 두께, 1~10px |
+| `smoothing_enabled` | true | 최종 경로의 두 단계 평활화 |
+| `smoothing_sigma_m` | 0.04 | 첫 단계 국소 평활화 표준편차 |
+| `smoothing_window_m` | 0.65 | 두 번째 단계 국소 2차 다항식 계산 범위 |
+| `smoothing_max_shift_m` | 0.03 | **각 평활화 단계**의 최대 이동량; 두 단계 누적은 최대 6cm |
+| `smoothing_strength` | 1.0 | 최종 평활화 강도, 0~1; 0이면 최종 평활화 생략 |
+| `straight_turn_deg` | 12.0 | 이 각도 이하에서는 직선 평활화 강도 유지 |
+| `corner_turn_deg` | 35.0 | 이 각도 이상에서는 두 번째 평활화 강도 억제 |
+| `turn_window_m` | 0.30 | 직선/코너 판정 방향 변화 측정 범위 |
+
+출렁임이 남으면 `smoothing_window_m`을 0.65→0.8 정도로 늘려 보고,
+코너가 과하게 완화되면 `smoothing_strength`를 1.0→0.7로 줄이거나 창 크기를 줄인다.
+최종 평활화를 꺼도 골격 방향 추정과 후보 전환에 사용하는 작은 필터는 유지된다.
+거리 계산에는 `bev_processor`의 실제 범위를 사용해야 한다. 기본값은 전방 0~3m,
+좌우 대칭 1.2m에 대응한다. 아래 중앙을 차량 근처의 시작 기준으로 사용하므로
+비대칭/전방 크롭 영상은 원점 변환을 추가하기 전 이 가정을 그대로 적용하면 안 된다.
+패딩은 관측 영역이나 도로 폭에 포함되지 않는다.
+
+`LaneResult`에 추가한 필드:
+
+- `centerline_points`: 가까운 곳부터 정렬된 확장 영상 픽셀 좌표, z=0. 미터/TF 좌표가 아님.
+- `centerline_support`: 점 수와 같은 길이. 1=한쪽 오프셋, 2=양쪽 중점,
+  3=6.5cm보다 긴 짧은 연결 구간. 국소 생성 근거이며 평활화 후 정확도 확률은 아님.
+- `centerline_mask`: image와 같은 크기의 `mono8` 0/255 마스크.
+- `centerline_valid`: 두 점 이상의 기하 경로가 존재함. 주행 가능 판정은 아님.
+- `centerline_sample_limit_reached`: 계산 예산 초과 여부.
+- `centerline_bev_width_m`, `centerline_bev_height_m`: 계산에 사용한 원본의 실제 범위.
+
+생성 불가/비활성화 시 점과 support 배열은 비고, 마스크는 0, valid는 false다.
+관측 경계가 화면 밖에 있으면 충돌 여부를 확인할 수 없다. 경계 여유 거리에는
+픽셀·샘플 간격 여유분을 추가하지만 차량 외곽/장애물/조향 곡률 제한이나 프레임 간
+추적을 포함하지 않는다. `labels=0`은 주행 가능 공간이 아니다.
+이번 ROS 이식은 사용자 요청에 따라 빌드·테스트·젯슨 실행을 수행하지 않았다.
+
 ## 결과 토픽과 좌표
 
 - `/line_detactor/result`: `line_detactor/msg/LaneResult`
-- `/line_detactor/result_image`: `sensor_msgs/msg/Image`, `bgr8`, 차선만 그린 검은 영상
+- `/line_detactor/result_image`: `sensor_msgs/msg/Image`, `bgr8`, 차선·정지선·노란 중앙 경로를 그린 검은 배경 영상
 
 `LaneResult.image`는 같은 BGR 결과이고 `labels`는 기존 좌우 차선용 `mono8`이다.
 라벨은 `0=배경`, `1=왼쪽 모델`, `2=오른쪽 모델`, `3=왼쪽 바깥 보간`,
@@ -198,7 +299,7 @@ v_source = v_result
 ## 속도와 기타
 
 프리뷰 `infer`는 순수 TensorRT 시간, `model FPS`는 그 역수다.
-`connect`는 CPU 노이즈 제거·경계 끝점 추출·보간·결과 생성 시간이고 `correct`는
+`connect`는 CPU 노이즈 제거·경계 끝점 추출·보간·중앙 경로 생성/평활화·결과 생성 시간이고 `correct`는
 GPU 라벨 생성/D2H까지 포함한 후처리 시간이다. `connect`는 `correct`에 포함된다.
 프리뷰 합성/창 표시, ROS 직렬화·발행은 해당 측정에 포함하지 않는다.
 `view FPS`는 전체 처리 빈도다. 로그에는 단계별 평균/최대 ms가 표시된다.

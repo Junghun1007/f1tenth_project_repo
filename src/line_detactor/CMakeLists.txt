@@ -103,6 +103,7 @@ target_link_libraries(line_tensorrt_backend
 add_library(line_detactor_component SHARED
   src/line_detactor_node.cpp
   src/lane_connector.cpp
+  src/centerline.cpp
 )
 target_compile_definitions(line_detactor_component
   PRIVATE LINE_DETACTOR_BUILDING_DLL

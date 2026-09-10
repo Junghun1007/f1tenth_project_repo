@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <opencv2/core.hpp>
+#include "line_detactor/centerline.hpp"
 
 namespace line_detactor
 {
@@ -40,10 +41,14 @@ struct LaneConnectionResult
 {
   std::array<ConnectedLane, 2> lanes;
   cv::Mat labels;  // mono8: 0=background, 1/2=left/right model, 3/4=left/right bridge.
-  cv::Mat image;   // bgr8: lanes/bridges; the node composites stop lines in green afterward.
+  cv::Mat image;   // bgr8: lanes/bridges; the node adds green stop lines and yellow centerline afterward.
+  CenterlineResult centerline;
   cv::Mat stop_line_mask;  // Independent mono8 0/255; original ROI only, no lane cleanup/bridges.
   std::uint8_t state{0U};  // 0=NONE, 1=LEFT_ONLY, 2=RIGHT_ONLY, 3=BOTH.
 };
+
+// Ordered observed skeletons per connected component; labels 3/4 are excluded.
+std::array<std::vector<std::vector<cv::Point2f>>, 2> observed_lane_paths(const cv::Mat & labels);
 
 void validate_lane_connection(const LaneConnectionConfig & config);
 LaneConnectionResult connect_lane_fragments(

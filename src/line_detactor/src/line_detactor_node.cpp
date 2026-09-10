@@ -159,6 +159,11 @@ public:
       "Border interpolation=%s, result=%dx%d (padding=%d each side), publish=%s, topic=%s",
       connection_.enabled ? "on" : "off", result_width(), model_input_height_,
       connection_.padding_px, result_publisher_ ? "on" : "off", result_topic_.c_str());
+    RCLCPP_INFO(node_.get_logger(),
+      "Yellow centerline=%s, lane width=%.2fm, BEV=%.2fx%.2fm, smoothing=%s strength=%.2f window=%.2fm",
+      centerline_.enabled && connection_.enabled ? "on" : "off", centerline_.lane_width_m,
+      centerline_.bev_width_m, centerline_.bev_height_m, centerline_.smoothing_enabled ? "on" : "off",
+      centerline_.smoothing_strength, centerline_.smoothing_window_m);
   }
 
   ~Impl()
@@ -215,6 +220,46 @@ private:
       "connection_border_endpoint_distance_px", 6.0);
     connection_.line_width_px = node_.declare_parameter<int>(
       "result_line_width_px", 2);
+    centerline_.enabled = node_.declare_parameter<bool>("centerline_enabled", true);
+    centerline_.lane_width_m = node_.declare_parameter<double>("centerline_lane_width_m", 0.65);
+    centerline_.bev_width_m = node_.declare_parameter<double>("centerline_bev_width_m", 1.2);
+    centerline_.bev_height_m = node_.declare_parameter<double>("centerline_bev_height_m", 3.0);
+    centerline_.sample_spacing_m = node_.declare_parameter<double>(
+      "centerline_sample_spacing_m", 0.015);
+    centerline_.min_fragment_length_m = node_.declare_parameter<double>(
+      "centerline_min_fragment_length_m", 0.08);
+    centerline_.tangent_window_m = node_.declare_parameter<double>(
+      "centerline_tangent_window_m", 0.06);
+    centerline_.width_tolerance_m = node_.declare_parameter<double>(
+      "centerline_width_tolerance_m", 0.12);
+    centerline_.pair_along_tolerance_m = node_.declare_parameter<double>(
+      "centerline_pair_along_tolerance_m", 0.055);
+    centerline_.pair_heading_tolerance_deg = node_.declare_parameter<double>(
+      "centerline_pair_heading_tolerance_deg", 40.0);
+    centerline_.max_gap_m = node_.declare_parameter<double>("centerline_max_gap_m", 0.12);
+    centerline_.max_start_distance_m = node_.declare_parameter<double>(
+      "centerline_max_start_distance_m", 0.65);
+    centerline_.min_clearance_m = node_.declare_parameter<double>(
+      "centerline_min_clearance_m", 0.16);
+    centerline_.outside_margin_m = node_.declare_parameter<double>(
+      "centerline_outside_margin_m", 0.12);
+    centerline_.max_samples = node_.declare_parameter<int>("centerline_max_samples", 2000);
+    centerline_.line_width_px = node_.declare_parameter<int>("centerline_line_width_px", 2);
+    centerline_.smoothing_enabled = node_.declare_parameter<bool>(
+      "centerline_smoothing_enabled", true);
+    centerline_.smoothing_sigma_m = node_.declare_parameter<double>(
+      "centerline_smoothing_sigma_m", 0.04);
+    centerline_.smoothing_window_m = node_.declare_parameter<double>(
+      "centerline_smoothing_window_m", 0.65);
+    centerline_.smoothing_max_shift_m = node_.declare_parameter<double>(
+      "centerline_smoothing_max_shift_m", 0.03);
+    centerline_.smoothing_strength = node_.declare_parameter<double>(
+      "centerline_smoothing_strength", 1.0);
+    centerline_.straight_turn_deg = node_.declare_parameter<double>(
+      "centerline_straight_turn_deg", 12.0);
+    centerline_.corner_turn_deg = node_.declare_parameter<double>(
+      "centerline_corner_turn_deg", 35.0);
+    centerline_.turn_window_m = node_.declare_parameter<double>("centerline_turn_window_m", 0.30);
     result_publish_enabled_ = node_.declare_parameter<bool>("result_publish_enabled", true);
     result_topic_ = node_.declare_parameter<std::string>("result_topic", "/line_detactor/result");
     result_image_topic_ = node_.declare_parameter<std::string>(
@@ -236,6 +281,11 @@ private:
   void validate_parameters() const
   {
     validate_lane_connection(connection_);
+    validate_centerline(centerline_);
+    if (centerline_.enabled && !connection_.enabled) {
+      RCLCPP_WARN(node_.get_logger(),
+        "centerline_enabled requires connection_enabled; raw preview mode has no centerline");
+    }
     if (result_topic_.empty() || result_image_topic_.empty() || result_topic_ == result_image_topic_ ||
       result_topic_ == input_topic_ || result_image_topic_ == input_topic_)
     {
@@ -392,6 +442,19 @@ private:
     message.image = image_message(result.image, input, "bgr8");
     message.labels = image_message(result.labels, input, "mono8");
     message.stop_line_mask = image_message(result.stop_line_mask, input, "mono8");
+    message.centerline_mask = image_message(result.centerline.mask, input, "mono8");
+    message.centerline_valid = result.centerline.points.size() >= 2U;
+    message.centerline_sample_limit_reached = result.centerline.sample_limit_reached;
+    message.centerline_support = result.centerline.support;
+    message.centerline_bev_width_m = static_cast<float>(centerline_.bev_width_m);
+    message.centerline_bev_height_m = static_cast<float>(centerline_.bev_height_m);
+    for (const auto & point : result.centerline.points) {
+      geometry_msgs::msg::Point32 output;
+      output.x = point.x;
+      output.y = point.y;
+      output.z = 0.0F;
+      message.centerline_points.push_back(output);
+    }
     message.stop_line_present = cv::countNonZero(result.stop_line_mask) > 0;
     result_image_publisher_->publish(message.image);
     result_publisher_->publish(message);
@@ -409,6 +472,8 @@ private:
     cv::Mat visible;
     cv::bitwise_or(result.labels, result.stop_line_mask, visible);
     blended.copyTo(overlay, visible);
+    // Solid yellow centerline stays visible regardless of lane overlay alpha.
+    overlay.setTo(cv::Scalar(0, 255, 255), result.centerline.mask);
     return overlay;
   }
 
@@ -559,6 +624,13 @@ private:
             cv::copyMakeBorder(stop_mask, result.stop_line_mask, 0, 0,
               connection_.padding_px, connection_.padding_px, cv::BORDER_CONSTANT, cv::Scalar(0));
             result.image.setTo(cv::Scalar(0, 255, 0), result.stop_line_mask);
+            result.centerline = generate_centerline(
+              result.labels, model_input_width_, connection_.padding_px, centerline_);
+            result.image.setTo(cv::Scalar(0, 255, 255), result.centerline.mask);
+            if (result.centerline.sample_limit_reached) {
+              RCLCPP_WARN_THROTTLE(node_.get_logger(), *node_.get_clock(), 5000,
+                "Centerline sample budget exceeded; publishing an empty centerline for this frame");
+            }
             connection_nanoseconds = static_cast<std::uint64_t>(
               std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started).count());
@@ -683,6 +755,7 @@ private:
   float mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
   LaneConnectionConfig connection_;
+  CenterlineConfig centerline_;
   bool result_publish_enabled_{true};
   std::string result_topic_;
   std::string result_image_topic_;

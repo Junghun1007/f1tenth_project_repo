@@ -16,7 +16,7 @@ uint32 padding_right
 # Negative/out-of-source coordinates are inferred, not newly observed camera pixels.
 # Diagnostic segments for border components and added bridges only.
 # labels are authoritative for lanes; stop_line_mask independently represents stop lines.
-# image composites both. Disconnected in-frame components are preserved.
+# image composites lanes, stop lines and the yellow centerline. Disconnected in-frame components are preserved.
 line_detactor/LaneCurve left
 line_detactor/LaneCurve right
 # No camera texture/banner. Extended dimensions, black background.
@@ -30,3 +30,21 @@ sensor_msgs/Image labels
 sensor_msgs/Image stop_line_mask
 # True iff stop_line_mask contains >=1 positive pixel; not a vehicle stop command.
 bool stop_line_present
+
+# Yellow center path, independent of labels and stop_line_mask.
+# Pixels in the padded image, ordered from near vehicle to far along the path.
+# valid only means a geometric path exists, NOT a validated driving command.
+bool centerline_valid
+bool centerline_sample_limit_reached
+geometry_msgs/Point32[] centerline_points
+uint8 CENTER_SINGLE=1
+uint8 CENTER_PAIRED=2
+uint8 CENTER_GAP=3
+# Same length as points. Local construction support, not a probability.
+# Short graph edges and subsequent smoothing can mix neighboring support.
+uint8[] centerline_support
+# mono8 0/255, same padded canvas as image; zero when disabled/no path.
+sensor_msgs/Image centerline_mask
+# Physical extent of the unpadded source used for centerline geometry.
+float32 centerline_bev_width_m
+float32 centerline_bev_height_m

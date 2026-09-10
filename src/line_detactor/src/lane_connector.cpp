@@ -372,6 +372,23 @@ void validate_lane_connection(const LaneConnectionConfig & config)
   {throw std::invalid_argument("Invalid border interpolation geometry/size parameters");}
 }
 
+std::array<std::vector<std::vector<cv::Point2f>>, 2> observed_lane_paths(const cv::Mat & labels)
+{
+  std::array<std::vector<std::vector<cv::Point2f>>, 2> paths;
+  for (int side = 0; side < 2; ++side) {
+    cv::Mat components, stats, centroids;
+    const int count = cv::connectedComponentsWithStats(
+      labels == side + 1, components, stats, centroids, 8, CV_32S);
+    for (int id = 1; id < count; ++id) {
+      const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
+        stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
+      auto points = component_path(components(roi) == id, roi.tl());
+      if (points.size() >= 2U) {paths[side].push_back(std::move(points));}
+    }
+  }
+  return paths;
+}
+
 LaneConnectionResult connect_lane_fragments(
   const cv::Mat & labels, const LaneConnectionConfig & config)
 {

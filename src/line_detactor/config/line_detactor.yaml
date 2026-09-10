@@ -38,3 +38,31 @@ line_detactor:
     preview_scale: 2.0
     preview_window_name: "BEV lane TensorRT preview"
     status_log_interval_sec: 1.0
+
+    # Centerline: labels 1/2 only, stop lines and border bridges excluded.
+    # BEV extents are physical SOURCE image dimensions; padding is not included.
+    # Requires connection_enabled: true. Parameters are read at startup.
+    centerline_enabled: true
+    centerline_lane_width_m: 0.65
+    centerline_bev_width_m: 1.2
+    centerline_bev_height_m: 3.0
+    centerline_sample_spacing_m: 0.015
+    centerline_min_fragment_length_m: 0.08
+    centerline_tangent_window_m: 0.06
+    centerline_width_tolerance_m: 0.12
+    centerline_pair_along_tolerance_m: 0.055
+    centerline_pair_heading_tolerance_deg: 40.0
+    centerline_max_gap_m: 0.12
+    centerline_max_start_distance_m: 0.65
+    centerline_min_clearance_m: 0.16
+    centerline_outside_margin_m: 0.12
+    centerline_max_samples: 2000
+    centerline_line_width_px: 2
+    centerline_smoothing_enabled: true
+    centerline_smoothing_sigma_m: 0.04
+    centerline_smoothing_window_m: 0.65
+    centerline_smoothing_max_shift_m: 0.03
+    centerline_smoothing_strength: 1.0
+    centerline_straight_turn_deg: 12.0
+    centerline_corner_turn_deg: 35.0
+    centerline_turn_window_m: 0.30
