@@ -34,6 +34,7 @@ line_detactor:
     result_image_topic: "/line_detactor/result_image"
 
     preview_enabled: true
+    # GUI refresh only. Inference/result publication run whenever a new BEV arrives.
     preview_fps: 30.0
     preview_scale: 2.0
     preview_window_name: "BEV lane TensorRT preview"

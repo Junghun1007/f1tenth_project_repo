@@ -6,6 +6,19 @@ and servo topics used by manual driving. Do not run manual and auto driving toge
 
 ## Control pipeline
 
+Control is triggered by each received `LaneResult`: validate the path, calculate
+Stanley/PID and publish duty/brake/servo commands directly in that callback.
+The controller does not wait for an 80Hz timer or repeatedly update PID on an old image.
+`control_rate_hz` is the stop-watchdog rate and reference rate for the configured
+steering filter weight. PID, brake ramps and steering/duty rate limits use elapsed
+time between results, bounded by the input freshness limits. Empty or invalid results
+immediately send stop commands. With no new results, the watchdog still stops on
+stale path/ERPM, disconnect or disable. Enabling or recovering telemetry alone does
+not initiate motion; a new valid lane result must arrive.
+
+The ROS command is published immediately after calculation. VESC UART transmission
+continues through the existing bridge worker; this is not a hard real-time guarantee.
+
 1. Subscribe to `/line_detactor/result`; validate the source timestamp, frame,
    centerline validity, sample limit, point/support arrays, and metric scale.
 2. Remove `padding_left` from result pixels and convert pixel centers to metres:

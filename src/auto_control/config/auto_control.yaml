@@ -25,6 +25,8 @@ auto_control:
     raw_steering_angle_topic: "/auto/raw_steering_angle_rad"
     command_servo_position_topic: "/auto/current_servo_position"
 
+    # 새 LaneResult마다 즉시 계산/발행한다. 아래 주기는 정지 감시용이며
+    # steering_current_weight의 시간 환산 기준이다. 제어 결과 FPS 상한이 아니다.
     control_rate_hz: 80.0
     status_log_rate_hz: 2.0
     # 중앙선 수신, 원본 영상 timestamp, ERPM 중 하나라도 오래되면 즉시 duty 0.
@@ -57,7 +59,8 @@ auto_control:
     stanley_corner_heading_threshold_deg: 20.0
     stanley_corner_opposing_correction_ratio: 0.90
     maximum_steering_angle_deg: 30.0
-    # 현재 계산 조향 58%, 직전 명령 42%와 조향 변화율 제한을 함께 적용한다.
+    # control_rate_hz 기준 현재 조향 58%, 이전 명령 42%의 응답을
+    # 실제 결과 수신 간격에 맞춰 환산하고 조향 변화율 제한을 함께 적용한다.
     steering_current_weight: 0.58
     steering_rate_limit_deg_per_sec: 240.0
     servo_left: 1.0

@@ -138,6 +138,9 @@ public:
 
     try {
       worker_ = std::thread(&Impl::worker_loop, this);
+      if (preview_enabled_) {
+        preview_worker_ = std::thread(&Impl::preview_loop, this);
+      }
     } catch (...) {
       stop();
       throw;
@@ -177,6 +180,16 @@ public:
 
 private:
   using Image = sensor_msgs::msg::Image;
+
+  struct PreviewFrame
+  {
+    Image::ConstSharedPtr input;
+    LaneConnectionResult result;
+    cv::Mat raw;
+    LaneInferenceTiming timing;
+    std::uint64_t connection_nanoseconds{0U};
+    std::uint64_t generation{0U};
+  };
 
   void read_parameters()
   {
@@ -474,8 +487,8 @@ private:
       message.centerline_points.push_back(output);
     }
     message.stop_line_present = cv::countNonZero(result.stop_line_mask) > 0;
-    result_image_publisher_->publish(message.image);
     result_publisher_->publish(message);
+    result_image_publisher_->publish(message.image);
   }
 
   cv::Mat result_overlay(const LaneConnectionResult & result, const Image & input) const
@@ -547,8 +560,13 @@ private:
 
   void request_shutdown()
   {
-    stop_requested_.store(true, std::memory_order_release);
+    {
+      // Synchronize the stop predicate with both waits so shutdown cannot miss a wakeup.
+      std::scoped_lock lock(frame_mutex_, preview_mutex_);
+      stop_requested_.store(true, std::memory_order_release);
+    }
     frame_condition_.notify_all();
+    preview_condition_.notify_all();
     if (rclcpp::ok()) {
       rclcpp::shutdown();
     }
@@ -556,24 +574,10 @@ private:
 
   void worker_loop()
   {
-    bool window_seen = false;
-    if (preview_enabled_) {
-      cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
-      cv::resizeWindow(
-        preview_window_name_,
-        static_cast<int>(result_width() * preview_scale_),
-        static_cast<int>((model_input_height_ + kBannerHeight) * preview_scale_));
-    }
-
-    const auto minimum_period = std::chrono::duration_cast<
-      std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(1.0 / preview_fps_));
-    auto next_allowed_at = std::chrono::steady_clock::now();
-    auto report_started_at = next_allowed_at;
-    auto last_error_at = next_allowed_at - std::chrono::seconds(5);
+    auto report_started_at = std::chrono::steady_clock::now();
+    auto last_error_at = report_started_at - std::chrono::seconds(5);
     std::uint64_t processed_generation = 0U;
-    std::uint64_t preview_interval = 0U;
-    double latest_preview_fps = 0.0;
+    std::uint64_t processed_interval = 0U;
     StageStats preprocessing;
     StageStats execution;
     StageStats correction;
@@ -586,8 +590,8 @@ private:
         std::uint64_t generation = 0U;
         {
           std::unique_lock<std::mutex> lock(frame_mutex_);
-          frame_condition_.wait_for(
-            lock, std::chrono::milliseconds(100), [this, processed_generation]() {
+          frame_condition_.wait(
+            lock, [this, processed_generation]() {
               return stop_requested_.load(std::memory_order_acquire) ||
                      latest_generation_ != processed_generation;
             });
@@ -599,23 +603,7 @@ private:
         }
 
         auto now = std::chrono::steady_clock::now();
-        if (now < next_allowed_at) {
-          std::unique_lock<std::mutex> lock(frame_mutex_);
-          frame_condition_.wait_until(
-            lock, next_allowed_at, [this]() {
-              return stop_requested_.load(std::memory_order_acquire);
-            });
-          if (stop_requested_.load(std::memory_order_acquire)) {
-            break;
-          }
-          message = latest_message_;
-          generation = latest_generation_;
-        }
-
         if (!message || generation == processed_generation) {
-          if (preview_enabled_ && window_quit_requested(window_seen)) {
-            request_shutdown();
-          }
           continue;
         }
         if (processed_generation > 0U && generation > processed_generation + 1U) {
@@ -667,7 +655,7 @@ private:
         }
 
         ++processed_total_;
-        ++preview_interval;
+        ++processed_interval;
         preprocessing.record(timing.preprocessing_nanoseconds);
         execution.record(timing.execution_nanoseconds);
         correction.record(timing.correction_nanoseconds);
@@ -675,25 +663,21 @@ private:
         postprocessing.record(timing.postprocessing_nanoseconds);
 
         if (preview_enabled_) {
-          cv::Mat overlay;
-          if (connection_.enabled) {
-            overlay = result_overlay(result, *message);
-          } else {
+          auto snapshot = std::make_shared<PreviewFrame>();
+          snapshot->input = message;
+          snapshot->result = std::move(result);
+          snapshot->timing = timing;
+          snapshot->connection_nanoseconds = connection_nanoseconds;
+          snapshot->generation = generation;
+          if (!connection_.enabled) {
+            // Backend buffers are reused by the next inference. The GUI owns this copy.
             const cv::Mat raw(model_input_height_, model_input_width_, CV_8UC3,
               const_cast<std::uint8_t *>(backend_->preview_bgr_data()));
-            cv::copyMakeBorder(raw, overlay, 0, 0, connection_.padding_px, connection_.padding_px,
-              cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+            snapshot->raw = raw.clone();
           }
-          const cv::Mat canvas = preview_canvas(
-            overlay,
-            nanoseconds_to_milliseconds(timing.execution_nanoseconds),
-            nanoseconds_to_milliseconds(timing.correction_nanoseconds),
-            nanoseconds_to_milliseconds(connection_nanoseconds), result.state,
-            latest_preview_fps);
-          cv::imshow(preview_window_name_, canvas);
-          if (window_quit_requested(window_seen)) {
-            request_shutdown();
-            break;
+          {
+            std::lock_guard<std::mutex> lock(preview_mutex_);
+            latest_preview_ = std::move(snapshot);
           }
         }
 
@@ -707,16 +691,17 @@ private:
             received = received_interval_;
             received_interval_ = 0U;
           }
-          latest_preview_fps =
-            static_cast<double>(preview_interval) / report_elapsed;
+          const double preview_fps = static_cast<double>(
+            previewed_interval_.exchange(0U, std::memory_order_relaxed)) / report_elapsed;
           RCLCPP_INFO(
             node_.get_logger(),
-            "FPS: input=%.1f, preview=%.1f/%.1f | AVG/MAX ms: "
+            "FPS: input=%.1f, processed=%.1f, preview=%.1f/%.1f | AVG/MAX ms: "
             "H2D+preprocess=%.3f/%.3f, pure-inference=%.3f/%.3f, "
             "correction=%.3f/%.3f, connect=%.3f/%.3f, postprocess+D2H=%.3f/%.3f | "
             "skipped=%llu, processed=%llu",
             static_cast<double>(received) / report_elapsed,
-            latest_preview_fps, preview_fps_,
+            static_cast<double>(processed_interval) / report_elapsed,
+            preview_fps, preview_fps_,
             preprocessing.average_milliseconds(),
             preprocessing.maximum_milliseconds(),
             execution.average_milliseconds(), execution.maximum_milliseconds(),
@@ -731,35 +716,102 @@ private:
           correction.reset();
           connection.reset();
           postprocessing.reset();
-          preview_interval = 0U;
+          processed_interval = 0U;
           report_started_at = now;
-        }
-
-        next_allowed_at += minimum_period;
-        if (next_allowed_at < now - minimum_period) {
-          next_allowed_at = now + minimum_period;
         }
       }
     } catch (const std::exception & exception) {
       RCLCPP_FATAL(
-        node_.get_logger(), "Lane preview worker failed: %s", exception.what());
+        node_.get_logger(), "Lane inference worker failed: %s", exception.what());
       request_shutdown();
     }
+  }
 
-    if (preview_enabled_) {
-      try {
-        cv::destroyWindow(preview_window_name_);
-      } catch (const cv::Exception &) {
+  // All HighGUI calls live here. Slow rendering never blocks inference or result publication.
+  void preview_loop()
+  {
+    bool window_seen = false;
+    try {
+      cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
+      cv::resizeWindow(
+        preview_window_name_,
+        static_cast<int>(result_width() * preview_scale_),
+        static_cast<int>((model_input_height_ + kBannerHeight) * preview_scale_));
+      const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1.0 / preview_fps_));
+      auto next_preview_at = std::chrono::steady_clock::now();
+      auto report_started_at = next_preview_at;
+      std::uint64_t displayed_generation = 0U;
+      std::uint64_t displayed_count = 0U;
+      double display_fps = 0.0;
+      while (!stop_requested_.load(std::memory_order_acquire)) {
+        std::shared_ptr<const PreviewFrame> frame;
+        {
+          std::unique_lock<std::mutex> lock(preview_mutex_);
+          preview_condition_.wait_until(lock, next_preview_at, [this]() {
+            return stop_requested_.load(std::memory_order_acquire);
+          });
+          if (stop_requested_.load(std::memory_order_acquire)) {break;}
+          frame = latest_preview_;
+        }
+        if (frame && frame->generation != displayed_generation) {
+          cv::Mat overlay;
+          if (connection_.enabled) {
+            overlay = result_overlay(frame->result, *frame->input);
+          } else {
+            cv::copyMakeBorder(frame->raw, overlay, 0, 0,
+              connection_.padding_px, connection_.padding_px,
+              cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+          }
+          const cv::Mat canvas = preview_canvas(
+            overlay,
+            nanoseconds_to_milliseconds(frame->timing.execution_nanoseconds),
+            nanoseconds_to_milliseconds(frame->timing.correction_nanoseconds),
+            nanoseconds_to_milliseconds(frame->connection_nanoseconds),
+            frame->result.state, display_fps);
+          cv::imshow(preview_window_name_, canvas);
+          displayed_generation = frame->generation;
+          ++displayed_count;
+          previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
+        }
+        if (window_quit_requested(window_seen)) {
+          request_shutdown();
+          break;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        const double elapsed = std::chrono::duration<double>(now - report_started_at).count();
+        if (elapsed >= status_log_interval_sec_) {
+          display_fps = static_cast<double>(displayed_count) / elapsed;
+          displayed_count = 0U;
+          report_started_at = now;
+        }
+        next_preview_at += period;
+        if (next_preview_at < now) {next_preview_at = now + period;}
       }
+    } catch (const std::exception & exception) {
+      RCLCPP_ERROR(node_.get_logger(), "Lane GUI failed: %s", exception.what());
+      request_shutdown();
+    }
+    try {
+      cv::destroyWindow(preview_window_name_);
+    } catch (const cv::Exception &) {
     }
   }
 
   void stop()
   {
-    stop_requested_.store(true, std::memory_order_release);
+    {
+      // Synchronize the stop predicate with both waits so shutdown cannot miss a wakeup.
+      std::scoped_lock lock(frame_mutex_, preview_mutex_);
+      stop_requested_.store(true, std::memory_order_release);
+    }
     frame_condition_.notify_all();
+    preview_condition_.notify_all();
     if (worker_.joinable() && worker_.get_id() != std::this_thread::get_id()) {
       worker_.join();
+    }
+    if (preview_worker_.joinable() && preview_worker_.get_id() != std::this_thread::get_id()) {
+      preview_worker_.join();
     }
   }
 
@@ -798,6 +850,11 @@ private:
   std::uint64_t skipped_total_{0U};
   std::atomic<bool> stop_requested_{false};
   std::thread worker_;
+  std::mutex preview_mutex_;
+  std::condition_variable preview_condition_;
+  std::shared_ptr<const PreviewFrame> latest_preview_;
+  std::atomic<std::uint64_t> previewed_interval_{0U};
+  std::thread preview_worker_;
 };
 
 LineDetactorNode::LineDetactorNode(const rclcpp::NodeOptions & options)

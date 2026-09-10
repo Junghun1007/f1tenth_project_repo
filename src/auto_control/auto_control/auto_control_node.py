@@ -157,8 +157,8 @@ class AutoControlNode(Node):
                 fall_amps_per_sec=self.brake_current_fall_amps_per_sec,
             )
         )
-        self._control_timer = self.create_timer(
-            1.0 / self.control_rate_hz, self._on_control_timer
+        self._watchdog_timer = self.create_timer(
+            1.0 / self.control_rate_hz, self._on_watchdog_timer
         )
         self._status_timer = self.create_timer(
             1.0 / self.status_log_rate_hz, self._log_status
@@ -173,7 +173,7 @@ class AutoControlNode(Node):
             self.get_logger().info("Automatic control starts disabled.")
         self.get_logger().info(
             "Auto control ready: lane=%s, speed=%.2f..%.2fm/s, "
-            "duty=%.3f..%.3f, auto_brake=%s/%.1fA, rate=%.1fHz"
+            "duty=%.3f..%.3f, auto_brake=%s/%.1fA, control=on_lane_result, watchdog=%.1fHz"
             % (
                 self.lane_result_topic,
                 self.minimum_speed_mps,
@@ -524,6 +524,9 @@ class AutoControlNode(Node):
             self._path = None
             self._lane_result_status = str(exception)
             self.get_logger().warn(f"Rejected ML centerline: {exception}", throttle_duration_sec=1.0)
+        finally:
+            # Every result, including invalid/empty frames, immediately decides the command.
+            self._update_control_from_path()
 
     def _message_time_or_none(self, message: LaneResult) -> Time | None:
         if message.header.stamp.sec == 0 and message.header.stamp.nanosec == 0:
@@ -575,13 +578,25 @@ class AutoControlNode(Node):
             f"Automatic control {'enabled' if self.enabled else 'disabled'}."
         )
 
-    def _on_control_timer(self) -> None:
+    def _on_watchdog_timer(self) -> None:
+        # No repeated PID/steering updates against the same image. The timer only
+        # stops/repeats zero commands when input or vehicle state becomes invalid.
+        reason = self._stop_reason(self.get_clock().now())
+        if reason is not None:
+            self._stop_control(reason)
+            self._publish_commands(
+                duty=0.0,
+                brake_current=0.0,
+                servo_position=self.servo_center,
+                motor_mode="stop",
+            )
+
+    def _update_control_from_path(self) -> None:
         now = self.get_clock().now()
-        nominal_period_sec = 1.0 / self.control_rate_hz
         dt_sec = clamp(
             self._elapsed_sec(self._last_control_time, now),
-            0.0,
-            2.0 * nominal_period_sec,
+            1.0e-6,
+            min(self.path_timeout_sec, self.path_capture_maximum_age_sec, self.erpm_timeout_sec),
         )
         self._last_control_time = now
 
@@ -637,9 +652,14 @@ class AutoControlNode(Node):
             self._steering_angle_rad = 0.0
             filtered_steering_rad = stanley.steering_angle_rad
         else:
+            # Keep the YAML weight's response at its reference control_rate_hz
+            # while accounting for the actual interval between image results.
+            current_weight = 1.0 - (1.0 - self.steering_current_weight) ** (
+                dt_sec * self.control_rate_hz
+            )
             filtered_steering_rad = (
-                self.steering_current_weight * stanley.steering_angle_rad
-                + (1.0 - self.steering_current_weight)
+                current_weight * stanley.steering_angle_rad
+                + (1.0 - current_weight)
                 * self._steering_angle_rad
             )
         self._steering_angle_rad = move_toward(
@@ -660,7 +680,7 @@ class AutoControlNode(Node):
             self._command_brake_current = self._brake_profile.update(
                 target_speed_mps=target_speed_mps,
                 current_speed_mps=self._current_speed_mps,
-                dt_sec=max(dt_sec, nominal_period_sec),
+                dt_sec=dt_sec,
             )
         else:
             self._brake_profile.reset()
@@ -692,7 +712,7 @@ class AutoControlNode(Node):
                 target_speed_mps=target_speed_mps,
                 current_speed_mps=self._current_speed_mps,
                 feedforward_duty=feedforward_duty,
-                dt_sec=max(dt_sec, nominal_period_sec),
+                dt_sec=dt_sec,
             )
             if self._command_duty < self.minimum_duty:
                 # Match manual driving's start-duty behavior when a path appears.
@@ -748,6 +768,8 @@ class AutoControlNode(Node):
         return None
 
     def _stop_control(self, reason: str) -> None:
+        # Stopped time must not accumulate into a large first steering/PID step.
+        self._last_control_time = self.get_clock().now()
         self._command_duty = 0.0
         self._command_brake_current = 0.0
         self._brake_mode_active = False
@@ -867,7 +889,10 @@ class AutoControlNode(Node):
         return max(0.0, (end - start).nanoseconds / 1_000_000_000.0)
 
     def stop_actuators(self) -> None:
-        self._control_timer.cancel()
+        # main() may drain one queued callback while shutting down. A pending
+        # lane result must not re-arm frame-triggered control after the stop.
+        self.enabled = False
+        self._watchdog_timer.cancel()
         self._status_timer.cancel()
         self._stop_control("shutdown")
         self._publish_commands(

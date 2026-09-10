@@ -157,7 +157,7 @@ line_detactor:
 | `result_publish_enabled` | `true` | 결과 메시지/영상 발행 |
 | `mask_threshold` | `0.5` | 좌우/정지선 각각의 sigmoid 임계값 |
 | `overlay_alpha` | `0.75` | 프리뷰 오버레이 불투명도 |
-| `preview_fps` | `30.0` | 최대 처리 빈도 |
+| `preview_fps` | `30.0` | 전용 GUI 스레드의 최대 표시 빈도. 추론/결과 발행 제한 아님 |
 | `preview_scale` | `2.0` | 프리뷰 확대 배율. 좌표/파라미터에 영향 없음 |
 | `warmup_iterations` | `10` | TensorRT 워밍업 횟수 |
 | `status_log_interval_sec` | `1.0` | 로그 간격 |
@@ -359,7 +359,17 @@ v_source = v_result
 `connect`는 CPU 노이즈 제거·경계 끝점 추출·보간·중앙 경로 생성/평활화·결과 생성 시간이고 `correct`는
 GPU 라벨 생성/D2H까지 포함한 후처리 시간이다. `connect`는 `correct`에 포함된다.
 프리뷰 합성/창 표시, ROS 직렬화·발행은 해당 측정에 포함하지 않는다.
-`view FPS`는 전체 처리 빈도다. 로그에는 단계별 평균/최대 ms가 표시된다.
+`view FPS`는 전용 GUI 스레드의 실제 표시 빈도다. 로그의 `input`, `processed`,
+`preview`는 각각 수신·추론/후처리 완료·화면 표시 FPS이며 단계별 평균/최대 ms도 표시한다.
+
+추론 작업자는 새 BEV를 받으면 즉시 처리하며 프리뷰 FPS를 기다리지 않는다.
+차선·중앙선 결과를 먼저 발행한 뒤 표시용 최신 결과를 GUI 스레드에 전달한다.
+영상 합성, `imshow`, `waitKey`는 GUI 스레드에서 수행한다. 프리뷰를 끄더라도
+추론 주기는 동일하다. 프리뷰를 닫으면 기존처럼 검출 노드가 종료된다.
+
+입력과 프리뷰 모두 최신 한 프레임을 보관한다. 처리가 입력보다 느리면 중간 영상은
+건너뛰고 `skipped`에 집계한다. 모든 카메라 프레임의 처리나 고정 FPS를 보장하지 않으며,
+ROS 전송과 GPU/CPU 처리 지연은 남는다. 오래된 프레임을 무제한 적재하지 않는다.
 
 logits 전체는 CPU에 복사하지 않고 120×300 mono8 두 장(좌우 라벨 + 정지선 마스크)을
 한 번에 전달한다. 36KB에서 72KB로 늘며 CUDA stream, pinned memory, GPU 전처리·threshold·

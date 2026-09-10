@@ -80,7 +80,10 @@ owns the joystick node defaults.
 
 The pipeline is `camera_driver -> bev_processor -> line_detactor -> auto_control`.
 The controller consumes `/line_detactor/result` centerline points, keeping their
-path order through corners. The preview displays detected lanes and the yellow
+path order through corners. Each result immediately triggers command calculation
+and publication. ML inference runs on new input independently of the GUI refresh
+rate; the controller timer only checks stop conditions. Overload keeps the latest
+frame instead of queuing old frames. The preview displays detected lanes and the yellow
 centerline. Rule-based sliding-window detection and `/camera/image_bev_lane`
 publication have been removed.
 
