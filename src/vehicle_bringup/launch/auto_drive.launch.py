@@ -7,6 +7,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
 )
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -122,7 +123,16 @@ def _apply_parameter_file_defaults(
     if preview not in ("true", "false"):
         raise RuntimeError("preview_enabled must be true or false")
     detector["preview_enabled"] = preview == "true"
-    return [ComposableNodeContainer(
+    return [LogInfo(msg=(
+        "[ML auto drive] launch=" + os.path.realpath(__file__) +
+        " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
+        " | detector_yaml=" + LaunchConfiguration("line_detactor_params_file").perform(context) +
+        " | model=" + str(detector.get("model_path", os.path.join(
+            get_package_share_directory("line_detactor"), "models",
+            "fast_scnn_stop_line_120x300_batch_1.onnx"))) +
+        " | pipeline=" + detector["input_topic"] + " -> " + str(detector["result_topic"]) +
+        " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
+    )), ComposableNodeContainer(
         name="line_detactor_container", namespace="", package="rclcpp_components",
         executable="component_container_mt", output="screen",
         composable_node_descriptions=[ComposableNode(

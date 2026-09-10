@@ -142,6 +142,52 @@ Invalid/stale path or ERPM and VESC disconnect send duty zero and centered steer
 Stop-line detection alone does not command stopping. Never run manual and auto launches together.
 Dataset capture now saves only `origin_bev`; removed rule-based labels are not generated.
 
+## ML pipeline diagnosis
+
+Updating sources with `git pull` does not update an installed launch file.
+Rebuild **vehicle_bringup** together with `line_detactor`, `auto_control` and
+`bev_processor`; rebuilding only BEV does not install the ML launch integration.
+Use a fresh terminal with the Humble environment and this workspace's
+`install/local_setup.bash` when checking for an older workspace overlay.
+
+The current launch prints `[ML auto drive]` with its launch path, selected YAML,
+model path, topic chain, and preview selection. A loaded detector prints
+`Line detector ready`. The default ML window is `BEV lane TensorRT preview`
+and contains inference/FPS/lanes information below the image; the raw BEV preview
+is disabled by the integrated launch. An ML window can still show just the image
+if the model detects no lanes, so use the status logs to distinguish these cases.
+
+Read-only inspection in the same ROS environment as the running launch:
+
+```bash
+ros2 pkg prefix vehicle_bringup
+ros2 pkg prefix line_detactor
+ros2 node list
+ros2 param get /bev_processor preview_enabled
+ros2 param get /line_detactor model_path
+ros2 topic info /camera/image_bev
+ros2 topic info /line_detactor/result
+```
+
+The pipeline needs `/bev_processor`, `/line_detactor`, `/auto_control` and
+`/vesc_bridge_node`. `ros2 pkg prefix` should point into the intended 0906ML install.
+The BEV topic needs a publisher and ML subscriber; the result topic needs an ML
+publisher and controller subscriber. Extra diagnostic subscriptions may also appear.
+
+`Auto status` now separates actuator stop state from ML reception:
+
+- `lane_rx=0`: no LaneResult has reached this controller.
+- `lane_status=no_centerline(state=...)`: ML messages arrive, but contain no centerline.
+- `centerline_sample_limit`: the generator exceeded its sample budget.
+- `insufficient_contiguous_path`: the received points do not meet the configured ROI,
+  length, point-count or adjacent-gap requirements.
+- `accepted`: the latest received path passed the controller's checks. Use
+  `last_rx_age`, `capture_age_at_rx` and `state` to check subsequent staleness.
+- `state=vesc_disconnected`, `waiting_for_erpm` or `erpm_timeout`: inspect UART VESC
+  telemetry separately; SLCAN dynamics does not replace controller ERPM/connection.
+
+The diagnostic output does not relax path freshness, validity or motor limits.
+
 ## 8BitDo Bluetooth input safety
 
 The manual launch uses the project-owned `joy_input_node` for the 8BitDo

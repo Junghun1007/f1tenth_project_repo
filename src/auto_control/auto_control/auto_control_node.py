@@ -107,6 +107,10 @@ class AutoControlNode(Node):
         self._path: OrderedPathModel | None = None
         self._last_path_received_time: Time | None = None
         self._path_capture_time: Time | None = None
+        self._lane_result_count = 0
+        self._lane_result_status = "waiting_for_lane_result"
+        self._lane_result_points = 0
+        self._lane_capture_age_sec: float | None = None
         self._last_erpm_time: Time | None = None
         self._current_speed_mps = 0.0
         self._vesc_connected = False
@@ -453,6 +457,9 @@ class AutoControlNode(Node):
 
     def _on_lane_result(self, message: LaneResult) -> None:
         now = self.get_clock().now()
+        self._lane_result_count += 1
+        self._lane_result_points = len(message.centerline_points)
+        self._lane_capture_age_sec = None
         # Invalid new frames must invalidate the old path immediately.
         self._path = None
         self._last_path_received_time = now
@@ -461,12 +468,17 @@ class AutoControlNode(Node):
             if capture_time is None:
                 raise ValueError("missing source capture timestamp")
             age = (now - capture_time).nanoseconds / 1e9
+            self._lane_capture_age_sec = age
             if age < -0.05 or age > self.path_capture_maximum_age_sec:
                 raise ValueError("source capture timestamp is stale or in the future")
             if self._path_capture_time is not None and capture_time.nanoseconds <= self._path_capture_time.nanoseconds:
                 raise ValueError("duplicate or out-of-order lane result")
             self._path_capture_time = capture_time
-            if not message.centerline_valid or message.centerline_sample_limit_reached:
+            if message.centerline_sample_limit_reached:
+                self._lane_result_status = "centerline_sample_limit"
+                return
+            if not message.centerline_valid:
+                self._lane_result_status = "no_centerline(state=%d)" % int(message.state)
                 return
             if int(message.state) not in (1, 2, 3):
                 raise ValueError("centerline has no observed lane support")
@@ -505,8 +517,12 @@ class AutoControlNode(Node):
                 maximum_gap_m=self.path_maximum_gap_m,
                 geometry_window_m=self.path_geometry_window_m,
             )
+            self._lane_result_status = (
+                "accepted" if self._path is not None else "insufficient_contiguous_path"
+            )
         except (TypeError, ValueError, OverflowError) as exception:
             self._path = None
+            self._lane_result_status = str(exception)
             self.get_logger().warn(f"Rejected ML centerline: {exception}", throttle_duration_sec=1.0)
 
     def _message_time_or_none(self, message: LaneResult) -> Time | None:
@@ -808,11 +824,21 @@ class AutoControlNode(Node):
 
     def _log_status(self) -> None:
         path_points = self._path.point_count if self._path is not None else 0
+        receive_age = (
+            "never" if self._last_path_received_time is None else
+            "%.3fs" % self._elapsed_sec(self._last_path_received_time, self.get_clock().now())
+        )
+        capture_age = (
+            "unknown" if self._lane_capture_age_sec is None else
+            "%.3fs" % self._lane_capture_age_sec
+        )
         self.get_logger().info(
             "Auto status | state=%s | path_points=%d | speed=%.2f/%.2fm/s | "
             "curvature=%.3f/m | cte=%+.3fm | heading=%+.1fdeg | guard=%s | "
             "raw/final_steering=%+.1f/%+.1fdeg | servo=%.3f | "
-            "motor=%s | duty=%.4f | brake=%.2fA"
+            "motor=%s | duty=%.4f | brake=%.2fA | "
+            "lane_rx=%d | lane_status=%s | source_points=%d | "
+            "last_rx_age=%s | capture_age_at_rx=%s"
             % (
                 self._last_stop_reason,
                 path_points,
@@ -828,6 +854,11 @@ class AutoControlNode(Node):
                 self._last_motor_mode,
                 self._command_duty,
                 self._command_brake_current,
+                self._lane_result_count,
+                self._lane_result_status,
+                self._lane_result_points,
+                receive_age,
+                capture_age,
             )
         )
 
