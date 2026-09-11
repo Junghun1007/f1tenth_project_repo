@@ -25,12 +25,13 @@ find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LaneCurve.msg"
   "msg/LaneResult.msg"
-  DEPENDENCIES std_msgs geometry_msgs sensor_msgs
+  DEPENDENCIES std_msgs geometry_msgs sensor_msgs builtin_interfaces
 )
 rosidl_get_typesupport_target(lane_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
@@ -121,6 +122,7 @@ ament_target_dependencies(line_detactor_component
   sensor_msgs
   std_msgs
   geometry_msgs
+  builtin_interfaces
 )
 target_link_libraries(line_detactor_component
   line_tensorrt_backend

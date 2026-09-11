@@ -116,3 +116,15 @@ auto_control:
     differential_ring_teeth: 37
     erpm_direction_sign: 1.0
     speed_scale_correction: 1.0
+
+    # auto_drive performance mode overrides control_mode to monitor_only,
+    # starts after the first valid centerline reaches servo-position calculation,
+    # records a new JSON file, then shuts the complete launch down.
+    performance_measurement_enabled: false
+    performance_measurement_duration_sec: 30.0
+    performance_measurement_startup_timeout_sec: 300.0
+    performance_measurement_power_sample_interval_sec: 0.1
+    performance_measurement_log_directory: "performance_logs"
+    # auto_drive fills these from the selected line_detactor YAML.
+    performance_measurement_engine_precision: "unknown"
+    performance_measurement_model_path: ""

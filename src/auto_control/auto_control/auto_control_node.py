@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import time
 
 import numpy as np
 import rclpy
@@ -29,6 +30,7 @@ from auto_control.control_core import (
     stanley_control,
     steering_angle_to_servo,
 )
+from auto_control.performance_measurement import PerformanceMeasurement
 
 
 class AutoControlNode(Node):
@@ -163,6 +165,44 @@ class AutoControlNode(Node):
         self._status_timer = self.create_timer(
             1.0 / self.status_log_rate_hz, self._log_status
         )
+        self._performance_measurement: PerformanceMeasurement | None = None
+        self._performance_timer = None
+        self._performance_finished = False
+        if self.performance_measurement_enabled:
+            # Exercise the full centerline/Stanley/servo-position calculation
+            # without publishing commands to physical actuators.
+            self.enabled = True
+            self.control_mode = "monitor_only"
+            self._performance_measurement = PerformanceMeasurement(
+                duration_sec=self.performance_measurement_duration_sec,
+                startup_timeout_sec=(
+                    self.performance_measurement_startup_timeout_sec
+                ),
+                log_directory=self.performance_measurement_log_directory,
+                engine_precision=(
+                    self.performance_measurement_engine_precision
+                ),
+                model_path=self.performance_measurement_model_path,
+            )
+            self._performance_timer = self.create_timer(
+                self.performance_measurement_power_sample_interval_sec,
+                self._on_performance_timer,
+            )
+            power_source = self._performance_measurement.power.source
+            self.get_logger().warn(
+                "Performance measurement enabled: monitor_only safety mode, "
+                "preview disabled by auto_drive, duration=%.1fs after the "
+                "first valid centerline, startup timeout=%.1fs, power=%s"
+                % (
+                    self.performance_measurement_duration_sec,
+                    self.performance_measurement_startup_timeout_sec,
+                    (
+                        f"{power_source.rail_name} ({power_source.source})"
+                        if power_source is not None
+                        else "unavailable (timing will still be recorded)"
+                    ),
+                )
+            )
 
         if self.enabled and self.control_mode == "drive":
             self.get_logger().warn(
@@ -298,6 +338,22 @@ class AutoControlNode(Node):
         self.declare_parameter("erpm_direction_sign", 1.0)
         self.declare_parameter("speed_scale_correction", 1.0)
 
+        self.declare_parameter("performance_measurement_enabled", False)
+        self.declare_parameter("performance_measurement_duration_sec", 30.0)
+        self.declare_parameter(
+            "performance_measurement_startup_timeout_sec", 300.0
+        )
+        self.declare_parameter(
+            "performance_measurement_power_sample_interval_sec", 0.1
+        )
+        self.declare_parameter(
+            "performance_measurement_log_directory", "performance_logs"
+        )
+        self.declare_parameter(
+            "performance_measurement_engine_precision", "unknown"
+        )
+        self.declare_parameter("performance_measurement_model_path", "")
+
     def _read_parameters(self) -> None:
         string_parameters = (
             "control_mode",
@@ -319,6 +375,9 @@ class AutoControlNode(Node):
             "heading_error_topic",
             "raw_steering_angle_topic",
             "command_servo_position_topic",
+            "performance_measurement_log_directory",
+            "performance_measurement_engine_precision",
+            "performance_measurement_model_path",
         )
         float_parameters = (
             "control_rate_hz",
@@ -371,6 +430,9 @@ class AutoControlNode(Node):
             "wheel_diameter_m",
             "erpm_direction_sign",
             "speed_scale_correction",
+            "performance_measurement_duration_sec",
+            "performance_measurement_startup_timeout_sec",
+            "performance_measurement_power_sample_interval_sec",
         )
         int_parameters = (
             "path_minimum_points",
@@ -386,6 +448,9 @@ class AutoControlNode(Node):
         )
         self.steering_servo_inverted = bool(
             self.get_parameter("steering_servo_inverted").value
+        )
+        self.performance_measurement_enabled = bool(
+            self.get_parameter("performance_measurement_enabled").value
         )
         for name in string_parameters:
             setattr(self, name, str(self.get_parameter(name).value))
@@ -414,6 +479,14 @@ class AutoControlNode(Node):
             raise ValueError("path_maximum_gap_m must be finite and positive")
         if self.control_rate_hz <= 0.0 or self.status_log_rate_hz <= 0.0:
             raise ValueError("control and status rates must be positive")
+        if min(
+            self.performance_measurement_duration_sec,
+            self.performance_measurement_startup_timeout_sec,
+            self.performance_measurement_power_sample_interval_sec,
+        ) <= 0.0:
+            raise ValueError("performance measurement durations must be positive")
+        if not self.performance_measurement_log_directory:
+            raise ValueError("performance measurement log directory must not be empty")
         if min(
             self.path_timeout_sec,
             self.path_capture_maximum_age_sec,
@@ -468,6 +541,10 @@ class AutoControlNode(Node):
             raise ValueError("motor and gear parameters must be positive")
 
     def _on_lane_result(self, message: LaneResult) -> None:
+        callback_started_ns = (
+            time.perf_counter_ns()
+            if self.performance_measurement_enabled else 0
+        )
         now = self.get_clock().now()
         self._lane_result_count += 1
         self._lane_result_points = len(message.centerline_points)
@@ -538,12 +615,173 @@ class AutoControlNode(Node):
             self.get_logger().warn(f"Rejected ML centerline: {exception}", throttle_duration_sec=1.0)
         finally:
             # Every result, including invalid/empty frames, immediately decides the command.
-            self._update_control_from_path()
+            servo_position_calculated = self._update_control_from_path()
+            if self.performance_measurement_enabled:
+                callback_finished_ns = time.perf_counter_ns()
+                self._record_performance_frame(
+                    message=message,
+                    callback_received_ros_ns=now.nanoseconds,
+                    callback_started_ns=callback_started_ns,
+                    callback_finished_ns=callback_finished_ns,
+                    valid_centerline=self._path is not None,
+                    servo_position_calculated=servo_position_calculated,
+                )
 
     def _message_time_or_none(self, message: LaneResult) -> Time | None:
         if message.header.stamp.sec == 0 and message.header.stamp.nanosec == 0:
             return None
         return Time.from_msg(message.header.stamp, clock_type=self.get_clock().clock_type)
+
+    @staticmethod
+    def _stamp_nanoseconds(stamp) -> int | None:
+        seconds = int(stamp.sec)
+        nanoseconds = int(stamp.nanosec)
+        if seconds == 0 and nanoseconds == 0:
+            return None
+        return seconds * 1_000_000_000 + nanoseconds
+
+    @staticmethod
+    def _latency_milliseconds(
+        started_ns: int | None, finished_ns: int | None
+    ) -> float | None:
+        if started_ns is None or finished_ns is None:
+            return None
+        elapsed_ns = finished_ns - started_ns
+        if elapsed_ns < 0:
+            return None
+        return elapsed_ns / 1_000_000.0
+
+    def _record_performance_frame(
+        self,
+        *,
+        message: LaneResult,
+        callback_received_ros_ns: int,
+        callback_started_ns: int,
+        callback_finished_ns: int,
+        valid_centerline: bool,
+        servo_position_calculated: bool,
+    ) -> None:
+        measurement = self._performance_measurement
+        if measurement is None or self._performance_finished:
+            return
+        if not measurement.active:
+            if not valid_centerline or not servo_position_calculated:
+                return
+            measurement.start(callback_started_ns)
+            self.get_logger().info(
+                "First valid ML centerline reached servo-position calculation; "
+                "starting %.1fs performance measurement."
+                % self.performance_measurement_duration_sec
+            )
+
+        callback_finished_ros_ns = self.get_clock().now().nanoseconds
+        source_stamp_ns = self._stamp_nanoseconds(message.header.stamp)
+        detector_input_stamp_ns = self._stamp_nanoseconds(
+            message.detector_input_received_stamp
+        )
+        result_ready_stamp_ns = self._stamp_nanoseconds(
+            message.detector_result_ready_stamp
+        )
+        auto_control_compute_ms = (
+            callback_finished_ns - callback_started_ns
+        ) / 1_000_000.0
+        detector_total_compute_ms = (
+            int(message.detector_total_compute_nanoseconds) / 1_000_000.0
+        )
+        lane_postprocess_total_ms = (
+            int(message.label_export_nanoseconds)
+            + int(message.backend_postprocess_nanoseconds)
+            + int(message.lane_geometry_nanoseconds)
+            + int(message.result_message_build_nanoseconds)
+        ) / 1_000_000.0
+        frame = {
+            "measurement_elapsed_sec": measurement.elapsed_sec(
+                callback_finished_ns
+            ),
+            "detector_sequence": int(message.detector_sequence),
+            "actual_engine_precision": str(message.engine_precision),
+            "valid_centerline": valid_centerline,
+            "servo_position_calculated": servo_position_calculated,
+            "centerline_point_count": len(message.centerline_points),
+            "steering_angle_rad": float(self._steering_angle_rad),
+            "servo_position": float(self._latest_servo_position),
+            "h2d_preprocess_ms": (
+                int(message.h2d_preprocess_nanoseconds) / 1_000_000.0
+            ),
+            "pure_inference_ms": (
+                int(message.pure_inference_nanoseconds) / 1_000_000.0
+            ),
+            "label_export_ms": (
+                int(message.label_export_nanoseconds) / 1_000_000.0
+            ),
+            "backend_postprocess_ms": (
+                int(message.backend_postprocess_nanoseconds) / 1_000_000.0
+            ),
+            "lane_geometry_ms": (
+                int(message.lane_geometry_nanoseconds) / 1_000_000.0
+            ),
+            "result_message_build_ms": (
+                int(message.result_message_build_nanoseconds) / 1_000_000.0
+            ),
+            "lane_postprocess_total_ms": lane_postprocess_total_ms,
+            "detector_queue_ms": (
+                int(message.detector_queue_nanoseconds) / 1_000_000.0
+            ),
+            "detector_total_compute_ms": detector_total_compute_ms,
+            "lane_result_transport_ms": self._latency_milliseconds(
+                result_ready_stamp_ns, callback_received_ros_ns
+            ),
+            "source_to_detector_input_ms": self._latency_milliseconds(
+                source_stamp_ns, detector_input_stamp_ns
+            ),
+            "auto_control_compute_ms": auto_control_compute_ms,
+            "compute_only_total_ms": (
+                detector_total_compute_ms + auto_control_compute_ms
+            ),
+            "detector_input_to_control_complete_ms": (
+                self._latency_milliseconds(
+                    detector_input_stamp_ns, callback_finished_ros_ns
+                )
+            ),
+            "source_capture_to_control_complete_ms": (
+                self._latency_milliseconds(
+                    source_stamp_ns, callback_finished_ros_ns
+                )
+            ),
+        }
+        measurement.add_frame(frame)
+
+    def _on_performance_timer(self) -> None:
+        measurement = self._performance_measurement
+        if measurement is None or self._performance_finished:
+            return
+        if measurement.startup_timed_out():
+            self._finish_performance_measurement("startup_timeout")
+            return
+        if not measurement.active:
+            return
+        measurement.sample_power()
+        if measurement.due_to_finish():
+            self._finish_performance_measurement("complete")
+
+    def _finish_performance_measurement(self, status: str) -> None:
+        measurement = self._performance_measurement
+        if measurement is None or self._performance_finished:
+            return
+        self._performance_finished = True
+        try:
+            output_path = measurement.write(status)
+            self.get_logger().info(
+                "PERFORMANCE_MEASUREMENT_COMPLETE status=%s file=%s frames=%d"
+                % (status, output_path, len(measurement.frames))
+            )
+        except (OSError, ValueError, TypeError) as exception:
+            self.get_logger().error(
+                f"Failed to write performance measurement: {exception}"
+            )
+        self.stop_actuators()
+        if rclpy.ok():
+            rclpy.shutdown()
 
     def _on_measured_erpm(self, message: Int32) -> None:
         now = self.get_clock().now()
@@ -603,7 +841,7 @@ class AutoControlNode(Node):
                 motor_mode="stop",
             )
 
-    def _update_control_from_path(self) -> None:
+    def _update_control_from_path(self) -> bool:
         now = self.get_clock().now()
         dt_sec = clamp(
             self._elapsed_sec(self._last_control_time, now),
@@ -621,7 +859,7 @@ class AutoControlNode(Node):
                 servo_position=self.servo_center,
                 motor_mode="stop",
             )
-            return
+            return False
 
         assert self._path is not None
         curvature_per_m = representative_curvature(
@@ -764,6 +1002,7 @@ class AutoControlNode(Node):
             servo_position=servo_position,
             motor_mode=motor_mode,
         )
+        return True
 
     def _stop_reason(self, now: Time) -> str | None:
         if not self.enabled:
@@ -922,6 +1161,8 @@ class AutoControlNode(Node):
         self.enabled = False
         self._watchdog_timer.cancel()
         self._status_timer.cancel()
+        if self._performance_timer is not None:
+            self._performance_timer.cancel()
         self._stop_control("shutdown")
         self._publish_commands(
             duty=0.0,
@@ -930,6 +1171,22 @@ class AutoControlNode(Node):
             motor_mode="stop",
         )
 
+    def write_interrupted_performance_measurement(self) -> None:
+        measurement = self._performance_measurement
+        if measurement is None or self._performance_finished:
+            return
+        self._performance_finished = True
+        try:
+            output_path = measurement.write("interrupted")
+            self.get_logger().warn(
+                "Interrupted performance measurement written to %s"
+                % output_path
+            )
+        except (OSError, ValueError, TypeError) as exception:
+            self.get_logger().error(
+                f"Failed to write interrupted performance measurement: {exception}"
+            )
+
 
 def main(args: list[str] | None = None) -> None:
     rclpy.init(args=args)
@@ -937,6 +1194,7 @@ def main(args: list[str] | None = None) -> None:
     try:
         rclpy.spin(node)
     finally:
+        node.write_interrupted_performance_measurement()
         if rclpy.ok():
             node.stop_actuators()
             rclpy.spin_once(node, timeout_sec=0.1)

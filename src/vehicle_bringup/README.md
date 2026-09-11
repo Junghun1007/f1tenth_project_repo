@@ -161,6 +161,73 @@ Invalid/stale path or ERPM and VESC disconnect send duty zero and centered steer
 Stop-line detection alone does not command stopping. Never run manual and auto launches together.
 Dataset capture now saves only `origin_bev`; removed rule-based labels are not generated.
 
+## Auto-drive performance measurement
+
+`performance_measurement_enabled:=true` turns the integrated launch into a
+fixed-duration benchmark. It forces `auto_control` to `monitor_only`, so the
+same centerline, Stanley steering, and servo-position calculation runs without
+publishing duty, brake, or servo actuator commands. It also disables BEV and ML
+previews so GUI rendering does not contaminate engine comparisons. The ordinary
+driving behavior is unchanged when the argument is `false` (the default).
+
+The measurement starts only after the first valid ML centerline completes the
+servo-position calculation. It then records 30 seconds by default and shuts down
+the complete launch. If no valid centerline arrives within 300 seconds, it writes
+a `startup_timeout` log and shuts down instead. Run it with the same YAML files
+used for driving:
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  auto_control_params_file:=/absolute/path/auto_control_test.yaml \
+  bev_params_file:=/absolute/path/bev_config_test.yaml \
+  line_detactor_params_file:=/absolute/path/line_detactor_test.yaml \
+  performance_measurement_enabled:=true \
+  performance_measurement_duration_sec:=30.0 \
+  performance_measurement_log_directory:=/absolute/path/performance_logs \
+  input_mode:=slcan \
+  slcan_channel:=/dev/ttyACM0 \
+  slcan_bitrate:=500000 \
+  can_controller_id:=112
+```
+
+Every run creates a new JSON file. The engine precision and local start time are
+part of both its title and filename, for example:
+
+```text
+auto_drive_benchmark_int8_20260911_113430_123456+0900.json
+```
+
+If no log directory is supplied, `performance_logs` under the directory from
+which `ros2 launch` was invoked is used. Each JSON contains every frame sample,
+every power sample, and aggregate count/average/minimum/p50/p95/maximum values.
+The main measurements are:
+
+- pure TensorRT inference and H2D/GPU preprocessing
+- GPU label export, lane connection/centerline generation, result-message build,
+  and their combined lane postprocessing time
+- line-detector queue time and compute-only detector time
+- source capture to line-detector input delay and LaneResult DDS transfer delay
+- LaneResult callback through final steering/servo-position calculation
+- BEV detector input to control completion and source capture to control completion
+- result throughput FPS, valid servo-position calculation FPS, and latency-derived FPS
+- Jetson total-module `VDD_IN`/`5V_IN` power average/minimum/maximum and estimated energy
+
+Power is read-only sampled from the INA3221 sysfs rail every 0.1 seconds. If the
+platform does not expose a recognized total-input rail, the JSON marks power as
+unavailable while retaining all timing measurements.
+
+`LaneResult.msg` carries the per-frame timing metadata, so rebuild all message
+producer/consumer packages after pulling this change:
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build \
+  --packages-select line_detactor auto_control vehicle_bringup \
+  --cmake-clean-cache \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
 ## ML pipeline diagnosis
 
 Updating sources with `git pull` does not update an installed launch file.

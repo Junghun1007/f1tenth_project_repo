@@ -6,10 +6,15 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    EmitEvent,
     IncludeLaunchDescription,
     LogInfo,
     OpaqueFunction,
+    RegisterEventHandler,
 )
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, ComposableNodeContainer
@@ -72,6 +77,15 @@ def _apply_parameter_file_defaults(
         LaunchConfiguration("line_detactor_params_file").perform(context),
         "line_detactor",
     )
+    context.launch_configurations["ml_engine_precision"] = str(
+        detector.get("engine_precision", "fp32")
+    )
+    context.launch_configurations["ml_model_path"] = str(
+        detector.get("model_path", os.path.join(
+            get_package_share_directory("line_detactor"), "models",
+            "fast_scnn_stop_line_120x300_batch_1.onnx",
+        ))
+    )
     # One physical geometry and result topic for producer and consumer. Old BEV
     # lane parameters in external YAML cannot reactivate the removed detector.
     x_min, x_max = float(bev_defaults["x_min_m"]), float(bev_defaults["x_max_m"])
@@ -123,6 +137,16 @@ def _apply_parameter_file_defaults(
     if preview not in ("true", "false"):
         raise RuntimeError("preview_enabled must be true or false")
     detector["preview_enabled"] = preview == "true"
+    measurement = LaunchConfiguration(
+        "performance_measurement_enabled"
+    ).perform(context).lower()
+    if measurement not in ("true", "false"):
+        raise RuntimeError("performance_measurement_enabled must be true or false")
+    if measurement == "true":
+        # GUI work would contaminate engine comparisons and is unnecessary for
+        # the fixed-duration, self-terminating measurement.
+        detector["preview_enabled"] = False
+        preview = "false"
     result_only = LaunchConfiguration("preview_result_only_enabled").perform(context)
     if result_only != _PARAMETER_FILE_DEFAULT:
         if result_only.lower() not in ("true", "false"):
@@ -144,6 +168,7 @@ def _apply_parameter_file_defaults(
             "fast_scnn_stop_line_120x300_batch_1.onnx"))) +
         " | pipeline=" + detector["input_topic"] + " -> " + str(detector["result_topic"]) +
         " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
+        " | performance measurement=" + measurement
     )), ComposableNodeContainer(
         name="line_detactor_container", namespace="", package="rclcpp_components",
         executable="component_container_mt", output="screen",
@@ -175,6 +200,9 @@ def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
     bev_params_file = LaunchConfiguration("bev_params_file")
     auto_control_params_file = LaunchConfiguration("auto_control_params_file")
+    performance_measurement_enabled = LaunchConfiguration(
+        "performance_measurement_enabled"
+    )
     bev_argument_fallbacks = [
         ("dataset_collection_enabled", "false"),
         ("dataset_collection_root_directory", "datasets"),
@@ -381,6 +409,7 @@ def generate_launch_description():
             "camera_params_file": LaunchConfiguration("camera_params_file"),
             "preview_enabled": "false",
             "publish_enabled": "true",
+            "performance_measurement_enabled": performance_measurement_enabled,
             **bev_overrides,
         }.items(),
     )
@@ -391,6 +420,30 @@ def generate_launch_description():
         "bev_x_max_m": ParameterValue(LaunchConfiguration("ml_bev_x_max_m"), value_type=float),
         "bev_y_max_m": ParameterValue(LaunchConfiguration("ml_bev_y_max_m"), value_type=float),
         "bev_meter_per_pixel": ParameterValue(LaunchConfiguration("ml_bev_meter_per_pixel"), value_type=float),
+        "performance_measurement_enabled": ParameterValue(
+            performance_measurement_enabled, value_type=bool
+        ),
+        "performance_measurement_duration_sec": ParameterValue(
+            LaunchConfiguration("performance_measurement_duration_sec"),
+            value_type=float,
+        ),
+        "performance_measurement_startup_timeout_sec": ParameterValue(
+            LaunchConfiguration("performance_measurement_startup_timeout_sec"),
+            value_type=float,
+        ),
+        "performance_measurement_power_sample_interval_sec": ParameterValue(
+            LaunchConfiguration("performance_measurement_power_sample_interval_sec"),
+            value_type=float,
+        ),
+        "performance_measurement_log_directory": LaunchConfiguration(
+            "performance_measurement_log_directory"
+        ),
+        "performance_measurement_engine_precision": LaunchConfiguration(
+            "ml_engine_precision"
+        ),
+        "performance_measurement_model_path": LaunchConfiguration(
+            "ml_model_path"
+        ),
     })
     auto_control_node = Node(
         package="auto_control",
@@ -402,6 +455,19 @@ def generate_launch_description():
             auto_control_params_file,
             controller_overrides,
         ],
+    )
+    performance_shutdown_handler = RegisterEventHandler(
+        OnProcessExit(
+            target_action=auto_control_node,
+            on_exit=[
+                EmitEvent(
+                    event=Shutdown(
+                        reason="auto-drive performance measurement completed"
+                    )
+                )
+            ],
+        ),
+        condition=IfCondition(performance_measurement_enabled),
     )
 
     vesc_bridge_node = Node(
@@ -441,6 +507,30 @@ def generate_launch_description():
             DeclareLaunchArgument("slcan_channel", default_value="/dev/ttyACM0"),
             DeclareLaunchArgument("slcan_bitrate", default_value="500000"),
             DeclareLaunchArgument("can_controller_id", default_value="0"),
+            DeclareLaunchArgument(
+                "performance_measurement_enabled",
+                default_value="false",
+                description=(
+                    "Measure after the first valid ML centerline, write JSON, "
+                    "and shut down; forces monitor_only and disables previews"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "performance_measurement_duration_sec",
+                default_value="30.0",
+            ),
+            DeclareLaunchArgument(
+                "performance_measurement_startup_timeout_sec",
+                default_value="300.0",
+            ),
+            DeclareLaunchArgument(
+                "performance_measurement_power_sample_interval_sec",
+                default_value="0.1",
+            ),
+            DeclareLaunchArgument(
+                "performance_measurement_log_directory",
+                default_value=os.path.join(os.getcwd(), "performance_logs"),
+            ),
             DeclareLaunchArgument(
                 "bev_params_file",
                 default_value=bev_config,
@@ -483,6 +573,7 @@ def generate_launch_description():
             bev_launch,
             vesc_bridge_node,
             dynamics_node,
+            performance_shutdown_handler,
             auto_control_node,
         ]
     )

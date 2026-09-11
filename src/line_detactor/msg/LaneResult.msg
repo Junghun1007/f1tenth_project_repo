@@ -1,5 +1,20 @@
 # Same timestamp and source frame_id as the input BEV. Pixel mapping is explicit below.
 std_msgs/Header header
+# Per-frame performance metadata. detector_input_received_stamp is when the
+# line detector received the BEV image; detector_result_ready_stamp is taken
+# immediately before publishing this result. All durations exclude GUI work.
+builtin_interfaces/Time detector_input_received_stamp
+builtin_interfaces/Time detector_result_ready_stamp
+string engine_precision
+uint64 detector_sequence
+uint64 detector_queue_nanoseconds
+uint64 h2d_preprocess_nanoseconds
+uint64 pure_inference_nanoseconds
+uint64 label_export_nanoseconds
+uint64 backend_postprocess_nanoseconds
+uint64 lane_geometry_nanoseconds
+uint64 result_message_build_nanoseconds
+uint64 detector_total_compute_nanoseconds
 uint8 NONE=0
 uint8 LEFT_ONLY=1
 uint8 RIGHT_ONLY=2

@@ -442,6 +442,12 @@ GPU 라벨 생성/D2H까지 포함한 후처리 시간이다. `connect`는 `corr
 건너뛰고 `skipped`에 집계한다. 모든 카메라 프레임의 처리나 고정 FPS를 보장하지 않으며,
 ROS 전송과 GPU/CPU 처리 지연은 남는다. 오래된 프레임을 무제한 적재하지 않는다.
 
+`LaneResult` carries the engine precision, detector input/result-ready stamps,
+queue time, H2D/preprocess, pure inference, label export, backend postprocess,
+lane geometry, result-message construction, and total detector compute time.
+These fields exclude GUI work and allow `auto_drive` performance mode to separate
+compute time from ROS transport and source-capture delay.
+
 logits 전체는 CPU에 복사하지 않고 120×300 mono8 두 장(좌우 라벨 + 정지선 마스크)을
 한 번에 전달한다. 36KB에서 72KB로 늘며 CUDA stream, pinned memory, GPU 전처리·threshold·
 오버레이 경로는 유지한다. FP16/INT8로 정밀도를 바꾸지 않고 기존 TensorRT FP32를 유지한다.

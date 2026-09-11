@@ -185,6 +185,7 @@ public:
 
 private:
   using Image = sensor_msgs::msg::Image;
+  using SteadyClock = std::chrono::steady_clock;
 
   struct PreviewFrame
   {
@@ -405,9 +406,13 @@ private:
 
   void on_image(const Image::ConstSharedPtr message)
   {
+    const auto received_at = SteadyClock::now();
+    const auto received_stamp = node_.get_clock()->now().to_msg();
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       latest_message_ = message;
+      latest_input_received_at_ = received_at;
+      latest_input_received_stamp_ = received_stamp;
       ++latest_generation_;
       ++received_interval_;
       ++received_total_;
@@ -462,11 +467,31 @@ private:
     return message;
   }
 
-  void publish_result(const LaneConnectionResult & result, const Image & input)
+  void publish_result(
+    const LaneConnectionResult & result,
+    const Image & input,
+    const builtin_interfaces::msg::Time & input_received_stamp,
+    const SteadyClock::time_point input_received_at,
+    const SteadyClock::time_point processing_started_at,
+    const LaneInferenceTiming & timing,
+    const std::uint64_t lane_geometry_nanoseconds,
+    const std::uint64_t detector_sequence)
   {
     if (!result_publisher_) {return;}
+    const auto message_build_started_at = SteadyClock::now();
     line_detactor::msg::LaneResult message;
     message.header = input.header;
+    message.detector_input_received_stamp = input_received_stamp;
+    message.engine_precision = engine_precision_;
+    message.detector_sequence = detector_sequence;
+    message.detector_queue_nanoseconds = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        processing_started_at - input_received_at).count());
+    message.h2d_preprocess_nanoseconds = timing.preprocessing_nanoseconds;
+    message.pure_inference_nanoseconds = timing.execution_nanoseconds;
+    message.label_export_nanoseconds = timing.label_export_nanoseconds;
+    message.backend_postprocess_nanoseconds = timing.postprocessing_nanoseconds;
+    message.lane_geometry_nanoseconds = lane_geometry_nanoseconds;
     message.state = result.state;
     message.processing_mode = line_detactor::msg::LaneResult::BORDER_ONLY;
     message.source_width = input.width;
@@ -505,6 +530,14 @@ private:
       message.centerline_points.push_back(output);
     }
     message.stop_line_present = cv::countNonZero(result.stop_line_mask) > 0;
+    const auto result_ready_at = SteadyClock::now();
+    message.result_message_build_nanoseconds = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        result_ready_at - message_build_started_at).count());
+    message.detector_total_compute_nanoseconds = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+        result_ready_at - processing_started_at).count());
+    message.detector_result_ready_stamp = node_.get_clock()->now().to_msg();
     result_publisher_->publish(message);
     result_image_publisher_->publish(message.image);
   }
@@ -606,6 +639,8 @@ private:
       while (!stop_requested_.load(std::memory_order_acquire)) {
         Image::ConstSharedPtr message;
         std::uint64_t generation = 0U;
+        SteadyClock::time_point input_received_at;
+        builtin_interfaces::msg::Time input_received_stamp;
         {
           std::unique_lock<std::mutex> lock(frame_mutex_);
           frame_condition_.wait(
@@ -618,6 +653,8 @@ private:
           }
           message = latest_message_;
           generation = latest_generation_;
+          input_received_at = latest_input_received_at_;
+          input_received_stamp = latest_input_received_stamp_;
         }
 
         auto now = std::chrono::steady_clock::now();
@@ -628,6 +665,7 @@ private:
           skipped_total_ += generation - processed_generation - 1U;
         }
         processed_generation = generation;
+        const auto processing_started_at = SteadyClock::now();
 
         LaneInferenceTiming timing;
         LaneConnectionResult result;
@@ -659,7 +697,10 @@ private:
               std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started).count());
             timing.correction_nanoseconds += timing.label_export_nanoseconds + connection_nanoseconds;
-            publish_result(result, *message);
+            publish_result(
+              result, *message, input_received_stamp, input_received_at,
+              processing_started_at, timing, connection_nanoseconds,
+              generation);
           }
         } catch (const std::exception & exception) {
           now = std::chrono::steady_clock::now();
@@ -866,6 +907,8 @@ private:
   std::mutex frame_mutex_;
   std::condition_variable frame_condition_;
   Image::ConstSharedPtr latest_message_;
+  SteadyClock::time_point latest_input_received_at_{};
+  builtin_interfaces::msg::Time latest_input_received_stamp_;
   std::uint64_t latest_generation_{0U};
   std::uint64_t received_interval_{0U};
   std::uint64_t received_total_{0U};
