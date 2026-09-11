@@ -145,6 +145,7 @@ def main() -> None:
             input_model=str(source),
             output_model_path=str(preprocessed),
             auto_merge=True,
+            skip_symbolic_shape=True,
             verbose=1,
         )
         reader = ImageCalibrationReader(input_name, data_root, samples)
@@ -162,6 +163,10 @@ def main() -> None:
             extra_options={
                 "ActivationSymmetric": True,
                 "WeightSymmetric": True,
+                # TensorRT 8.6 quantizes Conv bias internally from the
+                # activation/weight scales and rejects an explicit INT32 bias
+                # DequantizeLinear node on Jetson.
+                "QuantizeBias": False,
                 "DedicatedQDQPair": False,
             },
         )
@@ -174,11 +179,41 @@ def main() -> None:
         counts = Counter(node.op_type for node in quantized.graph.node)
         if not counts["QuantizeLinear"] or not counts["DequantizeLinear"]:
             raise ValueError("Explicit Q/DQ nodes were not generated")
+        initializer_types = {
+            item.name: item.data_type for item in quantized.graph.initializer
+        }
+        int32_dequantize_nodes = [
+            node.name
+            for node in quantized.graph.node
+            if node.op_type == "DequantizeLinear"
+            and node.input
+            and initializer_types.get(node.input[0]) == onnx.TensorProto.INT32
+        ]
+        if int32_dequantize_nodes:
+            raise ValueError(
+                "TensorRT-incompatible INT32 DequantizeLinear nodes found: "
+                f"{int32_dequantize_nodes[:5]}"
+            )
+        uint8_qdq_nodes = [
+            node.name
+            for node in quantized.graph.node
+            if node.op_type in ("QuantizeLinear", "DequantizeLinear")
+            and any(
+                initializer_types.get(name) == onnx.TensorProto.UINT8
+                for name in node.input
+            )
+        ]
+        if uint8_qdq_nodes:
+            raise ValueError(
+                "TensorRT-incompatible UINT8 Q/DQ nodes found: "
+                f"{uint8_qdq_nodes[:5]}"
+            )
         if any(node.domain not in ("", "ai.onnx") for node in quantized.graph.node):
             raise ValueError("Custom ONNX operators are not allowed")
         metadata = {item.key: item.value for item in quantized.metadata_props}
         metadata.update(
             quantization="explicit_qdq_int8_ptq",
+            quantized_bias="false",
             calibration_method=method_name,
             calibration_manifest_sha256=sha256_file(calibration_path),
             floating_point_exclusions=json.dumps(exclusions),
@@ -215,6 +250,9 @@ def main() -> None:
             "QuantizeLinear": counts["QuantizeLinear"],
             "DequantizeLinear": counts["DequantizeLinear"],
         },
+        "quantized_bias": False,
+        "tensorrt_int32_dequantize_count": len(int32_dequantize_nodes),
+        "tensorrt_uint8_qdq_count": len(uint8_qdq_nodes),
         "input": list(EXPECTED_TENSOR_SHAPE),
         "output": list(EXPECTED_TENSOR_SHAPE),
         "onnx": onnx.__version__,

@@ -57,14 +57,15 @@ needed; the frozen calibration manifest remains reusable.
 
 ## Current offline result
 
-The first generated candidate passed every configured accuracy gate:
+The TensorRT-compatible candidate with floating-point Conv biases passed every
+configured accuracy gate:
 
 | Condition / metric | FP32 | INT8 Q/DQ | INT8 - FP32 |
 |---|---:|---:|---:|
-| Clean stop-line pixel F1 | 0.790586 | 0.791857 | +0.001271 |
-| Clean lane macro pixel F1 | 0.848708 | 0.847969 | -0.000739 |
-| Occluded stop-line pixel F1 | 0.742926 | 0.743368 | +0.000443 |
-| Occluded lane macro pixel F1 | 0.826870 | 0.824349 | -0.002521 |
+| Clean stop-line pixel F1 | 0.790586 | 0.792143 | +0.001557 |
+| Clean lane macro pixel F1 | 0.848708 | 0.847980 | -0.000727 |
+| Occluded stop-line pixel F1 | 0.742926 | 0.743712 | +0.000786 |
+| Occluded lane macro pixel F1 | 0.826870 | 0.824301 | -0.002568 |
 | Clean negative stop-frame FP rate | 0.016092 | 0.011494 | -0.004598 |
 | Occluded negative stop-frame FP rate | 0.059770 | 0.066667 | +0.006897 |
 | Positive stop-frame tolerance-hit rate | 1.000000 | 1.000000 | 0.000000 |
@@ -81,10 +82,10 @@ two intra-op threads.
 
 | Model | Mean | Median | P95 |
 |---|---:|---:|---:|
-| FP32 | 2.7111 ms | 2.5111 ms | 4.0278 ms |
-| INT8 Q/DQ | 4.7675 ms | 4.6064 ms | 6.3089 ms |
+| FP32 | 2.2215 ms | 2.1760 ms | 2.4354 ms |
+| INT8 Q/DQ | 3.8599 ms | 3.8056 ms | 4.1107 ms |
 
-On this Windows CPU path, INT8 is `0.569x` as fast as FP32, or about `1.76x`
+On this Windows CPU path, INT8 is `0.576x` as fast as FP32, or about `1.74x`
 higher in mean latency. This does not predict Jetson TensorRT performance:
 execution-provider kernels, graph fusion and Q/DQ handling differ. Use the
 target-Jetson TensorRT timing for the deployment decision.

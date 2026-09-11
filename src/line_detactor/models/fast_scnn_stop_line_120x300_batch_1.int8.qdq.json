@@ -1,10 +1,10 @@
 {
   "schema_version": 1,
-  "created_utc": "2026-09-10T13:14:06.867803+00:00",
+  "created_utc": "2026-09-11T01:54:26.149961+00:00",
   "source_onnx": "C:\\Users\\godld\\Desktop\\f1tenth_project_repo\\src\\line_detactor\\models\\fast_scnn_stop_line_120x300_batch_1.onnx",
   "source_onnx_sha256": "abdd5485fa85342b12cd7086004bf04aed4754c1c2fb93b6abfea8d51619e061",
   "output_onnx": "C:\\Users\\godld\\Desktop\\f1tenth_project_repo\\src\\line_detactor\\models\\fast_scnn_stop_line_120x300_batch_1.int8.qdq.onnx",
-  "output_onnx_sha256": "395174be3dc56a0e496733ae1954db35dd2ab0bf577f6363c9c6e0ae1519ca02",
+  "output_onnx_sha256": "df8470c517099f094d62ebe81a69e212cfc5b5e12218754e21a22cffef248871",
   "format": "explicit Q/DQ INT8 PTQ",
   "calibration_method": "minmax",
   "calibration_manifest": "C:\\Users\\godld\\Desktop\\f1tenth_project_repo\\src\\line_detactor\\tools\\int8_calibration_manifest.json",
@@ -27,8 +27,11 @@
   ],
   "qdq_counts": {
     "QuantizeLinear": 82,
-    "DequantizeLinear": 168
+    "DequantizeLinear": 127
   },
+  "quantized_bias": false,
+  "tensorrt_int32_dequantize_count": 0,
+  "tensorrt_uint8_qdq_count": 0,
   "input": [
     1,
     3,
