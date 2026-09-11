@@ -945,21 +945,21 @@ class AutoControlNode(Node):
             self._brake_profile.reset()
             self._command_brake_current = 0.0
 
-        if self._command_brake_current > 0.0:
+        if self.control_mode == "drive" and self._command_brake_current > 0.0:
             # Brake current owns the VESC motor mode. Discard propulsion PID
             # state so positive duty can never fight an active brake command.
             self._command_duty = 0.0
             self._speed_pid.reset()
             motor_mode = "brake"
             self._brake_mode_active = True
-        elif self._brake_mode_active:
+        elif self.control_mode == "drive" and self._brake_mode_active:
             # Explicitly release COMM_SET_CURRENT_BRAKE, then wait one control
             # cycle before returning to positive duty.
             self._command_duty = 0.0
             self._speed_pid.reset()
             motor_mode = "brake_release"
             self._brake_mode_active = False
-        else:
+        elif self.control_mode == "drive":
             feedforward_duty = speed_feedforward_duty(
                 target_speed_mps,
                 minimum_speed_mps=self.minimum_speed_mps,
