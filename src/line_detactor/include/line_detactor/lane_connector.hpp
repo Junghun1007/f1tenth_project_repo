@@ -16,6 +16,7 @@ struct LaneConnectionConfig
   bool enabled{true};
   int padding_px{30};  // Per side; does not change model input or BEV scale.
   int min_component_area_px{8};
+  int skeleton_downsample_factor{1};  // 1 = original resolution; valid range 1..4.
   double min_fragment_length_px{8.0};
   int max_fragments{24};
   double tangent_window_px{8.0};

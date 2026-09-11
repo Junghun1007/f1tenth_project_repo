@@ -223,6 +223,8 @@ private:
       "result_padding_px", 30);
     connection_.min_component_area_px = node_.declare_parameter<int>(
       "connection_min_component_area_px", 8);
+    connection_.skeleton_downsample_factor = node_.declare_parameter<int>(
+      "connection_skeleton_downsample_factor", 1);
     connection_.min_fragment_length_px = node_.declare_parameter<double>(
       "connection_min_fragment_length_px", 8.0);
     connection_.max_fragments = node_.declare_parameter<int>(
@@ -251,6 +253,10 @@ private:
     centerline_.bev_height_m = node_.declare_parameter<double>("centerline_bev_height_m", 3.0);
     centerline_.sample_spacing_m = node_.declare_parameter<double>(
       "centerline_sample_spacing_m", 0.015);
+    centerline_.output_spacing_m = node_.declare_parameter<double>(
+      "centerline_output_spacing_m", 0.01);
+    centerline_.clearance_check_spacing_m = node_.declare_parameter<double>(
+      "centerline_clearance_check_spacing_m", 0.005);
     centerline_.min_fragment_length_m = node_.declare_parameter<double>(
       "centerline_min_fragment_length_m", 0.08);
     centerline_.tangent_window_m = node_.declare_parameter<double>(

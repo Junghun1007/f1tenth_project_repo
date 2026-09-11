@@ -338,6 +338,15 @@ struct Candidate
 void validate_centerline(const CenterlineConfig & c)
 {
   const auto positive = [](double v) {return std::isfinite(v) && v > 0.0;};
+  if (!positive(c.output_spacing_m) || c.output_spacing_m < 0.005 || c.output_spacing_m > 0.10) {
+    throw std::invalid_argument("centerline_output_spacing_m must be within 0.005..0.10 metres");
+  }
+  if (!positive(c.clearance_check_spacing_m) ||
+    c.clearance_check_spacing_m < 0.001 || c.clearance_check_spacing_m > 0.05)
+  {
+    throw std::invalid_argument(
+      "centerline_clearance_check_spacing_m must be within 0.001..0.05 metres");
+  }
   const double values[] = {c.lane_width_m, c.bev_width_m, c.bev_height_m, c.sample_spacing_m,
     c.min_fragment_length_m, c.tangent_window_m, c.width_tolerance_m,
     c.pair_along_tolerance_m, c.max_gap_m, c.max_start_distance_m, c.min_clearance_m,
@@ -403,7 +412,7 @@ CenterlineResult generate_centerline(
   const SpatialIndex boundary_index(boundary, cfg.min_clearance_m);
   // Include pixel-cell half diagonal and half sampling step for a conservative
   // sampled clearance check. This measures observed pixels, not drivable space.
-  const double check_step = std::min(0.005, cfg.sample_spacing_m / 2.0);
+  const double check_step = cfg.clearance_check_spacing_m;
   const Geometry geometry{cfg.bev_width_m, cfg.bev_height_m,
     std::min(cfg.outside_margin_m, std::max(0, padding - cfg.line_width_px) * sx),
     cfg.min_clearance_m + 0.5 * std::hypot(sx, sy) + check_step / 2.0, check_step, boundary_index};
@@ -610,7 +619,7 @@ CenterlineResult generate_centerline(
   Path raw;
   for (int id : ids) {raw.push_back(positions[id]);}
   const auto raw_arc = arc_lengths(raw);
-  Path path = resample(raw, 0.01);
+  Path path = resample(raw, cfg.output_spacing_m);
   const double length = raw_arc.back();
   std::vector<std::uint8_t> provenance;
   std::size_t j = 1U;

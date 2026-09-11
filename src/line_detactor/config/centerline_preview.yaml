@@ -4,6 +4,7 @@ line_detactor:
   ros__parameters:
     input_topic: "/camera/image_bev"
     connection_enabled: true
+    connection_skeleton_downsample_factor: 1  # Try 2; range 1..4, original labels preserved.
     result_padding_px: 30
     preview_enabled: true
     preview_result_only_enabled: true
@@ -11,6 +12,9 @@ line_detactor:
     result_publish_enabled: true
 
     centerline_enabled: true
+    centerline_sample_spacing_m: 0.015
+    centerline_output_spacing_m: 0.01         # Try 0.02; range 0.005..0.10m.
+    centerline_clearance_check_spacing_m: 0.005 # Try 0.01; range 0.001..0.05m.
     centerline_lane_width_m: 0.65
     # Match the physical UNPADDED source BEV; default source = 120x300 at 1 cm/px.
     centerline_bev_width_m: 1.2

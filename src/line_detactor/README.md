@@ -145,6 +145,7 @@ line_detactor:
 | `connection_enabled` | `true` | 작은 성분 제거 + 바깥 경계 보간 활성화 |
 | `result_padding_px` | `30` | 좌우 각각의 도화지 여백. 0이면 바깥 보간 없음 |
 | `connection_min_component_area_px` | `8` | 면적이 이보다 작은 성분만 삭제. 1이면 삭제 없음 |
+| `connection_skeleton_downsample_factor` | `1` | 골격 추출 해상도의 축소 배수(정수 1..4). 2이면 조각 ROI의 가로·세로를 약 절반으로 축소하고 추출 좌표를 복원. 원본 차선 라벨은 유지 |
 | `connection_border_endpoint_distance_px` | `6.0` | 중심선 끝점과 실제 화면 경계 검출 픽셀 사이 허용 거리 |
 | `connection_min_fragment_length_px` | `8.0` | 보간 방향 추정에 필요한 최소 중심선 길이. 미달해도 원본 마스크 유지 |
 | `connection_max_fragments` | `24` | 한 채널에서 조사할 경계 성분 수. 초과 성분도 마스크는 유지 |
@@ -165,6 +166,57 @@ line_detactor:
 | `status_log_interval_sec` | `1.0` | 로그 간격 |
 
 ## 노란 중앙 경로와 YAML 조정
+
+### 연산량을 줄이는 샘플링 설정
+
+아래 세 파라미터는 YAML과 `line_detactor.launch.py`의 동일 이름 인자로 설정할 수 있다.
+모두 시작 시 읽으므로 변경 후 노드를 재시작한다. 기본값은 기존 기본 설정의 해상도와
+출력 간격, 검사 간격을 유지한다. 아래 시험값은 성능·정확도를 측정한 결과가 아니다.
+
+| 파라미터 | 기본값 | 시험 시작값 | 허용 범위 / 영향 |
+|---|---:|---:|---|
+| `connection_skeleton_downsample_factor` | `1` | `2` | 정수 1..4. 골격 추출과 골격 그래프 탐색을 더 작은 ROI에서 수행 |
+| `centerline_output_spacing_m` | `0.01` | `0.02` | 0.005..0.10m. 최종 경로 재샘플링 간격이며 후속 평활화·발행의 점 수도 감소 |
+| `centerline_clearance_check_spacing_m` | `0.005` | `0.01` | 0.001..0.05m. 후보 연결·최종 경로·평활화 검증에서 사용하는 최대 구간 검사 간격 |
+
+`centerline_sample_spacing_m`은 관측 차선에서 중심선 **후보**를 만드는 간격이다.
+새 `centerline_output_spacing_m`은 경로 탐색 **후** 평활화와 발행에 사용할 간격이며 서로 독립이다.
+출력 점 수는 경로 길이에 따라 정해지고 끝점을 포함하므로 실제 간격은 설정값 이하다.
+짧은 경로가 7점 미만이 되면 기존 조건에 따라 최종 평활화를 생략한다.
+
+골격 축소는 각 연결 성분을 따로 면적 보간한 뒤, 차선이 조금이라도 차지하는 축소 픽셀을
+남긴다. 그 해상도에서 골격을 추출하고 실제 ROI 크기 비율로 원래 픽셀 중심 좌표에 복원한다.
+유효한 골격 경로가 나오지 않는 작은/퇴화 조각은 원래 해상도로 다시 추출한다.
+검출 라벨과 모델 입력 해상도는 바뀌지 않지만 골격 끝점·접선·코너 형상은 달라질 수 있다.
+검사 경계는 계속 원본 관측 마스크 픽셀을 사용한다.
+
+검사 간격을 키우면 구간별 검사 횟수가 줄어든다. 구간 사이의 미검사 거리를 보완하기 위해
+기존의 `min_clearance + 픽셀 반대각선 + 검사 간격/2` 여유 거리 계산을 유지한다.
+따라서 간격을 늘리면 좁은 경로가 더 많이 제외될 수도 있다. 이 간격은 이제 후보 간격과
+독립이다. 이전에 `centerline_sample_spacing_m < 0.01`을 사용했다면 과거와 동일한 검사 간격을
+유지하려면 `centerline_clearance_check_spacing_m`을 해당 후보 간격의 절반으로 지정한다.
+
+예를 들어 다음은 골격 해상도만 바꾸는 비교 실행이다. 다른 항목도 한 번에 하나씩 바꾸어
+`lane_geometry_nanoseconds`, 중심선 유효율·길이·프레임 사이 흔들림을 비교한다.
+
+```bash
+ros2 launch line_detactor line_detactor.launch.py \
+  connection_skeleton_downsample_factor:=2
+```
+
+`vehicle_bringup/auto_drive.launch.py`에서는 `line_detactor_params_file`로 전달하는 YAML의
+`line_detactor.ros__parameters` 아래에 같은 키를 넣는다. 다음은 세 항목을 조합한 시험 설정이다.
+기존 YAML에 아래 값을 반영하면 기존 모델 정밀도 등 다른 설정을 유지할 수 있다.
+
+```yaml
+line_detactor:
+  ros__parameters:
+    connection_skeleton_downsample_factor: 2
+    centerline_output_spacing_m: 0.02
+    centerline_clearance_check_spacing_m: 0.01
+```
+
+### 중앙 경로 생성 동작
 
 `centerline_enabled: true`가 기본이다. `connection_enabled: true`에서 동작한다.
 `connection_enabled: false`는 기존 raw 프리뷰 모드이며 중앙 경로/결과 메시지를 생성하지 않는다.

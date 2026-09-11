@@ -16,6 +16,8 @@ struct CenterlineConfig
   double bev_width_m{1.2};
   double bev_height_m{3.0};
   double sample_spacing_m{0.015};
+  double output_spacing_m{0.01};  // Final resampling, before smoothing/publication.
+  double clearance_check_spacing_m{0.005};  // Maximum step for segment clearance checks.
   double min_fragment_length_m{0.08};
   double tangent_window_m{0.06};
   double width_tolerance_m{0.12};

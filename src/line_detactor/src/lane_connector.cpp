@@ -75,8 +75,30 @@ cv::Mat thin(const cv::Mat & mask)
 }
 
 // Keep a single ordered skeleton path per component; side branches are not lanes.
-std::vector<Point> component_path(const cv::Mat & mask, const cv::Point & origin)
+std::vector<Point> component_path(
+  const cv::Mat & mask, const cv::Point & origin, const int downsample_factor)
 {
+  if (downsample_factor > 1) {
+    const cv::Size reduced_size(
+      (mask.cols + downsample_factor - 1) / downsample_factor,
+      (mask.rows + downsample_factor - 1) / downsample_factor);
+    cv::Mat reduced;
+    // Retain any occupied area so thin lane pixels are not lost by nearest-neighbor sampling.
+    cv::resize(mask, reduced, reduced_size, 0.0, 0.0, cv::INTER_AREA);
+    reduced = reduced > 0;
+    auto path = component_path(reduced, cv::Point(0, 0), 1);
+    if (path.size() >= 2U) {
+      const float sx = static_cast<float>(mask.cols) / reduced.cols;
+      const float sy = static_cast<float>(mask.rows) / reduced.rows;
+      for (auto & point : path) {
+        // Map pixel centers using actual ROI dimensions, including partial edge cells.
+        point.x = origin.x + (point.x + 0.5F) * sx - 0.5F;
+        point.y = origin.y + (point.y + 0.5F) * sy - 0.5F;
+      }
+      return path;
+    }
+    // Tiny or degenerate reduced components retain the original extraction behavior.
+  }
   const cv::Mat skeleton = thin(mask);
   std::vector<cv::Point> pixels;
   cv::findNonZero(skeleton, pixels);
@@ -313,7 +335,8 @@ std::vector<BorderEndpoint> retain_components(
   for (const int id : retained_components) {
     const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
       stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
-    auto path = component_path(components(roi) == id, roi.tl());
+    auto path = component_path(
+      components(roi) == id, roi.tl(), config.skeleton_downsample_factor);
     if (path.size() >= 2U) {
       auto padded_path = path;
       for (auto & point : padded_path) {point.x += config.padding_px;}
@@ -359,6 +382,9 @@ cv::Mat bridge_mask(const std::vector<Point> & curve, const cv::Size & size,
 void validate_lane_connection(const LaneConnectionConfig & config)
 {
   const auto positive = [](double value) {return std::isfinite(value) && value > 0.0;};
+  if (config.skeleton_downsample_factor < 1 || config.skeleton_downsample_factor > 4) {
+    throw std::invalid_argument("connection_skeleton_downsample_factor must be within 1..4");
+  }
   if (config.padding_px < 0 || config.padding_px > 300 || config.min_component_area_px < 1 ||
     config.max_fragments < 1 || config.max_fragments > 64 || config.line_width_px < 1 ||
     config.line_width_px > 10 || !positive(config.min_fragment_length_px) ||

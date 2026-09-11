@@ -19,6 +19,9 @@ line_detactor:
     connection_enabled: true
     result_padding_px: 30                 # Each side, output canvas only: 120 -> 180.
     connection_min_component_area_px: 8   # Sole noise-removal rule; 1 disables removal.
+    # 1..4; 2 thins each component at about half width/height, then restores coordinates.
+    # Original labels stay intact; coarse skeletons may change endpoints/corner shape.
+    connection_skeleton_downsample_factor: 1
     connection_border_endpoint_distance_px: 6.0 # Skeleton tip -> actual edge contact limit.
     connection_min_fragment_length_px: 8.0 # Minimum support for interpolation ONLY.
     connection_max_fragments: 24          # Cap border candidates only; never deletes masks.
@@ -52,6 +55,10 @@ line_detactor:
     centerline_bev_width_m: 1.2
     centerline_bev_height_m: 3.0
     centerline_sample_spacing_m: 0.015
+    centerline_output_spacing_m: 0.01    # 0.005..0.10m; final path spacing before smoothing.
+    # 0.001..0.05m, independent of candidate/output spacing. Half this step is added
+    # to the clearance guard; larger steps reduce checks but can reject tighter paths.
+    centerline_clearance_check_spacing_m: 0.005
     centerline_min_fragment_length_m: 0.08
     centerline_tangent_window_m: 0.06
     centerline_width_tolerance_m: 0.12
