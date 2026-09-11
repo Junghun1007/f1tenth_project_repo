@@ -407,7 +407,8 @@ private:
   void on_image(const Image::ConstSharedPtr message)
   {
     const auto received_at = SteadyClock::now();
-    const auto received_stamp = node_.get_clock()->now().to_msg();
+    const auto received_stamp =
+      static_cast<builtin_interfaces::msg::Time>(node_.get_clock()->now());
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
       latest_message_ = message;
@@ -537,7 +538,8 @@ private:
     message.detector_total_compute_nanoseconds = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
         result_ready_at - processing_started_at).count());
-    message.detector_result_ready_stamp = node_.get_clock()->now().to_msg();
+    message.detector_result_ready_stamp =
+      static_cast<builtin_interfaces::msg::Time>(node_.get_clock()->now());
     result_publisher_->publish(message);
     result_image_publisher_->publish(message.image);
   }
