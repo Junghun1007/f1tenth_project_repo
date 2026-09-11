@@ -3,6 +3,9 @@
 `auto_control_node` follows the yellow centerline published by `line_detactor`
 as `line_detactor/msg/LaneResult`. It writes to the VESC duty, brake-current,
 and servo topics used by manual driving. Do not run manual and auto driving together.
+The installed runtime is C++/`rclcpp`; Python and NumPy are not on the per-frame
+control path. The package's older Python files remain only as implementation
+reference and are not installed by the `ament_cmake` build.
 
 ## Control pipeline
 
@@ -38,7 +41,12 @@ Missing, invalid, short, duplicate, out-of-order or stale centerlines invalidate
 control. Stale ERPM, VESC disconnect, disable and shutdown also send duty zero
 and centered steering. These stops release electrical brake current. Existing
 freshness thresholds are retained; camera capture age includes ML inference time.
-`stop_line_mask` is diagnostic and does not trigger automatic stop-line handling.
+`stop_line_present` is diagnostic and does not trigger automatic stop-line handling.
+
+The control result carries timestamps, lane state/geometry, and the ordered
+centerline only. BGR/label/mask payloads are not serialized through the
+latency-sensitive control topic. Use `/line_detactor/result_image` for visual
+diagnostics; it is generated only while the preview or an image subscriber needs it.
 
 Default BEV is 120x300, X=0..3m and Y=-0.6..0.6m. The integrated launch checks
 that output size matches the static model and derives producer/consumer geometry
@@ -161,3 +169,5 @@ Diagnostic topics are `/auto/current_duty`, `/auto/current_brake_current`,
 `/auto/steering_angle_rad`. Stanley steering diagnostics are available at
 `/auto/cross_track_error_m`, `/auto/heading_error_rad`,
 `/auto/raw_steering_angle_rad`, and `/auto/current_servo_position`.
+Diagnostic messages are serialized only while a subscriber is present. VESC
+actuator command publication is unconditional in the corresponding active mode.

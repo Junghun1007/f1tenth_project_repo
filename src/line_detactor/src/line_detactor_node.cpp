@@ -499,25 +499,6 @@ private:
     message.source_height = input.height;
     message.padding_left = connection_.padding_px;
     message.padding_right = connection_.padding_px;
-    for (int side = 0; side < 2; ++side) {
-      auto & curve = side == 0 ? message.left : message.right;
-      const auto & lane = result.lanes[side];
-      curve.observed_length_px = static_cast<float>(lane.observed_length_px);
-      curve.provenance = lane.interpolated;
-      curve.segment_starts = lane.segment_starts;
-      curve.points.reserve(lane.points.size());
-      for (const auto & point : lane.points) {
-        geometry_msgs::msg::Point32 output;
-        output.x = point.x;
-        output.y = point.y;
-        output.z = 0.0F;
-        curve.points.push_back(output);
-      }
-    }
-    message.image = image_message(result.image, input, "bgr8");
-    message.labels = image_message(result.labels, input, "mono8");
-    message.stop_line_mask = image_message(result.stop_line_mask, input, "mono8");
-    message.centerline_mask = image_message(result.centerline.mask, input, "mono8");
     message.centerline_valid = result.centerline.points.size() >= 2U;
     message.centerline_sample_limit_reached = result.centerline.sample_limit_reached;
     message.centerline_support = result.centerline.support;
@@ -530,7 +511,7 @@ private:
       output.z = 0.0F;
       message.centerline_points.push_back(output);
     }
-    message.stop_line_present = cv::countNonZero(result.stop_line_mask) > 0;
+    message.stop_line_present = result.stop_line_present;
     const auto result_ready_at = SteadyClock::now();
     message.result_message_build_nanoseconds = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -540,8 +521,13 @@ private:
         result_ready_at - processing_started_at).count());
     message.detector_result_ready_stamp =
       static_cast<builtin_interfaces::msg::Time>(node_.get_clock()->now());
-    result_publisher_->publish(message);
-    result_image_publisher_->publish(message.image);
+    result_publisher_->publish(std::move(message));
+    if (!result.image.empty() &&
+      (result_image_publisher_->get_subscription_count() > 0U ||
+      result_image_publisher_->get_intra_process_subscription_count() > 0U))
+    {
+      result_image_publisher_->publish(image_message(result.image, input, "bgr8"));
+    }
   }
 
   cv::Mat result_overlay(const LaneConnectionResult & result, const Image & input) const
@@ -678,19 +664,30 @@ private:
             message->data.data(), message->data.size(), message->step);
           if (connection_.enabled) {
             const auto started = std::chrono::steady_clock::now();
+            const bool render_result = preview_enabled_ ||
+              (result_image_publisher_ &&
+              (result_image_publisher_->get_subscription_count() > 0U ||
+              result_image_publisher_->get_intra_process_subscription_count() > 0U));
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
-            result = connect_lane_fragments(labels, connection_);
+            result = connect_lane_fragments(labels, connection_, render_result);
             // Stop lines never enter the left/right connector. Retain overlaps
             // in independent masks, painting green only in the display image.
             cv::Mat stop_mask(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->stop_line_mask_data()));
-            cv::copyMakeBorder(stop_mask, result.stop_line_mask, 0, 0,
-              connection_.padding_px, connection_.padding_px, cv::BORDER_CONSTANT, cv::Scalar(0));
-            result.image.setTo(cv::Scalar(0, 255, 0), result.stop_line_mask);
+            result.stop_line_present = cv::countNonZero(stop_mask) > 0;
+            if (render_result) {
+              cv::copyMakeBorder(stop_mask, result.stop_line_mask, 0, 0,
+                connection_.padding_px, connection_.padding_px,
+                cv::BORDER_CONSTANT, cv::Scalar(0));
+              result.image.setTo(cv::Scalar(0, 255, 0), result.stop_line_mask);
+            }
             result.centerline = generate_centerline(
-              result.labels, model_input_width_, connection_.padding_px, centerline_);
-            result.image.setTo(cv::Scalar(0, 255, 255), result.centerline.mask);
+              result.labels, result.observed_paths,
+              model_input_width_, connection_.padding_px, centerline_, render_result);
+            if (render_result) {
+              result.image.setTo(cv::Scalar(0, 255, 255), result.centerline.mask);
+            }
             if (result.centerline.sample_limit_reached) {
               RCLCPP_WARN_THROTTLE(node_.get_logger(), *node_.get_clock(), 5000,
                 "Centerline sample budget exceeded; publishing an empty centerline for this frame");

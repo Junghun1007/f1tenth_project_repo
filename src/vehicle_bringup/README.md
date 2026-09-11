@@ -169,6 +169,7 @@ same centerline, Stanley steering, and servo-position calculation runs without
 publishing duty, brake, or servo actuator commands. It also disables BEV and ML
 previews so GUI rendering does not contaminate engine comparisons. The ordinary
 driving behavior is unchanged when the argument is `false` (the default).
+The controller calculation and benchmark recorder run in C++/`rclcpp`.
 
 The measurement starts only after the first valid ML centerline completes the
 servo-position calculation. It then records 30 seconds by default and shuts down
@@ -212,12 +213,23 @@ The main measurements are:
 - result throughput FPS, valid servo-position calculation FPS, and latency-derived FPS
 - Jetson total-module `VDD_IN`/`5V_IN` power average/minimum/maximum and estimated energy
 
+`lane_result_throughput_fps_excluding_source_transport_delay` and
+`servo_position_calculation_throughput_fps` are counts divided by the measurement
+window. A fixed source-to-detector latency therefore does not get added to every
+throughput interval: pipelined frames can overlap. The source still has to actually
+publish at that rate, and detector queueing or dropped latest-only frames can lower it.
+The JSON schema version is 2 and records `controller_implementation=rclcpp_cpp`.
+It also embeds the throughput and detector-input-to-control latency definitions
+so benchmark files remain self-describing.
+
 Power is read-only sampled from the INA3221 sysfs rail every 0.1 seconds. If the
 platform does not expose a recognized total-input rail, the JSON marks power as
 unavailable while retaining all timing measurements.
 
-`LaneResult.msg` carries the per-frame timing metadata, so rebuild all message
-producer/consumer packages after pulling this change:
+`LaneResult.msg` is now a lightweight control message: image, label, mask, and
+diagnostic lane-curve arrays were removed. The rendered result remains on
+`/line_detactor/result_image`. Rebuild all message producer/consumer packages after
+pulling this change:
 
 ```bash
 source /opt/ros/humble/setup.bash

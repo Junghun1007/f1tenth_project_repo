@@ -1,11 +1,11 @@
 #include "line_detactor/centerline.hpp"
-#include "line_detactor/lane_connector.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <queue>
 #include <stdexcept>
 #include <utility>
@@ -381,10 +381,12 @@ void validate_centerline(const CenterlineConfig & c)
 }
 
 CenterlineResult generate_centerline(
-  const cv::Mat & labels, int source_width, int padding, const CenterlineConfig & cfg)
+  const cv::Mat & labels, const ObservedLanePaths & observed_paths,
+  int source_width, int padding, const CenterlineConfig & cfg,
+  const bool render_mask)
 {
   CenterlineResult result;
-  result.mask = cv::Mat::zeros(labels.size(), CV_8UC1);
+  if (render_mask) {result.mask = cv::Mat::zeros(labels.size(), CV_8UC1);}
   if (!cfg.enabled) {return result;}
   if (labels.empty() || labels.type() != CV_8UC1 || source_width <= 0 || padding < 0 ||
     labels.cols != source_width + 2 * padding)
@@ -405,11 +407,10 @@ CenterlineResult generate_centerline(
   const Geometry geometry{cfg.bev_width_m, cfg.bev_height_m,
     std::min(cfg.outside_margin_m, std::max(0, padding - cfg.line_width_px) * sx),
     cfg.min_clearance_m + 0.5 * std::hypot(sx, sy) + check_step / 2.0, check_step, boundary_index};
-  const auto observed = observed_lane_paths(labels);
   std::vector<Fragment> fragments;
   std::size_t samples = 0U;
   for (int side = 0; side < 2; ++side) {
-    for (const auto & curve : observed[side]) {
+    for (const auto & curve : observed_paths[side]) {
       Path points;
       for (const auto & p : curve) {points.push_back(metric(p));}
       const auto raw_arc = arc_lengths(points);
@@ -423,9 +424,26 @@ CenterlineResult generate_centerline(
       points = gaussian(resample(points, cfg.sample_spacing_m), 1.0);
       const int half = std::max(1, static_cast<int>(std::round(cfg.tangent_window_m / (2.0 * cfg.sample_spacing_m))));
       Fragment f{side, points, tangents(points, half), arc_lengths(points), {}, {}, {}, {}};
-      prepare_outer_reference(f, cfg);
       samples += points.size();
       fragments.push_back(std::move(f));
+    }
+  }
+  std::array<Path, 2> side_points;
+  std::array<std::vector<std::pair<std::size_t, std::size_t>>, 2> side_references;
+  for (std::size_t fragment_index = 0; fragment_index < fragments.size(); ++fragment_index) {
+    auto & fragment = fragments[fragment_index];
+    prepare_outer_reference(fragment, cfg);
+    for (std::size_t point_index = 0; point_index < fragment.points.size(); ++point_index) {
+      side_points[fragment.side].push_back(fragment.points[point_index]);
+      side_references[fragment.side].emplace_back(fragment_index, point_index);
+    }
+  }
+  const double pairing_radius = std::hypot(
+    cfg.lane_width_m + cfg.width_tolerance_m, cfg.pair_along_tolerance_m);
+  std::array<std::unique_ptr<SpatialIndex>, 2> side_indices;
+  for (int side = 0; side < 2; ++side) {
+    if (!side_points[side].empty()) {
+      side_indices[side] = std::make_unique<SpatialIndex>(side_points[side], pairing_radius);
     }
   }
   std::vector<Candidate> candidates;
@@ -444,9 +462,12 @@ CenterlineResult generate_centerline(
       std::size_t counterpart_index = 0U;
       std::uint8_t mode = 1U;
       double best = std::numeric_limits<double>::infinity();
-      for (const auto & other : fragments) {
-        if (other.side == f.side) {continue;}
-        for (std::size_t j = 0; j < other.points.size(); ++j) {
+      const int opposite_side = 1 - f.side;
+      if (side_indices[opposite_side]) {
+        for (const int nearby_index : side_indices[opposite_side]->nearby(p, pairing_radius)) {
+          const auto [fragment_index, j] =
+            side_references[opposite_side][static_cast<std::size_t>(nearby_index)];
+          const auto & other = fragments[fragment_index];
           if (other.arc[j] < 0.025 || other.arc.back() - other.arc[j] < 0.025) {continue;}
           const Point delta = other.points[j] - p;
           const double across = delta.dot(normal);
@@ -606,8 +627,12 @@ CenterlineResult generate_centerline(
   for (const auto & p : path) {
     result.points.emplace_back(static_cast<float>(p.x / sx + padding), static_cast<float>(p.y / sy));
   }
-  for (std::size_t i = 1; i < result.points.size(); ++i) {
-    cv::line(result.mask, result.points[i - 1], result.points[i], cv::Scalar(255), cfg.line_width_px, cv::LINE_8);
+  if (render_mask) {
+    for (std::size_t i = 1; i < result.points.size(); ++i) {
+      cv::line(
+        result.mask, result.points[i - 1], result.points[i],
+        cv::Scalar(255), cfg.line_width_px, cv::LINE_8);
+    }
   }
   return result;
 }

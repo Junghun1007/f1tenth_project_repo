@@ -29,9 +29,8 @@ find_package(builtin_interfaces REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/LaneCurve.msg"
   "msg/LaneResult.msg"
-  DEPENDENCIES std_msgs geometry_msgs sensor_msgs builtin_interfaces
+  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 rosidl_get_typesupport_target(lane_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
@@ -164,6 +163,7 @@ install(
 ament_export_targets(export_line_detactor HAS_LIBRARY_TARGET)
 ament_export_dependencies(
   rosidl_default_runtime
+  builtin_interfaces
   std_msgs
   geometry_msgs
   ament_index_cpp

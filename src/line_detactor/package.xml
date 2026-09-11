@@ -3,7 +3,7 @@
 <package format="3">
   <name>line_detactor</name>
   <version>0.1.0</version>
-  <description>TensorRT BEV lane inference, fragment connection and expanded lane result frames.</description>
+  <description>TensorRT BEV lane inference, centerline generation, and lightweight control results.</description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>TODO</license>
 

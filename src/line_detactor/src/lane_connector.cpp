@@ -260,20 +260,6 @@ std::vector<Point> bridge(
   return best;
 }
 
-// Keep the complete model mask. Skeleton paths are metadata/direction estimates only.
-void append_segment(ConnectedLane & lane, const std::vector<Point> & path,
-  const bool inferred, const int padding)
-{
-  if (path.empty()) {return;}
-  lane.segment_starts.push_back(static_cast<std::uint32_t>(lane.points.size()));
-  for (auto point : path) {
-    point.x += padding;
-    lane.points.push_back(point);
-    lane.interpolated.push_back(inferred ? 1U : 0U);
-  }
-  if (!inferred) {lane.observed_length_px += arc_length(path);}
-}
-
 void add_endpoint(std::vector<BorderEndpoint> & endpoints, const std::vector<Point> & path,
   const bool at_end, const cv::Mat & components, const int id,
   const LaneConnectionConfig & config)
@@ -305,11 +291,13 @@ void add_endpoint(std::vector<BorderEndpoint> & endpoints, const std::vector<Poi
 
 std::vector<BorderEndpoint> retain_components(
   const cv::Mat & input, const int side, const LaneConnectionConfig & config,
-  cv::Mat & output, ConnectedLane & lane)
+  cv::Mat & output, std::vector<std::vector<Point>> & observed_paths,
+  const bool connect_borders)
 {
   cv::Mat components, stats, centroids;
   const int count = cv::connectedComponentsWithStats(
     input == side + 1, components, stats, centroids, 8, CV_32S);
+  std::vector<int> retained_components;
   std::vector<int> border_candidates;
   for (int id = 1; id < count; ++id) {
     if (stats.at<int>(id, cv::CC_STAT_AREA) < config.min_component_area_px) {continue;}
@@ -318,8 +306,22 @@ std::vector<BorderEndpoint> retain_components(
     const cv::Mat mask = components(roi) == id;
     // No thinning/repainting, minimum-length deletion, winner selection or pair rejection.
     output(cv::Rect(roi.x + config.padding_px, roi.y, roi.width, roi.height)).setTo(side + 1, mask);
+    retained_components.push_back(id);
     if (roi.x == 0 || roi.x + roi.width == input.cols) {border_candidates.push_back(id);}
   }
+  std::vector<std::vector<Point>> component_paths(static_cast<std::size_t>(count));
+  for (const int id : retained_components) {
+    const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
+      stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
+    auto path = component_path(components(roi) == id, roi.tl());
+    if (path.size() >= 2U) {
+      auto padded_path = path;
+      for (auto & point : padded_path) {point.x += config.padding_px;}
+      observed_paths.push_back(std::move(padded_path));
+    }
+    component_paths[static_cast<std::size_t>(id)] = std::move(path);
+  }
+  if (!connect_borders) {return {};}
   std::stable_sort(border_candidates.begin(), border_candidates.end(), [&](int a, int b) {
     return stats.at<int>(a, cv::CC_STAT_AREA) > stats.at<int>(b, cv::CC_STAT_AREA);
   });
@@ -328,12 +330,9 @@ std::vector<BorderEndpoint> retain_components(
   }
   std::vector<BorderEndpoint> endpoints;
   for (const int id : border_candidates) {
-    const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
-      stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
-    const auto path = component_path(components(roi) == id, roi.tl());
+    const auto & path = component_paths[static_cast<std::size_t>(id)];
     // Length only gates extrapolation eligibility, never removes model pixels.
     if (arc_length(path) < config.min_fragment_length_px || path.size() < 2U) {continue;}
-    append_segment(lane, path, false, config.padding_px);
     add_endpoint(endpoints, path, false, components, id, config);
     add_endpoint(endpoints, path, true, components, id, config);
   }
@@ -372,25 +371,9 @@ void validate_lane_connection(const LaneConnectionConfig & config)
   {throw std::invalid_argument("Invalid border interpolation geometry/size parameters");}
 }
 
-std::array<std::vector<std::vector<cv::Point2f>>, 2> observed_lane_paths(const cv::Mat & labels)
-{
-  std::array<std::vector<std::vector<cv::Point2f>>, 2> paths;
-  for (int side = 0; side < 2; ++side) {
-    cv::Mat components, stats, centroids;
-    const int count = cv::connectedComponentsWithStats(
-      labels == side + 1, components, stats, centroids, 8, CV_32S);
-    for (int id = 1; id < count; ++id) {
-      const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
-        stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
-      auto points = component_path(components(roi) == id, roi.tl());
-      if (points.size() >= 2U) {paths[side].push_back(std::move(points));}
-    }
-  }
-  return paths;
-}
-
 LaneConnectionResult connect_lane_fragments(
-  const cv::Mat & labels, const LaneConnectionConfig & config)
+  const cv::Mat & labels, const LaneConnectionConfig & config,
+  const bool render_image)
 {
   if (labels.type() != CV_8UC1 || labels.empty()) {
     throw std::invalid_argument("Lane connector expects a nonempty mono8 label image");
@@ -402,7 +385,8 @@ LaneConnectionResult connect_lane_fragments(
   std::array<std::vector<BorderEndpoint>, 2> endpoints;
   std::vector<Candidate> candidates;
   for (int side = 0; side < 2; ++side) {
-    endpoints[side] = retain_components(labels, side, config, result.labels, result.lanes[side]);
+    endpoints[side] = retain_components(
+      labels, side, config, result.labels, result.observed_paths[side], render_image);
     const auto & tips = endpoints[side];
     for (std::size_t a = 0; a < tips.size(); ++a) {
       for (std::size_t b = a + 1; b < tips.size(); ++b) {
@@ -427,16 +411,18 @@ LaneConnectionResult connect_lane_fragments(
     cv::bitwise_and(mask, result.labels != 0, collision);
     if (cv::countNonZero(collision) != 0) {continue;}
     result.labels.setTo(candidate.side + 3, mask);
-    append_segment(result.lanes[candidate.side], candidate.curve, true, config.padding_px);
     used[candidate.side][candidate.a] = true;
     used[candidate.side][candidate.b] = true;
   }
-  result.image = cv::Mat::zeros(size, CV_8UC3);
+  if (render_image) {result.image = cv::Mat::zeros(size, CV_8UC3);}
   for (int side = 0; side < 2; ++side) {
-    const cv::Mat mask = (result.labels == side + 1) | (result.labels == side + 3);
-    if (cv::countNonZero(mask) == 0) {continue;}
+    const cv::Mat model_mask = result.labels == side + 1;
+    if (cv::countNonZero(model_mask) == 0) {continue;}
     result.state |= static_cast<std::uint8_t>(1U << side);
-    result.image.setTo(side == 0 ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 0, 255), mask);
+    if (render_image) {
+      const cv::Mat mask = model_mask | (result.labels == side + 3);
+      result.image.setTo(side == 0 ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 0, 255), mask);
+    }
   }
   return result;
 }

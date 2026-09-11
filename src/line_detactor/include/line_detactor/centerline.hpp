@@ -1,10 +1,14 @@
 #ifndef LINE_DETACTOR__CENTERLINE_HPP_
 #define LINE_DETACTOR__CENTERLINE_HPP_
+#include <array>
 #include <cstdint>
 #include <vector>
 #include <opencv2/core.hpp>
 namespace line_detactor
 {
+using ObservedLanePaths =
+  std::array<std::vector<std::vector<cv::Point2f>>, 2>;
+
 struct CenterlineConfig
 {
   bool enabled{true};
@@ -52,6 +56,8 @@ struct CenterlineResult
 };
 void validate_centerline(const CenterlineConfig & config);
 CenterlineResult generate_centerline(
-  const cv::Mat & labels, int source_width, int padding, const CenterlineConfig & config);
+  const cv::Mat & labels, const ObservedLanePaths & observed_paths,
+  int source_width, int padding, const CenterlineConfig & config,
+  bool render_mask = true);
 }  // namespace line_detactor
 #endif

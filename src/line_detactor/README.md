@@ -256,18 +256,17 @@ ros2 launch line_detactor line_detactor.launch.py \
 비대칭/전방 크롭 영상은 원점 변환을 추가하기 전 이 가정을 그대로 적용하면 안 된다.
 패딩은 관측 영역이나 도로 폭에 포함되지 않는다.
 
-`LaneResult`에 추가한 필드:
+`LaneResult`의 중앙 경로 필드:
 
 - `centerline_points`: 가까운 곳부터 정렬된 확장 영상 픽셀 좌표, z=0. 미터/TF 좌표가 아님.
 - `centerline_support`: 점 수와 같은 길이. 1=한쪽 오프셋, 2=양쪽 중점,
   3=6.5cm보다 긴 짧은 연결 구간, 4=바깥 차선 기준 혼합(`CENTER_OUTER`).
   국소 생성 근거이며 평활화 후 정확도 확률은 아님. 4에도 양쪽/한쪽 관측 모두 가능하다.
-- `centerline_mask`: image와 같은 크기의 `mono8` 0/255 마스크.
 - `centerline_valid`: 두 점 이상의 기하 경로가 존재함. 주행 가능 판정은 아님.
 - `centerline_sample_limit_reached`: 계산 예산 초과 여부.
 - `centerline_bev_width_m`, `centerline_bev_height_m`: 계산에 사용한 원본의 실제 범위.
 
-생성 불가/비활성화 시 점과 support 배열은 비고, 마스크는 0, valid는 false다.
+생성 불가/비활성화 시 점과 support 배열은 비고 valid는 false다.
 관측 경계가 화면 밖에 있으면 충돌 여부를 확인할 수 없다. 경계 여유 거리에는
 픽셀·샘플 간격 여유분을 추가하지만 차량 외곽/장애물/조향 곡률 제한이나 프레임 간
 추적을 포함하지 않는다. `labels=0`은 주행 가능 공간이 아니다.
@@ -369,7 +368,10 @@ line_detactor:
 결과를 겹쳐 표시한다. `connection_enabled: false`인 raw 모드에서는 이 옵션을
 적용하지 않고 기존 raw 추론 프리뷰를 표시한다.
 연결 모드에서는 사용되지 않던 GPU 원본 오버레이 생성과 해당 D2H 복사도 생략한다.
-모델 추론·중앙선 생성·ROS 결과 메시지의 계산량은 그대로다. 실제 속도 향상은 미측정이다.
+프리뷰와 `/line_detactor/result_image` 구독자가 모두 없으면 BGR 결과 영상과 표시용
+정지선/중앙선 마스크 및 표시 전용 화면 밖 차선 연결도 만들지 않는다. 제어 중앙선은
+원래부터 이 표시용 연결선을 입력으로 쓰지 않으므로 주행 계산 결과는 바뀌지 않는다.
+모델 추론 결과 자체도 바뀌지 않는다.
 
 자동주행에서도 YAML 또는 명시적 launch 인자로 조절할 수 있다.
 
@@ -390,25 +392,17 @@ YAML보다 우선하며 변경 후 재실행한다.
 - `/line_detactor/result`: `line_detactor/msg/LaneResult`
 - `/line_detactor/result_image`: `sensor_msgs/msg/Image`, `bgr8`, 차선·정지선·노란 중앙 경로를 그린 검은 배경 영상
 
-`LaneResult.image`는 같은 BGR 결과이고 `labels`는 기존 좌우 차선용 `mono8`이다.
-라벨은 `0=배경`, `1=왼쪽 모델`, `2=오른쪽 모델`, `3=왼쪽 바깥 보간`,
-`4=오른쪽 바깥 보간`이다. `stop_line_mask`는 별도의 `mono8` 0/255 정지선 마스크이며
-image/labels와 같은 180×300(기본 패딩)의 좌표를 쓴다. 교차점은 labels와 stop_line_mask
-양쪽에 동시에 남을 수 있다. `stop_line_present`는 정지선 픽셀이 1개 이상인지를 나타내며
+제어용 `LaneResult`에는 BGR 영상, 좌우 라벨, 정지선/중앙선 마스크와 좌우 곡선
+진단 배열을 넣지 않는다. 타임스탬프·성능 시간·상태·원본 크기/패딩·중앙 경로만
+전송해 DDS 직렬화와 복사를 줄인다. `stop_line_present`는 정지선 픽셀이 1개 이상인지를 나타내며
 확정된 정지 명령은 아니다. 정지선만 있으면 state=NONE이어도 stop_line_present=true다.
-세 종류 모두 없으면 검은 영상, NONE, 빈 정지선 마스크를 발행한다.
+시각 결과가 필요하면 별도 `result_image` 토픽을 구독한다. 이 토픽은 구독자나 로컬
+프리뷰가 있을 때만 합성하며, 아무 차선/정지선/경로도 없으면 검은 영상을 발행한다.
 원본 timestamp/frame_id를 유지하며 QoS는 best effort, volatile, KeepLast(1)이다.
 
 `processing_mode=BORDER_ONLY`이다. `state`는 **남아 있는 마스크의 좌우 존재 여부**
 (`0=NONE`, `1=LEFT_ONLY`, `2=RIGHT_ONLY`, `3=BOTH`)이며 한 개의 연속 차선이
 확보되었다는 의미가 아니다. 계획 입력으로 해석할 때 이 차이를 반영해야 한다.
-
-`left/right` 점 목록은 **경계 방향 추정에 사용한 성분 중심선 및 보간 곡선의
-진단용 구간 목록**이다. 내부 성분/폐곡선까지 전부 표현하는 목록이 아니다.
-`segment_starts`의 각 시작 오프셋에서 다음 오프셋 직전(마지막은 배열 끝)까지가
-한 구간이며 **서로 다른 구간을 선으로 잇지 않는다**. 점별 provenance는
-`0=모델 지지`, `1=보간`이다. 관측 길이도 진단에 사용한 경계 성분만 집계한다.
-전체 좌우 검출은 `labels`, 정지선 검출은 `stop_line_mask`가 기준이며 `image`는 합성 표시다.
 
 점은 확장 영상의 픽셀 좌표(x 오른쪽, y 아래쪽, z=0)이며 미터/TF 위치가 아니다.
 
@@ -447,6 +441,10 @@ queue time, H2D/preprocess, pure inference, label export, backend postprocess,
 lane geometry, result-message construction, and total detector compute time.
 These fields exclude GUI work and allow `auto_drive` performance mode to separate
 compute time from ROS transport and source-capture delay.
+
+연결 단계에서 추출한 connected component 골격은 중앙선 생성에서 그대로 재사용한다.
+좌우 표본 대응은 전체 조합을 반복 탐색하지 않고 미터 단위 공간 인덱스로 주변 반대편
+표본만 조회한다. 제어 메시지에는 중앙 경로와 검증/측정에 필요한 스칼라만 실린다.
 
 logits 전체는 CPU에 복사하지 않고 120×300 mono8 두 장(좌우 라벨 + 정지선 마스크)을
 한 번에 전달한다. 36KB에서 72KB로 늘며 CUDA stream, pinned memory, GPU 전처리·threshold·
