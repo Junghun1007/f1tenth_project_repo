@@ -3,6 +3,7 @@
 #include "line_detactor/tensorrt_lane_backend.hpp"
 #include "line_detactor/lane_connector.hpp"
 #include "line_detactor/msg/lane_result.hpp"
+#include "line_detactor/stop_line_distance.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -38,7 +39,7 @@ namespace
 
 constexpr int kDefaultInputWidth = 120;
 constexpr int kDefaultInputHeight = 300;
-constexpr int kBannerHeight = 100;
+constexpr int kBannerHeight = 74;
 constexpr char kModelFilename[] =
   "fast_scnn_stop_line_120x300_batch_1.onnx";
 
@@ -135,6 +136,9 @@ public:
     subscription_ = node_.create_subscription<sensor_msgs::msg::Image>(
       input_topic_, image_qos,
       std::bind(&Impl::on_image, this, std::placeholders::_1));
+    control_latency_subscription_ = node_.create_subscription<std_msgs::msg::Float32>(
+      control_latency_topic_, image_qos,
+      std::bind(&Impl::on_control_latency, this, std::placeholders::_1));
 
     try {
       worker_ = std::thread(&Impl::worker_loop, this);
@@ -192,8 +196,8 @@ private:
     Image::ConstSharedPtr input;
     LaneConnectionResult result;
     cv::Mat raw;
-    LaneInferenceTiming timing;
-    std::uint64_t connection_nanoseconds{0U};
+    double average_inference_milliseconds{0.0};
+    double average_postprocess_milliseconds{0.0};
     std::uint64_t generation{0U};
   };
 
@@ -313,6 +317,8 @@ private:
     result_topic_ = node_.declare_parameter<std::string>("result_topic", "/line_detactor/result");
     result_image_topic_ = node_.declare_parameter<std::string>(
       "result_image_topic", "/line_detactor/result_image");
+    control_latency_topic_ = node_.declare_parameter<std::string>(
+      "control_latency_topic", "/auto/detector_input_to_control_decision_ms");
     warmup_iterations_ = node_.declare_parameter<int>(
       "warmup_iterations", 10);
     preview_enabled_ = node_.declare_parameter<bool>(
@@ -344,6 +350,9 @@ private:
     }
     if (input_topic_.empty()) {
       throw std::invalid_argument("input_topic must not be empty");
+    }
+    if (control_latency_topic_.empty()) {
+      throw std::invalid_argument("control_latency_topic must not be empty");
     }
     if (model_path_.empty()) {
       throw std::invalid_argument("model_path must not be empty");
@@ -425,6 +434,16 @@ private:
       ++received_total_;
     }
     frame_condition_.notify_one();
+  }
+
+  void on_control_latency(const std_msgs::msg::Float32::ConstSharedPtr message)
+  {
+    if (!std::isfinite(message->data) || message->data <= 0.0F) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(preview_mutex_);
+    ++control_latency_sample_count_;
+    control_latency_total_milliseconds_ += message->data;
   }
 
   void validate_image(const Image & message) const
@@ -555,30 +574,33 @@ private:
 
   cv::Mat preview_canvas(
     const cv::Mat & overlay,
-    const double inference_milliseconds,
-    const double correction_milliseconds,
-    const double connection_milliseconds,
-    const std::uint8_t state,
+    const double average_inference_milliseconds,
+    const double average_postprocess_milliseconds,
+    const double average_control_milliseconds,
+    const double stop_line_distance_m,
     const double preview_fps) const
   {
     cv::Mat banner = cv::Mat::zeros(
       kBannerHeight, overlay.cols, CV_8UC3);
-    const double model_fps = inference_milliseconds > 0.0 ?
-      1000.0 / inference_milliseconds : 0.0;
+    const double inference_fps = average_inference_milliseconds > 0.0 ?
+      1000.0 / average_inference_milliseconds : 0.0;
+    const double postprocess_fps = average_postprocess_milliseconds > 0.0 ?
+      1000.0 / average_postprocess_milliseconds : 0.0;
+    const double control_fps = average_control_milliseconds > 0.0 ?
+      1000.0 / average_control_milliseconds : 0.0;
     const std::vector<std::pair<std::string, cv::Scalar>> lines{
-      {"left:B right:R stop:G", cv::Scalar(220, 220, 220)},
-      {cv::format("infer %.2f ms", inference_milliseconds),
+      {cv::format("infer avg %.2fms %.1fFPS", average_inference_milliseconds, inference_fps),
         cv::Scalar(0, 255, 255)},
-      {cv::format("model %.1f FPS", model_fps), cv::Scalar(0, 255, 255)},
       {connection_.enabled ?
-        cv::format("correct %.2f ms", correction_milliseconds) :
-        "correct OFF", cv::Scalar(0, 255, 0)},
-      {connection_.enabled ? cv::format("connect %.2f ms", connection_milliseconds) :
-        "connect OFF", cv::Scalar(0, 255, 0)},
-      {connection_.enabled ? std::string("lanes ") +
-        (state == 3U ? "BOTH" : state == 1U ? "LEFT" : state == 2U ? "RIGHT" : "NONE") :
-        "lanes RAW", cv::Scalar(220, 220, 220)},
-      {cv::format("view %.1f FPS", preview_fps), cv::Scalar(255, 255, 255)}};
+        cv::format("post avg %.2fms %.1fFPS", average_postprocess_milliseconds, postprocess_fps) :
+        "post OFF", cv::Scalar(0, 255, 0)},
+      {std::isfinite(average_control_milliseconds) ?
+        cv::format("control avg %.2fms %.1fFPS", average_control_milliseconds, control_fps) :
+        "control -- ms -- FPS", cv::Scalar(255, 200, 0)},
+      {cv::format("preview %.1f FPS", preview_fps), cv::Scalar(255, 255, 255)},
+      {std::isfinite(stop_line_distance_m) ?
+        cv::format("stop %.2f m (front axle)", stop_line_distance_m) :
+        "stop -- m", cv::Scalar(0, 255, 0)}};
     for (std::size_t index = 0; index < lines.size(); ++index) {
       cv::putText(
         banner, lines[index].first,
@@ -628,6 +650,8 @@ private:
     StageStats correction;
     StageStats connection;
     StageStats postprocessing;
+    StageStats preview_execution;
+    StageStats preview_postprocess;
 
     try {
       while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -691,6 +715,9 @@ private:
             result.centerline = generate_centerline(
               result.labels, result.observed_paths,
               model_input_width_, connection_.padding_px, centerline_, render_result);
+            result.stop_line_distance_m = estimate_stop_line_distance_m(
+              stop_mask, result.centerline.points, connection_.padding_px,
+              centerline_.bev_width_m, centerline_.bev_height_m);
             if (render_result) {
               result.image.setTo(cv::Scalar(0, 255, 255), result.centerline.mask);
             }
@@ -725,6 +752,8 @@ private:
         correction.record(timing.correction_nanoseconds);
         connection.record(connection_nanoseconds);
         postprocessing.record(timing.postprocessing_nanoseconds);
+        preview_execution.record(timing.execution_nanoseconds);
+        preview_postprocess.record(timing.correction_nanoseconds);
 
         if (preview_enabled_) {
           auto snapshot = std::make_shared<PreviewFrame>();
@@ -732,8 +761,9 @@ private:
             snapshot->input = message;
           }
           snapshot->result = std::move(result);
-          snapshot->timing = timing;
-          snapshot->connection_nanoseconds = connection_nanoseconds;
+          snapshot->average_inference_milliseconds = preview_execution.average_milliseconds();
+          snapshot->average_postprocess_milliseconds =
+            preview_postprocess.average_milliseconds();
           snapshot->generation = generation;
           if (!connection_.enabled) {
             // Backend buffers are reused by the next inference. The GUI owns this copy.
@@ -812,6 +842,7 @@ private:
       double display_fps = 0.0;
       while (!stop_requested_.load(std::memory_order_acquire)) {
         std::shared_ptr<const PreviewFrame> frame;
+        double average_control_milliseconds = std::numeric_limits<double>::quiet_NaN();
         {
           std::unique_lock<std::mutex> lock(preview_mutex_);
           preview_condition_.wait_until(lock, next_preview_at, [this]() {
@@ -819,6 +850,10 @@ private:
           });
           if (stop_requested_.load(std::memory_order_acquire)) {break;}
           frame = latest_preview_;
+          if (control_latency_sample_count_ > 0U) {
+            average_control_milliseconds = control_latency_total_milliseconds_ /
+              static_cast<double>(control_latency_sample_count_);
+          }
         }
         if (frame && frame->generation != displayed_generation) {
           cv::Mat overlay;
@@ -832,10 +867,10 @@ private:
           }
           const cv::Mat canvas = preview_canvas(
             overlay,
-            nanoseconds_to_milliseconds(frame->timing.execution_nanoseconds),
-            nanoseconds_to_milliseconds(frame->timing.correction_nanoseconds),
-            nanoseconds_to_milliseconds(frame->connection_nanoseconds),
-            frame->result.state, display_fps);
+            frame->average_inference_milliseconds,
+            frame->average_postprocess_milliseconds,
+            average_control_milliseconds,
+            frame->result.stop_line_distance_m, display_fps);
           cv::imshow(preview_window_name_, canvas);
           displayed_generation = frame->generation;
           ++displayed_count;
@@ -897,6 +932,7 @@ private:
   bool result_publish_enabled_{true};
   std::string result_topic_;
   std::string result_image_topic_;
+  std::string control_latency_topic_;
   rclcpp::Publisher<line_detactor::msg::LaneResult>::SharedPtr result_publisher_;
   rclcpp::Publisher<Image>::SharedPtr result_image_publisher_;
   int warmup_iterations_{10};
@@ -909,6 +945,7 @@ private:
 
   std::unique_ptr<TensorRtLaneBackend> backend_;
   rclcpp::Subscription<Image>::SharedPtr subscription_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr control_latency_subscription_;
   std::mutex frame_mutex_;
   std::condition_variable frame_condition_;
   Image::ConstSharedPtr latest_message_;
@@ -924,6 +961,8 @@ private:
   std::mutex preview_mutex_;
   std::condition_variable preview_condition_;
   std::shared_ptr<const PreviewFrame> latest_preview_;
+  std::uint64_t control_latency_sample_count_{0U};
+  double control_latency_total_milliseconds_{0.0};
   std::atomic<std::uint64_t> previewed_interval_{0U};
   std::thread preview_worker_;
 };

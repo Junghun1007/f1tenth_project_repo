@@ -27,6 +27,10 @@ auto_control:
     heading_error_topic: "/auto/heading_error_rad"
     raw_steering_angle_topic: "/auto/raw_steering_angle_rad"
     command_servo_position_topic: "/auto/current_servo_position"
+    # Detector input receipt -> final servo/duty decision. Camera image transport
+    # before detector input is excluded; detector queue and LaneResult transport are included.
+    # Actuator command publication and VESC transmission are excluded.
+    input_to_control_decision_topic: "/auto/detector_input_to_control_decision_ms"
 
     # 새 LaneResult마다 즉시 계산/발행한다. 아래 주기는 정지 감시용이며
     # steering_current_weight의 시간 환산 기준이다. 제어 결과 FPS 상한이 아니다.

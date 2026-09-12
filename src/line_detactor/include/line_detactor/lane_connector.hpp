@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -40,6 +41,9 @@ struct LaneConnectionResult
   CenterlineResult centerline;
   cv::Mat stop_line_mask;  // Independent mono8 0/255; original ROI only, no lane cleanup/bridges.
   bool stop_line_present{false};
+  // Front-axle origin to the vehicle-near edge of the stop line, measured along
+  // the generated center path. NaN means that no reliable path/line intersection exists.
+  double stop_line_distance_m{std::numeric_limits<double>::quiet_NaN()};
   std::uint8_t state{0U};  // 0=NONE, 1=LEFT_ONLY, 2=RIGHT_ONLY, 3=BOTH.
 };
 

@@ -104,6 +104,7 @@ add_library(line_detactor_component SHARED
   src/line_detactor_node.cpp
   src/lane_connector.cpp
   src/centerline.cpp
+  src/stop_line_distance.cpp
 )
 target_compile_definitions(line_detactor_component
   PRIVATE LINE_DETACTOR_BUILDING_DLL
@@ -134,6 +135,19 @@ rclcpp_components_register_nodes(
   line_detactor_component
   "line_detactor::LineDetactorNode"
 )
+
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(stop_line_distance_test
+    test/stop_line_distance_test.cpp
+    src/stop_line_distance.cpp
+  )
+  target_include_directories(stop_line_distance_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS}
+  )
+  target_link_libraries(stop_line_distance_test ${OpenCV_LIBS})
+  add_test(NAME stop_line_distance_test COMMAND stop_line_distance_test)
+endif()
 
 add_executable(line_detactor_node src/main.cpp)
 ament_target_dependencies(line_detactor_node rclcpp)

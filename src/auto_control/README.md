@@ -22,6 +22,13 @@ not initiate motion; a new valid lane result must arrive.
 The ROS command is published immediately after calculation. VESC UART transmission
 continues through the existing bridge worker; this is not a hard real-time guarantee.
 
+For every valid centerline that reaches final servo/duty calculation, the node publishes
+`/auto/detector_input_to_control_decision_ms`. It starts when the detector receives the
+BEV image and ends immediately before actuator command publication. Camera-image transport
+before detector input, actuator command publication, and VESC UART transmission are excluded;
+the detector queue and `LaneResult` transport are included. The line-detector preview uses
+these samples for its cumulative `control avg` time and reciprocal FPS.
+
 1. Subscribe to `/line_detactor/result`; validate the source timestamp, frame,
    centerline validity, sample limit, point/support arrays, and metric scale.
 2. Remove `padding_left` from result pixels and convert pixel centers to metres:

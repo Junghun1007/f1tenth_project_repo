@@ -133,6 +133,9 @@ def _apply_parameter_file_defaults(
             context.launch_configurations[argument_name] = _launch_default(
                 controller_defaults, parameter_name, fallback
             )
+    detector["control_latency_topic"] = context.launch_configurations[
+        "input_to_control_decision_topic"
+    ]
     preview = context.launch_configurations["preview_enabled"].lower()
     if preview not in ("true", "false"):
         raise RuntimeError("preview_enabled must be true or false")
@@ -222,6 +225,12 @@ def generate_launch_description():
     controller_argument_fallbacks = [
         ("auto_enabled", "true", "enabled", bool),
         ("auto_control_mode", "drive", "control_mode", str),
+        (
+            "input_to_control_decision_topic",
+            "/auto/detector_input_to_control_decision_ms",
+            "input_to_control_decision_topic",
+            str,
+        ),
         ("minimum_duty", "0.070", "minimum_duty", float),
         ("maximum_duty", "0.090", "maximum_duty", float),
         (

@@ -73,6 +73,8 @@ public:
     heading_pub_ = create_publisher<std_msgs::msg::Float32>(heading_error_topic_, command_qos);
     raw_steering_pub_ = create_publisher<std_msgs::msg::Float32>(raw_steering_angle_topic_, command_qos);
     command_servo_pub_ = create_publisher<std_msgs::msg::Float32>(command_servo_position_topic_, command_qos);
+    input_to_control_decision_pub_ = create_publisher<std_msgs::msg::Float32>(
+      input_to_control_decision_topic_, command_qos);
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
@@ -176,6 +178,8 @@ private:
       "raw_steering_angle_topic", "/auto/raw_steering_angle_rad");
     command_servo_position_topic_ = parameter<std::string>(
       "command_servo_position_topic", "/auto/current_servo_position");
+    input_to_control_decision_topic_ = parameter<std::string>(
+      "input_to_control_decision_topic", "/auto/detector_input_to_control_decision_ms");
 
     control_rate_hz_ = parameter("control_rate_hz", 80.0);
     status_log_rate_hz_ = parameter("status_log_rate_hz", 2.0);
@@ -312,6 +316,9 @@ private:
     if (performance_measurement_log_directory_.empty()) {
       throw std::invalid_argument("performance measurement log directory must not be empty");
     }
+    if (input_to_control_decision_topic_.empty()) {
+      throw std::invalid_argument("input_to_control_decision_topic must not be empty");
+    }
   }
 
   void on_lane_result(const line_detactor::msg::LaneResult::ConstSharedPtr message)
@@ -348,12 +355,21 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
         "Rejected ML centerline: %s", exception.what());
     }
-    const bool servo_calculated = update_control_from_path();
+    std::int64_t decision_finished_ros_ns = 0;
+    const bool servo_calculated = update_control_from_path(decision_finished_ros_ns);
     const auto callback_finished = PerformanceMeasurement::SteadyClock::now();
     if (performance_measurement_enabled_) {
       record_performance_frame(
         *message, received_ros.nanoseconds(), callback_started, callback_finished,
         path_.has_value(), servo_calculated);
+    }
+    if (servo_calculated) {
+      const auto detector_input_ns = stamp_nanoseconds(message->detector_input_received_stamp);
+      if (detector_input_ns && decision_finished_ros_ns >= *detector_input_ns) {
+        const double total_milliseconds =
+          static_cast<double>(decision_finished_ros_ns - *detector_input_ns) / 1.0e6;
+        publish_float(input_to_control_decision_pub_, total_milliseconds);
+      }
     }
   }
 
@@ -421,7 +437,8 @@ private:
     return std::nullopt;
   }
 
-  bool update_control_from_path()
+  bool update_control_from_path(
+    std::int64_t & decision_finished_ros_ns)
   {
     const std::int64_t now_ns = now().nanoseconds();
     const double dt = clamp(seconds(now_ns - last_control_ns_), 1.0e-6,
@@ -429,6 +446,7 @@ private:
     last_control_ns_ = now_ns;
     if (const auto reason = stop_reason(now_ns)) {
       stop_control(*reason);
+      decision_finished_ros_ns = now().nanoseconds();
       publish_commands(0.0, 0.0, servo_center_, "stop");
       return false;
     }
@@ -500,6 +518,7 @@ private:
     latest_heading_error_rad_ = stanley.heading_error_rad;
     latest_raw_steering_angle_rad_ = stanley.steering_angle_rad;
     latest_direction_guard_used_ = stanley.direction_guard_used || corner_reset;
+    decision_finished_ros_ns = now().nanoseconds();
     publish_commands(command_duty_, command_brake_current_, servo, motor_mode);
     return true;
   }
@@ -731,6 +750,7 @@ private:
   std::string command_brake_current_topic_, target_speed_topic_, current_speed_topic_;
   std::string curvature_topic_, steering_angle_topic_, cross_track_error_topic_;
   std::string heading_error_topic_, raw_steering_angle_topic_, command_servo_position_topic_;
+  std::string input_to_control_decision_topic_;
   std::string performance_measurement_log_directory_, performance_measurement_engine_precision_;
   std::string performance_measurement_model_path_;
   double control_rate_hz_, status_log_rate_hz_, path_timeout_sec_;
@@ -778,6 +798,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr curvature_pub_, steering_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr cross_track_pub_, heading_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr raw_steering_pub_, command_servo_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr input_to_control_decision_pub_;
   rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_, enable_sub_;

@@ -73,6 +73,7 @@ OVERRIDES = {
     "result_publish_enabled": bool,
     "result_topic": str,
     "result_image_topic": str,
+    "control_latency_topic": str,
 }
 
 

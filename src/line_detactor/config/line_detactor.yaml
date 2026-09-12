@@ -37,6 +37,8 @@ line_detactor:
     result_publish_enabled: true
     result_topic: "/line_detactor/result"
     result_image_topic: "/line_detactor/result_image"
+    # Detector input -> final servo/duty decision latency fed back by auto_control.
+    control_latency_topic: "/auto/detector_input_to_control_decision_ms"
 
     preview_enabled: true
     # Black background with lanes/stop line/yellow path; skip source-image blending.
