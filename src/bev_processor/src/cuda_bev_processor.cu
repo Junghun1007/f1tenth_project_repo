@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -479,6 +480,100 @@ __global__ void nv12ToBevKernel(
   destination[2] = output_red;
 }
 
+class DeviceOutputPool final :
+  public std::enable_shared_from_this<DeviceOutputPool>
+{
+public:
+  DeviceOutputPool(
+    const std::size_t bytes_per_buffer,
+    const std::size_t initial_buffer_count)
+  : bytes_per_buffer_(bytes_per_buffer)
+  {
+    if (bytes_per_buffer_ == 0U || initial_buffer_count == 0U) {
+      throw std::invalid_argument("CUDA BEV output pool dimensions are invalid");
+    }
+    try {
+      for (std::size_t index = 0; index < initial_buffer_count; ++index) {
+        addBuffer();
+      }
+    } catch (...) {
+      releaseBuffers();
+      throw;
+    }
+  }
+
+  ~DeviceOutputPool()
+  {
+    releaseBuffers();
+  }
+
+  DeviceOutputPool(const DeviceOutputPool &) = delete;
+  DeviceOutputPool & operator=(const DeviceOutputPool &) = delete;
+
+  std::shared_ptr<const void> acquire()
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::size_t index = 0U;
+    for (; index < buffers_.size(); ++index) {
+      if (!buffers_[index].in_use) {
+        break;
+      }
+    }
+    if (index == buffers_.size()) {
+      // The normal latest-only path reuses the initial buffers. Growing here
+      // avoids blocking the BEV thread during a transient slow preview.
+      addBuffer();
+    }
+    buffers_[index].in_use = true;
+    auto self = shared_from_this();
+    return std::shared_ptr<const void>(
+      buffers_[index].data,
+      [self = std::move(self), index](const void *) {
+        self->release(index);
+      });
+  }
+
+private:
+  struct Buffer
+  {
+    std::uint8_t * data{nullptr};
+    bool in_use{false};
+  };
+
+  void addBuffer()
+  {
+    Buffer buffer;
+    checkCuda(
+      cudaMalloc(
+        reinterpret_cast<void **>(&buffer.data), bytes_per_buffer_),
+      "cudaMalloc pooled BEV output");
+    buffers_.push_back(buffer);
+  }
+
+  void release(const std::size_t index) noexcept
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index < buffers_.size()) {
+      buffers_[index].in_use = false;
+    }
+  }
+
+  void releaseBuffers() noexcept
+  {
+    for (auto & buffer : buffers_) {
+      if (buffer.data != nullptr) {
+        static_cast<void>(cudaFree(buffer.data));
+        buffer.data = nullptr;
+      }
+    }
+    buffers_.clear();
+  }
+
+  std::size_t bytes_per_buffer_{0U};
+  std::mutex mutex_;
+  std::vector<Buffer> buffers_;
+};
+
 }  // namespace
 
 class CudaBevProcessor::Impl
@@ -557,11 +652,7 @@ public:
           reinterpret_cast<void **>(&device_stabilized_to_source_),
           9U * sizeof(float)),
         "cudaMalloc stabilized-to-source homography");
-      checkCuda(
-        cudaMalloc(
-          reinterpret_cast<void **>(&device_output_),
-          output_bytes),
-        "cudaMalloc BEV output");
+      output_pool_ = std::make_shared<DeviceOutputPool>(output_bytes, 4U);
       const cv::Mat continuous_map_x =
         map_x.isContinuous() ? map_x : map_x.clone();
       const cv::Mat continuous_map_y =
@@ -599,7 +690,8 @@ public:
     const std::size_t data_size,
     const std::size_t input_stride,
     const cv::Matx33d & stabilized_to_source_homography,
-    const int source_crop_top)
+    const int source_crop_top,
+    const bool download_to_host)
   {
     if (nv12 == nullptr || input_stride <
       static_cast<std::size_t>(input_width_))
@@ -628,6 +720,9 @@ public:
       }
     }
 
+    const auto device_owner = output_pool_->acquire();
+    auto * device_output = static_cast<std::uint8_t *>(
+      const_cast<void *>(device_owner.get()));
     std::lock_guard<std::mutex> lock(stream_mutex_);
     checkCuda(
       cudaMemcpy2DAsync(
@@ -673,23 +768,28 @@ public:
       static_cast<float>(edge_adaptive_config_.maximum_anisotropy),
       static_cast<float>(edge_adaptive_config_.bev_x_max_m),
       static_cast<float>(edge_adaptive_config_.meter_per_pixel),
-      device_output_);
+      device_output);
     checkCuda(cudaGetLastError(), "launch NV12-to-BEV kernel");
 
 
     CudaBevResult output;
-    output.bgr.create(output_height_, output_width_, CV_8UC3);
+    output.device_bgr = device_output;
+    output.device_stride = static_cast<std::size_t>(output_width_) * 3U;
+    output.device_owner = device_owner;
     const std::size_t output_bytes =
       static_cast<std::size_t>(output_width_) *
       static_cast<std::size_t>(output_height_) * 3U;
-    checkCuda(
-      cudaMemcpyAsync(
-        output.bgr.data,
-        device_output_,
-        output_bytes,
-        cudaMemcpyDeviceToHost,
-        stream_),
-      "download BEV output");
+    if (download_to_host) {
+      output.bgr.create(output_height_, output_width_, CV_8UC3);
+      checkCuda(
+        cudaMemcpyAsync(
+          output.bgr.data,
+          device_output,
+          output_bytes,
+          cudaMemcpyDeviceToHost,
+          stream_),
+        "download BEV output");
+    }
 
     checkCuda(cudaStreamSynchronize(stream_), "process NV12 BEV frame");
     return output;
@@ -703,10 +803,7 @@ public:
 private:
   void release() noexcept
   {
-    if (device_output_ != nullptr) {
-      cudaFree(device_output_);
-      device_output_ = nullptr;
-    }
+    output_pool_.reset();
     if (device_map_y_ != nullptr) {
       cudaFree(device_map_y_);
       device_map_y_ = nullptr;
@@ -741,7 +838,7 @@ private:
   float * device_map_x_{nullptr};
   float * device_map_y_{nullptr};
   float * device_stabilized_to_source_{nullptr};
-  std::uint8_t * device_output_{nullptr};
+  std::shared_ptr<DeviceOutputPool> output_pool_;
   std::mutex stream_mutex_;
 };
 
@@ -765,14 +862,16 @@ CudaBevResult CudaBevProcessor::process(
   const std::size_t data_size,
   const std::size_t input_stride,
   const cv::Matx33d & stabilized_to_source_homography,
-  const int source_crop_top)
+  const int source_crop_top,
+  const bool download_to_host)
 {
   return impl_->process(
     nv12,
     data_size,
     input_stride,
     stabilized_to_source_homography,
-    source_crop_top);
+    source_crop_top,
+    download_to_host);
 }
 
 const std::string & CudaBevProcessor::deviceName() const

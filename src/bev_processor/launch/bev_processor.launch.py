@@ -155,6 +155,7 @@ def generate_launch_description():
         ("capture_joy_button", "1", int),
         ("publish_enabled", "true", bool),
         ("direct_output_enabled", "false", bool),
+        ("direct_host_copy_enabled", "false", bool),
         ("dataset_collection_enabled", "false", bool),
         ("dataset_collection_manual_capture_mode", "false", bool),
         ("dataset_collection_manual_capture_button", "0", int),

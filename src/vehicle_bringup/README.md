@@ -252,7 +252,7 @@ Use a fresh terminal with the Humble environment and this workspace's
 `install/local_setup.bash` when checking for an older workspace overlay.
 
 The current launch prints `[ML auto drive]` with its launch path, selected YAML,
-model path, direct-memory pipeline, and preview selection. A loaded detector prints
+model path, direct CUDA-memory pipeline, and preview selection. A loaded detector prints
 `Line detector ready`. The default ML window is `BEV lane TensorRT preview`
 and contains inference/FPS/lanes information below the image; the raw BEV preview
 is disabled by the integrated launch. An ML window can still show just the image
@@ -274,6 +274,8 @@ ros2 topic info /line_detactor/result
 The pipeline needs `/bev_processor`, `/line_detactor`, `/auto_control` and
 `/vesc_bridge_node`. `ros2 pkg prefix` should point into the intended 0906ML install.
 Both direct parameters must be `true`; `/camera/image_bev` is intentionally absent.
+The default result-only preview consumes the CUDA BEV allocation directly and does
+not create a full CPU BEV copy. A camera-overlay preview explicitly enables that copy.
 The result topic still needs an ML publisher and controller subscriber. Extra
 diagnostic subscriptions may also appear.
 

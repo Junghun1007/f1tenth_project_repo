@@ -80,8 +80,9 @@ ONNX Runtime CPU로 PyTorch 출력과 비교한다. 최종 테스트26장은 변
 
 Jetson의 CUDA·TensorRT 개발 패키지, OpenCV, ROS 2 Humble,
 `rosidl_default_generators`가 필요하다. PyTorch는 사용하지 않는다.
-자동주행 launch는 `bev_handoff`를 통해 같은 프로세스의 BEV `cv::Mat`을
-직접 받고, 아래의 독립 실행만 ROS 영상 토픽을 사용한다.
+자동주행 launch는 `bev_handoff`를 통해 같은 프로세스의 CUDA BEV
+버퍼를 TensorRT 전처리에 직접 넘기고, 아래의 독립 실행만 ROS 영상
+토픽과 CPU→GPU 업로드를 사용한다.
 이번 변경에는 `LaneResult` 중앙 경로 필드 추가가 있으므로 발행/구독 환경 모두
 같은 메시지 버전으로 재빌드하고 환경을 다시 읽는다.
 

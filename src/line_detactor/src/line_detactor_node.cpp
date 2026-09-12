@@ -172,8 +172,9 @@ public:
       preview_enabled_ ? "on" : "off", preview_fps_);
     RCLCPP_INFO(
       node_.get_logger(),
-      "GPU path: pinned BGR8 H2D -> CUDA RGB FP32 NCHW -> TensorRT -> "
+      "GPU path: %s -> CUDA RGB FP32 NCHW -> TensorRT -> "
       "%s; engine cache=%s",
+      direct_bev_input_enabled_ ? "direct device BGR8" : "pinned BGR8 H2D",
       connection_.enabled ? "CUDA labels D2H (raw overlay skipped)" : "CUDA overlay BGR8 D2H",
       backend_->engine_cache_path().c_str());
     RCLCPP_INFO(node_.get_logger(), "Preview content=%s",
@@ -208,6 +209,10 @@ private:
   {
     std_msgs::msg::Header header;
     cv::Mat bgr;
+    const std::uint8_t * device_bgr{nullptr};
+    std::size_t device_stride{0U};
+    int width{0};
+    int height{0};
     std::shared_ptr<const void> owner;
   };
 
@@ -463,6 +468,8 @@ private:
     }
     auto frame = std::make_shared<InputFrame>();
     frame->header = message->header;
+    frame->width = static_cast<int>(message->width);
+    frame->height = static_cast<int>(message->height);
     frame->bgr = cv::Mat(
       static_cast<int>(message->height),
       static_cast<int>(message->width),
@@ -479,6 +486,10 @@ private:
     auto frame = std::make_shared<InputFrame>();
     frame->header = message->header;
     frame->bgr = message->bgr;
+    frame->device_bgr = message->device_bgr;
+    frame->device_stride = message->device_stride;
+    frame->width = message->width;
+    frame->height = message->height;
     frame->owner = std::move(message);
     accept_frame(std::move(frame));
   }
@@ -512,22 +523,33 @@ private:
 
   void validate_image(const InputFrame & message) const
   {
-    if (message.bgr.type() != CV_8UC3) {
-      throw std::invalid_argument("Expected a BGR8 BEV image");
-    }
-    if (message.bgr.cols != model_input_width_ ||
-      message.bgr.rows != model_input_height_)
+    if (message.width != model_input_width_ ||
+      message.height != model_input_height_)
     {
       throw std::invalid_argument(
               "Expected " + std::to_string(model_input_width_) + "x" +
               std::to_string(model_input_height_) + " BEV, received " +
-              std::to_string(message.bgr.cols) + "x" +
-              std::to_string(message.bgr.rows));
+              std::to_string(message.width) + "x" +
+              std::to_string(message.height));
     }
     const std::size_t minimum_step =
       static_cast<std::size_t>(model_input_width_) * 3U;
-    if (message.bgr.step < minimum_step || message.bgr.data == nullptr) {
-      throw std::invalid_argument("BEV image step or data size is invalid");
+    if (message.device_bgr != nullptr) {
+      if (message.device_stride != minimum_step) {
+        throw std::invalid_argument("CUDA BEV image stride is invalid");
+      }
+    } else if (
+      message.bgr.type() != CV_8UC3 || message.bgr.step < minimum_step ||
+      message.bgr.data == nullptr)
+    {
+      throw std::invalid_argument("CPU BEV image buffer is invalid");
+    }
+    if (
+      preview_enabled_ && !preview_result_only_enabled_ &&
+      message.bgr.empty())
+    {
+      throw std::invalid_argument(
+              "Camera-overlay preview requires direct_host_copy_enabled=true");
     }
   }
 
@@ -583,8 +605,8 @@ private:
     message.lane_geometry_nanoseconds = lane_geometry_nanoseconds;
     message.state = result.state;
     message.processing_mode = line_detactor::msg::LaneResult::BORDER_ONLY;
-    message.source_width = static_cast<std::uint32_t>(input.bgr.cols);
-    message.source_height = static_cast<std::uint32_t>(input.bgr.rows);
+    message.source_width = static_cast<std::uint32_t>(input.width);
+    message.source_height = static_cast<std::uint32_t>(input.height);
     message.padding_left = connection_.padding_px;
     message.padding_right = connection_.padding_px;
     message.centerline_valid = result.centerline.points.size() >= 2U;
@@ -754,10 +776,13 @@ private:
         std::uint64_t connection_nanoseconds = 0U;
         try {
           validate_image(*message);
-          timing = backend_->infer_bgr(
-            message->bgr.data,
-            message->bgr.step * static_cast<std::size_t>(message->bgr.rows),
-            message->bgr.step);
+          timing = message->device_bgr != nullptr ?
+            backend_->infer_device_bgr(
+              message->device_bgr, message->device_stride) :
+            backend_->infer_bgr(
+              message->bgr.data,
+              message->bgr.step * static_cast<std::size_t>(message->bgr.rows),
+              message->bgr.step);
           if (connection_.enabled) {
             const auto started = std::chrono::steady_clock::now();
             const bool render_result = preview_enabled_ ||

@@ -42,6 +42,9 @@ public:
     const std::uint8_t * bgr,
     std::size_t data_size,
     std::size_t source_stride);
+  LaneInferenceTiming infer_device_bgr(
+    const std::uint8_t * device_bgr,
+    std::size_t device_stride);
 
   const std::uint8_t * preview_bgr_data() const noexcept;
   const std::uint8_t * label_data() const noexcept;

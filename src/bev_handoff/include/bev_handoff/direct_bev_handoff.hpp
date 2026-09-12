@@ -2,6 +2,7 @@
 #define BEV_HANDOFF__DIRECT_BEV_HANDOFF_HPP_
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -12,11 +13,18 @@
 namespace bev_handoff
 {
 
-// The cv::Mat owns the BEV allocation through OpenCV reference counting. A
-// consumer may retain this shared frame without copying its pixel buffer.
+// device_owner keeps the CUDA BEV allocation alive while a consumer uses it.
+// The optional cv::Mat independently owns a host copy when one is requested.
 struct DirectBevFrame
 {
+  // Optional CPU image for local preview/capture. The autonomous inference
+  // path uses device_bgr and does not require this download.
   cv::Mat bgr;
+  const std::uint8_t * device_bgr{nullptr};
+  std::size_t device_stride{0U};
+  int width{0};
+  int height{0};
+  std::shared_ptr<const void> device_owner;
   std_msgs::msg::Header header;
   std::chrono::steady_clock::time_point bev_input_received_at;
   std::uint64_t source_generation{0U};

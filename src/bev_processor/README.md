@@ -13,7 +13,10 @@
 3. OAK 측정 파이프라인을 닫고 `camera_driver`를 시작한다.
 4. CUDA가 NV12 안정화, BEV sampling, BGR 생성을 한 번에 수행한다.
 5. 독립 실행은 `/camera/image_bev`를 발행하고, `auto_drive.launch.py`는
-   같은 프로세스의 딥러닝 검출기에 BGR `cv::Mat`을 복사 없이 직접 넘긴다.
+   같은 프로세스의 딥러닝 검출기에 CUDA BGR BEV 버퍼를 직접 넘긴다.
+   기본 결과 프리뷰는 이 버퍼를 TensorRT 입력으로 사용하므로 CPU BEV
+   다운로드를 생략한다. 원본 오버레이·저장·ROS 영상 발행이 필요할 때만
+   호스트 복사를 생성한다.
 
 차량은 시작 측정이 완료될 때까지 정지해야 한다.
 

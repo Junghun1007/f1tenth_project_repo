@@ -303,7 +303,7 @@ public:
       "roll=%.2f, pitch_down=%.2f, yaw=%.2fdeg), "
       "valid_lut=%.2f%%, GPU=%s, interpolation=%s, "
       "processing=NV12-to-BEV/latest-only, "
-      "direct=%s, ROS=%s (max=%.1fHz, 0=unlimited), "
+      "direct=%s (host_copy=%s), ROS=%s (max=%.1fHz, 0=unlimited), "
       "preview=%s (max=%.1fHz)",
       input_topic_.c_str(),
       input_crop_width_,
@@ -330,6 +330,7 @@ public:
       startup_processor->deviceName().c_str(),
       bev_interpolation_.c_str(),
       direct_output_enabled_ ? "on" : "off",
+      direct_host_copy_enabled_ ? "on" : "off",
       publish_enabled_ ? "on" : "off",
       publish_max_fps_,
       preview_enabled_ ? "on" : "off",
@@ -399,6 +400,7 @@ private:
 
     declare_parameter<bool>("publish_enabled", true);
     declare_parameter<bool>("direct_output_enabled", false);
+    declare_parameter<bool>("direct_host_copy_enabled", false);
     declare_parameter<double>("publish_max_fps", 0.0);
     declare_parameter<bool>("preview_enabled", true);
     declare_parameter<double>("preview_max_fps", 60.0);
@@ -527,6 +529,8 @@ private:
     publish_enabled_ = get_parameter("publish_enabled").as_bool();
     direct_output_enabled_ =
       get_parameter("direct_output_enabled").as_bool();
+    direct_host_copy_enabled_ =
+      get_parameter("direct_host_copy_enabled").as_bool();
     publish_max_fps_ = get_parameter("publish_max_fps").as_double();
     preview_enabled_ = get_parameter("preview_enabled").as_bool();
     preview_max_fps_ = get_parameter("preview_max_fps").as_double();
@@ -1100,8 +1104,17 @@ private:
           input->nv12.size(),
           static_cast<std::size_t>(input->step),
           stabilized_to_source,
-          static_cast<int>(input->source_crop_top));
+          static_cast<int>(input->source_crop_top),
+          publish_enabled_ || preview_enabled_ ||
+          dataset_collection_enabled_ ||
+          dataset_collection_manual_capture_mode_ ||
+          direct_host_copy_enabled_);
         output->bgr = std::move(cuda_result.bgr);
+        output->device_bgr = cuda_result.device_bgr;
+        output->device_stride = cuda_result.device_stride;
+        output->width = bev_config_.output_width;
+        output->height = bev_config_.output_height;
+        output->device_owner = std::move(cuda_result.device_owner);
         output->header = input->header;
         output->header.frame_id = output_frame_id_;
         output->bev_input_received_at = input_received_at;
@@ -1945,6 +1958,7 @@ private:
   int input_crop_top_{240};
   bool publish_enabled_{true};
   bool direct_output_enabled_{false};
+  bool direct_host_copy_enabled_{false};
   double publish_max_fps_{0.0};
   bool preview_enabled_{true};
   double preview_max_fps_{60.0};

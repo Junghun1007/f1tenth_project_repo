@@ -33,6 +33,9 @@ struct EdgeAdaptiveConfig
 
 struct CudaBevResult
 {
+  const std::uint8_t * device_bgr{nullptr};
+  std::size_t device_stride{0U};
+  std::shared_ptr<const void> device_owner;
   cv::Mat bgr;
 };
 
@@ -56,7 +59,8 @@ public:
     std::size_t data_size,
     std::size_t input_stride,
     const cv::Matx33d & stabilized_to_source_homography,
-    int source_crop_top);
+    int source_crop_top,
+    bool download_to_host);
 
   const std::string & deviceName() const;
 

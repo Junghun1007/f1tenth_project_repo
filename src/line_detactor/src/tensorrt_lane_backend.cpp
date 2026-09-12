@@ -413,67 +413,36 @@ public:
       cudaEventRecord(preprocessing_finished_.get(), stream_.get()),
       "cudaEventRecord(preprocess finish)");
 
-    bool enqueued = false;
-#if NV_TENSORRT_MAJOR >= 10
-    enqueued = context_->enqueueV3(stream_.get());
-#else
-    enqueued = context_->enqueueV2(bindings_.data(), stream_.get(), nullptr);
-#endif
-    if (!enqueued) {
-      static_cast<void>(cudaStreamSynchronize(stream_.get()));
-      throw std::runtime_error("TensorRT inference enqueue failed");
-    }
-    check_cuda(
-      cudaEventRecord(execution_finished_.get(), stream_.get()),
-      "cudaEventRecord(inference finish)");
+    return finish_inference(
+      static_cast<const std::uint8_t *>(device_bgr_.get()));
+  }
 
-    if (export_labels_) {
-      check_cuda(cudaEventRecord(label_export_started_.get(), stream_.get()), "label export start");
-      check_cuda(
-        launch_lane_labels(static_cast<const float *>(device_logits_.get()),
-          static_cast<std::uint8_t *>(device_labels_.get()), input_width_, input_height_,
-          mask_threshold_, stream_.get()), "extract lane labels");
-      check_cuda(cudaMemcpyAsync(host_labels_.get(), device_labels_.get(), pixel_count_ * 2U,
-          cudaMemcpyDeviceToHost, stream_.get()), "copy lane labels to host");
-      check_cuda(cudaEventRecord(label_export_finished_.get(), stream_.get()), "label export finish");
+  LaneInferenceTiming infer_device_bgr(
+    const std::uint8_t * device_bgr,
+    const std::size_t device_stride)
+  {
+    const std::size_t row_bytes =
+      static_cast<std::size_t>(input_width_) * 3U;
+    if (device_bgr == nullptr) {
+      throw std::invalid_argument("CUDA BGR input must not be null");
+    }
+    if (device_stride != row_bytes) {
+      throw std::invalid_argument(
+              "CUDA BGR input must be tightly packed for direct inference");
     }
     check_cuda(
-      cudaEventRecord(postprocessing_started_.get(), stream_.get()),
-      "cudaEventRecord(postprocess start)");
-    // Connected mode renders from CPU labels/results. This raw camera overlay
-    // would be unused, including in result-only and headless autonomous driving.
-    if (!export_labels_) {
-      check_cuda(
-        launch_lane_overlay(
-          static_cast<const std::uint8_t *>(device_bgr_.get()),
-          static_cast<const float *>(device_logits_.get()),
-          static_cast<std::uint8_t *>(device_preview_bgr_.get()),
-          input_width_, input_height_, mask_threshold_, overlay_alpha_,
-          stream_.get()),
-        "launch lane overlay kernel");
-      check_cuda(
-        cudaMemcpyAsync(
-          host_preview_bgr_.get(), device_preview_bgr_.get(), image_byte_count_,
-          cudaMemcpyDeviceToHost, stream_.get()),
-        "cudaMemcpyAsync(preview device to host)");
-    }
+      cudaEventRecord(preprocessing_started_.get(), stream_.get()),
+      "cudaEventRecord(direct preprocess start)");
     check_cuda(
-      cudaEventRecord(postprocessing_finished_.get(), stream_.get()),
-      "cudaEventRecord(postprocess finish)");
+      launch_bgr_to_rgb_nchw(
+        device_bgr,
+        static_cast<float *>(device_input_.get()),
+        input_width_, input_height_, stream_.get()),
+      "launch direct BGR to RGB NCHW kernel");
     check_cuda(
-      cudaEventSynchronize(postprocessing_finished_.get()),
-      "cudaEventSynchronize(postprocess finish)");
-
-    return LaneInferenceTiming{
-      elapsed_cuda_nanoseconds(
-        preprocessing_started_.get(), preprocessing_finished_.get()),
-      elapsed_cuda_nanoseconds(
-        preprocessing_finished_.get(), execution_finished_.get()),
-      0U,
-      elapsed_cuda_nanoseconds(
-        postprocessing_started_.get(), postprocessing_finished_.get()),
-      export_labels_ ? elapsed_cuda_nanoseconds(
-        label_export_started_.get(), label_export_finished_.get()) : 0U};
+      cudaEventRecord(preprocessing_finished_.get(), stream_.get()),
+      "cudaEventRecord(direct preprocess finish)");
+    return finish_inference(device_bgr);
   }
 
   const std::uint8_t * preview_bgr_data() const noexcept
@@ -507,6 +476,70 @@ public:
   }
 
 private:
+  LaneInferenceTiming finish_inference(const std::uint8_t * device_bgr)
+  {
+    bool enqueued = false;
+#if NV_TENSORRT_MAJOR >= 10
+    enqueued = context_->enqueueV3(stream_.get());
+#else
+    enqueued = context_->enqueueV2(bindings_.data(), stream_.get(), nullptr);
+#endif
+    if (!enqueued) {
+      static_cast<void>(cudaStreamSynchronize(stream_.get()));
+      throw std::runtime_error("TensorRT inference enqueue failed");
+    }
+    check_cuda(
+      cudaEventRecord(execution_finished_.get(), stream_.get()),
+      "cudaEventRecord(inference finish)");
+
+    if (export_labels_) {
+      check_cuda(cudaEventRecord(label_export_started_.get(), stream_.get()), "label export start");
+      check_cuda(
+        launch_lane_labels(static_cast<const float *>(device_logits_.get()),
+          static_cast<std::uint8_t *>(device_labels_.get()), input_width_, input_height_,
+          mask_threshold_, stream_.get()), "extract lane labels");
+      check_cuda(cudaMemcpyAsync(host_labels_.get(), device_labels_.get(), pixel_count_ * 2U,
+          cudaMemcpyDeviceToHost, stream_.get()), "copy lane labels to host");
+      check_cuda(cudaEventRecord(label_export_finished_.get(), stream_.get()), "label export finish");
+    }
+    check_cuda(
+      cudaEventRecord(postprocessing_started_.get(), stream_.get()),
+      "cudaEventRecord(postprocess start)");
+    // Connected mode renders from CPU labels/results. This raw camera overlay
+    // would be unused, including in result-only and headless autonomous driving.
+    if (!export_labels_) {
+      check_cuda(
+        launch_lane_overlay(
+          device_bgr,
+          static_cast<const float *>(device_logits_.get()),
+          static_cast<std::uint8_t *>(device_preview_bgr_.get()),
+          input_width_, input_height_, mask_threshold_, overlay_alpha_,
+          stream_.get()),
+        "launch lane overlay kernel");
+      check_cuda(
+        cudaMemcpyAsync(
+          host_preview_bgr_.get(), device_preview_bgr_.get(), image_byte_count_,
+          cudaMemcpyDeviceToHost, stream_.get()),
+        "cudaMemcpyAsync(preview device to host)");
+    }
+    check_cuda(
+      cudaEventRecord(postprocessing_finished_.get(), stream_.get()),
+      "cudaEventRecord(postprocess finish)");
+    check_cuda(
+      cudaEventSynchronize(postprocessing_finished_.get()),
+      "cudaEventSynchronize(postprocess finish)");
+
+    return LaneInferenceTiming{
+      elapsed_cuda_nanoseconds(
+        preprocessing_started_.get(), preprocessing_finished_.get()),
+      elapsed_cuda_nanoseconds(
+        preprocessing_finished_.get(), execution_finished_.get()),
+      0U,
+      elapsed_cuda_nanoseconds(
+        postprocessing_started_.get(), postprocessing_finished_.get()),
+      export_labels_ ? elapsed_cuda_nanoseconds(
+        label_export_started_.get(), label_export_finished_.get()) : 0U};
+  }
   void load_or_build_engine(const std::size_t workspace_size_bytes)
   {
     if (cache_is_current(engine_cache_path_, model_path_)) {
@@ -817,6 +850,13 @@ LaneInferenceTiming TensorRtLaneBackend::infer_bgr(
   const std::size_t source_stride)
 {
   return impl_->infer_bgr(bgr, data_size, source_stride);
+}
+
+LaneInferenceTiming TensorRtLaneBackend::infer_device_bgr(
+  const std::uint8_t * device_bgr,
+  const std::size_t device_stride)
+{
+  return impl_->infer_device_bgr(device_bgr, device_stride);
 }
 
 const std::uint8_t * TensorRtLaneBackend::preview_bgr_data() const noexcept

@@ -164,6 +164,11 @@ def _apply_parameter_file_defaults(
         value = LaunchConfiguration(parameter_name).perform(context)
         if value != _PARAMETER_FILE_DEFAULT:
             detector[parameter_name] = float(value)
+    context.launch_configurations["direct_host_copy_enabled"] = (
+        "true" if detector["preview_enabled"] and not detector.get(
+            "preview_result_only_enabled", True
+        ) else "false"
+    )
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -171,7 +176,7 @@ def _apply_parameter_file_defaults(
         " | model=" + str(detector.get("model_path", os.path.join(
             get_package_share_directory("line_detactor"), "models",
             "fast_scnn_stop_line_120x300_batch_1.onnx"))) +
-        " | pipeline=direct BEV memory -> " + str(detector["result_topic"]) +
+        " | pipeline=direct CUDA BEV -> " + str(detector["result_topic"]) +
         " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
         " | performance measurement=" + measurement
     )), bev_launch, LoadComposableNodes(
@@ -420,6 +425,9 @@ def generate_launch_description():
             "preview_enabled": "false",
             "publish_enabled": "false",
             "direct_output_enabled": "true",
+            "direct_host_copy_enabled": LaunchConfiguration(
+                "direct_host_copy_enabled"
+            ),
             "performance_measurement_enabled": performance_measurement_enabled,
             **bev_overrides,
         }.items(),
