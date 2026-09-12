@@ -5,6 +5,8 @@
 #include "line_detactor/msg/lane_result.hpp"
 #include "line_detactor/stop_line_distance.hpp"
 
+#include "bev_handoff/direct_bev_handoff.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -31,6 +33,7 @@
 #include "opencv2/imgproc.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/header.hpp"
 
 namespace line_detactor
 {
@@ -133,9 +136,11 @@ public:
         result_topic_, image_qos);
       result_image_publisher_ = node_.create_publisher<Image>(result_image_topic_, image_qos);
     }
-    subscription_ = node_.create_subscription<sensor_msgs::msg::Image>(
-      input_topic_, image_qos,
-      std::bind(&Impl::on_image, this, std::placeholders::_1));
+    if (!direct_bev_input_enabled_) {
+      subscription_ = node_.create_subscription<sensor_msgs::msg::Image>(
+        input_topic_, image_qos,
+        std::bind(&Impl::on_image, this, std::placeholders::_1));
+    }
     control_latency_subscription_ = node_.create_subscription<std_msgs::msg::Float32>(
       control_latency_topic_, image_qos,
       std::bind(&Impl::on_control_latency, this, std::placeholders::_1));
@@ -145,6 +150,12 @@ public:
       if (preview_enabled_) {
         preview_worker_ = std::thread(&Impl::preview_loop, this);
       }
+      if (direct_bev_input_enabled_) {
+        direct_bev_consumer_id_ = bev_handoff::registerDirectBevConsumer(
+          [this](std::shared_ptr<const bev_handoff::DirectBevFrame> frame) {
+            on_direct_bev(std::move(frame));
+          });
+      }
     } catch (...) {
       stop();
       throw;
@@ -152,9 +163,11 @@ public:
 
     RCLCPP_INFO(
       node_.get_logger(),
-      "Line detector ready: input=%s (bgr8 %dx%d), model=%s, backend="
+      "Line detector ready: input=%s%s (bgr8 %dx%d), model=%s, backend="
       "TensorRT %s, threshold=%.3f, preview=%s @ %.1f FPS",
-      input_topic_.c_str(), model_input_width_, model_input_height_,
+      direct_bev_input_enabled_ ? "direct-process-local" : input_topic_.c_str(),
+      direct_bev_input_enabled_ ? "" : " ROS topic",
+      model_input_width_, model_input_height_,
       model_path_.c_str(), engine_precision_.c_str(), static_cast<double>(mask_threshold_),
       preview_enabled_ ? "on" : "off", preview_fps_);
     RCLCPP_INFO(
@@ -191,9 +204,16 @@ private:
   using Image = sensor_msgs::msg::Image;
   using SteadyClock = std::chrono::steady_clock;
 
+  struct InputFrame
+  {
+    std_msgs::msg::Header header;
+    cv::Mat bgr;
+    std::shared_ptr<const void> owner;
+  };
+
   struct PreviewFrame
   {
-    Image::ConstSharedPtr input;
+    std::shared_ptr<const InputFrame> input;
     LaneConnectionResult result;
     cv::Mat raw;
     double average_inference_milliseconds{0.0};
@@ -205,6 +225,8 @@ private:
   {
     input_topic_ = node_.declare_parameter<std::string>(
       "input_topic", "/camera/image_bev");
+    direct_bev_input_enabled_ = node_.declare_parameter<bool>(
+      "direct_bev_input_enabled", false);
     model_path_ = node_.declare_parameter<std::string>(
       "model_path", default_model_path());
     engine_cache_path_ = node_.declare_parameter<std::string>(
@@ -421,12 +443,54 @@ private:
 
   void on_image(const Image::ConstSharedPtr message)
   {
+    const std::size_t minimum_step =
+      static_cast<std::size_t>(message->width) * 3U;
+    const std::size_t required_size =
+      static_cast<std::size_t>(message->step) *
+      static_cast<std::size_t>(message->height);
+    if (
+      message->encoding != "bgr8" || message->width == 0U ||
+      message->height == 0U || message->step < minimum_step ||
+      message->data.size() < required_size)
+    {
+      RCLCPP_ERROR_THROTTLE(
+        node_.get_logger(), *node_.get_clock(), 5000,
+        "Rejected malformed ROS BEV image: encoding=%s size=%ux%u "
+        "step=%u data=%zu.",
+        message->encoding.c_str(), message->width, message->height,
+        message->step, message->data.size());
+      return;
+    }
+    auto frame = std::make_shared<InputFrame>();
+    frame->header = message->header;
+    frame->bgr = cv::Mat(
+      static_cast<int>(message->height),
+      static_cast<int>(message->width),
+      CV_8UC3,
+      const_cast<std::uint8_t *>(message->data.data()),
+      static_cast<std::size_t>(message->step));
+    frame->owner = message;
+    accept_frame(std::move(frame));
+  }
+
+  void on_direct_bev(
+    std::shared_ptr<const bev_handoff::DirectBevFrame> message)
+  {
+    auto frame = std::make_shared<InputFrame>();
+    frame->header = message->header;
+    frame->bgr = message->bgr;
+    frame->owner = std::move(message);
+    accept_frame(std::move(frame));
+  }
+
+  void accept_frame(std::shared_ptr<const InputFrame> frame)
+  {
     const auto received_at = SteadyClock::now();
     const auto received_stamp =
       static_cast<builtin_interfaces::msg::Time>(node_.get_clock()->now());
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
-      latest_message_ = message;
+      latest_message_ = std::move(frame);
       latest_input_received_at_ = received_at;
       latest_input_received_stamp_ = received_stamp;
       ++latest_generation_;
@@ -446,27 +510,23 @@ private:
     control_latency_total_milliseconds_ += message->data;
   }
 
-  void validate_image(const Image & message) const
+  void validate_image(const InputFrame & message) const
   {
-    if (message.encoding != "bgr8") {
-      throw std::invalid_argument(
-              "Expected bgr8, received " + message.encoding);
+    if (message.bgr.type() != CV_8UC3) {
+      throw std::invalid_argument("Expected a BGR8 BEV image");
     }
-    if (message.width != static_cast<std::uint32_t>(model_input_width_) ||
-      message.height != static_cast<std::uint32_t>(model_input_height_))
+    if (message.bgr.cols != model_input_width_ ||
+      message.bgr.rows != model_input_height_)
     {
       throw std::invalid_argument(
               "Expected " + std::to_string(model_input_width_) + "x" +
               std::to_string(model_input_height_) + " BEV, received " +
-              std::to_string(message.width) + "x" +
-              std::to_string(message.height));
+              std::to_string(message.bgr.cols) + "x" +
+              std::to_string(message.bgr.rows));
     }
     const std::size_t minimum_step =
       static_cast<std::size_t>(model_input_width_) * 3U;
-    const std::size_t required_size =
-      static_cast<std::size_t>(message.step) *
-      static_cast<std::size_t>(model_input_height_);
-    if (message.step < minimum_step || message.data.size() < required_size) {
+    if (message.bgr.step < minimum_step || message.bgr.data == nullptr) {
       throw std::invalid_argument("BEV image step or data size is invalid");
     }
   }
@@ -476,7 +536,10 @@ private:
     return model_input_width_ + 2 * connection_.padding_px;
   }
 
-  Image image_message(const cv::Mat & image, const Image & input, const std::string & encoding) const
+  Image image_message(
+    const cv::Mat & image,
+    const InputFrame & input,
+    const std::string & encoding) const
   {
     Image message;
     message.header = input.header;
@@ -495,7 +558,7 @@ private:
 
   void publish_result(
     const LaneConnectionResult & result,
-    const Image & input,
+    const InputFrame & input,
     const builtin_interfaces::msg::Time & input_received_stamp,
     const SteadyClock::time_point input_received_at,
     const SteadyClock::time_point processing_started_at,
@@ -520,8 +583,8 @@ private:
     message.lane_geometry_nanoseconds = lane_geometry_nanoseconds;
     message.state = result.state;
     message.processing_mode = line_detactor::msg::LaneResult::BORDER_ONLY;
-    message.source_width = input.width;
-    message.source_height = input.height;
+    message.source_width = static_cast<std::uint32_t>(input.bgr.cols);
+    message.source_height = static_cast<std::uint32_t>(input.bgr.rows);
     message.padding_left = connection_.padding_px;
     message.padding_right = connection_.padding_px;
     message.centerline_valid = result.centerline.points.size() >= 2U;
@@ -555,12 +618,13 @@ private:
     }
   }
 
-  cv::Mat result_overlay(const LaneConnectionResult & result, const Image & input) const
+  cv::Mat result_overlay(
+    const LaneConnectionResult & result,
+    const InputFrame & input) const
   {
-    cv::Mat source(model_input_height_, model_input_width_, CV_8UC3,
-      const_cast<std::uint8_t *>(input.data.data()), input.step);
     cv::Mat overlay;
-    cv::copyMakeBorder(source, overlay, 0, 0, connection_.padding_px, connection_.padding_px,
+    cv::copyMakeBorder(input.bgr, overlay, 0, 0,
+      connection_.padding_px, connection_.padding_px,
       cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
     cv::Mat blended;
     cv::addWeighted(overlay, 1.0 - overlay_alpha_, result.image, overlay_alpha_, 0.0, blended);
@@ -655,7 +719,7 @@ private:
 
     try {
       while (!stop_requested_.load(std::memory_order_acquire)) {
-        Image::ConstSharedPtr message;
+        std::shared_ptr<const InputFrame> message;
         std::uint64_t generation = 0U;
         SteadyClock::time_point input_received_at;
         builtin_interfaces::msg::Time input_received_stamp;
@@ -691,7 +755,9 @@ private:
         try {
           validate_image(*message);
           timing = backend_->infer_bgr(
-            message->data.data(), message->data.size(), message->step);
+            message->bgr.data,
+            message->bgr.step * static_cast<std::size_t>(message->bgr.rows),
+            message->bgr.step);
           if (connection_.enabled) {
             const auto started = std::chrono::steady_clock::now();
             const bool render_result = preview_enabled_ ||
@@ -902,6 +968,8 @@ private:
 
   void stop()
   {
+    bev_handoff::unregisterDirectBevConsumer(direct_bev_consumer_id_);
+    direct_bev_consumer_id_ = 0U;
     {
       // Synchronize the stop predicate with both waits so shutdown cannot miss a wakeup.
       std::scoped_lock lock(frame_mutex_, preview_mutex_);
@@ -919,6 +987,7 @@ private:
 
   LineDetactorNode & node_;
   std::string input_topic_;
+  bool direct_bev_input_enabled_{false};
   std::string model_path_;
   std::string engine_cache_path_;
   std::string engine_precision_{"fp32"};
@@ -948,7 +1017,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr control_latency_subscription_;
   std::mutex frame_mutex_;
   std::condition_variable frame_condition_;
-  Image::ConstSharedPtr latest_message_;
+  std::shared_ptr<const InputFrame> latest_message_;
   SteadyClock::time_point latest_input_received_at_{};
   builtin_interfaces::msg::Time latest_input_received_stamp_;
   std::uint64_t latest_generation_{0U};
@@ -958,6 +1027,7 @@ private:
   std::uint64_t skipped_total_{0U};
   std::atomic<bool> stop_requested_{false};
   std::thread worker_;
+  std::uint64_t direct_bev_consumer_id_{0U};
   std::mutex preview_mutex_;
   std::condition_variable preview_condition_;
   std::shared_ptr<const PreviewFrame> latest_preview_;

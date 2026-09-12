@@ -17,7 +17,7 @@ from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node, ComposableNodeContainer
+from launch_ros.actions import LoadComposableNodes, Node
 from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -61,6 +61,7 @@ def _apply_parameter_file_defaults(
     bev_arguments,
     controller_arguments,
     line_detactor_config,
+    bev_launch,
 ):
     bev_defaults = _merged_parameters(
         bev_config,
@@ -105,6 +106,7 @@ def _apply_parameter_file_defaults(
             raise RuntimeError(f"ML auto drive requires line_detactor {required}: true")
     detector.update({
         "input_topic": str(bev_defaults["output_topic"]),
+        "direct_bev_input_enabled": True,
         "centerline_bev_width_m": y_max-y_min,
         "centerline_bev_height_m": x_max-x_min,
     })
@@ -169,12 +171,11 @@ def _apply_parameter_file_defaults(
         " | model=" + str(detector.get("model_path", os.path.join(
             get_package_share_directory("line_detactor"), "models",
             "fast_scnn_stop_line_120x300_batch_1.onnx"))) +
-        " | pipeline=" + detector["input_topic"] + " -> " + str(detector["result_topic"]) +
+        " | pipeline=direct BEV memory -> " + str(detector["result_topic"]) +
         " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
         " | performance measurement=" + measurement
-    )), ComposableNodeContainer(
-        name="line_detactor_container", namespace="", package="rclcpp_components",
-        executable="component_container_mt", output="screen",
+    )), bev_launch, LoadComposableNodes(
+        target_container="/bev_processor_container",
         composable_node_descriptions=[ComposableNode(
             package="line_detactor", plugin="line_detactor::LineDetactorNode",
             name="line_detactor", parameters=[detector],
@@ -417,7 +418,8 @@ def generate_launch_description():
             "bev_params_file": bev_params_file,
             "camera_params_file": LaunchConfiguration("camera_params_file"),
             "preview_enabled": "false",
-            "publish_enabled": "true",
+            "publish_enabled": "false",
+            "direct_output_enabled": "true",
             "performance_measurement_enabled": performance_measurement_enabled,
             **bev_overrides,
         }.items(),
@@ -577,9 +579,9 @@ def generate_launch_description():
                     "bev_arguments": bev_arguments,
                     "controller_arguments": controller_arguments,
                     "line_detactor_config": line_detactor_config,
+                    "bev_launch": bev_launch,
                 },
             ),
-            bev_launch,
             vesc_bridge_node,
             dynamics_node,
             performance_shutdown_handler,

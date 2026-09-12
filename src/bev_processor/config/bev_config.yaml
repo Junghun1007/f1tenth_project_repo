@@ -21,6 +21,9 @@ bev_processor:
 
     # publish_max_fps가 0이면 처리된 프레임을 별도 속도 제한 없이 발행한다.
     publish_enabled: true
+    # true면 같은 프로세스의 line_detactor에 cv::Mat 소유권을 직접 넘긴다.
+    # auto_drive.launch.py는 이 경로를 켜고 ROS BEV 영상 발행을 끄는다.
+    direct_output_enabled: false
     publish_max_fps: 0.0
     preview_enabled: false
     preview_max_fps: 60.0

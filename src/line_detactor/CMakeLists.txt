@@ -20,6 +20,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
+find_package(bev_handoff REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -117,6 +118,7 @@ target_include_directories(line_detactor_component
 )
 ament_target_dependencies(line_detactor_component
   ament_index_cpp
+  bev_handoff
   rclcpp
   rclcpp_components
   sensor_msgs
@@ -181,6 +183,7 @@ ament_export_dependencies(
   std_msgs
   geometry_msgs
   ament_index_cpp
+  bev_handoff
   CUDAToolkit
   OpenCV
   rclcpp

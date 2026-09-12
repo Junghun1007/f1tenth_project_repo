@@ -12,7 +12,8 @@
 2. 측정 자세와 설정된 카메라 X/Y/yaw로 고정 BEV LUT를 만든다.
 3. OAK 측정 파이프라인을 닫고 `camera_driver`를 시작한다.
 4. CUDA가 NV12 안정화, BEV sampling, BGR 생성을 한 번에 수행한다.
-5. `/camera/image_bev`를 딥러닝 검출기에 전달한다.
+5. 독립 실행은 `/camera/image_bev`를 발행하고, `auto_drive.launch.py`는
+   같은 프로세스의 딥러닝 검출기에 BGR `cv::Mat`을 복사 없이 직접 넘긴다.
 
 차량은 시작 측정이 완료될 때까지 정지해야 한다.
 
@@ -23,7 +24,7 @@
 ```bash
 source /opt/ros/humble/setup.bash
 colcon build \
-  --packages-select camera_driver bev_processor \
+  --packages-select camera_driver bev_handoff bev_processor \
   --cmake-clean-cache \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash

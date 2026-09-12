@@ -33,6 +33,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/header.hpp>
 
+#include "bev_handoff/direct_bev_handoff.hpp"
 #include "bev_processor/bev_geometry.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
@@ -46,13 +47,7 @@ namespace
 
 using SteadyClock = std::chrono::steady_clock;
 
-struct BevFrame
-{
-  cv::Mat image;
-  std_msgs::msg::Header header;
-  SteadyClock::time_point input_received_at;
-  std::uint64_t generation{0U};
-};
+using BevFrame = bev_handoff::DirectBevFrame;
 
 bool graphicalDisplayAvailable()
 {
@@ -71,27 +66,27 @@ std::unique_ptr<sensor_msgs::msg::Image> makeBgr8Message(
   const BevFrame & frame,
   const std::string & frame_id)
 {
-  if (frame.image.type() != CV_8UC3) {
+  if (frame.bgr.type() != CV_8UC3) {
     throw std::invalid_argument("BEV output must be a BGR8 image");
   }
 
   auto message = std::make_unique<sensor_msgs::msg::Image>();
   message->header = frame.header;
   message->header.frame_id = frame_id;
-  message->height = static_cast<std::uint32_t>(frame.image.rows);
-  message->width = static_cast<std::uint32_t>(frame.image.cols);
+  message->height = static_cast<std::uint32_t>(frame.bgr.rows);
+  message->width = static_cast<std::uint32_t>(frame.bgr.cols);
   message->encoding = sensor_msgs::image_encodings::BGR8;
   message->is_bigendian = false;
-  message->step = static_cast<std::uint32_t>(frame.image.cols * 3);
+  message->step = static_cast<std::uint32_t>(frame.bgr.cols * 3);
   message->data.resize(
     static_cast<std::size_t>(message->step) *
     static_cast<std::size_t>(message->height));
 
-  for (int row = 0; row < frame.image.rows; ++row) {
+  for (int row = 0; row < frame.bgr.rows; ++row) {
     std::memcpy(
       message->data.data() +
       static_cast<std::size_t>(row) * message->step,
-      frame.image.ptr(row),
+      frame.bgr.ptr(row),
       message->step);
   }
   return message;
@@ -308,7 +303,8 @@ public:
       "roll=%.2f, pitch_down=%.2f, yaw=%.2fdeg), "
       "valid_lut=%.2f%%, GPU=%s, interpolation=%s, "
       "processing=NV12-to-BEV/latest-only, "
-      "ROS=%s (max=%.1fHz, 0=unlimited), preview=%s (max=%.1fHz)",
+      "direct=%s, ROS=%s (max=%.1fHz, 0=unlimited), "
+      "preview=%s (max=%.1fHz)",
       input_topic_.c_str(),
       input_crop_width_,
       input_crop_height_,
@@ -333,6 +329,7 @@ public:
       valid_lut_percent_.load(std::memory_order_relaxed),
       startup_processor->deviceName().c_str(),
       bev_interpolation_.c_str(),
+      direct_output_enabled_ ? "on" : "off",
       publish_enabled_ ? "on" : "off",
       publish_max_fps_,
       preview_enabled_ ? "on" : "off",
@@ -401,6 +398,7 @@ private:
     declare_parameter<double>("input_bottom_fraction", 0.70);
 
     declare_parameter<bool>("publish_enabled", true);
+    declare_parameter<bool>("direct_output_enabled", false);
     declare_parameter<double>("publish_max_fps", 0.0);
     declare_parameter<bool>("preview_enabled", true);
     declare_parameter<double>("preview_max_fps", 60.0);
@@ -527,6 +525,8 @@ private:
       get_parameter("input_bottom_fraction").as_double();
 
     publish_enabled_ = get_parameter("publish_enabled").as_bool();
+    direct_output_enabled_ =
+      get_parameter("direct_output_enabled").as_bool();
     publish_max_fps_ = get_parameter("publish_max_fps").as_double();
     preview_enabled_ = get_parameter("preview_enabled").as_bool();
     preview_max_fps_ = get_parameter("preview_max_fps").as_double();
@@ -1101,10 +1101,11 @@ private:
           static_cast<std::size_t>(input->step),
           stabilized_to_source,
           static_cast<int>(input->source_crop_top));
-        output->image = std::move(cuda_result.bgr);
+        output->bgr = std::move(cuda_result.bgr);
         output->header = input->header;
-        output->input_received_at = input_received_at;
-        output->generation = generation;
+        output->header.frame_id = output_frame_id_;
+        output->bev_input_received_at = input_received_at;
+        output->source_generation = generation;
         const auto finished_at = SteadyClock::now();
 
         const auto process_ns = static_cast<std::uint64_t>(
@@ -1123,6 +1124,27 @@ private:
             std::memory_order_release);
         }
         output_cv_.notify_all();
+        if (direct_output_enabled_) {
+          const auto direct_frame = std::atomic_load_explicit(
+            &latest_output_, std::memory_order_acquire);
+          if (bev_handoff::deliverDirectBevFrame(direct_frame)) {
+            const auto delivered_at = SteadyClock::now();
+            direct_delivered_total_.fetch_add(1U, std::memory_order_relaxed);
+            direct_delivered_interval_.fetch_add(1U, std::memory_order_relaxed);
+            recordPipelineLatency(
+              direct_frame->header,
+              bev_ready_latency_samples_interval_,
+              bev_ready_latency_ns_interval_,
+              bev_ready_latency_ns_max_interval_);
+            recordSteadyLatency(
+              delivered_at - direct_frame->bev_input_received_at,
+              bev_stage_latency_samples_interval_,
+              bev_stage_latency_ns_interval_,
+              bev_stage_latency_ns_max_interval_);
+          } else {
+            direct_unavailable_total_.fetch_add(1U, std::memory_order_relaxed);
+          }
+        }
       } catch (const std::exception & exception) {
         processing_error_total_.fetch_add(1U, std::memory_order_relaxed);
         RCLCPP_ERROR_THROTTLE(
@@ -1145,7 +1167,7 @@ private:
       if (!frame) {
         continue;
       }
-      last_generation = frame->generation;
+      last_generation = frame->source_generation;
 
       const auto now = SteadyClock::now();
       if (
@@ -1166,16 +1188,18 @@ private:
             makeBgr8Message(*frame, output_frame_id_));
         }
         const auto published_at = SteadyClock::now();
-        recordPipelineLatency(
-          frame->header,
-          bev_ready_latency_samples_interval_,
-          bev_ready_latency_ns_interval_,
-          bev_ready_latency_ns_max_interval_);
-        recordSteadyLatency(
-          published_at - frame->input_received_at,
-          bev_stage_latency_samples_interval_,
-          bev_stage_latency_ns_interval_,
-          bev_stage_latency_ns_max_interval_);
+        if (!direct_output_enabled_) {
+          recordPipelineLatency(
+            frame->header,
+            bev_ready_latency_samples_interval_,
+            bev_ready_latency_ns_interval_,
+            bev_ready_latency_ns_max_interval_);
+          recordSteadyLatency(
+            published_at - frame->bev_input_received_at,
+            bev_stage_latency_samples_interval_,
+            bev_stage_latency_ns_interval_,
+            bev_stage_latency_ns_max_interval_);
+        }
         last_published_at = now;
         published_total_.fetch_add(1U, std::memory_order_relaxed);
         published_interval_.fetch_add(1U, std::memory_order_relaxed);
@@ -1195,7 +1219,7 @@ private:
   {
     const auto frame = std::atomic_load_explicit(
       &latest_output_, std::memory_order_acquire);
-    if (!frame || frame->image.empty()) {
+    if (!frame || frame->bgr.empty()) {
       RCLCPP_WARN(
         get_logger(),
         "%s capture requested before a BEV frame was available.",
@@ -1218,7 +1242,7 @@ private:
       const std::filesystem::path filename = directory /
         ("bev_capture_" +
         std::to_string(get_clock()->now().nanoseconds()) + ".png");
-      if (!cv::imwrite(filename.string(), frame->image)) {
+      if (!cv::imwrite(filename.string(), frame->bgr)) {
         RCLCPP_ERROR(
           get_logger(),
           "Failed to capture BEV image: %s",
@@ -1333,8 +1357,8 @@ private:
   {
     namespace fs = std::filesystem;
     if (
-      frame.image.type() != CV_8UC3 || frame.image.cols != bev_config_.output_width ||
-      frame.image.rows != bev_config_.output_height)
+      frame.bgr.type() != CV_8UC3 || frame.bgr.cols != bev_config_.output_width ||
+      frame.bgr.rows != bev_config_.output_height)
     {
       throw std::runtime_error("dataset frame has invalid BGR BEV dimensions");
     }
@@ -1343,7 +1367,7 @@ private:
     const fs::path output = dataset_collection_directory_ / "origin_bev" / (stem + ".png");
     const fs::path temporary = dataset_collection_directory_ / "origin_bev" / (stem + ".tmp.png");
     try {
-      if (!cv::imwrite(temporary.string(), frame.image)) {
+      if (!cv::imwrite(temporary.string(), frame.bgr)) {
         throw std::runtime_error("failed to encode origin BEV PNG");
       }
       fs::rename(temporary, output);
@@ -1370,7 +1394,7 @@ private:
   {
     const auto frame = std::atomic_load_explicit(
       &latest_output_, std::memory_order_acquire);
-    if (!frame || frame->image.empty()) {
+    if (!frame || frame->bgr.empty()) {
       RCLCPP_WARN(
         get_logger(),
         "%s dataset capture requested before a BEV frame was available.",
@@ -1445,7 +1469,7 @@ private:
       if (!frame) {
         continue;
       }
-      last_generation = frame->generation;
+      last_generation = frame->source_generation;
 
       const auto now = SteadyClock::now();
       if (
@@ -1588,7 +1612,7 @@ private:
         const auto frame = std::atomic_load_explicit(
           &latest_output_, std::memory_order_acquire);
         if (frame) {
-          const cv::Mat & displayed_image = frame->image;
+          const cv::Mat & displayed_image = frame->bgr;
           cv::imshow(preview_window_name_, displayed_image);
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
@@ -1636,7 +1660,7 @@ private:
           &latest_output_, std::memory_order_acquire);
         return
           stop_.load(std::memory_order_acquire) ||
-          (frame && frame->generation != last_generation);
+          (frame && frame->source_generation != last_generation);
       });
     if (stop_.load(std::memory_order_acquire)) {
       return nullptr;
@@ -1729,6 +1753,10 @@ private:
       skipped_interval_.exchange(0U, std::memory_order_relaxed);
     const auto published =
       published_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto direct_delivered =
+      direct_delivered_interval_.exchange(0U, std::memory_order_relaxed);
+    const auto bev_ready = direct_output_enabled_ ?
+      direct_delivered : published;
     const auto previewed =
       previewed_interval_.exchange(0U, std::memory_order_relaxed);
     const auto process_ns =
@@ -1766,7 +1794,7 @@ private:
     if (latest) {
       latest_age_ms =
         std::chrono::duration<double, std::milli>(
-        now - latest->input_received_at).count();
+        now - latest->bev_input_received_at).count();
     }
     const double average_process_ms =
       processed > 0U ?
@@ -1799,7 +1827,7 @@ private:
         "bev_compute_ms(avg/max)=%.3f/%.3f skipped=%llu "
         "errors(invalid/process/publish)=%llu/%llu/%llu",
         static_cast<double>(accepted) / elapsed_sec,
-        static_cast<double>(published) / elapsed_sec,
+        static_cast<double>(bev_ready) / elapsed_sec,
         static_cast<double>(processed) / elapsed_sec,
         average_stabilized_latency_ms,
         static_cast<double>(stabilized_latency_ns_max) / 1.0e6,
@@ -1821,7 +1849,7 @@ private:
         get_logger(),
         "\nBEV status: input=%.1fHz (%llu total), processed=%.1fHz "
         "(%llu total, skipped=%llu/%llu interval/total), "
-        "ROS=%.1fHz, preview=%.1fHz, "
+        "direct=%.1fHz, ROS=%.1fHz, preview=%.1fHz, "
         "compute=%.3f/%.3fms avg/max, latest_age=%.2fms, "
         "extrinsics=startup_measured, fixed_lut=true, "
         "(height=%.3fm,roll=%.2f,pitch_down=%.2fdeg), "
@@ -1835,6 +1863,7 @@ private:
         static_cast<unsigned long long>(skipped),
         static_cast<unsigned long long>(
           skipped_total_.load(std::memory_order_relaxed)),
+        static_cast<double>(direct_delivered) / elapsed_sec,
         static_cast<double>(published) / elapsed_sec,
         static_cast<double>(previewed) / elapsed_sec,
         average_process_ms,
@@ -1887,6 +1916,19 @@ private:
         input_crop_width_,
         input_crop_height_);
     }
+    if (
+      direct_output_enabled_ &&
+      direct_delivered_total_.load(std::memory_order_relaxed) == 0U &&
+      std::chrono::duration<double>(now - node_started_at_).count() >=
+      startup_timeout_sec_)
+    {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(),
+        *get_clock(),
+        5000,
+        "No process-local BEV consumer is registered; load line_detactor "
+        "into bev_processor_container with direct_bev_input_enabled=true.");
+    }
   }
 
   int configuration_version_{0};
@@ -1902,6 +1944,7 @@ private:
   int input_crop_height_{560};
   int input_crop_top_{240};
   bool publish_enabled_{true};
+  bool direct_output_enabled_{false};
   double publish_max_fps_{0.0};
   bool preview_enabled_{true};
   double preview_max_fps_{60.0};
@@ -1981,6 +2024,8 @@ private:
   std::atomic<std::uint64_t> processed_total_{0U};
   std::atomic<std::uint64_t> skipped_total_{0U};
   std::atomic<std::uint64_t> published_total_{0U};
+  std::atomic<std::uint64_t> direct_delivered_total_{0U};
+  std::atomic<std::uint64_t> direct_unavailable_total_{0U};
   std::atomic<std::uint64_t> previewed_total_{0U};
   std::atomic<std::uint64_t> publish_throttled_total_{0U};
   std::atomic<std::uint64_t> invalid_total_{0U};
@@ -1992,6 +2037,7 @@ private:
   std::atomic<std::uint64_t> processed_interval_{0U};
   std::atomic<std::uint64_t> skipped_interval_{0U};
   std::atomic<std::uint64_t> published_interval_{0U};
+  std::atomic<std::uint64_t> direct_delivered_interval_{0U};
   std::atomic<std::uint64_t> previewed_interval_{0U};
   std::atomic<std::uint64_t> process_ns_interval_{0U};
   std::atomic<std::uint64_t> process_ns_max_interval_{0U};

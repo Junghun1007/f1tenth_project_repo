@@ -1,6 +1,9 @@
 line_detactor:
   ros__parameters:
     input_topic: "/camera/image_bev"
+    # auto_drive.launch.py에서는 true로 덮어써 같은 프로세스의 BEV cv::Mat을
+    # 직접 받고, 독립 실행에서는 기존 ROS 영상 토픽을 사용한다.
+    direct_bev_input_enabled: false
     # model_path defaults to fast_scnn_stop_line_120x300_batch_1.onnx (3 channels).
     # Run tools/export_stop_line_onnx.py after training before copying/building this package.
     engine_cache_path: ""

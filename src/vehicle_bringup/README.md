@@ -79,6 +79,9 @@ owns the joystick node defaults.
 ## Autonomous driving
 
 The pipeline is `camera_driver -> bev_processor -> line_detactor -> auto_control`.
+`auto_drive.launch.py` loads the first three perception components into the same
+component container. BEV-to-detector transfer is a process-local latest-frame
+handoff; `/camera/image_bev` is not published or subscribed in this launch.
 The controller consumes `/line_detactor/result` centerline points, keeping their
 path order through corners. Each result immediately triggers command calculation
 and publication. ML inference runs on new input independently of the GUI refresh
@@ -91,7 +94,7 @@ After pulling `0906ML`, rebuild the changed packages on the Jetson before launch
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select bev_processor line_detactor auto_control vehicle_bringup \
+colcon build --packages-select bev_handoff bev_processor line_detactor auto_control vehicle_bringup \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
@@ -234,7 +237,7 @@ pulling this change:
 ```bash
 source /opt/ros/humble/setup.bash
 colcon build \
-  --packages-select line_detactor auto_control vehicle_bringup \
+  --packages-select bev_handoff line_detactor auto_control vehicle_bringup \
   --cmake-clean-cache \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
@@ -249,7 +252,7 @@ Use a fresh terminal with the Humble environment and this workspace's
 `install/local_setup.bash` when checking for an older workspace overlay.
 
 The current launch prints `[ML auto drive]` with its launch path, selected YAML,
-model path, topic chain, and preview selection. A loaded detector prints
+model path, direct-memory pipeline, and preview selection. A loaded detector prints
 `Line detector ready`. The default ML window is `BEV lane TensorRT preview`
 and contains inference/FPS/lanes information below the image; the raw BEV preview
 is disabled by the integrated launch. An ML window can still show just the image
@@ -263,14 +266,16 @@ ros2 pkg prefix line_detactor
 ros2 node list
 ros2 param get /bev_processor preview_enabled
 ros2 param get /line_detactor model_path
-ros2 topic info /camera/image_bev
+ros2 param get /bev_processor direct_output_enabled
+ros2 param get /line_detactor direct_bev_input_enabled
 ros2 topic info /line_detactor/result
 ```
 
 The pipeline needs `/bev_processor`, `/line_detactor`, `/auto_control` and
 `/vesc_bridge_node`. `ros2 pkg prefix` should point into the intended 0906ML install.
-The BEV topic needs a publisher and ML subscriber; the result topic needs an ML
-publisher and controller subscriber. Extra diagnostic subscriptions may also appear.
+Both direct parameters must be `true`; `/camera/image_bev` is intentionally absent.
+The result topic still needs an ML publisher and controller subscriber. Extra
+diagnostic subscriptions may also appear.
 
 `Auto status` now separates actuator stop state from ML reception:
 
