@@ -41,17 +41,39 @@ struct ScanProjection
   std::size_t valid_bins{0};
 };
 
+struct ClusterConfig
+{
+  int min_bins{3};
+  int max_missing_bins{1};
+  double base_neighbor_distance_m{0.04};
+  double angular_neighbor_scale{1.5};
+  double radius_margin_m{0.04};
+  double min_radius_m{0.05};
+  double max_radius_m{0.40};
+};
+
+struct ObstacleCircle
+{
+  double forward_m{0.0};
+  double left_m{0.0};
+  double radius_m{0.0};
+  double representative_range_m{0.0};
+  std::size_t support_bins{0};
+  std::size_t first_bin{0};
+  std::size_t last_bin{0};
+};
+
 bool validateProjectionConfig(const ProjectionConfig & config, std::string & reason);
 
-RoiRect computeRoi(
-  int image_width,
+bool validateClusterConfig(const ClusterConfig & config, std::string & reason);
+
+RoiRect computeRoi(int image_width,
   int image_height,
   double width_ratio,
   double height_ratio,
   double bottom_offset_ratio);
 
-ScanProjection projectDepthToScan(
-  const std::uint16_t * depth_mm,
+ScanProjection projectDepthToScan(const std::uint16_t * depth_mm,
   int image_width,
   int image_height,
   std::size_t row_stride_elements,
@@ -59,4 +81,7 @@ ScanProjection projectDepthToScan(
   double cx,
   const ProjectionConfig & config);
 
-}  // namespace depth_lidar
+std::vector<ObstacleCircle> clusterScan(const ScanProjection & projection,
+  const ClusterConfig & config);
+
+} // namespace depth_lidar

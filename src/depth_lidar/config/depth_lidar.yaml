@@ -24,9 +24,41 @@ depth_lidar:
     scan.pixel_stride: 1
     scan.min_points_per_bin: 1
 
+    # Consecutive occupied angular bins are grouped in one O(N) pass. Radius is
+    # estimated from angular support * range, then clamped and inflated.
+    cluster.min_bins: 3
+    cluster.max_missing_bins: 1
+    cluster.base_neighbor_distance_m: 0.04
+    cluster.angular_neighbor_scale: 1.5
+    cluster.radius_margin_m: 0.04
+    cluster.min_radius_m: 0.05
+    cluster.max_radius_m: 0.40
+
+    # Pull CAM_A NV12 to a dedicated latest-frame host receiver without
+    # converting, publishing, or previewing it. This measures concurrent USB load.
+    nv12.enabled: true
+    nv12.fps: 60.0
+    nv12.width: 1280
+    nv12.height: 800
+
+    # Black diagnostic preview using the same metric convention as the future BEV:
+    # image top=forward, image left=vehicle left. preview.size_px is retained only
+    # for compatibility with older parameter files and is no longer used.
     preview.enabled: true
     preview.gui: false
     preview.fps: 10.0
     preview.size_px: 700
+    preview.scale: 3
+    bev.x_min_m: 0.0
+    bev.x_max_m: 3.0
+    bev.y_min_m: -0.6
+    bev.y_max_m: 0.6
+    bev.meter_per_pixel: 0.01
+
+    # 2D pose of the depth-camera origin in the future front-axle BEV frame.
+    sensor.x_m: -0.16
+    sensor.y_m: 0.0
+    sensor.yaw_deg: 0.0
+
     metrics.print_interval_sec: 1.0
     frame_id: "depth_lidar"
