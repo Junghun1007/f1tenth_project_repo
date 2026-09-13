@@ -9,12 +9,13 @@ ir_camera_driver:
     # 0.0=LEFT/CAM_B, 0.5=stereo midpoint, 1.0=RIGHT/CAM_C.
     virtual_camera_position_ratio: 0.5
 
-    # OAK-D Pro W OV9282 full sensor resolution. Reprojection is limited by
-    # RVC2 full-resolution stereo (50 FPS); one camera can run at 129 FPS.
+    # The tuning package intentionally captures and previews at 30 FPS so that
+    # the original and BEV windows have the same cadence and dark scenes can
+    # use exposure times up to one 30 FPS frame period.
     width: 1280
     height: 800
-    reprojection_fps: 50.0
-    single_camera_fps: 129.0
+    reprojection_fps: 30.0
+    single_camera_fps: 30.0
     undistort_single_camera: true
     sync_threshold_ms: 2.0
 
@@ -24,16 +25,37 @@ ir_camera_driver:
     ir_dot_projector_intensity: 1.0
     ir_flood_light_intensity: 0.0
 
-    # Keep auto exposure for the first tunnel preview. Enable manual exposure
-    # for controlled IR OFF/ON comparisons. Exposure must fit inside one frame.
-    manual_exposure_enabled: false
+    # The live control window can update flood/exposure/ISO while running.
+    # Exposure must fit inside one frame (maximum 33333 us at 30 FPS).
+    manual_exposure_enabled: true
     manual_exposure_us: 5000
     manual_sensitivity_iso: 800
 
-    # Preview is not rate-limited. These values only resize the GUI window;
-    # camera and reprojection resolution remains 1280x800.
+    # Both original and BEV previews are updated together at no more than 30 FPS.
     preview_window_name: "OAK IR center preview"
+    bev_preview_window_name: "OAK IR BEV preview"
+    controls_window_name: "OAK IR live controls"
+    preview_max_fps: 30.0
     preview_max_width: 1280
     preview_max_height: 800
+    bev_preview_scale: 2.0
     capture_directory: "."
     status_log_interval_sec: 1.0
+
+    # Static ground-plane projection for visibility tuning. Measure these
+    # values on the vehicle before judging lane geometry from the BEV image.
+    bev.camera_x_m: -0.16
+    bev.camera_y_m: 0.0
+    bev.camera_height_m: 0.20
+    bev.camera_roll_deg: 0.0
+    bev.camera_pitch_down_deg: 14.0
+    bev.camera_yaw_deg: 0.0
+
+    # Same front-axle BEV convention as bev_processor: top=forward, left=left.
+    bev.x_min_m: 0.0
+    bev.x_max_m: 3.0
+    bev.y_min_m: -0.6
+    bev.y_max_m: 0.6
+    bev.meter_per_pixel: 0.01
+    bev.output_width: 120
+    bev.output_height: 300

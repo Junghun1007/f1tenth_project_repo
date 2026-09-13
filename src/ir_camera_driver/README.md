@@ -1,7 +1,9 @@
 # ir_camera_driver
 
 OAK-D Pro W의 CAM_B/C 모노 카메라와 IR emitter를 사용하는 독립 터널
-가시성 테스트 패키지다. 다음 두 실행 모드를 제공한다.
+가시성 튜닝 패키지다. 원본 IR 영상과 고정 지면 BEV를 동시에 최대 30 FPS로
+표시하고, 별도 제어 창에서 flood·노출 시간·ISO를 실행 중 직접 입력할 수 있다.
+다음 두 실행 모드를 제공한다.
 
 - `reprojection_enabled=true`: 좌우 rectified 영상과 center-aligned disparity를
   이용해 스테레오 광학 중심 사이의 가상 시점 영상 하나를 만든다.
@@ -43,25 +45,28 @@ r = (0 - y_left) / (y_right - y_left)
 외부 캘리브레이션이 필요하다. 이번 패키지는 IR 차선 가시성 시험을 위한
 스테레오 사이 가상 시점까지만 만든다.
 
-## 속도 구성
+## 원본/BEV 프리뷰
 
-프리뷰에는 별도 FPS timer를 사용하지 않는다. 캡처 스레드는 DepthAI의
-크기 1/non-blocking 큐를 계속 비우고 최신 프레임만 공유하며, 프리뷰
-스레드는 처리 가능한 즉시 가장 최신 프레임을 표시한다. 느린 GUI 때문에
-과거 프레임이 쌓이지 않는다.
+기본 카메라 요청 속도와 원본/BEV 화면 갱신 상한은 모두 30 FPS다. 캡처
+스레드는 DepthAI의 크기 1/non-blocking 큐를 계속 비우고 최신 프레임만
+공유하므로 GUI가 느려져도 과거 프레임이 쌓이지 않는다. 두 프리뷰는 같은
+프레임으로 함께 갱신된다.
 
-- 중앙 재투영: `1280x800 @ 50 FPS`
-  - RVC2 800P stereo의 가장 빠른 integer disparity 구성
+- 중앙 재투영: `1280x800 @ 30 FPS`
+  - RVC2 800P integer disparity 구성
   - CENTER 정렬에 필수인 left-right check 활성화
   - subpixel과 추가 후처리 필터 비활성화
   - 중앙 합성은 Jetson CUDA에서 수행
-- 단일 렌즈: `1280x800 @ 129 FPS`
-  - OV9282 full-resolution 센서 최대 요청값
+- 단일 렌즈: `1280x800 @ 30 FPS`
   - stereo/disparity/CUDA 재투영을 시작하지 않음
 
-실제 화면 갱신률은 모니터 주사율과 OpenCV GUI 성능의 제한을 받는다.
-센서/스테레오 수신 속도는 매초 출력되는 `[IR_CAMERA] capture` 로그로
-확인한다.
+BEV는 프레임의 rectified intrinsics와 YAML에 입력한 카메라 높이·장착 자세를
+이용해 평면 노면을 투영한다. 기본 범위와 해상도는 기존 `bev_processor`와
+동일한 전방 0~3m, 좌우 ±0.6m, 1cm/pixel (`120x300`)이다. 장착 높이와
+pitch가 실제와 다르면 BEV 형상도 틀어지므로 실측값으로 수정해야 한다.
+
+실제 화면 갱신률과 처리 시간은 매초 출력되는 `[IR_CAMERA]` 로그에서
+`original`, `BEV`, `reproject`, `BEV` 항목으로 확인한다.
 
 ## IR와 노출
 
@@ -70,9 +75,10 @@ stereo disparity용 texture를 만들고, flood light는 어두운 장면을 균
 비추는 용도다. 터널 차선 자체의 IR 반사를 확인하려면
 `ir_flood_light_intensity`도 단계적으로 올려 비교할 수 있다.
 
-자동 노출이 기본값이다. 같은 위치에서 IR OFF/ON을 정량 비교할 때는
-`manual_exposure_enabled=true`로 설정해야 자동 노출이 IR 효과를 상쇄하지
-않는다. 설정 노출 시간은 프레임 주기보다 짧아야 한다.
+수동 노출이 기본값이다. 제어 창에서 값을 적용하면 좌우 카메라에 같은 노출과
+ISO가 즉시 전달된다. `AUTO EXPOSURE` 버튼 또는 `A` 키로 자동 노출을 다시
+켤 수 있다. 설정 노출 시간은 프레임 주기보다 짧아야 하며 30 FPS 기본값에서
+허용 범위는 `10~33333 us`다.
 
 ## 빌드
 
@@ -125,13 +131,24 @@ ros2 launch ir_camera_driver ir_camera_driver.launch.py \
   ir_flood_light_intensity:=0.5
 ```
 
+실행하면 원본, BEV, `OAK IR live controls`의 세 창이 열린다. 제어 창의
+입력 칸을 마우스로 클릭하고 숫자를 입력한 다음 Enter 또는 `APPLY` 버튼을
+누르면 다음 값이 즉시 적용된다.
+
+- Flood intensity: `0.0~1.0`
+- Exposure: `10~33333 us` (카메라 FPS를 바꾸면 최대값도 바뀜)
+- ISO: `100~1600`
+
 키 조작:
 
 - `I`: 설정된 dot/flood intensity로 IR ON/OFF 전환
-- `B`: 현재 최종 프리뷰를 PNG로 저장
+- `A`: 자동 노출로 전환
+- `Tab`: 다음 입력 칸 선택
+- `B`: 현재 원본과 BEV를 각각 PNG로 저장
 - `Q` 또는 `Esc`: 종료
 
-저장 파일명에는 `center/left/right`와 `ir_on/ir_off` 상태가 포함된다.
+저장 파일명에는 `center/left/right`, `ir_on/ir_off`, `original/bev` 상태가
+포함된다.
 
 ## 주요 파라미터
 
@@ -140,14 +157,18 @@ ros2 launch ir_camera_driver ir_camera_driver.launch.py \
 | `reprojection_enabled` | `true` | stereo 중앙 가상 시점 생성 여부 |
 | `selected_camera` | `LEFT` | 재투영 OFF 영상 및 invalid disparity fallback |
 | `virtual_camera_position_ratio` | `0.5` | LEFT 0.0에서 RIGHT 1.0 사이 가상 위치 |
-| `reprojection_fps` | `50.0` | 800P RVC2 stereo 최대 실효 FPS |
-| `single_camera_fps` | `129.0` | 800P OV9282 단일 센서 최대 FPS |
+| `reprojection_fps` | `30.0` | 800P stereo 카메라 요청 FPS |
+| `single_camera_fps` | `30.0` | 800P 단일 카메라 요청 FPS |
 | `ir_enabled` | `true` | 시작 시 IR emitter 활성화 |
 | `ir_dot_projector_intensity` | `1.0` | dot projector 세기 `0.0~1.0` |
 | `ir_flood_light_intensity` | `0.0` | flood light 세기 `0.0~1.0` |
-| `manual_exposure_enabled` | `false` | 좌우 동일 수동 노출 적용 |
+| `manual_exposure_enabled` | `true` | 좌우 동일 수동 노출 적용 |
 | `manual_exposure_us` | `5000` | 수동 노출 시간 |
 | `manual_sensitivity_iso` | `800` | 수동 ISO `100~1600` |
+| `preview_max_fps` | `30.0` | 원본/BEV 프리뷰 공통 FPS 상한 |
+| `bev.camera_height_m` | `0.20` | 지면 기준 카메라 광학 중심 높이 |
+| `bev.camera_pitch_down_deg` | `14.0` | 카메라 하향 장착 pitch |
+| `bev.*_m`, `bev.meter_per_pixel` | `0~3m`, `±0.6m`, `0.01` | BEV 범위와 해상도 |
 | `capture_directory` | `.` | `B` 키 PNG 저장 위치 |
 
 ## 제한사항
@@ -156,7 +177,8 @@ ros2 launch ir_camera_driver ir_camera_driver.launch.py \
   해당 픽셀은 선택한 렌즈 영상으로 대체된다.
 - 좌우 밝기 차이가 크면 평균 합성 경계가 보일 수 있다. 정량 시험에는 동일
   수동 노출을 권장한다.
-- 최대 FPS는 센서/스테레오 요청값이다. USB 연결이 HIGH(USB 2)로 표시되거나
-  Jetson 전력·열 상태가 좋지 않으면 실제 FPS가 낮아질 수 있다.
+- BEV는 평면 노면과 고정 장착 자세를 가정하며 IMU 흔들림 보정은 하지 않는다.
+- USB 연결이 HIGH(USB 2)로 표시되거나 Jetson 전력·열 상태가 좋지 않으면
+  실제 FPS가 30보다 낮아질 수 있다.
 - OAK-D Pro W는 dot projector와 flood LED가 기본적으로 꺼진 장치이므로 이
   패키지가 시작 시 명시적으로 켜고 종료 시 모두 끈다.

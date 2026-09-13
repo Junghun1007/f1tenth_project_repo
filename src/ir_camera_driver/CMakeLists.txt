@@ -20,7 +20,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(CUDAToolkit REQUIRED)
-find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs)
+find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
 find_package(depthai 3.6 CONFIG QUIET)
 if(NOT depthai_FOUND)
@@ -49,6 +49,18 @@ target_compile_options(ir_center_reprojector PRIVATE
 target_link_libraries(
   ir_center_reprojector PUBLIC CUDA::cudart ${OpenCV_LIBS})
 
+add_library(ir_bev_projector STATIC
+  src/ir_bev_projector.cpp
+)
+set_target_properties(ir_bev_projector PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(ir_bev_projector
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+    ${OpenCV_INCLUDE_DIRS}
+)
+target_link_libraries(ir_bev_projector PUBLIC ${OpenCV_LIBS})
+
 add_executable(ir_camera_driver_node
   src/ir_camera_driver_node.cpp
 )
@@ -61,6 +73,7 @@ ament_target_dependencies(ir_camera_driver_node
 )
 target_link_libraries(ir_camera_driver_node
   ir_center_reprojector
+  ir_bev_projector
   depthai::core
   ${OpenCV_LIBS}
   Threads::Threads
@@ -79,6 +92,7 @@ install(
 install(
   TARGETS
     ir_center_reprojector
+    ir_bev_projector
     ir_camera_driver_node
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
