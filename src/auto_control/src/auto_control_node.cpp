@@ -522,13 +522,11 @@ private:
     last_observed_remaining_ = distance;
   }
 
-  bool traffic_stop_requested(std::int64_t now_ns) const
+  bool traffic_stop_requested() const
   {
-    // Startup UNKNOWN/no messages is not a red light. Only a previously
-    // observed RED/GREEN arms loss handling; UNKNOWN never refreshes validity.
-    if (!traffic_stop_enabled_ || !traffic_signal_seen_) {return false;}
-    return traffic_red_ || !traffic_last_valid_ns_ || now_ns < *traffic_last_valid_ns_ ||
-      seconds(now_ns - *traffic_last_valid_ns_) > traffic_state_timeout_;
+    // A green light normally leaves view after passing the intersection.
+    // Only RED latches a stop; UNKNOWN/lost input preserves the latch until GREEN.
+    return traffic_stop_enabled_ && traffic_red_;
   }
 
   void on_traffic_state(const traffic_detection_test::msg::TrafficLightState::ConstSharedPtr message)
@@ -541,9 +539,8 @@ private:
       (traffic_capture_ns_ && *captured <= *traffic_capture_ns_)) {return;}
     traffic_capture_ns_ = captured;
     if (message->state != Signal::RED && message->state != Signal::GREEN) {return;}
-    const bool was_stopping = traffic_stop_requested(now_ns);
+    const bool was_stopping = traffic_stop_requested();
     traffic_signal_seen_ = true;
-    traffic_last_valid_ns_ = captured;
     if (message->state == Signal::RED) {
       if (!traffic_red_) {
         traffic_red_ = true;
@@ -567,11 +564,6 @@ private:
   double traffic_speed_limit(std::int64_t now_ns)
   {
     advance_stop_distance(now_ns);
-    if (!traffic_red_) {
-      traffic_reapproach_ = true;
-      traffic_phase_ = "temporary_stop_signal_lost";
-      return 0.0;
-    }
     if (traffic_holding_) {traffic_phase_ = "position_hold"; return 0.0;}
     if (!stop_remaining_ || !stop_line_seen_ns_ ||
       seconds(now_ns - *stop_line_seen_ns_) < 0 ||
@@ -645,7 +637,7 @@ private:
   {
     // A missing lane must not release a red-light brake. Retain the latest
     // steering command while stopping; disconnected/disabled modes keep their existing behavior.
-    const bool keep_braking = traffic_stop_requested(now().nanoseconds()) && enabled_ &&
+    const bool keep_braking = traffic_stop_requested() && enabled_ &&
       control_mode_ == "drive" && vesc_connected_;
     const double servo = latest_servo_position_;
     stop_control(reason);
@@ -695,7 +687,7 @@ private:
     double target_speed = curvature_speed_control_enabled_ ? curvature_target_speed(
       curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_) :
       maximum_speed_mps_;
-    const bool traffic_stop = traffic_stop_requested(now_ns);
+    const bool traffic_stop = traffic_stop_requested();
     if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
     const auto stanley = stanley_control(
       *path_, current_speed_mps_, stanley_gain_, stanley_softening_speed_mps_,
@@ -987,14 +979,13 @@ private:
       RCLCPP_INFO(get_logger(), "Traffic stop | red_latched=%s | hold=%s | remaining=%s | phase=%s | line_rejected=%llu | signal_seen=%s",
         traffic_red_ ? "yes" : "no", traffic_holding_ ? "yes" : "no",
         stop_remaining_ ? std::to_string(*stop_remaining_).c_str() : "unknown",
-        traffic_stop_requested(current_ns) ? traffic_phase_.c_str() : "inactive",
+        traffic_stop_requested() ? traffic_phase_.c_str() : "inactive",
         static_cast<unsigned long long>(stop_line_rejections_), traffic_signal_seen_ ? "yes" : "no");
     }
   }
 
   bool traffic_stop_enabled_{false}, traffic_red_{false}, traffic_holding_{false};
   bool traffic_signal_seen_{false};
-  std::optional<std::int64_t> traffic_last_valid_ns_;
   std::string traffic_state_topic_;
   double traffic_state_timeout_, traffic_line_timeout_, traffic_margin_, traffic_front_offset_;
   double traffic_deceleration_, traffic_response_time_, traffic_brake_gain_;
