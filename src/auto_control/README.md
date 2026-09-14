@@ -69,6 +69,14 @@ duty는 기존 상승/하강 속도 제한을 따른다. 신호등 정지 요구
 
 ### 임시 정지와 목표 도달 정차
 
+`stop_steering_hold_enabled: true`가 기본값이다. 목표 속도 0이고 실제 속도가
+0.05m/s 미만이면 마지막 최종 조향각/서보 위치를 유지해 정차 중 경로 흔들림이
+서보에 전달되지 않게 한다. 속도 노이즈로 유지 상태가 반복 전환되지 않도록
+0.10m/s 초과 또는 양의 목표 속도로 복귀할 때 해제한다. 이동 중 감속에서는
+경로 추종을 계속한다. 차선/ERPM 유실 등의 제어 중단과 disabled에서도 마지막
+조향을 유지하며, 옵션을 false로 설정하면 정차 중 Stanley 계산 결과를 적용하고
+제어 중단에서는 중앙 조향으로 복귀한다.
+
 RED는 정지 요구를 유지하며 UNKNOWN/신호 미검출로 해제되지 않는다. 유효한 최신 GREEN이
 해제하고 기존 enabled/drive/차선/ERPM 조건이 충족되면 주행한다. 시작부터 UNKNOWN이거나
 GREEN 확인 후 UNKNOWN/입력 유실이 발생해도 신호등 정지 요구를 새로 만들지 않는다.
@@ -281,3 +289,56 @@ Diagnostic topics are `/auto/current_duty`, `/auto/current_brake_current`,
 `/auto/raw_steering_angle_rad`, and `/auto/current_servo_position`.
 Diagnostic messages are serialized only while a subscriber is present. VESC
 actuator command publication is unconditional in the corresponding active mode.
+
+### 실제 주행 CSV 기록
+
+사용 중인 `auto_control_test.yaml`의 `auto_control.ros__parameters` 아래에 추가한다.
+기존 `auto_control_params_file:=.../auto_control_test.yaml` 실행 인자를 그대로 사용한다.
+
+```yaml
+driving_log_enabled: true
+driving_log_rate_hz: 20.0
+driving_log_directory: "driving_logs"
+stop_steering_hold_enabled: true
+```
+
+이 기록 기능은 실제 drive 모드에서 동작한다. `performance_measurement_enabled`는
+monitor_only로 바꾸는 별도 기능이므로 실제 주행 기록을 위해 켜지 않는다.
+실행 위치의 `driving_logs/drive_<시작시각 ns>.csv`와 같은 이름의 `.parameters.txt`에
+각각 주행 상태와 실제 적용된 auto_control 파라미터를 저장한다. 시작 로그의
+`Driving CSV:`에 절대 경로가 표시된다. 분석할 때 두 파일을 함께 전달한다.
+
+CSV는 제어 명령 발행 시점의 상태를 최대 20Hz로 샘플링하고 제어 상태, 모터 모드,
+수신 신호 색상, 조향 유지 상태가 바뀌면 추가 기록한다. 따라서 짧은 정지 분기를
+파악할 수 있으나 모든 센서 메시지나 모든 제어 주기를 보존하는 기록은 아니다.
+스냅샷을 최대 256개 큐에 넣고 별도 스레드에서 CSV 변환/파일 쓰기 및 1초 간격
+flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하지 않고 행을 누락하며
+`logger_dropped_rows`와 경고에 누적 수를 남긴다. Ctrl+C 정상 종료 시 대기 중인
+기록을 모두 저장한다. 강제 종료/전원 차단 시 마지막 미저장 데이터는 남지 않을 수 있다.
+
+- `target_speed_mps`, `speed_mps`, `raw_speed_mps`, `measured_erpm`: 목표/필터 속도,
+  필터 전 속도와 원본 ERPM. 시간차로 실제 감속 정도를 계산할 수 있다.
+- `pid_effort`, `desired_duty`, `command_duty`, `brake_current_a`: 통합 PID 출력
+  (-1..1), duty 변화율 제한 전 목표, 최종 duty 및 제동 전류 명령이다.
+  실제 전류 측정값은 아니며 `control_mode`/`motor_mode`/연결 상태와 함께 해석한다.
+- `centerline_xy_m`: 제어에 사용한 경로 전체를 `x:y;x:y;...` 형식으로 저장한다.
+  차량 기준 x 전방, y 좌측, 미터 단위이며 세계 좌표 궤적은 아니다.
+  경로 유효 여부와 원본 순서는 `path_valid`, `path_point_count`, `lane_sequence`에 있다.
+- `raw_steering_rad`, `steering_rad`, `servo_position`, `steering_held`: Stanley
+  계산값, 최종 조향각, 서보 명령과 조향 유지 여부. 각도는 라디안이다.
+- `stop_line_raw_m`: 마지막 LaneResult의 앞차축 기준 원본 정지선 거리.
+  `stop_line_present` 및 lane 상태/경과시간을 함께 확인한다.
+  `stop_line_corrected_m`은 범퍼/여유 거리/영상 지연 이동량을 뺀 최신 관측이며,
+  `stop_remaining_m`은 연속 확인·거리 일치 검사·필터·이동량 보정 후 제어에 사용한 값이다.
+  `stop_confirmed_age_s`, `stop_candidate_count`, `stop_line_rejections`로 미확인/유실/거부를 구분한다.
+- `signal_state`, `signal_score`, `signal_age_s`, `signal_message_accepted`는 마지막
+  수신 신호와 메시지 수용 여부다. 수용에는 UNKNOWN도 포함하며 정지 요청은
+  `red_latched`와 `traffic_stop_enabled`로 구분한다. 메시지 유실 시 마지막 색상이
+  남으므로 반드시 경과시간도 본다. 미측정/사용 불가 수치는 빈 칸이다.
+
+RED 직후 정지 원인은 `control_state`/`traffic_phase`로 구분한다.
+`temporary_stop_line_unavailable`이면 정지선이 아직 연속 확인되지 않았거나 오래되어
+목표 속도를 0으로 만든 것이다. `temporary_stop_control_input`이면 차선/ERPM 등
+제어 입력 실패로 제동 상한 명령을 내린 것이다. `approach`이면서 목표 속도는 남아
+있는데 차가 먼저 멈춘다면 PID 출력, 제동 전류, duty 회복 속도를 함께 분석한다.
+한 번 임시 정지를 거쳤다면 거리 복구 후에도 `slow_reapproach` 속도 제한이 유지된다.

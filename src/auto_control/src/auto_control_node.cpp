@@ -1,4 +1,5 @@
 #include "auto_control/control_core.hpp"
+#include "auto_control/driving_log.hpp"
 #include "auto_control/performance_measurement.hpp"
 
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -26,6 +28,7 @@ namespace auto_control
 namespace
 {
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kUnavailable = std::numeric_limits<double>::quiet_NaN();
 double radians(double degrees) {return degrees * kPi / 180.0;}
 double seconds(std::int64_t nanoseconds) {return nanoseconds / 1.0e9;}
 std::optional<std::int64_t> stamp_nanoseconds(const builtin_interfaces::msg::Time & stamp)
@@ -81,7 +84,7 @@ public:
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
-    if (traffic_stop_enabled_) {
+    if (traffic_stop_enabled_ || driving_log_enabled_) {
       traffic_sub_ = create_subscription<traffic_detection_test::msg::TrafficLightState>(
         traffic_state_topic_, sensor_qos,
         std::bind(&AutoControlNode::on_traffic_state, this, std::placeholders::_1));
@@ -121,6 +124,7 @@ public:
         performance_measurement_duration_sec_, performance_measurement_startup_timeout_sec_,
         measurement_->power_description().c_str());
     }
+    if (driving_log_enabled_) {start_driving_log();}
     if (enabled_ && control_mode_ == "drive") {
       RCLCPP_WARN(get_logger(),
         "Automatic control is armed at launch. The vehicle will move when VESC telemetry "
@@ -170,6 +174,10 @@ private:
 
   void declare_and_read_parameters()
   {
+    driving_log_enabled_ = parameter("driving_log_enabled", false);
+    driving_log_rate_hz_ = parameter("driving_log_rate_hz", 20.0);
+    driving_log_directory_ = parameter<std::string>("driving_log_directory", "driving_logs");
+    stop_steering_hold_enabled_ = parameter("stop_steering_hold_enabled", true);
     traffic_stop_enabled_ = parameter("traffic_stop_enabled", false);
     traffic_state_topic_ = parameter<std::string>("traffic_state_topic", "/traffic_light/state");
     traffic_state_timeout_ = parameter("traffic_state_timeout_sec", 0.30);
@@ -294,6 +302,9 @@ private:
 
   void validate_parameters() const
   {
+    if (!std::isfinite(driving_log_rate_hz_) || driving_log_rate_hz_ <= 0.0 ||
+      driving_log_rate_hz_ > 100.0 || driving_log_directory_.empty())
+    {throw std::invalid_argument("driving log needs a directory and rate in (0, 100] Hz");}
     const auto finite_positive = [](std::initializer_list<double> values) {
         return std::all_of(values.begin(), values.end(), [](double value) {
             return std::isfinite(value) && value > 0.0;
@@ -374,6 +385,10 @@ private:
     const auto callback_started = PerformanceMeasurement::SteadyClock::now();
     const auto received_ros = now();
     ++lane_result_count_;
+    latest_lane_sequence_ = message->detector_sequence;
+    latest_stop_line_present_ = message->stop_line_present;
+    latest_stop_line_raw_m_ = message->stop_line_distance_m;
+    latest_stop_line_corrected_m_ = kUnavailable;
     lane_result_points_ = message->centerline_points.size();
     lane_capture_age_sec_.reset();
     path_.reset();
@@ -397,6 +412,7 @@ private:
         {
           const double distance = message->stop_line_distance_m - traffic_front_offset_ -
             traffic_margin_ - std::max(0.0, current_speed_mps_) * std::max(0.0, age);
+          latest_stop_line_corrected_m_ = distance;
           observe_stop_distance(distance, received_ros.nanoseconds());
         } else {stop_candidate_count_ = 0;}
       }
@@ -534,10 +550,16 @@ private:
     using Signal = traffic_detection_test::msg::TrafficLightState;
     const auto captured = stamp_nanoseconds(message->header.stamp);
     const auto now_ns = now().nanoseconds();
+    latest_signal_state_ = message->state;
+    latest_signal_score_ = message->detection_score;
+    latest_signal_capture_ns_ = captured;
+    latest_signal_accepted_ = false;
     if (!captured || *captured > now_ns ||
       seconds(now_ns - *captured) > traffic_state_timeout_ ||
       (traffic_capture_ns_ && *captured <= *traffic_capture_ns_)) {return;}
     traffic_capture_ns_ = captured;
+    latest_signal_accepted_ = true;
+    if (!traffic_stop_enabled_) {return;}
     if (message->state != Signal::RED && message->state != Signal::GREEN) {return;}
     const bool was_stopping = traffic_stop_requested();
     traffic_signal_seen_ = true;
@@ -602,6 +624,8 @@ private:
     longitudinal_zero_target_ = target <= 0;
     const double feedback_speed = target <= 0 ? std::abs(current_speed_mps_) : current_speed_mps_;
     const double effort = longitudinal_pid_->update(target, feedback_speed, 0.0, dt);
+    latest_pid_effort_ = effort;
+    latest_desired_duty_ = target > 0 ? std::max(0.0, effort) * maximum_duty_ : 0.0;
     const bool braking_allowed = traffic_stop || electrical_brake_enabled_;
     const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
     double brake = braking_allowed ? std::max(0.0, -effort) * brake_cap : 0.0;
@@ -636,10 +660,10 @@ private:
   void publish_guard_stop(const std::string & reason)
   {
     // A missing lane must not release a red-light brake. Retain the latest
-    // steering command while stopping; disconnected/disabled modes keep their existing behavior.
+    // steering command while stopping. Motor handling of disconnected/disabled
+    // modes is unchanged; steering follows stop_steering_hold_enabled.
     const bool keep_braking = traffic_stop_requested() && enabled_ &&
       control_mode_ == "drive" && vesc_connected_;
-    const double servo = latest_servo_position_;
     stop_control(reason);
     if (keep_braking) {
       // This is a recoverable input failure, not arrival at the stop position.
@@ -649,8 +673,8 @@ private:
       stop_candidate_count_ = 0;
       command_brake_current_ = traffic_brake_max_;
       brake_mode_active_ = true;
-      publish_commands(0.0, command_brake_current_, servo, "brake");
-    } else {publish_commands(0.0, 0.0, servo_center_, "stop");}
+      publish_commands(0.0, command_brake_current_, latest_servo_position_, "brake");
+    } else {publish_commands(0.0, 0.0, latest_servo_position_, "stop");}
   }
 
   std::optional<std::string> stop_reason(std::int64_t now_ns) const
@@ -676,6 +700,7 @@ private:
     const double dt = clamp(seconds(now_ns - last_control_ns_), 1.0e-6,
       std::min({path_timeout_sec_, path_capture_maximum_age_sec_, erpm_timeout_sec_}));
     last_control_ns_ = now_ns;
+    latest_pid_effort_ = latest_desired_duty_ = kUnavailable;
     if (const auto reason = stop_reason(now_ns)) {
       publish_guard_stop(*reason);
       decision_finished_ros_ns = now().nanoseconds();
@@ -693,11 +718,19 @@ private:
       *path_, current_speed_mps_, stanley_gain_, stanley_softening_speed_mps_,
       stanley_heading_lookahead_m_, maximum_steering_angle_rad_,
       stanley_corner_heading_threshold_rad_, stanley_corner_opposing_correction_ratio_);
+    // Freeze the final command at standstill, with speed hysteresis to prevent
+    // ERPM noise from toggling the hold. Resume as soon as motion is requested.
+    if (!stop_steering_hold_enabled_ || target_speed > 0.0 ||
+      std::abs(current_speed_mps_) > 0.10) {steering_held_ = false;}
+    else if (std::abs(current_speed_mps_) < 0.05) {steering_held_ = true;}
     const bool corner_reset =
+      !steering_held_ &&
       std::abs(stanley.heading_error_rad) >= stanley_corner_heading_threshold_rad_ &&
       stanley.steering_angle_rad * steering_angle_rad_ < 0.0;
     double filtered = stanley.steering_angle_rad;
-    if (corner_reset) {
+    if (steering_held_) {
+      filtered = steering_angle_rad_;
+    } else if (corner_reset) {
       steering_angle_rad_ = 0.0;
     } else {
       const double current_weight = 1.0 - std::pow(
@@ -739,6 +772,7 @@ private:
         const double feedforward = speed_feedforward_duty(
           target_speed, minimum_speed_mps_, maximum_speed_mps_, minimum_duty_, maximum_duty_);
         const double desired = speed_pid_->update(target_speed, current_speed_mps_, feedforward, dt);
+        latest_desired_duty_ = desired;
         if (command_duty_ < minimum_duty_) {
           command_duty_ = minimum_duty_;
         } else {
@@ -766,13 +800,17 @@ private:
     command_duty_ = 0.0;
     command_brake_current_ = 0.0;
     brake_mode_active_ = false;
-    steering_angle_rad_ = 0.0;
+    steering_held_ = stop_steering_hold_enabled_;
+    if (!steering_held_) {
+      steering_angle_rad_ = 0.0;
+      latest_servo_position_ = servo_center_;
+    }
+    latest_pid_effort_ = latest_desired_duty_ = kUnavailable;
     latest_target_speed_mps_ = 0.0;
     latest_curvature_per_m_ = 0.0;
     latest_cross_track_error_m_ = 0.0;
     latest_heading_error_rad_ = 0.0;
     latest_raw_steering_angle_rad_ = 0.0;
-    latest_servo_position_ = servo_center_;
     latest_direction_guard_used_ = false;
     speed_pid_->reset();
     longitudinal_pid_->reset();
@@ -829,6 +867,7 @@ private:
     publish_diagnostic(heading_pub_, latest_heading_error_rad_);
     publish_diagnostic(raw_steering_pub_, latest_raw_steering_angle_rad_);
     publish_diagnostic(command_servo_pub_, latest_servo_position_);
+    record_driving_log();
   }
 
   void on_measured_erpm(const std_msgs::msg::Int32::ConstSharedPtr message)
@@ -838,6 +877,8 @@ private:
       message->data, wheel_diameter_m_, motor_pole_pairs_, motor_pinion_teeth_,
       spur_gear_teeth_, differential_pinion_teeth_, differential_ring_teeth_,
       erpm_direction_sign_, speed_scale_correction_);
+    latest_erpm_ = message->data;
+    latest_raw_speed_mps_ = raw;
     if (!last_erpm_ns_) {
       current_speed_mps_ = raw;
     } else {
@@ -861,7 +902,7 @@ private:
     enabled_ = message->data;
     if (!enabled_) {
       stop_control("disabled");
-      publish_commands(0.0, 0.0, servo_center_, "stop");
+      publish_commands(0.0, 0.0, latest_servo_position_, "stop");
     }
     RCLCPP_WARN(get_logger(), "Automatic control %s.", enabled_ ? "enabled" : "disabled");
   }
@@ -948,15 +989,96 @@ private:
     }
     enabled_ = false;
     stop_control("shutdown");
-    publish_commands(0.0, 0.0, servo_center_, "stop");
+    publish_commands(0.0, 0.0, latest_servo_position_, "stop");
     watchdog_timer_->cancel();
     status_timer_->cancel();
     performance_timer_->cancel();
     rclcpp::shutdown();
   }
 
+  void start_driving_log()
+  {
+    try {
+      std::string parameters = "effective_control_mode=" + control_mode_ + "\n";
+      for (const auto & name : list_parameters({}, 0U).names) {
+        parameters += name + "=" + get_parameter(name).value_to_string() + "\n";
+      }
+      driving_log_ = std::make_unique<DrivingLog>(driving_log_directory_,
+        "ros_time_ns,elapsed_sec,logger_dropped_rows,control_mode,control_state,traffic_phase,"
+        "motor_mode,lane_status,signal_state,enabled,vesc_connected,traffic_stop_enabled,"
+        "red_latched,position_hold,steering_held,speed_mps,raw_speed_mps,measured_erpm,"
+        "target_speed_mps,speed_error_mps,pid_effort,desired_duty,command_duty,brake_current_a,"
+        "raw_steering_rad,steering_rad,servo_position,cte_m,heading_error_rad,curvature_per_m,"
+        "stop_line_present,stop_line_raw_m,stop_line_corrected_m,stop_remaining_m,"
+        "stop_last_confirmed_m,stop_confirmed_age_s,stop_candidate_count,stop_line_rejections,"
+        "slow_reapproach,signal_score,signal_age_s,signal_message_accepted,erpm_age_s,"
+        "lane_receive_age_s,lane_capture_age_at_rx_s,path_capture_age_s,lane_sequence,"
+        "path_valid,path_point_count,centerline_xy_m",
+        parameters);
+      driving_log_started_ = std::chrono::steady_clock::now();
+      RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
+        driving_log_->path().c_str(), driving_log_rate_hz_);
+    } catch (const std::exception & exception) {
+      RCLCPP_ERROR(get_logger(), "Driving log unavailable: %s", exception.what());
+    }
+  }
+
+  void record_driving_log()
+  {
+    if (!driving_log_ || driving_log_->failed()) {return;}
+    const auto steady = std::chrono::steady_clock::now();
+    const bool changed = last_logged_state_ != last_stop_reason_ ||
+      last_logged_motor_ != last_motor_mode_ || last_logged_signal_ != latest_signal_state_ ||
+      last_logged_steering_held_ != steering_held_;
+    if (!changed && last_driving_log_ &&
+      std::chrono::duration<double>(steady - *last_driving_log_).count() <
+      1.0 / driving_log_rate_hz_) {return;}
+    last_driving_log_ = steady;
+    last_logged_state_ = last_stop_reason_;
+    last_logged_motor_ = last_motor_mode_;
+    last_logged_signal_ = latest_signal_state_;
+    last_logged_steering_held_ = steering_held_;
+    const auto ns = now().nanoseconds();
+    const auto age = [ns](const std::optional<std::int64_t> & stamp) {
+        return stamp ? seconds(ns - *stamp) : kUnavailable;
+      };
+    DrivingLogFrame frame;
+    frame.ros_ns = ns;
+    frame.elapsed_sec = std::chrono::duration<double>(steady - driving_log_started_).count();
+    frame.labels = {control_mode_, last_stop_reason_,
+      traffic_stop_requested() ? traffic_phase_ : "inactive", last_motor_mode_, lane_result_status_,
+      latest_signal_state_ == 1 ? "RED" : latest_signal_state_ == 2 ? "GREEN" : "UNKNOWN"};
+    frame.values = {
+      double(enabled_), double(vesc_connected_), double(traffic_stop_enabled_),
+      double(traffic_red_), double(traffic_holding_), double(steering_held_),
+      current_speed_mps_, latest_raw_speed_mps_, double(latest_erpm_),
+      latest_target_speed_mps_, latest_target_speed_mps_ - current_speed_mps_,
+      latest_pid_effort_, latest_desired_duty_, command_duty_, command_brake_current_,
+      latest_raw_steering_angle_rad_, steering_angle_rad_, latest_servo_position_,
+      latest_cross_track_error_m_, latest_heading_error_rad_, latest_curvature_per_m_,
+      double(latest_stop_line_present_), latest_stop_line_raw_m_, latest_stop_line_corrected_m_,
+      stop_remaining_.value_or(kUnavailable),
+      stop_line_seen_ns_ ? last_observed_remaining_ : kUnavailable, age(stop_line_seen_ns_),
+      double(stop_candidate_count_), double(stop_line_rejections_), double(traffic_reapproach_),
+      latest_signal_score_, age(latest_signal_capture_ns_), double(latest_signal_accepted_),
+      age(last_erpm_ns_), age(last_path_received_ns_), lane_capture_age_sec_.value_or(kUnavailable),
+      age(path_capture_ns_), double(latest_lane_sequence_), double(path_.has_value()),
+      path_ ? double(path_->points.size()) : 0.0};
+    if (path_) {frame.path = path_->points;}
+    driving_log_->enqueue(std::move(frame));
+  }
+
   void log_status()
   {
+    if (driving_log_ && driving_log_->failed()) {
+      RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Driving CSV write failed: %s", driving_log_->path().c_str());
+    }
+    if (driving_log_ && driving_log_->dropped() > 0) {
+      RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+        "Driving CSV dropped rows=%llu (writer backlog/contention)",
+        static_cast<unsigned long long>(driving_log_->dropped()));
+    }
     const auto current_ns = now().nanoseconds();
     const std::string receive_age = last_path_received_ns_ ?
       std::to_string(seconds(current_ns - *last_path_received_ns_)) + "s" : "never";
@@ -984,6 +1106,20 @@ private:
     }
   }
 
+  bool driving_log_enabled_{false}, stop_steering_hold_enabled_{true}, steering_held_{false};
+  double driving_log_rate_hz_{20.0};
+  std::string driving_log_directory_, last_logged_state_, last_logged_motor_;
+  std::unique_ptr<DrivingLog> driving_log_;
+  std::chrono::steady_clock::time_point driving_log_started_;
+  std::optional<std::chrono::steady_clock::time_point> last_driving_log_;
+  int latest_signal_state_{0}, last_logged_signal_{-1}, latest_erpm_{0};
+  bool latest_signal_accepted_{false}, latest_stop_line_present_{false};
+  bool last_logged_steering_held_{false};
+  std::uint64_t latest_lane_sequence_{0};
+  std::optional<std::int64_t> latest_signal_capture_ns_;
+  double latest_signal_score_{kUnavailable}, latest_stop_line_raw_m_{kUnavailable};
+  double latest_stop_line_corrected_m_{kUnavailable}, latest_raw_speed_mps_{kUnavailable};
+  double latest_pid_effort_{kUnavailable}, latest_desired_duty_{kUnavailable};
   bool traffic_stop_enabled_{false}, traffic_red_{false}, traffic_holding_{false};
   bool traffic_signal_seen_{false};
   std::string traffic_state_topic_;

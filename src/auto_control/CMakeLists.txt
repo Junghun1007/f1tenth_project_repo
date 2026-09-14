@@ -17,11 +17,13 @@ find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(line_detactor REQUIRED)
 find_package(traffic_detection_test REQUIRED)
+find_package(Threads REQUIRED)
 
 add_executable(auto_control_node
   src/auto_control_node.cpp
   src/control_core.cpp
   src/performance_measurement.cpp
+  src/driving_log.cpp
 )
 target_include_directories(auto_control_node
   PRIVATE
@@ -36,6 +38,7 @@ ament_target_dependencies(auto_control_node
 # These packages also export camera/inference components. Control consumes
 # only their ROS messages; do not link every exported implementation target.
 target_link_libraries(auto_control_node
+  Threads::Threads
   line_detactor::line_detactor__rosidl_typesupport_cpp
   traffic_detection_test::traffic_detection_test__rosidl_typesupport_cpp
 )
