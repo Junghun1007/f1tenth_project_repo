@@ -92,9 +92,9 @@ int main()
             if (!b.points.empty()) {
               saw_path = true;
               require(count(ProfileCounter::clearance_queries) > 0, "clearance checks missing");
-              require(count(ProfileCounter::path_checks) >= 2, "existing repeated checks missing");
+              require(count(ProfileCounter::path_checks) >= 1, "final path validation missing");
               if (!smoothing) {
-                require(count(ProfileCounter::path_checks) == 2, "disabled final smoothing ran checks");
+                require(count(ProfileCounter::path_checks) == 1, "unchanged path was checked twice");
               }
             }
             saw_limit = saw_limit || b.sample_limit_reached;

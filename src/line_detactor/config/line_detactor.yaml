@@ -12,7 +12,19 @@ line_detactor:
     tensorrt_workspace_size_mb: 1024
     model_input_width: 120
     model_input_height: 300
-    mask_threshold: 0.5                  # Independent sigmoid threshold for left/right/stop_line.
+    mask_threshold: 0.5                  # Left/right sigmoid threshold; stop line inherits unless overridden.
+    # 정지선 검출/거리 추정 (기본값은 기존 고정값과 동일, 노드 재시작 시 적용)
+    stop_line_mask_threshold: -1.0       # -1: mask_threshold 상속. 0..1: 정지선만 별도 임계값.
+    stop_line_min_present_pixels: 1      # stop_line_present 상태 기준; 표시/거리 추정과 독립.
+    stop_line_distance_enabled: true     # false: 거리 NaN, 정지선 마스크/초록 표시는 유지.
+    stop_line_min_pixels: 6              # 거리 추정에 필요한 마스크 픽셀 수 (>=2).
+    stop_line_max_fit_samples: 256       # Welsch 직선 피팅의 최대 표본 수 (>=2).
+    stop_line_support_trim_quantile: 0.02 # 지지 구간 양끝에서 제외할 비율 (0 <= q < 0.5).
+    stop_line_support_margin_px: 5.0     # 지지 구간 양끝 확장량 (픽셀, >=0).
+    stop_line_near_edge_quantile: 0.05    # 차량 쪽 정지선 가장자리 분위수 (0 <= q < 0.5).
+    stop_line_min_crossing_alignment: 0.5 # 경로와 정지선 법선 내적 절댓값 (0 < v <= 1).
+    stop_line_fit_distance_tolerance_px: 0.01 # 직선 피팅 거리 수렴 기준 (>0, 픽셀).
+    stop_line_fit_angle_tolerance_rad: 0.01   # 직선 피팅 각도 수렴 기준 (>0, rad).
     overlay_alpha: 0.75
     warmup_iterations: 10
 
@@ -20,6 +32,9 @@ line_detactor:
     # Only join two cut ends on the SAME left/right image edge, OUTSIDE the BEV.
     # false shows raw masks, with no cleanup/interpolation/result publication.
     connection_enabled: true
+    # Small masks use serial 16-bit CCL, converted to the existing 32-bit labels.
+    # false restores the previous OpenCV 32-bit path for an A/B measurement.
+    connection_ccl_serial_enabled: true
     result_padding_px: 30                 # Each side, output canvas only: 120 -> 180.
     connection_min_component_area_px: 8   # Sole noise-removal rule; 1 disables removal.
     # 1..4; 2 thins each component at about half width/height, then restores coordinates.

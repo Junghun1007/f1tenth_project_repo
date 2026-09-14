@@ -326,16 +326,34 @@ std::vector<BorderEndpoint> retain_components(
   const bool connect_borders, ProcessingProfile * profile)
 {
   ProfileTimer components_timer(profile, ProfileStage::components);
-  cv::Mat components, stats, centroids;
-  const int count = cv::connectedComponentsWithStats(
-    input == side + 1, components, stats, centroids, 8, CV_32S);
+  // This scratch storage belongs to the processing thread. Result masks/paths
+  // own their data, so the next side/frame can safely reuse these allocations.
+  struct Scratch {cv::Mat binary, labels16, components, stats, centroids, mask;};
+  thread_local Scratch scratch;
+  auto & components = scratch.components;
+  auto & stats = scratch.stats;
+  cv::compare(input, side + 1, scratch.binary, cv::CMP_EQ);
+  int count;
+  if (config.ccl_serial_enabled &&
+    input.total() < std::numeric_limits<std::uint16_t>::max())
+  {
+    // OpenCV's CV_16U CCL uses its serial implementation. The pixel-count
+    // bound guarantees room for every possible component plus background.
+    count = cv::connectedComponentsWithStats(
+      scratch.binary, scratch.labels16, stats, scratch.centroids, 8, CV_16U);
+    scratch.labels16.convertTo(components, CV_32S);
+  } else {
+    count = cv::connectedComponentsWithStats(
+      scratch.binary, components, stats, scratch.centroids, 8, CV_32S);
+  }
   std::vector<int> retained_components;
   std::vector<int> border_candidates;
   for (int id = 1; id < count; ++id) {
     if (stats.at<int>(id, cv::CC_STAT_AREA) < config.min_component_area_px) {continue;}
     const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
       stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
-    const cv::Mat mask = components(roi) == id;
+    cv::compare(components(roi), id, scratch.mask, cv::CMP_EQ);
+    const cv::Mat & mask = scratch.mask;
     // No thinning/repainting, minimum-length deletion, winner selection or pair rejection.
     output(cv::Rect(roi.x + config.padding_px, roi.y, roi.width, roi.height)).setTo(side + 1, mask);
     retained_components.push_back(id);
@@ -351,8 +369,9 @@ std::vector<BorderEndpoint> retain_components(
   for (const int id : retained_components) {
     const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
       stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
+    cv::compare(components(roi), id, scratch.mask, cv::CMP_EQ);
     auto path = component_path(
-      components(roi) == id, roi.tl(), config.skeleton_downsample_factor, profile);
+      scratch.mask, roi.tl(), config.skeleton_downsample_factor, profile);
     if (path.size() >= 2U) {
       auto padded_path = path;
       for (auto & point : padded_path) {point.x += config.padding_px;}

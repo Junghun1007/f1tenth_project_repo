@@ -24,6 +24,22 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 _PARAMETER_FILE_DEFAULT = "__PARAMETER_FILE_DEFAULT__"
 
+# Omitted arguments preserve external test YAML values.
+_DETECTOR_POSTPROCESS_OVERRIDES = {
+    "connection_ccl_serial_enabled": bool,
+    "stop_line_mask_threshold": float,
+    "stop_line_min_present_pixels": int,
+    "stop_line_distance_enabled": bool,
+    "stop_line_min_pixels": int,
+    "stop_line_max_fit_samples": int,
+    "stop_line_support_trim_quantile": float,
+    "stop_line_support_margin_px": float,
+    "stop_line_near_edge_quantile": float,
+    "stop_line_min_crossing_alignment": float,
+    "stop_line_fit_distance_tolerance_px": float,
+    "stop_line_fit_angle_tolerance_rad": float,
+}
+
 
 def _ros_parameters(config_path, node_name):
     with open(config_path, encoding="utf-8") as config_file:
@@ -152,6 +168,16 @@ def _apply_parameter_file_defaults(
         # the fixed-duration, self-terminating measurement.
         detector["preview_enabled"] = False
         preview = "false"
+    for name, value_type in _DETECTOR_POSTPROCESS_OVERRIDES.items():
+        value = LaunchConfiguration(name).perform(context)
+        if value == _PARAMETER_FILE_DEFAULT:
+            continue
+        if value_type is bool:
+            if value.lower() not in ("true", "false"):
+                raise RuntimeError(f"{name} must be true or false")
+            detector[name] = value.lower() == "true"
+        else:
+            detector[name] = value_type(value)
     profiling = LaunchConfiguration("profiling_enabled").perform(context)
     if profiling != _PARAMETER_FILE_DEFAULT:
         if profiling.lower() not in ("true", "false"):
@@ -523,6 +549,11 @@ def generate_launch_description():
             DeclareLaunchArgument("camera_params_file", default_value=camera_config),
             DeclareLaunchArgument("line_detactor_params_file", default_value=line_detactor_config,
                                   description="ML lane/centerline YAML; source geometry follows BEV YAML"),
+            *[
+                DeclareLaunchArgument(name, default_value=_PARAMETER_FILE_DEFAULT,
+                                      description="Override lane postprocessing YAML parameter")
+                for name in _DETECTOR_POSTPROCESS_OVERRIDES
+            ],
             DeclareLaunchArgument("profiling_enabled", default_value=_PARAMETER_FILE_DEFAULT,
                                   description="Save detailed lane processing CSV without changing preview/control; omitted uses YAML"),
             DeclareLaunchArgument("profiling_directory", default_value=_PARAMETER_FILE_DEFAULT,

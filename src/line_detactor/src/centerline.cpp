@@ -625,12 +625,20 @@ CenterlineResult generate_centerline(
       const auto direction = delta * (1.0 / length);
       const double aligned = direction.dot(candidates[i].direction);
       if (aligned < 0.5 || direction.dot(candidates[j].direction) < 0.5 ||
-        candidates[i].direction.dot(candidates[j].direction) < 0.5 ||
-        !geometry.segment_ok(positions[i], positions[j])) {continue;}
+        candidates[i].direction.dot(candidates[j].direction) < 0.5) {continue;}
       double next = distance + length * (1.0 + (candidates[j].paired ? 0.0 : 0.6) +
         3.0 * (1.0 - aligned));
       next += std::max(0.0, length - 0.065) * 3.0;
-      if (next < cost[j]) {cost[j] = next; previous[j] = i; queue.emplace(next, j);}
+      // Clearance is independent of graph cost: do not check edges that
+      // cannot improve the best known route to this candidate.
+      if (!(next < cost[j])) {
+        if (profile) {profile->add(ProfileCounter::graph_cost_rejections);}
+        continue;
+      }
+      if (!geometry.segment_ok(positions[i], positions[j])) {continue;}
+      cost[j] = next;
+      previous[j] = i;
+      queue.emplace(next, j);
     }
   }
   int end = start;
@@ -660,11 +668,13 @@ CenterlineResult generate_centerline(
     ProfileTimer check_timer(profile, ProfileStage::path_check_before);
     if (!geometry.path_ok(path)) {return result;}
   }
-  {
-    ProfileTimer smoothing_timer(profile, ProfileStage::smoothing);
-    path = smooth_centerline(path, geometry, cfg);
-  }
-  {
+  // Match smooth_centerline's no-op conditions; the unchanged path was
+  // already validated above. Keep the second validation for changed paths.
+  if (cfg.smoothing_enabled && cfg.smoothing_strength != 0.0 && path.size() >= 7U) {
+    {
+      ProfileTimer smoothing_timer(profile, ProfileStage::smoothing);
+      path = smooth_centerline(path, geometry, cfg);
+    }
     ProfileTimer check_timer(profile, ProfileStage::path_check_after);
     if (!geometry.path_ok(path)) {return result;}
   }

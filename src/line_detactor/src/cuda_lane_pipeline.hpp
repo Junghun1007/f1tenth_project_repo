@@ -22,6 +22,7 @@ cudaError_t launch_lane_labels(
   int width,
   int height,
   float mask_threshold,
+  float stop_line_mask_threshold,
   cudaStream_t stream) noexcept;
 
 cudaError_t launch_lane_overlay(
@@ -31,6 +32,7 @@ cudaError_t launch_lane_overlay(
   int width,
   int height,
   float mask_threshold,
+  float stop_line_mask_threshold,
   float overlay_alpha,
   cudaStream_t stream) noexcept;
 

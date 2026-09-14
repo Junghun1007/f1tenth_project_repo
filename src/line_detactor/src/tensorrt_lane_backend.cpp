@@ -301,7 +301,8 @@ public:
     const std::size_t workspace_size_bytes,
     const float mask_threshold,
     const float overlay_alpha,
-    const bool export_labels)
+    const bool export_labels,
+    const float stop_line_mask_threshold)
   : model_path_(model_path),
     engine_precision_(engine_precision),
     engine_cache_path_(requested_engine_cache_path.empty() ?
@@ -315,6 +316,7 @@ public:
     image_byte_count_(pixel_count_ * 3U),
     input_element_count_(pixel_count_ * 3U),
     mask_threshold_(mask_threshold),
+    stop_line_mask_threshold_(stop_line_mask_threshold == -1.0F ? mask_threshold : stop_line_mask_threshold),
     overlay_alpha_(overlay_alpha),
     export_labels_(export_labels)
   {
@@ -334,6 +336,9 @@ public:
     {
       throw std::invalid_argument("mask_threshold must be in [0,1]");
     }
+    if (!std::isfinite(stop_line_mask_threshold_) ||
+      stop_line_mask_threshold_ < 0.0F || stop_line_mask_threshold_ > 1.0F)
+    {throw std::invalid_argument("stop_line_mask_threshold must be -1 (inherit) or in [0,1]");}
     if (!std::isfinite(overlay_alpha) ||
       overlay_alpha < 0.0F || overlay_alpha > 1.0F)
     {
@@ -497,7 +502,7 @@ private:
       check_cuda(
         launch_lane_labels(static_cast<const float *>(device_logits_.get()),
           static_cast<std::uint8_t *>(device_labels_.get()), input_width_, input_height_,
-          mask_threshold_, stream_.get()), "extract lane labels");
+          mask_threshold_, stop_line_mask_threshold_, stream_.get()), "extract lane labels");
       check_cuda(cudaMemcpyAsync(host_labels_.get(), device_labels_.get(), pixel_count_ * 2U,
           cudaMemcpyDeviceToHost, stream_.get()), "copy lane labels to host");
       check_cuda(cudaEventRecord(label_export_finished_.get(), stream_.get()), "label export finish");
@@ -513,7 +518,7 @@ private:
           device_bgr,
           static_cast<const float *>(device_logits_.get()),
           static_cast<std::uint8_t *>(device_preview_bgr_.get()),
-          input_width_, input_height_, mask_threshold_, overlay_alpha_,
+          input_width_, input_height_, mask_threshold_, stop_line_mask_threshold_, overlay_alpha_,
           stream_.get()),
         "launch lane overlay kernel");
       check_cuda(
@@ -788,6 +793,7 @@ private:
   std::size_t input_element_count_{0U};
   std::size_t output_element_count_{0U};
   float mask_threshold_{0.5F};
+  float stop_line_mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
   bool export_labels_{false};
 
@@ -831,10 +837,11 @@ TensorRtLaneBackend::TensorRtLaneBackend(
   const std::size_t workspace_size_bytes,
   const float mask_threshold,
   const float overlay_alpha,
-  const bool export_labels)
+  const bool export_labels,
+  const float stop_line_mask_threshold)
 : impl_(std::make_unique<Impl>(
     model_path, engine_cache_path, engine_precision, input_width, input_height,
-    workspace_size_bytes, mask_threshold, overlay_alpha, export_labels))
+    workspace_size_bytes, mask_threshold, overlay_alpha, export_labels, stop_line_mask_threshold))
 {
 }
 

@@ -7,6 +7,18 @@ from launch_ros.descriptions import ComposableNode
 
 
 OVERRIDES = {
+    "connection_ccl_serial_enabled": bool,
+    "stop_line_mask_threshold": float,
+    "stop_line_min_present_pixels": int,
+    "stop_line_distance_enabled": bool,
+    "stop_line_min_pixels": int,
+    "stop_line_max_fit_samples": int,
+    "stop_line_support_trim_quantile": float,
+    "stop_line_support_margin_px": float,
+    "stop_line_near_edge_quantile": float,
+    "stop_line_min_crossing_alignment": float,
+    "stop_line_fit_distance_tolerance_px": float,
+    "stop_line_fit_angle_tolerance_rad": float,
     "profiling_enabled": bool,
     "profiling_directory": str,
     "centerline_enabled": bool,

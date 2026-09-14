@@ -473,6 +473,51 @@ v_source = v_result
 `line_detactor_params_file`로 차선·중앙선 YAML을 지정하며, BEV 배율은 `bev_params_file`에서
 검출기와 제어기에 함께 적용한다. 정지선 검출은 이 주행 제어의 정지 명령으로 사용하지 않는다.
 
+## 주행 로그 반영: 경로 생성과 정지선 파라미터
+
+연결요소 처리는 `connection_ccl_serial_enabled: true`일 때 작은 입력에 OpenCV의
+16비트 단일 스레드 CCL을 사용한 뒤 기존 32비트 라벨 형식으로 변환한다. 현재
+120×300 입력은 모든 픽셀이 별도 조각이어도 16비트 범위 안에 있다. 입력 픽셀 수가
+65,535 이상이면 기존 32비트 경로로 돌아간다. 8방향 연결·최소 면적 기준은 유지하고
+스레드별 임시 버퍼를 재사용한다. 같은 프로세스의 카메라/BEV에 영향을 주는
+`cv::setNumThreads()` 전역 설정은 바꾸지 않는다. `false`로 기존 CCL 경로와 비교할 수 있다.
+
+중심 경로 그래프에서는 기존 방향·비용식을 유지하고, 비용을 개선할 수 있는 간선만
+여유 거리 검사한다. `graph_cost_rejections_count`는 비용 때문에 거리 검사를 생략한
+횟수다. 최종 smoothing이 비활성화/강도 0/7점 미만이면 이미 검증한 경로를 재검증하지
+않는다. 이때 `smoothing_ms`, `path_check_after_ms`는 0이다. 실제 경로를 평활화하는
+경우에는 전후 검증을 유지한다. 거리 지도 전환은 이 변경의 재측정 후 판단하는 다음
+단계이며, 이번에는 기존 소수점 좌표·패딩 영역 거리 판정을 그대로 사용한다.
+
+정지선 관련 설정은 `config/line_detactor.yaml`의 `stop_line_*` 항목에 노출되어 있다.
+기존 테스트 파일 `line_detactor_test.yaml`의 `line_detactor.ros__parameters` 안에도
+같은 이름으로 넣을 수 있다. `auto_drive.launch.py`와 독립 검출기 launch 양쪽 모두
+동일한 이름의 명령행 재정의를 지원한다. 생략 시 선택한 YAML 값을 유지한다.
+모든 항목은 노드 시작 시 읽으며 기본값은 기존 동작을 유지한다.
+
+| 파라미터 | 기본값 | 의미 |
+|---|---:|---|
+| `stop_line_mask_threshold` | -1.0 | -1은 기존 `mask_threshold` 상속, 0~1은 정지선 채널만 별도 sigmoid 임계값. GPU 라벨과 raw 미리보기 모두 적용 |
+| `stop_line_min_present_pixels` | 1 | `stop_line_present` 상태의 최소 픽셀 수. 마스크 표시/거리 추정과 독립 |
+| `stop_line_distance_enabled` | true | 거리 추정 활성화. false면 거리 NaN, 초록 마스크 표시는 유지 |
+| `stop_line_min_pixels` | 6 | 거리 추정에 필요한 정지선 마스크 픽셀 수 |
+| `stop_line_max_fit_samples` | 256 | Welsch 직선 피팅 표본 수 상한 |
+| `stop_line_support_trim_quantile` | 0.02 | 직선 지지 구간의 양끝 제외 비율. 범위 `[0, 0.5)` |
+| `stop_line_support_margin_px` | 5.0 | 직선 지지 구간 양끝의 추가 허용 폭, 픽셀 |
+| `stop_line_near_edge_quantile` | 0.05 | 차량 쪽 정지선 가장자리 추정에 쓰는 분위수. 범위 `[0, 0.5)` |
+| `stop_line_min_crossing_alignment` | 0.5 | 경로와 정지선 법선의 내적 절댓값 최소치. 1이면 직각 교차만 허용 |
+| `stop_line_fit_distance_tolerance_px` | 0.01 | 피팅 거리 수렴 기준, 픽셀 |
+| `stop_line_fit_angle_tolerance_rad` | 0.01 | 피팅 각도 수렴 기준, rad |
+
+예를 들어 기존 실행 명령 끝에 `stop_line_mask_threshold:=0.6`을 추가하면 좌우 차선
+임계값은 유지하면서 정지선 임계값만 높인다. 정지선 거리는 앞차축부터 중앙 경로를
+따라 차량 쪽 정지선 가장자리까지 측정한다. 이 설정은 검출/거리 추정 기준이며
+자동주행 제어기의 정지 위치·제동 동작을 새로 추가하는 설정은 아니다.
+
+이번 변경은 사용자 요청으로 빌드·테스트를 실행하지 않았다. 차량에서는 업데이트 후
+`line_detactor`, `vehicle_bringup`을 재빌드하고 기존 옵션으로 CSV를 다시 수집하여
+P99/최대 지연, 거리 검사 횟수와 경로 출력 상태를 비교한다.
+
 ## 후처리 병목 측정 파일
 
 `profiling_enabled: true`로 실행하면 프레임별 연산 시간과 연산량을 CSV 한 파일에
@@ -541,7 +586,7 @@ BEV는 검출기에 전달된 크기·물리 범위만 포함하며, 카메라/B
 
 부모 시간은 자식 시간을 **포함**한다. 예를 들어 `connector_ms`에 `skeleton_ms`가,
 `skeleton_ms`에 `thinning_ms`가 포함되므로 모든 열을 더하면 중복 집계된다.
-`path_output_ms`에는 두 번의 경로 검사와 smoothing이 포함된다.
+`path_output_ms`에는 최종 경로 검사와, 활성화된 경우 smoothing 및 후속 검사가 포함된다.
 `candidates_ms`와 `path_search_ms`에는 각 단계의 거리 검사가 포함된다.
 거리 검사 내부는 픽셀마다 시계를 읽지 않고 횟수만 센다. 계측 자체의 비용은 남는다.
 `success=1`이어도 검출 차선/경로가 없을 수 있으며 `output_points_count`를 함께 본다.

@@ -128,7 +128,7 @@ public:
     backend_ = std::make_unique<TensorRtLaneBackend>(
       model_path_, engine_cache_path_, engine_precision_, model_input_width_, model_input_height_,
       static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
-      mask_threshold_, overlay_alpha_, connection_.enabled);
+      mask_threshold_, overlay_alpha_, connection_.enabled, stop_line_mask_threshold_);
     warm_up();
     start_profiling();
 
@@ -250,8 +250,28 @@ private:
       "model_input_height", kDefaultInputHeight);
     mask_threshold_ = static_cast<float>(
       node_.declare_parameter<double>("mask_threshold", 0.5));
+    stop_line_mask_threshold_ = static_cast<float>(node_.declare_parameter<double>(
+      "stop_line_mask_threshold", -1.0));
+    stop_line_min_present_pixels_ = node_.declare_parameter<int>("stop_line_min_present_pixels", 1);
+    stop_line_distance_.enabled = node_.declare_parameter<bool>("stop_line_distance_enabled", true);
+    stop_line_distance_.min_pixels = node_.declare_parameter<int>("stop_line_min_pixels", 6);
+    stop_line_distance_.max_fit_samples = node_.declare_parameter<int>("stop_line_max_fit_samples", 256);
+    stop_line_distance_.support_trim_quantile = node_.declare_parameter<double>(
+      "stop_line_support_trim_quantile", 0.02);
+    stop_line_distance_.support_margin_px = node_.declare_parameter<double>(
+      "stop_line_support_margin_px", 5.0);
+    stop_line_distance_.near_edge_quantile = node_.declare_parameter<double>(
+      "stop_line_near_edge_quantile", 0.05);
+    stop_line_distance_.min_crossing_alignment = node_.declare_parameter<double>(
+      "stop_line_min_crossing_alignment", 0.5);
+    stop_line_distance_.fit_distance_tolerance_px = node_.declare_parameter<double>(
+      "stop_line_fit_distance_tolerance_px", 0.01);
+    stop_line_distance_.fit_angle_tolerance_rad = node_.declare_parameter<double>(
+      "stop_line_fit_angle_tolerance_rad", 0.01);
     overlay_alpha_ = static_cast<float>(
       node_.declare_parameter<double>("overlay_alpha", 0.75));
+    connection_.ccl_serial_enabled = node_.declare_parameter<bool>(
+      "connection_ccl_serial_enabled", true);
     connection_.enabled = node_.declare_parameter<bool>(
       "connection_enabled", true);
     connection_.padding_px = node_.declare_parameter<int>(
@@ -395,6 +415,8 @@ private:
       std::getline(hardware, model, '\0');
       metadata.emplace_back("hardware_model", model);
     }
+    metadata.emplace_back("stop_line_mask_threshold_resolved", std::to_string(
+      stop_line_mask_threshold_ == -1.0F ? mask_threshold_ : stop_line_mask_threshold_));
     // Capture declared, effective parameters AFTER YAML and launch overrides.
     const auto names = node_.list_parameters({}, 0U).names;
     for (const auto & name : names) {
@@ -424,6 +446,14 @@ private:
   {
     validate_lane_connection(connection_);
     validate_centerline(centerline_);
+    validate_stop_line_distance(stop_line_distance_);
+    if (stop_line_min_present_pixels_ < 1) {
+      throw std::invalid_argument("stop_line_min_present_pixels must be >= 1");
+    }
+    if (!std::isfinite(stop_line_mask_threshold_) ||
+      (stop_line_mask_threshold_ != -1.0F &&
+      (stop_line_mask_threshold_ < 0.0F || stop_line_mask_threshold_ > 1.0F)))
+    {throw std::invalid_argument("stop_line_mask_threshold must be -1 (inherit) or in [0,1]");}
     if (centerline_.enabled && !connection_.enabled) {
       RCLCPP_WARN(node_.get_logger(),
         "centerline_enabled requires connection_enabled; raw preview mode has no centerline");
@@ -876,7 +906,7 @@ private:
             // in independent masks, painting green only in the display image.
             cv::Mat stop_mask(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->stop_line_mask_data()));
-            result.stop_line_present = cv::countNonZero(stop_mask) > 0;
+            result.stop_line_present = cv::countNonZero(stop_mask) >= stop_line_min_present_pixels_;
             if (render_result) {
               cv::copyMakeBorder(stop_mask, result.stop_line_mask, 0, 0,
                 connection_.padding_px, connection_.padding_px,
@@ -890,7 +920,7 @@ private:
             ProfileTimer stop_distance_timer(profile, ProfileStage::stop_distance);
             result.stop_line_distance_m = estimate_stop_line_distance_m(
               stop_mask, result.centerline.points, connection_.padding_px,
-              centerline_.bev_width_m, centerline_.bev_height_m);
+              centerline_.bev_width_m, centerline_.bev_height_m, stop_line_distance_);
             stop_distance_timer.stop();
             ProfileTimer centerline_render_timer(profile, ProfileStage::centerline_render);
             if (render_result) {
@@ -1130,6 +1160,9 @@ private:
   int model_input_height_{kDefaultInputHeight};
   float mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
+  float stop_line_mask_threshold_{-1.0F};
+  int stop_line_min_present_pixels_{1};
+  StopLineDistanceConfig stop_line_distance_;
   LaneConnectionConfig connection_;
   CenterlineConfig centerline_;
   bool result_publish_enabled_{true};

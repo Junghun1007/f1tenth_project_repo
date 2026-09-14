@@ -25,7 +25,7 @@ namespace line_detactor
   X(thinning_pixel_visits) X(border_endpoints) X(bridge_pairs) X(valid_bridges) \
   X(boundary_pixels) X(fragments) X(samples) X(pairing_neighbors) X(candidates) \
   X(graph_neighbor_visits) X(clearance_queries) X(clearance_pixel_tests) \
-  X(segment_checks) X(path_checks) X(output_points)
+  X(segment_checks) X(path_checks) X(output_points) X(graph_cost_rejections)
 
 enum class ProfileStage {
 #define LANE_ENUM(name) name,

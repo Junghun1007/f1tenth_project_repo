@@ -30,7 +30,8 @@ public:
     std::size_t workspace_size_bytes,
     float mask_threshold,
     float overlay_alpha,
-    bool export_labels = false);
+    bool export_labels = false,
+    float stop_line_mask_threshold = -1.0F);
   ~TensorRtLaneBackend();
 
   TensorRtLaneBackend(const TensorRtLaneBackend &) = delete;

@@ -15,6 +15,7 @@ namespace line_detactor
 struct LaneConnectionConfig
 {
   bool enabled{true};
+  bool ccl_serial_enabled{true};  // Serial 16-bit CCL for small masks; no global thread setting.
   int padding_px{30};  // Per side; does not change model input or BEV scale.
   int min_component_area_px{8};
   int skeleton_downsample_factor{1};  // 1 = original resolution; valid range 1..4.
