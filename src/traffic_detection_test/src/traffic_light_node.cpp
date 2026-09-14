@@ -42,7 +42,15 @@ public:
     top_ = declare_parameter<double>("roi_top", 0.1625);
     width_ = declare_parameter<double>("roi_width", 1.0);
     height_ = declare_parameter<double>("roi_height", 0.4);
-    score_ = declare_parameter<double>("score_threshold", 0.25);
+    score_ = declare_parameter<double>("score_threshold", 0.40);
+    confirmation_enabled_ = declare_parameter<bool>("confirmation_enabled", false);
+    confirmation_frames_ = declare_parameter<int>("confirmation_frames", 3);
+    confirmation_iou_ = declare_parameter<double>("confirmation_min_iou", 0.30);
+    confirmation_gap_ = declare_parameter<double>("confirmation_max_gap_sec", 0.25);
+    if (confirmation_frames_ < 1 || !std::isfinite(confirmation_iou_) ||
+      confirmation_iou_ <= 0 || confirmation_iou_ > 1 ||
+      !std::isfinite(confirmation_gap_) || confirmation_gap_ <= 0)
+    {throw std::invalid_argument("invalid traffic confirmation parameters");}
     nms_ = declare_parameter<double>("nms_threshold", 0.65);
     min_s_ = declare_parameter<int>("color_min_saturation", 80);
     min_v_ = declare_parameter<int>("color_min_value", 60);
@@ -82,6 +90,8 @@ public:
       bev_handoff::unregisterDirectCameraConsumer(consumer_);
       throw;
     }
+    RCLCPP_INFO(get_logger(), "Traffic settings: score=%.2f, confirmation=%s, frames=%d, IoU=%.2f, gap=%.2fs",
+      score_, confirmation_enabled_ ? "on" : "off", confirmation_frames_, confirmation_iou_, confirmation_gap_);
     RCLCPP_INFO(get_logger(),
       "Traffic observation enabled: INT8 640x160, %.1fHz, shared pre-BEV color input, "
       "no preview/control commands. Engine initialization runs on its own worker.", fps);
@@ -137,6 +147,29 @@ private:
     return red > green ? State::RED : green > red ? State::GREEN : State::UNKNOWN;
   }
 
+  // Worker-only state: no extra queue, inference, or lane-thread locking.
+  std::uint8_t confirm(std::uint8_t value, const cv::Rect2f & box, Clock::time_point captured)
+  {
+    if (!confirmation_enabled_) {return value;}
+    if (value == State::UNKNOWN) {
+      confirmation_count_ = 0;
+      candidate_state_ = State::UNKNOWN;
+      return State::UNKNOWN;
+    }
+    const double intersection = (box & candidate_box_).area();
+    const double combined = box.area() + candidate_box_.area() - intersection;
+    const double iou = combined > 0 ? intersection / combined : 0;
+    const auto gap = captured - candidate_time_;
+    const bool matches = confirmation_count_ > 0 && value == candidate_state_ &&
+      gap > Clock::duration::zero() && gap <= std::chrono::duration<double>(confirmation_gap_) &&
+      iou >= confirmation_iou_;
+    confirmation_count_ = matches ? confirmation_count_ + (confirmation_count_ < confirmation_frames_ ? 1 : 0) : 1;
+    candidate_state_ = value;
+    candidate_box_ = box;
+    candidate_time_ = captured;
+    return confirmation_count_ >= confirmation_frames_ ? value : State::UNKNOWN;
+  }
+
   void run()
   {
     // Building/deserializing TensorRT never blocks component construction or
@@ -174,6 +207,7 @@ private:
       const auto started = Clock::now();
       deadline = started + period_;
       State message;
+      cv::Rect2f detected_box;
       message.state = State::UNKNOWN;
       message.capture_age_ms = -1.0F;
       if (frame) {
@@ -195,6 +229,7 @@ private:
                 [](const auto & a, const auto & b) {return a.score < b.score;});
               message.detection_score = best->score;
               message.state = color(*frame, *best);
+              detected_box = best->box;
             }
           } catch (const std::exception & e) {
             RCLCPP_ERROR_THROTTLE(get_logger(), *get_clock(), 2000,
@@ -205,6 +240,7 @@ private:
         if (message.capture_age_ms < 0 || message.capture_age_ms > max_age_ * 1000) {
           message.state = State::UNKNOWN;
         }
+        message.state = confirm(message.state, detected_box, frame->captured_at);
         message.processing_ms = milliseconds(Clock::now() - started);
         ++count;
         sum_ms += message.processing_ms;
@@ -213,6 +249,7 @@ private:
         max_infer = std::max(max_infer, static_cast<double>(message.inference_ms));
         max_age_ms = std::max(max_age_ms, static_cast<double>(message.capture_age_ms));
       }
+      if (!frame) {confirm(State::UNKNOWN, {}, Clock::time_point{});}
       if (frame || started - last_publish >= std::chrono::milliseconds(100)) {
         bev_handoff::publishTrafficSignalState(message.state, frame ?
           frame->captured_at + std::chrono::duration_cast<Clock::duration>(
@@ -246,6 +283,12 @@ private:
   std::size_t workspace_;
   double max_age_, log_interval_, left_, top_, width_, height_, score_, nms_;
   int min_s_, min_v_;
+  bool confirmation_enabled_{false};
+  int confirmation_frames_{3}, confirmation_count_{0};
+  double confirmation_iou_{0.30}, confirmation_gap_{0.25};
+  std::uint8_t candidate_state_{State::UNKNOWN};
+  cv::Rect2f candidate_box_;
+  Clock::time_point candidate_time_;
   Clock::duration period_;
   std::uint64_t consumer_{0};
   rclcpp::Publisher<State>::SharedPtr publisher_;

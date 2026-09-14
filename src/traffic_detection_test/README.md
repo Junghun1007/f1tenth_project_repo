@@ -16,7 +16,8 @@ BEV 영상이나 IMU 지면 보정 영상을 신호등 입력으로 사용하지
 - 박스 좌표 복원/NMS와 최상위 점수 박스의 HSV 색상 판별은 CPU에서 수행한다.
   색상 판별용 BGR 변환도 해당 박스에만 적용한다.
 - 모든 검출 중 최고 점수 박스를 선택하는 기존 규칙을 사용한다.
-  내 주행 방향의 신호등 선택, 시간적 확정, 정지선 연결은 아직 구현하지 않았다.
+  내 주행 방향의 신호등 선택과 정지선 연결은 아직 구현하지 않았다.
+  선택적인 연속 관측 확인은 아래 설정으로 켤 수 있으며 기본값은 비활성화다.
 - 같은 GPU이므로 차선 추론과의 자원 경쟁은 남는다. 지연이 없다고 보장하지 않는다.
 
 **기존 BEV 차선 검출 프리뷰 하단에 `Traffic: RED / GREEN / UNKNOWN`을 표시한다.**
@@ -37,6 +38,50 @@ ros2 topic echo /traffic_light/state
 신선도를 판단해야 한다. `inference_ms`는 GPU 추론, `processing_ms`는 작업 스레드
 처리 전체, `capture_age_ms`는 결과 생성 시 촬영 이후 경과 시간이다.
 입력이 없는 경우 `capture_age_ms=-1`이다.
+
+### 확신도·검출 FPS·연속 확인 YAML
+
+자동 주행용 파일은 **`src/traffic_detection_test/config/traffic_light.yaml`**이다.
+`line_detactor_test.yaml`, `auto_control_test.yaml` 또는 단독 프리뷰용
+`traffic_detection_test.yaml`에 넣지 않는다. 현재 기본값:
+
+```yaml
+traffic_light_detector:
+  ros__parameters:
+    score_threshold: 0.40
+    inference_fps: 20.0
+    confirmation_enabled: false
+    confirmation_frames: 3
+    confirmation_min_iou: 0.30
+    confirmation_max_gap_sec: 0.25
+```
+
+`score_threshold`는 모델의 objectness × class probability 하한이며 색상 확신도가
+아니다. `inference_fps`는 검출 주기 상한으로, 실제 속도를 보장하지 않는다.
+모든 값은 시작 시 읽으므로 수정 후 노드를 재시작한다.
+
+`confirmation_enabled: false`에서는 연속 확인을 건너뛰고 현재 결과를 즉시 표시한다.
+추후 `true`로 바꾸면 같은 색, 직전 박스와 IoU가 `confirmation_min_iou` 이상,
+촬영 간격이 `confirmation_max_gap_sec` 이내인 관측이 `confirmation_frames`회
+연속되어야 RED/GREEN을 표시한다. 횟수는 카메라 전체 프레임이 아닌 **실제 추론한
+프레임** 기준이다. 20Hz에서 3회는 첫 관측 이후 약 100ms가 추가된다.
+미검출/오류/오래된 프레임/입력 중단은 횟수를 초기화하며, 색이나 박스가 바뀌면
+새 관측부터 다시 센다. 확인 전에는 UNKNOWN이고 이전 확정 색상을 유지하지 않는다.
+`confirmation_frames: 1`이면 첫 유효 관측부터 표시한다. 낮은 FPS를 사용하면서
+확인을 켠다면 `confirmation_max_gap_sec`도 촬영 간격보다 충분히 크게 조절한다.
+
+소스 YAML은 빌드 시 install로 복사된다. 반복 튜닝은 별도 파일을 만들어 기존
+실행 명령에 아래 인자를 추가하면 **YAML 수정마다 재빌드할 필요 없이** 재실행하면 된다:
+
+```bash
+cp src/traffic_detection_test/config/traffic_light.yaml traffic_light_test.yaml
+# 기존 ros2 launch 명령 끝에 추가
+# traffic_light_params_file:=/home/autopilot03/Desktop/0906ML/f1tenth_project_repo/traffic_light_test.yaml
+```
+
+CLI `traffic_light_inference_fps:=...`를 함께 지정하면 YAML의 `inference_fps`보다
+우선한다. YAML만으로 조정할 때는 해당 CLI 인자를 생략한다.
+연속 확인은 BEV 텍스트와 상태 메시지에만 적용하며 차량 정지 로직은 없다.
 
 설정은 `config/traffic_light.yaml`에 있다. ROI는 카메라 원본 크기의 비율로
 지정한다. 기본값은 640x400 기준 `x=0,y=65,w=640,h=160`에 해당하며
