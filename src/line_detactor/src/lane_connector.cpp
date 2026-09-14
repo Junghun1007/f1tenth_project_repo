@@ -437,7 +437,7 @@ void validate_lane_connection(const LaneConnectionConfig & config)
 
 LaneConnectionResult connect_lane_fragments(
   const cv::Mat & labels, const LaneConnectionConfig & config,
-  const bool render_image, ProcessingProfile * profile)
+  const bool render_image, ProcessingProfile * profile, const bool render_bgr)
 {
   ProfileTimer timer(profile, ProfileStage::connector);
   if (labels.type() != CV_8UC1 || labels.empty()) {
@@ -485,12 +485,12 @@ LaneConnectionResult connect_lane_fragments(
   }
   bridge_timer.stop();
   ProfileTimer render_timer(profile, ProfileStage::lane_render);
-  if (render_image) {result.image = cv::Mat::zeros(size, CV_8UC3);}
+  if (render_image && render_bgr) {result.image = cv::Mat::zeros(size, CV_8UC3);}
   for (int side = 0; side < 2; ++side) {
     const cv::Mat model_mask = result.labels == side + 1;
     if (cv::countNonZero(model_mask) == 0) {continue;}
     result.state |= static_cast<std::uint8_t>(1U << side);
-    if (render_image) {
+    if (render_image && render_bgr) {
       const cv::Mat mask = model_mask | (result.labels == side + 3);
       result.image.setTo(side == 0 ? cv::Scalar(255, 0, 0) : cv::Scalar(0, 0, 255), mask);
     }

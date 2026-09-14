@@ -1,5 +1,7 @@
 #include "bev_handoff/direct_camera_handoff.hpp"
 #include <atomic>
+#include <cmath>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <utility>
@@ -23,6 +25,29 @@ struct Signal
   std::chrono::steady_clock::time_point valid_until;
 };
 Signal & signal() {static Signal value; return value;}
+struct InferenceFps
+{
+  std::mutex mutex;
+  double value{std::numeric_limits<double>::quiet_NaN()};
+  std::chrono::steady_clock::time_point valid_until;
+};
+InferenceFps & inference_fps() {static InferenceFps value; return value;}
+}
+void publishTrafficInferenceFps(
+  double average_fps, std::chrono::steady_clock::time_point valid_until)
+{
+  auto & s = inference_fps();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  s.value = std::isfinite(average_fps) && average_fps >= 0.0 ?
+    average_fps : std::numeric_limits<double>::quiet_NaN();
+  s.valid_until = valid_until;
+}
+double latestTrafficInferenceFps()
+{
+  auto & s = inference_fps();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  return std::chrono::steady_clock::now() < s.valid_until ?
+    s.value : std::numeric_limits<double>::quiet_NaN();
 }
 void publishTrafficSignalState(
   std::uint8_t value, std::chrono::steady_clock::time_point valid_until)

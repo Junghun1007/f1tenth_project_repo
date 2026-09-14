@@ -4,6 +4,7 @@
 #include "line_detactor/lane_connector.hpp"
 #include "line_detactor/msg/lane_result.hpp"
 #include "line_detactor/stop_line_distance.hpp"
+#include "line_detactor/bev_theme.hpp"
 
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
@@ -21,6 +22,9 @@
 #include <functional>
 #include <fstream>
 #include <sys/utsname.h>
+#if defined(__linux__)
+#include <sys/resource.h>
+#endif
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -35,6 +39,7 @@
 #include "opencv2/highgui.hpp"
 #include "opencv2/imgproc.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/header.hpp"
@@ -149,6 +154,37 @@ public:
     control_latency_subscription_ = node_.create_subscription<std_msgs::msg::Float32>(
       control_latency_topic_, image_qos,
       std::bind(&Impl::on_control_latency, this, std::placeholders::_1));
+    if (preview_enabled_) {
+      speed_subscription_ = node_.create_subscription<std_msgs::msg::Float32>(
+        bev_theme_speed_topic_, image_qos,
+        [this](const std_msgs::msg::Float32::ConstSharedPtr message) {
+          std::lock_guard<std::mutex> lock(preview_mutex_);
+          theme_speed_mps_ = message->data;
+          theme_speed_received_at_ = SteadyClock::now();
+        });
+    }
+    theme_parameter_callback_ = node_.add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter> & parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        result.successful = true;
+        bool requested = bev_theme_enable_.load();
+        for (const auto & parameter : parameters) {
+          if (parameter.get_name() != "bev_theme_enable") {continue;}
+          if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+            result.successful = false;
+            result.reason = "bev_theme_enable must be bool";
+            return result;
+          }
+          requested = parameter.as_bool();
+          if (requested && !connection_.enabled) {
+            result.successful = false;
+            result.reason = "bev_theme_enable requires connection_enabled";
+            return result;
+          }
+        }
+        bev_theme_enable_.store(requested);
+        return result;
+      });
 
     try {
       worker_ = std::thread(&Impl::worker_loop, this);
@@ -234,6 +270,10 @@ private:
 
   void read_parameters()
   {
+    bev_theme_enable_.store(node_.declare_parameter<bool>("bev_theme_enable", false));
+    bev_theme_preview_fps_ = node_.declare_parameter<double>("bev_theme_preview_fps", 15.0);
+    bev_theme_speed_topic_ = node_.declare_parameter<std::string>(
+      "bev_theme_speed_topic", "/auto/current_speed");
     input_topic_ = node_.declare_parameter<std::string>(
       "input_topic", "/camera/image_bev");
     direct_bev_input_enabled_ = node_.declare_parameter<bool>(
@@ -505,6 +545,12 @@ private:
     }
     if (!std::isfinite(preview_fps_) || preview_fps_ <= 0.0) {
       throw std::invalid_argument("preview_fps must be finite and positive");
+    }
+    if (!std::isfinite(bev_theme_preview_fps_) || bev_theme_preview_fps_ <= 0.0 ||
+      bev_theme_speed_topic_.empty() || (bev_theme_enable_.load() && !connection_.enabled))
+    {
+      throw std::invalid_argument(
+              "BEV theme requires positive preview FPS, a speed topic, and connection_enabled");
     }
     if (!std::isfinite(preview_scale_) || preview_scale_ <= 0.0) {
       throw std::invalid_argument("preview_scale must be finite and positive");
@@ -903,21 +949,26 @@ private:
           }
           if (connection_.enabled) {
             const auto started = std::chrono::steady_clock::now();
-            const bool render_result = preview_enabled_ ||
-              (result_image_publisher_ &&
+            const bool image_subscribers = result_image_publisher_ &&
               (result_image_publisher_->get_subscription_count() > 0U ||
-              result_image_publisher_->get_intra_process_subscription_count() > 0U));
+              result_image_publisher_->get_intra_process_subscription_count() > 0U);
+            // Keep the existing bridge/label policy independent of theme state.
+            // Only skip display buffers; control geometry remains identical.
+            const bool render_result = preview_enabled_ || image_subscribers;
+            const bool render_legacy_image =
+              (preview_enabled_ && !bev_theme_enable_.load()) || image_subscribers;
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
-            profile_frame.render_result = render_result;
-            result = connect_lane_fragments(labels, connection_, render_result, profile);
+            profile_frame.render_result = render_legacy_image;
+            result = connect_lane_fragments(
+              labels, connection_, render_result, profile, render_legacy_image);
             ProfileTimer stop_mask_timer(profile, ProfileStage::stop_mask_render);
             // Stop lines never enter the left/right connector. Retain overlaps
             // in independent masks, painting green only in the display image.
             cv::Mat stop_mask(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->stop_line_mask_data()));
             result.stop_line_present = cv::countNonZero(stop_mask) >= stop_line_min_present_pixels_;
-            if (render_result) {
+            if (render_legacy_image) {
               cv::copyMakeBorder(stop_mask, result.stop_line_mask, 0, 0,
                 connection_.padding_px, connection_.padding_px,
                 cv::BORDER_CONSTANT, cv::Scalar(0));
@@ -926,14 +977,14 @@ private:
             stop_mask_timer.stop();
             result.centerline = generate_centerline(
               result.labels, result.observed_paths,
-              model_input_width_, connection_.padding_px, centerline_, render_result, profile);
+              model_input_width_, connection_.padding_px, centerline_, render_legacy_image, profile);
             ProfileTimer stop_distance_timer(profile, ProfileStage::stop_distance);
             result.stop_line_distance_m = estimate_stop_line_distance_m(
               stop_mask, result.centerline.points, connection_.padding_px,
               centerline_.bev_width_m, centerline_.bev_height_m, stop_line_distance_);
             stop_distance_timer.stop();
             ProfileTimer centerline_render_timer(profile, ProfileStage::centerline_render);
-            if (render_result) {
+            if (render_legacy_image) {
               result.image.setTo(cv::Scalar(0, 255, 255), result.centerline.mask);
             }
             centerline_render_timer.stop();
@@ -1054,6 +1105,11 @@ private:
   // All HighGUI calls live here. Slow rendering never blocks inference or result publication.
   void preview_loop()
   {
+#if defined(__linux__)
+    // Linux nice is per-thread. GUI drawing yields CPU scheduling priority to
+    // the inference/control threads in this component container.
+    (void)setpriority(PRIO_PROCESS, 0, 10);
+#endif
     bool window_seen = false;
     try {
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
@@ -1061,8 +1117,16 @@ private:
         preview_window_name_,
         static_cast<int>(result_width() * preview_scale_),
         static_cast<int>((model_input_height_ + kBannerHeight) * preview_scale_));
-      const auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(1.0 / preview_fps_));
+      BevThemeRenderer theme_renderer(model_input_width_, model_input_height_,
+        connection_.padding_px, centerline_.bev_width_m, centerline_.bev_height_m,
+        centerline_.lane_width_m);
+      std::uint64_t theme_generation = 0U;
+      bool theme_geometry_ready = false;
+      bool displayed_theme = false;
+      auto last_motion_at = SteadyClock::now();
+      double motion_distance_m = 0.0;
       auto next_preview_at = std::chrono::steady_clock::now();
       auto report_started_at = next_preview_at;
       std::uint64_t displayed_generation = 0U;
@@ -1072,6 +1136,7 @@ private:
       while (!stop_requested_.load(std::memory_order_acquire)) {
         std::shared_ptr<const PreviewFrame> frame;
         double average_control_milliseconds = std::numeric_limits<double>::quiet_NaN();
+        double theme_speed = std::numeric_limits<double>::quiet_NaN();
         {
           std::unique_lock<std::mutex> lock(preview_mutex_);
           preview_condition_.wait_until(lock, next_preview_at, [this]() {
@@ -1079,29 +1144,68 @@ private:
           });
           if (stop_requested_.load(std::memory_order_acquire)) {break;}
           frame = latest_preview_;
+          const auto speed_age = SteadyClock::now() - theme_speed_received_at_;
+          if (speed_age >= SteadyClock::duration::zero() &&
+            speed_age <= std::chrono::milliseconds(500) && std::isfinite(theme_speed_mps_))
+          {
+            theme_speed = theme_speed_mps_;
+          }
           if (control_latency_sample_count_ > 0U) {
             average_control_milliseconds = control_latency_total_milliseconds_ /
               static_cast<double>(control_latency_sample_count_);
           }
         }
         const auto traffic_signal = bev_handoff::latestTrafficSignalState();
-        if (frame && (frame->generation != displayed_generation || traffic_signal != displayed_signal)) {
-          cv::Mat overlay;
-          if (connection_.enabled) {
-            overlay = preview_result_only_enabled_ ? frame->result.image :
-              result_overlay(frame->result, *frame->input);
+        const bool theme = bev_theme_enable_.load();
+        const auto motion_now = SteadyClock::now();
+        const double motion_dt = std::clamp(
+          std::chrono::duration<double>(motion_now - last_motion_at).count(), 0.0, 0.25);
+        last_motion_at = motion_now;
+        if (theme && std::isfinite(theme_speed)) {
+          motion_distance_m += std::max(0.0, theme_speed) * motion_dt;
+        }
+        // Switching off may briefly encounter a snapshot without legacy image
+        // buffers. Wait for the next worker result rather than blocking it.
+        if (frame && (theme || !connection_.enabled || !frame->result.image.empty()) &&
+          (theme || displayed_theme || frame->generation != displayed_generation ||
+          traffic_signal != displayed_signal))
+        {
+          cv::Mat canvas;
+          if (theme) {
+            if (!theme_geometry_ready || theme_generation != frame->generation) {
+              theme_renderer.update(frame->result);
+              theme_generation = frame->generation;
+              theme_geometry_ready = true;
+            }
+            BevThemeTelemetry telemetry;
+            telemetry.speed_mps = theme_speed;
+            telemetry.distance_m = motion_distance_m;
+            telemetry.inference_ms = frame->average_inference_milliseconds;
+            telemetry.postprocess_ms = frame->average_postprocess_milliseconds;
+            telemetry.control_ms = average_control_milliseconds;
+            telemetry.traffic_fps = bev_handoff::latestTrafficInferenceFps();
+            telemetry.preview_fps = display_fps;
+            telemetry.signal = traffic_signal;
+            canvas = theme_renderer.render(telemetry);
           } else {
-            cv::copyMakeBorder(frame->raw, overlay, 0, 0,
-              connection_.padding_px, connection_.padding_px,
-              cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+            cv::Mat overlay;
+            if (connection_.enabled) {
+              overlay = preview_result_only_enabled_ ? frame->result.image :
+                result_overlay(frame->result, *frame->input);
+            } else {
+              cv::copyMakeBorder(frame->raw, overlay, 0, 0,
+                connection_.padding_px, connection_.padding_px,
+                cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+            }
+            canvas = preview_canvas(
+              overlay,
+              frame->average_inference_milliseconds,
+              frame->average_postprocess_milliseconds,
+              average_control_milliseconds,
+              frame->result.stop_line_distance_m, display_fps, traffic_signal);
           }
-          const cv::Mat canvas = preview_canvas(
-            overlay,
-            frame->average_inference_milliseconds,
-            frame->average_postprocess_milliseconds,
-            average_control_milliseconds,
-            frame->result.stop_line_distance_m, display_fps, traffic_signal);
           cv::imshow(preview_window_name_, canvas);
+          displayed_theme = theme;
           displayed_generation = frame->generation;
           displayed_signal = traffic_signal;
           ++displayed_count;
@@ -1118,12 +1222,16 @@ private:
           displayed_count = 0U;
           report_started_at = now;
         }
+        const double effective_fps = bev_theme_enable_.load() ?
+          std::min(preview_fps_, bev_theme_preview_fps_) : preview_fps_;
+        period = std::chrono::duration_cast<SteadyClock::duration>(
+          std::chrono::duration<double>(1.0 / effective_fps));
         next_preview_at += period;
         if (next_preview_at < now) {next_preview_at = now + period;}
       }
     } catch (const std::exception & exception) {
-      RCLCPP_ERROR(node_.get_logger(), "Lane GUI failed: %s", exception.what());
-      request_shutdown();
+      RCLCPP_ERROR(node_.get_logger(),
+        "Lane GUI disabled after error; inference/control continue: %s", exception.what());
     }
     try {
       cv::destroyWindow(preview_window_name_);
@@ -1186,6 +1294,10 @@ private:
   rclcpp::Publisher<Image>::SharedPtr result_image_publisher_;
   int warmup_iterations_{10};
   bool preview_enabled_{true};
+  std::atomic<bool> bev_theme_enable_{false};
+  double bev_theme_preview_fps_{15.0};
+  std::string bev_theme_speed_topic_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr theme_parameter_callback_;
   bool preview_result_only_enabled_{true};
   double preview_fps_{30.0};
   double preview_scale_{2.0};
@@ -1199,6 +1311,7 @@ private:
   std::unique_ptr<TensorRtLaneBackend> backend_;
   rclcpp::Subscription<Image>::SharedPtr subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr control_latency_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_subscription_;
   std::mutex frame_mutex_;
   std::condition_variable frame_condition_;
   std::shared_ptr<const InputFrame> latest_message_;
@@ -1213,6 +1326,8 @@ private:
   std::thread worker_;
   std::uint64_t direct_bev_consumer_id_{0U};
   std::mutex preview_mutex_;
+  double theme_speed_mps_{std::numeric_limits<double>::quiet_NaN()};
+  SteadyClock::time_point theme_speed_received_at_{};
   std::condition_variable preview_condition_;
   std::shared_ptr<const PreviewFrame> latest_preview_;
   std::uint64_t control_latency_sample_count_{0U};

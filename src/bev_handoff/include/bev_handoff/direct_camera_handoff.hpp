@@ -33,5 +33,10 @@ bool deliverDirectCameraFrame(std::shared_ptr<const DirectCameraFrame> frame);
 void publishTrafficSignalState(
   std::uint8_t state, std::chrono::steady_clock::time_point valid_until);
 std::uint8_t latestTrafficSignalState();
+// Completed model calls / wall time over the latest reporting window.
+// Expired/unavailable observations read NaN, independently of detected color.
+void publishTrafficInferenceFps(
+  double average_fps, std::chrono::steady_clock::time_point valid_until);
+double latestTrafficInferenceFps();
 }  // namespace bev_handoff
 #endif

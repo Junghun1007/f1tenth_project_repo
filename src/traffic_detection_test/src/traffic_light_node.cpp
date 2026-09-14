@@ -78,6 +78,7 @@ public:
       worker_ = std::thread([this]() {
         try {run();}
         catch (const std::exception & e) {
+          bev_handoff::publishTrafficInferenceFps(0.0, Clock::time_point{});
           bev_handoff::publishTrafficSignalState(State::UNKNOWN, Clock::time_point{});
           // A publication/shutdown failure must not terminate the shared
           // camera/BEV/lane process through an uncaught worker exception.
@@ -106,6 +107,7 @@ public:
     }
     condition_.notify_all();
     if (worker_.joinable()) {worker_.join();}
+    bev_handoff::publishTrafficInferenceFps(0.0, Clock::time_point{});
     bev_handoff::publishTrafficSignalState(State::UNKNOWN, Clock::time_point{});
   }
 
@@ -172,6 +174,7 @@ private:
 
   void run()
   {
+    bev_handoff::publishTrafficInferenceFps(0.0, Clock::time_point{});
     // Building/deserializing TensorRT never blocks component construction or
     // the BEV executor. Cold engine building can still compete for GPU time.
     std::unique_ptr<YoloxDetector> detector;
@@ -189,6 +192,8 @@ private:
     }
     auto deadline = Clock::now();
     auto last_log = deadline;
+    auto fps_window_started = deadline;
+    std::uint64_t completed_inferences = 0;
     auto last_publish = deadline - std::chrono::seconds(1);
     std::uint64_t count = 0, stale = 0;
     double sum_ms = 0, max_ms = 0, sum_infer = 0, max_infer = 0, max_age_ms = 0;
@@ -223,6 +228,7 @@ private:
               static_cast<int>(width_ * frame->width), static_cast<int>(height_ * frame->height));
             const auto result = detector->detect_nv12(frame->nv12, frame->size, frame->stride,
               frame->width, frame->height, roi);
+            ++completed_inferences;
             message.inference_ms = result.timing.forward_nanoseconds / 1.0e6;
             if (!result.detections.empty()) {
               const auto best = std::max_element(result.detections.begin(), result.detections.end(),
@@ -256,6 +262,15 @@ private:
             std::chrono::duration<double>(max_age_)) : Clock::time_point{});
         publisher_->publish(message);
         last_publish = started;
+      }
+      const auto fps_now = Clock::now();
+      const double fps_elapsed = std::chrono::duration<double>(fps_now - fps_window_started).count();
+      if (fps_elapsed >= 1.0) {
+        bev_handoff::publishTrafficInferenceFps(
+          static_cast<double>(completed_inferences) / fps_elapsed,
+          completed_inferences > 0 ? fps_now + std::chrono::milliseconds(1500) : Clock::time_point{});
+        completed_inferences = 0;
+        fps_window_started = fps_now;
       }
       const double elapsed = std::chrono::duration<double>(Clock::now() - last_log).count();
       if (elapsed >= log_interval_) {

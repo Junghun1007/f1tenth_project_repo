@@ -93,6 +93,19 @@ owns the joystick node defaults.
 
 ## Autonomous driving
 
+Optional lightweight white BEV preview (default off):
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py bev_theme_enable:=true
+ros2 param set /line_detactor bev_theme_enable false
+```
+
+The theme uses the same window dimensions and a separate 15 FPS preview cap.
+Set `bev_theme_enable` / `bev_theme_preview_fps` in the selected line detector YAML.
+The live speed HUD follows the controller's `current_speed_topic`; traffic model
+FPS is measured in the shared detector process. Build the changed packages together:
+`bev_handoff line_detactor traffic_detection_test vehicle_bringup`.
+
 The pipeline is `camera_driver -> bev_processor -> line_detactor -> auto_control`.
 `auto_drive.launch.py` loads the first three perception components into the same
 component container. BEV-to-detector transfer is a process-local latest-frame

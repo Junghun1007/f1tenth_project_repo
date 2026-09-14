@@ -22,6 +22,7 @@ find_package(ament_cmake REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(bev_handoff REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -103,6 +104,7 @@ target_link_libraries(line_tensorrt_backend
 
 add_library(line_detactor_component SHARED
   src/line_detactor_node.cpp
+  src/bev_theme.cpp
   src/lane_connector.cpp
   src/centerline.cpp
   src/stop_line_distance.cpp
@@ -135,6 +137,7 @@ ament_target_dependencies(line_detactor_component
   ament_index_cpp
   bev_handoff
   rclcpp
+  rcl_interfaces
   rclcpp_components
   sensor_msgs
   std_msgs

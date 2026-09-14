@@ -154,6 +154,14 @@ def _apply_parameter_file_defaults(
     detector["control_latency_topic"] = context.launch_configurations[
         "input_to_control_decision_topic"
     ]
+    detector["bev_theme_speed_topic"] = str(
+        controller_defaults.get("current_speed_topic", "/auto/current_speed")
+    )
+    theme = LaunchConfiguration("bev_theme_enable").perform(context)
+    if theme != _PARAMETER_FILE_DEFAULT:
+        if theme.lower() not in ("true", "false"):
+            raise RuntimeError("bev_theme_enable must be true or false")
+        detector["bev_theme_enable"] = theme.lower() == "true"
     preview = context.launch_configurations["preview_enabled"].lower()
     if preview not in ("true", "false"):
         raise RuntimeError("preview_enabled must be true or false")
@@ -587,6 +595,8 @@ def generate_launch_description():
                                   description="Lane profile output directory; omitted uses YAML/node default"),
             DeclareLaunchArgument("preview_result_only_enabled", default_value=_PARAMETER_FILE_DEFAULT,
                                   description="Show lanes/path on black background; omitted uses ML YAML"),
+            DeclareLaunchArgument("bev_theme_enable", default_value=_PARAMETER_FILE_DEFAULT,
+                                  description="Lightweight white BEV theme; omitted uses ML YAML (false)"),
             DeclareLaunchArgument("centerline_corner_outward_offset_m", default_value=_PARAMETER_FILE_DEFAULT,
                                   description="Corner path shift toward observed outer lane in metres; 0 disables"),
             DeclareLaunchArgument("centerline_corner_entry_distance_m", default_value=_PARAMETER_FILE_DEFAULT,

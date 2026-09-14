@@ -49,9 +49,12 @@ struct LaneConnectionResult
 };
 
 void validate_lane_connection(const LaneConnectionConfig & config);
+// render_image preserves the existing bridge policy. render_bgr independently
+// suppresses only the display image, leaving labels and control geometry intact.
 LaneConnectionResult connect_lane_fragments(
   const cv::Mat & labels, const LaneConnectionConfig & config,
-  bool render_image = true, ProcessingProfile * profile = nullptr);
+  bool render_image = true, ProcessingProfile * profile = nullptr,
+  bool render_bgr = true);
 
 }  // namespace line_detactor
 

@@ -139,6 +139,61 @@ line_detactor:
 프리뷰를 표시한다. `result_publish_enabled:=false`는 발행만 끈다.
 `preview_enabled:=false`여도 후처리와 결과 발행은 동작한다.
 
+## 가벼운 BEV 테마
+
+`bev_theme_enable`의 기본값은 **false**다. true이면 흰 배경,
+`#C7CCD4` 회색 차선, `#2699E6` 두꺼운 중앙선, 차선보다 2배 두꺼운 정지선,
+10cm 거리 눈금(1/2/3m 긴 눈금), 오른쪽 위 속도 원과 그 아래 신호 원을 표시한다.
+신호는 빨강/초록으로 채우고 UNKNOWN 또는 만료 시 테두리만 표시한다.
+하단은 차선 추론·후처리·제어 평균, 신호등 실제 평균 FPS, 프리뷰 FPS, 정지선 거리다.
+OpenCV 기본 글꼴을 사용하는 하단 항목명은 영어로 표시한다.
+기본 창 콘텐츠 크기는 기존과 같은 **360×776px**이다.
+
+```yaml
+line_detactor:
+  ros__parameters:
+    bev_theme_enable: false
+    bev_theme_preview_fps: 15.0
+    bev_theme_speed_topic: "/auto/current_speed"
+```
+
+자동주행에서는 지정한 `line_detactor_params_file`에 넣거나 launch로 켠다.
+`auto_control_test.yaml`의 제어 파라미터가 아니다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py bev_theme_enable:=true
+# 독립 차선 검출 launch도 같은 인자를 지원한다.
+ros2 launch line_detactor line_detactor.launch.py bev_theme_enable:=true
+
+# 실행 중 프리뷰 전환. 다른 프리뷰 설정은 시작 시 읽는다.
+ros2 param set /line_detactor bev_theme_enable true
+ros2 param set /line_detactor bev_theme_enable false
+```
+
+`connection_enabled=true`가 필요하며, `preview_enabled=false`이면 화면은 열지 않는다.
+테마를 끄면 기존 `preview_result_only_enabled` 설정의 프리뷰로 복귀한다.
+속도는 `bev_theme_speed_topic`에서 읽으며 0.5초 이상 새 값이 없으면 `--`로 표시한다.
+자동주행 launch는 이 토픽을 auto_control의 `current_speed_topic`과 맞춘다.
+신호등 FPS는 같은 프로세스의 traffic detector가 최근 약 1초 동안 실제 완료한 모델
+호출 수를 경과 시간으로 나눈 값이다. 입력 유실·초기화·오류로 측정이 없거나 만료되면
+`-- FPS`로 표시한다. 설정된 추론 상한이나 추론시간의 역수를 대신 표시하지 않는다.
+
+프리뷰는 상태 확인용 약도다. 좌우 차선과 중앙선은 이미 계산된 점열을 화면에서만
+단순화하며 정지선은 측정 거리와 중앙선 방향, 설정 차선 폭을 이용한 간단한 가로 막대다.
+정지선 마스크를 다시 분석하지 않는다. 점선은 기록용 지도가 아닌 속도 기반 이동 표시다.
+이 단순화는 발행되는 차선/중앙선 좌표, 정지선 거리 및 제어 로직에 적용되지 않는다.
+
+GUI는 최신 결과 하나만 읽고 기본 최대 15FPS로 표시한다(`preview_fps`가 더 낮으면 그 값).
+차선 형상은 새 결과를 표시할 때만 갱신하고, 눈금·고정 항목을 포함한 화면을 캐시한다.
+확대 후 축소, Gaussian blur, 추가 추론, 마스크 재가공은 하지 않으며 경계는 선의
+안티앨리어싱만 사용한다. 점선은 프레임당 최대 256개로 제한한다.
+테마만 표시하고 결과 영상 구독자가 없을 때는 추론 작업의 기존 BGR 표시 영상과
+중앙선/정지선 표시 마스크 생성을 생략한다. 보간/라벨 정책은 테마 전환과 독립적으로 유지한다.
+Linux GUI 스레드에는 낮은 CPU 우선순위(nice 10)를 요청하며, GUI 예외가 발생하면
+프리뷰만 종료하고 추론/제어는 유지한다. 사용자가 창을 닫는 기존 종료 동작은 유지한다.
+성능 측정 모드는 기존대로 GUI를 끈다. 이 변경에서는 요청에 따라 빌드·테스트·실차 성능
+측정을 실행하지 않았으므로 주행 성능에 영향이 없다는 실측 보장은 하지 않는다.
+
 ## 파라미터
 
 거리 단위는 확대 전 BEV 픽셀이다. 모두 테스트/실차 검증 전 시작값이다.
