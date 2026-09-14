@@ -28,5 +28,10 @@ std::uint64_t registerDirectCameraConsumer(DirectCameraCallback callback);
 void unregisterDirectCameraConsumer(std::uint64_t id);
 // Single consumer; drops on lock contention. Callback must only try-enqueue.
 bool deliverDirectCameraFrame(std::shared_ptr<const DirectCameraFrame> frame);
+// Small process-local observation for the existing BEV GUI, independent of
+// camera delivery locks. 0=UNKNOWN, 1=RED, 2=GREEN. Expired states read UNKNOWN.
+void publishTrafficSignalState(
+  std::uint8_t state, std::chrono::steady_clock::time_point valid_until);
+std::uint8_t latestTrafficSignalState();
 }  // namespace bev_handoff
 #endif

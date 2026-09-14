@@ -70,6 +70,7 @@ public:
       worker_ = std::thread([this]() {
         try {run();}
         catch (const std::exception & e) {
+          bev_handoff::publishTrafficSignalState(State::UNKNOWN, Clock::time_point{});
           // A publication/shutdown failure must not terminate the shared
           // camera/BEV/lane process through an uncaught worker exception.
           if (rclcpp::ok(get_node_base_interface()->get_context())) {
@@ -95,6 +96,7 @@ public:
     }
     condition_.notify_all();
     if (worker_.joinable()) {worker_.join();}
+    bev_handoff::publishTrafficSignalState(State::UNKNOWN, Clock::time_point{});
   }
 
 private:
@@ -142,6 +144,7 @@ private:
     std::unique_ptr<YoloxDetector> detector;
     State preparing;
     preparing.capture_age_ms = -1.0F;
+    bev_handoff::publishTrafficSignalState(State::UNKNOWN, Clock::time_point{});
     publisher_->publish(preparing);
     try {
       detector = std::make_unique<YoloxDetector>(
@@ -211,6 +214,9 @@ private:
         max_age_ms = std::max(max_age_ms, static_cast<double>(message.capture_age_ms));
       }
       if (frame || started - last_publish >= std::chrono::milliseconds(100)) {
+        bev_handoff::publishTrafficSignalState(message.state, frame ?
+          frame->captured_at + std::chrono::duration_cast<Clock::duration>(
+            std::chrono::duration<double>(max_age_)) : Clock::time_point{});
         publisher_->publish(message);
         last_publish = started;
       }

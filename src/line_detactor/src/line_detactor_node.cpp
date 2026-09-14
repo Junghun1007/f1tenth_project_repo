@@ -6,6 +6,7 @@
 #include "line_detactor/stop_line_distance.hpp"
 
 #include "bev_handoff/direct_bev_handoff.hpp"
+#include "bev_handoff/direct_camera_handoff.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -45,7 +46,7 @@ namespace
 
 constexpr int kDefaultInputWidth = 120;
 constexpr int kDefaultInputHeight = 300;
-constexpr int kBannerHeight = 74;
+constexpr int kBannerHeight = 88;
 constexpr char kModelFilename[] =
   "fast_scnn_stop_line_120x300_batch_1.onnx";
 
@@ -755,7 +756,8 @@ private:
     const double average_postprocess_milliseconds,
     const double average_control_milliseconds,
     const double stop_line_distance_m,
-    const double preview_fps) const
+    const double preview_fps,
+    const std::uint8_t traffic_signal) const
   {
     cv::Mat banner = cv::Mat::zeros(
       kBannerHeight, overlay.cols, CV_8UC3);
@@ -777,7 +779,11 @@ private:
       {cv::format("preview %.1f FPS", preview_fps), cv::Scalar(255, 255, 255)},
       {std::isfinite(stop_line_distance_m) ?
         cv::format("stop %.2f m (front axle)", stop_line_distance_m) :
-        "stop -- m", cv::Scalar(0, 255, 0)}};
+        "stop -- m", cv::Scalar(0, 255, 0)},
+      {traffic_signal == 1 ? "Traffic: RED" :
+        traffic_signal == 2 ? "Traffic: GREEN" : "Traffic: UNKNOWN",
+        traffic_signal == 1 ? cv::Scalar(0, 0, 255) :
+        traffic_signal == 2 ? cv::Scalar(0, 255, 0) : cv::Scalar(180, 180, 180)}};
     for (std::size_t index = 0; index < lines.size(); ++index) {
       cv::putText(
         banner, lines[index].first,
@@ -1059,6 +1065,7 @@ private:
       auto next_preview_at = std::chrono::steady_clock::now();
       auto report_started_at = next_preview_at;
       std::uint64_t displayed_generation = 0U;
+      std::uint8_t displayed_signal = 255U;
       std::uint64_t displayed_count = 0U;
       double display_fps = 0.0;
       while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -1076,7 +1083,8 @@ private:
               static_cast<double>(control_latency_sample_count_);
           }
         }
-        if (frame && frame->generation != displayed_generation) {
+        const auto traffic_signal = bev_handoff::latestTrafficSignalState();
+        if (frame && (frame->generation != displayed_generation || traffic_signal != displayed_signal)) {
           cv::Mat overlay;
           if (connection_.enabled) {
             overlay = preview_result_only_enabled_ ? frame->result.image :
@@ -1091,9 +1099,10 @@ private:
             frame->average_inference_milliseconds,
             frame->average_postprocess_milliseconds,
             average_control_milliseconds,
-            frame->result.stop_line_distance_m, display_fps);
+            frame->result.stop_line_distance_m, display_fps, traffic_signal);
           cv::imshow(preview_window_name_, canvas);
           displayed_generation = frame->generation;
+          displayed_signal = traffic_signal;
           ++displayed_count;
           previewed_interval_.fetch_add(1U, std::memory_order_relaxed);
         }

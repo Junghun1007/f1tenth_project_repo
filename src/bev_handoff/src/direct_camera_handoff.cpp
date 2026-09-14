@@ -16,6 +16,27 @@ struct State
   std::uint64_t id{0}, next{1};
 };
 State & state() {static State value; return value;}
+struct Signal
+{
+  std::mutex mutex;
+  std::uint8_t value{0};
+  std::chrono::steady_clock::time_point valid_until;
+};
+Signal & signal() {static Signal value; return value;}
+}
+void publishTrafficSignalState(
+  std::uint8_t value, std::chrono::steady_clock::time_point valid_until)
+{
+  auto & s = signal();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  s.value = value <= 2 ? value : 0;
+  s.valid_until = valid_until;
+}
+std::uint8_t latestTrafficSignalState()
+{
+  auto & s = signal();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  return std::chrono::steady_clock::now() < s.valid_until ? s.value : 0;
 }
 bool hasDirectCameraConsumer() {return state().active.load(std::memory_order_relaxed);}
 std::uint64_t registerDirectCameraConsumer(DirectCameraCallback callback)
