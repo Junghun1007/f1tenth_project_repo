@@ -140,6 +140,8 @@ public:
       longitudinal_pid_enabled_ ? "on" : "off (red stop still uses PID)",
       staged_control_enabled_ ? "on" : "off",
       curvature_speed_control_enabled_ ? "on" : "off", longitudinal_kp_, longitudinal_ki_, longitudinal_kd_);
+    RCLCPP_INFO(get_logger(), "Staged brake gains: speed=%.3f, missing deceleration=%.3f",
+      longitudinal_brake_speed_gain_, traffic_brake_decel_gain_);
     RCLCPP_INFO(get_logger(),
       "Traffic stop=%s | bumper offset=%.2fm, margin=%.2fm, planning decel=%.2fm/s2, "
       "response=%.2fs, brake cap=%.2fA (independent of normal electrical_brake_enabled)",
@@ -206,6 +208,7 @@ private:
     traffic_terminal_distance_ = parameter("traffic_terminal_tracking_distance_m", 0.10);
     traffic_terminal_timeout_ = parameter("traffic_terminal_tracking_timeout_sec", 1.50);
     curvature_speed_control_enabled_ = parameter("curvature_speed_control_enabled", false);
+    longitudinal_brake_speed_gain_ = parameter("longitudinal_brake_speed_gain", 1.0);
     longitudinal_kp_ = parameter("longitudinal_pid_kp", 1.0);
     longitudinal_ki_ = parameter("longitudinal_pid_ki", 0.5);
     longitudinal_kd_ = parameter("longitudinal_pid_kd", 0.0);
@@ -345,6 +348,7 @@ private:
       throw std::invalid_argument("traffic_pass_overshoot_m must be positive");
     }
     if (!finite_positive({drive_ff_fade_speed_, recovery_duty_rise_, deceleration_filter_sec_,
+        longitudinal_brake_speed_gain_,
         traffic_brake_decel_hysteresis_, traffic_brake_speed_hysteresis_, traffic_brake_decel_gain_,
         traffic_terminal_distance_, traffic_terminal_timeout_}) ||
       !finite({drive_ff_offset_, drive_ff_slope_, traffic_coast_probe_sec_}) ||
@@ -811,9 +815,9 @@ private:
     if (service_brake_requested_) {
       const double missing_decel = approaching ?
         std::max(0.0, required_deceleration_mps2_ - coast_decel) : 0.0;
-      requested_brake_current_ = brake_cap * clamp(
-        longitudinal_kp_ * (zero_target ? std::abs(current_speed_mps_) : std::max(0.0, overspeed)) +
-        traffic_brake_decel_gain_ * missing_decel, 0.0, 1.0);
+      requested_brake_current_ = staged_brake_current(
+        zero_target ? std::abs(current_speed_mps_) : std::max(0.0, overspeed),
+        missing_decel, longitudinal_brake_speed_gain_, traffic_brake_decel_gain_, brake_cap);
       if (traffic_stop && zero_target && std::abs(current_speed_mps_) < 0.05) {
         requested_brake_current_ = std::max(requested_brake_current_, traffic_hold_current_);
       }
@@ -1461,6 +1465,7 @@ private:
   double drive_ff_offset_, drive_ff_slope_, drive_ff_fade_speed_, recovery_duty_rise_;
   double deceleration_filter_sec_, traffic_coast_probe_sec_, traffic_brake_decel_hysteresis_;
   double traffic_brake_speed_hysteresis_, traffic_brake_decel_gain_;
+  double longitudinal_brake_speed_gain_;
   double traffic_terminal_distance_, traffic_terminal_timeout_;
   double coast_probe_elapsed_{0.0}, measured_deceleration_mps2_{kUnavailable};
   double coast_deceleration_mps2_{0.0}, required_deceleration_mps2_{kUnavailable};

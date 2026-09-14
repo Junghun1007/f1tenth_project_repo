@@ -54,4 +54,11 @@ install(FILES
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  enable_testing()
+  add_executable(staged_brake_test test/staged_brake_test.cpp src/control_core.cpp)
+  target_include_directories(staged_brake_test PRIVATE include)
+  add_test(NAME staged_brake_test COMMAND staged_brake_test)
+endif()
+
 ament_package()

@@ -21,6 +21,7 @@ longitudinal_pid_ki: 0.5
 longitudinal_pid_kd: 0.0
 longitudinal_pid_integral_limit: 2.0
 longitudinal_staged_control_enabled: true
+longitudinal_brake_speed_gain: 1.0
 longitudinal_feedforward_offset_duty: 0.015
 longitudinal_feedforward_duty_per_mps: 0.055
 longitudinal_feedforward_fade_speed_mps: 0.10
@@ -82,11 +83,25 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작
 4. **목표 도착**: 목표 속도가 0이면 양의 duty를 내지 않는다.
    실제 속도 0.05m/s 미만에서 `traffic_hold_current_amps`를 적용한다.
 
-추가 제동 전류는 `traffic_brake_max_current_amps * clamp(Kp*초과속도 +
+추가 제동 전류는 `traffic_brake_max_current_amps * clamp(longitudinal_brake_speed_gain*초과속도 +
 traffic_brake_deceleration_gain*부족감속, 0, 1)`로 정한다. 실제 전류 명령에는
 `brake_current_rise_amps_per_sec`/`brake_current_fall_amps_per_sec` 변화율 제한을 적용한다.
 현재 속도와 거리를 모두 사용하지만, 전류→감속의 실측 모델은 아니므로 이득 보정이 필요하다.
 제어 입력 유실에 대한 기존 정지 분기는 이 완만한 변화율 제한을 우회한다.
+
+단계 제어의 `longitudinal_pid_kp/ki/kd`는 구동 duty 보정에만 사용한다.
+`longitudinal_brake_speed_gain`은 별도의 양수 계수(단위 `1/(m/s)`)이며,
+코너 등 일반 주행 제동과 신호등 제동의 속도 오차 항에 공통 적용한다.
+일반 제동에는 `brake_maximum_current_amps` 상한을 쓰고 부족감속 항은 없다.
+목표 0에서는 절대 속도를 속도 오차로 쓰며, 저속 유지 전류는 기존대로 별도 적용한다.
+따라서 PID를 조절해도 같은 속도·거리 입력에 대한 제동 전류 계산 계수는 바뀌지 않는다.
+구동 응답이 바뀌면 실제 접근 속도와 제동 시점은 달라질 수 있다.
+
+새 계수의 기본값 `1.0`은 이전 기본 Kp `1.0`의 제동 세기를 유지한다.
+외부 YAML에서 이전 `longitudinal_pid_kp`를 다른 값으로 조정했다면, 이전 제동 계산을
+유지하려면 그 값을 `longitudinal_brake_speed_gain`에도 한 번 복사한 뒤 독립적으로 조절한다.
+새 키를 생략하면 구동 Kp와 관계없이 `1.0`을 사용한다. 재실행 시 적용되며 시작 로그와
+주행 로그 옆 파라미터 파일에도 기록한다.
 
 감속은 ERPM 속도 차분을 `longitudinal_deceleration_filter_sec`로 평활화해 추정한다.
 duty 감속 단계의 표본만 자연 감속 추정에 사용하고, 제동 중 및 제동 해제 후 응답 시간과
@@ -104,6 +119,7 @@ duty 감속 단계의 표본만 자연 감속 추정에 사용하고, 제동 중
 기본 D=0이므로 PI로 동작한다.
 
 `longitudinal_staged_control_enabled: false`로 이전 signed PID 방식으로 돌아갈 수 있다.
+이 호환 모드는 하나의 signed PID를 유지하므로 새 `longitudinal_brake_speed_gain`을 사용하지 않는다.
 `longitudinal_pid_enabled: false`이면 일반 주행은 기존 `speed_pid_*` 제어를 사용하지만,
 RED 정지 접근은 `longitudinal_staged_control_enabled`에 따라 새 단계 제어 또는 signed PID를 쓴다.
 `longitudinal_pid_*`는 정규화 출력용으로 duty 단위 `speed_pid_*`와 다르다.

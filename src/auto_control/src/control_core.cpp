@@ -216,6 +216,15 @@ double speed_feedforward_duty(
   return minimum_duty + (maximum_duty - minimum_duty) * amount;
 }
 
+double staged_brake_current(
+  double speed_error_mps, double missing_deceleration_mps2,
+  double speed_gain, double deceleration_gain, double maximum_current_amps)
+{
+  return maximum_current_amps * clamp(
+    speed_gain * std::max(0.0, speed_error_mps) +
+    deceleration_gain * std::max(0.0, missing_deceleration_mps2), 0.0, 1.0);
+}
+
 SpeedPid::SpeedPid(
   double kp, double ki, double kd, double integral_limit,
   double minimum_duty, double maximum_duty)

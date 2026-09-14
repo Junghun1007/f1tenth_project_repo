@@ -63,6 +63,12 @@ double speed_feedforward_duty(
 double move_toward(double value, double target, double maximum_step);
 double clamp(double value, double minimum, double maximum);
 
+// Called after the staged controller requests braking. Propulsion PID gains
+// are independent. Hold current and actuator slew limits are applied by the node.
+double staged_brake_current(
+  double speed_error_mps, double missing_deceleration_mps2,
+  double speed_gain, double deceleration_gain, double maximum_current_amps);
+
 class SpeedPid
 {
 public:

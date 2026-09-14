@@ -19,6 +19,9 @@ auto_control:
     longitudinal_pid_integral_limit: 2.0
     # duty를 먼저 줄이고, 감속 부족 시 별도 전류 제동. false=이전 signed PID 방식.
     longitudinal_staged_control_enabled: true
+    # 단계 제어의 속도 초과량→제동 비율. 구동 PID와 독립이며 코너/신호등 제동에 공통 적용.
+    # 단위 1/(m/s), 양수. 1.0이면 초과속도 0.2m/s에서 제동 상한의 20% 요청.
+    longitudinal_brake_speed_gain: 1.0
     # 목표 속도에 필요한 기본 duty 추정. 실차 보정이 필요한 시작값이며 PID가 오차를 보완.
     longitudinal_feedforward_offset_duty: 0.015
     longitudinal_feedforward_duty_per_mps: 0.055
@@ -158,7 +161,7 @@ auto_control:
     brake_minimum_vehicle_speed_mps: 0.20 # 기존 speed_pid 제어용
     brake_minimum_current_amps: 1.0      # 기존 speed_pid 제어용. 단계 제어는 하한 0
     brake_maximum_current_amps: 2.5
-    brake_current_gain_amps_per_mps: 6.0 # 기존 speed_pid 제어용. 단계 제어는 longitudinal_pid_kp 사용
+    brake_current_gain_amps_per_mps: 6.0 # 기존 speed_pid 제어용. 단계 제어는 longitudinal_brake_speed_gain 사용
     brake_current_rise_amps_per_sec: 6.0  # 단계 제어의 신호등 제동에도 적용. 작을수록 천천히 제동
     brake_current_fall_amps_per_sec: 16.0 # 제동 해제 속도. 0A 해제 명령 다음 주기에 duty 복귀
 
