@@ -5,6 +5,13 @@ auto_control:
     # 로 언제든 duty 0과 중앙 조향으로 전환할 수 있다.
     enabled: true
     # 개발 기능: false이면 신호등이 조향/속도/제동에 영향을 주지 않음. 재시작 시 적용.
+    # 속도 계획과 구동 제어 분리: 코너 감속 OFF, 통합 속도 PID ON.
+    curvature_speed_control_enabled: false
+    longitudinal_pid_enabled: true
+    longitudinal_pid_kp: 1.0
+    longitudinal_pid_ki: 0.5
+    longitudinal_pid_kd: 0.0             # D 기본 0: 속도 측정 노이즈 증폭 방지
+    longitudinal_pid_integral_limit: 2.0
     traffic_stop_enabled: false
     traffic_state_topic: "/traffic_light/state"
     traffic_state_timeout_sec: 0.30       # 신호 촬영 시각 기준 최대 수명
@@ -14,9 +21,14 @@ auto_control:
     traffic_stop_deceleration_mps2: 0.60  # 계획 감속도: 클수록 늦게/강하게 감속하는 속도 곡선
     traffic_brake_response_time_sec: 0.15 # 구동기 응답 여유 시간 (영상 경과시간은 별도 보정)
     # 신호등 정지는 아래 전류를 사용. 일반 electrical_brake_enabled=false여도 작동.
-    traffic_brake_amps_per_mps2: 2.0      # 요구 감속도→전류 환산 계수, 차량에서 조정 필요
+    traffic_brake_amps_per_mps2: 2.0      # 구버전 호환용. 새 PID 경로에서는 사용하지 않음
     traffic_brake_max_current_amps: 2.5   # VESC bridge 전류 상한 이하로 설정
-    traffic_hold_current_amps: 0.7       # 정차 목표 도달 후 유지 전류 (기계식 주차브레이크 아님)
+    traffic_hold_current_amps: 0.7       # 목표 0 + 저속에서만 유지 전류. 접근 제동에는 하한 없음.
+    traffic_stop_line_match_tolerance_m: 0.30 # 이동량 보정 거리와 관측값의 일치 허용 오차
+    traffic_stop_line_current_weight: 0.35   # 정상 관측으로 거리 증가/감소 양방향 보정
+    traffic_stop_line_confirm_frames: 3     # 정지선 관측 확인 횟수 (신호등 색 확인과 별개)
+    traffic_stop_position_tolerance_m: 0.03 # 정차 여유 거리보다 최대 이 값만큼 일찍 목표 0
+    traffic_reapproach_speed_mps: 0.20      # 임시 정지 후 관측 복구 시 접근 속도 상한
 
     # drive: duty/brake/servo output, steering_only: servo output only,
     # monitor_only: actuator output 없이 lateral/heading 오차만 계산 및 발행

@@ -52,8 +52,8 @@ public:
     speed_pid_ = std::make_unique<SpeedPid>(
       speed_pid_kp_, speed_pid_ki_, speed_pid_kd_, speed_pid_integral_limit_,
       minimum_duty_, maximum_duty_);
-    traffic_pid_ = std::make_unique<SpeedPid>(
-      speed_pid_kp_, speed_pid_ki_, speed_pid_kd_, speed_pid_integral_limit_, 0.0, maximum_duty_);
+    longitudinal_pid_ = std::make_unique<SpeedPid>(
+      longitudinal_kp_, longitudinal_ki_, longitudinal_kd_, longitudinal_integral_limit_, -1.0, 1.0);
     brake_profile_ = std::make_unique<AutomaticBrakeProfile>(BrakeConfig{
       brake_entry_speed_error_mps_, brake_exit_speed_error_mps_,
       brake_minimum_vehicle_speed_mps_, brake_minimum_current_amps_,
@@ -132,6 +132,9 @@ public:
     } else {
       RCLCPP_INFO(get_logger(), "Automatic control starts disabled.");
     }
+    RCLCPP_INFO(get_logger(), "Speed control: signed PID=%s, corner slowdown=%s, gains=%.3f/%.3f/%.3f",
+      longitudinal_pid_enabled_ ? "on" : "off (red stop still uses PID)",
+      curvature_speed_control_enabled_ ? "on" : "off", longitudinal_kp_, longitudinal_ki_, longitudinal_kd_);
     RCLCPP_INFO(get_logger(),
       "Traffic stop=%s | bumper offset=%.2fm, margin=%.2fm, planning decel=%.2fm/s2, "
       "response=%.2fs, brake cap=%.2fA (independent of normal electrical_brake_enabled)",
@@ -178,6 +181,17 @@ private:
     traffic_brake_gain_ = parameter("traffic_brake_amps_per_mps2", 2.0);
     traffic_brake_max_ = parameter("traffic_brake_max_current_amps", 2.5);
     traffic_hold_current_ = parameter("traffic_hold_current_amps", 0.7);
+    longitudinal_pid_enabled_ = parameter("longitudinal_pid_enabled", true);
+    curvature_speed_control_enabled_ = parameter("curvature_speed_control_enabled", false);
+    longitudinal_kp_ = parameter("longitudinal_pid_kp", 1.0);
+    longitudinal_ki_ = parameter("longitudinal_pid_ki", 0.5);
+    longitudinal_kd_ = parameter("longitudinal_pid_kd", 0.0);
+    longitudinal_integral_limit_ = parameter("longitudinal_pid_integral_limit", 2.0);
+    traffic_line_gate_ = parameter("traffic_stop_line_match_tolerance_m", 0.30);
+    traffic_line_weight_ = parameter("traffic_stop_line_current_weight", 0.35);
+    traffic_line_confirm_frames_ = parameter("traffic_stop_line_confirm_frames", 3);
+    traffic_arrival_tolerance_ = parameter("traffic_stop_position_tolerance_m", 0.03);
+    traffic_reapproach_speed_ = parameter("traffic_reapproach_speed_mps", 0.20);
     enabled_ = parameter("enabled", true);
     control_mode_ = parameter<std::string>("control_mode", "drive");
     enable_topic_ = parameter<std::string>("enable_topic", "/auto/enabled");
@@ -291,10 +305,14 @@ private:
           });
       };
     if (!finite_positive({traffic_state_timeout_, traffic_line_timeout_, traffic_deceleration_,
-        traffic_brake_gain_, traffic_brake_max_, traffic_hold_current_}) ||
-      !finite({traffic_margin_, traffic_front_offset_, traffic_response_time_}) ||
+        traffic_brake_gain_, traffic_brake_max_, traffic_hold_current_, longitudinal_kp_, longitudinal_integral_limit_,
+        traffic_line_gate_, traffic_line_weight_, traffic_reapproach_speed_}) ||
+      !finite({traffic_margin_, traffic_front_offset_, traffic_response_time_,
+        longitudinal_ki_, longitudinal_kd_, traffic_arrival_tolerance_}) ||
       traffic_margin_ < 0 || traffic_front_offset_ < 0 || traffic_response_time_ < 0 ||
-      traffic_hold_current_ > traffic_brake_max_ || traffic_state_topic_.empty())
+      traffic_hold_current_ > traffic_brake_max_ || traffic_state_topic_.empty() ||
+      longitudinal_ki_ < 0 || longitudinal_kd_ < 0 || traffic_arrival_tolerance_ < 0 || traffic_line_weight_ > 1 ||
+      traffic_line_confirm_frames_ < 1)
     {throw std::invalid_argument("invalid traffic stop parameters");}
     if (control_mode_ != "drive" && control_mode_ != "steering_only" && control_mode_ != "monitor_only") {
       throw std::invalid_argument("control_mode must be drive, steering_only, or monitor_only");
@@ -379,12 +397,8 @@ private:
         {
           const double distance = message->stop_line_distance_m - traffic_front_offset_ -
             traffic_margin_ - std::max(0.0, current_speed_mps_) * std::max(0.0, age);
-          // Once red is latched, do not switch to a farther line or let noise
-          // move the stop target away from the car. Never unlock a held stop.
-          stop_remaining_ = traffic_red_ && stop_remaining_ ?
-            std::min(*stop_remaining_, distance) : distance;
-          stop_line_seen_ns_ = received_ros.nanoseconds();
-        }
+          observe_stop_distance(distance, received_ros.nanoseconds());
+        } else {stop_candidate_count_ = 0;}
       }
       if (message->centerline_sample_limit_reached) {
         lane_result_status_ = "centerline_sample_limit";
@@ -467,12 +481,45 @@ private:
 
   void advance_stop_distance(std::int64_t now_ns)
   {
-    if (stop_distance_updated_ns_ && stop_remaining_) {
+    if (stop_distance_updated_ns_) {
       const double elapsed = seconds(now_ns - *stop_distance_updated_ns_);
-      if (elapsed < 0 || elapsed > traffic_line_timeout_) {stop_remaining_.reset();}
-      else {*stop_remaining_ -= std::max(0.0, current_speed_mps_) * elapsed;}
+      const bool speed_fresh = last_erpm_ns_ && now_ns >= *last_erpm_ns_ &&
+        seconds(now_ns - *last_erpm_ns_) <= erpm_timeout_sec_;
+      if (elapsed < 0 || elapsed > traffic_line_timeout_ || !speed_fresh) {
+        stop_remaining_.reset();
+        stop_line_seen_ns_.reset();
+        stop_candidate_count_ = 0;
+      } else {
+        const double travel = std::max(0.0, current_speed_mps_) * elapsed;
+        if (stop_remaining_) {*stop_remaining_ -= travel;}
+        if (stop_candidate_count_) {stop_candidate_distance_ -= travel;}
+      }
     }
     stop_distance_updated_ns_ = now_ns;
+  }
+
+  void observe_stop_distance(double distance, std::int64_t now_ns)
+  {
+    // Distance continuity is a proxy for line identity, not semantic tracking.
+    // Reject sudden jumps in EITHER direction. A matched observation can
+    // correct the estimate upward too; a short noisy sample is not permanent.
+    if (stop_remaining_ && std::abs(distance - *stop_remaining_) > traffic_line_gate_) {
+      stop_candidate_count_ = 0;
+      ++stop_line_rejections_;
+      return;
+    }
+    const bool consecutive = stop_candidate_count_ > 0 &&
+      now_ns > stop_candidate_ns_ && seconds(now_ns - stop_candidate_ns_) <= traffic_line_timeout_ &&
+      std::abs(distance - stop_candidate_distance_) <= traffic_line_gate_;
+    stop_candidate_count_ = consecutive ?
+      stop_candidate_count_ + (stop_candidate_count_ < traffic_line_confirm_frames_ ? 1 : 0) : 1;
+    stop_candidate_distance_ = distance;
+    stop_candidate_ns_ = now_ns;
+    if (stop_candidate_count_ < traffic_line_confirm_frames_) {return;}
+    stop_remaining_ = stop_remaining_ ?
+      *stop_remaining_ + traffic_line_weight_ * (distance - *stop_remaining_) : distance;
+    stop_line_seen_ns_ = now_ns;
+    last_observed_remaining_ = distance;
   }
 
   void on_traffic_state(const traffic_detection_test::msg::TrafficLightState::ConstSharedPtr message)
@@ -487,16 +534,17 @@ private:
     if (message->state == Signal::RED) {
       if (!traffic_red_) {
         traffic_red_ = true;
-        traffic_holding_ = false;
-        traffic_pid_->reset();
+        traffic_holding_ = traffic_reapproach_ = false;
+        longitudinal_pid_->reset();
         speed_pid_->reset();
         RCLCPP_WARN(get_logger(), "Traffic RED: stop-line approach latched.");
       }
     } else if (message->state == Signal::GREEN && traffic_red_) {
-      traffic_red_ = traffic_holding_ = false;
+      traffic_red_ = traffic_holding_ = traffic_reapproach_ = false;
+      stop_candidate_count_ = 0;
       stop_remaining_.reset();
       stop_line_seen_ns_.reset();
-      traffic_pid_->reset();
+      longitudinal_pid_->reset();
       speed_pid_->reset();
       RCLCPP_INFO(get_logger(), "Traffic GREEN: stop request released; normal drive gates still apply.");
     }
@@ -506,54 +554,66 @@ private:
   double traffic_speed_limit(std::int64_t now_ns)
   {
     advance_stop_distance(now_ns);
-    if (traffic_holding_) {return 0.0;}
+    if (traffic_holding_) {traffic_phase_ = "position_hold"; return 0.0;}
     if (!stop_remaining_ || !stop_line_seen_ns_ ||
       seconds(now_ns - *stop_line_seen_ns_) < 0 ||
       seconds(now_ns - *stop_line_seen_ns_) > traffic_line_timeout_)
-    {return 0.0;}  // Red without a usable stop line: brake now, never drive blindly.
-    if (*stop_remaining_ <= 0.0) {traffic_holding_ = true; return 0.0;}
-    // d = v*t_response + v^2/(2*a). Latency since capture was already deducted.
+    {
+      traffic_reapproach_ = true;
+      traffic_phase_ = "temporary_stop_line_unavailable";
+      return 0.0;
+    }
+    if (*stop_remaining_ <= traffic_arrival_tolerance_) {
+      traffic_phase_ = "position_braking";
+      // Only a recent, confirmed position AND low speed can latch a completed stop.
+      // Dead reckoning alone must not turn an observation failure into a permanent hold.
+      if (last_observed_remaining_ <= traffic_arrival_tolerance_ &&
+        std::abs(current_speed_mps_) < 0.05) {
+        traffic_holding_ = true;
+        traffic_phase_ = "position_hold";
+      }
+      return 0.0;
+    }
     const double at = traffic_deceleration_ * traffic_response_time_;
-    return std::sqrt(at * at + 2.0 * traffic_deceleration_ * *stop_remaining_) - at;
+    const double limit = std::sqrt(at * at + 2.0 * traffic_deceleration_ *
+      std::max(0.0, *stop_remaining_ - traffic_arrival_tolerance_)) - at;
+    traffic_phase_ = traffic_reapproach_ ? "slow_reapproach" : "approach";
+    return traffic_reapproach_ ? std::min(limit, traffic_reapproach_speed_) : limit;
   }
 
-  double traffic_brake_current(double remaining) const
+  std::string longitudinal_motor(double target, double dt, bool traffic_stop)
   {
-    const double speed = std::abs(current_speed_mps_);
-    const double usable = std::max(0.02, remaining - speed * traffic_response_time_);
-    const double required_deceleration = speed * speed / (2.0 * usable);
-    return clamp(traffic_brake_gain_ * required_deceleration,
-      traffic_hold_current_, traffic_brake_max_);
-  }
-
-  void traffic_motor(double target, double dt)
-  {
-    brake_profile_->reset();
     speed_pid_->reset();
-    if (target <= 0 && std::abs(current_speed_mps_) < 0.05) {traffic_holding_ = true;}
-    const double speed_error = current_speed_mps_ - target;
-    const bool decelerating = brake_mode_active_ ? speed_error > -0.03 : speed_error > 0.02;
-    if (target <= 0 || decelerating) {
-      const double distance = target > 0 && stop_remaining_ ? *stop_remaining_ : 0.0;
-      command_brake_current_ = traffic_brake_current(distance);
+    brake_profile_->reset();
+    // One signed PID controls BOTH traction and braking from target-speed error.
+    // Distance is used only by traffic_speed_limit(), never to calculate current.
+    // Reset on entering/leaving a zero-speed request; never propel at zero target.
+    if ((target <= 0) != longitudinal_zero_target_) {longitudinal_pid_->reset();}
+    longitudinal_zero_target_ = target <= 0;
+    const double feedback_speed = target <= 0 ? std::abs(current_speed_mps_) : current_speed_mps_;
+    const double effort = longitudinal_pid_->update(target, feedback_speed, 0.0, dt);
+    const bool braking_allowed = traffic_stop || electrical_brake_enabled_;
+    const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
+    double brake = braking_allowed ? std::max(0.0, -effort) * brake_cap : 0.0;
+    if (traffic_stop && target <= 0 && std::abs(current_speed_mps_) < 0.05) {
+      brake = std::max(brake, traffic_hold_current_);
+    }
+    if (brake > 0.0) {
       command_duty_ = 0.0;
+      command_brake_current_ = brake;
       brake_mode_active_ = true;
-      traffic_pid_->reset();
-    } else if (brake_mode_active_) {
-      command_brake_current_ = 0.0;
+      return "brake";
+    }
+    command_brake_current_ = 0.0;
+    if (brake_mode_active_) {
       command_duty_ = 0.0;
       brake_mode_active_ = false;
-      traffic_pid_->reset();
-    } else {
-      command_brake_current_ = 0.0;
-      const double feedforward = target < minimum_speed_mps_ ?
-        minimum_duty_ * target / minimum_speed_mps_ : speed_feedforward_duty(
-          target, minimum_speed_mps_, maximum_speed_mps_, minimum_duty_, maximum_duty_);
-      const double desired = traffic_pid_->update(target, current_speed_mps_, feedforward, dt);
-      // Zero minimum duty permits low-speed approach and full stopping.
-      command_duty_ = move_toward(command_duty_, desired,
-        (desired > command_duty_ ? duty_rise_rate_per_sec_ : duty_fall_rate_per_sec_) * dt);
+      return "brake_release";
     }
+    const double desired = target > 0 ? std::max(0.0, effort) * maximum_duty_ : 0.0;
+    command_duty_ = target <= 0 || effort < 0 ? 0.0 : move_toward(command_duty_, desired,
+      (desired > command_duty_ ? duty_rise_rate_per_sec_ : duty_fall_rate_per_sec_) * dt);
+    return "duty";
   }
 
   void publish_guard_stop(const std::string & reason)
@@ -565,7 +625,11 @@ private:
     const double servo = latest_servo_position_;
     stop_control(reason);
     if (keep_braking) {
-      traffic_holding_ = true;
+      // This is a recoverable input failure, not arrival at the stop position.
+      traffic_reapproach_ = true;
+      traffic_phase_ = "temporary_stop_control_input";
+      stop_line_seen_ns_.reset();
+      stop_candidate_count_ = 0;
       command_brake_current_ = traffic_brake_max_;
       brake_mode_active_ = true;
       publish_commands(0.0, command_brake_current_, servo, "brake");
@@ -603,8 +667,9 @@ private:
     const double curvature = representative_curvature(
       *path_, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
       curvature_percentile_);
-    double target_speed = curvature_target_speed(
-      curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_);
+    double target_speed = curvature_speed_control_enabled_ ? curvature_target_speed(
+      curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_) :
+      maximum_speed_mps_;
     const bool traffic_stop = traffic_stop_enabled_ && traffic_red_;
     if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
     const auto stanley = stanley_control(
@@ -634,12 +699,11 @@ private:
       command_brake_current_ = 0.0;
       brake_mode_active_ = false;
       speed_pid_->reset();
+      longitudinal_pid_->reset();
       brake_profile_->reset();
       motor_mode = "suppressed";
-    } else if (traffic_stop) {
-      const bool was_braking = brake_mode_active_;
-      traffic_motor(target_speed, dt);
-      motor_mode = command_brake_current_ > 0 ? "brake" : was_braking ? "brake_release" : "duty";
+    } else if (longitudinal_pid_enabled_ || traffic_stop) {
+      motor_mode = longitudinal_motor(target_speed, dt, traffic_stop);
     } else {
       command_brake_current_ = electrical_brake_enabled_ ?
         brake_profile_->update(target_speed, current_speed_mps_, dt) : 0.0;
@@ -667,8 +731,7 @@ private:
         motor_mode = "duty";
       }
     }
-    last_stop_reason_ = traffic_stop ?
-      (target_speed <= 0 ? "traffic_stop_hold" : "traffic_stop_approach") : "running";
+    last_stop_reason_ = traffic_stop ? "traffic_" + traffic_phase_ : "running";
     latest_target_speed_mps_ = target_speed;
     latest_curvature_per_m_ = curvature;
     latest_cross_track_error_m_ = stanley.cross_track_error_m;
@@ -695,7 +758,7 @@ private:
     latest_servo_position_ = servo_center_;
     latest_direction_guard_used_ = false;
     speed_pid_->reset();
-    traffic_pid_->reset();
+    longitudinal_pid_->reset();
     brake_profile_->reset();
     if (reason != last_stop_reason_) {
       RCLCPP_WARN(get_logger(), "Automatic drive stop condition: %s.", reason.c_str());
@@ -896,9 +959,11 @@ private:
       lane_result_count_, lane_result_status_.c_str(), lane_result_points_,
       receive_age.c_str(), capture_age.c_str());
     if (traffic_stop_enabled_) {
-      RCLCPP_INFO(get_logger(), "Traffic stop | red_latched=%s | hold=%s | remaining=%s",
+      RCLCPP_INFO(get_logger(), "Traffic stop | red_latched=%s | hold=%s | remaining=%s | phase=%s | line_rejected=%llu",
         traffic_red_ ? "yes" : "no", traffic_holding_ ? "yes" : "no",
-        stop_remaining_ ? std::to_string(*stop_remaining_).c_str() : "unknown");
+        stop_remaining_ ? std::to_string(*stop_remaining_).c_str() : "unknown",
+        traffic_red_ ? traffic_phase_.c_str() : "inactive",
+        static_cast<unsigned long long>(stop_line_rejections_));
     }
   }
 
@@ -907,9 +972,19 @@ private:
   double traffic_state_timeout_, traffic_line_timeout_, traffic_margin_, traffic_front_offset_;
   double traffic_deceleration_, traffic_response_time_, traffic_brake_gain_;
   double traffic_brake_max_, traffic_hold_current_;
+  bool longitudinal_pid_enabled_{true}, curvature_speed_control_enabled_{false};
+  bool longitudinal_zero_target_{false};
+  double longitudinal_kp_, longitudinal_ki_, longitudinal_kd_, longitudinal_integral_limit_;
+  double traffic_line_gate_, traffic_line_weight_, traffic_arrival_tolerance_, traffic_reapproach_speed_;
+  int traffic_line_confirm_frames_, stop_candidate_count_{0};
+  double stop_candidate_distance_{0.0}, last_observed_remaining_{0.0};
+  std::int64_t stop_candidate_ns_{0};
+  std::uint64_t stop_line_rejections_{0};
+  bool traffic_reapproach_{false};
+  std::string traffic_phase_{"inactive"};
   std::optional<double> stop_remaining_;
   std::optional<std::int64_t> stop_line_seen_ns_, stop_distance_updated_ns_, traffic_capture_ns_;
-  std::unique_ptr<SpeedPid> traffic_pid_;
+  std::unique_ptr<SpeedPid> longitudinal_pid_;
   rclcpp::Subscription<traffic_detection_test::msg::TrafficLightState>::SharedPtr traffic_sub_;
   bool enabled_{true};
   bool electrical_brake_enabled_{true};

@@ -6,6 +6,9 @@
 기존 BEV 프리뷰 하단에 `Traffic: RED / GREEN / UNKNOWN`을 표시한다.
 별도 신호등 창은 없으며 기본적으로 관측만 수행한다.
 개발용 정지선 제동은 `traffic_stop_enabled:=true`로 켜고 `false`로 끈다.
+속도 제어는 기본 `longitudinal_pid_enabled:=true`, 코너 감속은
+`curvature_speed_control_enabled:=false`다. 정지선 거리로 목표 속도를 갱신하고
+PID가 가속/제동을 제어한다.
 설정은 [auto_control 문서](../auto_control/README.md)의 신호등 정지 항목을 참고한다.
 `/traffic_light/state`의 `state`는
 `0=UNKNOWN`, `1=RED`, `2=GREEN`이다. `traffic_light_enabled:=false`로 끄고

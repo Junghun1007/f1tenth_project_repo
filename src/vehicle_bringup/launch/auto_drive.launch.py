@@ -442,7 +442,11 @@ def generate_launch_description():
             float,
         ),
     ]
-    controller_argument_fallbacks.append(("traffic_stop_enabled", "false", "traffic_stop_enabled", bool))
+    controller_argument_fallbacks.extend([
+        ("traffic_stop_enabled", "false", "traffic_stop_enabled", bool),
+        ("curvature_speed_control_enabled", "false", "curvature_speed_control_enabled", bool),
+        ("longitudinal_pid_enabled", "true", "longitudinal_pid_enabled", bool),
+    ])
     controller_arguments = [
         (
             argument_name,

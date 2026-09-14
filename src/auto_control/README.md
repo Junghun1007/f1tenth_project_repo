@@ -7,12 +7,19 @@ The installed runtime is C++/`rclcpp`; Python and NumPy are not on the per-frame
 control path. The package's older Python files remain only as implementation
 reference and are not installed by the `ament_cmake` build.
 
-## 개발 중인 신호등 정지 기능 (기본 OFF)
+## 속도 계획과 PID, 개발 중인 신호등 정지
 
-`auto_control_test.yaml`의 `auto_control.ros__parameters`에 설정한다.
-검출 확신도/FPS YAML은 `traffic_light_test.yaml`로 계속 분리한다.
+기본값은 **통합 속도 PID ON, 코너 곡률 감속 OFF, 신호등 정지 OFF**다.
+`auto_control_test.yaml`의 `auto_control.ros__parameters`에서 조절하고 재실행한다.
+검출 확신도/FPS는 별도의 `traffic_light_test.yaml` 설정이다.
 
 ```yaml
+longitudinal_pid_enabled: true
+curvature_speed_control_enabled: false
+longitudinal_pid_kp: 1.0
+longitudinal_pid_ki: 0.5
+longitudinal_pid_kd: 0.0
+longitudinal_pid_integral_limit: 2.0
 traffic_stop_enabled: false
 traffic_state_topic: "/traffic_light/state"
 traffic_state_timeout_sec: 0.30
@@ -21,49 +28,77 @@ traffic_stop_margin_m: 0.15
 traffic_front_axle_to_bumper_m: 0.10
 traffic_stop_deceleration_mps2: 0.60
 traffic_brake_response_time_sec: 0.15
-traffic_brake_amps_per_mps2: 2.0
 traffic_brake_max_current_amps: 2.5
 traffic_hold_current_amps: 0.7
+traffic_stop_line_match_tolerance_m: 0.30
+traffic_stop_line_current_weight: 0.35
+traffic_stop_line_confirm_frames: 3
+traffic_stop_position_tolerance_m: 0.03
+traffic_reapproach_speed_mps: 0.20
 ```
 
-값은 시작 시 읽는다. `traffic_stop_enabled: true`로 재실행하거나 기존 launch에
-`traffic_stop_enabled:=true`를 추가하면 켜진다. CLI가 YAML보다 우선하며
-`traffic_stop_enabled:=false`로 재실행하면 기존 주행 동작으로 돌아간다.
-신호등 검출기 자체를 켜는 `traffic_light_enabled`와 별개다.
+### 목표 속도 곡선 → 실제 속도 PID → duty/브레이크
 
-- 유효 촬영 시각을 가진 RED 수신 시 정지 요구를 유지한다. UNKNOWN/미검출/신호 타임아웃은
-  이 요구를 해제하지 않는다. 최신 GREEN은 요구를 해제하고, 새로운 유효 차선/ERPM과
-  기존 enabled/drive 조건을 만족할 때 주행을 재개한다. 최초 RED 전 UNKNOWN은 기존 주행을 허용한다.
-- 정지선 거리(`LaneResult.stop_line_distance_m`)는 앞차축 기준 경로 거리다.
-  범퍼 오프셋, 여유 거리, 영상 촬영 이후 추정 이동량을 빼서 남은 거리를 계산한다.
-  기본 범퍼 오프셋 0.10m는 차량 실측값이 아니라 초기 설정값이므로 실제 치수로 바꾼다.
-- 남은 거리 d, 계획 감속도 a, 구동기 응답 여유 t에 대해
-  `v_limit = sqrt((a*t)^2 + 2*a*d) - a*t`로 속도를 제한한다.
-  코너 속도 제한과 비교해 작은 목표 속도를 사용한다. a를 작게 하면 더 일찍 감속한다.
-- 현재 속도가 목표보다 높으면 남은 제동 거리와 `v^2/(2*d)`에 비례한 요구 감속도로
-  브레이크 전류를 정한다. 전류는 `traffic_hold_current_amps`부터
-  `traffic_brake_max_current_amps` 범위로 제한한다. 속도 오차의 작은 히스테리시스로
-  제동/해제 전환을 완화한다. 속도/거리→전류 계수는 차량에서 조정해야 한다.
-- 신호등 정지에서는 별도 최소 duty=0 PID로 저속 접근한다. 정지 목표를 지나거나
-  정지선 미확보로 목표 속도 0에서 정차하면 GREEN까지 정차 상태를 유지한다.
-  정차 목표에서는 양의 duty를 발행하지 않고 제동 전류를 계속 갱신한다.
-- 정지선 미검출은 0.50초까지 이동량으로 보정한다. RED인데 정지선 거리가 없거나
-  장기간 사라지면 즉시 목표 속도를 0으로 낮춘다. 빨간불 중 목표가 더 먼 정지선으로
-  바뀌지 않게 거리는 보수적으로 갱신하므로 노이즈에 의해 일찍 멈출 수 있다.
-- RED 중 차선/ERPM이 끊기면 watchdog도 제동을 유지한다(설정 전류 상한).
-  `enabled=false`, VESC 단절, steering_only/monitor_only는 기존 출력 제한을 우선한다.
-  개발용 기능이며 내 차로 신호등 선택/딜레마존 판단은 없다.
+코너 감속 OFF에서는 기본 목표가 `maximum_speed_mps`다. Stanley 조향은 그대로 사용한다.
+신호등 정지를 켜고 RED가 확인되면, 남은 거리에 따른 속도 곡선 `v(d)`에서 매 차선
+결과마다 목표를 다시 계산한다. 하나의 고정 속도나 미리 저장한 배열이 아니라,
+정지선에 접근할수록 최종 0까지 낮아지는 연속 곡선을 온라인으로 샘플링한다.
 
-**신호등 정지용 제동은 `electrical_brake_enabled`와 독립적**이다. 일반 코너 감속
-브레이크를 꺼도 이 기능을 켜면 신호등 정지에서 전류를 명령한다. VESC bridge의 전류
-상한도 함께 적용된다. 계획 감속도와 실제 감속도는 같다고 보장할 수 없고, 전기 제동은
-경사면에서 기계식 주차브레이크와 같은 정지 유지를 보장하지 않는다.
-이번 변경의 빌드/실차/자동 테스트는 수행하지 않았다.
+앞차축 기준 정지선 거리에서 범퍼 길이, 여유 거리, 촬영 이후 이동량을 뺀 거리를 d라 할 때
+`v(d) = min(주행속도, sqrt((a*t)^2 + 2*a*max(0,d-허용오차)) - a*t)`다.
+a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작을수록 일찍 감속한다.
+`traffic_stop_position_tolerance_m` 이내에서는 목표를 0으로 한다.
+기본 범퍼 길이 0.10m는 실측값이 아니므로 차량 치수로 수정한다.
 
-메시지 형식이 추가되었으므로 검출기와 제어기를 함께 다시 빌드해야 한다:
+거리 계산부는 목표 속도만 결정한다. **거리로 제동 전류를 직접 산출하지 않는다.**
+통합 PID는 `목표 속도 - 실제 속도`로 -1..1 출력을 계산한다. 양수는 최대 duty의 비율,
+음수는 최대 브레이크 전류의 비율로 변환한다. 접근 중 제동 전류 하한은 0이며,
+정차 목표 0이고 속도가 0.05m/s 미만일 때만 유지 전류 하한을 적용한다.
+duty는 기존 상승/하강 속도 제한을 따르며 최소 duty 강제 적용은 없다.
+적분은 출력 포화 시 추가 누적을 막고, 목표 0 진입/복귀와 RED/GREEN 전환에서 초기화한다.
+기본 D=0이므로 초기 동작은 PI이고, D를 쓰려면 `longitudinal_pid_kd`로 설정한다.
+
+새 PID 이득은 정규화된 출력용으로, 기존 duty 단위 `speed_pid_kp/ki/kd`와 다르다.
+`longitudinal_pid_enabled: false`일 때 일반 주행은 기존 제어로 돌아가지만
+신호등 정지를 켜면 RED 감속에는 통합 PID를 사용한다.
+`traffic_brake_amps_per_mps2`는 구버전 호환을 위해 읽기만 하며 새 제어에 쓰지 않는다.
+일반 주행 PID의 전기 제동은 `electrical_brake_enabled`를 따르고, **RED 정지 제동은
+이 옵션과 독립적으로 작동**한다. 양쪽 모두 VESC bridge의 전류 상한이 적용된다.
+
+### 임시 정지와 목표 도달 정차
+
+RED는 정지 요구를 유지하며 UNKNOWN/신호 미검출로 해제되지 않는다. 유효한 최신 GREEN이
+해제하고 기존 enabled/drive/차선/ERPM 조건이 충족되면 주행한다. 최초 RED 이전 UNKNOWN은
+기존 주행을 허용한다. 정지선 거리 미검출은 `traffic_stop_line_timeout_sec`까지만
+이동량으로 보정하고, 그 이후에는 **임시 정지**한다. 차선/속도 입력 손실도 임시 정지다.
+정지선이 정상적으로 재확인되고 입력이 복구되면 남은 거리를 따라 저속 재접근한다.
+임시 정지를 최종 도착으로 고정하지 않는다. 복구 접근 속도는 GREEN까지
+`traffic_reapproach_speed_mps`로 제한한다.
+
+거리 관측은 이동량 보정값과 일치 범위 안에 있는 연속 관측으로 확인한다.
+허용 범위 안에서는 증가/감소 양쪽으로 보정하므로 짧게 측정된 거리도 복구할 수 있다.
+허용 오차를 넘는 갑작스러운 변화는 두 방향 모두 거부한다. 이는 거리 연속성에 의한
+대상 일치 추정이며 정지선의 의미적 ID 추적은 아니다. 큰 추정 오차나 다른 정지선은
+자동으로 수용하지 않아 임시 정지가 계속될 수 있다. 정지선 확인 3회는 신호등 색상
+연속 확인 설정과 별개이며 한 번의 정지선 오검출을 바로 목표로 고정하지 않게 한다.
+
+최근 확인된 정지선 위치가 허용오차 이내이고, 보정한 위치도 해당 범위이며,
+실제 속도가 0.05m/s 미만일 때에만 최종 `position_hold`로 전환한다.
+그 상태는 GREEN까지 유지한다. 정지 위치를 지난 경우 뒤로 복귀하지 않는다.
+상태 로그 `phase`는 approach/slow_reapproach/position_braking/position_hold/
+temporary_stop_line_unavailable/temporary_stop_control_input을 구분한다.
+`line_rejected`는 거리 불일치로 거부한 누적 관측 수다.
+
+임시 정지에서 차선/ERPM이 끊기면 watchdog은 설정 전류 상한으로 제동한다.
+`enabled=false`, VESC 단절, steering_only/monitor_only는 기존 출력 제한을 우선한다.
+실제 제동거리와 새 PID 이득은 실차 검증 전이며, 전기 제동은 기계식 주차브레이크와 같은
+경사면 정지 유지를 보장하지 않는다. 이번 변경의 빌드/테스트는 수행하지 않았다.
+
+실행 인자 `traffic_stop_enabled:=true`, `curvature_speed_control_enabled:=false`,
+`longitudinal_pid_enabled:=true`로도 설정할 수 있으며 CLI가 YAML보다 우선한다.
 
 ```bash
-colcon build --packages-up-to vehicle_bringup \
+colcon build --packages-select auto_control vehicle_bringup \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
 source install/setup.bash
 ```
