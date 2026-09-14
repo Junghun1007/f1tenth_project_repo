@@ -106,9 +106,24 @@ add_library(line_detactor_component SHARED
   src/lane_connector.cpp
   src/centerline.cpp
   src/stop_line_distance.cpp
+  src/processing_profile.cpp
 )
+# Record the source identity at configure time, without requiring Git on the vehicle.
+set(LINE_DETACTOR_BUILD_REVISION "unknown")
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(COMMAND "${GIT_EXECUTABLE}" describe --always --dirty
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    OUTPUT_VARIABLE LINE_DETACTOR_GIT_REVISION OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET RESULT_VARIABLE LINE_DETACTOR_GIT_STATUS)
+  if(LINE_DETACTOR_GIT_STATUS EQUAL 0)
+    set(LINE_DETACTOR_BUILD_REVISION "${LINE_DETACTOR_GIT_REVISION}")
+  endif()
+endif()
 target_compile_definitions(line_detactor_component
   PRIVATE LINE_DETACTOR_BUILDING_DLL
+    LINE_DETACTOR_BUILD_CONFIGURATION="$<CONFIG>"
+    LINE_DETACTOR_BUILD_REVISION="${LINE_DETACTOR_BUILD_REVISION}"
 )
 target_include_directories(line_detactor_component
   PUBLIC
@@ -149,6 +164,16 @@ if(BUILD_TESTING)
   )
   target_link_libraries(stop_line_distance_test ${OpenCV_LIBS})
   add_test(NAME stop_line_distance_test COMMAND stop_line_distance_test)
+  add_executable(processing_profile_test
+    test/processing_profile_test.cpp
+    src/processing_profile.cpp
+    src/lane_connector.cpp
+    src/centerline.cpp
+  )
+  target_include_directories(processing_profile_test
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(processing_profile_test ${OpenCV_LIBS} Threads::Threads)
+  add_test(NAME processing_profile_test COMMAND processing_profile_test)
 endif()
 
 add_executable(line_detactor_node src/main.cpp)

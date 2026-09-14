@@ -473,6 +473,88 @@ v_source = v_result
 `line_detactor_params_file`로 차선·중앙선 YAML을 지정하며, BEV 배율은 `bev_params_file`에서
 검출기와 제어기에 함께 적용한다. 정지선 검출은 이 주행 제어의 정지 명령으로 사용하지 않는다.
 
+## 후처리 병목 측정 파일
+
+`profiling_enabled: true`로 실행하면 프레임별 연산 시간과 연산량을 CSV 한 파일에
+저장한다. 알고리즘, 엔진 정밀도, 미리보기, 제어 활성화 여부를 바꾸지 않는다.
+기본값은 `false`이고, 실행 중 파라미터 변경 대신 노드를 다시 시작해서 적용한다.
+기존 `performance_measurement_enabled`는 미리보기를 끄고 자동 종료하는 별도 기능이다.
+현재 화면을 켠 상태의 후처리 병목을 측정할 때는 그 옵션을 켤 필요가 없다.
+
+차량 저장소에서 변경 사항을 받은 후 기존 빌드 설정을 유지하여 재빌드한다.
+`--cmake-force-configure`는 빌드 출처를 CSV 메타데이터에 갱신한다.
+
+```bash
+cd /home/autopilot03/Desktop/0906ML/f1tenth_project_repo
+colcon build --packages-select line_detactor vehicle_bringup --cmake-force-configure
+source install/setup.bash
+```
+
+사용 중인 명령에 마지막 두 옵션만 추가하면 된다. 외부 테스트 YAML을 계속 사용하며,
+명령행 옵션을 생략하면 해당 YAML의 `profiling_enabled`, `profiling_directory`를 사용한다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  auto_control_params_file:=/home/autopilot03/Desktop/0906ML/f1tenth_project_repo/auto_control_test.yaml \
+  bev_params_file:=/home/autopilot03/Desktop/0906ML/f1tenth_project_repo/bev_config_test.yaml \
+  line_detactor_params_file:=/home/autopilot03/Desktop/0906ML/f1tenth_project_repo/line_detactor_test.yaml \
+  auto_enabled:=false \
+  input_mode:=slcan \
+  slcan_channel:=/dev/ttyACM0 \
+  slcan_bitrate:=500000 \
+  can_controller_id:=112 \
+  centerline_corner_outward_offset_m:=0.02 \
+  preview_enabled:=true \
+  preview_result_only_enabled:=true \
+  profiling_enabled:=true \
+  profiling_directory:=/home/autopilot03/Desktop/0906ML/f1tenth_project_repo/performance_logs
+```
+
+시작 로그의 `Lane processing profile: .../lane_profile_<시각>_<PID>/profile.csv`가 실제
+파일 위치다. 실행마다 새 디렉터리를 생성하며 기존 파일을 덮어쓰지 않는다.
+직선·코너·차선이 끊기거나 조각이 많이 나오는 장면을 포함해 30~60초 정도 측정한 뒤
+`Ctrl+C`로 정상 종료하고 **그 실행의 `profile.csv` 하나를 전달**하면 된다.
+시작 직후 프레임도 저장하므로 분석할 때 초기 구간을 구분할 수 있다.
+차량에만 있는 테스트 YAML 원본을 수정하거나 저장소에 복사할 필요가 없다.
+
+파일 앞부분의 `#` 주석에는 YAML과 launch 재정의가 적용된 **검출기의 실제 파라미터**, 모델·엔진
+경로, 시스템/장치 정보, 컴파일러, 빌드 구성과 configure 시점 Git 출처가 들어간다.
+BEV는 검출기에 전달된 크기·물리 범위만 포함하며, 카메라/BEV 처리 및 제어 노드 전체를
+프로파일링하지는 않는다. 테스트 YAML 경로가 같아도 launch에서 바꾼 코너 오프셋 등이
+실제 값으로 기록된다. CSV를 읽을 때 `#`로 시작하는 줄을 제외한다.
+
+| 열 | 의미 |
+|---|---|
+| `generation`, `elapsed_ms`, `source_stamp_ns`, `received_stamp_ns` | 입력 세대, 측정 시작 후 경과 시간, 원본/검출기 수신 ROS 시각 |
+| `queue_wait_ms`, `total_ms` | 최신 입력이 작업자를 기다린 시간, 작업자 시작부터 결과 발행 함수 종료까지의 시간 |
+| `gpu_*_ms`, `backend_wall_ms` | CUDA 이벤트로 측정한 전처리·추론·라벨 전송·기타 후처리, CPU에서 본 백엔드 호출 전체 시간 |
+| `correction_ms` | 화면 `post avg`에 집계하는 GPU 라벨 생성/전송 + CPU 후처리 시간 |
+| `connector_ms`, `components_ms`, `skeleton_ms`, `thinning_ms`, `skeleton_graph_ms` | 차선 연결 전체, 연결요소 정리, 골격 추출 전체와 내부 thinning·픽셀 그래프 처리 |
+| `border_endpoints_ms`, `bridge_candidates_ms`, `bridge_render_ms`, `lane_render_ms` | 경계 끝점, 연결 곡선 후보, 후보 정렬/충돌 확인/그리기, 차선 이미지·상태 생성 |
+| `centerline_ms`, `boundary_index_ms`, `fragment_prepare_ms`, `outer_reference_ms`, `pairing_index_ms` | 중심 경로 전체, 거리 검색 자료구조, 관측 차선 표본화, 코너 기준, 좌우 대응 검색 준비 |
+| `candidates_ms`, `path_search_ms`, `path_output_ms` | 좌우 대응·코너 보정·후보 검증, 경로 그래프 탐색, 최종 표본화·검증·마스크 생성 |
+| `path_check_before_ms`, `smoothing_ms`, `path_check_after_ms` | 기존 최종 smoothing 전/후 검사와 smoothing 호출 |
+| `stop_mask_render_ms`, `stop_distance_ms`, `centerline_render_ms`, `publish_ms` | 정지선 마스크 확인/표시, 정지선 거리, 노란 경로 합성, ROS 결과/이미지 발행 함수 |
+| `*_count` | 조각·골격 픽셀·표본·후보·탐색 이웃·거리 검사·최종 경로점 수 등 프레임별 연산량 |
+| `skipped_total`, `logger_dropped_total` | 처리하지 못해 건너뛴 입력 누계, 파일 기록 큐에서 누락된 행 누계 |
+| `success`, `render_result`, `sample_limit_reached` | 예외 없이 처리 완료, 표시용 결과 생성 여부, 중심 경로 표본 예산 초과 |
+
+부모 시간은 자식 시간을 **포함**한다. 예를 들어 `connector_ms`에 `skeleton_ms`가,
+`skeleton_ms`에 `thinning_ms`가 포함되므로 모든 열을 더하면 중복 집계된다.
+`path_output_ms`에는 두 번의 경로 검사와 smoothing이 포함된다.
+`candidates_ms`와 `path_search_ms`에는 각 단계의 거리 검사가 포함된다.
+거리 검사 내부는 픽셀마다 시계를 읽지 않고 횟수만 센다. 계측 자체의 비용은 남는다.
+`success=1`이어도 검출 차선/경로가 없을 수 있으며 `output_points_count`를 함께 본다.
+중간 반환·예외로 도달하지 않은 단계는 0이고, `success=0` 행은 완료된 프레임과 분리한다.
+`total_ms`에는 로그 큐 삽입, GUI 스레드 전달·표시, downstream 제어 처리는 포함되지 않는다.
+`logger_dropped_total`은 파일에 쓸 때 관측한 누계라 해당 입력 세대와 정확히 동기화되지는 않는다.
+
+파일 포맷 변환과 쓰기는 별도 스레드가 약 1초마다 수행한다. 큐는 최대 4096행이며,
+큐가 가득 차거나 짧은 큐 잠금을 즉시 얻지 못하면 입력 처리를 대기시키지 않고 로그 행만
+누락시킨다. 쓰기 오류와 누락은 터미널에도 표시한다. 정상 종료는 대기 중인 행을 저장하고
+마지막에 `# complete=true`를 남긴다. 강제 종료·전원 차단 시 마지막 버퍼는 유실될 수 있다.
+기본 저장 경로 `/tmp/line_detactor_profiles` 대신 위처럼 영구 저장 경로를 지정할 수 있다.
+
 ## 속도와 기타
 
 프리뷰 `infer avg`는 워밍업 이후 순수 TensorRT 추론의 누적 평균이고 FPS는 그 역수다.

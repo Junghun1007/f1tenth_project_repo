@@ -98,3 +98,7 @@ line_detactor:
     centerline_straight_turn_deg: 12.0
     centerline_corner_turn_deg: 35.0
     centerline_turn_window_m: 0.30
+
+    # Per-frame CPU/GPU timing and effective parameters in one CSV. No GUI/algorithm changes.
+    profiling_enabled: false
+    profiling_directory: "/tmp/line_detactor_profiles"

@@ -7,6 +7,8 @@ from launch_ros.descriptions import ComposableNode
 
 
 OVERRIDES = {
+    "profiling_enabled": bool,
+    "profiling_directory": str,
     "centerline_enabled": bool,
     "centerline_lane_width_m": float,
     "centerline_bev_width_m": float,

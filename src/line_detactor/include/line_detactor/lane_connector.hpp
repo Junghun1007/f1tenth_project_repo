@@ -50,7 +50,7 @@ struct LaneConnectionResult
 void validate_lane_connection(const LaneConnectionConfig & config);
 LaneConnectionResult connect_lane_fragments(
   const cv::Mat & labels, const LaneConnectionConfig & config,
-  bool render_image = true);
+  bool render_image = true, ProcessingProfile * profile = nullptr);
 
 }  // namespace line_detactor
 

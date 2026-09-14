@@ -152,6 +152,14 @@ def _apply_parameter_file_defaults(
         # the fixed-duration, self-terminating measurement.
         detector["preview_enabled"] = False
         preview = "false"
+    profiling = LaunchConfiguration("profiling_enabled").perform(context)
+    if profiling != _PARAMETER_FILE_DEFAULT:
+        if profiling.lower() not in ("true", "false"):
+            raise RuntimeError("profiling_enabled must be true or false")
+        detector["profiling_enabled"] = profiling.lower() == "true"
+    profiling_directory = LaunchConfiguration("profiling_directory").perform(context)
+    if profiling_directory != _PARAMETER_FILE_DEFAULT:
+        detector["profiling_directory"] = profiling_directory
     result_only = LaunchConfiguration("preview_result_only_enabled").perform(context)
     if result_only != _PARAMETER_FILE_DEFAULT:
         if result_only.lower() not in ("true", "false"):
@@ -515,6 +523,10 @@ def generate_launch_description():
             DeclareLaunchArgument("camera_params_file", default_value=camera_config),
             DeclareLaunchArgument("line_detactor_params_file", default_value=line_detactor_config,
                                   description="ML lane/centerline YAML; source geometry follows BEV YAML"),
+            DeclareLaunchArgument("profiling_enabled", default_value=_PARAMETER_FILE_DEFAULT,
+                                  description="Save detailed lane processing CSV without changing preview/control; omitted uses YAML"),
+            DeclareLaunchArgument("profiling_directory", default_value=_PARAMETER_FILE_DEFAULT,
+                                  description="Lane profile output directory; omitted uses YAML/node default"),
             DeclareLaunchArgument("preview_result_only_enabled", default_value=_PARAMETER_FILE_DEFAULT,
                                   description="Show lanes/path on black background; omitted uses ML YAML"),
             DeclareLaunchArgument("centerline_corner_outward_offset_m", default_value=_PARAMETER_FILE_DEFAULT,

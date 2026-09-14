@@ -18,6 +18,8 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <fstream>
+#include <sys/utsname.h>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -128,6 +130,7 @@ public:
       static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
       mask_threshold_, overlay_alpha_, connection_.enabled);
     warm_up();
+    start_profiling();
 
     const auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1))
       .best_effort()
@@ -359,8 +362,62 @@ private:
       "preview_scale", 2.0);
     preview_window_name_ = node_.declare_parameter<std::string>(
       "preview_window_name", "BEV lane TensorRT preview");
+    profiling_enabled_ = node_.declare_parameter<bool>("profiling_enabled", false);
+    profiling_directory_ = node_.declare_parameter<std::string>(
+      "profiling_directory", "/tmp/line_detactor_profiles");
     status_log_interval_sec_ = node_.declare_parameter<double>(
       "status_log_interval_sec", 1.0);
+  }
+
+  void start_profiling()
+  {
+    if (!profiling_enabled_) {return;}
+    std::vector<std::pair<std::string, std::string>> metadata{
+      {"node", node_.get_fully_qualified_name()},
+      {"compiler", __VERSION__}, {"opencv", CV_VERSION},
+      {"build_configuration", LINE_DETACTOR_BUILD_CONFIGURATION},
+      {"build_revision", LINE_DETACTOR_BUILD_REVISION},
+      {"engine_cache_path_resolved", backend_->engine_cache_path()},
+      {"hardware_threads", std::to_string(std::thread::hardware_concurrency())}};
+#ifdef __OPTIMIZE__
+    metadata.emplace_back("compiler_optimization_enabled", "true");
+#else
+    metadata.emplace_back("compiler_optimization_enabled", "false");
+#endif
+    struct utsname system_info{};
+    if (uname(&system_info) == 0) {
+      metadata.emplace_back("system", std::string(system_info.sysname) + " " +
+        system_info.release + " " + system_info.machine);
+    }
+    std::ifstream hardware("/proc/device-tree/model");
+    if (hardware) {
+      std::string model;
+      std::getline(hardware, model, '\0');
+      metadata.emplace_back("hardware_model", model);
+    }
+    // Capture declared, effective parameters AFTER YAML and launch overrides.
+    const auto names = node_.list_parameters({}, 0U).names;
+    for (const auto & name : names) {
+      const auto parameter = node_.get_parameter(name);
+      metadata.emplace_back("parameter." + name, parameter.value_to_string());
+    }
+    try {
+      profile_writer_ = std::make_unique<ProcessingProfileWriter>(profiling_directory_, metadata);
+      profile_started_at_ = SteadyClock::now();
+      RCLCPP_INFO(node_.get_logger(), "Lane processing profile: %s", profile_writer_->path().c_str());
+    } catch (const std::exception & error) {
+      // Logging availability must not determine whether the detector can run.
+      RCLCPP_ERROR(node_.get_logger(), "Lane profiling disabled: %s", error.what());
+    }
+  }
+
+  void save_profile(ProfileFrame & frame, const SteadyClock::time_point started)
+  {
+    if (!profile_writer_) {return;}
+    const auto now = SteadyClock::now();
+    frame.elapsed_ms = std::chrono::duration<double, std::milli>(started - profile_started_at_).count();
+    frame.total_ms = std::chrono::duration<double, std::milli>(now - started).count();
+    profile_writer_->submit(frame);
   }
 
   void validate_parameters() const
@@ -772,11 +829,24 @@ private:
         processed_generation = generation;
         const auto processing_started_at = SteadyClock::now();
 
+        ProfileFrame profile_frame;
+        auto * profile = profile_writer_ ? &profile_frame.detail : nullptr;
+        if (profile) {
+          profile_frame.generation = generation;
+          profile_frame.skipped_total = skipped_total_;
+          profile_frame.source_stamp_ns = static_cast<std::int64_t>(message->header.stamp.sec) *
+            1000000000LL + message->header.stamp.nanosec;
+          profile_frame.received_stamp_ns = static_cast<std::int64_t>(input_received_stamp.sec) *
+            1000000000LL + input_received_stamp.nanosec;
+          profile_frame.queue_wait_ms = std::chrono::duration<double, std::milli>(
+            processing_started_at - input_received_at).count();
+        }
         LaneInferenceTiming timing;
         LaneConnectionResult result;
         std::uint64_t connection_nanoseconds = 0U;
         try {
           validate_image(*message);
+          ProfileTimer backend_timer(profile, ProfileStage::backend_wall);
           timing = message->device_bgr != nullptr ?
             backend_->infer_device_bgr(
               message->device_bgr, message->device_stride) :
@@ -784,6 +854,13 @@ private:
               message->bgr.data,
               message->bgr.step * static_cast<std::size_t>(message->bgr.rows),
               message->bgr.step);
+          backend_timer.stop();
+          if (profile) {
+            profile_frame.gpu_preprocess_ms = nanoseconds_to_milliseconds(timing.preprocessing_nanoseconds);
+            profile_frame.gpu_inference_ms = nanoseconds_to_milliseconds(timing.execution_nanoseconds);
+            profile_frame.gpu_label_export_ms = nanoseconds_to_milliseconds(timing.label_export_nanoseconds);
+            profile_frame.gpu_postprocess_ms = nanoseconds_to_milliseconds(timing.postprocessing_nanoseconds);
+          }
           if (connection_.enabled) {
             const auto started = std::chrono::steady_clock::now();
             const bool render_result = preview_enabled_ ||
@@ -792,7 +869,9 @@ private:
               result_image_publisher_->get_intra_process_subscription_count() > 0U));
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
-            result = connect_lane_fragments(labels, connection_, render_result);
+            profile_frame.render_result = render_result;
+            result = connect_lane_fragments(labels, connection_, render_result, profile);
+            ProfileTimer stop_mask_timer(profile, ProfileStage::stop_mask_render);
             // Stop lines never enter the left/right connector. Retain overlaps
             // in independent masks, painting green only in the display image.
             cv::Mat stop_mask(model_input_height_, model_input_width_, CV_8UC1,
@@ -804,15 +883,21 @@ private:
                 cv::BORDER_CONSTANT, cv::Scalar(0));
               result.image.setTo(cv::Scalar(0, 255, 0), result.stop_line_mask);
             }
+            stop_mask_timer.stop();
             result.centerline = generate_centerline(
               result.labels, result.observed_paths,
-              model_input_width_, connection_.padding_px, centerline_, render_result);
+              model_input_width_, connection_.padding_px, centerline_, render_result, profile);
+            ProfileTimer stop_distance_timer(profile, ProfileStage::stop_distance);
             result.stop_line_distance_m = estimate_stop_line_distance_m(
               stop_mask, result.centerline.points, connection_.padding_px,
               centerline_.bev_width_m, centerline_.bev_height_m);
+            stop_distance_timer.stop();
+            ProfileTimer centerline_render_timer(profile, ProfileStage::centerline_render);
             if (render_result) {
               result.image.setTo(cv::Scalar(0, 255, 255), result.centerline.mask);
             }
+            centerline_render_timer.stop();
+            profile_frame.sample_limit_reached = result.centerline.sample_limit_reached;
             if (result.centerline.sample_limit_reached) {
               RCLCPP_WARN_THROTTLE(node_.get_logger(), *node_.get_clock(), 5000,
                 "Centerline sample budget exceeded; publishing an empty centerline for this frame");
@@ -821,12 +906,16 @@ private:
               std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started).count());
             timing.correction_nanoseconds += timing.label_export_nanoseconds + connection_nanoseconds;
+            profile_frame.correction_ms = nanoseconds_to_milliseconds(timing.correction_nanoseconds);
+            ProfileTimer publish_timer(profile, ProfileStage::publish);
             publish_result(
               result, *message, input_received_stamp, input_received_at,
               processing_started_at, timing, connection_nanoseconds,
               generation);
           }
+          profile_frame.success = true;
         } catch (const std::exception & exception) {
+          save_profile(profile_frame, processing_started_at);
           now = std::chrono::steady_clock::now();
           if (now - last_error_at >= std::chrono::seconds(5)) {
             RCLCPP_ERROR(
@@ -837,6 +926,7 @@ private:
           continue;
         }
 
+        save_profile(profile_frame, processing_started_at);
         ++processed_total_;
         ++processed_interval;
         preprocessing.record(timing.preprocessing_nanoseconds);
@@ -899,6 +989,12 @@ private:
             postprocessing.maximum_milliseconds(),
             static_cast<unsigned long long>(skipped_total_),
             static_cast<unsigned long long>(processed_total_));
+          if (profile_writer_ && (profile_writer_->failed() || profile_writer_->dropped() > 0U)) {
+            RCLCPP_WARN(node_.get_logger(), "Lane profile: write_failed=%s dropped_rows=%llu path=%s",
+              profile_writer_->failed() ? "true" : "false",
+              static_cast<unsigned long long>(profile_writer_->dropped()),
+              profile_writer_->path().c_str());
+          }
           preprocessing.reset();
           execution.reset();
           correction.reset();
@@ -1009,6 +1105,18 @@ private:
     if (preview_worker_.joinable() && preview_worker_.get_id() != std::this_thread::get_id()) {
       preview_worker_.join();
     }
+    if (profile_writer_) {
+      profile_writer_->close();
+      if (profile_writer_->failed()) {
+        RCLCPP_ERROR(node_.get_logger(), "Lane profile write failed; partial file: %s",
+          profile_writer_->path().c_str());
+      } else {
+        RCLCPP_INFO(node_.get_logger(), "Lane profile saved: %s (dropped rows=%llu)",
+          profile_writer_->path().c_str(),
+          static_cast<unsigned long long>(profile_writer_->dropped()));
+      }
+      profile_writer_.reset();
+    }
   }
 
   LineDetactorNode & node_;
@@ -1038,6 +1146,10 @@ private:
   std::string preview_window_name_;
   double status_log_interval_sec_{1.0};
 
+  bool profiling_enabled_{false};
+  std::string profiling_directory_;
+  SteadyClock::time_point profile_started_at_{};
+  std::unique_ptr<ProcessingProfileWriter> profile_writer_;
   std::unique_ptr<TensorRtLaneBackend> backend_;
   rclcpp::Subscription<Image>::SharedPtr subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr control_latency_subscription_;

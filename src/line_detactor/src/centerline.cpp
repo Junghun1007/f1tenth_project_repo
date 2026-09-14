@@ -95,8 +95,9 @@ public:
     }
     return ids;
   }
-  bool clear(const Point & p, double radius) const
+  bool clear(const Point & p, double radius, ProcessingProfile * profile) const
   {
+    if (profile) {profile->add(ProfileCounter::clearance_queries);}
     const auto lo = key(p - Point(radius, radius));
     const auto hi = key(p + Point(radius, radius));
     for (int y = lo.second; y <= hi.second; ++y) {
@@ -104,6 +105,7 @@ public:
         const auto found = bins_.find({x, y});
         if (found == bins_.end()) {continue;}
         for (int id : found->second) {
+          if (profile) {profile->add(ProfileCounter::clearance_pixel_tests);}
           if (norm(points_[id] - p) <= radius) {return false;}
         }
       }
@@ -128,13 +130,15 @@ struct Geometry
   double clearance;
   double check_step;
   const SpatialIndex & boundary;
+  ProcessingProfile * profile;
   bool point_ok(const Point & p) const
   {
     return std::isfinite(p.x) && std::isfinite(p.y) && p.x >= -margin &&
-           p.x <= width + margin && p.y >= 0.0 && p.y < height && boundary.clear(p, clearance);
+           p.x <= width + margin && p.y >= 0.0 && p.y < height && boundary.clear(p, clearance, profile);
   }
   bool segment_ok(const Point & a, const Point & b) const
   {
+    if (profile) {profile->add(ProfileCounter::segment_checks);}
     const int steps = std::max(1, static_cast<int>(std::ceil(norm(b - a) / check_step)));
     for (int i = 0; i <= steps; ++i) {
       if (!point_ok(a + (b - a) * (static_cast<double>(i) / steps))) {return false;}
@@ -143,6 +147,7 @@ struct Geometry
   }
   bool path_ok(const Path & p) const
   {
+    if (profile) {profile->add(ProfileCounter::path_checks);}
     for (std::size_t i = 1; i < p.size(); ++i) {
       if (!segment_ok(p[i - 1], p[i])) {return false;}
     }
@@ -392,8 +397,9 @@ void validate_centerline(const CenterlineConfig & c)
 CenterlineResult generate_centerline(
   const cv::Mat & labels, const ObservedLanePaths & observed_paths,
   int source_width, int padding, const CenterlineConfig & cfg,
-  const bool render_mask)
+  const bool render_mask, ProcessingProfile * profile)
 {
+  ProfileTimer timer(profile, ProfileStage::centerline);
   CenterlineResult result;
   if (render_mask) {result.mask = cv::Mat::zeros(labels.size(), CV_8UC1);}
   if (!cfg.enabled) {return result;}
@@ -404,10 +410,12 @@ CenterlineResult generate_centerline(
   const double sy = cfg.bev_height_m / labels.rows;
   const auto metric = [=](const cv::Point2f & p) {return Point((p.x - padding) * sx, p.y * sy);};
   const Point ego(cfg.bev_width_m / 2.0, cfg.bev_height_m);
+  ProfileTimer boundary_timer(profile, ProfileStage::boundary_index);
   Path boundary;
   std::vector<cv::Point> pixels;
   cv::findNonZero((labels == 1) | (labels == 2), pixels);
   for (const auto & p : pixels) {boundary.push_back(metric(cv::Point2f(p)));}
+  if (profile) {profile->add(ProfileCounter::boundary_pixels, boundary.size());}
   if (boundary.empty()) {return result;}
   const SpatialIndex boundary_index(boundary, cfg.min_clearance_m);
   // Include pixel-cell half diagonal and half sampling step for a conservative
@@ -415,7 +423,9 @@ CenterlineResult generate_centerline(
   const double check_step = cfg.clearance_check_spacing_m;
   const Geometry geometry{cfg.bev_width_m, cfg.bev_height_m,
     std::min(cfg.outside_margin_m, std::max(0, padding - cfg.line_width_px) * sx),
-    cfg.min_clearance_m + 0.5 * std::hypot(sx, sy) + check_step / 2.0, check_step, boundary_index};
+    cfg.min_clearance_m + 0.5 * std::hypot(sx, sy) + check_step / 2.0, check_step, boundary_index, profile};
+  boundary_timer.stop();
+  ProfileTimer fragment_timer(profile, ProfileStage::fragment_prepare);
   std::vector<Fragment> fragments;
   std::size_t samples = 0U;
   for (int side = 0; side < 2; ++side) {
@@ -434,9 +444,15 @@ CenterlineResult generate_centerline(
       const int half = std::max(1, static_cast<int>(std::round(cfg.tangent_window_m / (2.0 * cfg.sample_spacing_m))));
       Fragment f{side, points, tangents(points, half), arc_lengths(points), {}, {}, {}, {}};
       samples += points.size();
+      if (profile) {
+        profile->add(ProfileCounter::samples, points.size());
+        profile->add(ProfileCounter::fragments);
+      }
       fragments.push_back(std::move(f));
     }
   }
+  fragment_timer.stop();
+  ProfileTimer outer_timer(profile, ProfileStage::outer_reference);
   std::array<Path, 2> side_points;
   std::array<std::vector<std::pair<std::size_t, std::size_t>>, 2> side_references;
   for (std::size_t fragment_index = 0; fragment_index < fragments.size(); ++fragment_index) {
@@ -447,6 +463,8 @@ CenterlineResult generate_centerline(
       side_references[fragment.side].emplace_back(fragment_index, point_index);
     }
   }
+  outer_timer.stop();
+  ProfileTimer pairing_timer(profile, ProfileStage::pairing_index);
   const double pairing_radius = std::hypot(
     cfg.lane_width_m + cfg.width_tolerance_m, cfg.pair_along_tolerance_m);
   std::array<std::unique_ptr<SpatialIndex>, 2> side_indices;
@@ -455,6 +473,8 @@ CenterlineResult generate_centerline(
       side_indices[side] = std::make_unique<SpatialIndex>(side_points[side], pairing_radius);
     }
   }
+  pairing_timer.stop();
+  ProfileTimer candidate_timer(profile, ProfileStage::candidates);
   std::vector<Candidate> candidates;
   for (const auto & f : fragments) {
     Path offsets;
@@ -474,6 +494,7 @@ CenterlineResult generate_centerline(
       const int opposite_side = 1 - f.side;
       if (side_indices[opposite_side]) {
         for (const int nearby_index : side_indices[opposite_side]->nearby(p, pairing_radius)) {
+          if (profile) {profile->add(ProfileCounter::pairing_neighbors);}
           const auto [fragment_index, j] =
             side_references[opposite_side][static_cast<std::size_t>(nearby_index)];
           const auto & other = fragments[fragment_index];
@@ -572,7 +593,10 @@ CenterlineResult generate_centerline(
       candidates.push_back({offsets[i], preferred_directions[i], support[i], paired[i]});
     }
   }
+  if (profile) {profile->add(ProfileCounter::candidates, candidates.size());}
+  candidate_timer.stop();
   if (candidates.size() < 2U) {return result;}
+  ProfileTimer search_timer(profile, ProfileStage::path_search);
   Path positions;
   int start = 0;
   double nearest = std::numeric_limits<double>::infinity();
@@ -594,6 +618,7 @@ CenterlineResult generate_centerline(
     queue.pop();
     if (distance > cost[i]) {continue;}
     for (int j : neighbors.nearby(positions[i], cfg.max_gap_m)) {
+      if (profile) {profile->add(ProfileCounter::graph_neighbor_visits);}
       const auto delta = positions[j] - positions[i];
       const double length = norm(delta);
       if (length < 0.006) {continue;}
@@ -616,6 +641,8 @@ CenterlineResult generate_centerline(
   for (int i = end; i >= 0; i = previous[i]) {ids.push_back(i);}
   std::reverse(ids.begin(), ids.end());
   if (ids.size() < 2U) {return result;}
+  search_timer.stop();
+  ProfileTimer output_timer(profile, ProfileStage::path_output);
   Path raw;
   for (int id : ids) {raw.push_back(positions[id]);}
   const auto raw_arc = arc_lengths(raw);
@@ -629,13 +656,23 @@ CenterlineResult generate_centerline(
     provenance.push_back(i == 0U ? candidates[ids.front()].support :
       (raw_arc[j] - raw_arc[j - 1U] > 0.065 ? 3U : candidates[ids[j]].support));
   }
-  if (!geometry.path_ok(path)) {return result;}
-  path = smooth_centerline(path, geometry, cfg);
-  if (!geometry.path_ok(path)) {return result;}
+  {
+    ProfileTimer check_timer(profile, ProfileStage::path_check_before);
+    if (!geometry.path_ok(path)) {return result;}
+  }
+  {
+    ProfileTimer smoothing_timer(profile, ProfileStage::smoothing);
+    path = smooth_centerline(path, geometry, cfg);
+  }
+  {
+    ProfileTimer check_timer(profile, ProfileStage::path_check_after);
+    if (!geometry.path_ok(path)) {return result;}
+  }
   result.support = std::move(provenance);
   for (const auto & p : path) {
     result.points.emplace_back(static_cast<float>(p.x / sx + padding), static_cast<float>(p.y / sy));
   }
+  if (profile) {profile->add(ProfileCounter::output_points, result.points.size());}
   if (render_mask) {
     for (std::size_t i = 1; i < result.points.size(); ++i) {
       cv::line(

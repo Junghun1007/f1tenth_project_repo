@@ -35,8 +35,9 @@ double arc_length(const std::vector<Point> & points)
 }
 
 // Zhang-Suen thinning. Pad the ROI so border-touching endpoints are retained.
-cv::Mat thin(const cv::Mat & mask)
+cv::Mat thin(const cv::Mat & mask, ProcessingProfile * profile)
 {
+  ProfileTimer timer(profile, ProfileStage::thinning);
   cv::Mat image;
   cv::copyMakeBorder(mask, image, 1, 1, 1, 1, cv::BORDER_CONSTANT, 0);
   image /= 255;
@@ -44,6 +45,11 @@ cv::Mat thin(const cv::Mat & mask)
   while (changed) {
     changed = false;
     for (int pass = 0; pass < 2; ++pass) {
+      if (profile) {
+        profile->add(ProfileCounter::thinning_passes);
+        profile->add(ProfileCounter::thinning_pixel_visits,
+          static_cast<std::uint64_t>(image.rows - 2) * (image.cols - 2));
+      }
       std::vector<cv::Point> remove;
       for (int y = 1; y < image.rows - 1; ++y) {
         for (int x = 1; x < image.cols - 1; ++x) {
@@ -76,7 +82,8 @@ cv::Mat thin(const cv::Mat & mask)
 
 // Keep a single ordered skeleton path per component; side branches are not lanes.
 std::vector<Point> component_path(
-  const cv::Mat & mask, const cv::Point & origin, const int downsample_factor)
+  const cv::Mat & mask, const cv::Point & origin, const int downsample_factor,
+  ProcessingProfile * profile)
 {
   if (downsample_factor > 1) {
     const cv::Size reduced_size(
@@ -86,7 +93,7 @@ std::vector<Point> component_path(
     // Retain any occupied area so thin lane pixels are not lost by nearest-neighbor sampling.
     cv::resize(mask, reduced, reduced_size, 0.0, 0.0, cv::INTER_AREA);
     reduced = reduced > 0;
-    auto path = component_path(reduced, cv::Point(0, 0), 1);
+    auto path = component_path(reduced, cv::Point(0, 0), 1, profile);
     if (path.size() >= 2U) {
       const float sx = static_cast<float>(mask.cols) / reduced.cols;
       const float sy = static_cast<float>(mask.rows) / reduced.rows;
@@ -99,9 +106,11 @@ std::vector<Point> component_path(
     }
     // Tiny or degenerate reduced components retain the original extraction behavior.
   }
-  const cv::Mat skeleton = thin(mask);
+  const cv::Mat skeleton = thin(mask, profile);
+  ProfileTimer graph_timer(profile, ProfileStage::skeleton_graph);
   std::vector<cv::Point> pixels;
   cv::findNonZero(skeleton, pixels);
+  if (profile) {profile->add(ProfileCounter::skeleton_pixels, pixels.size());}
   if (pixels.size() < 2U) {return {};}
   cv::Mat indices(mask.size(), CV_32S, cv::Scalar(-1));
   for (std::size_t i = 0; i < pixels.size(); ++i) {
@@ -314,8 +323,9 @@ void add_endpoint(std::vector<BorderEndpoint> & endpoints, const std::vector<Poi
 std::vector<BorderEndpoint> retain_components(
   const cv::Mat & input, const int side, const LaneConnectionConfig & config,
   cv::Mat & output, std::vector<std::vector<Point>> & observed_paths,
-  const bool connect_borders)
+  const bool connect_borders, ProcessingProfile * profile)
 {
+  ProfileTimer components_timer(profile, ProfileStage::components);
   cv::Mat components, stats, centroids;
   const int count = cv::connectedComponentsWithStats(
     input == side + 1, components, stats, centroids, 8, CV_32S);
@@ -331,12 +341,18 @@ std::vector<BorderEndpoint> retain_components(
     retained_components.push_back(id);
     if (roi.x == 0 || roi.x + roi.width == input.cols) {border_candidates.push_back(id);}
   }
+  if (profile) {
+    profile->add(ProfileCounter::components_found, count - 1);
+    profile->add(ProfileCounter::components_retained, retained_components.size());
+  }
+  components_timer.stop();
+  ProfileTimer skeleton_timer(profile, ProfileStage::skeleton);
   std::vector<std::vector<Point>> component_paths(static_cast<std::size_t>(count));
   for (const int id : retained_components) {
     const cv::Rect roi(stats.at<int>(id, cv::CC_STAT_LEFT), stats.at<int>(id, cv::CC_STAT_TOP),
       stats.at<int>(id, cv::CC_STAT_WIDTH), stats.at<int>(id, cv::CC_STAT_HEIGHT));
     auto path = component_path(
-      components(roi) == id, roi.tl(), config.skeleton_downsample_factor);
+      components(roi) == id, roi.tl(), config.skeleton_downsample_factor, profile);
     if (path.size() >= 2U) {
       auto padded_path = path;
       for (auto & point : padded_path) {point.x += config.padding_px;}
@@ -344,7 +360,9 @@ std::vector<BorderEndpoint> retain_components(
     }
     component_paths[static_cast<std::size_t>(id)] = std::move(path);
   }
+  skeleton_timer.stop();
   if (!connect_borders) {return {};}
+  ProfileTimer endpoint_timer(profile, ProfileStage::border_endpoints);
   std::stable_sort(border_candidates.begin(), border_candidates.end(), [&](int a, int b) {
     return stats.at<int>(a, cv::CC_STAT_AREA) > stats.at<int>(b, cv::CC_STAT_AREA);
   });
@@ -359,6 +377,7 @@ std::vector<BorderEndpoint> retain_components(
     add_endpoint(endpoints, path, false, components, id, config);
     add_endpoint(endpoints, path, true, components, id, config);
   }
+  if (profile) {profile->add(ProfileCounter::border_endpoints, endpoints.size());}
   return endpoints;
 }
 
@@ -399,8 +418,9 @@ void validate_lane_connection(const LaneConnectionConfig & config)
 
 LaneConnectionResult connect_lane_fragments(
   const cv::Mat & labels, const LaneConnectionConfig & config,
-  const bool render_image)
+  const bool render_image, ProcessingProfile * profile)
 {
+  ProfileTimer timer(profile, ProfileStage::connector);
   if (labels.type() != CV_8UC1 || labels.empty()) {
     throw std::invalid_argument("Lane connector expects a nonempty mono8 label image");
   }
@@ -412,17 +432,21 @@ LaneConnectionResult connect_lane_fragments(
   std::vector<Candidate> candidates;
   for (int side = 0; side < 2; ++side) {
     endpoints[side] = retain_components(
-      labels, side, config, result.labels, result.observed_paths[side], render_image);
+      labels, side, config, result.labels, result.observed_paths[side], render_image, profile);
+    ProfileTimer candidate_timer(profile, ProfileStage::bridge_candidates);
     const auto & tips = endpoints[side];
     for (std::size_t a = 0; a < tips.size(); ++a) {
       for (std::size_t b = a + 1; b < tips.size(); ++b) {
+        if (profile) {profile->add(ProfileCounter::bridge_pairs);}
         auto curve = bridge(tips[a], tips[b], config, labels.cols, labels.rows);
         if (!curve.empty()) {
+          if (profile) {profile->add(ProfileCounter::valid_bridges);}
           candidates.push_back(Candidate{side, static_cast<int>(a), static_cast<int>(b), std::move(curve)});
         }
       }
     }
   }
+  ProfileTimer bridge_timer(profile, ProfileStage::bridge_render);
   // Nearest compatible pair first; every endpoint can participate only once.
   std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate & a, const Candidate & b) {
     return arc_length(a.curve) < arc_length(b.curve);
@@ -440,6 +464,8 @@ LaneConnectionResult connect_lane_fragments(
     used[candidate.side][candidate.a] = true;
     used[candidate.side][candidate.b] = true;
   }
+  bridge_timer.stop();
+  ProfileTimer render_timer(profile, ProfileStage::lane_render);
   if (render_image) {result.image = cv::Mat::zeros(size, CV_8UC3);}
   for (int side = 0; side < 2; ++side) {
     const cv::Mat model_mask = result.labels == side + 1;

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 #include <opencv2/core.hpp>
+#include "line_detactor/processing_profile.hpp"
 namespace line_detactor
 {
 using ObservedLanePaths =
@@ -60,6 +61,6 @@ void validate_centerline(const CenterlineConfig & config);
 CenterlineResult generate_centerline(
   const cv::Mat & labels, const ObservedLanePaths & observed_paths,
   int source_width, int padding, const CenterlineConfig & config,
-  bool render_mask = true);
+  bool render_mask = true, ProcessingProfile * profile = nullptr);
 }  // namespace line_detactor
 #endif
