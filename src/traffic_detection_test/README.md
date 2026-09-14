@@ -16,7 +16,8 @@ BEV 영상이나 IMU 지면 보정 영상을 신호등 입력으로 사용하지
 - 박스 좌표 복원/NMS와 최상위 점수 박스의 HSV 색상 판별은 CPU에서 수행한다.
   색상 판별용 BGR 변환도 해당 박스에만 적용한다.
 - 모든 검출 중 최고 점수 박스를 선택하는 기존 규칙을 사용한다.
-  내 주행 방향의 신호등 선택과 정지선 연결은 아직 구현하지 않았다.
+  내 주행 방향의 신호등 선택은 아직 구현하지 않았다. 정지선 제동은
+  auto_control의 별도 개발 기능 `traffic_stop_enabled`로 켠다(기본 false).
   선택적인 연속 관측 확인은 아래 설정으로 켤 수 있으며 기본값은 비활성화다.
 - 같은 GPU이므로 차선 추론과의 자원 경쟁은 남는다. 지연이 없다고 보장하지 않는다.
 
@@ -81,7 +82,8 @@ cp src/traffic_detection_test/config/traffic_light.yaml traffic_light_test.yaml
 
 CLI `traffic_light_inference_fps:=...`를 함께 지정하면 YAML의 `inference_fps`보다
 우선한다. YAML만으로 조정할 때는 해당 CLI 인자를 생략한다.
-연속 확인은 BEV 텍스트와 상태 메시지에만 적용하며 차량 정지 로직은 없다.
+연속 확인은 BEV 텍스트와 상태 메시지에 적용한다. auto_control에서
+`traffic_stop_enabled`를 켰을 때만 이 상태를 실제 정지선 제동에 사용한다.
 
 설정은 `config/traffic_light.yaml`에 있다. ROI는 카메라 원본 크기의 비율로
 지정한다. 기본값은 640x400 기준 `x=0,y=65,w=640,h=160`에 해당하며

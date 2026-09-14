@@ -714,6 +714,7 @@ private:
       message.centerline_points.push_back(output);
     }
     message.stop_line_present = result.stop_line_present;
+    message.stop_line_distance_m = result.stop_line_distance_m;
     const auto result_ready_at = SteadyClock::now();
     message.result_message_build_nanoseconds = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(

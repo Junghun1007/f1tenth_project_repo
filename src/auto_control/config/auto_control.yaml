@@ -4,6 +4,20 @@ auto_control:
     # 주행 중 `ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: false"`
     # 로 언제든 duty 0과 중앙 조향으로 전환할 수 있다.
     enabled: true
+    # 개발 기능: false이면 신호등이 조향/속도/제동에 영향을 주지 않음. 재시작 시 적용.
+    traffic_stop_enabled: false
+    traffic_state_topic: "/traffic_light/state"
+    traffic_state_timeout_sec: 0.30       # 신호 촬영 시각 기준 최대 수명
+    traffic_stop_line_timeout_sec: 0.50   # 정지선 미검출 동안 이동량 보정 허용 시간
+    traffic_stop_margin_m: 0.15           # 범퍼와 정지선 사이에 남길 거리
+    traffic_front_axle_to_bumper_m: 0.10  # 앞차축→앞범퍼 실제 길이로 설정
+    traffic_stop_deceleration_mps2: 0.60  # 계획 감속도: 클수록 늦게/강하게 감속하는 속도 곡선
+    traffic_brake_response_time_sec: 0.15 # 구동기 응답 여유 시간 (영상 경과시간은 별도 보정)
+    # 신호등 정지는 아래 전류를 사용. 일반 electrical_brake_enabled=false여도 작동.
+    traffic_brake_amps_per_mps2: 2.0      # 요구 감속도→전류 환산 계수, 차량에서 조정 필요
+    traffic_brake_max_current_amps: 2.5   # VESC bridge 전류 상한 이하로 설정
+    traffic_hold_current_amps: 0.7       # 정차 목표 도달 후 유지 전류 (기계식 주차브레이크 아님)
+
     # drive: duty/brake/servo output, steering_only: servo output only,
     # monitor_only: actuator output 없이 lateral/heading 오차만 계산 및 발행
     control_mode: "drive"

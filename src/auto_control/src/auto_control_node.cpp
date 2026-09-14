@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "line_detactor/msg/lane_result.hpp"
+#include "traffic_detection_test/msg/traffic_light_state.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
@@ -51,6 +52,8 @@ public:
     speed_pid_ = std::make_unique<SpeedPid>(
       speed_pid_kp_, speed_pid_ki_, speed_pid_kd_, speed_pid_integral_limit_,
       minimum_duty_, maximum_duty_);
+    traffic_pid_ = std::make_unique<SpeedPid>(
+      speed_pid_kp_, speed_pid_ki_, speed_pid_kd_, speed_pid_integral_limit_, 0.0, maximum_duty_);
     brake_profile_ = std::make_unique<AutomaticBrakeProfile>(BrakeConfig{
       brake_entry_speed_error_mps_, brake_exit_speed_error_mps_,
       brake_minimum_vehicle_speed_mps_, brake_minimum_current_amps_,
@@ -78,6 +81,11 @@ public:
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
+    if (traffic_stop_enabled_) {
+      traffic_sub_ = create_subscription<traffic_detection_test::msg::TrafficLightState>(
+        traffic_state_topic_, sensor_qos,
+        std::bind(&AutoControlNode::on_traffic_state, this, std::placeholders::_1));
+    }
     erpm_sub_ = create_subscription<std_msgs::msg::Int32>(
       measured_erpm_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_measured_erpm, this, std::placeholders::_1));
@@ -125,6 +133,11 @@ public:
       RCLCPP_INFO(get_logger(), "Automatic control starts disabled.");
     }
     RCLCPP_INFO(get_logger(),
+      "Traffic stop=%s | bumper offset=%.2fm, margin=%.2fm, planning decel=%.2fm/s2, "
+      "response=%.2fs, brake cap=%.2fA (independent of normal electrical_brake_enabled)",
+      traffic_stop_enabled_ ? "ON" : "OFF", traffic_front_offset_, traffic_margin_,
+      traffic_deceleration_, traffic_response_time_, traffic_brake_max_);
+    RCLCPP_INFO(get_logger(),
       "Auto control C++ ready: mode=%s, lane=%s, speed=%.2f..%.2fm/s, "
       "duty=%.3f..%.3f, auto_brake=%s/%.1fA, control=on_lane_result, watchdog=%.1fHz",
       control_mode_.c_str(), lane_result_topic_.c_str(), minimum_speed_mps_, maximum_speed_mps_,
@@ -154,6 +167,17 @@ private:
 
   void declare_and_read_parameters()
   {
+    traffic_stop_enabled_ = parameter("traffic_stop_enabled", false);
+    traffic_state_topic_ = parameter<std::string>("traffic_state_topic", "/traffic_light/state");
+    traffic_state_timeout_ = parameter("traffic_state_timeout_sec", 0.30);
+    traffic_line_timeout_ = parameter("traffic_stop_line_timeout_sec", 0.50);
+    traffic_margin_ = parameter("traffic_stop_margin_m", 0.15);
+    traffic_front_offset_ = parameter("traffic_front_axle_to_bumper_m", 0.10);
+    traffic_deceleration_ = parameter("traffic_stop_deceleration_mps2", 0.60);
+    traffic_response_time_ = parameter("traffic_brake_response_time_sec", 0.15);
+    traffic_brake_gain_ = parameter("traffic_brake_amps_per_mps2", 2.0);
+    traffic_brake_max_ = parameter("traffic_brake_max_current_amps", 2.5);
+    traffic_hold_current_ = parameter("traffic_hold_current_amps", 0.7);
     enabled_ = parameter("enabled", true);
     control_mode_ = parameter<std::string>("control_mode", "drive");
     enable_topic_ = parameter<std::string>("enable_topic", "/auto/enabled");
@@ -266,6 +290,12 @@ private:
             return std::isfinite(value);
           });
       };
+    if (!finite_positive({traffic_state_timeout_, traffic_line_timeout_, traffic_deceleration_,
+        traffic_brake_gain_, traffic_brake_max_, traffic_hold_current_}) ||
+      !finite({traffic_margin_, traffic_front_offset_, traffic_response_time_}) ||
+      traffic_margin_ < 0 || traffic_front_offset_ < 0 || traffic_response_time_ < 0 ||
+      traffic_hold_current_ > traffic_brake_max_ || traffic_state_topic_.empty())
+    {throw std::invalid_argument("invalid traffic stop parameters");}
     if (control_mode_ != "drive" && control_mode_ != "steering_only" && control_mode_ != "monitor_only") {
       throw std::invalid_argument("control_mode must be drive, steering_only, or monitor_only");
     }
@@ -342,6 +372,20 @@ private:
         throw std::invalid_argument("duplicate or out-of-order lane result");
       }
       path_capture_ns_ = capture_ns;
+      if (traffic_stop_enabled_ && message->header.frame_id == lane_result_frame_id_) {
+        advance_stop_distance(received_ros.nanoseconds());
+        if (message->stop_line_present && std::isfinite(message->stop_line_distance_m) &&
+          message->stop_line_distance_m >= 0.0 && message->stop_line_distance_m <= bev_x_max_m_ * 2.0)
+        {
+          const double distance = message->stop_line_distance_m - traffic_front_offset_ -
+            traffic_margin_ - std::max(0.0, current_speed_mps_) * std::max(0.0, age);
+          // Once red is latched, do not switch to a farther line or let noise
+          // move the stop target away from the car. Never unlock a held stop.
+          stop_remaining_ = traffic_red_ && stop_remaining_ ?
+            std::min(*stop_remaining_, distance) : distance;
+          stop_line_seen_ns_ = received_ros.nanoseconds();
+        }
+      }
       if (message->centerline_sample_limit_reached) {
         lane_result_status_ = "centerline_sample_limit";
       } else if (!message->centerline_valid) {
@@ -421,6 +465,113 @@ private:
     lane_result_status_ = path_ ? "accepted" : "insufficient_contiguous_path";
   }
 
+  void advance_stop_distance(std::int64_t now_ns)
+  {
+    if (stop_distance_updated_ns_ && stop_remaining_) {
+      const double elapsed = seconds(now_ns - *stop_distance_updated_ns_);
+      if (elapsed < 0 || elapsed > traffic_line_timeout_) {stop_remaining_.reset();}
+      else {*stop_remaining_ -= std::max(0.0, current_speed_mps_) * elapsed;}
+    }
+    stop_distance_updated_ns_ = now_ns;
+  }
+
+  void on_traffic_state(const traffic_detection_test::msg::TrafficLightState::ConstSharedPtr message)
+  {
+    using Signal = traffic_detection_test::msg::TrafficLightState;
+    const auto captured = stamp_nanoseconds(message->header.stamp);
+    const auto now_ns = now().nanoseconds();
+    if (!captured || *captured > now_ns ||
+      seconds(now_ns - *captured) > traffic_state_timeout_ ||
+      (traffic_capture_ns_ && *captured <= *traffic_capture_ns_)) {return;}
+    traffic_capture_ns_ = captured;
+    if (message->state == Signal::RED) {
+      if (!traffic_red_) {
+        traffic_red_ = true;
+        traffic_holding_ = false;
+        traffic_pid_->reset();
+        speed_pid_->reset();
+        RCLCPP_WARN(get_logger(), "Traffic RED: stop-line approach latched.");
+      }
+    } else if (message->state == Signal::GREEN && traffic_red_) {
+      traffic_red_ = traffic_holding_ = false;
+      stop_remaining_.reset();
+      stop_line_seen_ns_.reset();
+      traffic_pid_->reset();
+      speed_pid_->reset();
+      RCLCPP_INFO(get_logger(), "Traffic GREEN: stop request released; normal drive gates still apply.");
+    }
+    // UNKNOWN/stale messages cannot cancel a red stop. A new valid green can.
+  }
+
+  double traffic_speed_limit(std::int64_t now_ns)
+  {
+    advance_stop_distance(now_ns);
+    if (traffic_holding_) {return 0.0;}
+    if (!stop_remaining_ || !stop_line_seen_ns_ ||
+      seconds(now_ns - *stop_line_seen_ns_) < 0 ||
+      seconds(now_ns - *stop_line_seen_ns_) > traffic_line_timeout_)
+    {return 0.0;}  // Red without a usable stop line: brake now, never drive blindly.
+    if (*stop_remaining_ <= 0.0) {traffic_holding_ = true; return 0.0;}
+    // d = v*t_response + v^2/(2*a). Latency since capture was already deducted.
+    const double at = traffic_deceleration_ * traffic_response_time_;
+    return std::sqrt(at * at + 2.0 * traffic_deceleration_ * *stop_remaining_) - at;
+  }
+
+  double traffic_brake_current(double remaining) const
+  {
+    const double speed = std::abs(current_speed_mps_);
+    const double usable = std::max(0.02, remaining - speed * traffic_response_time_);
+    const double required_deceleration = speed * speed / (2.0 * usable);
+    return clamp(traffic_brake_gain_ * required_deceleration,
+      traffic_hold_current_, traffic_brake_max_);
+  }
+
+  void traffic_motor(double target, double dt)
+  {
+    brake_profile_->reset();
+    speed_pid_->reset();
+    if (target <= 0 && std::abs(current_speed_mps_) < 0.05) {traffic_holding_ = true;}
+    const double speed_error = current_speed_mps_ - target;
+    const bool decelerating = brake_mode_active_ ? speed_error > -0.03 : speed_error > 0.02;
+    if (target <= 0 || decelerating) {
+      const double distance = target > 0 && stop_remaining_ ? *stop_remaining_ : 0.0;
+      command_brake_current_ = traffic_brake_current(distance);
+      command_duty_ = 0.0;
+      brake_mode_active_ = true;
+      traffic_pid_->reset();
+    } else if (brake_mode_active_) {
+      command_brake_current_ = 0.0;
+      command_duty_ = 0.0;
+      brake_mode_active_ = false;
+      traffic_pid_->reset();
+    } else {
+      command_brake_current_ = 0.0;
+      const double feedforward = target < minimum_speed_mps_ ?
+        minimum_duty_ * target / minimum_speed_mps_ : speed_feedforward_duty(
+          target, minimum_speed_mps_, maximum_speed_mps_, minimum_duty_, maximum_duty_);
+      const double desired = traffic_pid_->update(target, current_speed_mps_, feedforward, dt);
+      // Zero minimum duty permits low-speed approach and full stopping.
+      command_duty_ = move_toward(command_duty_, desired,
+        (desired > command_duty_ ? duty_rise_rate_per_sec_ : duty_fall_rate_per_sec_) * dt);
+    }
+  }
+
+  void publish_guard_stop(const std::string & reason)
+  {
+    // A missing lane must not release a red-light brake. Retain the latest
+    // steering command while stopping; disconnected/disabled modes keep their existing behavior.
+    const bool keep_braking = traffic_stop_enabled_ && traffic_red_ && enabled_ &&
+      control_mode_ == "drive" && vesc_connected_;
+    const double servo = latest_servo_position_;
+    stop_control(reason);
+    if (keep_braking) {
+      traffic_holding_ = true;
+      command_brake_current_ = traffic_brake_max_;
+      brake_mode_active_ = true;
+      publish_commands(0.0, command_brake_current_, servo, "brake");
+    } else {publish_commands(0.0, 0.0, servo_center_, "stop");}
+  }
+
   std::optional<std::string> stop_reason(std::int64_t now_ns) const
   {
     if (!enabled_) {return "disabled";}
@@ -445,16 +596,17 @@ private:
       std::min({path_timeout_sec_, path_capture_maximum_age_sec_, erpm_timeout_sec_}));
     last_control_ns_ = now_ns;
     if (const auto reason = stop_reason(now_ns)) {
-      stop_control(*reason);
+      publish_guard_stop(*reason);
       decision_finished_ros_ns = now().nanoseconds();
-      publish_commands(0.0, 0.0, servo_center_, "stop");
       return false;
     }
     const double curvature = representative_curvature(
       *path_, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
       curvature_percentile_);
-    const double target_speed = curvature_target_speed(
+    double target_speed = curvature_target_speed(
       curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_);
+    const bool traffic_stop = traffic_stop_enabled_ && traffic_red_;
+    if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
     const auto stanley = stanley_control(
       *path_, current_speed_mps_, stanley_gain_, stanley_softening_speed_mps_,
       stanley_heading_lookahead_m_, maximum_steering_angle_rad_,
@@ -484,6 +636,10 @@ private:
       speed_pid_->reset();
       brake_profile_->reset();
       motor_mode = "suppressed";
+    } else if (traffic_stop) {
+      const bool was_braking = brake_mode_active_;
+      traffic_motor(target_speed, dt);
+      motor_mode = command_brake_current_ > 0 ? "brake" : was_braking ? "brake_release" : "duty";
     } else {
       command_brake_current_ = electrical_brake_enabled_ ?
         brake_profile_->update(target_speed, current_speed_mps_, dt) : 0.0;
@@ -511,7 +667,8 @@ private:
         motor_mode = "duty";
       }
     }
-    last_stop_reason_ = "running";
+    last_stop_reason_ = traffic_stop ?
+      (target_speed <= 0 ? "traffic_stop_hold" : "traffic_stop_approach") : "running";
     latest_target_speed_mps_ = target_speed;
     latest_curvature_per_m_ = curvature;
     latest_cross_track_error_m_ = stanley.cross_track_error_m;
@@ -538,9 +695,10 @@ private:
     latest_servo_position_ = servo_center_;
     latest_direction_guard_used_ = false;
     speed_pid_->reset();
+    traffic_pid_->reset();
     brake_profile_->reset();
     if (reason != last_stop_reason_) {
-      RCLCPP_WARN(get_logger(), "Automatic drive stopped: %s. Releasing motor command.", reason.c_str());
+      RCLCPP_WARN(get_logger(), "Automatic drive stop condition: %s.", reason.c_str());
     }
     last_stop_reason_ = reason;
   }
@@ -631,8 +789,7 @@ private:
   void on_watchdog()
   {
     if (const auto reason = stop_reason(now().nanoseconds())) {
-      stop_control(*reason);
-      publish_commands(0.0, 0.0, servo_center_, "stop");
+      publish_guard_stop(*reason);
     }
   }
 
@@ -738,8 +895,22 @@ private:
       latest_servo_position_, last_motor_mode_.c_str(), command_duty_, command_brake_current_,
       lane_result_count_, lane_result_status_.c_str(), lane_result_points_,
       receive_age.c_str(), capture_age.c_str());
+    if (traffic_stop_enabled_) {
+      RCLCPP_INFO(get_logger(), "Traffic stop | red_latched=%s | hold=%s | remaining=%s",
+        traffic_red_ ? "yes" : "no", traffic_holding_ ? "yes" : "no",
+        stop_remaining_ ? std::to_string(*stop_remaining_).c_str() : "unknown");
+    }
   }
 
+  bool traffic_stop_enabled_{false}, traffic_red_{false}, traffic_holding_{false};
+  std::string traffic_state_topic_;
+  double traffic_state_timeout_, traffic_line_timeout_, traffic_margin_, traffic_front_offset_;
+  double traffic_deceleration_, traffic_response_time_, traffic_brake_gain_;
+  double traffic_brake_max_, traffic_hold_current_;
+  std::optional<double> stop_remaining_;
+  std::optional<std::int64_t> stop_line_seen_ns_, stop_distance_updated_ns_, traffic_capture_ns_;
+  std::unique_ptr<SpeedPid> traffic_pid_;
+  rclcpp::Subscription<traffic_detection_test::msg::TrafficLightState>::SharedPtr traffic_sub_;
   bool enabled_{true};
   bool electrical_brake_enabled_{true};
   bool steering_servo_inverted_{true};

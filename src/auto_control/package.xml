@@ -13,6 +13,7 @@
   <depend>rclcpp</depend>
   <depend>std_msgs</depend>
   <depend>line_detactor</depend>
+  <depend>traffic_detection_test</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

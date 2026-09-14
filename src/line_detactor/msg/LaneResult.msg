@@ -34,6 +34,9 @@ uint32 padding_right
 # True iff the independent model stop-line output contains a positive pixel;
 # this is diagnostic and is not itself a vehicle stop command.
 bool stop_line_present
+# Along-path distance from front axle to near stop-line edge at header.stamp.
+# NaN when unavailable. Consumers must check finiteness, not default to zero.
+float32 stop_line_distance_m
 
 # Yellow center path, derived independently of the internal display masks.
 # Pixels in the padded image, ordered from near vehicle to far along the path.

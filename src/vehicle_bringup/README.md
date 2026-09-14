@@ -4,7 +4,10 @@
 `traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx`를 별도 작업 스레드에서
 20Hz로 실행하고, 카메라의 BEV 변환 전 컬러 영상을 공유한다.
 기존 BEV 프리뷰 하단에 `Traffic: RED / GREEN / UNKNOWN`을 표시한다.
-별도 신호등 창이나 브레이크 연결은 없으며 `/traffic_light/state`의 `state`는
+별도 신호등 창은 없으며 기본적으로 관측만 수행한다.
+개발용 정지선 제동은 `traffic_stop_enabled:=true`로 켜고 `false`로 끈다.
+설정은 [auto_control 문서](../auto_control/README.md)의 신호등 정지 항목을 참고한다.
+`/traffic_light/state`의 `state`는
 `0=UNKNOWN`, `1=RED`, `2=GREEN`이다. `traffic_light_enabled:=false`로 끄고
 차선 처리 지연을 비교할 수 있다. 상세 설정과 빌드는
 [신호등 패키지 문서](../traffic_detection_test/README.md)를 참고한다.

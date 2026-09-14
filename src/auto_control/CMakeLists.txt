@@ -16,6 +16,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(line_detactor REQUIRED)
+find_package(traffic_detection_test REQUIRED)
 
 add_executable(auto_control_node
   src/auto_control_node.cpp
@@ -32,6 +33,7 @@ ament_target_dependencies(auto_control_node
   rclcpp
   std_msgs
   line_detactor
+  traffic_detection_test
 )
 
 install(TARGETS auto_control_node

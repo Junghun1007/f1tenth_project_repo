@@ -232,7 +232,7 @@ def _apply_parameter_file_defaults(
         " | pipeline=direct CUDA BEV -> " + str(detector["result_topic"]) +
         " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
         " | performance measurement=" + measurement +
-        " | traffic observation=" + traffic_enabled + " (no control integration)"
+        " | traffic observation=" + traffic_enabled + " | traffic stop=" + context.launch_configurations["traffic_stop_enabled"]
     )), bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
         composable_node_descriptions=nodes,
@@ -442,6 +442,7 @@ def generate_launch_description():
             float,
         ),
     ]
+    controller_argument_fallbacks.append(("traffic_stop_enabled", "false", "traffic_stop_enabled", bool))
     controller_arguments = [
         (
             argument_name,
