@@ -1,0 +1,20 @@
+traffic_light_detector:
+  ros__parameters:
+    # Empty resolves to the bundled traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx.
+    model_path: ""
+    engine_cache_path: ""
+    tensorrt_workspace_size_mb: 1024
+    inference_fps: 20.0
+    max_frame_age_sec: 0.25
+    # Fractions of the full rectified COLOR frame, before BEV/IMU projection.
+    # Equivalent to x=0,y=65,w=640,h=160 on the standalone 640x400 view.
+    roi_left: 0.0
+    roi_top: 0.1625
+    roi_width: 1.0
+    roi_height: 0.4
+    score_threshold: 0.25
+    nms_threshold: 0.65
+    color_min_saturation: 80
+    color_min_value: 60
+    state_topic: "/traffic_light/state"
+    status_log_interval_sec: 2.0

@@ -1,5 +1,13 @@
 # vehicle_bringup
 
+`auto_drive.launch.py`는 신호등 **상태 관측만** 기본 활성화한다.
+`traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx`를 별도 작업 스레드에서
+20Hz로 실행하고, 카메라의 BEV 변환 전 컬러 영상을 공유한다.
+프리뷰나 브레이크 연결은 없으며 `/traffic_light/state`의 `state`는
+`0=UNKNOWN`, `1=RED`, `2=GREEN`이다. `traffic_light_enabled:=false`로 끄고
+차선 처리 지연을 비교할 수 있다. 상세 설정과 빌드는
+[신호등 패키지 문서](../traffic_detection_test/README.md)를 참고한다.
+
 `vehicle_bringup` owns the launch files and runtime configuration used to
 start the F1TENTH vehicle. It replaces the former `vehicle_launcher` and
 `vehicle_config` packages.

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(traffic_detection_test LANGUAGES CXX CUDA)
+project(traffic_detection_test LANGUAGES C CXX CUDA)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -19,6 +19,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(bev_handoff REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
@@ -74,6 +77,11 @@ if(NOT depthai_FOUND)
 endif()
 find_package(Threads REQUIRED)
 
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/TrafficLightState.msg"
+  DEPENDENCIES std_msgs
+)
+
 add_library(traffic_yolox_detector STATIC
   src/cuda_yolox_preprocessor.cu
   src/tensorrt_yolox_backend.cpp
@@ -127,6 +135,15 @@ rclcpp_components_register_nodes(
   "traffic_detection_test::TrafficDetectionTestNode"
 )
 
+add_library(traffic_light_component SHARED src/traffic_light_node.cpp)
+ament_target_dependencies(traffic_light_component
+  ament_index_cpp bev_handoff rclcpp rclcpp_components std_msgs)
+target_link_libraries(traffic_light_component traffic_yolox_detector Threads::Threads)
+rosidl_get_typesupport_target(traffic_light_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
+target_link_libraries(traffic_light_component "${traffic_light_typesupport}")
+rclcpp_components_register_nodes(traffic_light_component
+  "traffic_detection_test::TrafficLightNode")
+
 add_executable(traffic_detection_test_node
   src/main.cpp
 )
@@ -145,6 +162,7 @@ install(
   TARGETS
     traffic_yolox_detector
     traffic_detection_test_component
+    traffic_light_component
   EXPORT export_traffic_detection_test
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -156,6 +174,9 @@ install(
 
 ament_export_targets(export_traffic_detection_test HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  bev_handoff
+  std_msgs
+  rosidl_default_runtime
   ament_index_cpp
   CUDAToolkit
   OpenCV

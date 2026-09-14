@@ -12,6 +12,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(bev_handoff REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
@@ -72,6 +73,7 @@ target_include_directories(camera_driver_component
     $<INSTALL_INTERFACE:include>
 )
 ament_target_dependencies(camera_driver_component
+  bev_handoff
   rclcpp
   rclcpp_components
   geometry_msgs
@@ -150,6 +152,7 @@ install(
 
 ament_export_targets(export_camera_driver HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  bev_handoff
   OpenCV rclcpp rclcpp_components geometry_msgs rosidl_default_runtime
   sensor_msgs std_msgs)
 

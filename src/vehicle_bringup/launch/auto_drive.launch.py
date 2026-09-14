@@ -204,6 +204,24 @@ def _apply_parameter_file_defaults(
             "preview_result_only_enabled", True
         ) else "false"
     )
+    nodes = [ComposableNode(
+        package="line_detactor", plugin="line_detactor::LineDetactorNode",
+        name="line_detactor", parameters=[detector],
+        extra_arguments=[{"use_intra_process_comms": True}],
+    )]
+    traffic_enabled = LaunchConfiguration("traffic_light_enabled").perform(context).lower()
+    if traffic_enabled not in ("true", "false"):
+        raise RuntimeError("traffic_light_enabled must be true or false")
+    if traffic_enabled == "true":
+        traffic_parameters = [LaunchConfiguration("traffic_light_params_file").perform(context)]
+        traffic_fps = LaunchConfiguration("traffic_light_inference_fps").perform(context)
+        if traffic_fps != _PARAMETER_FILE_DEFAULT:
+            traffic_parameters.append({"inference_fps": float(traffic_fps)})
+        nodes.append(ComposableNode(
+            package="traffic_detection_test", plugin="traffic_detection_test::TrafficLightNode",
+            name="traffic_light_detector", parameters=traffic_parameters,
+            extra_arguments=[{"use_intra_process_comms": True}],
+        ))
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -213,14 +231,11 @@ def _apply_parameter_file_defaults(
             "fast_scnn_stop_line_120x300_batch_1.onnx"))) +
         " | pipeline=direct CUDA BEV -> " + str(detector["result_topic"]) +
         " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
-        " | performance measurement=" + measurement
+        " | performance measurement=" + measurement +
+        " | traffic observation=" + traffic_enabled + " (no control integration)"
     )), bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
-        composable_node_descriptions=[ComposableNode(
-            package="line_detactor", plugin="line_detactor::LineDetactorNode",
-            name="line_detactor", parameters=[detector],
-            extra_arguments=[{"use_intra_process_comms": True}],
-        )],
+        composable_node_descriptions=nodes,
     )]
 
 
@@ -548,6 +563,12 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument("camera_params_file", default_value=camera_config),
+            DeclareLaunchArgument("traffic_light_enabled", default_value="true",
+                                  description="Observe traffic signal state only; does not command brakes or drive"),
+            DeclareLaunchArgument("traffic_light_params_file", default_value=os.path.join(
+                get_package_share_directory("traffic_detection_test"), "config", "traffic_light.yaml")),
+            DeclareLaunchArgument("traffic_light_inference_fps", default_value=_PARAMETER_FILE_DEFAULT,
+                                  description="Traffic inference cap; omitted uses YAML (20Hz)"),
             DeclareLaunchArgument("line_detactor_params_file", default_value=line_detactor_config,
                                   description="ML lane/centerline YAML; source geometry follows BEV YAML"),
             *[

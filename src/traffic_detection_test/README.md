@@ -1,5 +1,73 @@
 # traffic_detection_test
 
+## 자동 주행에 연결된 상태 검출
+
+`auto_drive.launch.py`는 기본적으로 `TrafficLightNode`를 기존
+`bev_processor_container`에 함께 로드한다. 이 컴포넌트는 카메라를 열지 않고
+`camera_driver`의 **BEV 변환 전 컬러 NV12 원본**을 공유한다. 지면 투영된
+BEV 영상이나 IMU 지면 보정 영상을 신호등 입력으로 사용하지 않는다.
+기존 차선 검출과 함께 동작하지만 신호등 화면과 제동/주행 명령은 생성하지 않는다.
+
+- 모델: `traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx`, TensorRT INT8.
+- 카메라 콜백: 이미지 복사 없이 소유권을 가진 참조만 전달하며, 잠금 경합 시 버린다.
+- 별도 작업 스레드에서 기본 20Hz로 최신 프레임만 처리한다. 대기 프레임은 최대 1개.
+- 별도 nonblocking CUDA stream에서 ROI Y/UV만 GPU로 전송하고
+  crop/resize/NV12→BGR NCHW 전처리와 추론을 수행한다. 영상 전체 CPU BGR 변환은 없다.
+- 박스 좌표 복원/NMS와 최상위 점수 박스의 HSV 색상 판별은 CPU에서 수행한다.
+  색상 판별용 BGR 변환도 해당 박스에만 적용한다.
+- 모든 검출 중 최고 점수 박스를 선택하는 기존 규칙을 사용한다.
+  내 주행 방향의 신호등 선택, 시간적 확정, 정지선 연결은 아직 구현하지 않았다.
+- 같은 GPU이므로 차선 추론과의 자원 경쟁은 남는다. 지연이 없다고 보장하지 않는다.
+
+상태 확인:
+
+```bash
+ros2 topic echo /traffic_light/state
+```
+
+메시지 `traffic_detection_test/msg/TrafficLightState`의 `state`는
+`0=UNKNOWN`, `1=RED`, `2=GREEN`(파란불/초록불)이다. 미검출, 색상 동률,
+처리 오류 또는 오래된 입력은 UNKNOWN이다. 입력이 없으면 UNKNOWN을 주기적으로
+발행하며 이 경우 헤더는 비어 있다. 초기 엔진 준비 중에도 첫 UNKNOWN을 발행한다.
+`header.stamp`는 촬영 시각이며, 이후 소비자는 수신 시각뿐 아니라 이 시각으로
+신선도를 판단해야 한다. `inference_ms`는 GPU 추론, `processing_ms`는 작업 스레드
+처리 전체, `capture_age_ms`는 결과 생성 시 촬영 이후 경과 시간이다.
+입력이 없는 경우 `capture_age_ms=-1`이다.
+
+설정은 `config/traffic_light.yaml`에 있다. ROI는 카메라 원본 크기의 비율로
+지정한다. 기본값은 640x400 기준 `x=0,y=65,w=640,h=160`에 해당하며
+1280x800에서는 `x=0,y=130,w=1280,h=320`을 모델의 640x160으로 축소한다.
+CAM_B/C의 흑백 입력으로는 색상 판별을 할 수 없어 UNKNOWN 상태가 유지된다.
+
+기존 자동 주행 명령에 다음 인자를 사용할 수 있다:
+
+```bash
+# 신호등 연산을 완전히 끄고 차선 프로파일과 비교
+traffic_light_enabled:=false
+# 처리량 제한 (생략하면 YAML의 20Hz)
+traffic_light_inference_fps:=15.0
+# 외부 신호등 YAML (노드 키: traffic_light_detector)
+traffic_light_params_file:=/absolute/path/traffic_light.yaml
+```
+
+터미널 `Traffic` 로그에는 실제 프레임 처리율, 추론/전체 처리 평균·최댓값,
+촬영 이후 최대 경과시간, 최신 프레임 교체 횟수가 나온다. 카메라 80Hz/추론
+20Hz에서는 프레임 교체가 정상이다. 차선의 `profiling_enabled:=true` CSV를
+신호등 on/off 조건에서 비교해 차선 지연 영향을 판단할 수 있다.
+
+변경된 카메라와 공유 라이브러리까지 함께 빌드해야 한다:
+
+```bash
+colcon build --packages-up-to vehicle_bringup \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+source install/setup.bash
+```
+
+첫 실행의 엔진 빌드와 준비 직후 추론은 정상 운전 중 성능 측정에서 제외한다.
+엔진 초기화도 별도 스레드지만 최초 빌드의 CPU/GPU 부하는 공유한다.
+기존 단독 프리뷰는 아래와 같이 별도로 사용할 수 있으며, 같은 카메라를 사용하는
+자동 주행과 단독 프리뷰를 동시에 실행하면 안 된다.
+
 `camera_driver`를 수정하지 않고 OAK 카메라의 신호등 검출 결과만 확인하는
 ROS 2 C++ 프리뷰 패키지다. OAK CAM_A의 `1280x800` 센서 영상을 `640x400`
 NV12로 받아 TensorRT 입력용 전처리를 GPU에서 수행하고, 학습 완료된

@@ -411,16 +411,34 @@ public:
     if (data_size < nv12_byte_count) {
       throw std::invalid_argument("NV12 input buffer is undersized");
     }
-    nv12_device_.ensure_capacity(nv12_byte_count);
+    // Upload only the ROI, expanded to chroma-aligned edges. Preserve odd
+    // ROI coordinates used by the standalone detector (e.g. top=65).
+    const int upload_left = roi_left & ~1;
+    const int upload_top = roi_top & ~1;
+    const int upload_width = ((roi_left + roi_width + 1) & ~1) - upload_left;
+    const int upload_height = ((roi_top + roi_height + 1) & ~1) - upload_top;
+    const std::size_t upload_y_bytes =
+      static_cast<std::size_t>(upload_width) * upload_height;
+    nv12_device_.ensure_capacity(upload_y_bytes * 3U / 2U);
 
     check_cuda(
       cudaEventRecord(input_started_.get(), stream_.get()),
       "cudaEventRecord(NV12 input start)");
     check_cuda(
-      cudaMemcpyAsync(
-        nv12_device_.get(), nv12, nv12_byte_count,
+      cudaMemcpy2DAsync(
+        nv12_device_.get(), upload_width,
+        nv12 + static_cast<std::size_t>(upload_top) * source_stride + upload_left,
+        source_stride, upload_width, upload_height,
         cudaMemcpyHostToDevice, stream_.get()),
-      "cudaMemcpyAsync(NV12 host to device)");
+      "cudaMemcpy2DAsync(NV12 ROI Y)");
+    check_cuda(
+      cudaMemcpy2DAsync(
+        static_cast<std::uint8_t *>(nv12_device_.get()) + upload_y_bytes, upload_width,
+        nv12 + source_stride * source_height +
+        static_cast<std::size_t>(upload_top / 2) * source_stride + upload_left,
+        source_stride, upload_width, upload_height / 2,
+        cudaMemcpyHostToDevice, stream_.get()),
+      "cudaMemcpy2DAsync(NV12 ROI UV)");
     check_cuda(
       cudaEventRecord(input_finished_.get(), stream_.get()),
       "cudaEventRecord(NV12 input finish)");
@@ -428,7 +446,7 @@ public:
     check_cuda(
       launch_nv12_roi_to_bgr_nchw(
         static_cast<const std::uint8_t *>(nv12_device_.get()),
-        source_stride, source_height, roi_left, roi_top, roi_width,
+        upload_width, upload_height, roi_left - upload_left, roi_top - upload_top, roi_width,
         roi_height,
         static_cast<float *>(input_device_.get()), input_width_, input_height_,
         stream_.get()),

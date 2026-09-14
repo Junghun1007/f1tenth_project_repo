@@ -1,6 +1,7 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/msg/bev_input.hpp"
+#include "bev_handoff/direct_camera_handoff.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -1477,6 +1478,27 @@ private:
           std::atomic_store_explicit(
             &latest_frame_, std::move(snapshot), std::memory_order_release);
           frame_available_.notify_all();
+        }
+
+        if (bev_handoff::hasDirectCameraConsumer()) {
+          if (packet->getType() == dai::ImgFrame::Type::NV12) {
+            const auto & data = packet->getData();
+            auto frame = std::make_shared<bev_handoff::DirectCameraFrame>();
+            frame->nv12 = data.data();
+            frame->size = data.size();
+            frame->width = packet->getWidth();
+            frame->height = packet->getHeight();
+            frame->stride = packet->getStride() > 0U ? packet->getStride() : packet->getWidth();
+            frame->owner = packet;
+            frame->header.stamp = ros_timestamp_for(sensor_timestamp);
+            frame->header.frame_id = frame_id_;
+            frame->captured_at = sensor_timestamp;
+            frame->generation = generation;
+            bev_handoff::deliverDirectCameraFrame(std::move(frame));
+          } else {
+            RCLCPP_WARN_THROTTLE(node_.get_logger(), *node_.get_clock(), 5000,
+              "Traffic signal color detection requires CAM_A color NV12; grayscale is unsupported.");
+          }
         }
 
         if (!first_frame_received_.exchange(true)) {
