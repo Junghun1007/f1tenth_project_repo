@@ -28,6 +28,8 @@ traffic_stop_margin_m: 0.15
 traffic_front_axle_to_bumper_m: 0.10
 traffic_stop_deceleration_mps2: 0.60
 traffic_brake_response_time_sec: 0.15
+traffic_pass_if_unstoppable_enabled: true
+traffic_pass_overshoot_m: 0.60
 traffic_brake_max_current_amps: 2.5
 traffic_hold_current_amps: 0.7
 traffic_stop_line_match_tolerance_m: 0.30
@@ -40,7 +42,8 @@ traffic_reapproach_speed_mps: 0.20
 ### 목표 속도 곡선 → 실제 속도 PID → duty/브레이크
 
 코너 감속 OFF에서는 기본 목표가 `maximum_speed_mps`다. Stanley 조향은 그대로 사용한다.
-신호등 정지를 켜고 RED가 확인되면, 남은 거리에 따른 속도 곡선 `v(d)`에서 매 차선
+신호등 정지를 켜고 최신 RED와 유효한 정지선 거리를 함께 확인해 접근을 시작하면,
+남은 거리에 따른 속도 곡선 `v(d)`에서 매 차선
 결과마다 목표를 다시 계산한다. 하나의 고정 속도나 미리 저장한 배열이 아니라,
 정지선에 접근할수록 최종 0까지 낮아지는 연속 곡선을 온라인으로 샘플링한다.
 
@@ -57,7 +60,7 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작
 duty는 기존 상승/하강 속도 제한을 따른다. 신호등 정지 요구가 없는 일반 출발은
 기존 `minimum_duty`까지 초기 duty를 적용해 0부터 긴 대기 후 출발하는 현상을 줄인다
 (PID 요구 duty가 더 작으면 해당 값까지만 적용). 정지선 접근에는 이 출발 보정을 쓰지 않는다.
-적분은 출력 포화 시 추가 누적을 막고, 목표 0 진입/복귀와 RED/GREEN 전환에서 초기화한다.
+적분은 출력 포화 시 추가 누적을 막고, 목표 0 진입/복귀와 정지 접근 시작/GREEN 해제에서 초기화한다.
 기본 D=0이므로 초기 동작은 PI이고, D를 쓰려면 `longitudinal_pid_kd`로 설정한다.
 
 새 PID 이득은 정규화된 출력용으로, 기존 duty 단위 `speed_pid_kp/ki/kd`와 다르다.
@@ -77,14 +80,34 @@ duty는 기존 상승/하강 속도 제한을 따른다. 신호등 정지 요구
 조향을 유지하며, 옵션을 false로 설정하면 정차 중 Stanley 계산 결과를 적용하고
 제어 중단에서는 중앙 조향으로 복귀한다.
 
-RED는 정지 요구를 유지하며 UNKNOWN/신호 미검출로 해제되지 않는다. 유효한 최신 GREEN이
-해제하고 기존 enabled/drive/차선/ERPM 조건이 충족되면 주행한다. 시작부터 UNKNOWN이거나
-GREEN 확인 후 UNKNOWN/입력 유실이 발생해도 신호등 정지 요구를 새로 만들지 않는다.
-따라서 초록불로 정지선을 통과하고 회전하면서 신호등이 화면 밖으로 나가도 계속 주행한다.
-RED 이후 유실은 기존 정지선 접근/정차 요구를 유지하고, 최신 GREEN으로만 해제한다.
-`traffic_state_timeout_sec`은 수신 메시지의 촬영 경과시간 검사에만 사용하며,
-오래된 RED/GREEN 메시지는 무시한다. `signal_seen=no` 로그에서 정지한다면 신호등이
-아닌 차선/ERPM/enable 조건을 확인한다. RED 정지 중 정지선 거리 미검출은 `traffic_stop_line_timeout_sec`까지만
+정지선만 보이거나 RED만 보이고 유효한 정지선 거리가 없으면 신호등 정지 요구를 만들지 않는다.
+`traffic_state_timeout_sec` 이내의 RED와 `traffic_stop_line_timeout_sec` 이내에 연속 확인한
+범퍼 앞 정지선 거리가 함께 있어야 접근을 시작한다. 거리 확인 전 RED가 유실되어 만료되면
+대기를 해제하므로 이후의 신호등 없는 정지선에 이전 RED를 적용하지 않는다.
+접근을 시작한 뒤에는 RED/UNKNOWN/신호 유실에 관계없이 정지 요구를 유지한다.
+최신 GREEN은 감속/정차 중에도 정지 요구를 해제한다. GREEN 이후 UNKNOWN/입력 유실은
+새 정지 요구를 만들지 않으며 정상 목표 속도로 계속 주행한다.
+
+GREEN(이후 UNKNOWN 포함)에서 RED로 바뀌면, 유효한 거리와 속도를 확보한 시점에
+`예상 정지거리 = v*t + v²/(2*a)`를 계산한다. v는 현재 필터 속도, t는
+`traffic_brake_response_time_sec`, a는 `traffic_stop_deceleration_mps2`다.
+거리 관측은 영상 지연 이동량과 앞차축→범퍼 거리를 보정한다. 정차 여유 거리는
+이 판단에서 다시 더해 **물리적 정지선**을 기준으로 비교한다.
+`예상 초과거리 = 예상 정지거리 - 현재 범퍼부터 정지선까지 거리`가
+`traffic_pass_overshoot_m`(기본 0.60m) 이상이고 `traffic_pass_if_unstoppable_enabled`가
+true이면 정지 접근 대신 정상 목표 속도로 통과한다. 최초 인식이 RED인 경우에는
+이 예외를 적용하지 않는다. 이는 설정 감속도에 따른 추정이며 실측 정지 위치가 아니다.
+
+같은 대상에 대한 정지/통과 판단은 재계산으로 번갈아 바뀌지 않는다. 통과 결정은
+범퍼가 해당 정지선을 지났다고 추정되거나 GREEN이 확인되면 해제한다. 통과 중 속도/시간
+정보가 무효가 되어 거리 적분을 잃으면 통과 결정을 폐기하고 새 RED/정지선 쌍을 요구한다.
+모든 경우 기존 enabled/drive/차선/ERPM 조건을 우선하며, 계속 주행은 무제한 가속이 아닌
+설정된 정상 목표 속도로의 복귀다.
+
+접근 대상이 정해지기 전 관측은 마지막 정지선 확인 시각 기준으로 만료하고,
+범퍼가 통과한 관측도 버린다. 이전 정지선의 음수 거리가 다음 정지선을 계속 거부하지 않는다.
+접근을 이미 시작한 대상은 임의로 다음 정지선으로 바꾸지 않는다.
+RED 정지 접근 중 정지선 거리 미검출은 `traffic_stop_line_timeout_sec`까지만
 이동량으로 보정하고, 그 이후에는 **임시 정지**한다. 차선/속도 입력 손실도 임시 정지다.
 정지선이 정상적으로 재확인되고 입력이 복구되면 남은 거리를 따라 저속 재접근한다.
 임시 정지를 최종 도착으로 고정하지 않는다. 복구 접근 속도는 GREEN까지
@@ -100,7 +123,8 @@ RED 이후 유실은 기존 정지선 접근/정차 요구를 유지하고, 최�
 최근 확인된 정지선 위치가 허용오차 이내이고, 보정한 위치도 해당 범위이며,
 실제 속도가 0.05m/s 미만일 때에만 최종 `position_hold`로 전환한다.
 그 상태는 GREEN까지 유지한다. 정지 위치를 지난 경우 뒤로 복귀하지 않는다.
-상태 로그 `phase`는 approach/slow_reapproach/position_braking/position_hold/
+상태 로그 `phase`는 inactive/waiting_for_red_line_pair/pass_committed/
+approach/slow_reapproach/position_braking/position_hold/
 temporary_stop_line_unavailable/temporary_stop_control_input을 구분한다.
 `line_rejected`는 거리 불일치로 거부한 누적 관측 수다.
 
@@ -122,13 +146,16 @@ source install/setup.bash
 
 Control is triggered by each received `LaneResult`: validate the path, calculate
 Stanley/PID and publish duty/brake/servo commands directly in that callback.
-The controller does not wait for an 80Hz timer or repeatedly update PID on an old image.
+The controller does not wait for an 80Hz timer. A short geometric detection failure
+can reuse the last valid path within `path_hold_timeout_sec` (default 0.08s).
 `control_rate_hz` is the stop-watchdog rate and reference rate for the configured
 steering filter weight. PID, brake ramps and steering/duty rate limits use elapsed
-time between results, bounded by the input freshness limits. Empty or invalid results
-immediately send stop commands. With no new results, the watchdog still stops on
+time between results, bounded by the input freshness limits. A held path retains its
+original capture timestamp, and failures never extend its hold deadline. Set the
+hold timeout to zero to stop immediately on geometric failure. Malformed, stale,
+duplicate, out-of-order or wrong-frame results stop immediately. With no new results, the watchdog stops on
 stale path/ERPM, disconnect or disable. Enabling or recovering telemetry alone does
-not initiate motion; a new valid lane result must arrive.
+not initiate motion; another lane result must arrive and all path age/hold limits must pass.
 
 The ROS command is published immediately after calculation. VESC UART transmission
 continues through the existing bridge worker; this is not a hard real-time guarantee.
@@ -155,11 +182,13 @@ these samples for its cumulative `control avg` time and reciprocal FPS.
 6. Apply curvature-based target speed, ERPM feedback, PID and duty limits from YAML.
    Optional electrical braking replaces positive duty during overspeed.
 
-Missing, invalid, short, duplicate, out-of-order or stale centerlines invalidate
-control. Stale ERPM, VESC disconnect, disable and shutdown also send duty zero
-and centered steering. These stops release electrical brake current. Existing
-freshness thresholds are retained; camera capture age includes ML inference time.
-`stop_line_present` is diagnostic and does not trigger automatic stop-line handling.
+Missing/short geometric paths beyond the bounded hold interval invalidate control.
+Stale ERPM, VESC disconnect, disable and shutdown also stop drive commands. Steering
+follows `stop_steering_hold_enabled`. During an active RED approach, recoverable
+input failures keep braking; disconnected/disabled modes retain their motor behavior.
+Existing freshness limits still apply; camera capture age includes ML inference time.
+`stop_line_present` alone never requests a traffic stop: a fresh RED and a confirmed
+distance must be paired before activating an approach.
 
 The control result carries timestamps, lane state/geometry, and the ordered
 centerline only. BGR/label/mask payloads are not serialized through the
@@ -333,11 +362,17 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   `stop_confirmed_age_s`, `stop_candidate_count`, `stop_line_rejections`로 미확인/유실/거부를 구분한다.
 - `signal_state`, `signal_score`, `signal_age_s`, `signal_message_accepted`는 마지막
   수신 신호와 메시지 수용 여부다. 수용에는 UNKNOWN도 포함하며 정지 요청은
-  `red_latched`와 `traffic_stop_enabled`로 구분한다. 메시지 유실 시 마지막 색상이
+  `stop_active`와 `traffic_stop_enabled`로 구분한다. `red_latched`만으로는 거리 대기와
+  실제 정지 접근을 구분할 수 없다. 메시지 유실 시 마지막 색상이
   남으므로 반드시 경과시간도 본다. 미측정/사용 불가 수치는 빈 칸이다.
 
 RED 직후 정지 원인은 `control_state`/`traffic_phase`로 구분한다.
-`temporary_stop_line_unavailable`이면 정지선이 아직 연속 확인되지 않았거나 오래되어
+`waiting_for_red_line_pair`이면 아직 RED와 거리를 함께 확보하지 못해 정상 주행한다.
+`pass_committed`이면 0.6m 초과 정지 예측에 따라 통과를 선택했다.
+`predicted_stop_distance_m`/`predicted_overshoot_m`은 결정 시점의 값을 보존하며,
+`red_from_green`, `red_age_s`, `stop_active`, `pass_committed`로 근거를 확인한다.
+`path_held`는 잠깐 유효하지 않은 새 경로 대신 이전 유효 경로를 사용했음을 뜻한다.
+`temporary_stop_line_unavailable`이면 이미 시작한 접근 중 정지선이 오래 유실되어
 목표 속도를 0으로 만든 것이다. `temporary_stop_control_input`이면 차선/ERPM 등
 제어 입력 실패로 제동 상한 명령을 내린 것이다. `approach`이면서 목표 속도는 남아
 있는데 차가 먼저 멈춘다면 PID 출력, 제동 전류, duty 회복 속도를 함께 분석한다.

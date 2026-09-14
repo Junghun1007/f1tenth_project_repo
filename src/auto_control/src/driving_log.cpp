@@ -33,7 +33,7 @@ DrivingLog::DrivingLog(const std::string & directory, const std::string & header
   const auto base = root / ("drive_" + std::to_string(stamp));
   path_ = base.string() + ".csv";
   std::ofstream metadata(base.string() + ".parameters.txt");
-  metadata << "Driving log schema: 1\nEffective auto_control parameters at startup\n"
+  metadata << "Driving log schema: 2\nEffective auto_control parameters at startup\n"
            << parameters;
   metadata.close();
   if (!metadata) {throw std::runtime_error("cannot write driving log parameters");}

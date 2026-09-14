@@ -186,6 +186,8 @@ private:
     traffic_front_offset_ = parameter("traffic_front_axle_to_bumper_m", 0.10);
     traffic_deceleration_ = parameter("traffic_stop_deceleration_mps2", 0.60);
     traffic_response_time_ = parameter("traffic_brake_response_time_sec", 0.15);
+    traffic_pass_enabled_ = parameter("traffic_pass_if_unstoppable_enabled", true);
+    traffic_pass_overshoot_m_ = parameter("traffic_pass_overshoot_m", 0.60);
     traffic_brake_gain_ = parameter("traffic_brake_amps_per_mps2", 2.0);
     traffic_brake_max_ = parameter("traffic_brake_max_current_amps", 2.5);
     traffic_hold_current_ = parameter("traffic_hold_current_amps", 0.7);
@@ -230,6 +232,7 @@ private:
     control_rate_hz_ = parameter("control_rate_hz", 80.0);
     status_log_rate_hz_ = parameter("status_log_rate_hz", 2.0);
     path_timeout_sec_ = parameter("path_timeout_sec", 0.15);
+    path_hold_timeout_sec_ = parameter("path_hold_timeout_sec", 0.08);
     path_capture_maximum_age_sec_ = parameter("path_capture_maximum_age_sec", 0.20);
     erpm_timeout_sec_ = parameter("erpm_timeout_sec", 0.15);
     bev_x_max_m_ = parameter("bev_x_max_m", 3.0);
@@ -325,6 +328,12 @@ private:
       longitudinal_ki_ < 0 || longitudinal_kd_ < 0 || traffic_arrival_tolerance_ < 0 || traffic_line_weight_ > 1 ||
       traffic_line_confirm_frames_ < 1)
     {throw std::invalid_argument("invalid traffic stop parameters");}
+    if (!finite_positive({traffic_pass_overshoot_m_})) {
+      throw std::invalid_argument("traffic_pass_overshoot_m must be positive");
+    }
+    if (!finite({path_hold_timeout_sec_}) || path_hold_timeout_sec_ < 0.0 ||
+      path_hold_timeout_sec_ > path_timeout_sec_)
+    {throw std::invalid_argument("path_hold_timeout_sec must be between 0 and path_timeout_sec");}
     if (control_mode_ != "drive" && control_mode_ != "steering_only" && control_mode_ != "monitor_only") {
       throw std::invalid_argument("control_mode must be drive, steering_only, or monitor_only");
     }
@@ -391,7 +400,10 @@ private:
     latest_stop_line_corrected_m_ = kUnavailable;
     lane_result_points_ = message->centerline_points.size();
     lane_capture_age_sec_.reset();
+    auto previous_path = std::move(path_);
     path_.reset();
+    bool may_hold_path = false;
+    path_hold_active_ = false;
     last_path_received_ns_ = received_ros.nanoseconds();
     try {
       const auto capture_ns = stamp_nanoseconds(message->header.stamp);
@@ -401,10 +413,10 @@ private:
       if (age < -0.05 || age > path_capture_maximum_age_sec_) {
         throw std::invalid_argument("source capture timestamp is stale or in the future");
       }
-      if (path_capture_ns_ && *capture_ns <= *path_capture_ns_) {
+      if (last_lane_capture_ns_ && *capture_ns <= *last_lane_capture_ns_) {
         throw std::invalid_argument("duplicate or out-of-order lane result");
       }
-      path_capture_ns_ = capture_ns;
+      last_lane_capture_ns_ = capture_ns;
       if (traffic_stop_enabled_ && message->header.frame_id == lane_result_frame_id_) {
         advance_stop_distance(received_ros.nanoseconds());
         if (message->stop_line_present && std::isfinite(message->stop_line_distance_m) &&
@@ -423,11 +435,27 @@ private:
       } else {
         validate_and_build_path(*message);
       }
+      may_hold_path = message->header.frame_id == lane_result_frame_id_;
+      if (path_) {
+        path_capture_ns_ = capture_ns;
+        last_valid_path_received_ns_ = received_ros.nanoseconds();
+      }
     } catch (const std::exception & exception) {
       path_.reset();
       lane_result_status_ = exception.what();
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
         "Rejected ML centerline: %s", exception.what());
+    }
+    if (!path_ && may_hold_path && previous_path && last_valid_path_received_ns_ &&
+      path_capture_ns_ && path_hold_timeout_sec_ > 0.0 &&
+      received_ros.nanoseconds() >= *last_valid_path_received_ns_ &&
+      seconds(received_ros.nanoseconds() - *last_valid_path_received_ns_) <= path_hold_timeout_sec_ &&
+      received_ros.nanoseconds() >= *path_capture_ns_ &&
+      seconds(received_ros.nanoseconds() - *path_capture_ns_) <= path_capture_maximum_age_sec_)
+    {
+      path_ = std::move(previous_path);
+      path_hold_active_ = true;
+      lane_result_status_ = "holding_previous_path:" + lane_result_status_;
     }
     std::int64_t decision_finished_ros_ns = 0;
     const bool servo_calculated = update_control_from_path(decision_finished_ros_ns);
@@ -495,6 +523,21 @@ private:
     lane_result_status_ = path_ ? "accepted" : "insufficient_contiguous_path";
   }
 
+  void clear_stop_line_track()
+  {
+    stop_remaining_.reset();
+    stop_line_seen_ns_.reset();
+    stop_candidate_count_ = 0;
+    stop_candidate_ns_ = 0;
+    last_observed_remaining_ = 0.0;
+  }
+
+  bool stop_line_fresh(std::int64_t now_ns) const
+  {
+    return stop_remaining_ && stop_line_seen_ns_ && now_ns >= *stop_line_seen_ns_ &&
+      seconds(now_ns - *stop_line_seen_ns_) <= traffic_line_timeout_;
+  }
+
   void advance_stop_distance(std::int64_t now_ns)
   {
     if (stop_distance_updated_ns_) {
@@ -502,9 +545,13 @@ private:
       const bool speed_fresh = last_erpm_ns_ && now_ns >= *last_erpm_ns_ &&
         seconds(now_ns - *last_erpm_ns_) <= erpm_timeout_sec_;
       if (elapsed < 0 || elapsed > traffic_line_timeout_ || !speed_fresh) {
-        stop_remaining_.reset();
-        stop_line_seen_ns_.reset();
-        stop_candidate_count_ = 0;
+        clear_stop_line_track();
+        // Without valid motion integration a previous pass cannot remain armed
+        // indefinitely. Normal input guards stop control; recovery needs a new pair.
+        if (traffic_pass_committed_) {
+          traffic_pass_committed_ = traffic_red_ = traffic_red_from_green_ = false;
+          traffic_red_seen_ns_.reset();
+        }
       } else {
         const double travel = std::max(0.0, current_speed_mps_) * elapsed;
         if (stop_remaining_) {*stop_remaining_ -= travel;}
@@ -512,6 +559,30 @@ private:
       }
     }
     stop_distance_updated_ns_ = now_ns;
+    // Retire a committed pass only after the bumper has crossed its line.
+    // A fresh RED/line pair is required for the next target.
+    if (traffic_pass_committed_ && stop_remaining_ &&
+      *stop_remaining_ + traffic_margin_ <= 0.0)
+    {
+      traffic_pass_committed_ = false;
+      traffic_red_ = false;
+      traffic_red_seen_ns_.reset();
+      traffic_red_from_green_ = false;
+      clear_stop_line_track();
+    }
+    // Uncommitted observations expire by LAST OBSERVATION age, not callback dt.
+    // Never match the next intersection against an old, negative distance.
+    // An active stop keeps its target identity and cannot silently switch lines.
+    if (!traffic_stop_active_ && !traffic_pass_committed_ &&
+      (!stop_line_fresh(now_ns) || (stop_remaining_ &&
+      *stop_remaining_ + traffic_margin_ <= 0.0)))
+    {
+      // Keep a new candidate long enough to reach the confirmation count.
+      if (stop_remaining_ || (stop_candidate_count_ > 0 &&
+        (now_ns < stop_candidate_ns_ ||
+        seconds(now_ns - stop_candidate_ns_) > traffic_line_timeout_)))
+      {clear_stop_line_track();}
+    }
   }
 
   void observe_stop_distance(double distance, std::int64_t now_ns)
@@ -540,9 +611,55 @@ private:
 
   bool traffic_stop_requested() const
   {
-    // A green light normally leaves view after passing the intersection.
-    // Only RED latches a stop; UNKNOWN/lost input preserves the latch until GREEN.
-    return traffic_stop_enabled_ && traffic_red_;
+    return traffic_stop_enabled_ && traffic_stop_active_;
+  }
+
+  const char * traffic_status() const
+  {
+    if (traffic_stop_requested()) {return traffic_phase_.c_str();}
+    if (traffic_pass_committed_) {return "pass_committed";}
+    if (traffic_red_) {return "waiting_for_red_line_pair";}
+    return "inactive";
+  }
+
+  void update_traffic_decision(std::int64_t now_ns)
+  {
+    if (!traffic_stop_enabled_ || traffic_stop_active_ || traffic_pass_committed_) {return;}
+    if (!traffic_red_ || !traffic_red_seen_ns_) {return;}
+    if (now_ns < *traffic_red_seen_ns_ ||
+      seconds(now_ns - *traffic_red_seen_ns_) > traffic_state_timeout_)
+    {
+      // A RED with no confirmed line is not a stop request for a later,
+      // unrelated stop-line-only section. Signal loss AFTER activation differs.
+      traffic_red_ = false;
+      traffic_red_seen_ns_.reset();
+      traffic_red_from_green_ = false;
+      return;
+    }
+    if (!stop_line_fresh(now_ns) || *stop_remaining_ + traffic_margin_ <= 0.0) {return;}
+    const double speed = std::max(0.0, current_speed_mps_);
+    traffic_predicted_stop_distance_m_ = speed * traffic_response_time_ +
+      speed * speed / (2.0 * traffic_deceleration_);
+    // stop_remaining_ is to the buffered target; add the margin back to
+    // compare predicted BUMPER position with the physical stop line.
+    traffic_predicted_overshoot_m_ = traffic_predicted_stop_distance_m_ -
+      (*stop_remaining_ + traffic_margin_);
+    if (traffic_red_from_green_ && traffic_pass_enabled_ &&
+      traffic_predicted_overshoot_m_ >= traffic_pass_overshoot_m_)
+    {
+      traffic_pass_committed_ = true;
+      RCLCPP_WARN(get_logger(),
+        "GREEN->RED pass committed: predicted stop=%.3fm, overshoot=%.3fm >= %.3fm",
+        traffic_predicted_stop_distance_m_, traffic_predicted_overshoot_m_, traffic_pass_overshoot_m_);
+      return;
+    }
+    traffic_stop_active_ = true;
+    traffic_holding_ = traffic_reapproach_ = false;
+    traffic_phase_ = "approach";
+    longitudinal_pid_->reset();
+    speed_pid_->reset();
+    RCLCPP_WARN(get_logger(), "RED + confirmed stop line: approach latched, remaining=%.3fm",
+      *stop_remaining_);
   }
 
   void on_traffic_state(const traffic_detection_test::msg::TrafficLightState::ConstSharedPtr message)
@@ -561,24 +678,28 @@ private:
     latest_signal_accepted_ = true;
     if (!traffic_stop_enabled_) {return;}
     if (message->state != Signal::RED && message->state != Signal::GREEN) {return;}
-    const bool was_stopping = traffic_stop_requested();
     traffic_signal_seen_ = true;
     if (message->state == Signal::RED) {
       if (!traffic_red_) {
         traffic_red_ = true;
-        traffic_holding_ = traffic_reapproach_ = false;
+        traffic_red_from_green_ = traffic_green_seen_;
+        traffic_green_seen_ = false;
+        traffic_predicted_stop_distance_m_ = traffic_predicted_overshoot_m_ = kUnavailable;
+      }
+      traffic_red_seen_ns_ = captured;
+    } else if (message->state == Signal::GREEN) {
+      const bool was_stopping = traffic_stop_active_;
+      const bool had_target = traffic_stop_active_ || traffic_pass_committed_;
+      traffic_green_seen_ = true;
+      traffic_red_ = traffic_stop_active_ = traffic_pass_committed_ = false;
+      traffic_holding_ = traffic_reapproach_ = traffic_red_from_green_ = false;
+      traffic_red_seen_ns_.reset();
+      if (had_target) {clear_stop_line_track();}
+      if (was_stopping) {
         longitudinal_pid_->reset();
         speed_pid_->reset();
-        RCLCPP_WARN(get_logger(), "Traffic RED: stop-line approach latched.");
+        RCLCPP_INFO(get_logger(), "Traffic GREEN: stop request released; normal drive gates still apply.");
       }
-    } else if (message->state == Signal::GREEN && was_stopping) {
-      traffic_red_ = traffic_holding_ = traffic_reapproach_ = false;
-      stop_candidate_count_ = 0;
-      stop_remaining_.reset();
-      stop_line_seen_ns_.reset();
-      longitudinal_pid_->reset();
-      speed_pid_->reset();
-      RCLCPP_INFO(get_logger(), "Traffic GREEN: stop request released; normal drive gates still apply.");
     }
     // UNKNOWN/stale messages cannot cancel a red stop. A new valid green can.
   }
@@ -686,6 +807,10 @@ private:
       if (seconds(now_ns - *last_erpm_ns_) > erpm_timeout_sec_) {return "erpm_timeout";}
     }
     if (!path_ || !last_path_received_ns_) {return "centerline_missing";}
+    if (path_hold_active_ && (!last_valid_path_received_ns_ ||
+      now_ns < *last_valid_path_received_ns_ ||
+      seconds(now_ns - *last_valid_path_received_ns_) > path_hold_timeout_sec_))
+    {return "centerline_hold_timeout";}
     if (seconds(now_ns - *last_path_received_ns_) > path_timeout_sec_) {return "centerline_timeout";}
     if (path_capture_ns_ && seconds(now_ns - *path_capture_ns_) > path_capture_maximum_age_sec_) {
       return "centerline_stale";
@@ -706,6 +831,8 @@ private:
       decision_finished_ros_ns = now().nanoseconds();
       return false;
     }
+    advance_stop_distance(now_ns);
+    update_traffic_decision(now_ns);
     const double curvature = representative_curvature(
       *path_, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
       curvature_percentile_);
@@ -1013,7 +1140,8 @@ private:
         "stop_last_confirmed_m,stop_confirmed_age_s,stop_candidate_count,stop_line_rejections,"
         "slow_reapproach,signal_score,signal_age_s,signal_message_accepted,erpm_age_s,"
         "lane_receive_age_s,lane_capture_age_at_rx_s,path_capture_age_s,lane_sequence,"
-        "path_valid,path_point_count,centerline_xy_m",
+        "path_valid,path_point_count,stop_active,pass_committed,red_from_green,"
+        "predicted_stop_distance_m,predicted_overshoot_m,red_age_s,path_held,centerline_xy_m",
         parameters);
       driving_log_started_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
@@ -1029,7 +1157,8 @@ private:
     const auto steady = std::chrono::steady_clock::now();
     const bool changed = last_logged_state_ != last_stop_reason_ ||
       last_logged_motor_ != last_motor_mode_ || last_logged_signal_ != latest_signal_state_ ||
-      last_logged_steering_held_ != steering_held_;
+      last_logged_steering_held_ != steering_held_ ||
+      last_logged_traffic_status_ != traffic_status() || last_logged_path_held_ != path_hold_active_;
     if (!changed && last_driving_log_ &&
       std::chrono::duration<double>(steady - *last_driving_log_).count() <
       1.0 / driving_log_rate_hz_) {return;}
@@ -1038,6 +1167,8 @@ private:
     last_logged_motor_ = last_motor_mode_;
     last_logged_signal_ = latest_signal_state_;
     last_logged_steering_held_ = steering_held_;
+    last_logged_traffic_status_ = traffic_status();
+    last_logged_path_held_ = path_hold_active_;
     const auto ns = now().nanoseconds();
     const auto age = [ns](const std::optional<std::int64_t> & stamp) {
         return stamp ? seconds(ns - *stamp) : kUnavailable;
@@ -1046,7 +1177,7 @@ private:
     frame.ros_ns = ns;
     frame.elapsed_sec = std::chrono::duration<double>(steady - driving_log_started_).count();
     frame.labels = {control_mode_, last_stop_reason_,
-      traffic_stop_requested() ? traffic_phase_ : "inactive", last_motor_mode_, lane_result_status_,
+      traffic_status(), last_motor_mode_, lane_result_status_,
       latest_signal_state_ == 1 ? "RED" : latest_signal_state_ == 2 ? "GREEN" : "UNKNOWN"};
     frame.values = {
       double(enabled_), double(vesc_connected_), double(traffic_stop_enabled_),
@@ -1063,7 +1194,10 @@ private:
       latest_signal_score_, age(latest_signal_capture_ns_), double(latest_signal_accepted_),
       age(last_erpm_ns_), age(last_path_received_ns_), lane_capture_age_sec_.value_or(kUnavailable),
       age(path_capture_ns_), double(latest_lane_sequence_), double(path_.has_value()),
-      path_ ? double(path_->points.size()) : 0.0};
+      path_ ? double(path_->points.size()) : 0.0,
+      double(traffic_stop_active_), double(traffic_pass_committed_), double(traffic_red_from_green_),
+      traffic_predicted_stop_distance_m_, traffic_predicted_overshoot_m_, age(traffic_red_seen_ns_),
+      double(path_hold_active_)};
     if (path_) {frame.path = path_->points;}
     driving_log_->enqueue(std::move(frame));
   }
@@ -1101,26 +1235,32 @@ private:
       RCLCPP_INFO(get_logger(), "Traffic stop | red_latched=%s | hold=%s | remaining=%s | phase=%s | line_rejected=%llu | signal_seen=%s",
         traffic_red_ ? "yes" : "no", traffic_holding_ ? "yes" : "no",
         stop_remaining_ ? std::to_string(*stop_remaining_).c_str() : "unknown",
-        traffic_stop_requested() ? traffic_phase_.c_str() : "inactive",
+        traffic_status(),
         static_cast<unsigned long long>(stop_line_rejections_), traffic_signal_seen_ ? "yes" : "no");
     }
   }
 
   bool driving_log_enabled_{false}, stop_steering_hold_enabled_{true}, steering_held_{false};
   double driving_log_rate_hz_{20.0};
-  std::string driving_log_directory_, last_logged_state_, last_logged_motor_;
+  std::string driving_log_directory_, last_logged_state_, last_logged_motor_, last_logged_traffic_status_;
   std::unique_ptr<DrivingLog> driving_log_;
   std::chrono::steady_clock::time_point driving_log_started_;
   std::optional<std::chrono::steady_clock::time_point> last_driving_log_;
   int latest_signal_state_{0}, last_logged_signal_{-1}, latest_erpm_{0};
   bool latest_signal_accepted_{false}, latest_stop_line_present_{false};
   bool last_logged_steering_held_{false};
+  bool last_logged_path_held_{false}, path_hold_active_{false};
   std::uint64_t latest_lane_sequence_{0};
   std::optional<std::int64_t> latest_signal_capture_ns_;
   double latest_signal_score_{kUnavailable}, latest_stop_line_raw_m_{kUnavailable};
   double latest_stop_line_corrected_m_{kUnavailable}, latest_raw_speed_mps_{kUnavailable};
   double latest_pid_effort_{kUnavailable}, latest_desired_duty_{kUnavailable};
   bool traffic_stop_enabled_{false}, traffic_red_{false}, traffic_holding_{false};
+  bool traffic_stop_active_{false}, traffic_pass_committed_{false};
+  bool traffic_green_seen_{false}, traffic_red_from_green_{false}, traffic_pass_enabled_{true};
+  double traffic_pass_overshoot_m_{0.60};
+  double traffic_predicted_stop_distance_m_{kUnavailable}, traffic_predicted_overshoot_m_{kUnavailable};
+  std::optional<std::int64_t> traffic_red_seen_ns_;
   bool traffic_signal_seen_{false};
   std::string traffic_state_topic_;
   double traffic_state_timeout_, traffic_line_timeout_, traffic_margin_, traffic_front_offset_;
@@ -1153,7 +1293,7 @@ private:
   std::string input_to_control_decision_topic_;
   std::string performance_measurement_log_directory_, performance_measurement_engine_precision_;
   std::string performance_measurement_model_path_;
-  double control_rate_hz_, status_log_rate_hz_, path_timeout_sec_;
+  double control_rate_hz_, status_log_rate_hz_, path_timeout_sec_, path_hold_timeout_sec_;
   double path_capture_maximum_age_sec_, erpm_timeout_sec_, bev_x_max_m_, bev_y_max_m_;
   double bev_meter_per_pixel_, path_minimum_x_m_, path_maximum_x_m_, path_minimum_span_m_;
   double path_maximum_gap_m_, path_geometry_window_m_, stanley_gain_;
@@ -1177,6 +1317,7 @@ private:
 
   std::optional<OrderedPath> path_;
   std::optional<std::int64_t> last_path_received_ns_, path_capture_ns_, last_erpm_ns_;
+  std::optional<std::int64_t> last_valid_path_received_ns_, last_lane_capture_ns_;
   std::optional<double> lane_capture_age_sec_;
   std::int64_t last_control_ns_{0};
   std::size_t lane_result_count_{0U}, lane_result_points_{0U};
