@@ -10,27 +10,41 @@ auto_control:
     driving_log_rate_hz: 20.0            # 일반 기록 상한(Hz). 제어/신호/조향 유지 상태 변경 시 추가 기록
     driving_log_directory: "driving_logs" # 실행 위치 기준. 절대 경로도 가능
     # 개발 기능: false이면 신호등이 조향/속도/제동에 영향을 주지 않음. 재시작 시 적용.
-    # 속도 계획과 구동 제어 분리: 코너 감속 OFF, 통합 속도 PID ON.
+    # 속도 계획과 구동 제어 분리: 코너 감속 OFF, 속도 PID ON.
     curvature_speed_control_enabled: false
     longitudinal_pid_enabled: true
     longitudinal_pid_kp: 1.0
     longitudinal_pid_ki: 0.5
     longitudinal_pid_kd: 0.0             # D 기본 0: 속도 측정 노이즈 증폭 방지
     longitudinal_pid_integral_limit: 2.0
+    # duty를 먼저 줄이고, 감속 부족 시 별도 전류 제동. false=이전 signed PID 방식.
+    longitudinal_staged_control_enabled: true
+    # 목표 속도에 필요한 기본 duty 추정. 실차 보정이 필요한 시작값이며 PID가 오차를 보완.
+    longitudinal_feedforward_offset_duty: 0.015
+    longitudinal_feedforward_duty_per_mps: 0.055
+    longitudinal_feedforward_fade_speed_mps: 0.10 # 이 속도 아래에서는 offset도 0까지 축소
+    longitudinal_recovery_duty_rise_per_sec: 0.15 # 제동 해제 후 구동력 회복. 일반 출발 상승률과 별개
+    longitudinal_deceleration_filter_sec: 0.20   # ERPM 기반 감속 추정 필터
     traffic_stop_enabled: false
     traffic_state_topic: "/traffic_light/state"
     traffic_state_timeout_sec: 0.30       # 수신 신호/접근 시작 전 RED 수명. 접근 시작 후 RED 유실은 정지를 해제하지 않음
-    traffic_stop_line_timeout_sec: 0.50   # 정지선 미검출 동안 이동량 보정 허용 시간
+    traffic_stop_line_timeout_sec: 0.50   # 일반 정지선 유실 허용 시간. 아래 근접 추적 예외 적용
+    traffic_terminal_tracking_distance_m: 0.10 # 마지막 확인 거리(목표점까지)가 이 값 이내면 근접 추적 허용
+    traffic_terminal_tracking_timeout_sec: 1.50 # 마지막 확인부터의 시간 상한. 최신 차선/ERPM 필요
     traffic_stop_margin_m: 0.15           # 범퍼와 정지선 사이에 남길 거리
     traffic_front_axle_to_bumper_m: 0.10  # 앞차축→앞범퍼 실제 길이로 설정
     traffic_stop_deceleration_mps2: 0.60  # 계획 감속도: 클수록 늦게/강하게 감속하는 속도 곡선
     traffic_brake_response_time_sec: 0.15 # 구동기 응답 여유 시간 (영상 경과시간은 별도 보정)
+    traffic_coast_probe_sec: 0.15         # 초과속도 발생 후 duty 감속 관찰 시간. 급한 경우 생략
+    traffic_brake_deceleration_hysteresis_mps2: 0.10 # 필요 감속 - duty 감속이 이 값 초과면 추가 제동
+    traffic_brake_speed_hysteresis_mps: 0.05 # 목표보다 이만큼 빨라야 제동, 절반 이하에서 해제
+    traffic_brake_deceleration_gain: 0.50 # 부족 감속도 1m/s²당 제동 상한의 비율. 클수록 강한 제동
     # GREEN→RED 전환 시 예상 범퍼 정지 위치가 정지선을 아래 값 이상 넘으면 정상 목표 속도로 통과.
     # 정지 접근/통과 결정은 같은 정지선에 대해 유지하며, GREEN 확인 시 해제한다.
     traffic_pass_if_unstoppable_enabled: true
     traffic_pass_overshoot_m: 0.60
     # 신호등 정지는 아래 전류를 사용. 일반 electrical_brake_enabled=false여도 작동.
-    traffic_brake_amps_per_mps2: 2.0      # 구버전 호환용. 새 PID 경로에서는 사용하지 않음
+    traffic_brake_amps_per_mps2: 2.0      # 구버전 호환용. 현재 제어에서는 사용하지 않음
     traffic_brake_max_current_amps: 2.5   # VESC bridge 전류 상한 이하로 설정
     traffic_hold_current_amps: 0.7       # 목표 0 + 저속에서만 유지 전류. 접근 제동에는 하한 없음.
     traffic_stop_line_match_tolerance_m: 0.30 # 이동량 보정 거리와 관측값의 일치 허용 오차
@@ -123,16 +137,17 @@ auto_control:
 
     # 유효 경로가 생기면 manual_control과 같이 start duty를 즉시 적용한 뒤
     # PID+feed-forward 목표까지 rate limit으로 이동한다. 경로 유실은 즉시 0이다.
-    minimum_duty: 0.12
+    minimum_duty: 0.12                  # 기존 제어용. 새 단계 제어는 최소 duty 하한을 강제하지 않음
     maximum_duty: 0.20
-    duty_rise_rate_per_sec: 0.04
-    duty_fall_rate_per_sec: 0.08
+    duty_rise_rate_per_sec: 0.04         # 일반 출발/가속. 단계 제어는 minimum_duty로 즉시 뛰지 않음
+    duty_fall_rate_per_sec: 0.08         # duty 감속 단계의 하강 속도. 작을수록 천천히 줄임
     speed_pid_kp: 0.012
     speed_pid_ki: 0.004
     speed_pid_kd: 0.0
     speed_pid_integral_limit: 1.0
     speed_filter_time_constant_sec: 0.05
 
+    # 일반 주행 전기 제동 설정. 신호등 접근의 진입/해제는 traffic_brake_* 기준 사용.
     # 실제 속도가 목표 속도보다 0.10m/s 이상 높으면 duty를 즉시 버리고
     # COMM_SET_CURRENT_BRAKE로 전환한다. 오차가 0.03m/s 이하가 될 때까지
     # 제동을 유지해 경계에서 duty/브레이크가 반복 전환되는 것을 막는다.
@@ -140,12 +155,12 @@ auto_control:
     electrical_brake_enabled: false
     brake_entry_speed_error_mps: 0.10
     brake_exit_speed_error_mps: 0.03
-    brake_minimum_vehicle_speed_mps: 0.20
-    brake_minimum_current_amps: 1.0
+    brake_minimum_vehicle_speed_mps: 0.20 # 기존 speed_pid 제어용
+    brake_minimum_current_amps: 1.0      # 기존 speed_pid 제어용. 단계 제어는 하한 0
     brake_maximum_current_amps: 2.5
-    brake_current_gain_amps_per_mps: 6.0
-    brake_current_rise_amps_per_sec: 6.0
-    brake_current_fall_amps_per_sec: 16.0
+    brake_current_gain_amps_per_mps: 6.0 # 기존 speed_pid 제어용. 단계 제어는 longitudinal_pid_kp 사용
+    brake_current_rise_amps_per_sec: 6.0  # 단계 제어의 신호등 제동에도 적용. 작을수록 천천히 제동
+    brake_current_fall_amps_per_sec: 16.0 # 제동 해제 속도. 0A 해제 명령 다음 주기에 duty 복귀
 
     # Traxxas Slash 4X4 Ultimate 순정 구동계와 기존 camera_driver 값.
     wheel_diameter_m: 0.1095

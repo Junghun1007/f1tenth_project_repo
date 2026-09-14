@@ -73,6 +73,9 @@ public:
   double update(
     double target_speed_mps, double current_speed_mps,
     double feedforward_duty, double dt_sec);
+  // Undo this sample's integration if the downstream actuator limit prevents
+  // output from moving in the direction requested by the speed error.
+  void apply_output_limit(double requested, double applied);
 
 private:
   double kp_;
@@ -82,6 +85,8 @@ private:
   double minimum_duty_;
   double maximum_duty_;
   double integral_{0.0};
+  double integral_before_update_{0.0};
+  double latest_error_{0.0};
   std::optional<double> previous_error_;
 };
 

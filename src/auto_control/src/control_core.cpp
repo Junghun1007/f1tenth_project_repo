@@ -225,6 +225,7 @@ SpeedPid::SpeedPid(
 void SpeedPid::reset()
 {
   integral_ = 0.0;
+  integral_before_update_ = latest_error_ = 0.0;
   previous_error_.reset();
 }
 
@@ -234,6 +235,8 @@ double SpeedPid::update(
 {
   dt_sec = std::max(1.0e-4, dt_sec);
   const double error = target_speed_mps - current_speed_mps;
+  integral_before_update_ = integral_;
+  latest_error_ = error;
   const double derivative = previous_error_ ? (error - *previous_error_) / dt_sec : 0.0;
   const double candidate_integral = clamp(
     integral_ + error * dt_sec, -integral_limit_, integral_limit_);
@@ -245,6 +248,13 @@ double SpeedPid::update(
   if (!saturated_high && !saturated_low) {integral_ = candidate_integral;}
   previous_error_ = error;
   return output;
+}
+
+void SpeedPid::apply_output_limit(double requested, double applied)
+{
+  if (latest_error_ * (requested - applied) > 1.0e-9) {
+    integral_ = integral_before_update_;
+  }
 }
 
 AutomaticBrakeProfile::AutomaticBrakeProfile(const BrakeConfig & config) : config_(config) {}

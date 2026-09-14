@@ -9,7 +9,7 @@ reference and are not installed by the `ament_cmake` build.
 
 ## 속도 계획과 PID, 개발 중인 신호등 정지
 
-기본값은 **통합 속도 PID ON, 코너 곡률 감속 OFF, 신호등 정지 OFF**다.
+기본값은 **속도 PID 및 단계 제어 ON, 코너 곡률 감속 OFF, 신호등 정지 OFF**다.
 `auto_control_test.yaml`의 `auto_control.ros__parameters`에서 조절하고 재실행한다.
 검출 확신도/FPS는 별도의 `traffic_light_test.yaml` 설정이다.
 
@@ -20,14 +20,26 @@ longitudinal_pid_kp: 1.0
 longitudinal_pid_ki: 0.5
 longitudinal_pid_kd: 0.0
 longitudinal_pid_integral_limit: 2.0
+longitudinal_staged_control_enabled: true
+longitudinal_feedforward_offset_duty: 0.015
+longitudinal_feedforward_duty_per_mps: 0.055
+longitudinal_feedforward_fade_speed_mps: 0.10
+longitudinal_recovery_duty_rise_per_sec: 0.15
+longitudinal_deceleration_filter_sec: 0.20
 traffic_stop_enabled: false
 traffic_state_topic: "/traffic_light/state"
 traffic_state_timeout_sec: 0.30
 traffic_stop_line_timeout_sec: 0.50
+traffic_terminal_tracking_distance_m: 0.10
+traffic_terminal_tracking_timeout_sec: 1.50
 traffic_stop_margin_m: 0.15
 traffic_front_axle_to_bumper_m: 0.10
 traffic_stop_deceleration_mps2: 0.60
 traffic_brake_response_time_sec: 0.15
+traffic_coast_probe_sec: 0.15
+traffic_brake_deceleration_hysteresis_mps2: 0.10
+traffic_brake_speed_hysteresis_mps: 0.05
+traffic_brake_deceleration_gain: 0.50
 traffic_pass_if_unstoppable_enabled: true
 traffic_pass_overshoot_m: 0.60
 traffic_brake_max_current_amps: 2.5
@@ -39,7 +51,7 @@ traffic_stop_position_tolerance_m: 0.03
 traffic_reapproach_speed_mps: 0.20
 ```
 
-### 목표 속도 곡선 → 실제 속도 PID → duty/브레이크
+### 목표 속도 곡선 → duty 감속 → 부족한 감속을 전류 제동으로 보완
 
 코너 감속 OFF에서는 기본 목표가 `maximum_speed_mps`다. Stanley 조향은 그대로 사용한다.
 신호등 정지를 켜고 최신 RED와 유효한 정지선 거리를 함께 확인해 접근을 시작하면,
@@ -53,22 +65,52 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작
 `traffic_stop_position_tolerance_m` 이내에서는 목표를 0으로 한다.
 기본 범퍼 길이 0.10m는 실측값이 아니므로 차량 치수로 수정한다.
 
-거리 계산부는 목표 속도만 결정한다. **거리로 제동 전류를 직접 산출하지 않는다.**
-통합 PID는 `목표 속도 - 실제 속도`로 -1..1 출력을 계산한다. 양수는 최대 duty의 비율,
-음수는 최대 브레이크 전류의 비율로 변환한다. 접근 중 제동 전류 하한은 0이며,
-정차 목표 0이고 속도가 0.05m/s 미만일 때만 유지 전류 하한을 적용한다.
-duty는 기존 상승/하강 속도 제한을 따른다. 신호등 정지 요구가 없는 일반 출발은
-기존 `minimum_duty`까지 초기 duty를 적용해 0부터 긴 대기 후 출발하는 현상을 줄인다
-(PID 요구 duty가 더 작으면 해당 값까지만 적용). 정지선 접근에는 이 출발 보정을 쓰지 않는다.
-적분은 출력 포화 시 추가 누적을 막고, 목표 0 진입/복귀와 정지 접근 시작/GREEN 해제에서 초기화한다.
-기본 D=0이므로 초기 동작은 PI이고, D를 쓰려면 `longitudinal_pid_kd`로 설정한다.
+`longitudinal_staged_control_enabled: true`에서는 다음 순서로 구동기를 제어한다.
 
-새 PID 이득은 정규화된 출력용으로, 기존 duty 단위 `speed_pid_kp/ki/kd`와 다르다.
-`longitudinal_pid_enabled: false`일 때 일반 주행은 기존 제어로 돌아가지만
-신호등 정지를 켜면 RED 감속에는 통합 PID를 사용한다.
-`traffic_brake_amps_per_mps2`는 구버전 호환을 위해 읽기만 하며 새 제어에 쓰지 않는다.
-일반 주행 PID의 전기 제동은 `electrical_brake_enabled`를 따르고, **RED 정지 제동은
-이 옵션과 독립적으로 작동**한다. 양쪽 모두 VESC bridge의 전류 상한이 적용된다.
+1. **duty 감속**: 목표 속도의 기본 duty와 속도 PID 보정량을 더한다. 목표보다 빠르면
+   duty를 `duty_fall_rate_per_sec`에 따라 줄인다. PID의 음수 출력을 즉시 브레이크로 바꾸지 않는다.
+2. **추가 제동**: 현재 속도 v와 남은 거리로
+   `필요 감속 = v² / (2*max(0.01, d-허용오차-v*t))`를 계산한다.
+   목표보다 `traffic_brake_speed_hysteresis_mps` 이상 빠르고,
+   필요 감속이 duty 감속 추정값보다 `traffic_brake_deceleration_hysteresis_mps2` 이상 크면
+   `traffic_coast_probe_sec` 관찰 후 제동한다. 필요 감속이 계획 감속도의 2배 이상이면
+   관찰 대기는 생략한다. 제동 중에는 duty를 0으로 두어 구동/제동 명령을 겹치지 않는다.
+3. **제동 해제와 구동력 회복**: 초과속도가 진입 기준의 절반 이하이거나 duty 감속만으로
+   충분해지면 제동을 해제한다. 전류가 0까지 내려간 후 해제 명령을 한 주기 발행하고,
+   양의 목표 속도가 남아 있으면 `longitudinal_recovery_duty_rise_per_sec`로 duty를 회복한다.
+   일반 출발의 느린 상승률 때문에 목표점 전에 거의 멈춰 버리는 현상을 줄이려는 구조다.
+4. **목표 도착**: 목표 속도가 0이면 양의 duty를 내지 않는다.
+   실제 속도 0.05m/s 미만에서 `traffic_hold_current_amps`를 적용한다.
+
+추가 제동 전류는 `traffic_brake_max_current_amps * clamp(Kp*초과속도 +
+traffic_brake_deceleration_gain*부족감속, 0, 1)`로 정한다. 실제 전류 명령에는
+`brake_current_rise_amps_per_sec`/`brake_current_fall_amps_per_sec` 변화율 제한을 적용한다.
+현재 속도와 거리를 모두 사용하지만, 전류→감속의 실측 모델은 아니므로 이득 보정이 필요하다.
+제어 입력 유실에 대한 기존 정지 분기는 이 완만한 변화율 제한을 우회한다.
+
+감속은 ERPM 속도 차분을 `longitudinal_deceleration_filter_sec`로 평활화해 추정한다.
+duty 감속 단계의 표본만 자연 감속 추정에 사용하고, 제동 중 및 제동 해제 후 응답 시간과
+필터 정착 시간에는 갱신하지 않는다. 마지막 표본이 1초보다 오래되면 감속 능력을 0으로
+취급한다. 이 추정에는 타이어/노면, 속도 필터 지연, duty 수준의 영향이 남는다.
+
+기본 duty는 `offset*min(1, 목표속도/fade속도) + slope*목표속도`이며 최대 duty로 제한한다.
+`longitudinal_feedforward_offset_duty`와 `longitudinal_feedforward_duty_per_mps`는
+각각 offset/slope다. 기본 0.015/0.055는 조정 시작값이며 실차 보정 완료값이 아니다.
+목표가 작아지면 offset도 사라지고, 목표 0에서는 구동하지 않는다. PID는 이 기본 duty에
+속도 오차를 보완한다. 새 단계 제어는 출발 시 `minimum_duty`로 즉시 뛰지 않으며,
+일반 가속에는 `duty_rise_rate_per_sec`를 사용한다. 출력 상한뿐 아니라 실제 duty 변화율
+제한으로 보정량을 전달하지 못한 경우에도 해당 방향의 적분 누적을 막는다.
+제동 중, 목표 0 진입/복귀, 정지 접근 시작/GREEN 해제에서 PID를 초기화한다.
+기본 D=0이므로 PI로 동작한다.
+
+`longitudinal_staged_control_enabled: false`로 이전 signed PID 방식으로 돌아갈 수 있다.
+`longitudinal_pid_enabled: false`이면 일반 주행은 기존 `speed_pid_*` 제어를 사용하지만,
+RED 정지 접근은 `longitudinal_staged_control_enabled`에 따라 새 단계 제어 또는 signed PID를 쓴다.
+`longitudinal_pid_*`는 정규화 출력용으로 duty 단위 `speed_pid_*`와 다르다.
+`traffic_brake_amps_per_mps2`는 호환용이며 사용하지 않는다. 단계 제어에서는 기존
+`brake_minimum_current_amps`, `brake_current_gain_amps_per_mps`도 사용하지 않는다.
+일반 주행의 전기 제동은 `electrical_brake_enabled`를 따르고, **RED 정지 제동은
+이 옵션과 독립적으로 작동**한다. VESC bridge의 전류 상한도 적용된다.
 
 ### 임시 정지와 목표 도달 정차
 
@@ -107,8 +149,13 @@ true이면 정지 접근 대신 정상 목표 속도로 통과한다. 최초 인
 접근 대상이 정해지기 전 관측은 마지막 정지선 확인 시각 기준으로 만료하고,
 범퍼가 통과한 관측도 버린다. 이전 정지선의 음수 거리가 다음 정지선을 계속 거부하지 않는다.
 접근을 이미 시작한 대상은 임의로 다음 정지선으로 바꾸지 않는다.
-RED 정지 접근 중 정지선 거리 미검출은 `traffic_stop_line_timeout_sec`까지만
-이동량으로 보정하고, 그 이후에는 **임시 정지**한다. 차선/속도 입력 손실도 임시 정지다.
+RED 정지 접근 중 정지선 거리 미검출은 일반적으로 `traffic_stop_line_timeout_sec`까지
+이동량으로 보정하고, 그 이후에는 **임시 정지**한다. 단계 제어에서는 마지막 확인 거리가
+목표 정차점까지 `traffic_terminal_tracking_distance_m`(기본 0.10m) 이내라면,
+최신 차선/ERPM을 유지하는 동안 마지막 확인부터 `traffic_terminal_tracking_timeout_sec`
+(기본 1.50초)까지 이동량으로 근접 접근을 마칠 수 있다. 가까운 정지선이 영상에서
+사라져 도착 직전 임시 정지가 걸리는 현상을 줄인다. 멀리서 잃은 정지선에는 적용하지 않는다.
+차선/속도 입력 손실은 기존대로 임시 정지다.
 정지선이 정상적으로 재확인되고 입력이 복구되면 남은 거리를 따라 저속 재접근한다.
 임시 정지를 최종 도착으로 고정하지 않는다. 복구 접근 속도는 GREEN까지
 `traffic_reapproach_speed_mps`로 제한한다.
@@ -120,7 +167,8 @@ RED 정지 접근 중 정지선 거리 미검출은 `traffic_stop_line_timeout_s
 자동으로 수용하지 않아 임시 정지가 계속될 수 있다. 정지선 확인 3회는 신호등 색상
 연속 확인 설정과 별개이며 한 번의 정지선 오검출을 바로 목표로 고정하지 않게 한다.
 
-최근 확인된 정지선 위치가 허용오차 이내이고, 보정한 위치도 해당 범위이며,
+최근 확인된 정지선 위치가 허용오차 이내이거나 위의 제한된 근접 추적 조건을 만족하고,
+이동량으로 보정한 위치도 허용오차 이내이며,
 실제 속도가 0.05m/s 미만일 때에만 최종 `position_hold`로 전환한다.
 그 상태는 GREEN까지 유지한다. 정지 위치를 지난 경우 뒤로 복귀하지 않는다.
 상태 로그 `phase`는 inactive/waiting_for_red_line_pair/pass_committed/
@@ -338,7 +386,7 @@ monitor_only로 바꾸는 별도 기능이므로 실제 주행 기록을 위해 
 `Driving CSV:`에 절대 경로가 표시된다. 분석할 때 두 파일을 함께 전달한다.
 
 CSV는 제어 명령 발행 시점의 상태를 최대 20Hz로 샘플링하고 제어 상태, 모터 모드,
-수신 신호 색상, 조향 유지 상태가 바뀌면 추가 기록한다. 따라서 짧은 정지 분기를
+수신 신호 색상, 조향 유지 상태, 종방향 제어 단계가 바뀌면 추가 기록한다. 따라서 짧은 정지 분기를
 파악할 수 있으나 모든 센서 메시지나 모든 제어 주기를 보존하는 기록은 아니다.
 스냅샷을 최대 256개 큐에 넣고 별도 스레드에서 CSV 변환/파일 쓰기 및 1초 간격
 flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하지 않고 행을 누락하며
@@ -347,9 +395,17 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
 
 - `target_speed_mps`, `speed_mps`, `raw_speed_mps`, `measured_erpm`: 목표/필터 속도,
   필터 전 속도와 원본 ERPM. 시간차로 실제 감속 정도를 계산할 수 있다.
-- `pid_effort`, `desired_duty`, `command_duty`, `brake_current_a`: 통합 PID 출력
+- `pid_effort`, `desired_duty`, `command_duty`, `brake_current_a`: PID 출력
   (-1..1), duty 변화율 제한 전 목표, 최종 duty 및 제동 전류 명령이다.
+  단계 제어에서 제동 중에는 PID를 사용하지 않아 앞의 두 값은 빈 칸이다.
   실제 전류 측정값은 아니며 `control_mode`/`motor_mode`/연결 상태와 함께 해석한다.
+- 스키마 3의 `longitudinal_phase`는 `track_speed`/`reduce_duty`/`additional_brake`/
+  `release_brake`/`recover_drive`/`stop_brake` 등 실제 구동 제어 단계를 기록한다.
+  `feedforward_duty`는 기본 duty, `requested_brake_current_a`는 변화율 제한 전 전류 요청이다.
+  `required_deceleration_mps2`, `measured_deceleration_mps2`는 필요/측정 감속도다.
+  `coast_deceleration_mps2`는 마지막 duty 감속 추정값으로 `coast_age_s`가 1초를 넘으면
+  제어에서는 0으로 취급한다. `coast_probe_elapsed_s`는 제동 전 관찰 경과시간이다.
+  `traction_recovery`는 별도 duty 회복률 사용, `terminal_tracking`은 근접 거리 추적 조건 충족을 뜻한다.
 - `centerline_xy_m`: 제어에 사용한 경로 전체를 `x:y;x:y;...` 형식으로 저장한다.
   차량 기준 x 전방, y 좌측, 미터 단위이며 세계 좌표 궤적은 아니다.
   경로 유효 여부와 원본 순서는 `path_valid`, `path_point_count`, `lane_sequence`에 있다.
