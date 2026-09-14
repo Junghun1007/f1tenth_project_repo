@@ -25,7 +25,7 @@ target_include_directories(bev_handoff
     ${OpenCV_INCLUDE_DIRS}
 )
 ament_target_dependencies(bev_handoff std_msgs)
-target_link_libraries(bev_handoff PUBLIC ${OpenCV_LIBS})
+target_link_libraries(bev_handoff ${OpenCV_LIBS})
 
 install(
   TARGETS bev_handoff
