@@ -33,6 +33,7 @@
 #include "opencv2/imgproc.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/header.hpp"
 
 namespace line_detactor
