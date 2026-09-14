@@ -174,6 +174,8 @@ install(
 
 ament_export_targets(export_traffic_detection_test HAS_LIBRARY_TARGET)
 ament_export_dependencies(
+  depthai
+  Threads
   bev_handoff
   std_msgs
   rosidl_default_runtime

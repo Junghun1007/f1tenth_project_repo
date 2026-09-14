@@ -32,8 +32,12 @@ ament_target_dependencies(auto_control_node
   builtin_interfaces
   rclcpp
   std_msgs
-  line_detactor
-  traffic_detection_test
+)
+# These packages also export camera/inference components. Control consumes
+# only their ROS messages; do not link every exported implementation target.
+target_link_libraries(auto_control_node
+  line_detactor::line_detactor__rosidl_typesupport_cpp
+  traffic_detection_test::traffic_detection_test__rosidl_typesupport_cpp
 )
 
 install(TARGETS auto_control_node
