@@ -99,6 +99,10 @@ line_detactor:
     # Extend local corner evidence this far back along the observed boundary,
     # with a smooth ramp. 0 keeps only the local corner shift; valid range 0..5m.
     centerline_corner_entry_distance_m: 0.40
+    # Within this boundary-arc distance of corner evidence, keep full observed confidence.
+    # 0 keeps the old ramp; a positive value must be smaller than entry_distance_m.
+    # Earlier positioning example: entry_distance_m=1.2, full_offset_distance_m=0.6.
+    centerline_corner_entry_full_offset_distance_m: 0.0
     centerline_corner_outer_window_m: 0.60
     centerline_corner_outer_tangent_window_m: 0.15
     centerline_corner_outer_min_length_m: 0.30

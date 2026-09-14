@@ -324,7 +324,13 @@ void prepare_outer_reference(Fragment & f, const CenterlineConfig & cfg)
     for (std::size_t j = i + 1U; j < count; ++j) {
       const double distance = f.arc[j] - f.arc[i];
       if (distance >= cfg.corner_entry_distance_m) {break;}
-      const double ratio = 1.0 - distance / cfg.corner_entry_distance_m;
+      // Reach the full observed confidence before the bend, then hold it.
+      // Zero hold distance reproduces the original ramp exactly.
+      const double ratio = cfg.corner_entry_full_offset_distance_m == 0.0 ?
+        1.0 - distance / cfg.corner_entry_distance_m :
+        1.0 - std::clamp(
+        (distance - cfg.corner_entry_full_offset_distance_m) /
+        (cfg.corner_entry_distance_m - cfg.corner_entry_full_offset_distance_m), 0.0, 1.0);
       const double ramp = ratio * ratio * (3.0 - 2.0 * ratio);
       f.outward_confidence[i] = std::max(
         f.outward_confidence[i], f.outer_confidence[j] * ramp);
@@ -369,6 +375,14 @@ void validate_centerline(const CenterlineConfig & c)
   if (!std::isfinite(c.corner_entry_distance_m) || c.corner_entry_distance_m < 0.0 ||
     c.corner_entry_distance_m > 5.0)
   {throw std::invalid_argument("corner entry distance must be finite and within 0..5 metres");}
+  if (!std::isfinite(c.corner_entry_full_offset_distance_m) ||
+    c.corner_entry_full_offset_distance_m < 0.0 ||
+    (c.corner_entry_full_offset_distance_m > 0.0 &&
+    c.corner_entry_full_offset_distance_m >= c.corner_entry_distance_m))
+  {
+    throw std::invalid_argument(
+      "corner entry full offset distance must be 0 or positive and smaller than entry distance");
+  }
   if (!std::isfinite(c.corner_outer_weight) || c.corner_outer_weight < 0.0 || c.corner_outer_weight > 1.0 ||
     !positive(c.corner_outer_min_turn_deg) || !positive(c.corner_outer_full_turn_deg) ||
     c.corner_outer_full_turn_deg <= c.corner_outer_min_turn_deg || c.corner_outer_full_turn_deg >= 180.0 ||

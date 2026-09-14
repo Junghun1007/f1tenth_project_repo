@@ -288,6 +288,7 @@ ros2 launch line_detactor line_detactor.launch.py \
 | `corner_outer_enabled` | true | 코너에서 바깥 차선 기준 경로 우선 반영 |
 | `corner_outer_weight` | 0.85 | 바깥 차선 기준 경로의 최대 혼합 비중, 0~1 |
 | `corner_outward_offset_m` | 0.05 | 코너 및 진입 구간에서 추가로 바깥쪽으로 이동할 목표 거리(m), 0이면 이동 끔 |
+| `corner_entry_full_offset_distance_m` | 0.0 | 거리 감쇠 없이 코너 신뢰도를 유지할 경계 거리(m). 0은 기존 동작, 양수는 entry_distance_m 미만 |
 | `corner_entry_distance_m` | 0.40 | 관측 코너 신뢰도를 차량 쪽으로 확장할 경계 호 길이(m), 0이면 진입 확장 끔, 범위 0~5 |
 | `corner_outer_window_m` | 0.60 | 회전 방향과 관측 길이를 평가하는 거리 범위 |
 | `corner_outer_tangent_window_m` | 0.15 | 바깥 차선 기준 접선 추정 범위 |
@@ -389,6 +390,34 @@ line_detactor:
 `centerline_corner_entry_distance_m`(기본 0.40m) 범위 안의 앞쪽 코너 신뢰도를
 차량 쪽으로 확장한다. 거리는 같은 연속 관측 경계를 따라 측정하며, 멀수록
 smoothstep으로 이동량을 줄여 직선에서 서서히 바깥쪽으로 붙게 한다.
+`centerline_corner_entry_full_offset_distance_m`(기본 0.0m)을 양수로 설정하면
+그 거리 안에서는 거리 감쇠 없이 관측 코너 신뢰도를 유지한다. 진입 거리와 이 거리
+사이에서만 smoothstep으로 보정량이 증가한다. 0은 기존 동작이고, 양수는 반드시
+`centerline_corner_entry_distance_m`보다 작아야 한다.
+
+코너 진입 전에 미리 이동하는 첫 비교 설정은 다음과 같다. 외부 YAML을 수정하지
+않아도 기존 `auto_drive` 실행 명령 끝에 넣을 수 있다.
+
+```bash
+centerline_corner_outward_offset_m:=0.02 \
+centerline_corner_entry_distance_m:=1.2 \
+centerline_corner_entry_full_offset_distance_m:=0.6
+```
+
+관측 코너 증거로부터 경계 호 길이 1.2m 전에서 이동을 시작해, 0.6m 전부터 거리
+감쇠가 없는 보정 강도를 유지한다. 이는 기하학적 코너 시작 위치의 정확한 예측이나
+2cm 실차 이동을 보장하지 않는다. 코너 신뢰도·상충 증거·여유 거리 판정과 최종
+평활화가 실제 경로 이동량에 계속 영향을 준다. 끝까지 차선이 연결되어 관측되어야
+하며, 먼 코너가 보이지 않거나 조각 사이가 끊기면 확장되지 않는다.
+
+`auto_control`의 `curvature_lookahead_minimum_x_m`,
+`curvature_lookahead_maximum_x_m`, `curvature_percentile`은 속도 결정용 대표 곡률을
+구하는 범위/분위수다. 코너 오프셋 범위나 코너 내 차량 위치 추적을 설정하지 않는다.
+BEV 전체로 범위를 늘려도 실제 생성·채택된 경로만 사용한다. 90분위수는 좁은 코너
+구간이 긴 직선에 섞이면 작은 값이 될 수 있어, 범위 확대가 항상 더 이른 감속을
+보장하지 않는다. 이번 변경은 이 제어 파라미터를 바꾸지 않는다.
+
+이 진입 유지 구간 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.
 기존 코너 판별 창도 주변을 보기 때문에 이 값은 기하학적 코너 시작점 기준의
 정확한 거리보다 **기존 국소 코너 적용 범위를 앞당기는 추가 거리**를 뜻한다.
 
