@@ -49,6 +49,7 @@ class VescBridgeNode(Node):
         self.declare_parameter("log_commands", False)
         self.declare_parameter("telemetry_rate_hz", 80.0)
         self.declare_parameter("telemetry_log_rate_hz", 2.0)
+        self.declare_parameter("telemetry_timeout_sec", 0.15)
 
         self.declare_parameter("packet.comm_get_firmware_version", 0)
         self.declare_parameter("packet.comm_get_values_selective", 50)
@@ -100,6 +101,10 @@ class VescBridgeNode(Node):
         self.verify_firmware_on_startup = bool(
             self.get_parameter("verify_firmware_on_startup").value
         )
+        self.telemetry_timeout_sec = float(self.get_parameter("telemetry_timeout_sec").value)
+        if not math.isfinite(self.telemetry_timeout_sec) or self.telemetry_timeout_sec <= 0.0:
+            raise ValueError("telemetry_timeout_sec must be positive")
+        self._last_valid_telemetry_sec: float | None = None
 
         self._last_duty_time: Time | None = None
         self._last_duty_command = 0.0
@@ -167,6 +172,7 @@ class VescBridgeNode(Node):
             self._try_open_driver()
 
         self.io_worker = VescIoWorker(self.driver, self.telemetry_rate_hz)
+        self._telemetry_started_sec = time.monotonic()
         self.io_worker.start()
 
         # Duty/brake/ERPM/servo commands are desired current states. If serial
@@ -294,15 +300,36 @@ class VescBridgeNode(Node):
     def _drain_io_results(self) -> None:
         for result in self.io_worker.drain_results():
             self._handle_io_result(result)
+        # Also expire a silent/stalled worker; failed replies need not arrive
+        # for the freshness deadline to take effect.
+        if self.telemetry_rate_hz > 0.0 and self._connection_verified:
+            anchor = self._last_valid_telemetry_sec
+            if anchor is None:
+                anchor = self._telemetry_started_sec
+            if time.monotonic() - anchor > self.telemetry_timeout_sec:
+                self._connection_verified = False
+                self._set_connection_status(False)
+                self.get_logger().warn("VESC telemetry expired; connection marked unavailable.")
+
+    def _telemetry_is_fresh(self, sample_sec: float | None) -> bool:
+        return sample_sec is not None and 0.0 <= time.monotonic() - sample_sec <= self.telemetry_timeout_sec
 
     def _handle_io_result(self, result: VescIoResult) -> None:
         if not result.success:
-            self._connection_verified = False
-            self._set_connection_status(False)
+            retain_connection = (
+                result.operation == "telemetry"
+                and result.recoverable_response_error
+                and self._connection_verified
+                and self.driver.is_open
+                and self._telemetry_is_fresh(self._last_valid_telemetry_sec)
+            )
+            if not retain_connection:
+                self._connection_verified = False
+                self._set_connection_status(False)
             if result.operation == "telemetry":
                 self._telemetry_failures_interval += 1
                 self.get_logger().warn(
-                    f"Failed to read measured ERPM: {result.error}",
+                    f"Discarded ERPM response (retaining link={retain_connection}): {result.error}",
                     throttle_duration_sec=1.0,
                 )
             else:
@@ -325,6 +352,12 @@ class VescBridgeNode(Node):
                 )
             return
 
+        # Do not turn delayed queued results into apparently fresh measurements.
+        # Use request start as a conservative bound on measurement age.
+        if not self._telemetry_is_fresh(result.started_at_sec):
+            self._telemetry_failures_interval += 1
+            return
+        self._last_valid_telemetry_sec = result.started_at_sec
         self._connection_verified = True
         self._set_connection_status(True)
         measured_erpm = int(result.value)

@@ -23,6 +23,9 @@
     log_commands: false    # true이면 시리얼로 전달된 명령을 로그에 표시한다.
     telemetry_rate_hz: 80.0      # 80FPS 카메라와 같은 속도로 VESC 실제 ERPM 조회
     telemetry_log_rate_hz: 2.0   # 목표/실제 ERPM 콘솔 출력 주기
+    # 손상/누락 응답은 폐기. 마지막 정상 ERPM의 수명이 끝나면 연결 불가로 전환.
+    # 시리얼 open/read/write 자체 오류는 즉시 연결 불가. auto_control의 erpm_timeout_sec도 유지.
+    telemetry_timeout_sec: 0.15
 
     packet:
       start_byte: 2           # VESC short packet 시작 바이트

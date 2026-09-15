@@ -203,6 +203,8 @@ private:
     drive_ff_slope_ = parameter("longitudinal_feedforward_duty_per_mps", 0.055);
     drive_ff_fade_speed_ = parameter("longitudinal_feedforward_fade_speed_mps", 0.10);
     recovery_duty_rise_ = parameter("longitudinal_recovery_duty_rise_per_sec", 0.15);
+    recovery_start_ramp_sec_ = parameter("longitudinal_recovery_start_ramp_sec", 0.20);
+    traffic_brake_urgent_rise_ = parameter("traffic_brake_urgent_rise_amps_per_sec", 6.0);
     deceleration_filter_sec_ = parameter("longitudinal_deceleration_filter_sec", 0.20);
     traffic_coast_probe_sec_ = parameter("traffic_coast_probe_sec", 0.15);
     traffic_brake_decel_hysteresis_ = parameter("traffic_brake_deceleration_hysteresis_mps2", 0.10);
@@ -350,7 +352,8 @@ private:
     if (!finite_positive({traffic_pass_overshoot_m_})) {
       throw std::invalid_argument("traffic_pass_overshoot_m must be positive");
     }
-    if (!finite_positive({drive_ff_fade_speed_, recovery_duty_rise_, deceleration_filter_sec_,
+    if (!finite_positive({drive_ff_fade_speed_, recovery_duty_rise_, recovery_start_ramp_sec_,
+        traffic_brake_urgent_rise_, deceleration_filter_sec_,
         longitudinal_brake_speed_gain_,
         traffic_brake_decel_hysteresis_, traffic_brake_speed_hysteresis_, traffic_brake_decel_gain_,
         traffic_terminal_distance_, traffic_terminal_timeout_}) ||
@@ -735,6 +738,27 @@ private:
     // UNKNOWN/stale messages cannot cancel a red stop. A new valid green can.
   }
 
+  double traffic_brake_delay(double current) const
+  {
+    if (!staged_control_enabled_) {return traffic_response_time_;}
+    // Reference current is a planning estimate from existing gains, not an
+    // identified current-to-deceleration model. Half the linear ramp accounts
+    // for partial braking while current builds. Do not assume the urgent ramp
+    // is available when planning the normal approach.
+    const double reference = std::max(traffic_hold_current_, traffic_brake_max_ *
+      clamp(traffic_brake_decel_gain_ * traffic_deceleration_, 0.0, 1.0));
+    return traffic_response_time_ +
+      0.5 * std::max(0.0, reference - current) / brake_current_rise_amps_per_sec_;
+  }
+
+  double traffic_distance_speed_limit(double remaining) const
+  {
+    // Fixed planning delay: current buildup must not raise the speed target.
+    const double at = traffic_deceleration_ * traffic_brake_delay(0.0);
+    return std::sqrt(at * at + 2.0 * traffic_deceleration_ *
+      std::max(0.0, remaining - traffic_arrival_tolerance_)) - at;
+  }
+
   double traffic_speed_limit(std::int64_t now_ns)
   {
     advance_stop_distance(now_ns);
@@ -762,9 +786,7 @@ private:
       }
       return 0.0;
     }
-    const double at = traffic_deceleration_ * traffic_response_time_;
-    const double limit = std::sqrt(at * at + 2.0 * traffic_deceleration_ *
-      std::max(0.0, *stop_remaining_ - traffic_arrival_tolerance_)) - at;
+    const double limit = traffic_distance_speed_limit(*stop_remaining_);
     traffic_phase_ = traffic_reapproach_ ? "slow_reapproach" : "approach";
     return traffic_reapproach_ ? std::min(limit, traffic_reapproach_speed_) : limit;
   }
@@ -787,8 +809,11 @@ private:
     const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
     required_deceleration_mps2_ = kUnavailable;
     const bool approaching = traffic_stop && !zero_target && stop_remaining_;
+    latest_brake_delay_sec_ = traffic_stop ? traffic_brake_delay(command_brake_current_) : 0.0;
+    const double observed_decel = std::isfinite(measured_deceleration_mps2_) ?
+      std::max(0.0, measured_deceleration_mps2_) : 0.0;
     if (approaching) {
-      const double usable = *stop_remaining_ - traffic_arrival_tolerance_ - speed * traffic_response_time_;
+      const double usable = *stop_remaining_ - traffic_arrival_tolerance_ - speed * latest_brake_delay_sec_;
       required_deceleration_mps2_ = speed * speed / (2.0 * std::max(0.01, usable));
     }
     const double coast_decel = coast_deceleration_seen_ns_ && now_ns >= *coast_deceleration_seen_ns_ &&
@@ -801,11 +826,19 @@ private:
       traction_recovery_ = false;
     } else if (approaching) {
       const bool urgent = required_deceleration_mps2_ >= 2.0 * traffic_deceleration_;
+      // Braking continues while current ramps down and the actuator responds.
+      // Release ahead of a predicted undershoot when distance still permits it.
+      const double release_time =
+        command_brake_current_ / brake_current_fall_amps_per_sec_ + traffic_response_time_;
+      const double release_speed = std::max(0.0, speed - observed_decel * release_time);
+      const double release_target = std::min(target, traffic_distance_speed_limit(
+        *stop_remaining_ - 0.5 * (speed + release_speed) * release_time));
       if (service_brake_requested_) {
         if (overspeed <= 0.5 * traffic_brake_speed_hysteresis_ ||
-          (!urgent && required_deceleration_mps2_ <= coast_decel + 0.5 * traffic_brake_decel_hysteresis_))
+          (!urgent && (release_speed < release_target - 0.5 * traffic_brake_speed_hysteresis_ ||
+          required_deceleration_mps2_ <= coast_decel + 0.5 * traffic_brake_decel_hysteresis_)))
         {service_brake_requested_ = false;}
-      } else if (overspeed > traffic_brake_speed_hysteresis_) {
+      } else if (overspeed > traffic_brake_speed_hysteresis_ && (!brake_mode_active_ || urgent)) {
         coast_probe_elapsed_ += dt;
         service_brake_requested_ = urgent ||
           (coast_probe_elapsed_ >= traffic_coast_probe_sec_ &&
@@ -827,6 +860,10 @@ private:
         missing_decel, longitudinal_brake_speed_gain_, traffic_brake_decel_gain_, brake_cap);
       if (traffic_stop && zero_target && std::abs(current_speed_mps_) < 0.05) {
         requested_brake_current_ = std::max(requested_brake_current_, traffic_hold_current_);
+      } else if (traffic_stop && zero_target) {
+        // Crossing the position tolerance must not suddenly drop an already
+        // active braking request while the vehicle is still moving.
+        requested_brake_current_ = std::max(requested_brake_current_, command_brake_current_);
       }
     }
     if (was_braking && !service_brake_requested_) {
@@ -839,9 +876,22 @@ private:
       departure_pending_ = true;
       longitudinal_pid_->reset();
       command_duty_ = 0.0;
+      latest_brake_rise_ = brake_current_rise_amps_per_sec_;
+      if (traffic_stop && stop_remaining_ && speed > 0.05 &&
+        requested_brake_current_ > command_brake_current_)
+      {
+        // Deliver the requested current within the remaining time budget,
+        // bounded by a separate urgent slew limit. Never increase the amp cap.
+        const double available_time = std::max(dt,
+          (*stop_remaining_ - traffic_arrival_tolerance_) / speed - traffic_response_time_);
+        latest_brake_rise_ = clamp(
+          (requested_brake_current_ - command_brake_current_) / available_time,
+          brake_current_rise_amps_per_sec_,
+          std::max(brake_current_rise_amps_per_sec_, traffic_brake_urgent_rise_));
+      }
       command_brake_current_ = move_toward(command_brake_current_, requested_brake_current_,
         (requested_brake_current_ > command_brake_current_ ?
-        brake_current_rise_amps_per_sec_ : brake_current_fall_amps_per_sec_) * dt);
+        latest_brake_rise_ : brake_current_fall_amps_per_sec_) * dt);
       if (command_brake_current_ > 1.0e-6) {
         brake_mode_active_ = true;
         longitudinal_phase_ = service_brake_requested_ ?
@@ -878,19 +928,41 @@ private:
     // exceed the PID request on a slow stop-line reapproach. This is no duty floor.
     const bool start_drive = departure_pending_ && longitudinal_start_duty_ > 0.0 &&
       std::abs(current_speed_mps_) < 0.05 && command_duty_ <= 1.0e-6 && desired > 0.0;
-    if (desired > 0.0 || std::abs(current_speed_mps_) >= 0.05) {departure_pending_ = false;}
     // Standstill departures share the ordinary acceleration ramp. The recovery
     // ramp remains for releasing a brake while already moving.
     if (start_drive) {traction_recovery_ = false;}
     const double rise = traction_recovery_ ? recovery_duty_rise_ : duty_rise_rate_per_sec_;
     const double previous_duty = command_duty_;
+    const double recovery_duty = std::min(longitudinal_start_duty_, desired);
+    const double time_to_recover = std::max(0.0, recovery_duty - command_duty_) / rise;
+    const bool recovery_distance_ok = !approaching ||
+      *stop_remaining_ - traffic_arrival_tolerance_ >
+      speed * latest_brake_delay_sec_ + speed * speed / (2.0 * traffic_deceleration_);
+    const bool recover_motion = !start_drive && (traction_recovery_ || departure_pending_) &&
+      recovery_duty > command_duty_ && target > 0.05 &&
+      overspeed < -0.5 * traffic_brake_speed_hysteresis_ && recovery_distance_ok &&
+      speed - observed_decel * (time_to_recover + traffic_response_time_) < 0.10;
     command_duty_ = start_drive ? std::min(longitudinal_start_duty_, desired) :
       move_toward(command_duty_, desired,
       (desired > command_duty_ ? rise : duty_fall_rate_per_sec_) * dt);
+    if (recover_motion) {
+      // Continuous bounded ramp, not repeated launch pulses. Assistance stops
+      // at the lesser of manual-like starting duty and the PID request.
+      command_duty_ = std::max(command_duty_, move_toward(previous_duty, recovery_duty,
+        longitudinal_start_duty_ / recovery_start_ramp_sec_ * dt));
+      traction_recovery_ = true;
+    }
+    // Do not consume departure eligibility just because the first post-release
+    // sample was still moving; the vehicle may stall later in this ramp.
+    if (start_drive || longitudinal_start_duty_ <= 0.0 ||
+      (recovery_duty > 0.0 && command_duty_ >= recovery_duty) ||
+      (speed >= 0.10 && std::abs(overspeed) <= traffic_brake_speed_hysteresis_))
+    {departure_pending_ = false;}
     longitudinal_pid_->apply_output_limit(effort, command_duty_ / maximum_duty_);
     if (traction_recovery_ && std::abs(command_duty_ - desired) < 1.0e-4 &&
       overspeed >= -traffic_brake_speed_hysteresis_) {traction_recovery_ = false;}
-    longitudinal_phase_ = start_drive ? "start_drive" : traction_recovery_ ? "recover_drive" :
+    longitudinal_phase_ = start_drive ? "start_drive" : recover_motion ? "recover_motion" :
+      traction_recovery_ ? "recover_drive" :
       (overspeed > 0.0 || command_duty_ < previous_duty ? "reduce_duty" : "track_speed");
     return "duty";
   }
@@ -990,6 +1062,7 @@ private:
     last_control_ns_ = now_ns;
     latest_pid_effort_ = latest_desired_duty_ = kUnavailable;
     latest_feedforward_duty_ = required_deceleration_mps2_ = kUnavailable;
+    latest_brake_delay_sec_ = latest_brake_rise_ = kUnavailable;
     requested_brake_current_ = 0.0;
     if (const auto reason = stop_reason(now_ns)) {
       publish_guard_stop(*reason);
@@ -1099,6 +1172,7 @@ private:
     coast_probe_elapsed_ = 0.0;
     coast_deceleration_seen_ns_.reset();
     latest_feedforward_duty_ = required_deceleration_mps2_ = kUnavailable;
+    latest_brake_delay_sec_ = latest_brake_rise_ = kUnavailable;
     requested_brake_current_ = 0.0;
     longitudinal_phase_ = "guard_stop";
     last_control_ns_ = now().nanoseconds();
@@ -1346,7 +1420,7 @@ private:
         "predicted_stop_distance_m,predicted_overshoot_m,red_age_s,path_held,"
         "feedforward_duty,requested_brake_current_a,required_deceleration_mps2,"
         "measured_deceleration_mps2,coast_deceleration_mps2,coast_age_s,coast_probe_elapsed_s,"
-        "traction_recovery,terminal_tracking,centerline_xy_m",
+        "traction_recovery,terminal_tracking,brake_delay_s,brake_rise_limit_a_per_s,centerline_xy_m",
         parameters);
       driving_log_started_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
@@ -1409,7 +1483,7 @@ private:
       required_deceleration_mps2_, measured_deceleration_mps2_,
       coast_deceleration_seen_ns_ ? coast_deceleration_mps2_ : kUnavailable,
       age(coast_deceleration_seen_ns_), coast_probe_elapsed_, double(traction_recovery_),
-      double(terminal_tracking_active_)};
+      double(terminal_tracking_active_), latest_brake_delay_sec_, latest_brake_rise_};
     if (path_) {frame.path = path_->points;}
     driving_log_->enqueue(std::move(frame));
   }
@@ -1486,6 +1560,8 @@ private:
   bool terminal_tracking_active_{false};
   std::string longitudinal_phase_{"startup"}, last_logged_longitudinal_phase_;
   double drive_ff_offset_, drive_ff_slope_, drive_ff_fade_speed_, recovery_duty_rise_;
+  double recovery_start_ramp_sec_, traffic_brake_urgent_rise_;
+  double latest_brake_delay_sec_{kUnavailable}, latest_brake_rise_{kUnavailable};
   double deceleration_filter_sec_, traffic_coast_probe_sec_, traffic_brake_decel_hysteresis_;
   double traffic_brake_speed_hysteresis_, traffic_brake_decel_gain_;
   double longitudinal_brake_speed_gain_;

@@ -37,6 +37,10 @@ class VescDriverError(RuntimeError):
     pass
 
 
+class VescResponseError(VescDriverError):
+    """A missing or malformed response; the transport may still be usable."""
+
+
 class VescDriver:
     """VESC 시리얼 포트의 패킷 송수신을 담당하는 하위 드라이버.
 
@@ -191,11 +195,11 @@ class VescDriver:
         payload = self.read_payload()
 
         if len(payload) < 5 or payload[0] != request_id:
-            raise VescDriverError("Invalid VESC values response.")
+            raise VescResponseError("Invalid VESC values response.")
 
         returned_mask = struct.unpack(">I", payload[1:5])[0]
         if not returned_mask & self.ERPM_VALUE_MASK:
-            raise VescDriverError("VESC values response does not contain ERPM.")
+            raise VescResponseError("VESC values response does not contain ERPM.")
 
         erpm_offset = 5 + sum(
             field_size
@@ -203,7 +207,7 @@ class VescDriver:
             if returned_mask & (1 << bit)
         )
         if len(payload) < erpm_offset + 4:
-            raise VescDriverError("VESC values response contains incomplete ERPM data.")
+            raise VescResponseError("VESC values response contains incomplete ERPM data.")
 
         return struct.unpack(">i", payload[erpm_offset : erpm_offset + 4])[0]
 
@@ -236,12 +240,12 @@ class VescDriver:
         elif start_byte == self.LONG_START_BYTE:
             payload_length = struct.unpack(">H", self._read_exact(2))[0]
         else:
-            raise VescDriverError(
+            raise VescResponseError(
                 f"Invalid VESC response start byte: {start_byte}"
             )
 
         if payload_length < 1 or payload_length > self.MAX_READ_PAYLOAD_SIZE:
-            raise VescDriverError(
+            raise VescResponseError(
                 f"Invalid VESC response payload length: {payload_length}"
             )
 
@@ -250,11 +254,11 @@ class VescDriver:
         end_byte = self._read_exact(1)[0]
 
         if end_byte != self.END_BYTE:
-            raise VescDriverError(f"Invalid VESC response end byte: {end_byte}")
+            raise VescResponseError(f"Invalid VESC response end byte: {end_byte}")
 
         expected_crc = self.crc16_xmodem(payload)
         if received_crc != expected_crc:
-            raise VescDriverError(
+            raise VescResponseError(
                 "Invalid VESC response CRC: "
                 f"received={received_crc}, expected={expected_crc}"
             )
@@ -269,7 +273,7 @@ class VescDriver:
         while len(received) < size:
             chunk = self._serial.read(size - len(received))
             if not chunk:
-                raise VescDriverError(
+                raise VescResponseError(
                     f"Timed out waiting for VESC response ({len(received)}/{size} bytes)"
                 )
             received.extend(chunk)

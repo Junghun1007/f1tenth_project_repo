@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Literal
 
-from vesc_bridge.vesc_driver import VescDriver
+from vesc_bridge.vesc_driver import VescDriver, VescResponseError
 
 
 Operation = Literal["duty", "brake", "erpm", "servo", "telemetry"]
@@ -20,6 +20,7 @@ class VescIoResult:
     started_at_sec: float
     finished_at_sec: float
     error: str | None = None
+    recoverable_response_error: bool = False
 
     @property
     def midpoint_sec(self) -> float:
@@ -137,10 +138,11 @@ class VescIoWorker:
                 )
             except Exception as exc:
                 finished_at_sec = time.monotonic()
-                # A failed write may leave the transport unusable. Telemetry
-                # timeouts keep the port open so the next selective request can
-                # recover without a startup delay.
-                if operation != "telemetry":
+                # Only protocol/response failures can retain an open transport.
+                # Serial read/open/write exceptions are actual I/O failures,
+                # including a failed request write during telemetry.
+                recoverable = operation == "telemetry" and isinstance(exc, VescResponseError)
+                if not recoverable:
                     try:
                         self._driver.close()
                     except Exception:
@@ -153,6 +155,7 @@ class VescIoWorker:
                         started_at_sec=started_at_sec,
                         finished_at_sec=finished_at_sec,
                         error=str(exc),
+                        recoverable_response_error=recoverable,
                     )
                 )
 

@@ -24,6 +24,23 @@ steering writes are handled before telemetry. The periodic
 status log reports requested/actual telemetry Hz, UART round-trip average/max,
 and failed queries for on-vehicle verification.
 
+CRC/framing errors, incomplete values and response timeouts discard only that
+ERPM sample while the port is open and the last valid response is within
+`telemetry_timeout_sec` (default 0.15 s). Serial open/read/write exceptions,
+including a failed telemetry request write, mark the link unavailable immediately.
+The result-drain timer also checks freshness even if the worker produces no result;
+continued response failures or silence expire the link. Only a fresh successful
+telemetry response restores a failed connection; command writes cannot restore it.
+With telemetry disabled, this telemetry freshness watchdog is disabled too.
+
+No extrapolated or repeated ERPM is published. `auto_control` holds its last
+filtered speed between valid samples and its existing `erpm_timeout_sec` still
+stops control. A dropped sample never refreshes either deadline. Request start
+time bounds sample age, and queued responses already older than the bridge
+deadline are discarded. This avoids treating an acceleration prediction during
+braking as a new measurement. The two deadlines belong to different nodes;
+keep both at 0.15 s unless changing the intended freshness policy.
+
 The 80 Hz setting matches the camera's nominal publish rate but does not
 phase-lock UART replies to image exposure. Each transaction records its host
 monotonic start, finish, and midpoint so a later speed/IMU fusion stage can

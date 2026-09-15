@@ -22,6 +22,8 @@ longitudinal_pid_kd: 0.0
 longitudinal_pid_integral_limit: 2.0
 longitudinal_staged_control_enabled: true
 longitudinal_start_duty: 0.05
+longitudinal_recovery_start_ramp_sec: 0.20
+traffic_brake_urgent_rise_amps_per_sec: 6.0
 longitudinal_brake_speed_gain: 1.0
 longitudinal_feedforward_offset_duty: 0.015
 longitudinal_feedforward_duty_per_mps: 0.055
@@ -63,7 +65,9 @@ traffic_reapproach_speed_mps: 0.20
 
 앞차축 기준 정지선 거리에서 범퍼 길이, 여유 거리, 촬영 이후 이동량을 뺀 거리를 d라 할 때
 `v(d) = min(주행속도, sqrt((a*t)^2 + 2*a*max(0,d-허용오차)) - a*t)`다.
-a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작을수록 일찍 감속한다.
+a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. 단계 제어에서는 t에
+기준 제동 전류까지 선형 상승하는 시간의 절반을 더한다. 속도 곡선은 0A에서의 고정 지연을
+쓰므로 전류가 증가했다고 목표 속도가 올라가지 않는다. a가 작을수록 일찍 감속한다.
 `traffic_stop_position_tolerance_m` 이내에서는 목표를 0으로 한다.
 기본 범퍼 길이 0.10m는 실측값이 아니므로 차량 치수로 수정한다.
 
@@ -73,13 +77,17 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작
    duty를 `duty_fall_rate_per_sec`에 따라 줄인다. PID의 음수 출력을 즉시 브레이크로 바꾸지 않는다.
 2. **추가 제동**: 현재 속도 v와 남은 거리로
    `필요 감속 = v² / (2*max(0.01, d-허용오차-v*t))`를 계산한다.
+   여기의 t에는 현재 전류에서 기준 전류까지의 추가 상승 지연을 반영한다.
    목표보다 `traffic_brake_speed_hysteresis_mps` 이상 빠르고,
    필요 감속이 duty 감속 추정값보다 `traffic_brake_deceleration_hysteresis_mps2` 이상 크면
    `traffic_coast_probe_sec` 관찰 후 제동한다. 필요 감속이 계획 감속도의 2배 이상이면
    관찰 대기는 생략한다. 제동 중에는 duty를 0으로 두어 구동/제동 명령을 겹치지 않는다.
 3. **제동 해제와 구동력 회복**: 초과속도가 진입 기준의 절반 이하이거나 duty 감속만으로
-   충분해지면 제동을 해제한다. 전류가 0까지 내려간 후 해제 명령을 한 주기 발행하고,
+   충분해지면 제동을 해제한다. 긴급하지 않을 때는 전류 해제 시간과 응답 지연 동안의
+   추가 감속과 이동 거리를 예측해, 그때 남을 거리의 목표 속도 아래로 처지기 전에 해제를 시작한다. 해제 중 재진입은
+   긴급한 경우에만 허용한다. 전류가 0까지 내려간 후 해제 명령을 한 주기 발행하고,
    양의 목표 속도가 남아 있으면 주행 중에는 `longitudinal_recovery_duty_rise_per_sec`로 회복한다.
+   회복 도중 정체가 예상되면 아래 `recover_motion` 보조를 적용한다.
    정지 상태에서 재출발할 때는 아래 시작 duty를 1회 적용한 뒤 일반 가속률을 사용한다.
 4. **목표 도착**: 목표 속도가 0이면 양의 duty를 내지 않는다.
    실제 속도 0.05m/s 미만에서 `traffic_hold_current_amps`를 적용한다.
@@ -87,6 +95,15 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작
 추가 제동 전류는 `traffic_brake_max_current_amps * clamp(longitudinal_brake_speed_gain*초과속도 +
 traffic_brake_deceleration_gain*부족감속, 0, 1)`로 정한다. 실제 전류 명령에는
 `brake_current_rise_amps_per_sec`/`brake_current_fall_amps_per_sec` 변화율 제한을 적용한다.
+단계 제어의 신호등 제동에서는 `(남은 거리-허용오차)/속도-응답 지연` 안에 요청 전류에
+도달하기 어려우면 상승률을 높인다. 추가 상승 상한은 `traffic_brake_urgent_rise_amps_per_sec`
+(기본 6.0A/s, 공통 상승률보다 낮게 설정하면 공통값 사용)이며 전류 상한 자체는 유지한다.
+목표가 0으로 바뀌어도 실제 속도 0.05m/s 이상에서는 이미 적용 중인 제동 전류를 낮추지 않는다.
+저속 진입 후에는 유지 전류 규칙과 기존 전류 하강률을 따른다.
+
+지연 추정의 기준 전류는 `max(유지 전류, 제동 상한*clamp(감속 gain*계획 감속도,0,1))`다.
+지연은 `응답 지연 + 0.5*max(0,기준 전류-현재 전류)/공통 전류 상승률`로 계산한다.
+선형 상승 중 부분 제동을 근사한 계획값이며 실제 제동력 보정 결과가 아니다.
 현재 속도와 거리를 모두 사용하지만, 전류→감속의 실측 모델은 아니므로 이득 보정이 필요하다.
 제어 입력 유실에 대한 기존 정지 분기는 이 완만한 변화율 제한을 우회한다.
 
@@ -126,7 +143,8 @@ duty 감속 단계의 표본만 자연 감속 추정에 사용하고, 제동 중
 유효 경로·최신 ERPM·VESC 연결·drive 모드·주행 허용 조건을 만족하고,
 목표 속도와 PID 구동 요청이 양수이며 실제 속도의 절댓값이 0.05m/s 미만이어야 한다.
 제동 전류가 0까지 내려가고 별도의 0A 해제 주기를 마친 다음에만 적용한다.
-주행 중 입력이 잠깐 끊겼다가 복구되면 시작 duty를 건너뛰고 기존 상승률로 복귀한다.
+주행 중 복구된 첫 표본의 속도가 0.05m/s 이상이어도 회복 자격을 바로 없애지 않는다.
+시작 duty/PID 요청에 도달하거나 목표 속도에 복귀할 때까지 이후 정체를 함께 감시한다.
 
 시작 명령은 `min(longitudinal_start_duty, PID가 요청한 duty)`다.
 저속 정지선 재접근처럼 요청이 작으면 0.05를 강제하지 않는다.
@@ -134,10 +152,19 @@ duty 감속 단계의 표본만 자연 감속 추정에 사용하고, 제동 중
 필요하면 `duty_fall_rate_per_sec`로 시작 duty 아래까지 내려갈 수 있다.
 시작 순간에는 추가 상승분을 더하지 않으며, 속도가 계속 낮다는 이유로 매 주기 재적용하지 않는다.
 목표 0/보호 정지 또는 제동 중 정지를 거쳐 다음 출발을 준비한다.
-따라서 구동 명령 중 힘이 부족해 움직이지 않는 경우는 반복 출발 펄스를 주지 않고 PID로 조절한다.
+제동/보호 정지 후 구동력이 회복되는 동안, 시작 duty에 도달하기 전에 속도가 0.10m/s 아래로
+떨어질 것으로 예측되면 `recover_motion`을 기록하고 보조 상승률을 적용한다. 예측에는 관측
+감속도와 기존 상승률로 시작 duty에 도달할 시간을 사용한다. 이미 정체한 경우도 포함한다.
+목표가 0.05m/s보다 크고 실제 속도보다 충분히 높으며, 신호등 접근 중에는 현재 속도에서
+계획 감속도와 제동 지연으로 멈출 거리가 남아 있어야 한다.
+
+보조 상승률은 `longitudinal_start_duty / longitudinal_recovery_start_ramp_sec`다.
+기본 0.05/0.20은 0.25 duty/s이며, 보조는 `min(시작 duty, PID 요청)`까지만 적용한다.
+그 이상은 기존 상승률을 따르며 실제 출력 기준 적분 누적 제한도 유지한다. 반복 점프나
+고정 최소 duty를 강제하지 않는다. 보조 시간은 양수이며 길게 설정할수록 더 완만하다.
 
 `longitudinal_start_duty`는 0부터 `maximum_duty` 사이의 유한한 값이어야 한다.
-0이면 시작 duty 기능을 끄고 기존의 0부터 상승하는 동작과 제동 회복률을 사용한다.
+0이면 시작 duty와 정체 방지 보조 상승을 끄고 기존 0부터 상승하는 동작과 제동 회복률을 사용한다.
 이 파라미터는 단계 제어 전용이며 FF 오프셋, 기존 `minimum_duty`, 구버전 PID 동작과 독립이다.
 YAML 변경은 재실행 시 적용하며 `auto_drive`에서는 `longitudinal_start_duty:=0.05`로도 지정할 수 있다.
 외부 YAML에서 키를 생략해도 새 기본값 0.05가 적용된다.
@@ -442,14 +469,17 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   (-1..1), duty 변화율 제한 전 목표, 최종 duty 및 제동 전류 명령이다.
   단계 제어에서 제동 중에는 PID를 사용하지 않아 앞의 두 값은 빈 칸이다.
   실제 전류 측정값은 아니며 `control_mode`/`motor_mode`/연결 상태와 함께 해석한다.
-- 스키마 3의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
-  `release_brake`/`recover_drive`/`stop_brake` 등 실제 구동 제어 단계를 기록한다.
+- 스키마 4의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
+  `release_brake`/`recover_drive`/`recover_motion`/`stop_brake` 등 실제 구동 제어 단계를 기록한다.
   `start_drive`는 시작 duty를 1회 적용한 주기이며, 다음 주기부터 일반 PID 제어로 이어진다.
   `feedforward_duty`는 기본 duty, `requested_brake_current_a`는 변화율 제한 전 전류 요청이다.
   `required_deceleration_mps2`, `measured_deceleration_mps2`는 필요/측정 감속도다.
   `coast_deceleration_mps2`는 마지막 duty 감속 추정값으로 `coast_age_s`가 1초를 넘으면
   제어에서는 0으로 취급한다. `coast_probe_elapsed_s`는 제동 전 관찰 경과시간이다.
   `traction_recovery`는 별도 duty 회복률 사용, `terminal_tracking`은 근접 거리 추적 조건 충족을 뜻한다.
+  `recover_motion`은 시작 duty까지 정체 방지 보조 상승을 적용한 주기다.
+  `brake_delay_s`는 현재 전류를 반영한 제동 지연 추정,
+  `brake_rise_limit_a_per_s`는 해당 주기에 계산한 전류 상승 한도다. 실측 전류/지연이 아니다.
 - `centerline_xy_m`: 제어에 사용한 경로 전체를 `x:y;x:y;...` 형식으로 저장한다.
   차량 기준 x 전방, y 좌측, 미터 단위이며 세계 좌표 궤적은 아니다.
   경로 유효 여부와 원본 순서는 `path_valid`, `path_point_count`, `lane_sequence`에 있다.
