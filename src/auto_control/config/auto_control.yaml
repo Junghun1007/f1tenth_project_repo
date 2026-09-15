@@ -19,6 +19,8 @@ auto_control:
     longitudinal_pid_integral_limit: 2.0
     # duty를 먼저 줄이고, 감속 부족 시 별도 전류 제동. false=이전 signed PID 방식.
     longitudinal_staged_control_enabled: true
+    # 정지 후 출발 순간 1회 적용. 수동 start_duty와 동일; PID 요청이 작으면 그 값으로 제한.
+    longitudinal_start_duty: 0.05       # 0=기존 0부터 상승. 이후에는 duty_rise_rate_per_sec 사용
     # 단계 제어의 속도 초과량→제동 비율. 구동 PID와 독립이며 코너/신호등 제동에 공통 적용.
     # 단위 1/(m/s), 양수. 1.0이면 초과속도 0.2m/s에서 제동 상한의 20% 요청.
     longitudinal_brake_speed_gain: 1.0
@@ -26,7 +28,7 @@ auto_control:
     longitudinal_feedforward_offset_duty: 0.015
     longitudinal_feedforward_duty_per_mps: 0.055
     longitudinal_feedforward_fade_speed_mps: 0.10 # 이 속도 아래에서는 offset도 0까지 축소
-    longitudinal_recovery_duty_rise_per_sec: 0.15 # 제동 해제 후 구동력 회복. 일반 출발 상승률과 별개
+    longitudinal_recovery_duty_rise_per_sec: 0.15 # 주행 중 제동 해제 후 회복. 정지 재출발은 시작 duty+일반 상승률
     longitudinal_deceleration_filter_sec: 0.20   # ERPM 기반 감속 추정 필터
     traffic_stop_enabled: false
     traffic_state_topic: "/traffic_light/state"
@@ -138,11 +140,11 @@ auto_control:
     curvature_lookahead_maximum_x_m: 1.60
     curvature_percentile: 90.0
 
-    # 유효 경로가 생기면 manual_control과 같이 start duty를 즉시 적용한 뒤
+    # 단계 제어: 유효 입력+정지 상태에서 longitudinal_start_duty를 1회 적용한 뒤
     # PID+feed-forward 목표까지 rate limit으로 이동한다. 경로 유실은 즉시 0이다.
     minimum_duty: 0.12                  # 기존 제어용. 새 단계 제어는 최소 duty 하한을 강제하지 않음
     maximum_duty: 0.20
-    duty_rise_rate_per_sec: 0.04         # 일반 출발/가속. 단계 제어는 minimum_duty로 즉시 뛰지 않음
+    duty_rise_rate_per_sec: 0.04         # 시작 duty 적용 이후 일반 가속. 수동 기본 0.03/s와 유사
     duty_fall_rate_per_sec: 0.08         # duty 감속 단계의 하강 속도. 작을수록 천천히 줄임
     speed_pid_kp: 0.012
     speed_pid_ki: 0.004

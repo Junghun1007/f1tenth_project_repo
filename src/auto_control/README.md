@@ -21,6 +21,7 @@ longitudinal_pid_ki: 0.5
 longitudinal_pid_kd: 0.0
 longitudinal_pid_integral_limit: 2.0
 longitudinal_staged_control_enabled: true
+longitudinal_start_duty: 0.05
 longitudinal_brake_speed_gain: 1.0
 longitudinal_feedforward_offset_duty: 0.015
 longitudinal_feedforward_duty_per_mps: 0.055
@@ -78,8 +79,8 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. a가 작
    관찰 대기는 생략한다. 제동 중에는 duty를 0으로 두어 구동/제동 명령을 겹치지 않는다.
 3. **제동 해제와 구동력 회복**: 초과속도가 진입 기준의 절반 이하이거나 duty 감속만으로
    충분해지면 제동을 해제한다. 전류가 0까지 내려간 후 해제 명령을 한 주기 발행하고,
-   양의 목표 속도가 남아 있으면 `longitudinal_recovery_duty_rise_per_sec`로 duty를 회복한다.
-   일반 출발의 느린 상승률 때문에 목표점 전에 거의 멈춰 버리는 현상을 줄이려는 구조다.
+   양의 목표 속도가 남아 있으면 주행 중에는 `longitudinal_recovery_duty_rise_per_sec`로 회복한다.
+   정지 상태에서 재출발할 때는 아래 시작 duty를 1회 적용한 뒤 일반 가속률을 사용한다.
 4. **목표 도착**: 목표 속도가 0이면 양의 duty를 내지 않는다.
    실제 속도 0.05m/s 미만에서 `traffic_hold_current_amps`를 적용한다.
 
@@ -112,11 +113,37 @@ duty 감속 단계의 표본만 자연 감속 추정에 사용하고, 제동 중
 `longitudinal_feedforward_offset_duty`와 `longitudinal_feedforward_duty_per_mps`는
 각각 offset/slope다. 기본 0.015/0.055는 조정 시작값이며 실차 보정 완료값이 아니다.
 목표가 작아지면 offset도 사라지고, 목표 0에서는 구동하지 않는다. PID는 이 기본 duty에
-속도 오차를 보완한다. 새 단계 제어는 출발 시 `minimum_duty`로 즉시 뛰지 않으며,
+속도 오차를 보완한다. 단계 제어의 정지 출발은 별도 `longitudinal_start_duty`로 설정하며,
 일반 가속에는 `duty_rise_rate_per_sec`를 사용한다. 출력 상한뿐 아니라 실제 duty 변화율
 제한으로 보정량을 전달하지 못한 경우에도 해당 방향의 적분 누적을 막는다.
 제동 중, 목표 0 진입/복귀, 정지 접근 시작/GREEN 해제에서 PID를 초기화한다.
 기본 D=0이므로 PI로 동작한다.
+
+정지 후 출발에서는 기본 `longitudinal_start_duty: 0.05`를 한 번 적용한다.
+이는 `manual_vesc_config.yaml`의 수동 전진 `start_duty: 0.05`와 같은 명령값이다.
+최초 출발, 비활성/경로 유실 정지 후 복귀, 신호등 정차 후 GREEN 재출발,
+임시 정지 후 정지선 재접근, 추가 제동 중 정지했다가 재출발하는 경우에 공통 적용한다.
+유효 경로·최신 ERPM·VESC 연결·drive 모드·주행 허용 조건을 만족하고,
+목표 속도와 PID 구동 요청이 양수이며 실제 속도의 절댓값이 0.05m/s 미만이어야 한다.
+제동 전류가 0까지 내려가고 별도의 0A 해제 주기를 마친 다음에만 적용한다.
+주행 중 입력이 잠깐 끊겼다가 복구되면 시작 duty를 건너뛰고 기존 상승률로 복귀한다.
+
+시작 명령은 `min(longitudinal_start_duty, PID가 요청한 duty)`다.
+저속 정지선 재접근처럼 요청이 작으면 0.05를 강제하지 않는다.
+한 번 적용한 다음 주기부터 PID 목표까지 `duty_rise_rate_per_sec`로 올라가고,
+필요하면 `duty_fall_rate_per_sec`로 시작 duty 아래까지 내려갈 수 있다.
+시작 순간에는 추가 상승분을 더하지 않으며, 속도가 계속 낮다는 이유로 매 주기 재적용하지 않는다.
+목표 0/보호 정지 또는 제동 중 정지를 거쳐 다음 출발을 준비한다.
+따라서 구동 명령 중 힘이 부족해 움직이지 않는 경우는 반복 출발 펄스를 주지 않고 PID로 조절한다.
+
+`longitudinal_start_duty`는 0부터 `maximum_duty` 사이의 유한한 값이어야 한다.
+0이면 시작 duty 기능을 끄고 기존의 0부터 상승하는 동작과 제동 회복률을 사용한다.
+이 파라미터는 단계 제어 전용이며 FF 오프셋, 기존 `minimum_duty`, 구버전 PID 동작과 독립이다.
+YAML 변경은 재실행 시 적용하며 `auto_drive`에서는 `longitudinal_start_duty:=0.05`로도 지정할 수 있다.
+외부 YAML에서 키를 생략해도 새 기본값 0.05가 적용된다.
+기본 일반 상승률 0.04/s는 수동 최대 상승률 0.03/s와 유사하며,
+수동 최대 가속 입력과 같은 상승률을 원하면 `duty_rise_rate_per_sec: 0.03`을 사용한다.
+실제 출발의 부드러움은 배터리·노면·속도 피드백에 따라 달라진다. 이번 출발 변경의 빌드와 테스트는 수행하지 않았다.
 
 `longitudinal_staged_control_enabled: false`로 이전 signed PID 방식으로 돌아갈 수 있다.
 이 호환 모드는 하나의 signed PID를 유지하므로 새 `longitudinal_brake_speed_gain`을 사용하지 않는다.
@@ -415,8 +442,9 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   (-1..1), duty 변화율 제한 전 목표, 최종 duty 및 제동 전류 명령이다.
   단계 제어에서 제동 중에는 PID를 사용하지 않아 앞의 두 값은 빈 칸이다.
   실제 전류 측정값은 아니며 `control_mode`/`motor_mode`/연결 상태와 함께 해석한다.
-- 스키마 3의 `longitudinal_phase`는 `track_speed`/`reduce_duty`/`additional_brake`/
+- 스키마 3의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
   `release_brake`/`recover_drive`/`stop_brake` 등 실제 구동 제어 단계를 기록한다.
+  `start_drive`는 시작 duty를 1회 적용한 주기이며, 다음 주기부터 일반 PID 제어로 이어진다.
   `feedforward_duty`는 기본 duty, `requested_brake_current_a`는 변화율 제한 전 전류 요청이다.
   `required_deceleration_mps2`, `measured_deceleration_mps2`는 필요/측정 감속도다.
   `coast_deceleration_mps2`는 마지막 duty 감속 추정값으로 `coast_age_s`가 1초를 넘으면

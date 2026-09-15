@@ -142,6 +142,8 @@ public:
       curvature_speed_control_enabled_ ? "on" : "off", longitudinal_kp_, longitudinal_ki_, longitudinal_kd_);
     RCLCPP_INFO(get_logger(), "Staged brake gains: speed=%.3f, missing deceleration=%.3f",
       longitudinal_brake_speed_gain_, traffic_brake_decel_gain_);
+    RCLCPP_INFO(get_logger(), "Staged departure: start duty=%.3f (0=disabled), then rise=%.3f/s",
+      longitudinal_start_duty_, duty_rise_rate_per_sec_);
     RCLCPP_INFO(get_logger(),
       "Traffic stop=%s | bumper offset=%.2fm, margin=%.2fm, planning decel=%.2fm/s2, "
       "response=%.2fs, brake cap=%.2fA (independent of normal electrical_brake_enabled)",
@@ -196,6 +198,7 @@ private:
     traffic_hold_current_ = parameter("traffic_hold_current_amps", 0.7);
     longitudinal_pid_enabled_ = parameter("longitudinal_pid_enabled", true);
     staged_control_enabled_ = parameter("longitudinal_staged_control_enabled", true);
+    longitudinal_start_duty_ = parameter("longitudinal_start_duty", 0.05);
     drive_ff_offset_ = parameter("longitudinal_feedforward_offset_duty", 0.015);
     drive_ff_slope_ = parameter("longitudinal_feedforward_duty_per_mps", 0.055);
     drive_ff_fade_speed_ = parameter("longitudinal_feedforward_fade_speed_mps", 0.10);
@@ -355,6 +358,9 @@ private:
       drive_ff_offset_ < 0 || drive_ff_offset_ > maximum_duty_ || drive_ff_slope_ < 0 ||
       traffic_coast_probe_sec_ < 0)
     {throw std::invalid_argument("invalid staged longitudinal control parameters");}
+    if (!std::isfinite(longitudinal_start_duty_) || longitudinal_start_duty_ < 0.0 ||
+      longitudinal_start_duty_ > maximum_duty_)
+    {throw std::invalid_argument("longitudinal_start_duty must be between 0 and maximum_duty");}
     if (!finite({path_hold_timeout_sec_}) || path_hold_timeout_sec_ < 0.0 ||
       path_hold_timeout_sec_ > path_timeout_sec_)
     {throw std::invalid_argument("path_hold_timeout_sec must be between 0 and path_timeout_sec");}
@@ -789,6 +795,7 @@ private:
       seconds(now_ns - *coast_deceleration_seen_ns_) <= 1.0 ? coast_deceleration_mps2_ : 0.0;
     const bool was_braking = service_brake_requested_;
     if (zero_target) {
+      departure_pending_ = true;
       service_brake_requested_ = braking_allowed;
       coast_probe_elapsed_ = 0.0;
       traction_recovery_ = false;
@@ -827,6 +834,9 @@ private:
       coast_probe_elapsed_ = 0.0;
     }
     if (service_brake_requested_ || brake_mode_active_) {
+      // Recheck standstill on the first drive cycle after release: the car can
+      // finish stopping during the release cycle, even with a positive target.
+      departure_pending_ = true;
       longitudinal_pid_->reset();
       command_duty_ = 0.0;
       command_brake_current_ = move_toward(command_brake_current_, requested_brake_current_,
@@ -863,14 +873,24 @@ private:
     const double desired = clamp(effort * maximum_duty_, 0.0, maximum_duty_);
     latest_pid_effort_ = effort;
     latest_desired_duty_ = desired;
+    // All input guards and the separate zero-current release cycle have passed.
+    // Seed a real standstill departure once, like manual start_duty, but do not
+    // exceed the PID request on a slow stop-line reapproach. This is no duty floor.
+    const bool start_drive = departure_pending_ && longitudinal_start_duty_ > 0.0 &&
+      std::abs(current_speed_mps_) < 0.05 && command_duty_ <= 1.0e-6 && desired > 0.0;
+    if (desired > 0.0 || std::abs(current_speed_mps_) >= 0.05) {departure_pending_ = false;}
+    // Standstill departures share the ordinary acceleration ramp. The recovery
+    // ramp remains for releasing a brake while already moving.
+    if (start_drive) {traction_recovery_ = false;}
     const double rise = traction_recovery_ ? recovery_duty_rise_ : duty_rise_rate_per_sec_;
     const double previous_duty = command_duty_;
-    command_duty_ = move_toward(command_duty_, desired,
+    command_duty_ = start_drive ? std::min(longitudinal_start_duty_, desired) :
+      move_toward(command_duty_, desired,
       (desired > command_duty_ ? rise : duty_fall_rate_per_sec_) * dt);
     longitudinal_pid_->apply_output_limit(effort, command_duty_ / maximum_duty_);
     if (traction_recovery_ && std::abs(command_duty_ - desired) < 1.0e-4 &&
       overspeed >= -traffic_brake_speed_hysteresis_) {traction_recovery_ = false;}
-    longitudinal_phase_ = traction_recovery_ ? "recover_drive" :
+    longitudinal_phase_ = start_drive ? "start_drive" : traction_recovery_ ? "recover_drive" :
       (overspeed > 0.0 || command_duty_ < previous_duty ? "reduce_duty" : "track_speed");
     return "duty";
   }
@@ -1073,6 +1093,7 @@ private:
 
   void stop_control(const std::string & reason)
   {
+    departure_pending_ = true;
     service_brake_requested_ = traction_recovery_ = false;
     terminal_tracking_active_ = false;
     coast_probe_elapsed_ = 0.0;
@@ -1460,6 +1481,8 @@ private:
   double traffic_brake_max_, traffic_hold_current_;
   bool longitudinal_pid_enabled_{true}, curvature_speed_control_enabled_{false};
   bool staged_control_enabled_{true}, service_brake_requested_{false}, traction_recovery_{false};
+  bool departure_pending_{true};
+  double longitudinal_start_duty_;
   bool terminal_tracking_active_{false};
   std::string longitudinal_phase_{"startup"}, last_logged_longitudinal_phase_;
   double drive_ff_offset_, drive_ff_slope_, drive_ff_fade_speed_, recovery_duty_rise_;

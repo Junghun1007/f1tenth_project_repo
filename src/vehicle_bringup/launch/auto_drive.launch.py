@@ -297,6 +297,7 @@ def generate_launch_description():
         ),
         ("minimum_duty", "0.070", "minimum_duty", float),
         ("maximum_duty", "0.090", "maximum_duty", float),
+        ("longitudinal_start_duty", "0.05", "longitudinal_start_duty", float),
         (
             "duty_rise_rate_per_sec",
             "0.04",
