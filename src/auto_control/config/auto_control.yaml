@@ -38,7 +38,8 @@ auto_control:
     traffic_stop_line_timeout_sec: 0.50   # 일반 정지선 유실 허용 시간. 아래 근접 추적 예외 적용
     traffic_terminal_tracking_distance_m: 0.10 # 마지막 확인 거리(목표점까지)가 이 값 이내면 근접 추적 허용
     traffic_terminal_tracking_timeout_sec: 1.50 # 마지막 확인부터의 시간 상한. 최신 차선/ERPM 필요
-    traffic_stop_margin_m: 0.15           # 범퍼와 정지선 사이에 남길 거리
+    traffic_stop_margin_m: 0.15           # 범위 진입 전 감속 계획의 명목 여유 거리
+    traffic_stop_range_max_m: 0.30       # 앞범퍼 기준 정지선 전방 0~30cm를 허용 정차 범위로 사용
     traffic_front_axle_to_bumper_m: 0.10  # 앞차축→앞범퍼 실제 길이로 설정
     traffic_stop_deceleration_mps2: 0.60  # 계획 감속도: 클수록 늦게/강하게 감속하는 속도 곡선
     traffic_brake_response_time_sec: 0.15 # 구동기 응답 여유. 단계 제어는 전류 상승 지연도 별도 추정해 더함
@@ -58,7 +59,7 @@ auto_control:
     traffic_stop_line_match_tolerance_m: 0.30 # 이동량 보정 거리와 관측값의 일치 허용 오차
     traffic_stop_line_current_weight: 0.35   # 정상 관측으로 거리 증가/감소 양방향 보정
     traffic_stop_line_confirm_frames: 3     # 정지선 관측 확인 횟수 (신호등 색 확인과 별개)
-    traffic_stop_position_tolerance_m: 0.03 # 정차 여유 거리보다 최대 이 값만큼 일찍 목표 0
+    traffic_stop_position_tolerance_m: 0.03 # 감속 계획 거리 여유. 실제 정지 개시는 위 허용 범위 진입 시 확정
     traffic_reapproach_speed_mps: 0.20      # 임시 정지 후 관측 복구 시 접근 속도 상한
 
     # drive: duty/brake/servo output, steering_only: servo output only,

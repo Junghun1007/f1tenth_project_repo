@@ -298,6 +298,7 @@ def generate_launch_description():
         ("minimum_duty", "0.070", "minimum_duty", float),
         ("maximum_duty", "0.090", "maximum_duty", float),
         ("longitudinal_start_duty", "0.05", "longitudinal_start_duty", float),
+        ("traffic_stop_range_max_m", "0.30", "traffic_stop_range_max_m", float),
         ("longitudinal_recovery_start_ramp_sec", "0.20", "longitudinal_recovery_start_ramp_sec", float),
         ("traffic_brake_urgent_rise_amps_per_sec", "6.0", "traffic_brake_urgent_rise_amps_per_sec", float),
         (

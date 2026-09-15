@@ -145,10 +145,10 @@ public:
     RCLCPP_INFO(get_logger(), "Staged departure: start duty=%.3f (0=disabled), then rise=%.3f/s",
       longitudinal_start_duty_, duty_rise_rate_per_sec_);
     RCLCPP_INFO(get_logger(),
-      "Traffic stop=%s | bumper offset=%.2fm, margin=%.2fm, planning decel=%.2fm/s2, "
+      "Traffic stop=%s | bumper offset=%.2fm, margin=%.2fm, accepted range=0..%.2fm, planning decel=%.2fm/s2, "
       "response=%.2fs, brake cap=%.2fA (independent of normal electrical_brake_enabled)",
       traffic_stop_enabled_ ? "ON" : "OFF", traffic_front_offset_, traffic_margin_,
-      traffic_deceleration_, traffic_response_time_, traffic_brake_max_);
+      traffic_stop_range_max_m_, traffic_deceleration_, traffic_response_time_, traffic_brake_max_);
     RCLCPP_INFO(get_logger(),
       "Auto control C++ ready: mode=%s, lane=%s, speed=%.2f..%.2fm/s, "
       "duty=%.3f..%.3f, auto_brake=%s/%.1fA, control=on_lane_result, watchdog=%.1fHz",
@@ -188,6 +188,7 @@ private:
     traffic_state_timeout_ = parameter("traffic_state_timeout_sec", 0.30);
     traffic_line_timeout_ = parameter("traffic_stop_line_timeout_sec", 0.50);
     traffic_margin_ = parameter("traffic_stop_margin_m", 0.15);
+    traffic_stop_range_max_m_ = parameter("traffic_stop_range_max_m", 0.30);
     traffic_front_offset_ = parameter("traffic_front_axle_to_bumper_m", 0.10);
     traffic_deceleration_ = parameter("traffic_stop_deceleration_mps2", 0.60);
     traffic_response_time_ = parameter("traffic_brake_response_time_sec", 0.15);
@@ -349,6 +350,10 @@ private:
       longitudinal_ki_ < 0 || longitudinal_kd_ < 0 || traffic_arrival_tolerance_ < 0 || traffic_line_weight_ > 1 ||
       traffic_line_confirm_frames_ < 1)
     {throw std::invalid_argument("invalid traffic stop parameters");}
+    if (!std::isfinite(traffic_stop_range_max_m_) || traffic_stop_range_max_m_ <= 0.0 ||
+      traffic_margin_ + traffic_arrival_tolerance_ > traffic_stop_range_max_m_)
+    {throw std::invalid_argument(
+        "traffic_stop_range_max_m must be positive and include stop margin plus position tolerance");}
     if (!finite_positive({traffic_pass_overshoot_m_})) {
       throw std::invalid_argument("traffic_pass_overshoot_m must be positive");
     }
@@ -689,6 +694,7 @@ private:
     }
     traffic_stop_active_ = true;
     traffic_holding_ = traffic_reapproach_ = false;
+    traffic_range_stop_committed_ = false;
     traffic_phase_ = "approach";
     longitudinal_pid_->reset();
     speed_pid_->reset();
@@ -727,6 +733,7 @@ private:
       traffic_green_seen_ = true;
       traffic_red_ = traffic_stop_active_ = traffic_pass_committed_ = false;
       traffic_holding_ = traffic_reapproach_ = traffic_red_from_green_ = false;
+      traffic_range_stop_committed_ = false;
       traffic_red_seen_ns_.reset();
       if (had_target) {clear_stop_line_track();}
       if (was_stopping) {
@@ -769,21 +776,27 @@ private:
       seconds(now_ns - *stop_line_seen_ns_) <= traffic_terminal_timeout_ &&
       last_erpm_ns_ && now_ns >= *last_erpm_ns_ && seconds(now_ns - *last_erpm_ns_) <= erpm_timeout_sec_;
     if (traffic_holding_) {traffic_phase_ = "position_hold"; return 0.0;}
+    // Once braking into the accepted bumper-to-line range has begun, neither
+    // observation jitter nor an input outage may cause another forward request.
+    // Keep this latch through guard stops; a valid GREEN releases it.
+    if (traffic_range_stop_committed_) {
+      if (std::abs(current_speed_mps_) < 0.05) {traffic_holding_ = true;}
+      traffic_phase_ = traffic_holding_ ? "position_hold" : "range_braking";
+      return 0.0;
+    }
     if (!stop_line_fresh(now_ns) && !terminal_tracking_active_)
     {
       traffic_reapproach_ = true;
       traffic_phase_ = "temporary_stop_line_unavailable";
       return 0.0;
     }
-    if (*stop_remaining_ <= traffic_arrival_tolerance_) {
-      traffic_phase_ = "position_braking";
-      // A confirmed near-target anchor may briefly leave the camera view.
-      // Bounded ERPM integration can finish that approach, never a distant lost line.
-      if ((last_observed_remaining_ <= traffic_arrival_tolerance_ || terminal_tracking_active_) &&
-        std::abs(current_speed_mps_) < 0.05) {
-        traffic_holding_ = true;
-        traffic_phase_ = "position_hold";
-      }
+    // stop_remaining_ is measured from the nominal buffered target. Add its
+    // margin back to compare with the physical line from the FRONT BUMPER.
+    // A negative distance is an overshoot and must still command braking.
+    if (*stop_remaining_ + traffic_margin_ <= traffic_stop_range_max_m_) {
+      traffic_range_stop_committed_ = true;
+      traffic_holding_ = std::abs(current_speed_mps_) < 0.05;
+      traffic_phase_ = traffic_holding_ ? "position_hold" : "range_braking";
       return 0.0;
     }
     const double limit = traffic_distance_speed_limit(*stop_remaining_);
@@ -1543,6 +1556,8 @@ private:
   double latest_stop_line_corrected_m_{kUnavailable}, latest_raw_speed_mps_{kUnavailable};
   double latest_pid_effort_{kUnavailable}, latest_desired_duty_{kUnavailable};
   bool traffic_stop_enabled_{false}, traffic_red_{false}, traffic_holding_{false};
+  bool traffic_range_stop_committed_{false};
+  double traffic_stop_range_max_m_;
   bool traffic_stop_active_{false}, traffic_pass_committed_{false};
   bool traffic_green_seen_{false}, traffic_red_from_green_{false}, traffic_pass_enabled_{true};
   double traffic_pass_overshoot_m_{0.60};

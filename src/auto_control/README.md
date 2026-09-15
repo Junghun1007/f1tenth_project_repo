@@ -37,6 +37,7 @@ traffic_stop_line_timeout_sec: 0.50
 traffic_terminal_tracking_distance_m: 0.10
 traffic_terminal_tracking_timeout_sec: 1.50
 traffic_stop_margin_m: 0.15
+traffic_stop_range_max_m: 0.30
 traffic_front_axle_to_bumper_m: 0.10
 traffic_stop_deceleration_mps2: 0.60
 traffic_brake_response_time_sec: 0.15
@@ -61,14 +62,25 @@ traffic_reapproach_speed_mps: 0.20
 신호등 정지를 켜고 최신 RED와 유효한 정지선 거리를 함께 확인해 접근을 시작하면,
 남은 거리에 따른 속도 곡선 `v(d)`에서 매 차선
 결과마다 목표를 다시 계산한다. 하나의 고정 속도나 미리 저장한 배열이 아니라,
-정지선에 접근할수록 최종 0까지 낮아지는 연속 곡선을 온라인으로 샘플링한다.
+정지선에 접근할수록 낮아지는 연속 곡선을 온라인으로 샘플링한다.
+앞범퍼가 정지선 전방 0~`traffic_stop_range_max_m`(기본 0.30m) 범위에 들어오면
+목표 속도와 duty를 0으로 전환해 제동을 시작한다. 30cm는 앞차축이나 명목 목표점 기준이 아니다.
+현재 속도에 따라 제동하면서 범위 안으로 더 이동할 수 있으며 실차 정지 위치는 검증이 필요하다.
+이미 선을 넘어선 거리도 전진 요청 없이 제동한다.
+
+범위 진입 후에는 `range_braking`을 유지하고 기존 저속 조건(절대 속도 0.05m/s 미만)을
+만족하면 `position_hold`로 전환한다. 거리 관측 흔들림이나 입력 유실/복구로 다시 전진하지
+않으며 유효 GREEN에서 정지 확정을 해제한다. 차선/ERPM/연결/주행 허용 감시는 계속 적용한다.
+이 변경은 저속 ERPM을 0으로 보정하거나 ERPM 기반 정지 판정 기준을 바꾸지는 않는다.
 
 앞차축 기준 정지선 거리에서 범퍼 길이, 여유 거리, 촬영 이후 이동량을 뺀 거리를 d라 할 때
 `v(d) = min(주행속도, sqrt((a*t)^2 + 2*a*max(0,d-허용오차)) - a*t)`다.
 a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. 단계 제어에서는 t에
 기준 제동 전류까지 선형 상승하는 시간의 절반을 더한다. 속도 곡선은 0A에서의 고정 지연을
 쓰므로 전류가 증가했다고 목표 속도가 올라가지 않는다. a가 작을수록 일찍 감속한다.
-`traffic_stop_position_tolerance_m` 이내에서는 목표를 0으로 한다.
+`traffic_stop_margin_m`와 `traffic_stop_position_tolerance_m`는 범위 진입 전 감속 계획에
+사용한다. 두 값의 합은 허용 범위 상한 이하여야 한다. 범위에 들어온 차량을 이 명목 목표까지
+다시 전진시키지 않는다. `auto_drive`에서 `traffic_stop_range_max_m:=0.30`으로도 지정할 수 있다.
 기본 범퍼 길이 0.10m는 실측값이 아니므로 차량 치수로 수정한다.
 
 `longitudinal_staged_control_enabled: true`에서는 다음 순서로 구동기를 제어한다.
@@ -89,7 +101,7 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. 단계 �
    양의 목표 속도가 남아 있으면 주행 중에는 `longitudinal_recovery_duty_rise_per_sec`로 회복한다.
    회복 도중 정체가 예상되면 아래 `recover_motion` 보조를 적용한다.
    정지 상태에서 재출발할 때는 아래 시작 duty를 1회 적용한 뒤 일반 가속률을 사용한다.
-4. **목표 도착**: 목표 속도가 0이면 양의 duty를 내지 않는다.
+4. **범위 진입 후 정지**: 앞범퍼가 허용 범위에 진입하면 목표 속도 0을 확정하고 양의 duty를 내지 않는다.
    실제 속도 0.05m/s 미만에서 `traffic_hold_current_amps`를 적용한다.
 
 추가 제동 전류는 `traffic_brake_max_current_amps * clamp(longitudinal_brake_speed_gain*초과속도 +
@@ -471,6 +483,7 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   실제 전류 측정값은 아니며 `control_mode`/`motor_mode`/연결 상태와 함께 해석한다.
 - 스키마 4의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
   `release_brake`/`recover_drive`/`recover_motion`/`stop_brake` 등 실제 구동 제어 단계를 기록한다.
+  `traffic_phase`의 `range_braking`은 허용 정차 범위 진입 후 정지 확정, `position_hold`는 저속 유지 상태다.
   `start_drive`는 시작 duty를 1회 적용한 주기이며, 다음 주기부터 일반 PID 제어로 이어진다.
   `feedforward_duty`는 기본 duty, `requested_brake_current_a`는 변화율 제한 전 전류 요청이다.
   `required_deceleration_mps2`, `measured_deceleration_mps2`는 필요/측정 감속도다.
