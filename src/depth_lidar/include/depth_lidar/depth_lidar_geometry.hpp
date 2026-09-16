@@ -28,6 +28,7 @@ struct ProjectionConfig
   int scan_bins{360};
   int pixel_stride{1};
   int min_points_per_bin{1};
+  std::string range_selection{"nearest"};
 };
 
 struct ScanProjection

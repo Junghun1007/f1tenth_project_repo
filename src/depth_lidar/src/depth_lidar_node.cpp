@@ -261,7 +261,8 @@ cv::Mat makeScanPreview(const ScanProjection & projection,
                     << projection.valid_bins;
   draw_status(processing_status.str(), height - 10);
   cv::putText(image,
-    config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON",
+    std::string(config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON")
+      + " | " + config.projection.range_selection,
     cv::Point(8, 54), cv::FONT_HERSHEY_SIMPLEX, 0.35,
     cv::Scalar(65, 65, 65), 1, cv::LINE_AA);
   return image;
@@ -343,6 +344,8 @@ public:
       declare_parameter<int>("scan.pixel_stride", config_.projection.pixel_stride);
     config_.projection.min_points_per_bin =
       declare_parameter<int>("scan.min_points_per_bin", config_.projection.min_points_per_bin);
+    config_.projection.range_selection =
+      declare_parameter<std::string>("scan.range_selection", config_.projection.range_selection);
     config_.cluster.min_bins = declare_parameter<int>("cluster.min_bins", config_.cluster.min_bins);
     config_.cluster.max_missing_bins =
       declare_parameter<int>("cluster.max_missing_bins", config_.cluster.max_missing_bins);
@@ -462,6 +465,8 @@ private:
           next.projection.pixel_stride = static_cast<int>(parameter.as_int());
         } else if (name == "scan.min_points_per_bin") {
           next.projection.min_points_per_bin = static_cast<int>(parameter.as_int());
+        } else if (name == "scan.range_selection") {
+          next.projection.range_selection = parameter.as_string();
         } else if (name == "cluster.min_bins") {
           next.cluster.min_bins = static_cast<int>(parameter.as_int());
         } else if (name == "cluster.max_missing_bins") {

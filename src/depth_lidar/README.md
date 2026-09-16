@@ -155,6 +155,7 @@ Depth 모드 및 필터 파라미터는 장치 파이프라인을 자동으로 �
 | `range.offset_m` | 거리 보정값. 음수는 가깝게, 양수는 멀게 보정 |
 | `scan.bins` | ROI 횡방향 시야각을 나누는 LaserScan 각도 구간 개수 |
 | `scan.pixel_stride` | ROI 픽셀 샘플 간격; 클수록 빠르지만 성긴 결과 |
+| `scan.range_selection` | 각도별 유효 거리 선택: nearest(기본), farthest |
 | `scan.min_points_per_bin` | bin을 유효하게 만드는 최소 픽셀 수 |
 | `cluster.min_bins` | 객체 군집으로 인정할 최소 유효 각도 bin 수 |
 | `cluster.max_missing_bins` | 같은 군집 안에서 허용할 연속 누락 bin 수 |
@@ -191,7 +192,8 @@ radius = clamp(physical width / 2 + margin, minimum radius, maximum radius)
 카메라 좌측이며 양의 각도입니다. 거리 반원 5개는 `range.max_m`까지 같은 간격으로
 그립니다. 30도 간격 각도선과 ROI 좌우 시야 경계선을 함께 표시합니다.
 
-파란색 점은 `/depth_lidar/scan`과 동일한 각도별 최근접 측정값입니다. 원본 Depth의 모든
+파란색 점은 `/depth_lidar/scan`과 동일한 각도별 대표 측정값입니다.
+`scan.range_selection=nearest`는 최근접, `farthest`는 최원거리 유효 값을 선택합니다. 원본 Depth의 모든
 픽셀을 표시하는 것은 아니며, `range.offset_m` 등 기존 scan 처리는 그대로 적용됩니다.
 바닥 제거는 수행하지 않습니다. 측정이 없으면 `NO VALID RETURNS`를 표시합니다.
 
@@ -204,6 +206,24 @@ pixel_y = camera_origin_y - range * cos(angle) * pixels_per_meter
 이전 YAML을 그대로 읽을 수 있도록 유지하지만 레이더 표시에 영향을 주지 않습니다.
 거리·각도는 카메라 기준이며 앞차축 이동이나 BEV 좌표 변환, 장애물 반지름 확대는
 프리뷰에 적용하지 않습니다. 군집 연산은 성능 측정을 위해 계속 수행합니다.
+
+### 최근접 / 최원거리 비교
+
+ROI 테스트 YAML은 `scan.range_selection: "farthest"`로 설정되어 있습니다.
+기본 패키지 YAML과 파라미터 생략 시에는 기존 `nearest` 동작을 유지합니다.
+레이더에 현재 선택 모드를 표시하며 다음 명령으로 재시작 없이 바꿀 수 있습니다.
+
+```bash
+ros2 param set /depth_lidar scan.range_selection farthest
+ros2 param set /depth_lidar scan.range_selection nearest
+```
+
+거리 보정과 min/max 범위 필터를 통과한 픽셀 중에서 각도별 최솟값/최댓값을 고릅니다.
+유효 픽셀이 없거나 `scan.min_points_per_bin`보다 적으면 측정 없음으로 처리합니다.
+선택 모드는 레이더뿐 아니라 `/depth_lidar/scan`과 군집 계산에도 적용됩니다.
+두 방식 모두 지면 제거가 아닙니다. 예를 들어 한 각도 구간에 0.5m 물체와 2m 바닥이
+함께 잡히면 farthest는 2m 바닥을 선택합니다. 지면과 물체를 구분하려면 높이 또는
+지면 모델을 이용한 별도 필터가 필요합니다.
 
 ### 거리 offset
 

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <vector>
 
 TEST(DepthLidarGeometry, ComputesRoiAndProjectsAFlatDepthImage)
@@ -35,6 +36,17 @@ TEST(DepthLidarGeometry, ComputesRoiAndProjectsAFlatDepthImage)
 namespace
 {
 
+depth_lidar::ProjectionConfig fullRoiConfig()
+{
+  depth_lidar::ProjectionConfig config;
+  config.roi_height_ratio = 1.0;
+  config.roi_bottom_offset_ratio = 0.0;
+  config.min_range_m = 0.1;
+  config.max_range_m = 3.0;
+  config.scan_bins = 3;
+  return config;
+}
+
 depth_lidar::ScanProjection makeScan(const std::size_t bins, const float increment)
 {
   depth_lidar::ScanProjection scan;
@@ -59,6 +71,62 @@ depth_lidar::ClusterConfig testClusterConfig()
 }
 
 } // namespace
+
+TEST(DepthLidarGeometry, SelectsNearestOrFarthestAcrossRoiRows)
+{
+  auto config = fullRoiConfig();
+  const std::vector<std::uint16_t> depth{
+    0U, 2000U, 0U,
+    0U, 1500U, 0U,
+    0U, 400U, 0U,
+    0U, 800U, 0U};
+  auto scan = depth_lidar::projectDepthToScan(depth.data(), 3, 4, 3, 4.0, 1.0, config);
+  ASSERT_EQ(scan.valid_bins, 1U);
+  EXPECT_NEAR(scan.ranges[1], 0.4, 1e-6);
+  config.range_selection = "farthest";
+  scan = depth_lidar::projectDepthToScan(depth.data(), 3, 4, 3, 4.0, 1.0, config);
+  ASSERT_EQ(scan.valid_bins, 1U);
+  EXPECT_NEAR(scan.ranges[1], 2.0, 1e-6);
+  EXPECT_TRUE(std::isinf(scan.ranges[0]));
+  EXPECT_TRUE(std::isinf(scan.ranges[2]));
+}
+
+TEST(DepthLidarGeometry, FarthestHonorsCorrectedRangeLimitsAndMinimumSupport)
+{
+  auto config = fullRoiConfig();
+  config.range_selection = "farthest";
+  config.range_offset_m = 0.1;
+  const std::vector<std::uint16_t> depth{
+    0U, 0U, 0U,
+    0U, 3500U, 0U,
+    0U, 2950U, 0U,
+    0U, 1000U, 0U,
+    0U, 2000U, 0U};
+  config.min_points_per_bin = 2;
+  auto scan = depth_lidar::projectDepthToScan(depth.data(), 3, 5, 3, 4.0, 1.0, config);
+  EXPECT_EQ(scan.valid_input_points, 2U);
+  ASSERT_EQ(scan.valid_bins, 1U);
+  EXPECT_NEAR(scan.ranges[1], 2.1, 1e-6);
+  config.min_points_per_bin = 3;
+  scan = depth_lidar::projectDepthToScan(depth.data(), 3, 5, 3, 4.0, 1.0, config);
+  EXPECT_EQ(scan.valid_bins, 0U);
+  EXPECT_TRUE(std::isinf(scan.ranges[1]));
+}
+
+TEST(DepthLidarGeometry, FarthestWithoutValidSamplesStaysEmpty)
+{
+  auto config = fullRoiConfig();
+  config.range_selection = "farthest";
+  const std::vector<std::uint16_t> depth{0U, 50U, 4000U};
+  const auto scan = depth_lidar::projectDepthToScan(depth.data(), 3, 1, 3, 4.0, 1.0, config);
+  EXPECT_EQ(scan.valid_bins, 0U);
+  for (const auto range : scan.ranges) {
+    EXPECT_TRUE(std::isinf(range));
+  }
+  config.range_selection = "unknown";
+  EXPECT_THROW(depth_lidar::projectDepthToScan(depth.data(), 3, 1, 3, 4.0, 1.0, config),
+    std::invalid_argument);
+}
 
 TEST(DepthLidarGeometry, ClustersAdjacentBinsAndRejectsSinglePointNoise)
 {

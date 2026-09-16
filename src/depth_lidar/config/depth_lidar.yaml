@@ -23,6 +23,8 @@ depth_lidar:
     scan.bins: 360
     scan.pixel_stride: 1
     scan.min_points_per_bin: 1
+    # Per-angle valid range selection; neither mode removes the ground.
+    scan.range_selection: "nearest"    # nearest, farthest
 
     # Consecutive occupied angular bins are grouped in one O(N) pass. Radius is
     # estimated from angular support * range, then clamped and inflated.

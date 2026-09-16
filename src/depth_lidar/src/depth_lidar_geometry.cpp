@@ -45,6 +45,10 @@ bool validateProjectionConfig(const ProjectionConfig & config, std::string & rea
     reason = "scan.min_points_per_bin must be in [1, 10000]";
     return false;
   }
+  if (config.range_selection != "nearest" && config.range_selection != "farthest") {
+    reason = "scan.range_selection must be nearest or farthest";
+    return false;
+  }
   reason.clear();
   return true;
 }
@@ -151,6 +155,7 @@ ScanProjection projectDepthToScan(const std::uint16_t * const depth_mm,
   output.ranges.assign(static_cast<std::size_t>(config.scan_bins),
     std::numeric_limits<float>::infinity());
   std::vector<int> point_counts(static_cast<std::size_t>(config.scan_bins), 0);
+  const bool select_farthest = config.range_selection == "farthest";
 
   for (int v = output.roi.y; v < output.roi.y + output.roi.height; v += config.pixel_stride) {
     const std::uint16_t * const row = depth_mm + static_cast<std::size_t>(v) * row_stride_elements;
@@ -178,7 +183,15 @@ ScanProjection projectDepthToScan(const std::uint16_t * const depth_mm,
       }
 
       const std::size_t index = static_cast<std::size_t>(bin);
-      output.ranges[index] = std::min(output.ranges[index], static_cast<float>(corrected_range_m));
+      const float range = static_cast<float>(corrected_range_m);
+      // Seed from the first valid sample: empty bins must retain +infinity,
+      // which cannot be used as the initial value of a maximum reduction.
+      if (point_counts[index] == 0) {
+        output.ranges[index] = range;
+      } else {
+        output.ranges[index] = select_farthest
+          ? std::max(output.ranges[index], range) : std::min(output.ranges[index], range);
+      }
       ++point_counts[index];
       ++output.valid_input_points;
     }
