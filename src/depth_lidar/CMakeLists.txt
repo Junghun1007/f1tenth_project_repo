@@ -16,11 +16,14 @@ find_package(rclcpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core highgui imgproc)
 find_package(depthai 3.6 CONFIG REQUIRED)
 find_package(oak_startup REQUIRED)
 
-add_library(depth_lidar_geometry src/depth_lidar_geometry.cpp src/depth_lidar_stabilization.cpp)
+add_library(depth_lidar_geometry src/depth_lidar_geometry.cpp src/depth_lidar_stabilization.cpp src/depth_lidar_grid.cpp)
 target_include_directories(depth_lidar_geometry
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -31,7 +34,7 @@ target_link_libraries(depth_lidar_geometry PRIVATE opencv_core)
 
 add_executable(depth_lidar_node src/depth_lidar_node.cpp src/depth_lidar_preview.cpp)
 target_include_directories(depth_lidar_node PRIVATE include ${OpenCV_INCLUDE_DIRS})
-ament_target_dependencies(depth_lidar_node builtin_interfaces rclcpp rcl_interfaces sensor_msgs std_msgs)
+ament_target_dependencies(depth_lidar_node builtin_interfaces rclcpp rcl_interfaces sensor_msgs std_msgs nav_msgs geometry_msgs visualization_msgs)
 target_link_libraries(depth_lidar_node depth_lidar_geometry oak_startup::measurement depthai::core ${OpenCV_LIBS})
 
 install(

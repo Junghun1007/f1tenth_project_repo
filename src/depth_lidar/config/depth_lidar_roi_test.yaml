@@ -1,4 +1,4 @@
-# One-shot BEV-style startup pose -> fixed height band -> nearest virtual scan.
+# Fixed startup pose -> height band -> confirmed scan -> occupancy clusters/outlines.
 # Start stationary on level ground. No online pose/ground-plane estimation.
 depth_lidar:
   ros__parameters:
@@ -88,13 +88,25 @@ depth_lidar:
     scan.hold_sec: 0.08             # 0 = no hold; confirmation still applies.
     input.max_age_sec: 0.20         # Reject stale/replayed frames; stop publishing old data.
 
+    # Grid built from confirmed angular scan returns, NOT raw depth pixel counts.
+    # 60 forward columns x 120 left/right rows = 7200 cells; bounds are half-open.
+    grid.resolution_m: 0.05
+    grid.x_min_m: 0.0
+    grid.x_max_m: 3.0
+    grid.y_min_m: -3.0
+    grid.y_max_m: 3.0
+    grid.min_returns_per_cell: 1
+    # 8-connected occupied cells. No gap filling, circles, hulls or inflation.
+    cluster.min_cells: 2
+    cluster.min_returns: 2
+
     # Optional USB load generator; no conversion or publication.
     nv12.enabled: false
     nv12.fps: 30.0
     nv12.width: 1280
     nv12.height: 800
 
-    # White radar: orange=current return, gray=held return; no clusters or circles.
+    # White radar: cluster cell outlines; orange=current, gray=held. No circles/labels.
     preview.enabled: true
     preview.gui: true
     preview.fps: 15.0

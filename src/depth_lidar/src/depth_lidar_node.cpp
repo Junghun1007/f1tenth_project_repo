@@ -1,4 +1,5 @@
 #include "depth_lidar/depth_lidar_geometry.hpp"
+#include "depth_lidar/depth_lidar_grid.hpp"
 #include "depth_lidar/depth_lidar_preview.hpp"
 #include "depth_lidar/depth_lidar_stabilization.hpp"
 
@@ -15,6 +16,10 @@
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <geometry_msgs/msg/point.hpp>
+#include <std_msgs/msg/color_rgba.hpp>
 #include "oak_startup/oak_startup_measurement.hpp"
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
@@ -50,6 +55,8 @@ constexpr std::uint32_t kColorSensorHeight = 800U;
 struct NodeConfig
 {
   ProjectionConfig projection;
+  GridConfig grid;
+  ClusterConfig cluster;
   double camera_fps{30.0};
   std::string camera_resolution{"400p"};
   std::string depth_mode{"high_density"};
@@ -157,6 +164,7 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
     reason = "sensor pose must be finite";
     return false;
   }
+  if (!validateGridConfig(config.grid, config.cluster, reason)) { return false; }
   if (!validateProjectionConfig(config.projection, reason)) {
     return false;
   }
@@ -331,6 +339,14 @@ public:
     config_.confirm_hits = declare_parameter<int>("scan.confirm_hits", config_.confirm_hits);
     config_.confirm_window_frames = declare_parameter<int>("scan.confirm_window_frames", config_.confirm_window_frames);
     config_.confirm_distance_m = declare_parameter<double>("scan.confirm_distance_m", config_.confirm_distance_m);
+    config_.grid.resolution_m = declare_parameter<double>("grid.resolution_m", config_.grid.resolution_m);
+    config_.grid.x_min_m = declare_parameter<double>("grid.x_min_m", config_.grid.x_min_m);
+    config_.grid.x_max_m = declare_parameter<double>("grid.x_max_m", config_.grid.x_max_m);
+    config_.grid.y_min_m = declare_parameter<double>("grid.y_min_m", config_.grid.y_min_m);
+    config_.grid.y_max_m = declare_parameter<double>("grid.y_max_m", config_.grid.y_max_m);
+    config_.grid.min_returns_per_cell = declare_parameter<int>("grid.min_returns_per_cell", config_.grid.min_returns_per_cell);
+    config_.cluster.min_cells = declare_parameter<int>("cluster.min_cells", config_.cluster.min_cells);
+    config_.cluster.min_returns = declare_parameter<int>("cluster.min_returns", config_.cluster.min_returns);
     config_.hold_sec = declare_parameter<double>("scan.hold_sec", config_.hold_sec);
     config_.max_age_sec = declare_parameter<double>("input.max_age_sec", config_.max_age_sec);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
@@ -391,12 +407,17 @@ public:
     for (const auto & entry : get_node_parameters_interface()->get_parameter_overrides()) {
       const auto & name = entry.first;
       if (name.rfind("ground.", 0) == 0 || name.rfind("floor.", 0) == 0
-          || name.rfind("grid.", 0) == 0 || name.rfind("cluster.", 0) == 0
+          || name == "grid.min_points_per_cell" || name == "cluster.min_points"
+          || name == "cluster.radius_margin_m" || name == "cluster.min_radius_m"
+          || name == "cluster.max_radius_m" || name == "cluster.neighbor_distance_m"
           || name.rfind("stabilization.", 0) == 0 || name.rfind("bev.", 0) == 0
           || name == "scan.range_selection" || name == "preview.scale") {
         throw std::invalid_argument("Obsolete depth_lidar parameter: " + name + "; use the fixed-pose scan YAML");
       }
     }
+    occupancy_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>("~/occupancy", rclcpp::SensorDataQoS());
+    contours_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("~/contours", rclcpp::SensorDataQoS());
+    clusters_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/clusters", rclcpp::SensorDataQoS());
     scan_pub_ = create_publisher<sensor_msgs::msg::LaserScan>("~/scan", rclcpp::SensorDataQoS());
     points_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/scan_points", rclcpp::SensorDataQoS());
     status_pub_ = create_publisher<std_msgs::msg::String>("~/status", rclcpp::QoS(1).transient_local());
@@ -440,6 +461,14 @@ public:
             else if (p.get_name() == "scan.confirm_hits") { next.confirm_hits = p.as_int(); }
             else if (p.get_name() == "scan.confirm_window_frames") { next.confirm_window_frames = p.as_int(); }
             else if (p.get_name() == "scan.confirm_distance_m") { next.confirm_distance_m = p.as_double(); }
+            else if (p.get_name() == "grid.resolution_m") { next.grid.resolution_m = p.as_double(); }
+            else if (p.get_name() == "grid.x_min_m") { next.grid.x_min_m = p.as_double(); }
+            else if (p.get_name() == "grid.x_max_m") { next.grid.x_max_m = p.as_double(); }
+            else if (p.get_name() == "grid.y_min_m") { next.grid.y_min_m = p.as_double(); }
+            else if (p.get_name() == "grid.y_max_m") { next.grid.y_max_m = p.as_double(); }
+            else if (p.get_name() == "grid.min_returns_per_cell") { next.grid.min_returns_per_cell = p.as_int(); }
+            else if (p.get_name() == "cluster.min_cells") { next.cluster.min_cells = p.as_int(); }
+            else if (p.get_name() == "cluster.min_returns") { next.cluster.min_returns = p.as_int(); }
             else if (p.get_name() == "scan.hold_sec") { next.hold_sec = p.as_double(); }
             else if (p.get_name() == "input.max_age_sec") { next.max_age_sec = p.as_double(); }
             else if (p.get_name() == "nv12.enabled") { next.nv12_enabled = p.as_bool(); }
@@ -481,9 +510,81 @@ private:
     std_msgs::msg::String message; message.data = text; status_pub_->publish(message);
     std_msgs::msg::Bool flag; flag.data = ready; ready_pub_->publish(flag);
   }
-  void publishScan(const ScanResult & scan, const NodeConfig & c,
+  void publishGrid(const GridResult & grid, const NodeConfig & c,
+    const builtin_interfaces::msg::Time & stamp)
+  {
+    nav_msgs::msg::OccupancyGrid occupancy;
+    occupancy.header.stamp=stamp; occupancy.header.frame_id=c.frame_id;
+    occupancy.info.resolution=grid.config.resolution_m;
+    occupancy.info.width=grid.width; occupancy.info.height=grid.height;
+    occupancy.info.origin.position.x=grid.config.x_min_m;
+    occupancy.info.origin.position.y=grid.config.y_min_m;
+    occupancy.info.origin.orientation.w=1.0;
+    occupancy.data.resize(grid.cells.size(),-1);
+    for (std::size_t i=0; i<grid.cells.size(); ++i) {
+      if (grid.cells[i].returns) { occupancy.data[i]=100; }
+    }
+    occupancy_pub_->publish(occupancy);
+    if (contours_pub_->get_subscription_count()) {
+      visualization_msgs::msg::MarkerArray message;
+      // IDs are frame-local. Clear old groups even when this frame has no clusters.
+      message.markers.resize(grid.clusters.size()+1);
+      message.markers[0].header=occupancy.header;
+      message.markers[0].action=visualization_msgs::msg::Marker::DELETEALL;
+      for (std::size_t i=0; i<grid.clusters.size(); ++i) {
+        auto & marker=message.markers[i+1];
+        marker.header=occupancy.header; marker.ns="depth_grid_clusters"; marker.id=static_cast<int>(i);
+        marker.type=visualization_msgs::msg::Marker::LINE_LIST;
+        marker.action=visualization_msgs::msg::Marker::ADD;
+        marker.pose.orientation.w=1.0; marker.scale.x=0.01; marker.color.a=1.0F;
+        marker.lifetime.sec=1;
+      }
+      for (const auto & edge:grid.boundary) {
+        auto & marker=message.markers[edge.cluster_id+1];
+        geometry_msgs::msg::Point a,b;
+        a.x=edge.x1; a.y=edge.y1; b.x=edge.x2; b.y=edge.y2;
+        marker.points.push_back(a); marker.points.push_back(b);
+        std_msgs::msg::ColorRGBA color;
+        color.r=edge.age_sec>0 ? .59F : .90F; color.g=.59F;
+        color.b=edge.age_sec>0 ? .59F : 0.0F; color.a=1.0F;
+        marker.colors.push_back(color); marker.colors.push_back(color);
+      }
+      contours_pub_->publish(message);
+    }
+    if (!clusters_pub_->get_subscription_count()) { return; }
+    sensor_msgs::msg::PointCloud2 message; message.header=occupancy.header;
+    sensor_msgs::PointCloud2Modifier modifier(message);
+    using F=sensor_msgs::msg::PointField;
+    modifier.setPointCloud2Fields(12,
+      "x",1,F::FLOAT32,"y",1,F::FLOAT32,"z",1,F::FLOAT32,
+      "min_x",1,F::FLOAT32,"max_x",1,F::FLOAT32,"min_y",1,F::FLOAT32,"max_y",1,F::FLOAT32,
+      "nearest_range_m",1,F::FLOAT32,"observation_age_sec",1,F::FLOAT32,
+      "cluster_id",1,F::UINT32,"cell_count",1,F::UINT32,"return_count",1,F::UINT32);
+    modifier.resize(grid.clusters.size()); message.is_dense=true;
+    if (!grid.clusters.empty()) {
+      sensor_msgs::PointCloud2Iterator<float> x(message,"x"),y(message,"y"),z(message,"z"),
+        min_x(message,"min_x"),max_x(message,"max_x"),min_y(message,"min_y"),max_y(message,"max_y"),
+        range(message,"nearest_range_m"),age(message,"observation_age_sec");
+      sensor_msgs::PointCloud2Iterator<std::uint32_t> id(message,"cluster_id"),cells(message,"cell_count"),returns(message,"return_count");
+      for (std::size_t i=0; i<grid.clusters.size(); ++i) {
+        const auto & cluster=grid.clusters[i];
+        *x=cluster.center_x; *y=cluster.center_y; *z=0.0F;
+        *min_x=cluster.min_x; *max_x=cluster.max_x; *min_y=cluster.min_y; *max_y=cluster.max_y;
+        *range=cluster.nearest_range_m; *age=cluster.age_sec;
+        *id=static_cast<std::uint32_t>(i); *cells=static_cast<std::uint32_t>(cluster.cells.size());
+        *returns=static_cast<std::uint32_t>(cluster.returns);
+        ++x; ++y; ++z; ++min_x; ++max_x; ++min_y; ++max_y; ++range; ++age; ++id; ++cells; ++returns;
+      }
+    }
+    clusters_pub_->publish(message);
+  }
+  GridResult publishScan(const ScanResult & scan, const NodeConfig & c,
     const builtin_interfaces::msg::Time & stamp, double scan_time)
   {
+    const double grid_start=hostSeconds();
+    auto grid=clusterScan(scan,c.projection,c.grid,c.cluster);
+    last_grid_ms_=(hostSeconds()-grid_start)*1000.0;
+    publishGrid(grid,c,stamp);
     constexpr double rad = 3.14159265358979323846 / 180.0;
     sensor_msgs::msg::LaserScan message;
     message.header.stamp = stamp; message.header.frame_id = c.frame_id;
@@ -494,7 +595,7 @@ private:
     message.range_min = c.projection.min_range_m; message.range_max = c.projection.max_range_m;
     message.ranges = scan.ranges; // NaN means unobserved; never claim free space.
     scan_pub_->publish(message);
-    if (!points_pub_->get_subscription_count()) { return; }
+    if (!points_pub_->get_subscription_count()) { return grid; }
     sensor_msgs::msg::PointCloud2 points;
     points.header = message.header;
     sensor_msgs::PointCloud2Modifier modifier(points);
@@ -512,6 +613,7 @@ private:
       }
     }
     points_pub_->publish(points);
+    return grid;
   }
   void configurePipeline(dai::Pipeline & pipeline,
     const NodeConfig & config,
@@ -666,6 +768,7 @@ private:
     ScanHold hold(c.confirm_hits, c.confirm_window_frames, c.confirm_distance_m);
     CameraGeometry camera;
     auto displayed = emptyScan(c.projection);
+    auto displayed_grid = clusterScan(displayed,c.projection,c.grid,c.cluster);
     bool configured = false, ready = false, radar_open = false, stereo_open = false;
     double last_rx = hostSeconds(), previous_frame = -1.0;
     double last_preview = 0.0, last_stereo = 0.0, metric_start = last_rx;
@@ -692,10 +795,10 @@ private:
         if (ready && clock - last_rx > c.max_age_sec) {
           hold.clear(); displayed = emptyScan(c.projection); ready = false;
           status("DEPTH STALE / FIXED POSE RETAINED", false);
-          publishScan(displayed, c, now(), 1.0/c.camera_fps);
+          displayed_grid = publishScan(displayed, c, now(), 1.0/c.camera_fps);
         } else if (clock > hold.nextExpiryTime()) {
           displayed = hold.snapshot(clock, c.hold_sec);
-          publishScan(displayed, c, now(), 1.0/c.camera_fps);
+          displayed_grid = publishScan(displayed, c, now(), 1.0/c.camera_fps);
         }
         auto frame = depth_queue->tryGet<dai::ImgFrame>();
         if (frame) {
@@ -731,8 +834,8 @@ private:
           if (!ready) { status("READY / FIXED STARTUP POSE", true); ready = true; }
           last_rx = start;
           const auto stamp = now() - rclcpp::Duration::from_seconds(std::max(0.0, hostSeconds()-capture));
-          publishScan(displayed, c, stamp, scan_time);
-          ++frames; processing_sum += processing_ms; delay_sum += age*1000.0;
+          displayed_grid = publishScan(displayed, c, stamp, scan_time);
+          ++frames; processing_sum += processing_ms + last_grid_ms_; delay_sum += age*1000.0;
         }
         if (left_queue) {
           if (auto f = left_queue->tryGet<dai::ImgFrame>()) { left_frame = std::move(f); }
@@ -752,15 +855,15 @@ private:
         if (clock-metric_start >= c.metrics_interval_sec) {
           fps = frames / (clock-metric_start); ms = frames ? processing_sum/frames : 0.0;
           const auto total = nv12_count.load(); nv12_fps = (total-previous_nv12)/(clock-metric_start);
-          RCLCPP_INFO(get_logger(), "depth %.1f FPS | project+filter %.3f ms | bins %zu/%d | delay %.1f ms | NV12 %.1f FPS",
+          RCLCPP_INFO(get_logger(), "depth %.1f FPS | project+grid %.3f ms | bins %zu/%d | delay %.1f ms | NV12 %.1f FPS",
             fps, ms, displayed.valid_bins, c.projection.bins, frames ? delay_sum/frames : 0.0, nv12_fps);
           previous_nv12 = total; frames = 0; processing_sum = delay_sum = 0; metric_start = clock;
         }
         if (c.preview_enabled && clock-last_preview >= 1.0/c.preview_fps) {
-          auto preview = makeRadarPreview(displayed, c.projection, c.preview_size_px, ready);
+          auto preview = makeRadarPreview(displayed, displayed_grid, c.projection, c.preview_size_px, ready);
           std::ostringstream metrics;
           metrics << std::fixed << std::setprecision(1) << "DEPTH " << fps << " FPS | NV12 " << nv12_fps
-            << " FPS | PROJECT " << std::setprecision(3) << ms << " ms";
+            << " FPS | PROJECT+GRID " << std::setprecision(3) << ms << " ms";
           cv::putText(preview, metrics.str(), cv::Point(8,preview.rows-10), cv::FONT_HERSHEY_SIMPLEX, .35, cv::Scalar(65,65,65),1,cv::LINE_AA);
           cv::putText(preview, ready ? "FIXED POSE | C: CAMERA ON/OFF" : "WAITING FOR DEPTH | FIXED POSE",
             cv::Point(8,56),cv::FONT_HERSHEY_SIMPLEX,.35,cv::Scalar(65,65,65),1,cv::LINE_AA);
@@ -783,6 +886,10 @@ private:
   oak_startup::OakStartupMeasurementConfig startup_;
   std::atomic_bool stop_requested_{false}, restart_requested_{false};
   std::thread worker_;
+  double last_grid_ms_{0.0}; // Worker-owned; excludes ROS publication and rendering.
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr contours_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr clusters_pub_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr points_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_, pose_pub_;

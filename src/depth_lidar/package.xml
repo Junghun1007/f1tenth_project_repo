@@ -2,7 +2,7 @@
 <package format="3">
   <name>depth_lidar</name>
   <version>0.1.0</version>
-  <description>Fixed startup camera pose and height-filtered virtual 2D laser scans.</description>
+  <description>Fixed startup camera pose and height-filtered virtual 2D scans with occupancy clusters and exact cell outlines.</description>
   <maintainer email="ojeonghun@example.com">ojeonghun</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,6 +12,9 @@
   <depend>rcl_interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>visualization_msgs</depend>
   <depend>depthai</depend>
   <depend>oak_startup</depend>
   <depend>libopencv-dev</depend>

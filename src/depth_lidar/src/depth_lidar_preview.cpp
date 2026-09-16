@@ -51,7 +51,7 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
   return image;
 }
 
-cv::Mat makeRadarPreview(const ScanResult & scan, const ProjectionConfig & config,
+cv::Mat makeRadarPreview(const ScanResult & scan, const GridResult & detection, const ProjectionConfig & config,
   const int width_px, const bool ready)
 {
   const double max_range_m = config.max_range_m;
@@ -98,12 +98,13 @@ cv::Mat makeRadarPreview(const ScanResult & scan, const ProjectionConfig & confi
       labelAt(label, end + cv::Point(-8, -7), 0.35);
     }
   }
-  for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
-    if (!std::isfinite(scan.ranges[i])) { continue; }
-    const double angle = (config.angle_min_deg + i *
-      (config.angle_max_deg - config.angle_min_deg) / (config.bins - 1)) * pi / 180.0;
-    cv::circle(image, pointAt(scan.ranges[i], angle), 2,
-      scan.ages[i] > 0.0F ? cv::Scalar(150,150,150) : cv::Scalar(0,150,230), -1, cv::LINE_AA);
+  const auto gridPoint = [&](double x, double y) {
+    return cv::Point(origin.x-static_cast<int>(std::lround(y*pixels_per_meter)),
+      origin.y-static_cast<int>(std::lround(x*pixels_per_meter)));
+  };
+  for (const auto & edge : detection.boundary) {
+    cv::line(image, gridPoint(edge.x1,edge.y1), gridPoint(edge.x2,edge.y2),
+      edge.age_sec > 0.0 ? cv::Scalar(150,150,150) : cv::Scalar(0,150,230),2,cv::LINE_AA);
   }
   cv::drawMarker(image, origin, ink, cv::MARKER_CROSS, 10, 2, cv::LINE_AA);
   labelAt(width_px < 400 ? "0m" : "VEHICLE / 0m",
@@ -111,11 +112,11 @@ cv::Mat makeRadarPreview(const ScanResult & scan, const ProjectionConfig & confi
   labelAt(width_px < 400 ? "L (+)" : "LEFT (+)", cv::Point(8, origin.y + 17), 0.35);
   labelAt(width_px < 400 ? "R (-)" : "RIGHT (-)",
     cv::Point(width_px - (width_px < 400 ? 40 : 75), origin.y + 17), 0.35);
-  labelAt("VIRTUAL SCAN / VEHICLE FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
-  labelAt("RETURNS " + std::to_string(scan.valid_bins) + " | SAMPLES " + std::to_string(scan.accepted_points),
+  labelAt("GRID CLUSTERS / VEHICLE FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
+  labelAt("RETURNS " + std::to_string(scan.valid_bins) + " | CELLS " + std::to_string(detection.occupied_cells) + " | CLUSTERS " + std::to_string(detection.clusters.size()),
     cv::Point(10, 38), 0.35);
-  if (scan.valid_bins == 0) {
-    labelAt(ready ? "NO VALID RETURNS" : "SCAN NOT READY", cv::Point(origin.x - 60, origin.y - radius_px / 2), 0.4);
+  if (detection.clusters.empty()) {
+    labelAt(ready ? "NO CONFIRMED CLUSTERS" : "SCAN NOT READY", cv::Point(origin.x - 60, origin.y - radius_px / 2), 0.4);
   }
   return image;
 }

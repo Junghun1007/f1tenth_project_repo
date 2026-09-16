@@ -1,15 +1,16 @@
 #pragma once
 
 #include "depth_lidar/depth_lidar_geometry.hpp"
+#include "depth_lidar/depth_lidar_grid.hpp"
 
 #include <opencv2/core.hpp>
 
 namespace depth_lidar
 {
 
-// Fixed vehicle-frame scan points; orange=current, gray=briefly held.
+// Cluster cell outlines in the fixed vehicle frame; orange=current, gray=held.
 // Leaves the bottom 40 pixels available for receiver/processing metrics.
-cv::Mat makeRadarPreview(const ScanResult & scan, const ProjectionConfig & config, int width_px, bool ready = true);
+cv::Mat makeRadarPreview(const ScanResult & scan, const GridResult & detection, const ProjectionConfig & config, int width_px, bool ready = true);
 
 // Draw the actual depth ROI scaled into rectified left/right images. Right is
 // the depth reference; the left rectangle is a guide, not a correspondence.

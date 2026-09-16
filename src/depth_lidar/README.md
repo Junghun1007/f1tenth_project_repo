@@ -2,8 +2,8 @@
 
 차선을 보기 위해 아래로 기울인 OAK 카메라에서 전방 장애물의 대략적인 위치를 얻는다.
 시작할 때만 `bev_processor`와 공용인 `oak_startup`으로 roll/pitch/높이를 측정하고,
-이후에는 고정 변환 → 높이 필터 → 각도별 최단 거리만 처리한다.
-주행 중 평면 추정, 자세 갱신, 점유격자, 군집화, 외곽선 계산은 수행하지 않는다.
+이후에는 고정 변환 → 높이 필터 → 각도별 최단 거리 → 시간 확인 → 점유격자 →
+8방향 연결 군집화 → 셀 외곽선 추출을 처리한다. 주행 중 평면·자세 재추정은 하지 않는다.
 
 ## 실행
 
@@ -77,14 +77,14 @@ CAM_A 기준으로 바꾼다. TF는 자동 발행하지 않으며, 다른 노드
 수평 거리 `hypot(X,Y)`와 방향 `atan2(Y,X)`를 구하고 각도 bin마다 가장 가까운 값을 남긴다.
 깊이 이웃이 없는 고립점과 표본 수가 부족한 bin은 제외한다.
 같은 bin에서 현재 거리와 10cm 이내인 관측이 최근 4개 depth 프레임 중 3개 이상
-있을 때만 출력한다. 이 조건은 이미 표시된 점에도 계속 적용한다. 평균 거리나 군집 중심을
-사용하지 않으므로 긴 벽을 큰 원으로 앞쪽까지 확장하지 않는다.
+있을 때만 출력한다. 이 조건은 이미 표시된 점에도 계속 적용한다. 스캔 거리에는 평균 거리나 군집 중심을
+사용하지 않으므로 긴 벽을 큰 원으로 앞쪽까지 확장하지 않는다. 군집 평균 위치는 별도로 제공한다.
 
 각 픽셀의 회전된 광선과 높이 조건을 만족하는 raw-depth 구간을 미리 계산한다.
 매 프레임에는 깊이 범위 검사 → 필요한 점의 XY 계산 → bin 최솟값 갱신을 수행한다.
 전체 3D 포인트클라우드를 만들거나 정렬하지 않는다. 연산은 표본 수에 선형이며,
 30 FPS/400p/stride 2/141 bins를 기본으로 둔다. 실제 성능은 하드웨어에서 확인해야 한다.
-로그의 `project+filter ms`는 호스트 필터·변환·scan hold 시간이며 OAK stereo 연산,
+로그의 `project+grid ms`는 호스트 필터·변환·시간 확인·격자·군집·외곽선 시간이며 OAK stereo 연산,
 USB 수신 대기, ROS 발행, 프리뷰 비용을 포함하지 않는다.
 
 ## 주요 설정
@@ -108,6 +108,11 @@ USB 수신 대기, ROS 발행, 프리뷰 비용을 포함하지 않는다.
 | `scan.confirm_distance_m` | 기본 10cm. 현재 거리와 이 차이 이내인 같은 bin의 과거 관측만 횟수에 포함한다. |
 | `scan.hold_sec` | 기본 80ms. 마지막으로 확인을 통과한 점을 잠깐 보존한다. 0으로 꺼도 시간 확인은 유지한다. |
 | `input.max_age_sec` | 기본 200ms. 오래된 입력/입력 단절 시 결과를 비운다. |
+| `grid.resolution_m` | 기본 5cm. 키우면 점들이 연결되기 쉬우나 가까운 물체가 합쳐지고 경계가 거칠어진다. |
+| `grid.x_min_m/x_max_m/y_min_m/y_max_m` | 차량 좌표계 격자 범위. 최솟값 포함/최댓값 제외. 범위 길이는 셀 크기의 정수배여야 한다. |
+| `grid.min_returns_per_cell` | 기본 1. 한 셀에 필요한 확정 스캔점 수. raw depth 픽셀 수가 아니다. |
+| `cluster.min_cells` | 기본 2. 이보다 작은 연결 성분은 격자·군집 출력에서 제외한다. |
+| `cluster.min_returns` | 기본 2. 연결 성분에 필요한 확정 스캔점 수. |
 
 높이 필터는 초기 바닥 기준이며 지면의 경사 변화나 차체 pitch/roll 변화는 보정하지 않는다.
 카메라가 내려다보는 각도/FOV 밖에 있는 물체는 좌표 변환으로 복구할 수 없다.
@@ -132,16 +137,53 @@ USB 수신 대기, ROS 발행, 프리뷰 비용을 포함하지 않는다.
 프리뷰 갱신이나 유지 중 재발행은 확인 횟수에 포함하지 않는다.
 지속적으로 검출되는 바닥 오차는 이 필터로 제거되지 않으므로 초기 자세와 높이 문턱값을 확인한다.
 
+## 점유격자와 군집 외곽선
+
+확인된 2D 스캔점으로만 격자를 만든다. 각 방향의 최단 거리로 줄이기 전의 전체 depth
+점군을 복원하는 것은 아니다. 카메라에서 관측된 장애물의 앞쪽 표면을 군집화한다.
+
+기본 5cm 셀, 전방 0~3m/좌우 -3~3m에 7,200개 셀을 두며, 인접한 8방향 점유 셀을
+한 군집으로 묶는다. 최소 2개 셀·2개 스캔점을 만족해야 격자·외곽선·군집 출력에 남는다.
+기존 `/scan`과 `/scan_points`는 군집 크기 필터 이전의 확정 스캔을 계속 제공한다.
+작은 장애물도 군집으로 남겨야 하면 두 최소값을 1로 낮춘다.
+
+노출된 셀의 네 변만 외곽선으로 추출한다. 오목한 형태와 내부 구멍을 보존하고 빈 셀을
+메우거나 외곽을 원/볼록다각형으로 감싸지 않는다. 셀 단위 양자화 오차는 존재한다.
+벽/물체라는 의미 분류는 하지 않으며, 길게 연결된 벽은 긴 셀 경계로 표현한다.
+경로 충돌 검사에는 점유 셀/실제 외곽선을 사용하고 군집 중심이나 사각 범위를 대신 쓰지 않는다.
+
+1도 간격의 스캔은 원거리·비스듬한 벽에서 빈 셀이 생겨 여러 군집으로 나뉠 수 있다.
+이 경우 `grid.resolution_m: 0.10`으로 키우거나 `scan.bins`를 늘려 비교한다.
+각도 bin을 늘려도 카메라의 유효 표본 수가 부족하면 개선되지 않는다.
+서로 가까운 물체가 합쳐지면 셀 크기를 줄인다. 대각선으로 접한 셀도 같은 군집이다.
+
+군집 ID는 매 프레임 다시 부여하며 추적 ID가 아니다. 확인된 점의 짧은 hold는 유지하되
+군집을 추가로 장시간 유지하지 않는다. 점의 hold 만료 시 외곽선과 군집도 함께 갱신한다.
+새 프레임이나 만료 갱신 때 한 번 계산한 결과를 프리뷰가 재사용한다.
+추가 연산은 스캔점 수 + 격자 셀 수에 선형이며 격자는 최대 100,000셀로 제한한다.
+
+`/clusters`는 군집당 한 점인 PointCloud2이며 다음 필드를 제공한다.
+
+- `cluster_id`: 같은 프레임의 `/contours` marker ID.
+- `x/y/z`: 지지 스캔점의 평균 XY와 z=0. 실제 물체 부피 중심이 아니다.
+- `min_x/max_x/min_y/max_y`: 점유 셀의 축 정렬 범위. 빈 영역을 채워 점유 처리하지 않는다.
+- `nearest_range_m`: 군집에 속한 스캔점 중 실제 최단 수평 거리.
+- `cell_count/return_count`: 점유 셀 수/지지 스캔점 수.
+- `observation_age_sec`: 셀별 최신 관측 나이 중 최댓값. USB 지연은 제외한다.
+
 ## 출력
 
 | 토픽 | 형식 | 내용 |
 |---|---|---|
 | `/depth_lidar/scan` | `sensor_msgs/LaserScan` | 고정 차량 좌표계 방향별 수평 거리. 부재/무효/FOV 밖은 NaN. |
 | `/depth_lidar/scan_points` | `sensor_msgs/PointCloud2` | 유효 bin의 x/y, z=0, `observation_age_sec`. 구독 시 생성. |
+| `/depth_lidar/occupancy` | `nav_msgs/OccupancyGrid` | 군집 필터 후 셀. 100=점유, -1=미관측. 0/free를 추정하지 않는다. |
+| `/depth_lidar/contours` | `visualization_msgs/MarkerArray` | 군집별 LINE_LIST, 내부 구멍 포함. 사라진 군집도 삭제한다. |
+| `/depth_lidar/clusters` | `sensor_msgs/PointCloud2` | 군집별 평균 위치·범위·최단 거리·셀 수·스캔점 수. 구독 시 생성. |
 | `/depth_lidar/status` | `std_msgs/String` | 초기 측정/준비/입력 장애 상태. transient-local. |
 | `/depth_lidar/ready` | `std_msgs/Bool` | 초기 측정 성공 후 유효한 최신 depth를 처리 중인지. 검출점 개수와 별개. |
 | `/depth_lidar/startup_pose` | `std_msgs/String` | 고정 CAM_A roll/pitch/높이, 장치 ID, 자세 출처. 진단용, TF 아님. |
-| `/depth_lidar/preview` | `sensor_msgs/Image` | 흰 레이더, 주황=현재점, 회색=짧게 유지한 점. |
+| `/depth_lidar/preview` | `sensor_msgs/Image` | 흰 레이더의 군집 셀 외곽선. 주황=현재 관측 셀, 회색=유지 중인 셀. |
 | `/depth_lidar/stereo_preview` | `sensor_msgs/Image` | 좌/우 정렬 영상과 초록 샘플링 ROI. 왼쪽 ROI는 위치 안내이며 정확한 대응점 아님. |
 
 스캔 원점은 차량 원점이므로 카메라 원점과 다르고, 여러 높이의 반환값을 합친다.
@@ -151,10 +193,11 @@ NaN을 최대거리 또는 통과 가능한 빈 공간으로 치환하지 않는
 유지 시간은 호스트가 관측한 시각부터 계산하며 USB 지연은 age 필드에 포함하지 않는다.
 현재 프레임 발행 시 header는 추정 촬영 시각, 입력 대기 중 만료 갱신은 발행 시각이다.
 
-기존 `ground.*`, `floor.*`, `grid.*`, `cluster.*`, `stabilization.*`, `bev.*`,
-`preview.scale`, `scan.range_selection`은 제거했다. 해당 설정 파일은 오류로 거부한다.
-기존 occupancy/contours/cells/ground_status/ground_valid 토픽도 제거했으므로 소비 노드는
-새로운 scan/scan_points/ready 인터페이스로 변경해야 한다.
+기존 `ground.*`, `floor.*`, `stabilization.*`, `bev.*`, `preview.scale`,
+`scan.range_selection`과 과거 원 반지름 관련 `cluster.*` 파라미터는 사용하지 않는다.
+새 격자는 확정 스캔점을 입력으로 사용하므로 과거 raw depth 개수 기준인
+`grid.min_points_per_cell`/`cluster.min_points` 대신 `grid.min_returns_per_cell`/
+`cluster.min_returns`를 사용한다. 과거 cells/ground_status/ground_valid 토픽은 복원하지 않는다.
 
 같은 OAK를 `camera_driver` 또는 `bev_processor`가 이미 열고 있으면 독립 depth_lidar와
 동시에 사용할 수 없다. 이번 변경은 초기 측정 **알고리즘 공유**이며 장치/스트림의 동시
