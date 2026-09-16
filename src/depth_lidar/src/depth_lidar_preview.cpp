@@ -13,7 +13,7 @@ namespace depth_lidar
 {
 
 cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
-  const RoiRect & depth_roi, const int depth_width, const int depth_height)
+  const RoiRect & depth_roi, const int depth_width, const int depth_height, const RoiRect * floor_roi)
 {
   if (left.empty() || right.empty() || left.type() != CV_8UC1 || right.type() != CV_8UC1
       || left.size() != right.size() || depth_width <= 0 || depth_height <= 0
@@ -22,6 +22,11 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
       || depth_roi.y + depth_roi.height > depth_height)
   {
     throw std::invalid_argument("stereo preview requires matching grayscale frames and a valid depth ROI");
+  }
+  if (floor_roi && (floor_roi->x < 0 || floor_roi->y < 0 || floor_roi->width <= 0
+      || floor_roi->height <= 0 || floor_roi->x + floor_roi->width > depth_width
+      || floor_roi->y + floor_roi->height > depth_height)) {
+    throw std::invalid_argument("invalid floor measurement ROI");
   }
   constexpr int header = 54;
   constexpr int footer = 28;
@@ -35,6 +40,13 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
   for (int side = 0; side < 2; ++side) {
     cv::Mat panel = image(cv::Rect(side * left.cols, header, left.cols, left.rows));
     cv::cvtColor(side == 0 ? left : right, panel, cv::COLOR_GRAY2BGR);
+    if (floor_roi) {
+      const cv::Point start(static_cast<int>(std::floor(floor_roi->x * sx)),
+        static_cast<int>(std::floor(floor_roi->y * sy)));
+      const cv::Point end(static_cast<int>(std::ceil((floor_roi->x + floor_roi->width) * sx)) - 1,
+        static_cast<int>(std::ceil((floor_roi->y + floor_roi->height) * sy)) - 1);
+      cv::rectangle(panel, start, end, cv::Scalar(240, 120, 0), 2, cv::LINE_8);
+    }
     cv::rectangle(panel, roi_start, roi_end, cv::Scalar(0, 220, 0), 2, cv::LINE_8);
     const cv::Point label(side * left.cols + 8, 20);
     cv::putText(image, side == 0 ? "LEFT / ROI GUIDE" : "RIGHT / DEPTH ROI",
@@ -45,7 +57,7 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
     cv::putText(image, bounds.str(), label + cv::Point(0, 22),
       cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
   }
-  cv::putText(image, "B: measure floor | C: camera ON/OFF | Green: ROI | Right: depth reference",
+  cv::putText(image, "B: measure floor | C: camera ON/OFF | Green: detection | Blue: floor fit | Right: depth reference",
     cv::Point(8, image.rows - 9), cv::FONT_HERSHEY_SIMPLEX, 0.4,
     cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
   return image;
@@ -116,12 +128,12 @@ cv::Mat makeRadarPreview(const DetectionResult & detection,
       1, point_color, cv::FILLED, cv::LINE_AA);
   }
   cv::drawMarker(image, origin, ink, cv::MARKER_CROSS, 10, 2, cv::LINE_AA);
-  labelAt(width_px < 400 ? "0m" : "CAMERA / 0m",
-    origin + cv::Point(width_px < 400 ? -8 : -43, 17), 0.35);
+  labelAt(width_px < 400 ? "0m" : "CAMERA FOOT / 0m",
+    origin + cv::Point(width_px < 400 ? -8 : -58, 17), 0.35);
   labelAt(width_px < 400 ? "L (+)" : "LEFT (+)", cv::Point(8, origin.y + 17), 0.35);
   labelAt(width_px < 400 ? "R (-)" : "RIGHT (-)",
     cv::Point(width_px - (width_px < 400 ? 40 : 75), origin.y + 17), 0.35);
-  labelAt("OBSTACLES / CAMERA FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
+  labelAt("OBSTACLES / GROUND FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
   labelAt("POINTS " + std::to_string(detection.points.size()) + " | OBJECTS " + std::to_string(detection.obstacles.size()),
     cv::Point(10, 38), 0.35);
   if (detection.obstacles.empty()) {

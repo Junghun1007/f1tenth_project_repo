@@ -1,9 +1,11 @@
 # depth_lidar
 
-OAK 스테레오 깊이 영상에서 저장된 바닥 기준보다 가까워진 픽셀을 추출하고,
-군집의 평균 위치와 반지름을 레이더 및 ROS 토픽으로 출력하는 독립 ROS 2 패키지입니다.
-장애물 추정을 실행할 때마다 바닥을 측정하지 않습니다. **저장된 바닥 파일을 재사용**하며,
-사용자가 명시적으로 측정할 때만 기존 파일을 폐기하고 새로 저장합니다.
+OAK 스테레오 깊이 영상을 3차원 점으로 복원하고, **저장한 바닥 평면으로부터의 높이**로
+장애물 후보를 구분하는 독립 ROS 2 패키지입니다. 후보 군집의 평균 위치와 반지름을
+레이더와 ROS 토픽으로 출력합니다. 픽셀별 배경 깊이 차이와 nearest/farthest 선택은 사용하지 않습니다.
+
+바닥은 사용자가 명시적으로 측정할 때만 새로 저장합니다. 장애물 추정을 실행할 때마다
+측정하거나 주행 중 자동으로 평면을 갱신하지 않습니다.
 
 ## 빌드 및 실행
 
@@ -19,122 +21,142 @@ ros2 launch depth_lidar depth_lidar.launch.py config_file:="$(ros2 pkg prefix de
 테스트용 YAML은 레이더와 스테레오 GUI를 켭니다. 다른 YAML은 `config_file`에 실행 PC의
 절대 경로를 전달합니다. 기본 `config/depth_lidar.yaml`은 GUI를 끄고 이미지 토픽을 발행합니다.
 
-## 바닥 파일을 처음 만드는 방법
+## 바닥 평면 파일 만들기
 
-1. 카메라를 사용할 자세에 고정하고, 관심 영역에 장애물 없이 바닥만 보이게 합니다.
-2. 레이더/스테레오 창에 포커스를 두고 **B**를 누르거나 아래 서비스를 호출합니다.
-3. `MEASURING FLOOR n/60`이 끝나고 `READY | SAVED FLOOR`가 표시될 때까지 기다립니다.
-4. 이후 장애물을 놓으면 자동으로 검출합니다. 다음 실행에서도 저장 파일을 불러옵니다.
+1. 카메라를 사용할 높이·자세로 고정하고 차량을 정지시킵니다.
+2. 스테레오 **오른쪽의 파란 측정 ROI** 안에 바닥이 넓게 보이도록 조절하고 장애물을 치웁니다.
+3. 창에 포커스를 두고 **B**를 누르거나 아래 서비스를 호출합니다.
+4. `MEASURING FLOOR n/60` 이후 `READY | SAVED FLOOR`를 확인합니다.
+   상태의 `H`는 추정 카메라 높이, `RMSE`는 평면 적합 오차, `INLIERS`는 평면 지지점 수입니다.
+5. 이후 장애물을 놓으면 검출합니다. 다음 실행에서도 저장 파일을 자동으로 불러옵니다.
 
 ```bash
 ros2 service call /depth_lidar/measure_floor std_srvs/srv/Trigger '{}'
 ros2 topic echo /depth_lidar/floor_status
 ```
 
-서비스 응답은 측정 요청 접수를 뜻하며, 완료 여부는 상태 토픽과 화면에서 확인합니다.
-새 측정 요청을 처리할 때 **기존 메모리 기준값과 파일을 먼저 삭제**합니다. 측정 도중 다시 B를
-누르면 누적값을 버리고 처음부터 새로 측정합니다. 측정이 실패하거나 중단되어도 이전 결과로
-돌아가지 않습니다. 새 기준이 준비되기 전에는 장애물 결과를 비웁니다.
+서비스 응답은 요청 접수이며, 완료 여부는 상태 토픽/화면에서 확인합니다.
+새 측정 요청을 처리하면 **기존 메모리 모델과 파일부터 삭제**합니다. 측정 중 B를 다시 누르면
+처음부터 시작합니다. 실패·중단되어도 이전 결과로 복구하지 않으며 유효 평면이 없으면
+빈 장애물 목록을 발행합니다. 실패 이유는 로그에 출력합니다.
 
-기본 저장 경로는 **실행 PC 사용자 홈의 `~/.ros/depth_lidar/floor_reference.bin`**입니다.
-설정 YAML과 별도인 바이너리 파일이며, 측정한 픽셀별 평균 깊이(m), 분산 계산용 누적값,
-유효 샘플 수, 측정 프레임 수, 장치 ID·깊이 설정·해상도·카메라 내부 파라미터를 저장합니다.
-임시 파일을 완전히 기록한 뒤 지정 파일명으로 바꿉니다. 파일 쓰기 실패 시 화면에 표시하며,
-새 결과는 현재 프로세스 메모리에서만 사용할 수 있습니다.
+기본 경로는 **실행 PC의 `~/.ros/depth_lidar/floor_reference.bin`**입니다.
+`DLPLANE2` 형식으로 단위 법선·평면 상수, 적합 오차·지지점 수·샘플 수,
+측정 프레임 수, 장치 ID·깊이 설정·해상도·내부 파라미터를 저장합니다.
+픽셀별 배경 이미지는 저장하지 않습니다. 임시 파일 기록 후 지정 파일명으로 바꿉니다.
+저장 실패 시 새 모델은 현재 프로세스 메모리에서만 사용하며 화면·로그에 실패를 표시합니다.
 
-- 시작 시 파일이 있으면 호환성을 확인하고 자동으로 불러옵니다. **자동 재측정은 하지 않습니다.**
-- 파일이 없거나 읽을 수 없거나 카메라 설정이 다르면 `B: MEASURE` 상태로 대기합니다.
-- 저장된 기준은 고정됩니다. 일반 장애물 추정 프레임으로 평균을 갱신하지 않습니다.
-- 카메라 높이·기울기나 바닥 형상을 바꿨다면 직접 재측정합니다. 자세 변화는 파일에서 감지하지 않습니다.
-- `floor.file`은 실행 중 바꿀 수 없습니다. YAML/실행 인자를 바꾸고 노드를 다시 시작합니다.
+**이전 `DLFLOOR1` 픽셀 오프셋 파일은 호환되지 않습니다. 업데이트 후 B로 한 번 재측정합니다.**
 
-## 검출과 군집 위치
+- 파일이 없거나 호환되지 않으면 `B: MEASURE`로 대기하며 자동 측정하지 않습니다.
+- 일반 장애물 프레임은 저장된 평면을 바꾸지 않습니다.
+- 카메라 높이·기울기 또는 바닥과 카메라의 상대 자세가 바뀌면 직접 재측정합니다.
+  장착 자세 변화는 파일 호환성 검사로 감지할 수 없습니다.
+- `floor.file` 변경은 YAML을 수정하고 노드를 재시작해야 합니다.
 
-바닥 측정은 ROI와 검출 거리 제한에 관계없이 **전체 depth 영상**을 사용합니다. 따라서 측정 후
-ROI를 늘리거나 이동할 수 있고, 3m 밖의 바닥 앞에 나타난 3m 이내 물체도 판정할 수 있습니다.
-깊이 0은 무효이며 평균에서 제외합니다. 기본 60프레임 중 최소 30회 유효했던 픽셀만 사용합니다.
-기준이 없는 픽셀은 물체 판정을 하지 않습니다.
+## 바닥 측정과 장애물 구분
 
-```text
-물체 후보 = 바닥 평균 깊이 - 현재 깊이 > max(floor.min_delta_m, floor.noise_scale × 표준편차)
-```
+측정은 탐지 ROI와 별개인 `floor.measure_roi_*` 영역에서 `floor.fit_pixel_stride` 간격으로
+깊이를 모읍니다. 깊이 0과 `floor.fit_max_depth_m` 밖의 값은 제외합니다.
+기본 60프레임 중 30회 이상 유효한 픽셀의 평균 깊이를 3D로 복원한 뒤 RANSAC으로 평면을 찾고,
+지지점으로 최소제곱 보정합니다. 벽이나 선 형태의 표본을 줄이기 위해 법선 방향·카메라 높이,
+지지점 수·비율·분포를 검사합니다. 실패 시 모델을 저장하지 않습니다.
 
-현재 ROI 안에서 위 조건과 `range.min_m`~`range.max_m`을 만족하는 픽셀을 추출합니다.
-영상의 8방향 인접 픽셀 중 3D 거리가 `cluster.neighbor_distance_m` 이하인 점을 연결합니다.
-`cluster.min_points`보다 작은 군집은 제거합니다. stride를 늘리면 샘플 격자상의 이웃을 사용하며
-점 수가 줄기 때문에 군집 조건도 함께 조절해야 합니다.
+카메라 전방/좌측/상방 좌표의 평면을 `aX+bY+cZ+d=0`으로 표현합니다.
+법선 `(a,b,c)`는 길이 1이며 카메라 상방을 향하게 합니다. 이때 `d`는 바닥에서 카메라까지의
+수직 거리이고, 점의 `h=aX+bY+cZ+d`는 바닥 위 높이(m)입니다.
 
 ```text
-장애물 중심 X = 군집 점들의 전방 좌표 평균
-장애물 중심 Y = 군집 점들의 좌측 좌표 평균
-반지름 = max(cluster.min_radius_m, 중심에서 가장 먼 군집 점의 수평 거리 + radius_margin_m)
+장애물 후보 높이: max(floor.min_height_m, floor.noise_scale × 평면 RMSE) <= h <= floor.max_height_m
 ```
 
-좌표는 **바닥과의 차이가 아닌 현재의 원래 깊이**로 계산합니다. `range.offset_m`은 별도의
-공통 거리 보정이며, 바닥 학습값에는 적용하지 않고 검출 좌표에만 적용합니다.
-반지름 상한으로 큰 장애물을 잘라내지 않습니다. 차량 크기와 경로계획 여유는 사용처에서 더합니다.
-카메라 기준 +X는 전방, +Y는 좌측이며 평면상의 군집 출력 Z는 0입니다.
+현재 탐지 ROI의 유효 깊이를 3D로 복원하고 위 높이 조건과 수평 거리 범위를 적용합니다.
+바닥 아래 점과 높이 문턱 이하의 점은 제외합니다. 측정 당시 깊이가 없었던 픽셀도 현재 유효
+깊이가 있으면 같은 평면으로 판정할 수 있습니다. 탐지 ROI 변경만으로 재측정할 필요는 없습니다.
 
-기존 nearest/farthest 선택, 각도 bin 축약, LaserScan 출력은 제거했습니다.
-`scan.*`, `cluster.min_bins`, `cluster.max_missing_bins`, `cluster.base_neighbor_distance_m`,
-`cluster.angular_neighbor_scale`, `cluster.max_radius_m` 대신 새 YAML을 사용합니다.
+기본 `floor.min_height_m=0.05`는 **바닥 위 5cm 미만의 표면을 후보에서 제외**합니다.
+검출할 가장 낮은 장애물에 맞춰 조정합니다. RMSE는 평균 깊이 점들의 평면 적합 오차이며
+개별 실시간 깊이 픽셀의 오차를 모두 나타내지는 않습니다.
 
-## 출력
+평면 형상만으로 바닥과 넓은 상판을 완전히 구분할 수는 없습니다. 측정 ROI에는 바닥을 확보하고,
+`floor.min_camera_height_m`/`max_camera_height_m` 범위를 실제 설치 높이 주변으로 좁히는 것이 좋습니다.
+평평한 바닥에서도 차체 진동·피치/롤로 상대 자세가 바뀌면 저장 평면과 차이가 생깁니다.
+
+## 군집과 좌표
+
+영상의 8방향 이웃 중 3D 거리가 `cluster.neighbor_distance_m` 이하인 후보를 연결합니다.
+`cluster.min_points` 미만 군집을 제거합니다. stride를 늘리면 샘플 격자상의 이웃을 사용합니다.
+
+군집 좌표는 바닥에 수직으로 내려놓은 **카메라의 발점**을 원점으로 합니다.
++X는 카메라 전방축을 바닥에 투영한 방향, +Y는 그 바닥에서 좌측, +Z는 바닥 법선입니다.
+카메라가 아래로 기울어져 있어도 원래 카메라 전방 깊이를 그대로 수평 거리로 쓰지 않습니다.
+
+```text
+장애물 중심 X/Y = 바닥 좌표로 변환한 군집 점들의 X/Y 평균
+반지름 = max(cluster.min_radius_m, 중심에서 가장 먼 점의 수평 거리 + radius_margin_m)
+```
+
+군집 중심은 관측된 표면점의 평균이며 물체 전체의 기하학적 중심은 아닙니다.
+반지름은 관측점들을 덮고 상한으로 잘라내지 않습니다. 가려진 부분과 차량 크기·경로계획 여유는
+사용처에서 고려합니다. 출력 Z는 평면상 장애물 중심을 뜻하는 0입니다.
+`range.offset_m`은 바닥 좌표의 수평 거리에만 적용하며 높이나 평면 측정값에는 적용하지 않습니다.
+
+기본 `frame_id`는 **`depth_lidar_ground`**입니다. 차량/앞차축 BEV로의 변환과 TF 발행은
+포함하지 않습니다. 이전 `depth_lidar` 카메라 좌표와 같은 좌표로 취급하지 마세요.
+`scan.*`, 각도 bin 군집 설정, `/depth_lidar/scan`은 사용하지 않습니다.
+
+## 출력과 화면
 
 | 토픽/서비스 | 형식 및 의미 |
 |---|---|
-| `/depth_lidar/obstacles` | PointCloud2, 군집 하나당 점 하나: x/y/z/radius(float32, m), point_count(uint32) |
-| `/depth_lidar/floor_status` | String, 측정/저장/로드 상태. 최신 상태를 유지하는 transient-local 토픽 |
-| `/depth_lidar/preview` | 흰색 레이더: 파란 군집 점, 주황 중심·반지름, 바닥 상태, 수신/연산 성능 |
-| `/depth_lidar/stereo_preview` | 좌우 정렬 영상과 초록 ROI. 오른쪽이 실제 depth 기준, 왼쪽은 비교 가이드 |
-| `/depth_lidar/measure_floor` | Trigger 서비스. 이전 결과를 버리고 새 바닥 측정 요청 |
+| `/depth_lidar/obstacles` | PointCloud2, 군집당 x/y/z/radius(float32, m), point_count(uint32) |
+| `/depth_lidar/floor_status` | String, 측정·저장·로드 상태. 최신 상태 유지(transient-local) |
+| `/depth_lidar/preview` | 흰색 바닥 좌표 레이더: 파란 군집점, 주황 중심·반지름, 상태·성능 |
+| `/depth_lidar/stereo_preview` | 정렬 좌우 영상, 초록 탐지 ROI와 파란 평면 측정 ROI |
+| `/depth_lidar/measure_floor` | Trigger, 이전 결과를 버리고 새 바닥 측정 요청 |
 
-기준 미준비/측정 중에는 빈 장애물 목록을 발행합니다. 빈 목록 자체는 바닥 학습 완료를
-뜻하지 않으므로 경로계획에서는 `floor_status`와 측정 시각도 확인해야 합니다.
-카메라 오류 시 상태는 `CAMERA UNAVAILABLE`이 됩니다.
+평면 미준비/측정 중에는 빈 결과를 발행합니다. 빈 결과만으로 빈 공간을 판단하지 않도록
+`floor_status`와 결과 시각도 함께 사용합니다. 카메라 오류 시 상태는 `CAMERA UNAVAILABLE`입니다.
+레이더 아래 중앙이 원점, 위가 바닥에서 전방, 왼쪽이 좌측입니다.
 
-레이더는 군집 중심뿐 아니라 검출된 표면 점들과 반지름을 표시합니다. 원점은 아래 중앙,
-위쪽은 전방, 왼쪽은 카메라 좌측입니다. 이 단계에는 앞차축/BEV 좌표 변환을 적용하지 않습니다.
-
-## 화면 및 ROI 조절
-
-- **B**: 바닥 파일 새로 측정. 이전 결과 폐기.
-- **C**: 좌우 카메라 전송·화면 켜기/끄기. 파이프라인이 잠깐 재시작되지만 같은 카메라 설정의
-  바닥 기준은 유지합니다. 카메라 설정이나 측정 모드를 자동 변경하지 않습니다.
-- 창만 숨기려면 `stereo_preview.gui=false`로 설정합니다. 재시작 없이 영상 전송은 유지합니다.
+**B**는 새 바닥 측정, **C**는 좌우 카메라 전송·창 켜기/끄기입니다.
+C로 파이프라인이 재시작되어도 같은 설정의 바닥 모델은 유지합니다.
+`stereo_preview.gui`만 바꾸면 영상 전송을 유지한 채 창만 숨기거나 보입니다.
+오른쪽 테두리가 실제 depth 기준이고 왼쪽 테두리는 같은 영상 위치의 가이드입니다.
 
 ```bash
-ros2 param set /depth_lidar stereo_preview.enabled false
-ros2 param set /depth_lidar stereo_preview.enabled true
 ros2 param set /depth_lidar stereo_preview.gui false
 ros2 param set /depth_lidar stereo_preview.gui true
-ros2 param set /depth_lidar roi.width_ratio 0.8
 ros2 param set /depth_lidar roi.height_ratio 0.30
 ros2 param set /depth_lidar roi.bottom_offset_ratio 0.25
+ros2 param set /depth_lidar floor.min_height_m 0.04
 ```
 
-현재 ROI는 400p에서 x=0, y=180, w=640, h=120입니다. `bottom_offset_ratio`를 늘리면
-위로 이동합니다. `height_ratio + bottom_offset_ratio <= 1`이어야 합니다. ROI와 검출 임계값은
-실행 중 바꿀 수 있으며 변경값을 유지하려면 YAML에 기록해야 합니다.
+640×400 영상 기준 초록 탐지 ROI는 x=0, y=180, w=640, h=120이고,
+파란 측정 ROI는 x=64, y=240, w=512, h=140입니다.
+`bottom_offset_ratio`가 커지면 위로 이동하며 `height_ratio + bottom_offset_ratio <= 1`이어야 합니다.
 
-## 주요 파라미터
+## 주요 설정
 
-| 파라미터 | 의미 |
+| 설정 | 기본값과 의미 |
 |---|---|
-| `floor.file` | 영구 바닥 파일 경로. 기본 ~/.ros/depth_lidar/floor_reference.bin |
-| `floor.measure_frames` | 명시적 새 측정 시 모을 프레임 수. 기본 60 |
-| `floor.min_valid_ratio` | 픽셀별 최소 유효 샘플 비율. 기본 0.50, 최소 2회 |
-| `floor.min_delta_m` | 물체 후보의 최소 깊이 차이. 기본 0.05m |
-| `floor.noise_scale` | 픽셀별 표준편차에 곱하는 계수. 기본 3.0 |
-| `points.pixel_stride` | 검출 ROI의 픽셀 샘플 간격. 바닥 측정은 항상 모든 픽셀 사용 |
-| `cluster.min_points` | 군집으로 인정할 최소 픽셀 수. 기본 20 |
-| `cluster.neighbor_distance_m` | 인접 후보 픽셀 사이 최대 3D 거리. 기본 0.08m |
-| `cluster.radius_margin_m`, `cluster.min_radius_m` | 반지름 여유와 최솟값 |
-| `preview.enabled`, `preview.gui`, `preview.fps`, `preview.size_px` | 레이더 발행/창/갱신률/가로 크기 |
-| `stereo_preview.enabled`, `stereo_preview.gui`, `stereo_preview.fps` | 좌우 영상 전송/창/호스트 갱신률 |
-| `nv12.*` | CAM_A의 동시 USB 부하 측정. 영상 변환·발행·프리뷰 없이 전용 스레드로 수신 |
+| `floor.measure_frames`, `floor.min_valid_ratio` | 60프레임, 픽셀 유효 비율 0.50 (최소 2회) |
+| `floor.measure_roi_width_ratio`, `floor.measure_roi_height_ratio`, `floor.measure_roi_bottom_offset_ratio` | 바닥 측정 영역 0.80 / 0.35 / 0.05 |
+| `floor.fit_pixel_stride`, `floor.fit_max_depth_m` | 측정 간격 4픽셀, 최대 광축 깊이 4m |
+| `floor.ransac_iterations` | 평면 가설 200회 |
+| `floor.inlier_distance_m` | 평면에서 0.02m 이내를 지지점으로 분류 |
+| `floor.min_inlier_points`, `floor.min_inlier_ratio` | 최소 100점, 유효 측정점의 0.60 이상 |
+| `floor.max_tilt_deg` | 카메라 상방과 평면 법선의 각도 최대 60도 |
+| `floor.min_camera_height_m`, `floor.max_camera_height_m` | 추정 카메라 높이 허용 범위 0.05~1.0m |
+| `floor.min_height_m`, `floor.max_height_m`, `floor.noise_scale` | 후보 높이 0.05~1.0m, 적합 오차 계수 3.0 |
+| `points.pixel_stride` | 탐지 ROI 샘플 간격 1픽셀 |
+| `cluster.min_points`, `cluster.neighbor_distance_m` | 최소 20점, 이웃 3D 거리 0.08m |
+| `cluster.radius_margin_m`, `cluster.min_radius_m` | 반지름 여유 0.04m, 최소 반지름 0.05m |
+| `preview.*`, `stereo_preview.*` | 레이더/좌우 영상 발행·창·갱신률 |
+| `nv12.*` | CAM_A 동시 USB 부하 측정용 수신. 변환·발행·프리뷰 없음 |
 
-`floor.measure_frames`, `floor.min_valid_ratio` 변경은 다음 새 측정부터 적용됩니다.
-`floor.min_delta_m`, `floor.noise_scale`, 군집 조건은 현재 저장 기준에 즉시 적용됩니다.
-`preview.scale`, `bev.*`, `sensor.*`는 이전 설정 호환용으로 남아 있으며 현재 표시에 사용하지 않습니다.
-수신 FPS와 객체 처리시간은 계속 표시합니다. 바닥 측정/파일 저장 중의 연산시간에는 그 작업이 포함됩니다.
+측정·적합 설정 변경은 **다음 B 측정부터** 적용합니다. 저장 모델이나 진행 중 측정을 바꾸지 않습니다.
+`floor.min_height_m`, `floor.max_height_m`, `floor.noise_scale`, 탐지 ROI·거리·군집 설정은
+현재 프레임부터 적용됩니다. 변경값을 유지하려면 YAML도 수정해야 합니다.
+기존 `floor.min_delta_m`은 제거했습니다. `preview.scale`, `bev.*`, `sensor.*`는 이전 설정
+호환용이며 현재 표시에 사용하지 않습니다. 바닥 적합·파일 저장 시간은 처리시간 지표에 포함됩니다.

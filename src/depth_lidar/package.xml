@@ -2,7 +2,7 @@
 <package format="3">
   <name>depth_lidar</name>
   <version>0.1.0</version>
-  <description>OAK depth floor-reference measurement and obstacle clustering with radar preview.</description>
+  <description>OAK depth ground-plane calibration and height-filtered obstacle clustering with radar preview.</description>
   <maintainer email="ojeonghun@example.com">ojeonghun</maintainer>
   <license>Apache-2.0</license>
 
