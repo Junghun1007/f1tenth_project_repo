@@ -16,7 +16,7 @@ struct StabilizationConfig
 
 bool validateStabilizationConfig(const StabilizationConfig & config, std::string & reason);
 
-// Caller resets both the pixel mask and this history on calibration, geometry,
+// Caller resets both the pixel mask and this history on invalid/jumping planes,
 // detection-setting changes and camera restarts. Times are monotonic frame times.
 class ClusterStabilizer
 {

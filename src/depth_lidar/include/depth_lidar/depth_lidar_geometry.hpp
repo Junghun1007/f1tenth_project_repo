@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -17,7 +18,6 @@ struct CameraGeometry
   double fy{0.0};
   double cx{0.0};
   double cy{0.0};
-  std::string signature;
 };
 
 struct ProjectionConfig
@@ -39,13 +39,48 @@ struct ClusterConfig
   double min_radius_m{0.05};
 };
 
-struct FloorConfig
+struct GroundConfig
 {
-  int measure_frames{60};
-  double min_valid_ratio{0.5};
-  double min_delta_m{0.05};
+  double roi_width_ratio{0.90};
+  double roi_height_ratio{0.55};
+  double roi_bottom_offset_ratio{0.0};
+  int pixel_stride{4};
+  int max_samples{3000};
+  int max_iterations{200};
+  double min_depth_m{0.10};
+  double max_depth_m{4.0};
+  double inlier_distance_m{0.02};
+  int min_inlier_points{100};
+  double min_inlier_ratio{0.35};
+  double min_spread_m{0.05};
+  double max_rmse_m{0.015};
+  double reference_up_x{0.0};
+  double reference_up_y{0.0};
+  double reference_up_z{1.0};
+  double max_tilt_deg{60.0};
+  double min_camera_height_m{0.05};
+  double max_camera_height_m{1.0};
+  double min_height_m{0.05};
+  double max_height_m{1.0};
   double noise_scale{3.0};
-  double release_ratio{0.6};
+  double release_ratio{0.60};
+  double reset_history_angle_deg{3.0};
+  double reset_history_height_m{0.03};
+};
+
+// Unit normal points toward the expected up direction in camera forward/left/up.
+// No calibration file or previous-frame plane is used to produce this estimate.
+struct GroundPlane
+{
+  bool valid{false};
+  std::array<double, 3> normal{{0.0, 0.0, 1.0}};
+  double offset_m{0.0};
+  double rmse_m{0.0};
+  std::size_t sample_points{0};
+  std::size_t inlier_points{0};
+  std::string reason{"not estimated"};
+  double height(double forward, double left, double up) const;
+  bool changedFrom(const GroundPlane & previous, const GroundConfig & config) const;
 };
 
 struct ForegroundPoint
@@ -75,43 +110,18 @@ struct DetectionResult
 
 bool validateProjectionConfig(const ProjectionConfig & config, std::string & reason);
 bool validateClusterConfig(const ClusterConfig & config, std::string & reason);
-bool validateFloorConfig(const FloorConfig & config, std::string & reason);
+bool validateGroundConfig(const GroundConfig & config, std::string & reason);
 RoiRect computeRoi(int image_width, int image_height,
   double width_ratio, double height_ratio, double bottom_offset_ratio);
 
-// Explicit, frozen per-pixel background. Learning always replaces all prior data.
-class FloorReference
-{
-public:
-  void clear();
-  void begin(const CameraGeometry & camera, const FloorConfig & config);
-  bool accumulate(const std::uint16_t * depth_mm, std::size_t row_stride_elements);
-  bool compatible(const CameraGeometry & camera) const;
-  bool ready() const { return !measuring_ && valid_pixels_ > 0; }
-  bool measuring() const { return measuring_; }
-  int frames() const { return frames_; }
-  int targetFrames() const { return target_frames_; }
-  std::size_t validPixels() const { return valid_pixels_; }
-  bool isForeground(std::size_t pixel, double depth_m, const FloorConfig & config,
-    bool was_foreground = false) const;
-  void save(const std::string & path) const;
-  bool load(const std::string & path, const CameraGeometry & camera);
+GroundPlane estimateGroundPlane(const std::uint16_t * depth_mm,
+  std::size_t row_stride_elements, const CameraGeometry & camera, const GroundConfig & config);
 
-private:
-  CameraGeometry camera_;
-  int frames_{0};
-  int target_frames_{0};
-  int min_samples_{0};
-  bool measuring_{false};
-  std::size_t valid_pixels_{0};
-  std::vector<double> mean_m_;
-  std::vector<double> m2_;
-  std::vector<std::uint32_t> counts_;
-};
-
+// Pixel labels are optional, transient hysteresis state. Caller clears them
+// after invalid/jumping planes and changes to camera, ROI or detection settings.
 DetectionResult detectForeground(const std::uint16_t * depth_mm,
   std::size_t row_stride_elements, const CameraGeometry & camera,
-  const FloorReference & floor, const FloorConfig & floor_config,
+  const GroundPlane & ground, const GroundConfig & ground_config,
   const ProjectionConfig & projection, const ClusterConfig & cluster,
   std::vector<std::uint8_t> * foreground_mask = nullptr);
 } // namespace depth_lidar

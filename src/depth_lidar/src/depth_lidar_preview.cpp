@@ -13,7 +13,7 @@ namespace depth_lidar
 {
 
 cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
-  const RoiRect & depth_roi, const int depth_width, const int depth_height)
+  const RoiRect & depth_roi, const int depth_width, const int depth_height, const RoiRect * ground_roi)
 {
   if (left.empty() || right.empty() || left.type() != CV_8UC1 || right.type() != CV_8UC1
       || left.size() != right.size() || depth_width <= 0 || depth_height <= 0
@@ -22,6 +22,11 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
       || depth_roi.y + depth_roi.height > depth_height)
   {
     throw std::invalid_argument("stereo preview requires matching grayscale frames and a valid depth ROI");
+  }
+  if (ground_roi && (ground_roi->x < 0 || ground_roi->y < 0 || ground_roi->width <= 0
+      || ground_roi->height <= 0 || ground_roi->x + ground_roi->width > depth_width
+      || ground_roi->y + ground_roi->height > depth_height)) {
+    throw std::invalid_argument("invalid ground estimation ROI");
   }
   constexpr int header = 54;
   constexpr int footer = 28;
@@ -35,6 +40,13 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
   for (int side = 0; side < 2; ++side) {
     cv::Mat panel = image(cv::Rect(side * left.cols, header, left.cols, left.rows));
     cv::cvtColor(side == 0 ? left : right, panel, cv::COLOR_GRAY2BGR);
+    if (ground_roi) {
+      const cv::Point start(static_cast<int>(std::floor(ground_roi->x * sx)),
+        static_cast<int>(std::floor(ground_roi->y * sy)));
+      const cv::Point end(static_cast<int>(std::ceil((ground_roi->x + ground_roi->width) * sx)) - 1,
+        static_cast<int>(std::ceil((ground_roi->y + ground_roi->height) * sy)) - 1);
+      cv::rectangle(panel, start, end, cv::Scalar(240, 120, 0), 2, cv::LINE_8);
+    }
     cv::rectangle(panel, roi_start, roi_end, cv::Scalar(0, 220, 0), 2, cv::LINE_8);
     const cv::Point label(side * left.cols + 8, 20);
     cv::putText(image, side == 0 ? "LEFT / ROI GUIDE" : "RIGHT / DEPTH ROI",
@@ -45,14 +57,14 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
     cv::putText(image, bounds.str(), label + cv::Point(0, 22),
       cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
   }
-  cv::putText(image, "B: measure floor | C: camera ON/OFF | Green: ROI | Right: depth reference",
+  cv::putText(image, "C: camera ON/OFF | Green: obstacles | Blue: live ground fit | Right: depth reference",
     cv::Point(8, image.rows - 9), cv::FONT_HERSHEY_SIMPLEX, 0.4,
     cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
   return image;
 }
 
 cv::Mat makeRadarPreview(const DetectionResult & detection,
-  const int width_px, const double max_range_m)
+  const int width_px, const double max_range_m, const bool ground_valid)
 {
   if (width_px < 240 || !std::isfinite(max_range_m) || max_range_m <= 0.0) {
     throw std::invalid_argument("radar preview requires width >= 240 and positive finite range");
@@ -114,7 +126,7 @@ cv::Mat makeRadarPreview(const DetectionResult & detection,
   labelAt("POINTS " + std::to_string(detection.points.size()) + " | OBJECTS " + std::to_string(detection.obstacles.size()),
     cv::Point(10, 38), 0.35);
   if (detection.obstacles.empty()) {
-    labelAt("NO DETECTED CLUSTERS", cv::Point(origin.x - 60, origin.y - radius_px / 2), 0.4);
+    labelAt(ground_valid ? "NO DETECTED CLUSTERS" : "GROUND UNAVAILABLE", cv::Point(origin.x - 60, origin.y - radius_px / 2), 0.4);
   }
   return image;
 }

@@ -2,7 +2,7 @@
 <package format="3">
   <name>depth_lidar</name>
   <version>0.1.0</version>
-  <description>OAK depth floor-reference measurement and obstacle clustering with radar preview.</description>
+  <description>Per-frame MSAC ground estimation and height-filtered depth obstacle clustering with radar preview.</description>
   <maintainer email="ojeonghun@example.com">ojeonghun</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,7 +12,6 @@
   <depend>rcl_interfaces</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
-  <depend>std_srvs</depend>
   <depend>depthai</depend>
   <depend>libopencv-dev</depend>
 

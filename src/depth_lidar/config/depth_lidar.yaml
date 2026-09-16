@@ -22,16 +22,42 @@ depth_lidar:
     range.offset_m: 0.0
     points.pixel_stride: 1
 
-    # Persistent per-pixel floor reference, loaded on startup; never auto-measured.
-    # Press B or call /depth_lidar/measure_floor only when the scene contains floor.
-    # A new measurement discards the previous in-memory reference AND file first.
-    floor.file: "~/.ros/depth_lidar/floor_reference.bin"
-    floor.measure_frames: 60
-    floor.min_valid_ratio: 0.50
-    floor.min_delta_m: 0.05
-    floor.noise_scale: 3.0
-    # Pixel hysteresis: release at 60% of max(min_delta, noise_scale * sigma).
-    floor.release_ratio: 0.60
+    # Estimate a fresh ground plane from THIS frame; no file or B calibration.
+    # Blue ROI = ground fitting; green roi.* = obstacle detection.
+    ground.roi_width_ratio: 0.90
+    ground.roi_height_ratio: 0.55
+    ground.roi_bottom_offset_ratio: 0.0
+    # Sampling step grows automatically if needed to respect max_samples.
+    ground.pixel_stride: 4
+    ground.max_samples: 3000
+    ground.max_iterations: 200
+    ground.min_depth_m: 0.10
+    ground.max_depth_m: 4.0
+    ground.inlier_distance_m: 0.02
+    ground.min_inlier_points: 100
+    ground.min_inlier_ratio: 0.35
+    ground.min_spread_m: 0.05
+    ground.max_rmse_m: 0.015
+
+    # Expected ground normal in CAMERA forward/left/up coordinates, normalized internally.
+    # Narrow direction and camera-height limits to the actual mounting geometry.
+    ground.reference_up_x: 0.0
+    ground.reference_up_y: 0.0
+    ground.reference_up_z: 1.0
+    ground.max_tilt_deg: 60.0
+    ground.min_camera_height_m: 0.05
+    ground.max_camera_height_m: 1.0
+
+    # Height ABOVE the live plane, not per-pixel depth difference.
+    # New candidates: height > max(min_height, noise_scale * plane RMSE).
+    ground.min_height_m: 0.05
+    ground.max_height_m: 1.0
+    ground.noise_scale: 3.0
+    # Release threshold cannot fall below inlier_distance_m.
+    ground.release_ratio: 0.60
+    # Large plane changes clear pixel/cluster history, not the new valid plane.
+    ground.reset_history_angle_deg: 3.0
+    ground.reset_history_height_m: 0.03
 
     # Confirm a cluster in 2 of the last 3 processed depth frames, hold up to 80ms.
     # Matching uses camera-frame XY centers; no odometry/motion compensation.
@@ -63,7 +89,7 @@ depth_lidar:
     preview.fps: 10.0
     preview.size_px: 700
 
-    # Optional rectified left/right camera images with detection ROI overlay.
+    # Rectified left/right preview: green=obstacles ROI, blue=live ground ROI.
     # enabled toggles USB streams (pipeline restart); gui toggles only the window.
     # Press C in either preview window to toggle enabled.
     stereo_preview.enabled: false

@@ -13,7 +13,7 @@
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <std_srvs/srv/trigger.hpp>
+#include <std_msgs/msg/bool.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -22,8 +22,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
-#include <cstdlib>
-#include <filesystem>
 #include <exception>
 #include <functional>
 #include <iomanip>
@@ -57,9 +55,8 @@ struct NodeConfig
   std::string median_filter{"3x3"};
   ProjectionConfig projection;
   ClusterConfig cluster;
-  FloorConfig floor;
+  GroundConfig ground;
   StabilizationConfig stabilization;
-  std::string floor_file{"~/.ros/depth_lidar/floor_reference.bin"};
   bool nv12_enabled{true};
   double nv12_fps{60.0};
   int nv12_width{1280};
@@ -188,11 +185,7 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   if (!validateProjectionConfig(config.projection, reason)) {
     return false;
   }
-  if (config.floor_file.empty()) {
-    reason = "floor.file cannot be empty";
-    return false;
-  }
-  return validateClusterConfig(config.cluster, reason) && validateFloorConfig(config.floor, reason)
+  return validateClusterConfig(config.cluster, reason) && validateGroundConfig(config.ground, reason)
     && validateStabilizationConfig(config.stabilization, reason);
 }
 
@@ -245,14 +238,15 @@ dai::StereoDepthConfig::MedianFilter parseMedianFilter(const std::string & value
 }
 
 cv::Mat makeScanPreview(const DetectionResult & detection,
-  const std::string & floor_status,
+  const std::string & ground_status,
   const NodeConfig & config,
   const double depth_rx_fps,
   const double nv12_rx_fps,
   const double object_processing_fps,
   const double object_processing_ms)
 {
-  cv::Mat image = makeRadarPreview(detection, config.preview_size_px, config.projection.max_range_m);
+  cv::Mat image = makeRadarPreview(detection, config.preview_size_px, config.projection.max_range_m,
+    ground_status.rfind("VALID |", 0) == 0);
   const int height = image.rows;
   const auto draw_status = [&](const std::string & text, const int row) {
     int baseline = 0;
@@ -272,8 +266,8 @@ cv::Mat makeScanPreview(const DetectionResult & detection,
                     << detection.obstacles.size();
   draw_status(processing_status.str(), height - 10);
   draw_status(std::string(config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON")
-    + " | B: MEASURE FLOOR", 54);
-  draw_status(floor_status, 72);
+    + " | GROUND: LIVE MSAC", 54);
+  draw_status(ground_status, 72);
   return image;
 }
 
@@ -312,24 +306,6 @@ sensor_msgs::msg::Image matToImageMessage(const cv::Mat & image,
   message.data.resize(bytes);
   std::memcpy(message.data.data(), image.data, bytes);
   return message;
-}
-
-std::string expandedFloorPath(const std::string & configured)
-{
-  if (configured.rfind("~/", 0) != 0) { return configured; }
-  const char * user_home = std::getenv("HOME");
-  if (!user_home) { throw std::runtime_error("HOME is required to expand floor.file"); }
-  return (std::filesystem::path(user_home) / configured.substr(2)).string();
-}
-
-std::string floorCameraSignature(const NodeConfig & c, const std::string & device_id)
-{
-  std::ostringstream signature;
-  signature << std::setprecision(17) << device_id << '|' << c.camera_resolution << '|'
-    << c.camera_fps << '|' << c.depth_mode << '|' << c.confidence_threshold << '|'
-    << c.left_right_check << '|' << c.subpixel << '|' << c.extended_disparity << '|'
-    << c.median_filter << "|RECTIFIED_RIGHT|mm";
-  return signature.str();
 }
 
 sensor_msgs::msg::PointCloud2 obstacleMessage(const DetectionResult & detection,
@@ -405,11 +381,56 @@ public:
       declare_parameter<double>("cluster.radius_margin_m", config_.cluster.radius_margin_m);
     config_.cluster.min_radius_m =
       declare_parameter<double>("cluster.min_radius_m", config_.cluster.min_radius_m);
-    config_.floor.measure_frames = declare_parameter<int>("floor.measure_frames", config_.floor.measure_frames);
-    config_.floor.min_valid_ratio = declare_parameter<double>("floor.min_valid_ratio", config_.floor.min_valid_ratio);
-    config_.floor.min_delta_m = declare_parameter<double>("floor.min_delta_m", config_.floor.min_delta_m);
-    config_.floor.noise_scale = declare_parameter<double>("floor.noise_scale", config_.floor.noise_scale);
-    config_.floor.release_ratio = declare_parameter<double>("floor.release_ratio", config_.floor.release_ratio);
+    config_.ground.roi_width_ratio =
+      declare_parameter<double>("ground.roi_width_ratio", config_.ground.roi_width_ratio);
+    config_.ground.roi_height_ratio =
+      declare_parameter<double>("ground.roi_height_ratio", config_.ground.roi_height_ratio);
+    config_.ground.roi_bottom_offset_ratio =
+      declare_parameter<double>("ground.roi_bottom_offset_ratio", config_.ground.roi_bottom_offset_ratio);
+    config_.ground.pixel_stride =
+      declare_parameter<int>("ground.pixel_stride", config_.ground.pixel_stride);
+    config_.ground.max_samples =
+      declare_parameter<int>("ground.max_samples", config_.ground.max_samples);
+    config_.ground.max_iterations =
+      declare_parameter<int>("ground.max_iterations", config_.ground.max_iterations);
+    config_.ground.min_depth_m =
+      declare_parameter<double>("ground.min_depth_m", config_.ground.min_depth_m);
+    config_.ground.max_depth_m =
+      declare_parameter<double>("ground.max_depth_m", config_.ground.max_depth_m);
+    config_.ground.inlier_distance_m =
+      declare_parameter<double>("ground.inlier_distance_m", config_.ground.inlier_distance_m);
+    config_.ground.min_inlier_points =
+      declare_parameter<int>("ground.min_inlier_points", config_.ground.min_inlier_points);
+    config_.ground.min_inlier_ratio =
+      declare_parameter<double>("ground.min_inlier_ratio", config_.ground.min_inlier_ratio);
+    config_.ground.min_spread_m =
+      declare_parameter<double>("ground.min_spread_m", config_.ground.min_spread_m);
+    config_.ground.max_rmse_m =
+      declare_parameter<double>("ground.max_rmse_m", config_.ground.max_rmse_m);
+    config_.ground.reference_up_x =
+      declare_parameter<double>("ground.reference_up_x", config_.ground.reference_up_x);
+    config_.ground.reference_up_y =
+      declare_parameter<double>("ground.reference_up_y", config_.ground.reference_up_y);
+    config_.ground.reference_up_z =
+      declare_parameter<double>("ground.reference_up_z", config_.ground.reference_up_z);
+    config_.ground.max_tilt_deg =
+      declare_parameter<double>("ground.max_tilt_deg", config_.ground.max_tilt_deg);
+    config_.ground.min_camera_height_m =
+      declare_parameter<double>("ground.min_camera_height_m", config_.ground.min_camera_height_m);
+    config_.ground.max_camera_height_m =
+      declare_parameter<double>("ground.max_camera_height_m", config_.ground.max_camera_height_m);
+    config_.ground.min_height_m =
+      declare_parameter<double>("ground.min_height_m", config_.ground.min_height_m);
+    config_.ground.max_height_m =
+      declare_parameter<double>("ground.max_height_m", config_.ground.max_height_m);
+    config_.ground.noise_scale =
+      declare_parameter<double>("ground.noise_scale", config_.ground.noise_scale);
+    config_.ground.release_ratio =
+      declare_parameter<double>("ground.release_ratio", config_.ground.release_ratio);
+    config_.ground.reset_history_angle_deg =
+      declare_parameter<double>("ground.reset_history_angle_deg", config_.ground.reset_history_angle_deg);
+    config_.ground.reset_history_height_m =
+      declare_parameter<double>("ground.reset_history_height_m", config_.ground.reset_history_height_m);
     config_.stabilization.enabled =
       declare_parameter<bool>("stabilization.enabled", config_.stabilization.enabled);
     config_.stabilization.confirm_hits =
@@ -422,7 +443,6 @@ public:
       declare_parameter<double>("stabilization.match_distance_m", config_.stabilization.match_distance_m);
     config_.stabilization.max_frame_gap_sec =
       declare_parameter<double>("stabilization.max_frame_gap_sec", config_.stabilization.max_frame_gap_sec);
-    config_.floor_file = declare_parameter<std::string>("floor.file", config_.floor_file);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
     config_.nv12_fps = declare_parameter<double>("nv12.fps", config_.nv12_fps);
     config_.nv12_width = declare_parameter<int>("nv12.width", config_.nv12_width);
@@ -455,19 +475,18 @@ public:
     if (!validateNodeConfig(config_, reason)) {
       throw std::invalid_argument("invalid initial parameter: " + reason);
     }
-    floor_path_ = expandedFloorPath(config_.floor_file);
+    for (const auto & entry : get_node_parameters_interface()->get_parameter_overrides()) {
+      if (entry.first.rfind("floor.", 0) == 0) {
+        throw std::invalid_argument("floor.* parameters were removed; use the current ground.* YAML");
+      }
+    }
 
     const auto qos = rclcpp::SensorDataQoS().keep_last(1);
     obstacles_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/obstacles", qos);
-    floor_status_publisher_ = create_publisher<std_msgs::msg::String>("~/floor_status",
+    ground_status_publisher_ = create_publisher<std_msgs::msg::String>("~/ground_status",
       rclcpp::QoS(1).reliable().transient_local());
-    measure_floor_service_ = create_service<std_srvs::srv::Trigger>("~/measure_floor",
-      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
-        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-        floor_measure_requests_.fetch_add(1U);
-        response->success = true;
-        response->message = "New floor measurement queued; prior reference will be discarded. See ~/floor_status.";
-      });
+    ground_valid_publisher_ = create_publisher<std_msgs::msg::Bool>("~/ground_valid",
+      rclcpp::QoS(1).reliable().transient_local());
     preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/preview", qos);
     stereo_preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/stereo_preview", qos);
     parameter_callback_ = add_on_set_parameters_callback(
@@ -541,16 +560,56 @@ private:
           next.cluster.radius_margin_m = parameter.as_double();
         } else if (name == "cluster.min_radius_m") {
           next.cluster.min_radius_m = parameter.as_double();
-        } else if (name == "floor.measure_frames") {
-          next.floor.measure_frames = static_cast<int>(parameter.as_int());
-        } else if (name == "floor.min_valid_ratio") {
-          next.floor.min_valid_ratio = parameter.as_double();
-        } else if (name == "floor.min_delta_m") {
-          next.floor.min_delta_m = parameter.as_double();
-        } else if (name == "floor.noise_scale") {
-          next.floor.noise_scale = parameter.as_double();
-        } else if (name == "floor.release_ratio") {
-          next.floor.release_ratio = parameter.as_double();
+        } else if (name == "ground.roi_width_ratio") {
+          next.ground.roi_width_ratio = parameter.as_double();
+        } else if (name == "ground.roi_height_ratio") {
+          next.ground.roi_height_ratio = parameter.as_double();
+        } else if (name == "ground.roi_bottom_offset_ratio") {
+          next.ground.roi_bottom_offset_ratio = parameter.as_double();
+        } else if (name == "ground.pixel_stride") {
+          next.ground.pixel_stride = static_cast<int>(parameter.as_int());
+        } else if (name == "ground.max_samples") {
+          next.ground.max_samples = static_cast<int>(parameter.as_int());
+        } else if (name == "ground.max_iterations") {
+          next.ground.max_iterations = static_cast<int>(parameter.as_int());
+        } else if (name == "ground.min_depth_m") {
+          next.ground.min_depth_m = parameter.as_double();
+        } else if (name == "ground.max_depth_m") {
+          next.ground.max_depth_m = parameter.as_double();
+        } else if (name == "ground.inlier_distance_m") {
+          next.ground.inlier_distance_m = parameter.as_double();
+        } else if (name == "ground.min_inlier_points") {
+          next.ground.min_inlier_points = static_cast<int>(parameter.as_int());
+        } else if (name == "ground.min_inlier_ratio") {
+          next.ground.min_inlier_ratio = parameter.as_double();
+        } else if (name == "ground.min_spread_m") {
+          next.ground.min_spread_m = parameter.as_double();
+        } else if (name == "ground.max_rmse_m") {
+          next.ground.max_rmse_m = parameter.as_double();
+        } else if (name == "ground.reference_up_x") {
+          next.ground.reference_up_x = parameter.as_double();
+        } else if (name == "ground.reference_up_y") {
+          next.ground.reference_up_y = parameter.as_double();
+        } else if (name == "ground.reference_up_z") {
+          next.ground.reference_up_z = parameter.as_double();
+        } else if (name == "ground.max_tilt_deg") {
+          next.ground.max_tilt_deg = parameter.as_double();
+        } else if (name == "ground.min_camera_height_m") {
+          next.ground.min_camera_height_m = parameter.as_double();
+        } else if (name == "ground.max_camera_height_m") {
+          next.ground.max_camera_height_m = parameter.as_double();
+        } else if (name == "ground.min_height_m") {
+          next.ground.min_height_m = parameter.as_double();
+        } else if (name == "ground.max_height_m") {
+          next.ground.max_height_m = parameter.as_double();
+        } else if (name == "ground.noise_scale") {
+          next.ground.noise_scale = parameter.as_double();
+        } else if (name == "ground.release_ratio") {
+          next.ground.release_ratio = parameter.as_double();
+        } else if (name == "ground.reset_history_angle_deg") {
+          next.ground.reset_history_angle_deg = parameter.as_double();
+        } else if (name == "ground.reset_history_height_m") {
+          next.ground.reset_history_height_m = parameter.as_double();
         } else if (name == "stabilization.enabled") {
           next.stabilization.enabled = parameter.as_bool();
         } else if (name == "stabilization.confirm_hits") {
@@ -563,11 +622,6 @@ private:
           next.stabilization.match_distance_m = parameter.as_double();
         } else if (name == "stabilization.max_frame_gap_sec") {
           next.stabilization.max_frame_gap_sec = parameter.as_double();
-        } else if (name == "floor.file") {
-          if (parameter.as_string() != previous.floor_file) {
-            result.reason = "floor.file is fixed for this process; change YAML and restart";
-            return result;
-          }
         } else if (name == "nv12.enabled") {
           next.nv12_enabled = parameter.as_bool();
         } else if (name == "nv12.fps") {
@@ -666,7 +720,7 @@ private:
     stereo->setLeftRightCheck(config.left_right_check);
     stereo->setSubpixel(config.subpixel);
     stereo->setExtendedDisparity(config.extended_disparity);
-    // Keep the scan ROI in the same perspective as the right rectified preview.
+    // Keep both ground/detection ROIs in the right rectified preview perspective.
     stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
 
     nv12_output = nullptr;
@@ -688,7 +742,7 @@ private:
   {
     bool radar_window_open = false;
     bool stereo_window_open = false;
-    FloorReference floor;
+    GroundPlane previous_ground;
     ClusterStabilizer stabilizer;
     std::vector<std::uint8_t> foreground_mask;
     std::string active_stabilization_context;
@@ -697,29 +751,28 @@ private:
     const auto clear_history = [&]() {
       stabilizer.clear();
       foreground_mask.clear();
+      previous_ground = GroundPlane{};
       active_stabilization_context.clear();
       have_detection_time = false;
     };
-    std::uint64_t handled_floor_request = 0U;
-    bool start_floor_measurement = false;
-    bool allow_reference_load = true;
-    std::string active_floor_context;
-    std::string floor_status;
+    std::string ground_status;
     std::size_t published_obstacle_count = 0U;
-    const std::string floor_path = floor_path_;
-    const auto set_floor_status = [&](const std::string & status) {
-      if (floor_status == status) { return; }
-      floor_status = status;
+    const auto set_ground_status = [&](const std::string & status) {
+      if (ground_status == status) { return; }
+      ground_status = status;
       std_msgs::msg::String message;
       message.data = status;
-      floor_status_publisher_->publish(message);
+      ground_status_publisher_->publish(message);
+      std_msgs::msg::Bool validity;
+      validity.data = status.rfind("VALID |", 0) == 0;
+      ground_valid_publisher_->publish(validity);
     };
     const auto publish_status_result = [&](const NodeConfig & config, const DetectionResult & detection) {
       const auto stamp = now();
       obstacles_publisher_->publish(obstacleMessage(detection, stamp, config.frame_id));
       published_obstacle_count = detection.obstacles.size();
       if (config.preview_enabled) {
-        auto preview = makeScanPreview(detection, floor_status, config, 0.0, 0.0, 0.0, 0.0);
+        auto preview = makeScanPreview(detection, ground_status, config, 0.0, 0.0, 0.0, 0.0);
         preview_publisher_->publish(matToImageMessage(preview, stamp, config.frame_id));
         if (config.preview_gui) {
           cv::imshow("depth_lidar radar preview", preview);
@@ -730,13 +783,13 @@ private:
     const auto publish_empty = [&](const NodeConfig & config) {
       publish_status_result(config, DetectionResult{});
     };
-    set_floor_status("WAITING FOR CAMERA | B: MEASURE FLOOR");
+    set_ground_status("WAITING FOR CAMERA | LIVE MSAC");
     while (rclcpp::ok() && !stop_requested_.load()) {
       restart_requested_.store(false);
       const NodeConfig startup_config = configSnapshot();
       try {
         clear_history();
-        set_floor_status("WAITING FOR CAMERA | HISTORY CLEARED");
+        set_ground_status("WAITING FOR CAMERA | HISTORY CLEARED");
         publish_empty(startup_config);
         auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
         dai::Pipeline pipeline(device);
@@ -792,7 +845,6 @@ private:
           startup_config.nv12_enabled ? "enabled" : "disabled");
 
         CameraGeometry camera;
-        camera.signature = floorCameraSignature(startup_config, device->getDeviceId());
         std::atomic_bool nv12_receiver_stop{false};
         std::atomic_bool nv12_receiver_failed{false};
         std::atomic<std::uint64_t> nv12_received_total{0U};
@@ -850,26 +902,6 @@ private:
               throw std::runtime_error("NV12 receiver stopped unexpectedly");
             }
             const NodeConfig display_config = configSnapshot();
-            const auto floor_request = floor_measure_requests_.load();
-            if (floor_request != handled_floor_request) {
-              handled_floor_request = floor_request;
-              floor.clear();
-              clear_history();
-              start_floor_measurement = false;
-              allow_reference_load = false;
-              // Invalidate the old result before collecting a single new sample.
-              set_floor_status("MEASUREMENT REQUESTED | HISTORY CLEARED");
-              publish_empty(display_config);
-              try {
-                std::filesystem::remove(floor_path);
-                std::filesystem::remove(floor_path + ".tmp");
-                start_floor_measurement = true;
-                set_floor_status("MEASUREMENT REQUESTED | OLD REFERENCE DISCARDED");
-              } catch (const std::exception & error) {
-                set_floor_status("FLOOR DELETE ERROR | SEE LOG | B: RETRY");
-                RCLCPP_ERROR(get_logger(), "Cannot discard previous floor file: %s", error.what());
-              }
-            }
             if (radar_window_open && (!display_config.preview_enabled || !display_config.preview_gui)) {
               cv::destroyWindow("depth_lidar radar preview");
               radar_window_open = false;
@@ -882,10 +914,6 @@ private:
             }
             if (radar_window_open || stereo_window_open) {
               const int key = cv::waitKey(1) & 0xff;
-              if (key == 'b' || key == 'B') {
-                floor_measure_requests_.fetch_add(1U);
-                continue;
-              }
               if (key == 'c' || key == 'C') {
                 // Use the ROS parameter path so GUI and command-line state agree.
                 const auto result = set_parameters_atomically({rclcpp::Parameter(
@@ -920,8 +948,11 @@ private:
                     const auto roi = computeRoi(latest_depth_width, latest_depth_height,
                       roi_config.roi_width_ratio, roi_config.roi_height_ratio,
                       roi_config.roi_bottom_offset_ratio);
+                    const auto ground_roi = computeRoi(latest_depth_width, latest_depth_height,
+                      display_config.ground.roi_width_ratio, display_config.ground.roi_height_ratio,
+                      display_config.ground.roi_bottom_offset_ratio);
                     cv::Mat preview = makeStereoPreview(stereoGrayFrame(*stereo_left_frame),
-                      stereoGrayFrame(*stereo_right_frame), roi, latest_depth_width, latest_depth_height);
+                      stereoGrayFrame(*stereo_right_frame), roi, latest_depth_width, latest_depth_height, &ground_roi);
                     stereo_preview_publisher_->publish(
                       matToImageMessage(preview, now(), display_config.frame_id));
                     if (display_config.stereo_preview_gui) {
@@ -940,7 +971,7 @@ private:
                 > display_config.stabilization.max_frame_gap_sec) {
               clear_history();
               depth_stale = true;
-              set_floor_status("DEPTH STALE | WAITING FOR FRAME");
+              set_ground_status("DEPTH STALE | WAITING FOR FRAME");
               publish_empty(display_config);
             }
             auto depth_frame = depth_queue->tryGet<dai::ImgFrame>();
@@ -990,74 +1021,37 @@ private:
             camera.fx = intrinsics[0][0]; camera.fy = intrinsics[1][1];
             camera.cx = intrinsics[0][2]; camera.cy = intrinsics[1][2];
             if (!intrinsics_logged) {
-              RCLCPP_INFO(get_logger(), "Depth %dx%d, fx=%.2f fy=%.2f cx=%.2f cy=%.2f; floor file: %s",
-                depth_width, depth_height, camera.fx, camera.fy, camera.cx, camera.cy, floor_path.c_str());
+              RCLCPP_INFO(get_logger(), "Depth %dx%d, fx=%.2f fy=%.2f cx=%.2f cy=%.2f; per-frame MSAC ground",
+                depth_width, depth_height, camera.fx, camera.fy, camera.cx, camera.cy);
               intrinsics_logged = true;
             }
             const NodeConfig current = configSnapshot();
             const auto * depth = reinterpret_cast<const std::uint16_t *>(depth_data.data());
             const auto stride_elements = depth_stride / sizeof(std::uint16_t);
             std::ostringstream context;
-            context << std::setprecision(17) << camera.signature << '|' << camera.width << '|' << camera.height
+            context << std::setprecision(17) << camera.width << '|' << camera.height
               << '|' << camera.fx << '|' << camera.fy << '|' << camera.cx << '|' << camera.cy;
-            if (active_floor_context != context.str()) {
-              active_floor_context = context.str();
-              floor.clear();
-              clear_history();
-              set_floor_status("NO COMPATIBLE FLOOR | B: MEASURE");
-              if (allow_reference_load && !start_floor_measurement) {
-                try {
-                  if (floor.load(floor_path, camera)) {
-                    set_floor_status("READY | LOADED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
-                  } else {
-                    set_floor_status("NO COMPATIBLE FLOOR | B: MEASURE");
-                  }
-                } catch (const std::exception & error) {
-                  set_floor_status("FLOOR LOAD ERROR | B: MEASURE");
-                  RCLCPP_ERROR(get_logger(), "Cannot load floor reference: %s", error.what());
-                }
-              }
-            }
-            if (start_floor_measurement) {
-              floor.begin(camera, current.floor);
-              start_floor_measurement = false;
-            }
-            if (floor.ready() && floor_status.rfind("READY", 0) != 0) {
-              set_floor_status("READY | RETAINED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
-            }
-            if (floor.measuring()) {
-              const bool finished = floor.accumulate(depth, stride_elements);
-              set_floor_status("MEASURING FLOOR " + std::to_string(floor.frames()) + "/"
-                + std::to_string(floor.targetFrames()) + " | KEEP FLOOR CLEAR");
-              if (finished) {
-                if (!floor.ready()) {
-                  set_floor_status("MEASUREMENT FAILED: NO VALID FLOOR | B: RETRY");
-                } else {
-                  try {
-                    floor.save(floor_path);
-                    allow_reference_load = true;
-                    set_floor_status("READY | SAVED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
-                    RCLCPP_INFO(get_logger(), "Saved new floor reference: %s (%zu valid pixels)",
-                      floor_path.c_str(), floor.validPixels());
-                  } catch (const std::exception & error) {
-                    set_floor_status("READY IN MEMORY | SAVE FAILED: SEE LOG");
-                    RCLCPP_ERROR(get_logger(), "Floor reference save failed: %s", error.what());
-                  }
-                }
-              }
-            }
-            // Detector changes invalidate both per-pixel labels and cluster tracks;
-            // preview-only changes keep history. The floor file is never modified here.
+            // Configuration changes clear transient labels/tracks. Plane estimation
+            // always uses this frame alone, including after a failed estimate.
             context << '|' << current.frame_id << '|' << current.projection.roi_width_ratio
               << '|' << current.projection.roi_height_ratio << '|' << current.projection.roi_bottom_offset_ratio
               << '|' << current.projection.pixel_stride << '|' << current.projection.min_range_m
               << '|' << current.projection.max_range_m << '|' << current.projection.range_offset_m
-              << '|' << current.floor.min_delta_m << '|' << current.floor.noise_scale << '|' << current.floor.release_ratio
               << '|' << current.cluster.min_points << '|' << current.cluster.neighbor_distance_m
               << '|' << current.cluster.radius_margin_m << '|' << current.cluster.min_radius_m
               << '|' << current.stabilization.enabled << '|' << current.stabilization.confirm_hits
               << '|' << current.stabilization.window_frames << '|' << current.stabilization.hold_sec
               << '|' << current.stabilization.match_distance_m << '|' << current.stabilization.max_frame_gap_sec;
+            context
+              << '|' << current.ground.roi_width_ratio << '|' << current.ground.roi_height_ratio << '|' << current.ground.roi_bottom_offset_ratio
+              << '|' << current.ground.pixel_stride << '|' << current.ground.max_samples << '|' << current.ground.max_iterations
+              << '|' << current.ground.min_depth_m << '|' << current.ground.max_depth_m << '|' << current.ground.inlier_distance_m
+              << '|' << current.ground.min_inlier_points << '|' << current.ground.min_inlier_ratio << '|' << current.ground.min_spread_m
+              << '|' << current.ground.max_rmse_m << '|' << current.ground.reference_up_x << '|' << current.ground.reference_up_y
+              << '|' << current.ground.reference_up_z << '|' << current.ground.max_tilt_deg << '|' << current.ground.min_camera_height_m
+              << '|' << current.ground.max_camera_height_m << '|' << current.ground.min_height_m << '|' << current.ground.max_height_m
+              << '|' << current.ground.noise_scale << '|' << current.ground.release_ratio << '|' << current.ground.reset_history_angle_deg
+              << '|' << current.ground.reset_history_height_m;
             if (active_stabilization_context != context.str()
                 || (have_detection_time && frame_time_sec - previous_detection_time
                     > current.stabilization.max_frame_gap_sec)) {
@@ -1067,21 +1061,33 @@ private:
             if (have_detection_time && frame_time_sec <= previous_detection_time) {
               // Replayed frames must not re-confirm a track or preserve pixel labels.
               clear_history();
+              set_ground_status("INVALID | NON-MONOTONIC FRAME TIME");
               publish_empty(current);
               continue;
             }
             previous_detection_time = frame_time_sec;
             have_detection_time = true;
-            const auto raw_detection = detectForeground(depth, stride_elements, camera, floor,
-              current.floor, current.projection, current.cluster,
-              current.stabilization.enabled ? &foreground_mask : nullptr);
-            DetectionResult detection;
-            if (floor.ready()) {
-              detection = stabilizer.update(raw_detection, frame_time_sec, current.stabilization);
+            const auto ground = estimateGroundPlane(depth, stride_elements, camera, current.ground);
+            if (ground.valid) {
+              if (previous_ground.valid && ground.changedFrom(previous_ground, current.ground)) {
+                stabilizer.clear();
+                foreground_mask.clear();
+              }
+              previous_ground = ground;
+              std::ostringstream status;
+              status << "VALID | MSAC " << ground.inlier_points << "/" << ground.sample_points
+                << std::fixed << std::setprecision(3) << " | H " << ground.offset_m
+                << "m | RMSE " << ground.rmse_m << "m";
+              set_ground_status(status.str());
             } else {
               clear_history();
-              detection = raw_detection;
+              set_ground_status("INVALID | " + ground.reason);
             }
+            const auto raw_detection = detectForeground(depth, stride_elements, camera, ground,
+              current.ground, current.projection, current.cluster,
+              current.stabilization.enabled ? &foreground_mask : nullptr);
+            const auto detection = ground.valid
+              ? stabilizer.update(raw_detection, frame_time_sec, current.stabilization) : raw_detection;
             const auto object_processing_end = std::chrono::steady_clock::now();
             const double object_processing_ms =
               std::chrono::duration<double, std::milli>(object_processing_end - processing_start)
@@ -1135,7 +1141,7 @@ private:
                 last_foreground_points,
                 detection.roi.width,
                 detection.roi.height,
-                floor_status.c_str());
+                ground_status.c_str());
               metrics_start = before_preview;
               metric_frames = 0;
               metric_delay_sum_ms = 0.0;
@@ -1146,7 +1152,7 @@ private:
                                      >= std::chrono::duration<double>(1.0 / current.preview_fps);
             if (current.preview_enabled && preview_due) {
               cv::Mat preview = makeScanPreview(detection,
-                floor_status,
+                ground_status,
                 current,
                 measured_depth_rx_fps,
                 measured_nv12_rx_fps,
@@ -1178,7 +1184,7 @@ private:
         }
       } catch (const std::exception & error) {
         clear_history();
-        set_floor_status("CAMERA UNAVAILABLE | RECONNECTING");
+        set_ground_status("CAMERA UNAVAILABLE | RECONNECTING");
         obstacles_publisher_->publish(obstacleMessage(DetectionResult{}, now(), configSnapshot().frame_id));
         published_obstacle_count = 0U;
         RCLCPP_ERROR(get_logger(), "DepthAI pipeline error: %s", error.what());
@@ -1191,14 +1197,12 @@ private:
 
   mutable std::mutex config_mutex_;
   NodeConfig config_;
-  std::string floor_path_;
   std::atomic_bool stop_requested_{false};
   std::atomic_bool restart_requested_{false};
   std::thread worker_;
-  std::atomic<std::uint64_t> floor_measure_requests_{0U};
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacles_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr floor_status_publisher_;
-  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr measure_floor_service_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr ground_status_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ground_valid_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr stereo_preview_publisher_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
@@ -1209,11 +1213,13 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
+  int exit_code = 0;
   try {
     rclcpp::spin(std::make_shared<depth_lidar::DepthLidarNode>());
   } catch (const std::exception & error) {
     RCLCPP_FATAL(rclcpp::get_logger("depth_lidar"), "Fatal error: %s", error.what());
+    exit_code = 1;
   }
   rclcpp::shutdown();
-  return 0;
+  return exit_code;
 }
