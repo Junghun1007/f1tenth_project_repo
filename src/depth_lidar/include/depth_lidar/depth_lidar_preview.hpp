@@ -7,7 +7,7 @@
 namespace depth_lidar
 {
 
-// Camera-frame foreground points and cluster centers/footprints.
+// Camera-frame cluster circles only; no point markers or per-cluster labels.
 // Leaves the bottom 40 pixels available for receiver/processing metrics.
 cv::Mat makeRadarPreview(const DetectionResult & detection, int width_px, double max_range_m);
 

@@ -98,7 +98,7 @@ ROI를 늘리거나 이동할 수 있고, 3m 밖의 바닥 앞에 나타난 3m �
    약 한 프레임(17ms)이지만 실제 지연은 수신·처리 속도에 따라 달라집니다.
 3. 확정된 군집이 누락되면 마지막 관측부터 `stabilization.hold_sec`(기본 80ms)까지 유지합니다.
    유지 위치와 반지름은 마지막 관측값이며 이동 예측·좌표 평균 필터는 적용하지 않습니다.
-   회색 원과 `HOLD` 라벨로 표시하고, 과거 표면점은 다시 그리지 않습니다.
+   유지 군집은 회색 원으로 표시합니다. 군집별 좌표·반지름·HOLD 글씨와 중심 십자, 개별 점은 표시하지 않습니다.
 
 ```yaml
 floor.release_ratio: 0.60
@@ -131,7 +131,7 @@ stabilization.max_frame_gap_sec: 0.20
 |---|---|
 | `/depth_lidar/obstacles` | PointCloud2, 군집 하나당 점 하나: x/y/z/radius(float32, m), point_count(uint32), observation_age_sec(float32, s) |
 | `/depth_lidar/floor_status` | String, 측정/저장/로드 상태. 최신 상태를 유지하는 transient-local 토픽 |
-| `/depth_lidar/preview` | 흰색 레이더: 파란 군집 점, 주황 현재 중심·반지름, 회색 유지 군집, 바닥 상태, 수신/연산 성능 |
+| `/depth_lidar/preview` | 흰색 레이더: 주황 현재 군집 원, 회색 유지 군집 원, 바닥 상태, 수신/연산 성능 |
 | `/depth_lidar/stereo_preview` | 좌우 정렬 영상과 초록 ROI. 오른쪽이 실제 depth 기준, 왼쪽은 비교 가이드 |
 | `/depth_lidar/measure_floor` | Trigger 서비스. 이전 결과를 버리고 새 바닥 측정 요청 |
 
@@ -144,7 +144,7 @@ USB/처리/ROS 전송 지연 전체를 나타내는 값은 아닙니다. 유지 
 뜻하지 않으므로 경로계획에서는 `floor_status`와 측정 시각도 확인해야 합니다.
 카메라 오류 시 상태는 `CAMERA UNAVAILABLE`이 됩니다.
 
-레이더는 군집 중심뿐 아니라 검출된 표면 점들과 반지름을 표시합니다. 원점은 아래 중앙,
+레이더의 장애물은 군집 원만 표시합니다. 거리·각도 격자와 상태·성능 표시는 유지합니다. 원점은 아래 중앙,
 위쪽은 전방, 왼쪽은 카메라 좌측입니다. 이 단계에는 앞차축/BEV 좌표 변환을 적용하지 않습니다.
 
 ## 화면 및 ROI 조절
