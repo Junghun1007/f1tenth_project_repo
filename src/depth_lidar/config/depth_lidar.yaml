@@ -13,28 +13,30 @@ depth_lidar:
 
     # Centered ROI. Its bottom edge is this ratio above the image bottom.
     roi.width_ratio: 1.0
-    roi.height_ratio: 0.10
-    roi.bottom_offset_ratio: 0.35
+    roi.height_ratio: 0.30
+    roi.bottom_offset_ratio: 0.25
 
     range.min_m: 0.20
     range.max_m: 8.0
     # corrected range = measured range + offset. Negative values make obstacles closer.
     range.offset_m: 0.0
-    scan.bins: 360
-    scan.pixel_stride: 1
-    scan.min_points_per_bin: 1
-    # Per-angle valid range selection; neither mode removes the ground.
-    scan.range_selection: "nearest"    # nearest, farthest
+    points.pixel_stride: 1
 
-    # Consecutive occupied angular bins are grouped in one O(N) pass. Radius is
-    # estimated from angular support * range, then clamped and inflated.
-    cluster.min_bins: 3
-    cluster.max_missing_bins: 1
-    cluster.base_neighbor_distance_m: 0.04
-    cluster.angular_neighbor_scale: 1.5
+    # Persistent per-pixel floor reference, loaded on startup; never auto-measured.
+    # Press B or call /depth_lidar/measure_floor only when the scene contains floor.
+    # A new measurement discards the previous in-memory reference AND file first.
+    floor.file: "~/.ros/depth_lidar/floor_reference.bin"
+    floor.measure_frames: 60
+    floor.min_valid_ratio: 0.50
+    floor.min_delta_m: 0.05
+    floor.noise_scale: 3.0
+
+    # Cluster foreground pixels before computing mean X/Y and covering radius.
+    # 8-connected image neighbors must also be within this 3D distance.
+    cluster.min_points: 20
+    cluster.neighbor_distance_m: 0.08
     cluster.radius_margin_m: 0.04
     cluster.min_radius_m: 0.05
-    cluster.max_radius_m: 0.40
 
     # Pull CAM_A NV12 to a dedicated latest-frame host receiver without
     # converting, publishing, or previewing it. This measures concurrent USB load.
@@ -50,7 +52,7 @@ depth_lidar:
     preview.fps: 10.0
     preview.size_px: 700
 
-    # Optional rectified left/right camera images with scan ROI overlay.
+    # Optional rectified left/right camera images with detection ROI overlay.
     # enabled toggles USB streams (pipeline restart); gui toggles only the window.
     # Press C in either preview window to toggle enabled.
     stereo_preview.enabled: false

@@ -45,13 +45,13 @@ cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
     cv::putText(image, bounds.str(), label + cv::Point(0, 22),
       cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
   }
-  cv::putText(image, "C: camera ON/OFF | Green: scan ROI | Left view has stereo parallax",
+  cv::putText(image, "B: measure floor | C: camera ON/OFF | Green: ROI | Right: depth reference",
     cv::Point(8, image.rows - 9), cv::FONT_HERSHEY_SIMPLEX, 0.4,
     cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
   return image;
 }
 
-cv::Mat makeRadarPreview(const ScanProjection & projection,
+cv::Mat makeRadarPreview(const DetectionResult & detection,
   const int width_px, const double max_range_m)
 {
   if (width_px < 240 || !std::isfinite(max_range_m) || max_range_m <= 0.0) {
@@ -59,7 +59,7 @@ cv::Mat makeRadarPreview(const ScanProjection & projection,
   }
   constexpr double pi = 3.14159265358979323846;
   const int radius_px = width_px / 2 - 38;
-  const cv::Point origin(width_px / 2, radius_px + 64);
+  const cv::Point origin(width_px / 2, radius_px + 96);
   cv::Mat image(origin.y + 68, width_px, CV_8UC3, cv::Scalar(255, 255, 255));
   const double pixels_per_meter = radius_px / max_range_m;
   const cv::Scalar grid(210, 210, 210);
@@ -98,26 +98,22 @@ cv::Mat makeRadarPreview(const ScanProjection & projection,
       labelAt(label, end + cv::Point(-8, -7), 0.35);
     }
   }
-  // The scan only covers the camera ROI's horizontal field of view.
-  for (const double angle : {static_cast<double>(projection.angle_min),
-      static_cast<double>(projection.angle_max)})
-  {
-    if (std::isfinite(angle)) {
-      cv::line(image, origin, pointAt(max_range_m, angle),
-        cv::Scalar(175, 155, 130), 1, cv::LINE_AA);
-    }
+  for (const auto & obstacle : detection.obstacles) {
+    const auto center = pointAt(std::hypot(obstacle.forward_m, obstacle.left_m),
+      std::atan2(obstacle.left_m, obstacle.forward_m));
+    const int radius = std::max(1, static_cast<int>(std::lround(obstacle.radius_m * pixels_per_meter)));
+    cv::circle(image, center, radius, cv::Scalar(0, 150, 230), 2, cv::LINE_AA);
+    cv::drawMarker(image, center, cv::Scalar(0, 70, 180), cv::MARKER_CROSS, 9, 2);
+    std::ostringstream label;
+    label << std::fixed << std::setprecision(2) << "x" << obstacle.forward_m
+          << " y" << obstacle.left_m << " r" << obstacle.radius_m;
+    labelAt(label.str(), center + cv::Point(6, -8), 0.35);
   }
-  std::size_t displayed_points = 0;
-  for (std::size_t i = 0; i < projection.ranges.size(); ++i) {
-    const double range = projection.ranges[i];
-    const double angle = projection.angle_min + static_cast<double>(i) * projection.angle_increment;
-    if (!std::isfinite(range) || range <= 0.0 || range > max_range_m
-        || !std::isfinite(angle) || std::abs(angle) > pi / 2.0)
-    {
-      continue;
-    }
-    cv::circle(image, pointAt(range, angle), 2, point_color, cv::FILLED, cv::LINE_AA);
-    ++displayed_points;
+  for (const auto & point : detection.points) {
+    const double range = std::hypot(point.forward_m, point.left_m);
+    if (range > max_range_m) { continue; }
+    cv::circle(image, pointAt(range, std::atan2(point.left_m, point.forward_m)),
+      1, point_color, cv::FILLED, cv::LINE_AA);
   }
   cv::drawMarker(image, origin, ink, cv::MARKER_CROSS, 10, 2, cv::LINE_AA);
   labelAt(width_px < 400 ? "0m" : "CAMERA / 0m",
@@ -125,11 +121,11 @@ cv::Mat makeRadarPreview(const ScanProjection & projection,
   labelAt(width_px < 400 ? "L (+)" : "LEFT (+)", cv::Point(8, origin.y + 17), 0.35);
   labelAt(width_px < 400 ? "R (-)" : "RIGHT (-)",
     cv::Point(width_px - (width_px < 400 ? 40 : 75), origin.y + 17), 0.35);
-  labelAt("DEPTH SCAN / CAMERA FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
-  labelAt("POINTS " + std::to_string(displayed_points) + " | FORWARD UP",
+  labelAt("OBSTACLES / CAMERA FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
+  labelAt("POINTS " + std::to_string(detection.points.size()) + " | OBJECTS " + std::to_string(detection.obstacles.size()),
     cv::Point(10, 38), 0.35);
-  if (displayed_points == 0U) {
-    labelAt("NO VALID RETURNS", cv::Point(origin.x - 60, origin.y - radius_px / 2), 0.4);
+  if (detection.obstacles.empty()) {
+    labelAt("NO DETECTED CLUSTERS", cv::Point(origin.x - 60, origin.y - radius_px / 2), 0.4);
   }
   return image;
 }

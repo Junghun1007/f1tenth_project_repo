@@ -9,7 +9,10 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
-#include <sensor_msgs/msg/laser_scan.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/trigger.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -18,6 +21,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
+#include <filesystem>
 #include <exception>
 #include <functional>
 #include <iomanip>
@@ -51,6 +56,8 @@ struct NodeConfig
   std::string median_filter{"3x3"};
   ProjectionConfig projection;
   ClusterConfig cluster;
+  FloorConfig floor;
+  std::string floor_file{"~/.ros/depth_lidar/floor_reference.bin"};
   bool nv12_enabled{true};
   double nv12_fps{60.0};
   int nv12_width{1280};
@@ -179,11 +186,11 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   if (!validateProjectionConfig(config.projection, reason)) {
     return false;
   }
-  if (config.cluster.min_bins > config.projection.scan_bins) {
-    reason = "cluster.min_bins cannot exceed scan.bins";
+  if (config.floor_file.empty()) {
+    reason = "floor.file cannot be empty";
     return false;
   }
-  return validateClusterConfig(config.cluster, reason);
+  return validateClusterConfig(config.cluster, reason) && validateFloorConfig(config.floor, reason);
 }
 
 std::pair<std::uint32_t, std::uint32_t> parseResolution(const std::string & value)
@@ -234,14 +241,15 @@ dai::StereoDepthConfig::MedianFilter parseMedianFilter(const std::string & value
   throw std::invalid_argument("unsupported median filter: " + value);
 }
 
-cv::Mat makeScanPreview(const ScanProjection & projection,
+cv::Mat makeScanPreview(const DetectionResult & detection,
+  const std::string & floor_status,
   const NodeConfig & config,
   const double depth_rx_fps,
   const double nv12_rx_fps,
   const double object_processing_fps,
   const double object_processing_ms)
 {
-  cv::Mat image = makeRadarPreview(projection, config.preview_size_px, config.projection.max_range_m);
+  cv::Mat image = makeRadarPreview(detection, config.preview_size_px, config.projection.max_range_m);
   const int height = image.rows;
   const auto draw_status = [&](const std::string & text, const int row) {
     int baseline = 0;
@@ -257,14 +265,12 @@ cv::Mat makeScanPreview(const ScanProjection & projection,
   draw_status(receive_status.str(), height - 28);
   std::ostringstream processing_status;
   processing_status << std::fixed << std::setprecision(1) << "CLUSTER+POS " << object_processing_fps
-                    << " FPS (" << std::setprecision(3) << object_processing_ms << " ms AVG) | BINS "
-                    << projection.valid_bins;
+                    << " FPS (" << std::setprecision(3) << object_processing_ms << " ms AVG) | OBJECTS "
+                    << detection.obstacles.size();
   draw_status(processing_status.str(), height - 10);
-  cv::putText(image,
-    std::string(config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON")
-      + " | " + config.projection.range_selection,
-    cv::Point(8, 54), cv::FONT_HERSHEY_SIMPLEX, 0.35,
-    cv::Scalar(65, 65, 65), 1, cv::LINE_AA);
+  draw_status(std::string(config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON")
+    + " | B: MEASURE FLOOR", 54);
+  draw_status(floor_status, 72);
   return image;
 }
 
@@ -305,6 +311,52 @@ sensor_msgs::msg::Image matToImageMessage(const cv::Mat & image,
   return message;
 }
 
+std::string expandedFloorPath(const std::string & configured)
+{
+  if (configured.rfind("~/", 0) != 0) { return configured; }
+  const char * user_home = std::getenv("HOME");
+  if (!user_home) { throw std::runtime_error("HOME is required to expand floor.file"); }
+  return (std::filesystem::path(user_home) / configured.substr(2)).string();
+}
+
+std::string floorCameraSignature(const NodeConfig & c, const std::string & device_id)
+{
+  std::ostringstream signature;
+  signature << std::setprecision(17) << device_id << '|' << c.camera_resolution << '|'
+    << c.camera_fps << '|' << c.depth_mode << '|' << c.confidence_threshold << '|'
+    << c.left_right_check << '|' << c.subpixel << '|' << c.extended_disparity << '|'
+    << c.median_filter << "|RECTIFIED_RIGHT|mm";
+  return signature.str();
+}
+
+sensor_msgs::msg::PointCloud2 obstacleMessage(const DetectionResult & detection,
+  const builtin_interfaces::msg::Time & stamp, const std::string & frame_id)
+{
+  sensor_msgs::msg::PointCloud2 message;
+  message.header.stamp = stamp;
+  message.header.frame_id = frame_id;
+  sensor_msgs::PointCloud2Modifier modifier(message);
+  using Field = sensor_msgs::msg::PointField;
+  modifier.setPointCloud2Fields(5, "x", 1, Field::FLOAT32, "y", 1, Field::FLOAT32,
+    "z", 1, Field::FLOAT32, "radius", 1, Field::FLOAT32, "point_count", 1, Field::UINT32);
+  modifier.resize(detection.obstacles.size());
+  message.is_dense = true;
+  // Avoid creating iterators over an empty cloud on ROS versions whose iterator
+  // implementation takes &data.front(). The empty message still clears results.
+  if (detection.obstacles.empty()) { return message; }
+  sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z"), radius(message, "radius");
+  sensor_msgs::PointCloud2Iterator<std::uint32_t> count(message, "point_count");
+  for (const auto & obstacle : detection.obstacles) {
+    *x = static_cast<float>(obstacle.forward_m);
+    *y = static_cast<float>(obstacle.left_m);
+    *z = 0.0F;
+    *radius = static_cast<float>(obstacle.radius_m);
+    *count = static_cast<std::uint32_t>(obstacle.support_points);
+    ++x; ++y; ++z; ++radius; ++count;
+  }
+  return message;
+}
+
 } // namespace
 
 class DepthLidarNode : public rclcpp::Node
@@ -338,29 +390,20 @@ public:
       declare_parameter<double>("range.max_m", config_.projection.max_range_m);
     config_.projection.range_offset_m =
       declare_parameter<double>("range.offset_m", config_.projection.range_offset_m);
-    config_.projection.scan_bins =
-      declare_parameter<int>("scan.bins", config_.projection.scan_bins);
     config_.projection.pixel_stride =
-      declare_parameter<int>("scan.pixel_stride", config_.projection.pixel_stride);
-    config_.projection.min_points_per_bin =
-      declare_parameter<int>("scan.min_points_per_bin", config_.projection.min_points_per_bin);
-    config_.projection.range_selection =
-      declare_parameter<std::string>("scan.range_selection", config_.projection.range_selection);
-    config_.cluster.min_bins = declare_parameter<int>("cluster.min_bins", config_.cluster.min_bins);
-    config_.cluster.max_missing_bins =
-      declare_parameter<int>("cluster.max_missing_bins", config_.cluster.max_missing_bins);
-    config_.cluster.base_neighbor_distance_m =
-      declare_parameter<double>("cluster.base_neighbor_distance_m",
-        config_.cluster.base_neighbor_distance_m);
-    config_.cluster.angular_neighbor_scale =
-      declare_parameter<double>("cluster.angular_neighbor_scale",
-        config_.cluster.angular_neighbor_scale);
+      declare_parameter<int>("points.pixel_stride", config_.projection.pixel_stride);
+    config_.cluster.min_points = declare_parameter<int>("cluster.min_points", config_.cluster.min_points);
+    config_.cluster.neighbor_distance_m =
+      declare_parameter<double>("cluster.neighbor_distance_m", config_.cluster.neighbor_distance_m);
     config_.cluster.radius_margin_m =
       declare_parameter<double>("cluster.radius_margin_m", config_.cluster.radius_margin_m);
     config_.cluster.min_radius_m =
       declare_parameter<double>("cluster.min_radius_m", config_.cluster.min_radius_m);
-    config_.cluster.max_radius_m =
-      declare_parameter<double>("cluster.max_radius_m", config_.cluster.max_radius_m);
+    config_.floor.measure_frames = declare_parameter<int>("floor.measure_frames", config_.floor.measure_frames);
+    config_.floor.min_valid_ratio = declare_parameter<double>("floor.min_valid_ratio", config_.floor.min_valid_ratio);
+    config_.floor.min_delta_m = declare_parameter<double>("floor.min_delta_m", config_.floor.min_delta_m);
+    config_.floor.noise_scale = declare_parameter<double>("floor.noise_scale", config_.floor.noise_scale);
+    config_.floor_file = declare_parameter<std::string>("floor.file", config_.floor_file);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
     config_.nv12_fps = declare_parameter<double>("nv12.fps", config_.nv12_fps);
     config_.nv12_width = declare_parameter<int>("nv12.width", config_.nv12_width);
@@ -393,9 +436,19 @@ public:
     if (!validateNodeConfig(config_, reason)) {
       throw std::invalid_argument("invalid initial parameter: " + reason);
     }
+    floor_path_ = expandedFloorPath(config_.floor_file);
 
     const auto qos = rclcpp::SensorDataQoS().keep_last(1);
-    scan_publisher_ = create_publisher<sensor_msgs::msg::LaserScan>("~/scan", qos);
+    obstacles_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/obstacles", qos);
+    floor_status_publisher_ = create_publisher<std_msgs::msg::String>("~/floor_status",
+      rclcpp::QoS(1).reliable().transient_local());
+    measure_floor_service_ = create_service<std_srvs::srv::Trigger>("~/measure_floor",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        floor_measure_requests_.fetch_add(1U);
+        response->success = true;
+        response->message = "New floor measurement queued; prior reference will be discarded. See ~/floor_status.";
+      });
     preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/preview", qos);
     stereo_preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/stereo_preview", qos);
     parameter_callback_ = add_on_set_parameters_callback(
@@ -459,28 +512,29 @@ private:
           next.projection.max_range_m = parameter.as_double();
         } else if (name == "range.offset_m") {
           next.projection.range_offset_m = parameter.as_double();
-        } else if (name == "scan.bins") {
-          next.projection.scan_bins = static_cast<int>(parameter.as_int());
-        } else if (name == "scan.pixel_stride") {
+        } else if (name == "points.pixel_stride") {
           next.projection.pixel_stride = static_cast<int>(parameter.as_int());
-        } else if (name == "scan.min_points_per_bin") {
-          next.projection.min_points_per_bin = static_cast<int>(parameter.as_int());
-        } else if (name == "scan.range_selection") {
-          next.projection.range_selection = parameter.as_string();
-        } else if (name == "cluster.min_bins") {
-          next.cluster.min_bins = static_cast<int>(parameter.as_int());
-        } else if (name == "cluster.max_missing_bins") {
-          next.cluster.max_missing_bins = static_cast<int>(parameter.as_int());
-        } else if (name == "cluster.base_neighbor_distance_m") {
-          next.cluster.base_neighbor_distance_m = parameter.as_double();
-        } else if (name == "cluster.angular_neighbor_scale") {
-          next.cluster.angular_neighbor_scale = parameter.as_double();
+        } else if (name == "cluster.min_points") {
+          next.cluster.min_points = static_cast<int>(parameter.as_int());
+        } else if (name == "cluster.neighbor_distance_m") {
+          next.cluster.neighbor_distance_m = parameter.as_double();
         } else if (name == "cluster.radius_margin_m") {
           next.cluster.radius_margin_m = parameter.as_double();
         } else if (name == "cluster.min_radius_m") {
           next.cluster.min_radius_m = parameter.as_double();
-        } else if (name == "cluster.max_radius_m") {
-          next.cluster.max_radius_m = parameter.as_double();
+        } else if (name == "floor.measure_frames") {
+          next.floor.measure_frames = static_cast<int>(parameter.as_int());
+        } else if (name == "floor.min_valid_ratio") {
+          next.floor.min_valid_ratio = parameter.as_double();
+        } else if (name == "floor.min_delta_m") {
+          next.floor.min_delta_m = parameter.as_double();
+        } else if (name == "floor.noise_scale") {
+          next.floor.noise_scale = parameter.as_double();
+        } else if (name == "floor.file") {
+          if (parameter.as_string() != previous.floor_file) {
+            result.reason = "floor.file is fixed for this process; change YAML and restart";
+            return result;
+          }
         } else if (name == "nv12.enabled") {
           next.nv12_enabled = parameter.as_bool();
         } else if (name == "nv12.fps") {
@@ -573,6 +627,7 @@ private:
     auto * right_output = right->requestOutput(resolution);
     stereo = pipeline.create<dai::node::StereoDepth>();
     stereo->build(*left_output, *right_output, parseDepthMode(config.depth_mode));
+    stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
     stereo->initialConfig->setConfidenceThreshold(config.confidence_threshold);
     stereo->initialConfig->setMedianFilter(parseMedianFilter(config.median_filter));
     stereo->setLeftRightCheck(config.left_right_check);
@@ -600,6 +655,21 @@ private:
   {
     bool radar_window_open = false;
     bool stereo_window_open = false;
+    FloorReference floor;
+    std::uint64_t handled_floor_request = 0U;
+    bool start_floor_measurement = false;
+    bool allow_reference_load = true;
+    std::string active_floor_context;
+    std::string floor_status;
+    const std::string floor_path = floor_path_;
+    const auto set_floor_status = [&](const std::string & status) {
+      if (floor_status == status) { return; }
+      floor_status = status;
+      std_msgs::msg::String message;
+      message.data = status;
+      floor_status_publisher_->publish(message);
+    };
+    set_floor_status("WAITING FOR CAMERA | B: MEASURE FLOOR");
     while (rclcpp::ok() && !stop_requested_.load()) {
       restart_requested_.store(false);
       const NodeConfig startup_config = configSnapshot();
@@ -657,6 +727,8 @@ private:
           startup_config.depth_mode.c_str(),
           startup_config.nv12_enabled ? "enabled" : "disabled");
 
+        CameraGeometry camera;
+        camera.signature = floorCameraSignature(startup_config, device->getDeviceId());
         std::atomic_bool nv12_receiver_stop{false};
         std::atomic_bool nv12_receiver_failed{false};
         std::atomic<std::uint64_t> nv12_received_total{0U};
@@ -685,9 +757,7 @@ private:
             });
         }
 
-        bool intrinsics_ready = false;
-        double fx = 0.0;
-        double cx = 0.0;
+        bool intrinsics_logged = false;
         auto metrics_start = std::chrono::steady_clock::now();
         auto preview_last = metrics_start - 1s;
         auto stereo_preview_last = metrics_start - 1s;
@@ -699,7 +769,7 @@ private:
         double metric_delay_sum_ms = 0.0;
         double metric_object_processing_sum_ms = 0.0;
         std::uint64_t previous_nv12_total = 0U;
-        std::size_t last_valid_bins = 0;
+        std::size_t last_foreground_points = 0;
         std::size_t last_obstacle_count = 0;
         double measured_depth_rx_fps = 0.0;
         double measured_nv12_rx_fps = 0.0;
@@ -714,6 +784,24 @@ private:
               throw std::runtime_error("NV12 receiver stopped unexpectedly");
             }
             const NodeConfig display_config = configSnapshot();
+            const auto floor_request = floor_measure_requests_.load();
+            if (floor_request != handled_floor_request) {
+              handled_floor_request = floor_request;
+              floor.clear();
+              start_floor_measurement = false;
+              allow_reference_load = false;
+              // Invalidate the old result before collecting a single new sample.
+              obstacles_publisher_->publish(obstacleMessage(DetectionResult{}, now(), display_config.frame_id));
+              try {
+                std::filesystem::remove(floor_path);
+                std::filesystem::remove(floor_path + ".tmp");
+                start_floor_measurement = true;
+                set_floor_status("MEASUREMENT REQUESTED | OLD REFERENCE DISCARDED");
+              } catch (const std::exception & error) {
+                set_floor_status("FLOOR DELETE ERROR | SEE LOG | B: RETRY");
+                RCLCPP_ERROR(get_logger(), "Cannot discard previous floor file: %s", error.what());
+              }
+            }
             if (radar_window_open && (!display_config.preview_enabled || !display_config.preview_gui)) {
               cv::destroyWindow("depth_lidar radar preview");
               radar_window_open = false;
@@ -726,6 +814,10 @@ private:
             }
             if (radar_window_open || stereo_window_open) {
               const int key = cv::waitKey(1) & 0xff;
+              if (key == 'b' || key == 'B') {
+                floor_measure_requests_.fetch_add(1U);
+                continue;
+              }
               if (key == 'c' || key == 'C') {
                 // Use the ROS parameter path so GUI and command-line state agree.
                 const auto result = set_parameters_atomically({rclcpp::Parameter(
@@ -785,66 +877,90 @@ private:
             const int depth_width = depth_frame->getWidth();
             const int depth_height = depth_frame->getHeight();
             const auto & depth_data = depth_frame->getData();
-            const std::size_t expected_depth_bytes = static_cast<std::size_t>(depth_width)
-                                                     * static_cast<std::size_t>(depth_height)
-                                                     * sizeof(std::uint16_t);
-            if (depth_width <= 0 || depth_height <= 0 || depth_data.size() < expected_depth_bytes) {
-              RCLCPP_WARN_THROTTLE(get_logger(),
-                *get_clock(),
-                2000,
-                "Expected a non-empty packed 16-bit depth frame");
+            const std::size_t packed_stride = static_cast<std::size_t>(std::max(0, depth_width)) * sizeof(std::uint16_t);
+            const std::size_t depth_stride = depth_frame->getStride() == 0U ? packed_stride : depth_frame->getStride();
+            if (depth_width <= 0 || depth_height <= 0 || depth_stride < packed_stride
+                || depth_stride % sizeof(std::uint16_t) != 0U
+                || depth_frame->getType() != dai::ImgFrame::Type::RAW16
+                || depth_data.size() < depth_stride * static_cast<std::size_t>(depth_height - 1) + packed_stride)
+            {
+              RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Invalid RAW16 depth frame/stride");
               continue;
             }
-
-            latest_depth_width = depth_width;
-            latest_depth_height = depth_height;
-            if (!intrinsics_ready) {
-              const auto intrinsics =
-                device->readCalibration().getCameraIntrinsics(dai::CameraBoardSocket::CAM_C,
-                  depth_width,
-                  depth_height);
-              fx = static_cast<double>(intrinsics.at(0).at(0));
-              cx = static_cast<double>(intrinsics.at(0).at(2));
-              if (!std::isfinite(fx) || fx <= 0.0 || !std::isfinite(cx)) {
-                throw std::runtime_error("invalid right-camera intrinsics from device calibration");
-              }
-              intrinsics_ready = true;
-              RCLCPP_INFO(get_logger(),
-                "Depth frame %dx%d, fx=%.2f, cx=%.2f",
-                depth_width,
-                depth_height,
-                fx,
-                cx);
+            latest_depth_width = camera.width = depth_width;
+            latest_depth_height = camera.height = depth_height;
+            const auto & transformation = depth_frame->getTransformation();
+            if (!transformation.isValid()) {
+              throw std::runtime_error("depth frame has no valid rectified intrinsics");
             }
-
+            const auto intrinsics = transformation.getIntrinsicMatrix();
+            camera.fx = intrinsics[0][0]; camera.fy = intrinsics[1][1];
+            camera.cx = intrinsics[0][2]; camera.cy = intrinsics[1][2];
+            if (!intrinsics_logged) {
+              RCLCPP_INFO(get_logger(), "Depth %dx%d, fx=%.2f fy=%.2f cx=%.2f cy=%.2f; floor file: %s",
+                depth_width, depth_height, camera.fx, camera.fy, camera.cx, camera.cy, floor_path.c_str());
+              intrinsics_logged = true;
+            }
             const NodeConfig current = configSnapshot();
-            const auto projection =
-              projectDepthToScan(reinterpret_cast<const std::uint16_t *>(depth_data.data()),
-                depth_width,
-                depth_height,
-                static_cast<std::size_t>(depth_width),
-                fx,
-                cx,
-                current.projection);
-            const auto obstacles = clusterScan(projection, current.cluster);
+            const auto * depth = reinterpret_cast<const std::uint16_t *>(depth_data.data());
+            const auto stride_elements = depth_stride / sizeof(std::uint16_t);
+            std::ostringstream context;
+            context << std::setprecision(17) << camera.signature << '|' << camera.width << '|' << camera.height
+              << '|' << camera.fx << '|' << camera.fy << '|' << camera.cx << '|' << camera.cy;
+            if (active_floor_context != context.str()) {
+              active_floor_context = context.str();
+              floor.clear();
+              set_floor_status("NO COMPATIBLE FLOOR | B: MEASURE");
+              if (allow_reference_load && !start_floor_measurement) {
+                try {
+                  if (floor.load(floor_path, camera)) {
+                    set_floor_status("READY | LOADED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
+                  } else {
+                    set_floor_status("NO COMPATIBLE FLOOR | B: MEASURE");
+                  }
+                } catch (const std::exception & error) {
+                  set_floor_status("FLOOR LOAD ERROR | B: MEASURE");
+                  RCLCPP_ERROR(get_logger(), "Cannot load floor reference: %s", error.what());
+                }
+              }
+            }
+            if (start_floor_measurement) {
+              floor.begin(camera, current.floor);
+              start_floor_measurement = false;
+            }
+            if (floor.ready() && floor_status.rfind("READY", 0) != 0) {
+              set_floor_status("READY | RETAINED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
+            }
+            if (floor.measuring()) {
+              const bool finished = floor.accumulate(depth, stride_elements);
+              set_floor_status("MEASURING FLOOR " + std::to_string(floor.frames()) + "/"
+                + std::to_string(floor.targetFrames()) + " | KEEP FLOOR CLEAR");
+              if (finished) {
+                if (!floor.ready()) {
+                  set_floor_status("MEASUREMENT FAILED: NO VALID FLOOR | B: RETRY");
+                } else {
+                  try {
+                    floor.save(floor_path);
+                    allow_reference_load = true;
+                    set_floor_status("READY | SAVED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
+                    RCLCPP_INFO(get_logger(), "Saved new floor reference: %s (%zu valid pixels)",
+                      floor_path.c_str(), floor.validPixels());
+                  } catch (const std::exception & error) {
+                    set_floor_status("READY IN MEMORY | SAVE FAILED: SEE LOG");
+                    RCLCPP_ERROR(get_logger(), "Floor reference save failed: %s", error.what());
+                  }
+                }
+              }
+            }
+            const auto detection = detectForeground(depth, stride_elements, camera, floor,
+              current.floor, current.projection, current.cluster);
             const auto object_processing_end = std::chrono::steady_clock::now();
             const double object_processing_ms =
               std::chrono::duration<double, std::milli>(object_processing_end - processing_start)
                 .count();
             const builtin_interfaces::msg::Time ros_stamp = now();
 
-            sensor_msgs::msg::LaserScan scan;
-            scan.header.stamp = ros_stamp;
-            scan.header.frame_id = current.frame_id;
-            scan.angle_min = projection.angle_min;
-            scan.angle_max = projection.angle_max;
-            scan.angle_increment = projection.angle_increment;
-            scan.time_increment = 0.0F;
-            scan.scan_time = static_cast<float>(1.0 / startup_config.camera_fps);
-            scan.range_min = static_cast<float>(current.projection.min_range_m);
-            scan.range_max = static_cast<float>(current.projection.max_range_m);
-            scan.ranges = projection.ranges;
-            scan_publisher_->publish(std::move(scan));
+            obstacles_publisher_->publish(obstacleMessage(detection, ros_stamp, current.frame_id));
 
             const auto before_preview = std::chrono::steady_clock::now();
             const double delay_ms = std::max(0.0,
@@ -854,8 +970,8 @@ private:
             ++metric_frames;
             metric_delay_sum_ms += delay_ms;
             metric_object_processing_sum_ms += object_processing_ms;
-            last_valid_bins = projection.valid_bins;
-            last_obstacle_count = obstacles.size();
+            last_foreground_points = detection.points.size();
+            last_obstacle_count = detection.obstacles.size();
 
             const double metric_elapsed_sec =
               std::chrono::duration<double>(before_preview - metrics_start).count();
@@ -878,7 +994,7 @@ private:
                 "depth RX %.1f FPS (%.1f%%) | NV12 RX %.1f/%.1f FPS | "
                 "object processing %.3f ms / %.1f FPS | objects %zu | delay "
                 "%.2f ms | "
-                "valid bins %zu/%d | ROI %dx%d",
+                "foreground points %zu | ROI %dx%d | %s",
                 measured_depth_rx_fps,
                 fps_achievement_percent,
                 measured_nv12_rx_fps,
@@ -887,10 +1003,10 @@ private:
                 measured_object_processing_fps,
                 last_obstacle_count,
                 measured_delay_ms,
-                last_valid_bins,
-                current.projection.scan_bins,
-                projection.roi.width,
-                projection.roi.height);
+                last_foreground_points,
+                detection.roi.width,
+                detection.roi.height,
+                floor_status.c_str());
               metrics_start = before_preview;
               metric_frames = 0;
               metric_delay_sum_ms = 0.0;
@@ -900,7 +1016,8 @@ private:
             const bool preview_due = (before_preview - preview_last)
                                      >= std::chrono::duration<double>(1.0 / current.preview_fps);
             if (current.preview_enabled && preview_due) {
-              cv::Mat preview = makeScanPreview(projection,
+              cv::Mat preview = makeScanPreview(detection,
+                floor_status,
                 current,
                 measured_depth_rx_fps,
                 measured_nv12_rx_fps,
@@ -931,6 +1048,7 @@ private:
           std::rethrow_exception(processing_error);
         }
       } catch (const std::exception & error) {
+        set_floor_status("CAMERA UNAVAILABLE | RECONNECTING");
         RCLCPP_ERROR(get_logger(), "DepthAI pipeline error: %s", error.what());
         for (int i = 0; i < 10 && rclcpp::ok() && !stop_requested_.load(); ++i) {
           std::this_thread::sleep_for(100ms);
@@ -941,10 +1059,14 @@ private:
 
   mutable std::mutex config_mutex_;
   NodeConfig config_;
+  std::string floor_path_;
   std::atomic_bool stop_requested_{false};
   std::atomic_bool restart_requested_{false};
   std::thread worker_;
-  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
+  std::atomic<std::uint64_t> floor_measure_requests_{0U};
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacles_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr floor_status_publisher_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr measure_floor_service_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr stereo_preview_publisher_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;

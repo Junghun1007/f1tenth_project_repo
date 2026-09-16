@@ -2,55 +2,58 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <string>
 #include <vector>
 
 namespace depth_lidar
 {
+struct RoiRect { int x{0}; int y{0}; int width{0}; int height{0}; };
 
-struct RoiRect
+struct CameraGeometry
 {
-  int x{0};
-  int y{0};
   int width{0};
   int height{0};
+  double fx{0.0};
+  double fy{0.0};
+  double cx{0.0};
+  double cy{0.0};
+  std::string signature;
 };
 
 struct ProjectionConfig
 {
   double roi_width_ratio{1.0};
-  double roi_height_ratio{0.10};
-  double roi_bottom_offset_ratio{0.35};
-  double min_range_m{0.20};
-  double max_range_m{8.0};
+  double roi_height_ratio{0.30};
+  double roi_bottom_offset_ratio{0.25};
+  double min_range_m{0.10};
+  double max_range_m{3.0};
   double range_offset_m{0.0};
-  int scan_bins{360};
   int pixel_stride{1};
-  int min_points_per_bin{1};
-  std::string range_selection{"nearest"};
-};
-
-struct ScanProjection
-{
-  RoiRect roi;
-  float angle_min{0.0F};
-  float angle_max{0.0F};
-  float angle_increment{0.0F};
-  std::vector<float> ranges;
-  std::size_t valid_input_points{0};
-  std::size_t valid_bins{0};
 };
 
 struct ClusterConfig
 {
-  int min_bins{3};
-  int max_missing_bins{1};
-  double base_neighbor_distance_m{0.04};
-  double angular_neighbor_scale{1.5};
+  int min_points{20};
+  double neighbor_distance_m{0.08};
   double radius_margin_m{0.04};
   double min_radius_m{0.05};
-  double max_radius_m{0.40};
+};
+
+struct FloorConfig
+{
+  int measure_frames{60};
+  double min_valid_ratio{0.5};
+  double min_delta_m{0.05};
+  double noise_scale{3.0};
+};
+
+struct ForegroundPoint
+{
+  double forward_m{0.0};
+  double left_m{0.0};
+  double up_m{0.0};
+  int u{0};
+  int v{0};
 };
 
 struct ObstacleCircle
@@ -58,31 +61,53 @@ struct ObstacleCircle
   double forward_m{0.0};
   double left_m{0.0};
   double radius_m{0.0};
-  double representative_range_m{0.0};
-  std::size_t support_bins{0};
-  std::size_t first_bin{0};
-  std::size_t last_bin{0};
+  std::size_t support_points{0};
+};
+
+struct DetectionResult
+{
+  RoiRect roi;
+  std::vector<ForegroundPoint> points;
+  std::vector<ObstacleCircle> obstacles;
 };
 
 bool validateProjectionConfig(const ProjectionConfig & config, std::string & reason);
-
 bool validateClusterConfig(const ClusterConfig & config, std::string & reason);
+bool validateFloorConfig(const FloorConfig & config, std::string & reason);
+RoiRect computeRoi(int image_width, int image_height,
+  double width_ratio, double height_ratio, double bottom_offset_ratio);
 
-RoiRect computeRoi(int image_width,
-  int image_height,
-  double width_ratio,
-  double height_ratio,
-  double bottom_offset_ratio);
+// Explicit, frozen per-pixel background. Learning always replaces all prior data.
+class FloorReference
+{
+public:
+  void clear();
+  void begin(const CameraGeometry & camera, const FloorConfig & config);
+  bool accumulate(const std::uint16_t * depth_mm, std::size_t row_stride_elements);
+  bool compatible(const CameraGeometry & camera) const;
+  bool ready() const { return !measuring_ && valid_pixels_ > 0; }
+  bool measuring() const { return measuring_; }
+  int frames() const { return frames_; }
+  int targetFrames() const { return target_frames_; }
+  std::size_t validPixels() const { return valid_pixels_; }
+  bool isForeground(std::size_t pixel, double depth_m, const FloorConfig & config) const;
+  void save(const std::string & path) const;
+  bool load(const std::string & path, const CameraGeometry & camera);
 
-ScanProjection projectDepthToScan(const std::uint16_t * depth_mm,
-  int image_width,
-  int image_height,
-  std::size_t row_stride_elements,
-  double fx,
-  double cx,
-  const ProjectionConfig & config);
+private:
+  CameraGeometry camera_;
+  int frames_{0};
+  int target_frames_{0};
+  int min_samples_{0};
+  bool measuring_{false};
+  std::size_t valid_pixels_{0};
+  std::vector<double> mean_m_;
+  std::vector<double> m2_;
+  std::vector<std::uint32_t> counts_;
+};
 
-std::vector<ObstacleCircle> clusterScan(const ScanProjection & projection,
-  const ClusterConfig & config);
-
+DetectionResult detectForeground(const std::uint16_t * depth_mm,
+  std::size_t row_stride_elements, const CameraGeometry & camera,
+  const FloorReference & floor, const FloorConfig & floor_config,
+  const ProjectionConfig & projection, const ClusterConfig & cluster);
 } // namespace depth_lidar

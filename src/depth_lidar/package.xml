@@ -2,7 +2,7 @@
 <package format="3">
   <name>depth_lidar</name>
   <version>0.1.0</version>
-  <description>Low-latency OAK depth-camera to ROS 2 LaserScan test package.</description>
+  <description>OAK depth floor-reference measurement and obstacle clustering with radar preview.</description>
   <maintainer email="ojeonghun@example.com">ojeonghun</maintainer>
   <license>Apache-2.0</license>
 
@@ -11,6 +11,8 @@
   <depend>rclcpp</depend>
   <depend>rcl_interfaces</depend>
   <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>depthai</depend>
   <depend>libopencv-dev</depend>
 

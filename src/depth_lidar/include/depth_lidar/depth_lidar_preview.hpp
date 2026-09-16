@@ -7,9 +7,9 @@
 namespace depth_lidar
 {
 
-// Camera-origin polar scan; no vehicle pose, BEV bounds, or obstacle inflation.
+// Camera-frame foreground points and cluster centers/footprints.
 // Leaves the bottom 40 pixels available for receiver/processing metrics.
-cv::Mat makeRadarPreview(const ScanProjection & projection, int width_px, double max_range_m);
+cv::Mat makeRadarPreview(const DetectionResult & detection, int width_px, double max_range_m);
 
 // Draw the actual depth ROI scaled into rectified left/right images. Right is
 // the depth reference; the left rectangle is a guide, not a correspondence.
