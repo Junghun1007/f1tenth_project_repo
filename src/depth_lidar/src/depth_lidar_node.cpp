@@ -243,7 +243,8 @@ cv::Mat makeScanPreview(const DetectionResult & detection,
   const double depth_rx_fps,
   const double nv12_rx_fps,
   const double object_processing_fps,
-  const double object_processing_ms)
+  const double object_processing_ms,
+  const bool waiting_for_depth = false)
 {
   cv::Mat image = makeRadarPreview(detection, config.preview_size_px, config.projection.max_range_m,
     ground_status.rfind("VALID |", 0) == 0);
@@ -267,7 +268,7 @@ cv::Mat makeScanPreview(const DetectionResult & detection,
   draw_status(processing_status.str(), height - 10);
   draw_status(std::string(config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON")
     + " | GROUND: LIVE MSAC", 54);
-  draw_status(ground_status, 72);
+  draw_status(ground_status + (waiting_for_depth ? " | WAITING FOR DEPTH" : ""), 72);
   return image;
 }
 
@@ -757,6 +758,11 @@ private:
     };
     std::string ground_status;
     std::size_t published_obstacle_count = 0U;
+    // Idle expiry redraws use the last measured averages, not fabricated zeros.
+    double measured_depth_rx_fps = 0.0;
+    double measured_nv12_rx_fps = 0.0;
+    double measured_object_processing_fps = 0.0;
+    double measured_object_processing_ms = 0.0;
     const auto set_ground_status = [&](const std::string & status) {
       if (ground_status == status) { return; }
       ground_status = status;
@@ -767,12 +773,15 @@ private:
       validity.data = status.rfind("VALID |", 0) == 0;
       ground_valid_publisher_->publish(validity);
     };
-    const auto publish_status_result = [&](const NodeConfig & config, const DetectionResult & detection) {
+    const auto publish_status_result = [&](const NodeConfig & config, const DetectionResult & detection,
+        bool waiting_for_depth) {
       const auto stamp = now();
       obstacles_publisher_->publish(obstacleMessage(detection, stamp, config.frame_id));
       published_obstacle_count = detection.obstacles.size();
       if (config.preview_enabled) {
-        auto preview = makeScanPreview(detection, ground_status, config, 0.0, 0.0, 0.0, 0.0);
+        auto preview = makeScanPreview(detection, ground_status, config,
+          measured_depth_rx_fps, measured_nv12_rx_fps,
+          measured_object_processing_fps, measured_object_processing_ms, waiting_for_depth);
         preview_publisher_->publish(matToImageMessage(preview, stamp, config.frame_id));
         if (config.preview_gui) {
           cv::imshow("depth_lidar radar preview", preview);
@@ -781,7 +790,7 @@ private:
       }
     };
     const auto publish_empty = [&](const NodeConfig & config) {
-      publish_status_result(config, DetectionResult{});
+      publish_status_result(config, DetectionResult{}, false);
     };
     set_ground_status("WAITING FOR CAMERA | LIVE MSAC");
     while (rclcpp::ok() && !stop_requested_.load()) {
@@ -789,6 +798,10 @@ private:
       const NodeConfig startup_config = configSnapshot();
       try {
         clear_history();
+        measured_depth_rx_fps = 0.0;
+        measured_nv12_rx_fps = 0.0;
+        measured_object_processing_fps = 0.0;
+        measured_object_processing_ms = 0.0;
         set_ground_status("WAITING FOR CAMERA | HISTORY CLEARED");
         publish_empty(startup_config);
         auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
@@ -887,10 +900,6 @@ private:
         std::uint64_t previous_nv12_total = 0U;
         std::size_t last_foreground_points = 0;
         std::size_t last_obstacle_count = 0;
-        double measured_depth_rx_fps = 0.0;
-        double measured_nv12_rx_fps = 0.0;
-        double measured_object_processing_fps = 0.0;
-        double measured_object_processing_ms = 0.0;
         double measured_delay_ms = 0.0;
         auto last_valid_depth_rx = std::chrono::steady_clock::now();
         bool depth_stale = false;
@@ -982,7 +991,7 @@ private:
                   std::chrono::steady_clock::now().time_since_epoch()).count();
                 const auto remaining = stabilizer.snapshot(clock_sec, display_config.stabilization);
                 if (remaining.obstacles.size() < published_obstacle_count) {
-                  publish_status_result(display_config, remaining);
+                  publish_status_result(display_config, remaining, true);
                 }
               }
               std::this_thread::sleep_for(1ms);
@@ -990,6 +999,11 @@ private:
             }
 
             const auto processing_start = std::chrono::steady_clock::now();
+            // Track TTL begins when a frame is available to the host. Both update
+            // and idle snapshot use this clock; capture timestamps below still
+            // reject stale/replayed frames. USB latency must not consume hold_sec.
+            const double observation_time_sec = std::chrono::duration<double>(
+              processing_start.time_since_epoch()).count();
             const int depth_width = depth_frame->getWidth();
             const int depth_height = depth_frame->getHeight();
             const auto & depth_data = depth_frame->getData();
@@ -1070,7 +1084,8 @@ private:
             const auto ground = estimateGroundPlane(depth, stride_elements, camera, current.ground);
             if (ground.valid) {
               if (previous_ground.valid && ground.changedFrom(previous_ground, current.ground)) {
-                stabilizer.clear();
+                // Height labels depend on the plane, but tracks use camera XY.
+                // Reclassify pixels without forcing unchanged objects to reconfirm.
                 foreground_mask.clear();
               }
               previous_ground = ground;
@@ -1080,14 +1095,19 @@ private:
                 << "m | RMSE " << ground.rmse_m << "m";
               set_ground_status(status.str());
             } else {
-              clear_history();
+              // A failed fit is a missed observation, not a coordinate change.
+              // Never reuse its plane or pixel labels. Keep confirmed tracks only
+              // within hold_sec, without refreshing their last observation time.
+              foreground_mask.clear();
+              previous_ground = GroundPlane{};
               set_ground_status("INVALID | " + ground.reason);
             }
             const auto raw_detection = detectForeground(depth, stride_elements, camera, ground,
               current.ground, current.projection, current.cluster,
               current.stabilization.enabled ? &foreground_mask : nullptr);
-            const auto detection = ground.valid
-              ? stabilizer.update(raw_detection, frame_time_sec, current.stabilization) : raw_detection;
+            // Invalid ground produces an empty raw detection; update counts a miss
+            // and expires tracks normally while ground_valid remains false.
+            const auto detection = stabilizer.update(raw_detection, observation_time_sec, current.stabilization);
             const auto object_processing_end = std::chrono::steady_clock::now();
             const double object_processing_ms =
               std::chrono::duration<double, std::milli>(object_processing_end - processing_start)

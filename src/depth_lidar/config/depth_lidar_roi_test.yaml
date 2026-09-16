@@ -56,11 +56,12 @@ depth_lidar:
     ground.noise_scale: 3.0
     # Release threshold cannot fall below inlier_distance_m.
     ground.release_ratio: 0.60
-    # Large plane changes clear pixel/cluster history, not the new valid plane.
+    # Large plane changes clear pixel labels only; camera-XY tracks keep normal hold.
     ground.reset_history_angle_deg: 3.0
     ground.reset_history_height_m: 0.03
 
-    # Confirm a cluster in 2 of the last 3 processed depth frames, hold up to 80ms.
+    # Confirm in 2 of 3 frames; hold up to 80ms, including brief ground-fit failures.
+    # Hold uses host observation time; capture/USB delay does not consume it.
     # Matching uses camera-frame XY centers; no odometry/motion compensation.
     stabilization.enabled: true
     stabilization.confirm_hits: 2

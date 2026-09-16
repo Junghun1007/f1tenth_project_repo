@@ -16,8 +16,9 @@ struct StabilizationConfig
 
 bool validateStabilizationConfig(const StabilizationConfig & config, std::string & reason);
 
-// Caller resets both the pixel mask and this history on invalid/jumping planes,
-// detection-setting changes and camera restarts. Times are monotonic frame times.
+// Invalid ground is an empty observation; plane changes reset pixel labels only.
+// Caller clears tracks on setting changes, stale input and camera restarts.
+// update and snapshot both use host monotonic time, not frame capture time.
 class ClusterStabilizer
 {
 public:
