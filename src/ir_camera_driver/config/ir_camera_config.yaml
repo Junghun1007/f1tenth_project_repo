@@ -42,8 +42,56 @@ ir_camera_driver:
     capture_directory: "."
     status_log_interval_sec: 1.0
 
-    # Static ground-plane projection for visibility tuning. Measure these
-    # values on the vehicle before judging lane geometry from the BEV image.
+    # Shared bev_processor/oak_startup stationary measurement. In single-lens
+    # mode both stereo cameras run ONLY during automatic height measurement.
+    device_id: ""  # Empty: measure the first OAK, then reopen that same device.
+    bev.startup_measurement_enabled: true
+    measurement_attitude_source: "depth"  # depth plane, IMU quality checked; or imu
+    measurement_manual_camera_height_enabled: false
+    measurement_manual_camera_height_m: 0.20  # CAM_A optical center, if manual
+    measurement_warmup_sec: 2.0
+    measurement_timeout_sec: 45.0
+    # Independent from runtime IR settings; returns to runtime values afterward.
+    measurement_ir_dot_projector_intensity: 1.0
+    measurement_roi_preview_enabled: true
+    measurement_roi_width: 456
+    measurement_roi_height: 228
+    measurement_roi_vertical_offset_px: 80
+    measurement_point_sample_step: 2
+    measurement_minimum_valid_points: 5080
+    measurement_minimum_height_m: 0.10
+    measurement_maximum_height_m: 0.40
+    measurement_plane_ransac_iterations: 200
+    measurement_plane_inlier_threshold_m: 0.008
+    measurement_plane_minimum_inliers: 3656
+    measurement_plane_minimum_inlier_ratio: 0.70
+    measurement_plane_maximum_residual_mad_m: 0.005
+    measurement_plane_maximum_imu_difference_deg: 5.0
+    measurement_imu_sample_count: 1200
+    measurement_imu_max_direction_rms_deg: 0.50
+    measurement_stable_plane_frame_count: 45
+    measurement_maximum_height_stddev_m: 0.003
+    measurement_maximum_plane_normal_rms_deg: 0.25
+
+    # Reuse camera_driver's calibrated gyro/accelerometer tilt estimator.
+    # IMU reports and image exposure midpoints share the DepthAI host clock.
+    imu_stabilization_enabled: true
+    imu_calibration_timeout_sec: 30.0
+    measurement_imu_rate_hz: 400.0
+    measurement_imu_queue_size: 200
+    measurement_imu_max_batch_reports: 5
+    measurement_maximum_imu_pair_skew_sec: 0.003
+    imu_stabilization_startup_discard_duration_sec: 1.0
+    imu_stabilization_reference_calibration_duration_sec: 4.0
+    imu_stabilization_maximum_correction_deg: 3.0
+    imu_stabilization_maximum_frame_imu_wait_sec: 0.001
+    imu_stabilization_maximum_frame_imu_age_sec: 0.006
+    imu_stabilization_maximum_frame_imu_prediction_sec: 0.015
+
+    # Vehicle mounting parameters refer to CAM_A (RGB) optical center, matching
+    # oak_startup/bev_processor. EEPROM extrinsics locate each IR lens from it.
+    # x/y/yaw still require measurement on the vehicle. Height/roll/pitch below
+    # are used only if bev.startup_measurement_enabled is explicitly false.
     bev.camera_x_m: -0.16
     bev.camera_y_m: 0.0
     bev.camera_height_m: 0.20

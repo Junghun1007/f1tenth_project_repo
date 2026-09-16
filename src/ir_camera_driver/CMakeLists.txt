@@ -19,6 +19,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(bev_processor REQUIRED)
+find_package(camera_driver REQUIRED)
+find_package(oak_startup REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
@@ -59,7 +62,7 @@ target_include_directories(ir_bev_projector
     $<INSTALL_INTERFACE:include>
     ${OpenCV_INCLUDE_DIRS}
 )
-target_link_libraries(ir_bev_projector PUBLIC ${OpenCV_LIBS})
+target_link_libraries(ir_bev_projector PUBLIC bev_processor::bev_geometry ${OpenCV_LIBS})
 
 add_executable(ir_camera_driver_node
   src/ir_camera_driver_node.cpp
@@ -74,6 +77,8 @@ ament_target_dependencies(ir_camera_driver_node
 target_link_libraries(ir_camera_driver_node
   ir_center_reprojector
   ir_bev_projector
+  camera_driver::camera_imu_stabilizer
+  oak_startup::measurement
   depthai::core
   ${OpenCV_LIBS}
   Threads::Threads

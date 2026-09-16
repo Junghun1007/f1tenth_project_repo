@@ -25,6 +25,8 @@
 #include <vector>
 
 #include "depthai/depthai.hpp"
+#include "camera_driver/imu_image_stabilizer.hpp"
+#include "oak_startup/oak_startup_measurement.hpp"
 #include "opencv2/core.hpp"
 #include "opencv2/highgui.hpp"
 #include "opencv2/imgcodecs.hpp"
@@ -64,6 +66,35 @@ bool graphicalDisplayAvailable()
 #endif
 }
 
+double timestampSeconds(const std::chrono::steady_clock::time_point & timestamp)
+{
+  return std::chrono::duration<double>(timestamp.time_since_epoch()).count();
+}
+
+template<typename Matrix>
+cv::Matx33d calibrationRotation(
+  const Matrix & matrix, const char * name)
+{
+  if (matrix.size() < 3U || matrix[0].size() < 3U ||
+    matrix[1].size() < 3U || matrix[2].size() < 3U)
+  {
+    throw std::runtime_error(std::string(name) + ": missing rotation");
+  }
+  cv::Matx33d rotation;
+  for (int row = 0; row < 3; ++row) {
+    for (int col = 0; col < 3; ++col) {
+      rotation(row, col) = matrix[row][col];
+    }
+  }
+  if (!cv::checkRange(cv::Mat(rotation)) ||
+    std::abs(cv::determinant(cv::Mat(rotation)) - 1.0) > 0.02 ||
+    cv::norm(cv::Mat(rotation * rotation.t() - cv::Matx33d::eye())) > 0.02)
+  {
+    throw std::runtime_error(std::string(name) + ": invalid rotation");
+  }
+  return rotation;
+}
+
 const char * usbSpeedName(const dai::UsbSpeed speed)
 {
   switch (speed) {
@@ -98,12 +129,16 @@ public:
     }
 
     try {
+      measureBevMount();
       startOak();
       started_at_ = std::chrono::steady_clock::now();
       last_status_at_ = started_at_;
       status_timer_ = create_wall_timer(
         std::chrono::duration<double>(status_log_interval_sec_),
         std::bind(&IrCameraDriverNode::reportStatus, this));
+      if (imu_stabilization_enabled_) {
+        imu_thread_ = std::thread(&IrCameraDriverNode::imuLoop, this);
+      }
       capture_thread_ = std::thread(&IrCameraDriverNode::captureLoop, this);
       preview_thread_ = std::thread(&IrCameraDriverNode::previewLoop, this);
     } catch (...) {
@@ -320,11 +355,194 @@ private:
         "IR is enabled but both configured emitter intensities are zero.");
     }
 
-    bev_projector_ = std::make_unique<IrBevProjector>(bev_config_);
+    readMeasurementParameters();
     flood_input_ = formatFlood(ir_flood_light_intensity_);
     exposure_input_ = std::to_string(manual_exposure_us_);
     iso_input_ = std::to_string(manual_sensitivity_iso_);
     manual_exposure_active_.store(manual_exposure_enabled_, std::memory_order_relaxed);
+  }
+
+  void readMeasurementParameters()
+  {
+    device_id_ = declare_parameter<std::string>("device_id", "");
+    startup_measurement_enabled_ = declare_parameter<bool>(
+      "bev.startup_measurement_enabled", true);
+    imu_stabilization_enabled_ = declare_parameter<bool>(
+      "imu_stabilization_enabled", true);
+    imu_calibration_timeout_sec_ = declare_parameter<double>(
+      "imu_calibration_timeout_sec", 30.0);
+    auto & measurement = startup_measurement_config_;
+    measurement.device_id = device_id_;
+    measurement.stereo_fps = declare_parameter<double>(
+      "measurement_stereo_fps", measurement.stereo_fps);
+    measurement.stereo_width = declare_parameter<int>(
+      "measurement_stereo_width", measurement.stereo_width);
+    measurement.stereo_height = declare_parameter<int>(
+      "measurement_stereo_height", measurement.stereo_height);
+    measurement.depth_queue_size = declare_parameter<int>(
+      "measurement_depth_queue_size", measurement.depth_queue_size);
+    measurement.stereo_subpixel_fractional_bits = declare_parameter<int>(
+      "measurement_stereo_subpixel_fractional_bits", measurement.stereo_subpixel_fractional_bits);
+    measurement.stereo_left_right_check_threshold = declare_parameter<int>(
+      "measurement_stereo_left_right_check_threshold", measurement.stereo_left_right_check_threshold);
+    measurement.stereo_confidence_threshold = declare_parameter<int>(
+      "measurement_stereo_confidence_threshold", measurement.stereo_confidence_threshold);
+    measurement.stereo_disparity_shift = declare_parameter<int>(
+      "measurement_stereo_disparity_shift", measurement.stereo_disparity_shift);
+    measurement.imu_rate_hz = declare_parameter<double>(
+      "measurement_imu_rate_hz", measurement.imu_rate_hz);
+    measurement.imu_queue_size = declare_parameter<int>(
+      "measurement_imu_queue_size", measurement.imu_queue_size);
+    measurement.imu_max_batch_reports = declare_parameter<int>(
+      "measurement_imu_max_batch_reports", measurement.imu_max_batch_reports);
+    measurement.maximum_imu_pair_skew_sec = declare_parameter<double>(
+      "measurement_maximum_imu_pair_skew_sec", measurement.maximum_imu_pair_skew_sec);
+    measurement.warmup_sec = declare_parameter<double>(
+      "measurement_warmup_sec", measurement.warmup_sec);
+    measurement.ir_dot_projector_intensity = declare_parameter<double>(
+      "measurement_ir_dot_projector_intensity", measurement.ir_dot_projector_intensity);
+    measurement.manual_camera_height_enabled = declare_parameter<bool>(
+      "measurement_manual_camera_height_enabled", measurement.manual_camera_height_enabled);
+    measurement.manual_camera_height_m = declare_parameter<double>(
+      "measurement_manual_camera_height_m", measurement.manual_camera_height_m);
+    measurement.roi_width = declare_parameter<int>(
+      "measurement_roi_width", measurement.roi_width);
+    measurement.roi_height = declare_parameter<int>(
+      "measurement_roi_height", measurement.roi_height);
+    measurement.roi_vertical_offset_px = declare_parameter<int>(
+      "measurement_roi_vertical_offset_px", measurement.roi_vertical_offset_px);
+    measurement.roi_preview_enabled = declare_parameter<bool>(
+      "measurement_roi_preview_enabled", measurement.roi_preview_enabled);
+    measurement.point_sample_step = declare_parameter<int>(
+      "measurement_point_sample_step", measurement.point_sample_step);
+    measurement.minimum_valid_points = declare_parameter<int>(
+      "measurement_minimum_valid_points", measurement.minimum_valid_points);
+    measurement.minimum_depth_m = declare_parameter<double>(
+      "measurement_minimum_depth_m", measurement.minimum_depth_m);
+    measurement.maximum_depth_m = declare_parameter<double>(
+      "measurement_maximum_depth_m", measurement.maximum_depth_m);
+    measurement.minimum_height_m = declare_parameter<double>(
+      "measurement_minimum_height_m", measurement.minimum_height_m);
+    measurement.maximum_height_m = declare_parameter<double>(
+      "measurement_maximum_height_m", measurement.maximum_height_m);
+    measurement.plane_ransac_iterations = declare_parameter<int>(
+      "measurement_plane_ransac_iterations", measurement.plane_ransac_iterations);
+    measurement.plane_inlier_threshold_m = declare_parameter<double>(
+      "measurement_plane_inlier_threshold_m", measurement.plane_inlier_threshold_m);
+    measurement.plane_minimum_inliers = declare_parameter<int>(
+      "measurement_plane_minimum_inliers", measurement.plane_minimum_inliers);
+    measurement.plane_minimum_inlier_ratio = declare_parameter<double>(
+      "measurement_plane_minimum_inlier_ratio", measurement.plane_minimum_inlier_ratio);
+    measurement.plane_maximum_residual_mad_m = declare_parameter<double>(
+      "measurement_plane_maximum_residual_mad_m", measurement.plane_maximum_residual_mad_m);
+    measurement.plane_maximum_imu_difference_deg = declare_parameter<double>(
+      "measurement_plane_maximum_imu_difference_deg", measurement.plane_maximum_imu_difference_deg);
+    measurement.imu_roll_bias_deg = declare_parameter<double>(
+      "measurement_imu_roll_bias_deg", measurement.imu_roll_bias_deg);
+    measurement.imu_pitch_bias_deg = declare_parameter<double>(
+      "measurement_imu_pitch_bias_deg", measurement.imu_pitch_bias_deg);
+    measurement.imu_sample_count = declare_parameter<int>(
+      "measurement_imu_sample_count", measurement.imu_sample_count);
+    measurement.imu_max_direction_rms_deg = declare_parameter<double>(
+      "measurement_imu_max_direction_rms_deg", measurement.imu_max_direction_rms_deg);
+    measurement.imu_accel_min_mps2 = declare_parameter<double>(
+      "measurement_imu_accel_min_mps2", measurement.imu_accel_min_mps2);
+    measurement.imu_accel_max_mps2 = declare_parameter<double>(
+      "measurement_imu_accel_max_mps2", measurement.imu_accel_max_mps2);
+    measurement.imu_gyroscope_mean_maximum_degps = declare_parameter<double>(
+      "measurement_imu_gyroscope_mean_maximum_degps", measurement.imu_gyroscope_mean_maximum_degps);
+    measurement.imu_gyroscope_stddev_maximum_degps = declare_parameter<double>(
+      "measurement_imu_gyroscope_stddev_maximum_degps", measurement.imu_gyroscope_stddev_maximum_degps);
+    measurement.stable_plane_frame_count = declare_parameter<int>(
+      "measurement_stable_plane_frame_count", measurement.stable_plane_frame_count);
+    measurement.maximum_height_stddev_m = declare_parameter<double>(
+      "measurement_maximum_height_stddev_m", measurement.maximum_height_stddev_m);
+    measurement.maximum_plane_normal_rms_deg = declare_parameter<double>(
+      "measurement_maximum_plane_normal_rms_deg", measurement.maximum_plane_normal_rms_deg);
+    measurement.timeout_sec = declare_parameter<double>(
+      "measurement_timeout_sec", measurement.timeout_sec);
+    measurement.attitude_source = oak_startup::parseStartupAttitudeSource(
+      declare_parameter<std::string>("measurement_attitude_source", "depth"));
+    auto & imu = imu_stabilizer_config_;
+    imu.external_reference_required = true;
+    imu.startup_discard_duration_sec = declare_parameter<double>(
+      "imu_stabilization_startup_discard_duration_sec", imu.startup_discard_duration_sec);
+    imu.reference_calibration_duration_sec = declare_parameter<double>(
+      "imu_stabilization_reference_calibration_duration_sec", imu.reference_calibration_duration_sec);
+    imu.calibration_maximum_angular_speed_degps = declare_parameter<double>(
+      "imu_stabilization_calibration_maximum_angular_speed_degps", imu.calibration_maximum_angular_speed_degps);
+    imu.maximum_correction_deg = declare_parameter<double>(
+      "imu_stabilization_maximum_correction_deg", imu.maximum_correction_deg);
+    imu.maximum_frame_imu_wait_sec = declare_parameter<double>(
+      "imu_stabilization_maximum_frame_imu_wait_sec", imu.maximum_frame_imu_wait_sec);
+    imu.maximum_frame_imu_age_sec = declare_parameter<double>(
+      "imu_stabilization_maximum_frame_imu_age_sec", imu.maximum_frame_imu_age_sec);
+    imu.maximum_frame_imu_prediction_sec = declare_parameter<double>(
+      "imu_stabilization_maximum_frame_imu_prediction_sec", imu.maximum_frame_imu_prediction_sec);
+    if (!std::isfinite(imu_calibration_timeout_sec_) ||
+      imu_calibration_timeout_sec_ <=
+      imu.startup_discard_duration_sec + imu.reference_calibration_duration_sec ||
+      !std::isfinite(measurement.imu_rate_hz) || measurement.imu_rate_hz <= 0.0 ||
+      measurement.imu_rate_hz > 1000.0 || measurement.imu_queue_size <= 0 ||
+      measurement.imu_max_batch_reports <= 1 ||
+      measurement.imu_max_batch_reports > measurement.imu_queue_size ||
+      !std::isfinite(measurement.maximum_imu_pair_skew_sec) ||
+      measurement.maximum_imu_pair_skew_sec <= 0.0)
+    {
+      throw std::invalid_argument("invalid IR IMU timing/queue configuration");
+    }
+    if (!reprojection_enabled_ && !undistort_single_camera_) {
+      throw std::invalid_argument(
+              "metric IR BEV requires undistort_single_camera=true");
+    }
+    // Validate static geometry even when automatic measurement is requested.
+    IrBevProjector geometry_check(bev_config_);
+    if (imu_stabilization_enabled_) {
+      imu_stabilizer_ =
+        std::make_unique<camera_driver::ImuImageStabilizer>(imu);
+    }
+  }
+
+  void measureBevMount()
+  {
+    if (startup_measurement_enabled_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "IR BEV startup: keep the vehicle stationary on flat ground. "
+        "height=%s, attitude=%s, measurement dot=%.2f (runtime dot=%.2f).",
+        startup_measurement_config_.manual_camera_height_enabled ? "manual" : "stereo",
+        startup_measurement_config_.manual_camera_height_enabled ? "imu" :
+        oak_startup::startupAttitudeSourceName(startup_measurement_config_.attitude_source),
+        startup_measurement_config_.manual_camera_height_enabled ? 0.0 :
+        startup_measurement_config_.ir_dot_projector_intensity,
+        ir_dot_projector_intensity_);
+      const auto measurement = oak_startup::measureOakStartupExtrinsics(
+        startup_measurement_config_, []() {return !rclcpp::ok();});
+      device_id_ = measurement.device_id;
+      bev_config_.camera_height_m = measurement.height_m;
+      bev_config_.camera_roll_deg = measurement.roll_deg;
+      bev_config_.camera_pitch_down_deg = measurement.pitch_down_deg;
+      RCLCPP_INFO(
+        get_logger(),
+        "IR_BEV_STARTUP: CAM_A height=%.4fm roll=%.3fdeg pitch_down=%.3fdeg "
+        "source=%s/%s, height_stddev=%.4fm plane_RMS=%.3fdeg "
+        "inliers=%.1f%% residual_MAD=%.4fm IMU_RMS=%.3fdeg",
+        measurement.height_m, measurement.roll_deg, measurement.pitch_down_deg,
+        measurement.height_source.c_str(), measurement.attitude_source.c_str(),
+        measurement.height_stddev_m, measurement.plane_normal_rms_deg,
+        100.0 * measurement.plane_inlier_ratio, measurement.plane_residual_mad_m,
+        measurement.imu_direction_rms_deg);
+    } else {
+      RCLCPP_WARN(get_logger(), "IR BEV uses explicit fixed CAM_A mounting parameters.");
+    }
+    if (imu_stabilizer_ && !imu_stabilizer_->setExternalReferenceUpCamera(
+        oak_startup::attitudeUpVector(
+          bev_config_.camera_roll_deg, bev_config_.camera_pitch_down_deg)))
+    {
+      throw std::runtime_error("could not set the measured IR BEV ground reference");
+    }
+    bev_projector_ = std::make_unique<IrBevProjector>(bev_config_);
+    right_bev_projector_ = std::make_unique<IrBevProjector>(bev_config_);
   }
 
   void configureExposure(const std::shared_ptr<dai::node::Camera> & camera)
@@ -338,7 +556,12 @@ private:
 
   void startOak()
   {
-    device_ = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
+    if (!rclcpp::ok()) {
+      throw std::runtime_error("IR camera startup cancelled");
+    }
+    device_ = device_id_.empty() ?
+      std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
+      std::make_shared<dai::Device>(dai::DeviceInfo(device_id_), dai::UsbSpeed::SUPER);
     pipeline_ = std::make_unique<dai::Pipeline>(device_);
     // DepthAI 3.6 enables startup auto-calibration by default. This preview
     // package must never mutate the device EEPROM as a side effect.
@@ -430,6 +653,34 @@ private:
         undistort_single_camera_);
     }
 
+    if (imu_stabilization_enabled_) {
+      if (device_->getConnectedIMU().empty()) {
+        throw std::runtime_error("IR BEV stabilization requires the OAK IMU");
+      }
+      const auto calibration = device_->getCalibration();
+      const auto imu_to_rgb = calibrationRotation(
+        calibration.getImuToCameraExtrinsics(dai::CameraBoardSocket::CAM_A, false),
+        "IMU-to-CAM_A");
+      const auto imu_to_output = calibrationRotation(
+        calibration.getEepromData().imuExtrinsics.rotationMatrix,
+        "calibrated IMU output");
+      calibrated_imu_to_rgb_ = imu_to_rgb * imu_to_output.t();
+      auto imu = pipeline_->create<dai::node::IMU>();
+      imu->enableIMUSensor(
+        {dai::IMUSensor::ACCELEROMETER_CALIBRATED,
+          dai::IMUSensor::GYROSCOPE_CALIBRATED},
+        static_cast<int>(std::lround(startup_measurement_config_.imu_rate_hz)));
+      imu->setBatchReportThreshold(1);
+      imu->setMaxBatchReports(startup_measurement_config_.imu_max_batch_reports);
+      imu_queue_ = imu->out.createOutputQueue(
+        static_cast<unsigned int>(startup_measurement_config_.imu_queue_size), false);
+      RCLCPP_INFO(
+        get_logger(), "IR BEV IMU: keep still for %.1fs discard + %.1fs bias calibration; "
+        "BEV waits for synchronized tilt, limit=%.1fdeg.",
+        imu_stabilizer_config_.startup_discard_duration_sec,
+        imu_stabilizer_config_.reference_calibration_duration_sec,
+        imu_stabilizer_config_.maximum_correction_deg);
+    }
     output_queue_ = host_output->createOutputQueue(1U, false);
     pipeline_->build();
     const auto xlink_bridge = host_output->getXLinkBridge();
@@ -788,39 +1039,164 @@ private:
     return true;
   }
 
-  void ensureBevProjector(dai::ImgFrame & reference_frame)
+  void ensureBevProjector(
+    IrBevProjector & projector, dai::ImgFrame & reference_frame,
+    const dai::CameraBoardSocket socket)
   {
-    if (bev_projector_->ready()) {
+    if (projector.ready()) {
       return;
     }
-
-    double fx = 0.0;
-    double fy = 0.0;
-    double cx = 0.0;
-    double cy = 0.0;
     const auto & transformation = reference_frame.getTransformation();
-    if (transformation.isValid()) {
-      const auto intrinsics = transformation.getIntrinsicMatrix();
-      fx = static_cast<double>(intrinsics[0][0]);
-      fy = static_cast<double>(intrinsics[1][1]);
-      cx = static_cast<double>(intrinsics[0][2]);
-      cy = static_cast<double>(intrinsics[1][2]);
-    } else {
-      const auto intrinsics = device_->readCalibration().getCameraIntrinsics(
-        selectedSocket(), width_, height_);
-      fx = static_cast<double>(intrinsics.at(0).at(0));
-      fy = static_cast<double>(intrinsics.at(1).at(1));
-      cx = static_cast<double>(intrinsics.at(0).at(2));
-      cy = static_cast<double>(intrinsics.at(1).at(2));
+    if (!transformation.isValid()) {
+      throw std::runtime_error(
+              "IR BEV requires actual output-frame intrinsics; metadata is missing");
     }
-
-    bev_projector_->configure(fx, fy, cx, cy, width_, height_);
+    const auto intrinsics = transformation.getIntrinsicMatrix();
+    const auto calibration = device_->getCalibration();
+    // Frame metadata contains the actual output optical axes, including
+    // stereo rectification. Compose T_view->reference with T_reference->CAM_A
+    // exactly as DepthAI's PointCloud conversion does; do not apply the
+    // EEPROM rectification a second time or assume rectified==physical axes.
+    const auto frame_extrinsics = transformation.getExtrinsics();
+    const auto reference_socket = frame_extrinsics.toCameraSocket;
+    if (reference_socket == dai::CameraBoardSocket::AUTO) {
+      throw std::runtime_error("IR BEV output-frame extrinsics have no reference camera");
+    }
+    const auto view_to_reference = frame_extrinsics.getTransformationMatrix(
+      false, dai::LengthUnit::METER);
+    const auto rotation_reference_from_view = calibrationRotation(
+      view_to_reference, "output-frame-to-reference");
+    cv::Matx33d rotation_rgb_from_reference = cv::Matx33d::eye();
+    cv::Vec3d reference_center_rgb_m(0.0, 0.0, 0.0);
+    if (reference_socket != dai::CameraBoardSocket::CAM_A) {
+      const auto reference_to_rgb = calibration.getCameraExtrinsics(
+        reference_socket, dai::CameraBoardSocket::CAM_A, false);
+      rotation_rgb_from_reference = calibrationRotation(reference_to_rgb, "reference-to-CAM_A");
+      if (reference_to_rgb[0].size() < 4U || reference_to_rgb[1].size() < 4U ||
+        reference_to_rgb[2].size() < 4U)
+      {
+        throw std::runtime_error("reference-to-CAM_A translation is missing");
+      }
+      // CalibrationHandler's default translation unit is centimeters.
+      reference_center_rgb_m = cv::Vec3d(
+        reference_to_rgb[0][3], reference_to_rgb[1][3], reference_to_rgb[2][3]) * 0.01;
+    }
+    const auto rotation_rgb_from_view =
+      rotation_rgb_from_reference * rotation_reference_from_view;
+    const auto center_rgb_m = reference_center_rgb_m + rotation_rgb_from_reference *
+      cv::Vec3d(view_to_reference[0][3], view_to_reference[1][3], view_to_reference[2][3]);
+    projector.configure(
+      intrinsics[0][0], intrinsics[1][1], intrinsics[0][2], intrinsics[1][2],
+      width_, height_, rotation_rgb_from_view, center_rgb_m);
     RCLCPP_INFO(
-      get_logger(),
-      "IR BEV ready: K=(%.3f, %.3f, %.3f, %.3f), ground coverage=%.1f%%, "
-      "height=%.3fm pitch_down=%.2fdeg",
-      fx, fy, cx, cy, 100.0 * bev_projector_->validPixelRatio(),
-      bev_config_.camera_height_m, bev_config_.camera_pitch_down_deg);
+      get_logger(), "IR BEV calibrated: %s K=(%.3f,%.3f,%.3f,%.3f), "
+      "IR center in CAM_A=(%.4f,%.4f,%.4f)m, ground coverage=%.1f%%",
+      socket == dai::CameraBoardSocket::CAM_B ? "LEFT" : "RIGHT",
+      intrinsics[0][0], intrinsics[1][1], intrinsics[0][2], intrinsics[1][2],
+      center_rgb_m[0], center_rgb_m[1], center_rgb_m[2],
+      100.0 * projector.validPixelRatio());
+  }
+
+  void imuLoop()
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(imu_calibration_timeout_sec_);
+    bool calibration_reported = false;
+    while (!stop_requested_.load(std::memory_order_relaxed) && rclcpp::ok()) {
+      try {
+        if (!pipeline_ || !pipeline_->isRunning()) {
+          break;
+        }
+        if (!imu_stabilizer_->initialized() && std::chrono::steady_clock::now() > deadline) {
+          const auto progress = imu_stabilizer_->calibrationProgress();
+          RCLCPP_FATAL(
+            get_logger(), "IR BEV IMU calibration timed out: %s. Keep the vehicle still.",
+            progress.last_rejection_reason.c_str());
+          rclcpp::shutdown();
+          break;
+        }
+        auto data = imu_queue_->tryGet<dai::IMUData>();
+        if (!data) {
+          std::this_thread::sleep_for(200us);
+          continue;
+        }
+        for (const auto & packet : data->packets) {
+          const auto & accel = packet.acceleroMeter;
+          const auto & gyro = packet.gyroscope;
+          const double gyro_time = timestampSeconds(gyro.getTimestamp());
+          const double skew = std::abs(timestampSeconds(accel.getTimestamp()) - gyro_time);
+          std::optional<cv::Vec3d> acceleration;
+          if (std::isfinite(skew) && skew <=
+            startup_measurement_config_.maximum_imu_pair_skew_sec)
+          {
+            acceleration = calibrated_imu_to_rgb_ * cv::Vec3d(accel.x, accel.y, accel.z);
+          }
+          imu_stabilizer_->update(
+            acceleration, calibrated_imu_to_rgb_ * cv::Vec3d(gyro.x, gyro.y, gyro.z), gyro_time);
+          imu_samples_total_.fetch_add(1U, std::memory_order_relaxed);
+        }
+        if (!calibration_reported && imu_stabilizer_->initialized()) {
+          calibration_reported = true;
+          RCLCPP_INFO(get_logger(), "IR BEV IMU calibration complete; live tilt correction active.");
+        }
+      } catch (const std::exception & exception) {
+        RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 1000, "IR IMU error: %s", exception.what());
+        std::this_thread::sleep_for(1ms);
+      }
+    }
+  }
+
+  std::optional<cv::Matx33d> correctionFor(const dai::ImgFrame & frame)
+  {
+    if (!imu_stabilization_enabled_) {
+      return cv::Matx33d::eye();
+    }
+    const auto correction = imu_stabilizer_->correctionAt(
+      timestampSeconds(frame.getTimestamp(dai::CameraExposureOffset::MIDDLE)));
+    if (!correction || !correction->within_correction_limit) {
+      bev_imu_rejections_total_.fetch_add(1U, std::memory_order_relaxed);
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 2000,
+        "IR BEV withheld: IMU calibrating, frame/IMU timing invalid, or tilt exceeds limit.");
+      return std::nullopt;
+    }
+    latest_tilt_deg_.store(correction->correction_angle_deg, std::memory_order_relaxed);
+    return correction->camera_to_reference_tilt;
+  }
+
+  cv::Mat projectSingleBev(dai::ImgFrame & frame)
+  {
+    ensureBevProjector(*bev_projector_, frame, selectedSocket());
+    const auto correction = correctionFor(frame);
+    return correction ? bev_projector_->project(frame.getFrame(false), *correction) : cv::Mat();
+  }
+
+  cv::Mat projectStereoBev(const StereoSnapshot & snapshot)
+  {
+    ensureBevProjector(*bev_projector_, *snapshot.left, dai::CameraBoardSocket::CAM_B);
+    ensureBevProjector(*right_bev_projector_, *snapshot.right, dai::CameraBoardSocket::CAM_C);
+    const auto left_correction = correctionFor(*snapshot.left);
+    const auto right_correction = correctionFor(*snapshot.right);
+    if (!left_correction || !right_correction) {
+      return {};
+    }
+    // Project each physical lens onto the SAME metric ground grid. The center
+    // preview's invalid-disparity fallback belongs to a different optical
+    // center and must never be interpreted as metric virtual-camera pixels.
+    const auto left = bev_projector_->project(snapshot.left->getFrame(false), *left_correction);
+    const auto right = right_bev_projector_->project(
+      snapshot.right->getFrame(false), *right_correction);
+    cv::Mat both, only_right, output;
+    cv::bitwise_and(bev_projector_->validMask(), right_bev_projector_->validMask(), both);
+    cv::bitwise_not(bev_projector_->validMask(), only_right);
+    cv::bitwise_and(only_right, right_bev_projector_->validMask(), only_right);
+    output = left.clone();
+    right.copyTo(output, only_right);
+    cv::Mat blended;
+    cv::addWeighted(left, 0.5, right, 0.5, 0.0, blended);
+    blended.copyTo(output, both);
+    return output;
   }
 
   bool validFrameSize(const dai::ImgFrame & frame) const
@@ -1049,9 +1425,6 @@ private:
                 std::chrono::steady_clock::now() - reprojection_started_at);
               latest_reprojection_ms_.store(
                 elapsed.count(), std::memory_order_relaxed);
-              dai::ImgFrame & reference = selected_camera_ == SelectedCamera::LEFT ?
-                *snapshot->left : *snapshot->right;
-              ensureBevProjector(reference);
               displayed_stereo = std::move(snapshot);
               displayed_single.reset();
               previewed_generation = displayed_stereo->generation;
@@ -1062,7 +1435,6 @@ private:
               &latest_single_, std::memory_order_acquire);
             if (snapshot && snapshot->generation != previewed_generation) {
               current_frame = snapshot->frame->getFrame(false);
-              ensureBevProjector(*snapshot->frame);
               displayed_single = std::move(snapshot);
               displayed_stereo.reset();
               previewed_generation = displayed_single->generation;
@@ -1073,17 +1445,32 @@ private:
 
         if (frame_updated && !current_frame.empty()) {
           const auto bev_started_at = std::chrono::steady_clock::now();
-          current_bev = bev_projector_->project(current_frame);
+          current_bev.release();
+          try {
+            current_bev = displayed_stereo ? projectStereoBev(*displayed_stereo) :
+              projectSingleBev(*displayed_single->frame);
+          } catch (const std::exception & exception) {
+            preview_errors_total_.fetch_add(1U, std::memory_order_relaxed);
+            RCLCPP_ERROR_THROTTLE(
+              get_logger(), *get_clock(), 1000, "IR BEV withheld: %s", exception.what());
+          }
           latest_bev_ms_.store(
             std::chrono::duration<double, std::milli>(
               std::chrono::steady_clock::now() - bev_started_at).count(),
             std::memory_order_relaxed);
           resizePreviewWindow(current_frame);
           cv::imshow(preview_window_name_, current_frame);
-          cv::imshow(bev_preview_window_name_, current_bev);
+          if (current_bev.empty()) {
+            cv::Mat waiting(300, 500, CV_8UC1, cv::Scalar(0));
+            cv::putText(waiting, "BEV unavailable: check calibration / IMU", cv::Point(10, 145),
+              cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255), 1, cv::LINE_AA);
+            cv::imshow(bev_preview_window_name_, waiting);
+          } else {
+            cv::imshow(bev_preview_window_name_, current_bev);
+            bev_preview_interval_.fetch_add(1U, std::memory_order_relaxed);
+          }
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           original_preview_interval_.fetch_add(1U, std::memory_order_relaxed);
-          bev_preview_interval_.fetch_add(1U, std::memory_order_relaxed);
           control_panel_dirty_.store(true, std::memory_order_relaxed);
         }
 
@@ -1165,7 +1552,8 @@ private:
       get_logger(),
       "[IR_CAMERA] capture=%.1fHz original=%.1fHz BEV=%.1fHz requested=%.1fHz, "
       "exposure=%ldus ISO=%d, IR=%s, reproject=%.2fms BEV=%.2fms, "
-      "skipped=%lu invalid=%lu capture_errors=%lu preview_errors=%lu",
+      "skipped=%lu invalid=%lu capture_errors=%lu preview_errors=%lu, "
+      "IMU=%s samples=%lu BEV_rejected=%lu tilt=%.3fdeg",
       static_cast<double>(capture_count) / elapsed,
       static_cast<double>(original_preview_count) / elapsed,
       static_cast<double>(bev_preview_count) / elapsed,
@@ -1182,7 +1570,11 @@ private:
       static_cast<unsigned long>(
         capture_errors_total_.load(std::memory_order_relaxed)),
       static_cast<unsigned long>(
-        preview_errors_total_.load(std::memory_order_relaxed)));
+        preview_errors_total_.load(std::memory_order_relaxed)),
+      !imu_stabilizer_ ? "off" : (imu_stabilizer_->initialized() ? "ready" : "calibrating"),
+      static_cast<unsigned long>(imu_samples_total_.load(std::memory_order_relaxed)),
+      static_cast<unsigned long>(bev_imu_rejections_total_.load(std::memory_order_relaxed)),
+      latest_tilt_deg_.load(std::memory_order_relaxed));
   }
 
   void stop()
@@ -1193,6 +1585,9 @@ private:
     stop_requested_.store(true, std::memory_order_relaxed);
     frame_available_.notify_all();
 
+    if (imu_thread_.joinable()) {
+      imu_thread_.join();
+    }
     if (capture_thread_.joinable()) {
       capture_thread_.join();
     }
@@ -1215,6 +1610,7 @@ private:
       } catch (...) {
       }
     }
+    imu_queue_.reset();
     output_queue_.reset();
     camera_control_queues_.clear();
     if (pipeline_) {
@@ -1232,6 +1628,21 @@ private:
     device_.reset();
     center_reprojector_.reset();
   }
+
+  std::string device_id_;
+  bool startup_measurement_enabled_{true};
+  bool imu_stabilization_enabled_{true};
+  double imu_calibration_timeout_sec_{30.0};
+  oak_startup::OakStartupMeasurementConfig startup_measurement_config_;
+  camera_driver::ImuImageStabilizerConfig imu_stabilizer_config_;
+  std::unique_ptr<camera_driver::ImuImageStabilizer> imu_stabilizer_;
+  std::shared_ptr<dai::MessageQueue> imu_queue_;
+  cv::Matx33d calibrated_imu_to_rgb_{cv::Matx33d::eye()};
+  std::thread imu_thread_;
+  std::atomic<std::uint64_t> imu_samples_total_{0U};
+  std::atomic<std::uint64_t> bev_imu_rejections_total_{0U};
+  std::atomic<double> latest_tilt_deg_{0.0};
+  std::unique_ptr<IrBevProjector> right_bev_projector_;
 
   bool reprojection_enabled_{true};
   std::string selected_camera_name_{"LEFT"};

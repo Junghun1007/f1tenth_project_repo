@@ -116,8 +116,13 @@ if(BUILD_TESTING)
   add_test(NAME startup_attitude_test COMMAND startup_attitude_test)
 endif()
 
+install(TARGETS bev_geometry EXPORT export_bev_geometry
+  ARCHIVE DESTINATION lib
+  LIBRARY DESTINATION lib
+)
+ament_export_targets(export_bev_geometry HAS_LIBRARY_TARGET)
+
 install(TARGETS
-  bev_geometry
   bev_processor_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib

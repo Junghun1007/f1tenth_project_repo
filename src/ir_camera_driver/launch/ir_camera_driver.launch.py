@@ -1,9 +1,72 @@
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _launch_node(context):
+    # Empty optional arguments preserve values supplied by params_file.
+    optional_overrides = {}
+    for name, value_type in (
+        ("measurement_ir_dot_projector_intensity", float),
+        ("measurement_manual_camera_height_enabled", bool),
+        ("measurement_manual_camera_height_m", float),
+    ):
+        value = LaunchConfiguration(name).perform(context).strip()
+        if not value:
+            continue
+        if value_type is bool:
+            if value.lower() not in ("true", "false"):
+                raise ValueError(f"{name} must be true or false")
+            optional_overrides[name] = value.lower() == "true"
+        else:
+            optional_overrides[name] = value_type(value)
+    return [
+        Node(
+            package="ir_camera_driver",
+            executable="ir_camera_driver_node",
+            name="ir_camera_driver",
+            output="screen",
+            parameters=[
+                LaunchConfiguration("params_file"),
+                {
+                    "reprojection_enabled": ParameterValue(
+                        LaunchConfiguration("reprojection_enabled"),
+                        value_type=bool,
+                    ),
+                    "selected_camera": LaunchConfiguration(
+                        "selected_camera"
+                    ),
+                    "virtual_camera_position_ratio": ParameterValue(
+                        LaunchConfiguration(
+                            "virtual_camera_position_ratio"
+                        ),
+                        value_type=float,
+                    ),
+                    "ir_enabled": ParameterValue(
+                        LaunchConfiguration("ir_enabled"),
+                        value_type=bool,
+                    ),
+                    "ir_dot_projector_intensity": ParameterValue(
+                        LaunchConfiguration(
+                            "ir_dot_projector_intensity"
+                        ),
+                        value_type=float,
+                    ),
+                    "ir_flood_light_intensity": ParameterValue(
+                        LaunchConfiguration("ir_flood_light_intensity"),
+                        value_type=float,
+                    ),
+                    "capture_directory": LaunchConfiguration(
+                        "capture_directory"
+                    ),
+                },
+                optional_overrides,
+            ],
+        )
+    ]
 
 
 def generate_launch_description():
@@ -57,50 +120,28 @@ def generate_launch_description():
                 description="IR flood-light intensity from 0.0 to 1.0.",
             ),
             DeclareLaunchArgument(
+                "measurement_ir_dot_projector_intensity",
+                default_value="",
+                description="Dot intensity during startup ground measurement only.",
+            ),
+            DeclareLaunchArgument(
+                "measurement_manual_camera_height_enabled",
+                default_value="",
+                description=(
+                    "Use manual CAM_A height and IMU startup attitude; "
+                    "skip startup stereo. Empty uses params_file."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "measurement_manual_camera_height_m",
+                default_value="",
+                description="Manual CAM_A optical-center height above ground in meters.",
+            ),
+            DeclareLaunchArgument(
                 "capture_directory",
                 default_value=".",
                 description="Directory used by the B-key PNG capture.",
             ),
-            Node(
-                package="ir_camera_driver",
-                executable="ir_camera_driver_node",
-                name="ir_camera_driver",
-                output="screen",
-                parameters=[
-                    LaunchConfiguration("params_file"),
-                    {
-                        "reprojection_enabled": ParameterValue(
-                            LaunchConfiguration("reprojection_enabled"),
-                            value_type=bool,
-                        ),
-                        "selected_camera": LaunchConfiguration(
-                            "selected_camera"
-                        ),
-                        "virtual_camera_position_ratio": ParameterValue(
-                            LaunchConfiguration(
-                                "virtual_camera_position_ratio"
-                            ),
-                            value_type=float,
-                        ),
-                        "ir_enabled": ParameterValue(
-                            LaunchConfiguration("ir_enabled"),
-                            value_type=bool,
-                        ),
-                        "ir_dot_projector_intensity": ParameterValue(
-                            LaunchConfiguration(
-                                "ir_dot_projector_intensity"
-                            ),
-                            value_type=float,
-                        ),
-                        "ir_flood_light_intensity": ParameterValue(
-                            LaunchConfiguration("ir_flood_light_intensity"),
-                            value_type=float,
-                        ),
-                        "capture_directory": LaunchConfiguration(
-                            "capture_directory"
-                        ),
-                    },
-                ],
-            ),
+            OpaqueFunction(function=_launch_node),
         ]
     )
