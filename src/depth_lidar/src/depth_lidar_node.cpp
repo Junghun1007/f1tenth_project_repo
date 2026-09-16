@@ -1,5 +1,6 @@
 #include "depth_lidar/depth_lidar_geometry.hpp"
 #include "depth_lidar/depth_lidar_preview.hpp"
+#include "depth_lidar/depth_lidar_stabilization.hpp"
 
 #include <depthai/depthai.hpp>
 #include <opencv2/highgui.hpp>
@@ -57,6 +58,7 @@ struct NodeConfig
   ProjectionConfig projection;
   ClusterConfig cluster;
   FloorConfig floor;
+  StabilizationConfig stabilization;
   std::string floor_file{"~/.ros/depth_lidar/floor_reference.bin"};
   bool nv12_enabled{true};
   double nv12_fps{60.0};
@@ -190,7 +192,8 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
     reason = "floor.file cannot be empty";
     return false;
   }
-  return validateClusterConfig(config.cluster, reason) && validateFloorConfig(config.floor, reason);
+  return validateClusterConfig(config.cluster, reason) && validateFloorConfig(config.floor, reason)
+    && validateStabilizationConfig(config.stabilization, reason);
 }
 
 std::pair<std::uint32_t, std::uint32_t> parseResolution(const std::string & value)
@@ -337,8 +340,9 @@ sensor_msgs::msg::PointCloud2 obstacleMessage(const DetectionResult & detection,
   message.header.frame_id = frame_id;
   sensor_msgs::PointCloud2Modifier modifier(message);
   using Field = sensor_msgs::msg::PointField;
-  modifier.setPointCloud2Fields(5, "x", 1, Field::FLOAT32, "y", 1, Field::FLOAT32,
-    "z", 1, Field::FLOAT32, "radius", 1, Field::FLOAT32, "point_count", 1, Field::UINT32);
+  modifier.setPointCloud2Fields(6, "x", 1, Field::FLOAT32, "y", 1, Field::FLOAT32,
+    "z", 1, Field::FLOAT32, "radius", 1, Field::FLOAT32, "point_count", 1, Field::UINT32,
+    "observation_age_sec", 1, Field::FLOAT32);
   modifier.resize(detection.obstacles.size());
   message.is_dense = true;
   // Avoid creating iterators over an empty cloud on ROS versions whose iterator
@@ -346,13 +350,15 @@ sensor_msgs::msg::PointCloud2 obstacleMessage(const DetectionResult & detection,
   if (detection.obstacles.empty()) { return message; }
   sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z"), radius(message, "radius");
   sensor_msgs::PointCloud2Iterator<std::uint32_t> count(message, "point_count");
+  sensor_msgs::PointCloud2Iterator<float> age(message, "observation_age_sec");
   for (const auto & obstacle : detection.obstacles) {
     *x = static_cast<float>(obstacle.forward_m);
     *y = static_cast<float>(obstacle.left_m);
     *z = 0.0F;
     *radius = static_cast<float>(obstacle.radius_m);
     *count = static_cast<std::uint32_t>(obstacle.support_points);
-    ++x; ++y; ++z; ++radius; ++count;
+    *age = static_cast<float>(obstacle.observation_age_sec);
+    ++x; ++y; ++z; ++radius; ++count; ++age;
   }
   return message;
 }
@@ -403,6 +409,19 @@ public:
     config_.floor.min_valid_ratio = declare_parameter<double>("floor.min_valid_ratio", config_.floor.min_valid_ratio);
     config_.floor.min_delta_m = declare_parameter<double>("floor.min_delta_m", config_.floor.min_delta_m);
     config_.floor.noise_scale = declare_parameter<double>("floor.noise_scale", config_.floor.noise_scale);
+    config_.floor.release_ratio = declare_parameter<double>("floor.release_ratio", config_.floor.release_ratio);
+    config_.stabilization.enabled =
+      declare_parameter<bool>("stabilization.enabled", config_.stabilization.enabled);
+    config_.stabilization.confirm_hits =
+      declare_parameter<int>("stabilization.confirm_hits", config_.stabilization.confirm_hits);
+    config_.stabilization.window_frames =
+      declare_parameter<int>("stabilization.window_frames", config_.stabilization.window_frames);
+    config_.stabilization.hold_sec =
+      declare_parameter<double>("stabilization.hold_sec", config_.stabilization.hold_sec);
+    config_.stabilization.match_distance_m =
+      declare_parameter<double>("stabilization.match_distance_m", config_.stabilization.match_distance_m);
+    config_.stabilization.max_frame_gap_sec =
+      declare_parameter<double>("stabilization.max_frame_gap_sec", config_.stabilization.max_frame_gap_sec);
     config_.floor_file = declare_parameter<std::string>("floor.file", config_.floor_file);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
     config_.nv12_fps = declare_parameter<double>("nv12.fps", config_.nv12_fps);
@@ -530,6 +549,20 @@ private:
           next.floor.min_delta_m = parameter.as_double();
         } else if (name == "floor.noise_scale") {
           next.floor.noise_scale = parameter.as_double();
+        } else if (name == "floor.release_ratio") {
+          next.floor.release_ratio = parameter.as_double();
+        } else if (name == "stabilization.enabled") {
+          next.stabilization.enabled = parameter.as_bool();
+        } else if (name == "stabilization.confirm_hits") {
+          next.stabilization.confirm_hits = static_cast<int>(parameter.as_int());
+        } else if (name == "stabilization.window_frames") {
+          next.stabilization.window_frames = static_cast<int>(parameter.as_int());
+        } else if (name == "stabilization.hold_sec") {
+          next.stabilization.hold_sec = parameter.as_double();
+        } else if (name == "stabilization.match_distance_m") {
+          next.stabilization.match_distance_m = parameter.as_double();
+        } else if (name == "stabilization.max_frame_gap_sec") {
+          next.stabilization.max_frame_gap_sec = parameter.as_double();
         } else if (name == "floor.file") {
           if (parameter.as_string() != previous.floor_file) {
             result.reason = "floor.file is fixed for this process; change YAML and restart";
@@ -656,11 +689,23 @@ private:
     bool radar_window_open = false;
     bool stereo_window_open = false;
     FloorReference floor;
+    ClusterStabilizer stabilizer;
+    std::vector<std::uint8_t> foreground_mask;
+    std::string active_stabilization_context;
+    bool have_detection_time = false;
+    double previous_detection_time = 0.0;
+    const auto clear_history = [&]() {
+      stabilizer.clear();
+      foreground_mask.clear();
+      active_stabilization_context.clear();
+      have_detection_time = false;
+    };
     std::uint64_t handled_floor_request = 0U;
     bool start_floor_measurement = false;
     bool allow_reference_load = true;
     std::string active_floor_context;
     std::string floor_status;
+    std::size_t published_obstacle_count = 0U;
     const std::string floor_path = floor_path_;
     const auto set_floor_status = [&](const std::string & status) {
       if (floor_status == status) { return; }
@@ -669,11 +714,30 @@ private:
       message.data = status;
       floor_status_publisher_->publish(message);
     };
+    const auto publish_status_result = [&](const NodeConfig & config, const DetectionResult & detection) {
+      const auto stamp = now();
+      obstacles_publisher_->publish(obstacleMessage(detection, stamp, config.frame_id));
+      published_obstacle_count = detection.obstacles.size();
+      if (config.preview_enabled) {
+        auto preview = makeScanPreview(detection, floor_status, config, 0.0, 0.0, 0.0, 0.0);
+        preview_publisher_->publish(matToImageMessage(preview, stamp, config.frame_id));
+        if (config.preview_gui) {
+          cv::imshow("depth_lidar radar preview", preview);
+          radar_window_open = true;
+        }
+      }
+    };
+    const auto publish_empty = [&](const NodeConfig & config) {
+      publish_status_result(config, DetectionResult{});
+    };
     set_floor_status("WAITING FOR CAMERA | B: MEASURE FLOOR");
     while (rclcpp::ok() && !stop_requested_.load()) {
       restart_requested_.store(false);
       const NodeConfig startup_config = configSnapshot();
       try {
+        clear_history();
+        set_floor_status("WAITING FOR CAMERA | HISTORY CLEARED");
+        publish_empty(startup_config);
         auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
         dai::Pipeline pipeline(device);
         pipeline.setXLinkChunkSize(0);
@@ -776,6 +840,8 @@ private:
         double measured_object_processing_fps = 0.0;
         double measured_object_processing_ms = 0.0;
         double measured_delay_ms = 0.0;
+        auto last_valid_depth_rx = std::chrono::steady_clock::now();
+        bool depth_stale = false;
 
         std::exception_ptr processing_error;
         try {
@@ -788,10 +854,12 @@ private:
             if (floor_request != handled_floor_request) {
               handled_floor_request = floor_request;
               floor.clear();
+              clear_history();
               start_floor_measurement = false;
               allow_reference_load = false;
               // Invalidate the old result before collecting a single new sample.
-              obstacles_publisher_->publish(obstacleMessage(DetectionResult{}, now(), display_config.frame_id));
+              set_floor_status("MEASUREMENT REQUESTED | HISTORY CLEARED");
+              publish_empty(display_config);
               try {
                 std::filesystem::remove(floor_path);
                 std::filesystem::remove(floor_path + ".tmp");
@@ -867,8 +935,25 @@ private:
                 }
               }
             }
+            if (!depth_stale && std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - last_valid_depth_rx).count()
+                > display_config.stabilization.max_frame_gap_sec) {
+              clear_history();
+              depth_stale = true;
+              set_floor_status("DEPTH STALE | WAITING FOR FRAME");
+              publish_empty(display_config);
+            }
             auto depth_frame = depth_queue->tryGet<dai::ImgFrame>();
             if (!depth_frame) {
+              if (published_obstacle_count > 0U && display_config.stabilization.enabled
+                  && display_config.stabilization.hold_sec > 0.0) {
+                const double clock_sec = std::chrono::duration<double>(
+                  std::chrono::steady_clock::now().time_since_epoch()).count();
+                const auto remaining = stabilizer.snapshot(clock_sec, display_config.stabilization);
+                if (remaining.obstacles.size() < published_obstacle_count) {
+                  publish_status_result(display_config, remaining);
+                }
+              }
               std::this_thread::sleep_for(1ms);
               continue;
             }
@@ -887,6 +972,14 @@ private:
               RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Invalid RAW16 depth frame/stride");
               continue;
             }
+            const double frame_time_sec = std::chrono::duration<double>(
+              depth_frame->getTimestamp().time_since_epoch()).count();
+            if (std::chrono::duration<double>(std::chrono::steady_clock::now()
+                - depth_frame->getTimestamp()).count() > display_config.stabilization.max_frame_gap_sec) {
+              continue;
+            }
+            last_valid_depth_rx = std::chrono::steady_clock::now();
+            depth_stale = false;
             latest_depth_width = camera.width = depth_width;
             latest_depth_height = camera.height = depth_height;
             const auto & transformation = depth_frame->getTransformation();
@@ -910,6 +1003,7 @@ private:
             if (active_floor_context != context.str()) {
               active_floor_context = context.str();
               floor.clear();
+              clear_history();
               set_floor_status("NO COMPATIBLE FLOOR | B: MEASURE");
               if (allow_reference_load && !start_floor_measurement) {
                 try {
@@ -952,8 +1046,42 @@ private:
                 }
               }
             }
-            const auto detection = detectForeground(depth, stride_elements, camera, floor,
-              current.floor, current.projection, current.cluster);
+            // Detector changes invalidate both per-pixel labels and cluster tracks;
+            // preview-only changes keep history. The floor file is never modified here.
+            context << '|' << current.frame_id << '|' << current.projection.roi_width_ratio
+              << '|' << current.projection.roi_height_ratio << '|' << current.projection.roi_bottom_offset_ratio
+              << '|' << current.projection.pixel_stride << '|' << current.projection.min_range_m
+              << '|' << current.projection.max_range_m << '|' << current.projection.range_offset_m
+              << '|' << current.floor.min_delta_m << '|' << current.floor.noise_scale << '|' << current.floor.release_ratio
+              << '|' << current.cluster.min_points << '|' << current.cluster.neighbor_distance_m
+              << '|' << current.cluster.radius_margin_m << '|' << current.cluster.min_radius_m
+              << '|' << current.stabilization.enabled << '|' << current.stabilization.confirm_hits
+              << '|' << current.stabilization.window_frames << '|' << current.stabilization.hold_sec
+              << '|' << current.stabilization.match_distance_m << '|' << current.stabilization.max_frame_gap_sec;
+            if (active_stabilization_context != context.str()
+                || (have_detection_time && frame_time_sec - previous_detection_time
+                    > current.stabilization.max_frame_gap_sec)) {
+              clear_history();
+              active_stabilization_context = context.str();
+            }
+            if (have_detection_time && frame_time_sec <= previous_detection_time) {
+              // Replayed frames must not re-confirm a track or preserve pixel labels.
+              clear_history();
+              publish_empty(current);
+              continue;
+            }
+            previous_detection_time = frame_time_sec;
+            have_detection_time = true;
+            const auto raw_detection = detectForeground(depth, stride_elements, camera, floor,
+              current.floor, current.projection, current.cluster,
+              current.stabilization.enabled ? &foreground_mask : nullptr);
+            DetectionResult detection;
+            if (floor.ready()) {
+              detection = stabilizer.update(raw_detection, frame_time_sec, current.stabilization);
+            } else {
+              clear_history();
+              detection = raw_detection;
+            }
             const auto object_processing_end = std::chrono::steady_clock::now();
             const double object_processing_ms =
               std::chrono::duration<double, std::milli>(object_processing_end - processing_start)
@@ -961,6 +1089,7 @@ private:
             const builtin_interfaces::msg::Time ros_stamp = now();
 
             obstacles_publisher_->publish(obstacleMessage(detection, ros_stamp, current.frame_id));
+            published_obstacle_count = detection.obstacles.size();
 
             const auto before_preview = std::chrono::steady_clock::now();
             const double delay_ms = std::max(0.0,
@@ -1048,7 +1177,10 @@ private:
           std::rethrow_exception(processing_error);
         }
       } catch (const std::exception & error) {
+        clear_history();
         set_floor_status("CAMERA UNAVAILABLE | RECONNECTING");
+        obstacles_publisher_->publish(obstacleMessage(DetectionResult{}, now(), configSnapshot().frame_id));
+        published_obstacle_count = 0U;
         RCLCPP_ERROR(get_logger(), "DepthAI pipeline error: %s", error.what());
         for (int i = 0; i < 10 && rclcpp::ok() && !stop_requested_.load(); ++i) {
           std::this_thread::sleep_for(100ms);

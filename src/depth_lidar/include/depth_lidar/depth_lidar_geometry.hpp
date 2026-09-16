@@ -45,6 +45,7 @@ struct FloorConfig
   double min_valid_ratio{0.5};
   double min_delta_m{0.05};
   double noise_scale{3.0};
+  double release_ratio{0.6};
 };
 
 struct ForegroundPoint
@@ -62,6 +63,7 @@ struct ObstacleCircle
   double left_m{0.0};
   double radius_m{0.0};
   std::size_t support_points{0};
+  double observation_age_sec{0.0};
 };
 
 struct DetectionResult
@@ -90,7 +92,8 @@ public:
   int frames() const { return frames_; }
   int targetFrames() const { return target_frames_; }
   std::size_t validPixels() const { return valid_pixels_; }
-  bool isForeground(std::size_t pixel, double depth_m, const FloorConfig & config) const;
+  bool isForeground(std::size_t pixel, double depth_m, const FloorConfig & config,
+    bool was_foreground = false) const;
   void save(const std::string & path) const;
   bool load(const std::string & path, const CameraGeometry & camera);
 
@@ -109,5 +112,6 @@ private:
 DetectionResult detectForeground(const std::uint16_t * depth_mm,
   std::size_t row_stride_elements, const CameraGeometry & camera,
   const FloorReference & floor, const FloorConfig & floor_config,
-  const ProjectionConfig & projection, const ClusterConfig & cluster);
+  const ProjectionConfig & projection, const ClusterConfig & cluster,
+  std::vector<std::uint8_t> * foreground_mask = nullptr);
 } // namespace depth_lidar

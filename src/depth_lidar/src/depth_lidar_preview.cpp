@@ -102,11 +102,13 @@ cv::Mat makeRadarPreview(const DetectionResult & detection,
     const auto center = pointAt(std::hypot(obstacle.forward_m, obstacle.left_m),
       std::atan2(obstacle.left_m, obstacle.forward_m));
     const int radius = std::max(1, static_cast<int>(std::lround(obstacle.radius_m * pixels_per_meter)));
-    cv::circle(image, center, radius, cv::Scalar(0, 150, 230), 2, cv::LINE_AA);
-    cv::drawMarker(image, center, cv::Scalar(0, 70, 180), cv::MARKER_CROSS, 9, 2);
+    const bool held = obstacle.observation_age_sec > 0.0;
+    cv::circle(image, center, radius, held ? cv::Scalar(150, 150, 150) : cv::Scalar(0, 150, 230), 2, cv::LINE_AA);
+    cv::drawMarker(image, center, held ? cv::Scalar(120, 120, 120) : cv::Scalar(0, 70, 180), cv::MARKER_CROSS, 9, 2);
     std::ostringstream label;
     label << std::fixed << std::setprecision(2) << "x" << obstacle.forward_m
           << " y" << obstacle.left_m << " r" << obstacle.radius_m;
+    if (held) { label << " HOLD " << obstacle.observation_age_sec << "s"; }
     labelAt(label.str(), center + cv::Point(6, -8), 0.35);
   }
   for (const auto & point : detection.points) {

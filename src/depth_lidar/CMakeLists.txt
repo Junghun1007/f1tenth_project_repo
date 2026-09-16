@@ -20,7 +20,7 @@ find_package(std_srvs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core highgui imgproc)
 find_package(depthai CONFIG REQUIRED)
 
-add_library(depth_lidar_geometry src/depth_lidar_geometry.cpp)
+add_library(depth_lidar_geometry src/depth_lidar_geometry.cpp src/depth_lidar_stabilization.cpp)
 target_include_directories(depth_lidar_geometry
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

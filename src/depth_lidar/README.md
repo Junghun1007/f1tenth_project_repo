@@ -60,7 +60,7 @@ ROI를 늘리거나 이동할 수 있고, 3m 밖의 바닥 앞에 나타난 3m �
 기준이 없는 픽셀은 물체 판정을 하지 않습니다.
 
 ```text
-물체 후보 = 바닥 평균 깊이 - 현재 깊이 > max(floor.min_delta_m, floor.noise_scale × 표준편차)
+신규 물체 후보 = 바닥 평균 깊이 - 현재 깊이 > max(floor.min_delta_m, floor.noise_scale × 표준편차)
 ```
 
 현재 ROI 안에서 위 조건과 `range.min_m`~`range.max_m`을 만족하는 픽셀을 추출합니다.
@@ -83,15 +83,62 @@ ROI를 늘리거나 이동할 수 있고, 3m 밖의 바닥 앞에 나타난 3m �
 `scan.*`, `cluster.min_bins`, `cluster.max_missing_bins`, `cluster.base_neighbor_distance_m`,
 `cluster.angular_neighbor_scale`, `cluster.max_radius_m` 대신 새 YAML을 사용합니다.
 
+## 깜빡임 안정화
+
+픽셀별 바닥 파일과 원래 깊이를 이용한 위치 추정은 유지합니다. 다음 처리는 **레이더와 장애물
+토픽에 함께 적용**되며 기존 `DLFLOOR1` 파일을 다시 측정하지 않아도 됩니다.
+
+1. 픽셀별 신규 검출 문턱은 `T=max(floor.min_delta_m, floor.noise_scale × 표준편차)`입니다.
+   직전 프레임에서 후보였던 픽셀은 `T × floor.release_ratio`를 넘으면 유지합니다.
+   기본 T가 5cm라면 해제 문턱은 3cm입니다. 깊이 0이나 거리 범위 밖의 픽셀은 즉시 해제합니다.
+   무효 깊이를 과거 깊이로 채우지 않습니다.
+2. 군집 중심의 카메라 X/Y 거리가 `stabilization.match_distance_m` 이내인 쌍 중 가까운 순서로
+   일대일 연결합니다. 기본 15cm이며, 최근 **처리된 depth 3프레임 중 2회** 관측된 군집을 확정합니다.
+   한 번만 나타나는 군집은 출력하지 않습니다. 두 번 연속 확인되는 경우 60Hz에서 추가 지연은
+   약 한 프레임(17ms)이지만 실제 지연은 수신·처리 속도에 따라 달라집니다.
+3. 확정된 군집이 누락되면 마지막 관측부터 `stabilization.hold_sec`(기본 80ms)까지 유지합니다.
+   유지 위치와 반지름은 마지막 관측값이며 이동 예측·좌표 평균 필터는 적용하지 않습니다.
+   회색 원과 `HOLD` 라벨로 표시하고, 과거 표면점은 다시 그리지 않습니다.
+
+```yaml
+floor.release_ratio: 0.60
+stabilization.enabled: true
+stabilization.confirm_hits: 2
+stabilization.window_frames: 3
+stabilization.hold_sec: 0.08
+stabilization.match_distance_m: 0.15
+stabilization.max_frame_gap_sec: 0.20
+```
+
+`stabilization.enabled=false`는 픽셀 히스테리시스와 군집 확인·유지를 함께 끄고 기존 단일 프레임
+검출로 돌아갑니다. `floor.release_ratio=1.0`은 군집 안정화를 유지하면서 픽셀 히스테리시스만 끕니다.
+`hold_sec=0`은 누락 군집의 출력을 유지하지 않습니다.
+
+바닥 재측정, 탐지 ROI·거리·군집·안정화 설정 변경, 좌표 프레임 변경, 카메라 재시작 시
+픽셀 및 군집 이력을 초기화합니다. 바닥 파일은 그대로 재사용하며 B 재측정 때만 교체합니다.
+프레임 시각 간격이 `max_frame_gap_sec`를 넘으면 이력을 초기화하고, 오래된 영상과 중복·역순
+시각은 안정화 근거로 사용하지 않습니다. 프레임이 끊겨도 수신 루프가 유지되는 동안 시간 기준으로
+유지 군집을 만료시킵니다. 유효 영상이 200ms 이상 없으면 `DEPTH STALE`과 빈 결과를 발행합니다.
+카메라 오류 시에도 장애물 목록을 비웁니다.
+
+주행 중 차량 이동을 보정하는 odometry/TF는 연결하지 않았습니다. 유지 군집은 **과거 카메라
+좌표의 짧은 보류**이므로 빠른 주행에서는 유지 시간을 줄여야 합니다. 가까운 물체들이 교차하거나
+군집이 분리·합쳐지면 잘못 연결될 수 있습니다. 실제 잡음/속도에 맞춰 거리와 시간을 조절합니다.
+
 ## 출력
 
 | 토픽/서비스 | 형식 및 의미 |
 |---|---|
-| `/depth_lidar/obstacles` | PointCloud2, 군집 하나당 점 하나: x/y/z/radius(float32, m), point_count(uint32) |
+| `/depth_lidar/obstacles` | PointCloud2, 군집 하나당 점 하나: x/y/z/radius(float32, m), point_count(uint32), observation_age_sec(float32, s) |
 | `/depth_lidar/floor_status` | String, 측정/저장/로드 상태. 최신 상태를 유지하는 transient-local 토픽 |
-| `/depth_lidar/preview` | 흰색 레이더: 파란 군집 점, 주황 중심·반지름, 바닥 상태, 수신/연산 성능 |
+| `/depth_lidar/preview` | 흰색 레이더: 파란 군집 점, 주황 현재 중심·반지름, 회색 유지 군집, 바닥 상태, 수신/연산 성능 |
 | `/depth_lidar/stereo_preview` | 좌우 정렬 영상과 초록 ROI. 오른쪽이 실제 depth 기준, 왼쪽은 비교 가이드 |
 | `/depth_lidar/measure_floor` | Trigger 서비스. 이전 결과를 버리고 새 바닥 측정 요청 |
+
+`observation_age_sec`는 처리 중인 depth 프레임 시각에서 마지막 군집 관측까지의 경과 시간입니다.
+현재 관측은 0, 누락 후 유지는 양수입니다. 프레임 중단 시 만료 갱신에는 현재 단조 시각을 씁니다.
+USB/처리/ROS 전송 지연 전체를 나타내는 값은 아닙니다. 유지 군집의 `point_count`는 마지막 관측값입니다.
+필드 추가로 `point_step`은 **24바이트**입니다. 수신 측은 필드 이름과 `point_step`을 사용해야 합니다.
 
 기준 미준비/측정 중에는 빈 장애물 목록을 발행합니다. 빈 목록 자체는 바닥 학습 완료를
 뜻하지 않으므로 경로계획에서는 `floor_status`와 측정 시각도 확인해야 합니다.
@@ -139,6 +186,6 @@ ros2 param set /depth_lidar roi.bottom_offset_ratio 0.25
 | `nv12.*` | CAM_A의 동시 USB 부하 측정. 영상 변환·발행·프리뷰 없이 전용 스레드로 수신 |
 
 `floor.measure_frames`, `floor.min_valid_ratio` 변경은 다음 새 측정부터 적용됩니다.
-`floor.min_delta_m`, `floor.noise_scale`, 군집 조건은 현재 저장 기준에 즉시 적용됩니다.
+`floor.min_delta_m`, `floor.noise_scale`, `floor.release_ratio`, 군집·안정화 조건은 현재 저장 기준에 즉시 적용하고 검출 이력을 초기화합니다.
 `preview.scale`, `bev.*`, `sensor.*`는 이전 설정 호환용으로 남아 있으며 현재 표시에 사용하지 않습니다.
 수신 FPS와 객체 처리시간은 계속 표시합니다. 바닥 측정/파일 저장 중의 연산시간에는 그 작업이 포함됩니다.

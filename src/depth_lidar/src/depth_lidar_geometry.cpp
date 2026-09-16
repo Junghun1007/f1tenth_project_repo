@@ -70,8 +70,9 @@ bool validateFloorConfig(const FloorConfig & c, std::string & reason)
   if (c.measure_frames < 2 || c.measure_frames > 3600
       || !std::isfinite(c.min_valid_ratio) || c.min_valid_ratio <= 0.0 || c.min_valid_ratio > 1.0
       || !std::isfinite(c.min_delta_m) || c.min_delta_m <= 0.0
-      || !std::isfinite(c.noise_scale) || c.noise_scale < 0.0) {
-    reason = "floor requires frames [2,3600], valid_ratio (0,1], delta > 0, noise_scale >= 0";
+      || !std::isfinite(c.noise_scale) || c.noise_scale < 0.0
+      || !std::isfinite(c.release_ratio) || c.release_ratio <= 0.0 || c.release_ratio > 1.0) {
+    reason = "floor requires frames [2,3600], valid_ratio (0,1], delta > 0, noise_scale >= 0, release_ratio (0,1]";
     return false;
   }
   reason.clear();
@@ -145,13 +146,15 @@ bool FloorReference::accumulate(const std::uint16_t * depth, std::size_t stride)
   return true;
 }
 
-bool FloorReference::isForeground(std::size_t i, double depth_m, const FloorConfig & c) const
+bool FloorReference::isForeground(std::size_t i, double depth_m, const FloorConfig & c,
+  bool was_foreground) const
 {
   if (!ready() || i >= counts_.size() || counts_[i] < static_cast<std::uint32_t>(min_samples_)) {
     return false;
   }
   const double sigma = std::sqrt(std::max(0.0, m2_[i] / (counts_[i] - 1U)));
-  return mean_m_[i] - depth_m > std::max(c.min_delta_m, c.noise_scale * sigma);
+  const double threshold = std::max(c.min_delta_m, c.noise_scale * sigma);
+  return mean_m_[i] - depth_m > threshold * (was_foreground ? c.release_ratio : 1.0);
 }
 
 void FloorReference::save(const std::string & path) const
@@ -245,7 +248,8 @@ bool FloorReference::load(const std::string & path, const CameraGeometry & camer
 
 DetectionResult detectForeground(const std::uint16_t * depth, std::size_t stride,
   const CameraGeometry & camera, const FloorReference & floor, const FloorConfig & floor_config,
-  const ProjectionConfig & projection, const ClusterConfig & cluster)
+  const ProjectionConfig & projection, const ClusterConfig & cluster,
+  std::vector<std::uint8_t> * foreground_mask)
 {
   std::string reason;
   if (!validCamera(camera) || !depth || stride < static_cast<std::size_t>(camera.width)
@@ -256,7 +260,12 @@ DetectionResult detectForeground(const std::uint16_t * depth, std::size_t stride
   DetectionResult result;
   result.roi = computeRoi(camera.width, camera.height, projection.roi_width_ratio,
     projection.roi_height_ratio, projection.roi_bottom_offset_ratio);
-  if (!floor.ready() || !floor.compatible(camera)) { return result; }
+  if (!floor.ready() || !floor.compatible(camera)) {
+    if (foreground_mask) { foreground_mask->clear(); }
+    return result;
+  }
+  const auto pixels = static_cast<std::size_t>(camera.width) * camera.height;
+  if (foreground_mask && foreground_mask->size() != pixels) { foreground_mask->assign(pixels, 0U); }
   const int step = projection.pixel_stride;
   const int cols = (result.roi.width + step - 1) / step;
   const int rows = (result.roi.height + step - 1) / step;
@@ -268,14 +277,20 @@ DetectionResult detectForeground(const std::uint16_t * depth, std::size_t stride
     for (int col = 0; col < cols; ++col) {
       const int u = result.roi.x + col * step;
       const auto raw = depth[static_cast<std::size_t>(v) * stride + u];
-      if (!raw || !floor.isForeground(static_cast<std::size_t>(v) * camera.width + u,
-          raw * 0.001, floor_config)) { continue; }
+      const auto pixel = static_cast<std::size_t>(v) * camera.width + u;
+      const bool previous = foreground_mask && (*foreground_mask)[pixel] != 0U;
+      const bool foreground = raw && floor.isForeground(pixel, raw * 0.001, floor_config, previous);
+      if (foreground_mask) { (*foreground_mask)[pixel] = foreground ? 1U : 0U; }
+      if (!foreground) { continue; }
       const double forward = raw * 0.001;
       const double left = (camera.cx - u) * forward / camera.fx;
       const double up = (camera.cy - v) * forward / camera.fy;
       const double range = std::hypot(forward, left);
       const double corrected = range + projection.range_offset_m;
-      if (corrected < projection.min_range_m || corrected > projection.max_range_m) { continue; }
+      if (corrected < projection.min_range_m || corrected > projection.max_range_m) {
+        if (foreground_mask) { (*foreground_mask)[pixel] = 0U; }
+        continue;
+      }
       const double scale = corrected / range;
       grid[static_cast<std::size_t>(row) * cols + col] = static_cast<int>(candidates.size());
       candidates.push_back({forward * scale, left * scale, up * scale, u, v});

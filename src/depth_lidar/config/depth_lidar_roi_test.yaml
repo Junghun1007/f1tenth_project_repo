@@ -31,6 +31,17 @@ depth_lidar:
     floor.min_valid_ratio: 0.50
     floor.min_delta_m: 0.05
     floor.noise_scale: 3.0
+    # Pixel hysteresis: release at 60% of max(min_delta, noise_scale * sigma).
+    floor.release_ratio: 0.60
+
+    # Confirm a cluster in 2 of the last 3 processed depth frames, hold up to 80ms.
+    # Matching uses camera-frame XY centers; no odometry/motion compensation.
+    stabilization.enabled: true
+    stabilization.confirm_hits: 2
+    stabilization.window_frames: 3
+    stabilization.hold_sec: 0.08
+    stabilization.match_distance_m: 0.15
+    stabilization.max_frame_gap_sec: 0.20
 
     # Cluster foreground pixels before computing mean X/Y and covering radius.
     # 8-connected image neighbors must also be within this 3D distance.
