@@ -79,8 +79,13 @@ depth_lidar:
     # Reject isolated depth speckles using four neighbors at pixel_stride spacing.
     filter.min_neighbors: 1         # 0 disables; 1..4 requires supporting neighbors.
     filter.neighbor_delta_m: 0.08
-    # Missing bins may retain their last observation briefly; fresh returns replace it.
-    scan.hold_sec: 0.08             # 0 = latest frame only, no inter-frame hold.
+    # Confirm a similar range in this angular bin in 3 of the last 4 depth frames.
+    # Continuously enforced; rejects single-frame and alternating on/off speckles.
+    scan.confirm_hits: 3            # 1 disables temporal confirmation.
+    scan.confirm_window_frames: 4   # Processed depth frames, not preview refreshes.
+    scan.confirm_distance_m: 0.10   # Supporting ranges must be within 10cm of current.
+    # Only confirmed observations refresh the hold; candidates remain invisible.
+    scan.hold_sec: 0.08             # 0 = no hold; confirmation still applies.
     input.max_age_sec: 0.20         # Reject stale/replayed frames; stop publishing old data.
 
     # Optional USB load generator; no conversion or publication.

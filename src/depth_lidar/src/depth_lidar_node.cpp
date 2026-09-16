@@ -59,6 +59,9 @@ struct NodeConfig
   bool subpixel{false};
   bool extended_disparity{false};
   std::string median_filter{"3x3"};
+  int confirm_hits{3};
+  int confirm_window_frames{4};
+  double confirm_distance_m{0.10};
   double hold_sec{0.08};
   double max_age_sec{0.20};
   bool nv12_enabled{false};
@@ -155,6 +158,12 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
     return false;
   }
   if (!validateProjectionConfig(config.projection, reason)) {
+    return false;
+  }
+  if (config.confirm_window_frames < 1 || config.confirm_window_frames > 30
+      || config.confirm_hits < 1 || config.confirm_hits > config.confirm_window_frames
+      || !std::isfinite(config.confirm_distance_m) || config.confirm_distance_m <= 0.0) {
+    reason = "scan.confirm_hits must be 1..confirm_window_frames (1..30); confirm_distance_m must be finite and positive";
     return false;
   }
   if (!std::isfinite(config.hold_sec) || !std::isfinite(config.max_age_sec)
@@ -319,6 +328,9 @@ public:
     config_.projection.min_points_per_bin = declare_parameter<int>("scan.min_points_per_bin", config_.projection.min_points_per_bin);
     config_.projection.min_neighbors = declare_parameter<int>("filter.min_neighbors", config_.projection.min_neighbors);
     config_.projection.neighbor_delta_m = declare_parameter<double>("filter.neighbor_delta_m", config_.projection.neighbor_delta_m);
+    config_.confirm_hits = declare_parameter<int>("scan.confirm_hits", config_.confirm_hits);
+    config_.confirm_window_frames = declare_parameter<int>("scan.confirm_window_frames", config_.confirm_window_frames);
+    config_.confirm_distance_m = declare_parameter<double>("scan.confirm_distance_m", config_.confirm_distance_m);
     config_.hold_sec = declare_parameter<double>("scan.hold_sec", config_.hold_sec);
     config_.max_age_sec = declare_parameter<double>("input.max_age_sec", config_.max_age_sec);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
@@ -425,6 +437,9 @@ public:
             else if (p.get_name() == "scan.min_points_per_bin") { next.projection.min_points_per_bin = p.as_int(); }
             else if (p.get_name() == "filter.min_neighbors") { next.projection.min_neighbors = p.as_int(); }
             else if (p.get_name() == "filter.neighbor_delta_m") { next.projection.neighbor_delta_m = p.as_double(); }
+            else if (p.get_name() == "scan.confirm_hits") { next.confirm_hits = p.as_int(); }
+            else if (p.get_name() == "scan.confirm_window_frames") { next.confirm_window_frames = p.as_int(); }
+            else if (p.get_name() == "scan.confirm_distance_m") { next.confirm_distance_m = p.as_double(); }
             else if (p.get_name() == "scan.hold_sec") { next.hold_sec = p.as_double(); }
             else if (p.get_name() == "input.max_age_sec") { next.max_age_sec = p.as_double(); }
             else if (p.get_name() == "nv12.enabled") { next.nv12_enabled = p.as_bool(); }
@@ -648,7 +663,7 @@ private:
     const std::atomic<std::uint64_t> & nv12_count, const std::atomic_bool & nv12_failed)
   {
     ScanProjector projector;
-    ScanHold hold;
+    ScanHold hold(c.confirm_hits, c.confirm_window_frames, c.confirm_distance_m);
     CameraGeometry camera;
     auto displayed = emptyScan(c.projection);
     bool configured = false, ready = false, radar_open = false, stereo_open = false;
