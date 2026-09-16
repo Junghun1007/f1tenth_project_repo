@@ -54,6 +54,7 @@ struct NodeConfig
   std::string camera_resolution{"400p"};
   std::string depth_mode{"high_density"};
   int confidence_threshold{200};
+  double ir_dot_projector_intensity{0.5};
   bool left_right_check{true};
   bool subpixel{false};
   bool extended_disparity{false};
@@ -95,6 +96,11 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   }
   if (!isOneOf(config.depth_mode, {"default", "high_density", "high_accuracy"})) {
     reason = "depth.mode must be one of: default, high_density, high_accuracy";
+    return false;
+  }
+  if (!std::isfinite(config.ir_dot_projector_intensity)
+      || config.ir_dot_projector_intensity < 0.0 || config.ir_dot_projector_intensity > 1.0) {
+    reason = "depth.ir_dot_projector_intensity must be finite and in [0.0, 1.0]";
     return false;
   }
   if (config.confidence_threshold < 0 || config.confidence_threshold > 255) {
@@ -289,6 +295,8 @@ public:
     config_.camera_fps = declare_parameter<double>("camera.fps", config_.camera_fps);
     config_.camera_resolution = declare_parameter<std::string>("camera.resolution", config_.camera_resolution);
     config_.depth_mode = declare_parameter<std::string>("depth.mode", config_.depth_mode);
+    config_.ir_dot_projector_intensity = declare_parameter<double>(
+      "depth.ir_dot_projector_intensity", config_.ir_dot_projector_intensity);
     config_.confidence_threshold = declare_parameter<int>("depth.confidence_threshold", config_.confidence_threshold);
     config_.left_right_check = declare_parameter<bool>("depth.left_right_check", config_.left_right_check);
     config_.subpixel = declare_parameter<bool>("depth.subpixel", config_.subpixel);
@@ -329,7 +337,7 @@ public:
     config_.sensor_yaw_deg = declare_parameter<double>("sensor.yaw_deg", config_.sensor_yaw_deg);
     config_.metrics_interval_sec = declare_parameter<double>("metrics.print_interval_sec", config_.metrics_interval_sec);
     config_.frame_id = declare_parameter<std::string>("frame_id", config_.frame_id);
-    startup_.ir_dot_projector_intensity = 0.0;
+    startup_.ir_dot_projector_intensity = 0.5;
     startup_.roi_preview_enabled = false;
     rcl_interfaces::msg::ParameterDescriptor read_only;
     read_only.read_only = true;
@@ -394,6 +402,7 @@ public:
             if (p.get_name() == "camera.fps") { next.camera_fps = p.as_double(); }
             else if (p.get_name() == "camera.resolution") { next.camera_resolution = p.as_string(); }
             else if (p.get_name() == "depth.mode") { next.depth_mode = p.as_string(); }
+            else if (p.get_name() == "depth.ir_dot_projector_intensity") { next.ir_dot_projector_intensity = p.as_double(); }
             else if (p.get_name() == "depth.confidence_threshold") { next.confidence_threshold = p.as_int(); }
             else if (p.get_name() == "depth.left_right_check") { next.left_right_check = p.as_bool(); }
             else if (p.get_name() == "depth.subpixel") { next.subpixel = p.as_bool(); }
@@ -535,6 +544,8 @@ private:
     oak_startup::OakStartupMeasurement pose;
     status("MEASURING STARTUP POSE: keep vehicle stationary on level ground", false);
     try {
+      RCLCPP_INFO(get_logger(), "Startup IR dot projector intensity: %.2f",
+        startup_.ir_dot_projector_intensity);
       pose = oak_startup::measureOakStartupExtrinsics(startup_, [this]() { return stopping(); });
       std::ostringstream description;
       description << std::setprecision(9) << "CAM_A fixed pose: device=" << pose.device_id
@@ -588,6 +599,15 @@ private:
         if (left_queue) { bound(stereo->rectifiedLeft); bound(stereo->rectifiedRight); }
         if (nv12_output) { bound(*nv12_output); }
         pipeline.start();
+        // Apply on every open/restart, including zero: startup and runtime are independent.
+        const bool ir_applied = device->setIrLaserDotProjectorIntensity(
+          static_cast<float>(c.ir_dot_projector_intensity));
+        if (!ir_applied && c.ir_dot_projector_intensity > 0.0) {
+          throw std::runtime_error(
+            "Failed to enable runtime IR dot projector; depth.ir_dot_projector_intensity > 0 requires a supported OAK Pro device");
+        }
+        RCLCPP_INFO(get_logger(), "Runtime IR dot projector intensity: %.2f (applied=%s)",
+          c.ir_dot_projector_intensity, ir_applied ? "true" : "false");
         std::atomic_bool nv12_stop{false}, nv12_failed{false};
         std::atomic<std::uint64_t> nv12_count{0};
         std::thread receiver;

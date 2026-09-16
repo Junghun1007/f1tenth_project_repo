@@ -599,15 +599,15 @@ OakStartupMeasurement measureOakStartupExtrinsics(
       static_cast<unsigned int>(config.imu_queue_size), false);
 
     pipeline->start();
-    if (
-      !config.manual_camera_height_enabled &&
-      config.ir_dot_projector_intensity > 0.0 &&
-      !device->setIrLaserDotProjectorIntensity(
-        static_cast<float>(config.ir_dot_projector_intensity)))
-    {
-      throw std::runtime_error(
-              "failed to enable the OAK IR dot projector; "
-              "startup measurement requires a Pro-series device");
+    if (!config.manual_camera_height_enabled) {
+      // Explicitly apply zero too, so a prior pipeline cannot leave the emitter enabled.
+      const bool ir_applied = device->setIrLaserDotProjectorIntensity(
+        static_cast<float>(config.ir_dot_projector_intensity));
+      if (!ir_applied && config.ir_dot_projector_intensity > 0.0) {
+        throw std::runtime_error(
+                "failed to enable the OAK IR dot projector; "
+                "startup measurement requires a Pro-series device");
+      }
     }
     const auto measurement_started_at = std::chrono::steady_clock::now();
     const auto deadline =

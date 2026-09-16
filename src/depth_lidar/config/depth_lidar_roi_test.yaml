@@ -5,6 +5,9 @@ depth_lidar:
     camera.fps: 30.0
     camera.resolution: "400p"       # 400p, 480p, 720p, 800p
     depth.mode: "high_density"      # default, high_density, high_accuracy
+    # Runtime obstacle depth illumination, independent of startup intensity.
+    # Normalized 0..1; 0=OFF. Reapplied after every runtime pipeline restart.
+    depth.ir_dot_projector_intensity: 0.5
     depth.confidence_threshold: 200
     depth.left_right_check: true
     depth.subpixel: false
@@ -44,8 +47,8 @@ depth_lidar:
     startup.stereo_confidence_threshold: 55
     startup.warmup_sec: 2.0
     startup.timeout_sec: 45.0
-    # 0 disables active illumination; >0 requires an OAK Pro dot projector.
-    startup.ir_dot_projector_intensity: 0.0
+    # Startup only: normalized 0..1, 0=OFF; >0 requires an OAK Pro dot projector.
+    startup.ir_dot_projector_intensity: 0.5
 
     # CAM_A position/yaw relative to the front-axle ground origin (meters/degrees).
     # Roll, pitch and height come from startup. CAM_C/rectification uses EEPROM.

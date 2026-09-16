@@ -8,6 +8,7 @@
 ## 실행
 
 DepthAI C++ 3.6+, ROS 2, OpenCV와 보정된 IMU가 있는 OAK가 필요하다.
+기본 설정은 초기 측정과 runtime 모두 dot 프로젝터를 사용하므로 이를 지원하는 OAK Pro 장치가 필요하다.
 공용 패키지가 추가되었으므로 기존 설치에서도 의존 패키지를 함께 빌드한다.
 
 ```bash
@@ -31,6 +32,28 @@ ros2 launch depth_lidar depth_lidar.launch.py config_file:=$(ros2 pkg prefix --s
 `startup.*`는 실행 중 변경할 수 없다. 다른 파라미터를 변경하면 runtime 카메라
 파이프라인과 짧은 거리 보존 이력을 재시작하지만 초기 자세는 유지한다.
 C 키는 runtime 카메라 창/USB 스트림을 켜고 끈다. 기본 실행은 GUI를 사용하지 않는다.
+
+## Dot 프로젝터 강도
+
+초기 자세 측정과 장애물 검출에 서로 독립된 강도를 적용한다. 기본값 0.5는 시작 설정이며
+환경에 맞춰 조절한다. 최적 강도를 실측한 값은 아니다.
+
+```yaml
+startup.ir_dot_projector_intensity: 0.5  # 초기 자세 측정
+depth.ir_dot_projector_intensity: 0.5   # 장애물 검출
+```
+
+두 값 모두 유한한 0.0~1.0만 허용한다. 각각 0.0으로 끌 수 있고, 프로젝터가 없는 장치는
+두 값 모두 0.0으로 설정한다. 양수 설정을 장치에 적용하지 못하면 해당 단계는 오류로
+처리하며, 프로젝터가 켜졌다고 가정한 채 검출을 계속하지 않는다.
+
+초기 측정값은 `startup.*`의 기존 규칙대로 실행 중 변경할 수 없다. runtime 강도는 다음처럼
+변경하며, runtime 파이프라인만 재시작하고 초기 자세는 다시 측정하지 않는다.
+C 키로 카메라 창을 켜거나 재연결할 때도 runtime 강도를 다시 적용한다.
+
+```bash
+ros2 param set /depth_lidar depth.ir_dot_projector_intensity 0.5
+```
 
 ## 좌표와 처리
 
@@ -68,7 +91,8 @@ USB 수신 대기, ROS 발행, 프리뷰 비용을 포함하지 않는다.
 |---|---|
 | `startup.roi_*` | 초기 1280×800 CAM_A 정렬 depth의 바닥 영역. runtime `roi.*`와 별개다. |
 | `startup.minimum_height_m/maximum_height_m` | 예상 카메라 장착 높이 허용 범위. 기본 0.10~0.40m. |
-| `startup.ir_dot_projector_intensity` | 기본 0. Pro 장치에서 바닥 depth가 부족하면 0~1 범위로 설정. |
+| `startup.ir_dot_projector_intensity` | 초기 자세 측정 강도. 기본 0.5, 범위 0~1, 0은 OFF. 변경 후 노드 재시작 필요. |
+| `depth.ir_dot_projector_intensity` | 장애물 검출 중 강도. 기본 0.5, 범위 0~1, 0은 OFF. 실행 중 변경 가능. |
 | `startup.timeout_sec` | 안정된 초기 표본을 기다릴 한도, 기본 45초. |
 | `height.min_m` | 바닥으로 제외할 높이. 기본 5cm. 높일수록 바닥 오검출은 줄지만 낮은 물체를 놓친다. |
 | `height.max_m` | 검출할 높이 상한. 기본 40cm. 실제 차체 충돌 높이에 맞춘다. |
