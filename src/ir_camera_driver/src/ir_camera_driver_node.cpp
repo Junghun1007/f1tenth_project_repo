@@ -788,7 +788,7 @@ private:
     return true;
   }
 
-  void ensureBevProjector(const dai::ImgFrame & reference_frame)
+  void ensureBevProjector(dai::ImgFrame & reference_frame)
   {
     if (bev_projector_->ready()) {
       return;
@@ -1049,7 +1049,7 @@ private:
                 std::chrono::steady_clock::now() - reprojection_started_at);
               latest_reprojection_ms_.store(
                 elapsed.count(), std::memory_order_relaxed);
-              const dai::ImgFrame & reference = selected_camera_ == SelectedCamera::LEFT ?
+              dai::ImgFrame & reference = selected_camera_ == SelectedCamera::LEFT ?
                 *snapshot->left : *snapshot->right;
               ensureBevProjector(reference);
               displayed_stereo = std::move(snapshot);
@@ -1275,7 +1275,7 @@ private:
   std::shared_ptr<dai::Device> device_;
   std::unique_ptr<dai::Pipeline> pipeline_;
   std::shared_ptr<dai::MessageQueue> output_queue_;
-  std::vector<std::shared_ptr<dai::MessageQueue>> camera_control_queues_;
+  std::vector<std::shared_ptr<dai::InputQueue>> camera_control_queues_;
   std::unique_ptr<CudaCenterReprojector> center_reprojector_;
   std::unique_ptr<IrBevProjector> bev_projector_;
 
