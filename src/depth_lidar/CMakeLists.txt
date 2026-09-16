@@ -42,6 +42,10 @@ if(BUILD_TESTING)
   ament_add_gtest(depth_lidar_geometry_test test/depth_lidar_geometry_test.cpp)
   target_link_libraries(depth_lidar_geometry_test depth_lidar_geometry)
   target_include_directories(depth_lidar_geometry_test PRIVATE include)
+  ament_add_gtest(depth_lidar_preview_test
+    test/depth_lidar_preview_test.cpp src/depth_lidar_preview.cpp)
+  target_link_libraries(depth_lidar_preview_test depth_lidar_geometry ${OpenCV_LIBS})
+  target_include_directories(depth_lidar_preview_test PRIVATE include ${OpenCV_INCLUDE_DIRS})
 endif()
 
 ament_export_include_directories(include)

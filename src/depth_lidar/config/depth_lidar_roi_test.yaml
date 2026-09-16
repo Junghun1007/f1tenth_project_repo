@@ -1,3 +1,4 @@
+# ROI tuning: radar + rectified stereo windows. Press C to toggle camera.
 depth_lidar:
   ros__parameters:
     # Camera pipeline parameters. Changes restart only this package's camera pipeline.
@@ -16,8 +17,8 @@ depth_lidar:
     roi.height_ratio: 0.10
     roi.bottom_offset_ratio: 0.35
 
-    range.min_m: 0.20
-    range.max_m: 8.0
+    range.min_m: 0.10
+    range.max_m: 3.0
     # corrected range = measured range + offset. Negative values make obstacles closer.
     range.offset_m: 0.0
     scan.bins: 360
@@ -44,16 +45,16 @@ depth_lidar:
     # White radar preview in the camera frame: top=forward, left=camera left.
     # Range rings extend to range.max_m; size_px sets the image width.
     preview.enabled: true
-    preview.gui: false
-    preview.fps: 10.0
+    preview.gui: true
+    preview.fps: 30.0
     preview.size_px: 700
 
     # Optional rectified left/right camera images with scan ROI overlay.
     # enabled toggles USB streams (pipeline restart); gui toggles only the window.
     # Press C in either preview window to toggle enabled.
-    stereo_preview.enabled: false
-    stereo_preview.gui: false
-    stereo_preview.fps: 15.0
+    stereo_preview.enabled: true
+    stereo_preview.gui: true
+    stereo_preview.fps: 30.0
 
     # Legacy BEV settings below are accepted but not used by the radar preview.
     preview.scale: 3

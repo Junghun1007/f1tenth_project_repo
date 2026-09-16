@@ -12,6 +12,7 @@ CAM_A의 NV12도 변환이나 프리뷰 없이 동시에
 - `~/scan` (`/depth_lidar/scan`): x축 전방, y축 좌측인 `LaserScan`
 - `~/preview` (`/depth_lidar/preview`): 흰색 배경에 거리 반원·각도선과 파란색 측정점을
   표시한 카메라 기준 레이더 영상. BEV/앞차축 변환과 원형 장애물 표시는 적용하지 않음
+- `~/stereo_preview`: 선택적으로 켜는 좌우 정렬 영상 + 초록색 ROI 테두리
 - 프리뷰/터미널: Depth 호스트 수신 FPS, NV12 호스트 수신 FPS, Depth 투영부터 군집과
   객체 위치 산출까지의 평균 연산시간 및 그 역수인 처리 가능 FPS
 - 터미널: 참고용 카메라 촬영 시각부터 출력까지의 delay. 수신/연산 FPS에는 포함하지 않음
@@ -89,6 +90,35 @@ ROI 아래 경계 = 영상 아래에서 roi.bottom_offset_ratio 만큼 위
 ROI는 화면 아래에서 35% 위 지점부터 위쪽으로 영상 높이의 10%를 차지합니다.
 `roi.height_ratio + roi.bottom_offset_ratio`는 1.0 이하여야 합니다.
 
+## 스테레오 영상에서 ROI 조정
+
+`config/depth_lidar_roi_test.yaml`은 레이더와 좌우 스테레오 GUI를 모두 켠 테스트 설정입니다.
+
+```bash
+ros2 launch depth_lidar depth_lidar.launch.py config_file:="$(ros2 pkg prefix depth_lidar)/share/depth_lidar/config/depth_lidar_roi_test.yaml"
+```
+
+`stereo_preview.enabled=true`, `stereo_preview.gui=true`로 켜면 좌우 정렬 영상을 나란히
+표시합니다. 오른쪽 `RIGHT / DEPTH ROI`의 초록색 테두리가 실제 scan ROI입니다.
+깊이 정렬을 기존 CENTER에서 RECTIFIED_RIGHT로 변경해 오른쪽 영상과 좌표를 맞췄습니다.
+왼쪽 테두리는 동일 좌표의 비교용 가이드이며, 시차 때문에 물체의 가로 위치는 다릅니다.
+Depth가 축소되는 preset에서도 실제 depth ROI를 영상 해상도에 맞춰 표시합니다.
+레이더와 스테레오 창은 각각 최신 데이터로 갱신되며, 좌우 영상끼리는 같은 sequence를 사용합니다.
+
+창에 포커스를 둔 채 **C**를 누르면 카메라 화면을 켜고 끕니다. 다음 명령도 가능합니다.
+
+```bash
+ros2 param set /depth_lidar stereo_preview.enabled false
+ros2 param set /depth_lidar stereo_preview.enabled true
+ros2 param set /depth_lidar stereo_preview.gui false
+ros2 param set /depth_lidar stereo_preview.gui true
+```
+
+`enabled` 전환은 좌우 USB 전송을 추가/제거하기 위해 카메라 파이프라인을 잠깐 재시작합니다.
+`gui`는 창만 제어하므로 재시작 없이 토픽과 전송을 유지합니다. 기본 설정은 둘 다 false입니다.
+`stereo_preview.fps`는 호스트 변환·발행·표시 속도이며, 전송 속도는 camera.fps입니다.
+ROI 파라미터는 실행 중 변경 시 다음 갱신에 반영됩니다. 결정한 값은 YAML에 직접 저장합니다.
+
 ## 실행 중 파라미터 변경
 
 모든 실험 파라미터는 `ros2 param set`으로 실행 중 변경할 수 있습니다.
@@ -135,6 +165,7 @@ Depth 모드 및 필터 파라미터는 장치 파이프라인을 자동으로 �
 | `nv12.enabled`, `nv12.fps` | CAM_A NV12 동시 호스트 전송과 요청 FPS |
 | `nv12.width`, `nv12.height` | NV12 전송 해상도. 1280x800 이하의 짝수 크기 |
 | `preview.enabled`, `preview.gui` | 프리뷰 토픽/GUI 사용 여부 |
+| `stereo_preview.enabled`, `stereo_preview.gui`, `stereo_preview.fps` | 좌우 ROI 프리뷰 전송, 창, 갱신률 |
 | `preview.fps`, `preview.size_px` | 프리뷰 갱신률과 가로 픽셀 수; 세로 크기는 자동 결정 |
 | `preview.scale`, `bev.*`, `sensor.*` | 이전 YAML 호환용. 현재 레이더 표시에는 적용하지 않음 |
 

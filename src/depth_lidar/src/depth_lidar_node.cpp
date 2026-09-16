@@ -60,6 +60,9 @@ struct NodeConfig
   double preview_fps{10.0};
   int preview_size_px{700};
   int preview_scale{3};
+  bool stereo_preview_enabled{false};
+  bool stereo_preview_gui{false};
+  double stereo_preview_fps{15.0};
   double bev_x_min_m{0.0};
   double bev_x_max_m{3.0};
   double bev_y_min_m{-0.6};
@@ -85,7 +88,8 @@ bool cameraConfigChanged(const NodeConfig & lhs, const NodeConfig & rhs)
          || lhs.extended_disparity != rhs.extended_disparity
          || lhs.median_filter != rhs.median_filter || lhs.nv12_enabled != rhs.nv12_enabled
          || lhs.nv12_fps != rhs.nv12_fps || lhs.nv12_width != rhs.nv12_width
-         || lhs.nv12_height != rhs.nv12_height;
+         || lhs.nv12_height != rhs.nv12_height
+         || lhs.stereo_preview_enabled != rhs.stereo_preview_enabled;
 }
 
 bool validateNodeConfig(const NodeConfig & config, std::string & reason)
@@ -116,6 +120,11 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   }
   if (config.preview_fps <= 0.0 || config.preview_fps > 120.0) {
     reason = "preview.fps must be in (0.0, 120.0]";
+    return false;
+  }
+  if (!std::isfinite(config.stereo_preview_fps)
+      || config.stereo_preview_fps <= 0.0 || config.stereo_preview_fps > 120.0) {
+    reason = "stereo_preview.fps must be in (0.0, 120.0]";
     return false;
   }
   if (config.preview_size_px < 240 || config.preview_size_px > 2000) {
@@ -251,7 +260,30 @@ cv::Mat makeScanPreview(const ScanProjection & projection,
                     << " FPS (" << std::setprecision(3) << object_processing_ms << " ms AVG) | BINS "
                     << projection.valid_bins;
   draw_status(processing_status.str(), height - 10);
+  cv::putText(image,
+    config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON",
+    cv::Point(8, 54), cv::FONT_HERSHEY_SIMPLEX, 0.35,
+    cv::Scalar(65, 65, 65), 1, cv::LINE_AA);
   return image;
+}
+
+// View only; the owning ImgFrame stays alive until rendering completes.
+cv::Mat stereoGrayFrame(dai::ImgFrame & frame)
+{
+  const int width = static_cast<int>(frame.getWidth());
+  const int height = static_cast<int>(frame.getHeight());
+  const auto type = frame.getType();
+  const std::size_t stride = frame.getStride() == 0U
+    ? static_cast<std::size_t>(std::max(0, width)) : frame.getStride();
+  auto && bytes = frame.getData();
+  if (width <= 0 || height <= 0 || stride < static_cast<std::size_t>(width)
+      || (type != dai::ImgFrame::Type::RAW8 && type != dai::ImgFrame::Type::GRAY8
+          && type != dai::ImgFrame::Type::YUV400p)
+      || bytes.size() < stride * static_cast<std::size_t>(height - 1) + width)
+  {
+    throw std::runtime_error("invalid rectified grayscale frame");
+  }
+  return cv::Mat(height, width, CV_8UC1, bytes.data(), stride);
 }
 
 sensor_msgs::msg::Image matToImageMessage(const cv::Mat & image,
@@ -335,6 +367,12 @@ public:
     config_.preview_fps = declare_parameter<double>("preview.fps", config_.preview_fps);
     config_.preview_size_px = declare_parameter<int>("preview.size_px", config_.preview_size_px);
     config_.preview_scale = declare_parameter<int>("preview.scale", config_.preview_scale);
+    config_.stereo_preview_enabled =
+      declare_parameter<bool>("stereo_preview.enabled", config_.stereo_preview_enabled);
+    config_.stereo_preview_gui =
+      declare_parameter<bool>("stereo_preview.gui", config_.stereo_preview_gui);
+    config_.stereo_preview_fps =
+      declare_parameter<double>("stereo_preview.fps", config_.stereo_preview_fps);
     config_.bev_x_min_m = declare_parameter<double>("bev.x_min_m", config_.bev_x_min_m);
     config_.bev_x_max_m = declare_parameter<double>("bev.x_max_m", config_.bev_x_max_m);
     config_.bev_y_min_m = declare_parameter<double>("bev.y_min_m", config_.bev_y_min_m);
@@ -356,6 +394,7 @@ public:
     const auto qos = rclcpp::SensorDataQoS().keep_last(1);
     scan_publisher_ = create_publisher<sensor_msgs::msg::LaserScan>("~/scan", qos);
     preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/preview", qos);
+    stereo_preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/stereo_preview", qos);
     parameter_callback_ = add_on_set_parameters_callback(
       std::bind(&DepthLidarNode::onParameters, this, std::placeholders::_1));
     worker_ = std::thread(&DepthLidarNode::cameraLoop, this);
@@ -455,6 +494,12 @@ private:
           next.preview_size_px = static_cast<int>(parameter.as_int());
         } else if (name == "preview.scale") {
           next.preview_scale = static_cast<int>(parameter.as_int());
+        } else if (name == "stereo_preview.enabled") {
+          next.stereo_preview_enabled = parameter.as_bool();
+        } else if (name == "stereo_preview.gui") {
+          next.stereo_preview_gui = parameter.as_bool();
+        } else if (name == "stereo_preview.fps") {
+          next.stereo_preview_fps = parameter.as_double();
         } else if (name == "bev.x_min_m") {
           next.bev_x_min_m = parameter.as_double();
         } else if (name == "bev.x_max_m") {
@@ -528,7 +573,8 @@ private:
     stereo->setLeftRightCheck(config.left_right_check);
     stereo->setSubpixel(config.subpixel);
     stereo->setExtendedDisparity(config.extended_disparity);
-    stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::CENTER);
+    // Keep the scan ROI in the same perspective as the right rectified preview.
+    stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
 
     nv12_output = nullptr;
     if (config.nv12_enabled) {
@@ -547,6 +593,8 @@ private:
 
   void cameraLoop()
   {
+    bool radar_window_open = false;
+    bool stereo_window_open = false;
     while (rclcpp::ok() && !stop_requested_.load()) {
       restart_requested_.store(false);
       const NodeConfig startup_config = configSnapshot();
@@ -561,6 +609,12 @@ private:
         configurePipeline(pipeline, startup_config, left, right, stereo, nv12_output);
 
         auto depth_queue = stereo->depth.createOutputQueue(1, false);
+        std::shared_ptr<dai::MessageQueue> stereo_left_queue;
+        std::shared_ptr<dai::MessageQueue> stereo_right_queue;
+        if (startup_config.stereo_preview_enabled) {
+          stereo_left_queue = stereo->rectifiedLeft.createOutputQueue(1, false);
+          stereo_right_queue = stereo->rectifiedRight.createOutputQueue(1, false);
+        }
         std::shared_ptr<dai::MessageQueue> nv12_queue;
         if (nv12_output != nullptr) {
           nv12_queue = nv12_output->createOutputQueue(1, false);
@@ -579,6 +633,16 @@ private:
           }
           bridge->xLinkOut->input.setMaxSize(1);
           bridge->xLinkOut->input.setBlocking(false);
+        }
+        if (startup_config.stereo_preview_enabled) {
+          for (auto * output : {&stereo->rectifiedLeft, &stereo->rectifiedRight}) {
+            const auto bridge = output->getXLinkBridge();
+            if (!bridge || !bridge->xLinkOut) {
+              throw std::runtime_error("DepthAI did not create a rectified image XLink bridge");
+            }
+            bridge->xLinkOut->input.setMaxSize(1);
+            bridge->xLinkOut->input.setBlocking(false);
+          }
         }
         pipeline.start();
         RCLCPP_INFO(get_logger(),
@@ -621,6 +685,11 @@ private:
         double cx = 0.0;
         auto metrics_start = std::chrono::steady_clock::now();
         auto preview_last = metrics_start - 1s;
+        auto stereo_preview_last = metrics_start - 1s;
+        std::shared_ptr<dai::ImgFrame> stereo_left_frame;
+        std::shared_ptr<dai::ImgFrame> stereo_right_frame;
+        int latest_depth_width = 0;
+        int latest_depth_height = 0;
         std::size_t metric_frames = 0;
         double metric_delay_sum_ms = 0.0;
         double metric_object_processing_sum_ms = 0.0;
@@ -638,6 +707,68 @@ private:
           while (rclcpp::ok() && !stop_requested_.load() && !restart_requested_.load()) {
             if (nv12_receiver_failed.load()) {
               throw std::runtime_error("NV12 receiver stopped unexpectedly");
+            }
+            const NodeConfig display_config = configSnapshot();
+            if (radar_window_open && (!display_config.preview_enabled || !display_config.preview_gui)) {
+              cv::destroyWindow("depth_lidar radar preview");
+              radar_window_open = false;
+            }
+            if (stereo_window_open
+                && (!display_config.stereo_preview_enabled || !display_config.stereo_preview_gui))
+            {
+              cv::destroyWindow("depth_lidar stereo ROI");
+              stereo_window_open = false;
+            }
+            if (radar_window_open || stereo_window_open) {
+              const int key = cv::waitKey(1) & 0xff;
+              if (key == 'c' || key == 'C') {
+                // Use the ROS parameter path so GUI and command-line state agree.
+                const auto result = set_parameters_atomically({rclcpp::Parameter(
+                  "stereo_preview.enabled", !display_config.stereo_preview_enabled)});
+                if (!result.successful) {
+                  RCLCPP_WARN(get_logger(), "Could not toggle stereo preview: %s", result.reason.c_str());
+                }
+                continue;
+              }
+            }
+            if (stereo_left_queue && stereo_right_queue && display_config.stereo_preview_enabled) {
+              if (auto frame = stereo_left_queue->tryGet<dai::ImgFrame>()) {
+                stereo_left_frame = std::move(frame);
+              }
+              if (auto frame = stereo_right_queue->tryGet<dai::ImgFrame>()) {
+                stereo_right_frame = std::move(frame);
+              }
+              // Never block depth processing while waiting for the matching eye.
+              if (stereo_left_frame && stereo_right_frame) {
+                const auto left_sequence = stereo_left_frame->getSequenceNum();
+                const auto right_sequence = stereo_right_frame->getSequenceNum();
+                if (left_sequence < right_sequence) {
+                  stereo_left_frame.reset();
+                } else if (right_sequence < left_sequence) {
+                  stereo_right_frame.reset();
+                } else if (latest_depth_width > 0 && latest_depth_height > 0) {
+                  const auto display_now = std::chrono::steady_clock::now();
+                  if (display_now - stereo_preview_last
+                      >= std::chrono::duration<double>(1.0 / display_config.stereo_preview_fps))
+                  {
+                    const auto & roi_config = display_config.projection;
+                    const auto roi = computeRoi(latest_depth_width, latest_depth_height,
+                      roi_config.roi_width_ratio, roi_config.roi_height_ratio,
+                      roi_config.roi_bottom_offset_ratio);
+                    cv::Mat preview = makeStereoPreview(stereoGrayFrame(*stereo_left_frame),
+                      stereoGrayFrame(*stereo_right_frame), roi, latest_depth_width, latest_depth_height);
+                    stereo_preview_publisher_->publish(
+                      matToImageMessage(preview, now(), display_config.frame_id));
+                    if (display_config.stereo_preview_gui) {
+                      cv::imshow("depth_lidar stereo ROI", preview);
+                      stereo_window_open = true;
+                    }
+                    stereo_preview_last = display_now;
+                  }
+                  stereo_left_frame.reset();
+                  stereo_right_frame.reset();
+                }
+              }
             }
             auto depth_frame = depth_queue->tryGet<dai::ImgFrame>();
             if (!depth_frame) {
@@ -660,6 +791,8 @@ private:
               continue;
             }
 
+            latest_depth_width = depth_width;
+            latest_depth_height = depth_height;
             if (!intrinsics_ready) {
               const auto intrinsics =
                 device->readCalibration().getCameraIntrinsics(dai::CameraBoardSocket::CAM_C,
@@ -771,7 +904,7 @@ private:
               preview_publisher_->publish(matToImageMessage(preview, ros_stamp, current.frame_id));
               if (current.preview_gui) {
                 cv::imshow("depth_lidar radar preview", preview);
-                cv::waitKey(1);
+                radar_window_open = true;
               }
               preview_last = before_preview;
             }
@@ -785,6 +918,10 @@ private:
           nv12_receiver.join();
         }
         pipeline.stop();
+        if (stereo_window_open) {
+          cv::destroyWindow("depth_lidar stereo ROI");
+          stereo_window_open = false;
+        }
         if (processing_error) {
           std::rethrow_exception(processing_error);
         }
@@ -804,6 +941,7 @@ private:
   std::thread worker_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr stereo_preview_publisher_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
 };
 

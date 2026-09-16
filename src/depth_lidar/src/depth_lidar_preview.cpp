@@ -12,6 +12,45 @@
 namespace depth_lidar
 {
 
+cv::Mat makeStereoPreview(const cv::Mat & left, const cv::Mat & right,
+  const RoiRect & depth_roi, const int depth_width, const int depth_height)
+{
+  if (left.empty() || right.empty() || left.type() != CV_8UC1 || right.type() != CV_8UC1
+      || left.size() != right.size() || depth_width <= 0 || depth_height <= 0
+      || depth_roi.x < 0 || depth_roi.y < 0 || depth_roi.width <= 0 || depth_roi.height <= 0
+      || depth_roi.x + depth_roi.width > depth_width
+      || depth_roi.y + depth_roi.height > depth_height)
+  {
+    throw std::invalid_argument("stereo preview requires matching grayscale frames and a valid depth ROI");
+  }
+  constexpr int header = 54;
+  constexpr int footer = 28;
+  cv::Mat image(left.rows + header + footer, left.cols * 2, CV_8UC3, cv::Scalar(255, 255, 255));
+  const double sx = static_cast<double>(left.cols) / depth_width;
+  const double sy = static_cast<double>(left.rows) / depth_height;
+  const cv::Point roi_start(static_cast<int>(std::floor(depth_roi.x * sx)),
+    static_cast<int>(std::floor(depth_roi.y * sy)));
+  const cv::Point roi_end(static_cast<int>(std::ceil((depth_roi.x + depth_roi.width) * sx)) - 1,
+    static_cast<int>(std::ceil((depth_roi.y + depth_roi.height) * sy)) - 1);
+  for (int side = 0; side < 2; ++side) {
+    cv::Mat panel = image(cv::Rect(side * left.cols, header, left.cols, left.rows));
+    cv::cvtColor(side == 0 ? left : right, panel, cv::COLOR_GRAY2BGR);
+    cv::rectangle(panel, roi_start, roi_end, cv::Scalar(0, 220, 0), 2, cv::LINE_8);
+    const cv::Point label(side * left.cols + 8, 20);
+    cv::putText(image, side == 0 ? "LEFT / ROI GUIDE" : "RIGHT / DEPTH ROI",
+      label, cv::FONT_HERSHEY_SIMPLEX, 0.5, cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
+    std::ostringstream bounds;
+    bounds << "Depth ROI x=" << depth_roi.x << " y=" << depth_roi.y
+           << " w=" << depth_roi.width << " h=" << depth_roi.height;
+    cv::putText(image, bounds.str(), label + cv::Point(0, 22),
+      cv::FONT_HERSHEY_SIMPLEX, 0.4, cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
+  }
+  cv::putText(image, "C: camera ON/OFF | Green: scan ROI | Left view has stereo parallax",
+    cv::Point(8, image.rows - 9), cv::FONT_HERSHEY_SIMPLEX, 0.4,
+    cv::Scalar(45, 45, 45), 1, cv::LINE_AA);
+  return image;
+}
+
 cv::Mat makeRadarPreview(const ScanProjection & projection,
   const int width_px, const double max_range_m)
 {
