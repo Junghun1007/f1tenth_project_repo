@@ -1,4 +1,5 @@
 #include "depth_lidar/depth_lidar_geometry.hpp"
+#include "depth_lidar/depth_lidar_preview.hpp"
 
 #include <depthai/depthai.hpp>
 #include <opencv2/highgui.hpp>
@@ -35,7 +36,6 @@ namespace depth_lidar
 namespace
 {
 using namespace std::chrono_literals;
-constexpr double kPi = 3.14159265358979323846;
 constexpr std::uint32_t kColorSensorWidth = 1280U;
 constexpr std::uint32_t kColorSensorHeight = 800U;
 
@@ -225,141 +225,32 @@ dai::StereoDepthConfig::MedianFilter parseMedianFilter(const std::string & value
   throw std::invalid_argument("unsupported median filter: " + value);
 }
 
-std::pair<double, double>
-cameraPointToVehicle(const NodeConfig & config, const double forward_m, const double left_m)
-{
-  const double yaw = config.sensor_yaw_deg * kPi / 180.0;
-  return {config.sensor_x_m + std::cos(yaw) * forward_m - std::sin(yaw) * left_m,
-    config.sensor_y_m + std::sin(yaw) * forward_m + std::cos(yaw) * left_m};
-}
-
-std::vector<ObstacleCircle> obstaclesToVehicle(const NodeConfig & config,
-  const std::vector<ObstacleCircle> & camera_obstacles)
-{
-  std::vector<ObstacleCircle> vehicle_obstacles = camera_obstacles;
-  for (auto & obstacle : vehicle_obstacles) {
-    const auto position = cameraPointToVehicle(config, obstacle.forward_m, obstacle.left_m);
-    obstacle.forward_m = position.first;
-    obstacle.left_m = position.second;
-  }
-  return vehicle_obstacles;
-}
-
-cv::Point bevPoint(const NodeConfig & config, const double forward_m, const double left_m)
-{
-  const double pixels_per_meter =
-    static_cast<double>(config.preview_scale) / config.bev_meter_per_pixel;
-  return cv::Point(
-    static_cast<int>(std::lround((config.bev_y_max_m - left_m) * pixels_per_meter - 0.5)),
-    static_cast<int>(std::lround((config.bev_x_max_m - forward_m) * pixels_per_meter - 0.5)));
-}
-
-cv::Mat makeBevPreview(const ScanProjection & projection,
-  const std::vector<ObstacleCircle> & obstacles,
+cv::Mat makeScanPreview(const ScanProjection & projection,
   const NodeConfig & config,
   const double depth_rx_fps,
   const double nv12_rx_fps,
   const double object_processing_fps,
   const double object_processing_ms)
 {
-  const int width = static_cast<int>(std::lround(
-                      (config.bev_y_max_m - config.bev_y_min_m) / config.bev_meter_per_pixel))
-                    * config.preview_scale;
-  const int height = static_cast<int>(std::lround(
-                       (config.bev_x_max_m - config.bev_x_min_m) / config.bev_meter_per_pixel))
-                     * config.preview_scale;
-  cv::Mat image(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
-  const cv::Scalar grid_color(48, 48, 48);
-  const cv::Scalar center_color(78, 78, 78);
-  const double pixels_per_meter =
-    static_cast<double>(config.preview_scale) / config.bev_meter_per_pixel;
-
-  for (double x = std::ceil(config.bev_x_min_m * 2.0) / 2.0; x <= config.bev_x_max_m + 1.0e-9;
-    x += 0.5)
-  {
-    const int row = bevPoint(config, x, 0.0).y;
-    cv::line(image, cv::Point(0, row), cv::Point(width - 1, row), grid_color, 1, cv::LINE_AA);
-  }
-  const int center_column = bevPoint(config, config.bev_x_min_m, 0.0).x;
-  cv::line(image,
-    cv::Point(center_column, 0),
-    cv::Point(center_column, height - 1),
-    center_color,
-    1,
-    cv::LINE_AA);
-
-  for (const auto & obstacle : obstacles) {
-    const cv::Point center = bevPoint(config, obstacle.forward_m, obstacle.left_m);
-    const int radius_px =
-      std::max(1, static_cast<int>(std::lround(obstacle.radius_m * pixels_per_meter)));
-    cv::circle(image, center, radius_px, cv::Scalar(0, 55, 105), cv::FILLED, cv::LINE_AA);
-    cv::circle(image, center, radius_px, cv::Scalar(0, 150, 255), 2, cv::LINE_AA);
-    if (center.x >= 0 && center.x < image.cols && center.y >= 0 && center.y < image.rows) {
-      std::ostringstream label;
-      label << std::fixed << std::setprecision(2) << "x" << obstacle.forward_m << " y"
-            << obstacle.left_m << " r" << obstacle.radius_m;
-      cv::putText(image,
-        label.str(),
-        center + cv::Point(5, -5),
-        cv::FONT_HERSHEY_SIMPLEX,
-        0.30,
-        cv::Scalar(220, 220, 220),
-        1,
-        cv::LINE_AA);
-    }
-  }
-
-  for (std::size_t i = 0; i < projection.ranges.size(); ++i) {
-    const float range = projection.ranges[i];
-    if (!std::isfinite(range)) {
-      continue;
-    }
-    const double angle = static_cast<double>(projection.angle_min)
-                         + static_cast<double>(i) * static_cast<double>(projection.angle_increment);
-    const auto point_vehicle = cameraPointToVehicle(config,
-      static_cast<double>(range) * std::cos(angle),
-      static_cast<double>(range) * std::sin(angle));
-    const cv::Point point = bevPoint(config, point_vehicle.first, point_vehicle.second);
-    if (point.x >= 0 && point.x < image.cols && point.y >= 0 && point.y < image.rows) {
-      cv::circle(image, point, 2, cv::Scalar(255, 255, 0), cv::FILLED, cv::LINE_AA);
-    }
-  }
-  cv::Point vehicle = bevPoint(config, 0.0, 0.0);
-  vehicle.x = std::clamp(vehicle.x, 0, width - 1);
-  vehicle.y = std::clamp(vehicle.y, 0, height - 1);
-  cv::circle(image, vehicle, 4, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
-
-  cv::putText(image,
-    "DEPTH LIDAR / BEV",
-    cv::Point(8, 18),
-    cv::FONT_HERSHEY_SIMPLEX,
-    0.45,
-    cv::Scalar(230, 230, 230),
-    1,
-    cv::LINE_AA);
+  cv::Mat image = makeRadarPreview(projection, config.preview_size_px, config.projection.max_range_m);
+  const int height = image.rows;
+  const auto draw_status = [&](const std::string & text, const int row) {
+    int baseline = 0;
+    const auto size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.36, 1, &baseline);
+    const double scale = 0.36 * std::min(1.0,
+      static_cast<double>(image.cols - 16) / std::max(1, size.width));
+    cv::putText(image, text, cv::Point(8, row), cv::FONT_HERSHEY_SIMPLEX,
+      scale, cv::Scalar(65, 65, 65), 1, cv::LINE_AA);
+  };
   std::ostringstream receive_status;
   receive_status << std::fixed << std::setprecision(1) << "DEPTH RX " << depth_rx_fps
                  << " FPS | NV12 RX " << nv12_rx_fps << " FPS";
-  cv::putText(image,
-    receive_status.str(),
-    cv::Point(8, height - 28),
-    cv::FONT_HERSHEY_SIMPLEX,
-    0.36,
-    cv::Scalar(230, 230, 230),
-    1,
-    cv::LINE_AA);
+  draw_status(receive_status.str(), height - 28);
   std::ostringstream processing_status;
   processing_status << std::fixed << std::setprecision(1) << "CLUSTER+POS " << object_processing_fps
-                    << " FPS (" << std::setprecision(3) << object_processing_ms << " ms AVG) | N "
-                    << obstacles.size();
-  cv::putText(image,
-    processing_status.str(),
-    cv::Point(8, height - 10),
-    cv::FONT_HERSHEY_SIMPLEX,
-    0.36,
-    cv::Scalar(230, 230, 230),
-    1,
-    cv::LINE_AA);
+                    << " FPS (" << std::setprecision(3) << object_processing_ms << " ms AVG) | BINS "
+                    << projection.valid_bins;
+  draw_status(processing_status.str(), height - 10);
   return image;
 }
 
@@ -797,8 +688,7 @@ private:
                 fx,
                 cx,
                 current.projection);
-            const auto camera_obstacles = clusterScan(projection, current.cluster);
-            const auto obstacles = obstaclesToVehicle(current, camera_obstacles);
+            const auto obstacles = clusterScan(projection, current.cluster);
             const auto object_processing_end = std::chrono::steady_clock::now();
             const double object_processing_ms =
               std::chrono::duration<double, std::milli>(object_processing_end - processing_start)
@@ -872,8 +762,7 @@ private:
             const bool preview_due = (before_preview - preview_last)
                                      >= std::chrono::duration<double>(1.0 / current.preview_fps);
             if (current.preview_enabled && preview_due) {
-              cv::Mat preview = makeBevPreview(projection,
-                obstacles,
+              cv::Mat preview = makeScanPreview(projection,
                 current,
                 measured_depth_rx_fps,
                 measured_nv12_rx_fps,
@@ -881,7 +770,7 @@ private:
                 measured_object_processing_ms);
               preview_publisher_->publish(matToImageMessage(preview, ros_stamp, current.frame_id));
               if (current.preview_gui) {
-                cv::imshow("depth_lidar BEV preview", preview);
+                cv::imshow("depth_lidar radar preview", preview);
                 cv::waitKey(1);
               }
               preview_last = before_preview;

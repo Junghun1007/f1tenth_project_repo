@@ -2,15 +2,16 @@
 
 OAK 계열 스테레오 Depth 카메라를 직접 열어, 선택한 영상 ROI를 2D 라이다 형태의
 `sensor_msgs/LaserScan`으로 변환하는 독립 ROS 2 테스트 패키지입니다. 연속 스캔 bin을
-경량 군집화해 원형 장애물로 표시하며, CAM_A의 NV12도 변환이나 프리뷰 없이 동시에
+경량 군집화하며, 프리뷰는 카메라 기준 측정점을 흰색 레이더 격자에 표시합니다.
+CAM_A의 NV12도 변환이나 프리뷰 없이 동시에
 호스트로 전송해 향후 BEV 파이프라인의 USB 부하를 재현합니다. 다른 주행 노드나 카메라
 드라이버를 사용하지 않습니다.
 
 ## 출력
 
 - `~/scan` (`/depth_lidar/scan`): x축 전방, y축 좌측인 `LaserScan`
-- `~/preview` (`/depth_lidar/preview`): 검정 배경의 BEV 좌표계에 청록색 측정점과
-  주황색 원형 장애물을 표시한 진단 영상
+- `~/preview` (`/depth_lidar/preview`): 흰색 배경에 거리 반원·각도선과 파란색 측정점을
+  표시한 카메라 기준 레이더 영상. BEV/앞차축 변환과 원형 장애물 표시는 적용하지 않음
 - 프리뷰/터미널: Depth 호스트 수신 FPS, NV12 호스트 수신 FPS, Depth 투영부터 군집과
   객체 위치 산출까지의 평균 연산시간 및 그 역수인 처리 가능 FPS
 - 터미널: 참고용 카메라 촬영 시각부터 출력까지의 delay. 수신/연산 FPS에는 포함하지 않음
@@ -64,11 +65,7 @@ depth_lidar:
     nv12.fps: 60.0
     nv12.width: 1280
     nv12.height: 800
-    bev.x_min_m: 0.0
-    bev.x_max_m: 3.0
-    bev.y_min_m: -0.6
-    bev.y_max_m: 0.6
-    bev.meter_per_pixel: 0.01
+    preview.size_px: 700
 ```
 
 RViz2에서는 `/depth_lidar/scan`을 `LaserScan`으로 추가합니다. 프리뷰는 다음처럼 확인할 수
@@ -138,10 +135,8 @@ Depth 모드 및 필터 파라미터는 장치 파이프라인을 자동으로 �
 | `nv12.enabled`, `nv12.fps` | CAM_A NV12 동시 호스트 전송과 요청 FPS |
 | `nv12.width`, `nv12.height` | NV12 전송 해상도. 1280x800 이하의 짝수 크기 |
 | `preview.enabled`, `preview.gui` | 프리뷰 토픽/GUI 사용 여부 |
-| `preview.fps`, `preview.scale` | 프리뷰 갱신률과 BEV 정수 확대 배율 |
-| `preview.size_px` | 이전 YAML 호환용. 현재 렌더러에서는 사용하지 않음 |
-| `bev.*_m`, `bev.meter_per_pixel` | 프리뷰의 실제 BEV 범위와 해상도 |
-| `sensor.x_m`, `sensor.y_m`, `sensor.yaw_deg` | 카메라 원점에서 앞차축 BEV 좌표로 가는 2D 장착 자세 |
+| `preview.fps`, `preview.size_px` | 프리뷰 갱신률과 가로 픽셀 수; 세로 크기는 자동 결정 |
+| `preview.scale`, `bev.*`, `sensor.*` | 이전 YAML 호환용. 현재 레이더 표시에는 적용하지 않음 |
 
 ### 군집과 원형 장애물
 
@@ -159,10 +154,25 @@ radius = clamp(physical width / 2 + margin, minimum radius, maximum radius)
 연속된 물체는 하나의 큰 원형 장애물로 합쳐질 수 있으며, 이는 러프한 occupancy 시험을
 위한 의도된 동작입니다.
 
-프리뷰는 `bev_processor`와 같은 방식으로 화면 위쪽을 전방 `+X`, 화면 왼쪽을 차량 좌측
-`+Y`로 사용합니다. 현재는 실제 차선 BEV를 입력받거나 합성하지 않고 검정 배경만 그립니다.
-`sensor.*` 변환은 장애물과 점의 위치에만 적용되며 기존 `/depth_lidar/scan`은 계속 카메라
-기준 `frame_id`로 발행됩니다.
+### 카메라 기준 레이더 프리뷰
+
+흰색 배경의 아래 중앙 십자표가 카메라 원점입니다. 위쪽은 카메라 전방, 왼쪽은
+카메라 좌측이며 양의 각도입니다. 거리 반원 5개는 `range.max_m`까지 같은 간격으로
+그립니다. 30도 간격 각도선과 ROI 좌우 시야 경계선을 함께 표시합니다.
+
+파란색 점은 `/depth_lidar/scan`과 동일한 각도별 최근접 측정값입니다. 원본 Depth의 모든
+픽셀을 표시하는 것은 아니며, `range.offset_m` 등 기존 scan 처리는 그대로 적용됩니다.
+바닥 제거는 수행하지 않습니다. 측정이 없으면 `NO VALID RETURNS`를 표시합니다.
+
+```text
+pixel_x = camera_origin_x - range * sin(angle) * pixels_per_meter
+pixel_y = camera_origin_y - range * cos(angle) * pixels_per_meter
+```
+
+`preview.size_px`는 가로 크기이며 기본 700px입니다. `preview.scale`, `bev.*`, `sensor.*`는
+이전 YAML을 그대로 읽을 수 있도록 유지하지만 레이더 표시에 영향을 주지 않습니다.
+거리·각도는 카메라 기준이며 앞차축 이동이나 BEV 좌표 변환, 장애물 반지름 확대는
+프리뷰에 적용하지 않습니다. 군집 연산은 성능 측정을 위해 계속 수행합니다.
 
 ### 거리 offset
 

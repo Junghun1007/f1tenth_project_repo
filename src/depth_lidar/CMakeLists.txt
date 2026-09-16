@@ -24,7 +24,7 @@ target_include_directories(depth_lidar_geometry
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
-add_executable(depth_lidar_node src/depth_lidar_node.cpp)
+add_executable(depth_lidar_node src/depth_lidar_node.cpp src/depth_lidar_preview.cpp)
 target_include_directories(depth_lidar_node PRIVATE include ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(depth_lidar_node builtin_interfaces rclcpp rcl_interfaces sensor_msgs)
 target_link_libraries(depth_lidar_node depth_lidar_geometry depthai::core ${OpenCV_LIBS})
