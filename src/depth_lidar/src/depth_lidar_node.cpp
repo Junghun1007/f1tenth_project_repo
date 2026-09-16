@@ -14,9 +14,9 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/bool.hpp>
-#include <nav_msgs/msg/occupancy_grid.hpp>
-#include <visualization_msgs/msg/marker_array.hpp>
-#include <geometry_msgs/msg/point.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
+#include "oak_startup/oak_startup_measurement.hpp"
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -28,6 +28,7 @@
 #include <exception>
 #include <functional>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -48,6 +49,7 @@ constexpr std::uint32_t kColorSensorHeight = 800U;
 
 struct NodeConfig
 {
+  ProjectionConfig projection;
   double camera_fps{30.0};
   std::string camera_resolution{"400p"};
   std::string depth_mode{"high_density"};
@@ -56,33 +58,24 @@ struct NodeConfig
   bool subpixel{false};
   bool extended_disparity{false};
   std::string median_filter{"3x3"};
-  ProjectionConfig projection;
-  ClusterConfig cluster;
-  GridConfig grid;
-  GroundConfig ground;
-  StabilizationConfig stabilization;
+  double hold_sec{0.08};
+  double max_age_sec{0.20};
   bool nv12_enabled{false};
   double nv12_fps{30.0};
   int nv12_width{1280};
   int nv12_height{800};
   bool preview_enabled{true};
   bool preview_gui{false};
-  double preview_fps{10.0};
+  double preview_fps{15.0};
   int preview_size_px{700};
-  int preview_scale{3};
   bool stereo_preview_enabled{false};
   bool stereo_preview_gui{false};
   double stereo_preview_fps{10.0};
-  double bev_x_min_m{0.0};
-  double bev_x_max_m{3.0};
-  double bev_y_min_m{-0.6};
-  double bev_y_max_m{0.6};
-  double bev_meter_per_pixel{0.01};
   double sensor_x_m{-0.16};
   double sensor_y_m{0.0};
   double sensor_yaw_deg{0.0};
   double metrics_interval_sec{1.0};
-  std::string frame_id{"depth_lidar"};
+  std::string frame_id{"front_axle"};
 };
 
 bool isOneOf(const std::string & value, const std::vector<std::string> & choices)
@@ -90,21 +83,9 @@ bool isOneOf(const std::string & value, const std::vector<std::string> & choices
   return std::find(choices.begin(), choices.end(), value) != choices.end();
 }
 
-bool cameraConfigChanged(const NodeConfig & lhs, const NodeConfig & rhs)
-{
-  return lhs.camera_fps != rhs.camera_fps || lhs.camera_resolution != rhs.camera_resolution
-         || lhs.depth_mode != rhs.depth_mode || lhs.confidence_threshold != rhs.confidence_threshold
-         || lhs.left_right_check != rhs.left_right_check || lhs.subpixel != rhs.subpixel
-         || lhs.extended_disparity != rhs.extended_disparity
-         || lhs.median_filter != rhs.median_filter || lhs.nv12_enabled != rhs.nv12_enabled
-         || lhs.nv12_fps != rhs.nv12_fps || lhs.nv12_width != rhs.nv12_width
-         || lhs.nv12_height != rhs.nv12_height
-         || lhs.stereo_preview_enabled != rhs.stereo_preview_enabled;
-}
-
 bool validateNodeConfig(const NodeConfig & config, std::string & reason)
 {
-  if (config.camera_fps < 1.0 || config.camera_fps > 120.0) {
+  if (!std::isfinite(config.camera_fps) || config.camera_fps < 1.0 || config.camera_fps > 120.0) {
     reason = "camera.fps must be in [1.0, 120.0]";
     return false;
   }
@@ -128,7 +109,7 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
     reason = "depth.median_filter must be one of: off, 3x3, 5x5, 7x7";
     return false;
   }
-  if (config.preview_fps <= 0.0 || config.preview_fps > 120.0) {
+  if (!std::isfinite(config.preview_fps) || config.preview_fps <= 0.0 || config.preview_fps > 120.0) {
     reason = "preview.fps must be in (0.0, 120.0]";
     return false;
   }
@@ -141,7 +122,7 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
     reason = "preview.size_px must be in [240, 2000]";
     return false;
   }
-  if (config.metrics_interval_sec < 0.1 || config.metrics_interval_sec > 60.0) {
+  if (!std::isfinite(config.metrics_interval_sec) || config.metrics_interval_sec < 0.1 || config.metrics_interval_sec > 60.0) {
     reason = "metrics.print_interval_sec must be in [0.1, 60.0]";
     return false;
   }
@@ -149,7 +130,7 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
     reason = "frame_id cannot be empty";
     return false;
   }
-  if (config.nv12_fps < 1.0 || config.nv12_fps > 120.0) {
+  if (!std::isfinite(config.nv12_fps) || config.nv12_fps < 1.0 || config.nv12_fps > 120.0) {
     reason = "nv12.fps must be in [1.0, 120.0]";
     return false;
   }
@@ -161,25 +142,6 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
     reason = "nv12 width and height must be even and no larger than 1280x800";
     return false;
   }
-  if (config.preview_scale < 1 || config.preview_scale > 8) {
-    reason = "preview.scale must be in [1, 8]";
-    return false;
-  }
-  if (!std::isfinite(config.bev_x_min_m) || !std::isfinite(config.bev_x_max_m)
-      || !std::isfinite(config.bev_y_min_m) || !std::isfinite(config.bev_y_max_m)
-      || !std::isfinite(config.bev_meter_per_pixel) || config.bev_x_min_m < 0.0
-      || config.bev_x_max_m <= config.bev_x_min_m || config.bev_y_max_m <= config.bev_y_min_m
-      || config.bev_meter_per_pixel <= 0.0)
-  {
-    reason = "BEV extents must be finite and ordered with positive meter_per_pixel";
-    return false;
-  }
-  const double bev_width = (config.bev_y_max_m - config.bev_y_min_m) / config.bev_meter_per_pixel;
-  const double bev_height = (config.bev_x_max_m - config.bev_x_min_m) / config.bev_meter_per_pixel;
-  if (bev_width < 1.0 || bev_height < 1.0 || bev_width > 4096.0 || bev_height > 4096.0) {
-    reason = "BEV output dimensions must be in [1, 4096]";
-    return false;
-  }
   if (!std::isfinite(config.sensor_x_m) || !std::isfinite(config.sensor_y_m)
       || !std::isfinite(config.sensor_yaw_deg))
   {
@@ -189,8 +151,13 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   if (!validateProjectionConfig(config.projection, reason)) {
     return false;
   }
-  return validateGridConfig(config.grid, reason) && validateClusterConfig(config.cluster, reason) && validateGroundConfig(config.ground, reason)
-    && validateStabilizationConfig(config.stabilization, reason);
+  if (!std::isfinite(config.hold_sec) || !std::isfinite(config.max_age_sec)
+      || config.hold_sec < 0 || config.hold_sec > 0.5 || config.max_age_sec < 0.02
+      || config.max_age_sec > 2.0 || config.hold_sec > config.max_age_sec) {
+    reason = "scan.hold_sec must be 0..0.5 and <= input.max_age_sec (0.02..2.0)";
+    return false;
+  }
+  return true;
 }
 
 std::pair<std::uint32_t, std::uint32_t> parseResolution(const std::string & value)
@@ -241,41 +208,6 @@ dai::StereoDepthConfig::MedianFilter parseMedianFilter(const std::string & value
   throw std::invalid_argument("unsupported median filter: " + value);
 }
 
-cv::Mat makeScanPreview(const DetectionResult & detection,
-  const std::string & ground_status,
-  const NodeConfig & config,
-  const double depth_rx_fps,
-  const double nv12_rx_fps,
-  const double object_processing_fps,
-  const double object_processing_ms,
-  const bool waiting_for_depth = false)
-{
-  cv::Mat image = makeRadarPreview(detection, config.preview_size_px, config.projection.max_range_m,
-    ground_status.rfind("VALID |", 0) == 0);
-  const int height = image.rows;
-  const auto draw_status = [&](const std::string & text, const int row) {
-    int baseline = 0;
-    const auto size = cv::getTextSize(text, cv::FONT_HERSHEY_SIMPLEX, 0.36, 1, &baseline);
-    const double scale = 0.36 * std::min(1.0,
-      static_cast<double>(image.cols - 16) / std::max(1, size.width));
-    cv::putText(image, text, cv::Point(8, row), cv::FONT_HERSHEY_SIMPLEX,
-      scale, cv::Scalar(65, 65, 65), 1, cv::LINE_AA);
-  };
-  std::ostringstream receive_status;
-  receive_status << std::fixed << std::setprecision(1) << "DEPTH RX " << depth_rx_fps
-                 << " FPS | NV12 RX " << nv12_rx_fps << " FPS";
-  draw_status(receive_status.str(), height - 28);
-  std::ostringstream processing_status;
-  processing_status << std::fixed << std::setprecision(1) << "DETECT+GRID " << object_processing_fps
-                    << " FPS (" << std::setprecision(3) << object_processing_ms << " ms AVG) | OBJECTS "
-                    << detection.obstacles.size();
-  draw_status(processing_status.str(), height - 10);
-  draw_status(std::string(config.stereo_preview_enabled ? "C: CAMERA OFF" : "C: CAMERA ON")
-    + " | GROUND: LIVE MSAC", 54);
-  draw_status(ground_status + (waiting_for_depth ? " | WAITING FOR DEPTH" : ""), 72);
-  return image;
-}
-
 // View only; the owning ImgFrame stays alive until rendering completes.
 cv::Mat stereoGrayFrame(dai::ImgFrame & frame)
 {
@@ -313,90 +245,40 @@ sensor_msgs::msg::Image matToImageMessage(const cv::Mat & image,
   return message;
 }
 
-nav_msgs::msg::OccupancyGrid occupancyMessage(const DetectionResult & detection,
-  const builtin_interfaces::msg::Time & stamp, const std::string & frame_id)
+// The runtime image is RECTIFIED_RIGHT (CAM_C). Startup attitude is raw CAM_A.
+FixedTransform rgbFromRectifiedRight(dai::CalibrationHandler & calibration)
 {
-  nav_msgs::msg::OccupancyGrid message;
-  message.header.stamp = stamp;
-  message.header.frame_id = frame_id;
-  message.info.resolution = static_cast<float>(detection.grid.resolution_m);
-  message.info.width = detection.width;
-  message.info.height = detection.height;
-  message.info.origin.position.x = detection.grid.x_min_m;
-  message.info.origin.position.y = detection.grid.y_min_m;
-  message.info.origin.orientation.w = 1.0;
-  message.data.resize(detection.cells.size(), -1);
-  for (std::size_t i = 0; i < detection.cells.size(); ++i) {
-    if (detection.cells[i].support_points) { message.data[i] = 100; }
+  using Socket = dai::CameraBoardSocket;
+  if (calibration.getStereoRightCameraId() != Socket::CAM_C
+      || calibration.getStereoLeftCameraId() != Socket::CAM_B) {
+    throw std::runtime_error("Expected calibrated CAM_B/C stereo pair");
   }
-  return message;
+  const auto extrinsics = calibration.getCameraExtrinsics(Socket::CAM_C, Socket::CAM_A, false);
+  const auto rectification = calibration.getStereoRightRectificationRotation();
+  if (extrinsics.size() != 4 || rectification.size() != 3) {
+    throw std::runtime_error("Missing stereo-to-RGB calibration");
+  }
+  for (const auto & row : extrinsics) {
+    if (row.size() != 4) { throw std::runtime_error("Invalid extrinsic matrix"); }
+  }
+  for (const auto & row : rectification) {
+    if (row.size() != 3) { throw std::runtime_error("Invalid rectification matrix"); }
+  }
+  FixedTransform rgb_from_right, right_from_rectified;
+  for (int r = 0; r < 3; ++r) {
+    rgb_from_right.translation[r] = extrinsics[r][3] * 0.01; // EEPROM centimeters -> meters.
+    for (int c = 0; c < 3; ++c) {
+      rgb_from_right.rotation[3*r+c] = extrinsics[r][c];
+      right_from_rectified.rotation[3*r+c] = rectification[c][r];
+    }
+  }
+  return compose(rgb_from_right, right_from_rectified);
 }
 
-visualization_msgs::msg::MarkerArray contourMessage(const DetectionResult & detection,
-  const builtin_interfaces::msg::Time & stamp, const std::string & frame_id)
+double hostSeconds()
 {
-  visualization_msgs::msg::MarkerArray message;
-  message.markers.resize(2);
-  for (int held = 0; held < 2; ++held) {
-    auto & marker = message.markers[held];
-    marker.header.stamp = stamp;
-    marker.header.frame_id = frame_id;
-    marker.ns = "depth_grid_boundary";
-    marker.id = held;
-    marker.type = visualization_msgs::msg::Marker::LINE_LIST;
-    marker.pose.orientation.w = 1.0;
-    marker.scale.x = 0.01;
-    marker.color.r = held ? 0.59F : 0.90F;
-    marker.color.g = 0.59F;
-    marker.color.b = held ? 0.59F : 0.0F;
-    marker.color.a = 1.0F;
-    marker.lifetime.sec = 1; // Also expires the view if the process disappears.
-  }
-  for (const auto & edge : detection.boundary) {
-    auto & marker = message.markers[edge.observation_age_sec > 0.0 ? 1 : 0];
-    geometry_msgs::msg::Point start, end;
-    start.x = edge.x1; start.y = edge.y1;
-    end.x = edge.x2; end.y = edge.y2;
-    marker.points.push_back(start);
-    marker.points.push_back(end);
-  }
-  for (auto & marker : message.markers) {
-    marker.action = marker.points.empty() ? visualization_msgs::msg::Marker::DELETE
-      : visualization_msgs::msg::Marker::ADD;
-  }
-  return message;
+  return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-
-// One point per occupied cell, not per obstacle center. No circle/radius fields.
-sensor_msgs::msg::PointCloud2 occupiedCellMessage(const DetectionResult & detection,
-  const builtin_interfaces::msg::Time & stamp, const std::string & frame_id)
-{
-  sensor_msgs::msg::PointCloud2 message;
-  message.header.stamp = stamp;
-  message.header.frame_id = frame_id;
-  sensor_msgs::PointCloud2Modifier modifier(message);
-  using Field = sensor_msgs::msg::PointField;
-  modifier.setPointCloud2Fields(5, "x", 1, Field::FLOAT32, "y", 1, Field::FLOAT32,
-    "z", 1, Field::FLOAT32, "point_count", 1, Field::UINT32, "observation_age_sec", 1, Field::FLOAT32);
-  modifier.resize(detection.occupied_cells);
-  message.is_dense = true;
-  if (!detection.occupied_cells) { return message; }
-  sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z");
-  sensor_msgs::PointCloud2Iterator<std::uint32_t> count(message, "point_count");
-  sensor_msgs::PointCloud2Iterator<float> age(message, "observation_age_sec");
-  for (std::size_t i = 0; i < detection.cells.size(); ++i) {
-    const auto & cell = detection.cells[i];
-    if (!cell.support_points) { continue; }
-    *x = static_cast<float>(detection.grid.x_min_m + (i % detection.width + 0.5) * detection.grid.resolution_m);
-    *y = static_cast<float>(detection.grid.y_min_m + (i / detection.width + 0.5) * detection.grid.resolution_m);
-    *z = 0.0F;
-    *count = cell.support_points;
-    *age = static_cast<float>(cell.observation_age_sec);
-    ++x; ++y; ++z; ++count; ++age;
-  }
-  return message;
-}
-
 } // namespace
 
 class DepthLidarNode : public rclcpp::Node
@@ -405,101 +287,32 @@ public:
   DepthLidarNode() : Node("depth_lidar")
   {
     config_.camera_fps = declare_parameter<double>("camera.fps", config_.camera_fps);
-    config_.camera_resolution =
-      declare_parameter<std::string>("camera.resolution", config_.camera_resolution);
+    config_.camera_resolution = declare_parameter<std::string>("camera.resolution", config_.camera_resolution);
     config_.depth_mode = declare_parameter<std::string>("depth.mode", config_.depth_mode);
-    config_.confidence_threshold =
-      declare_parameter<int>("depth.confidence_threshold", config_.confidence_threshold);
-    config_.left_right_check =
-      declare_parameter<bool>("depth.left_right_check", config_.left_right_check);
+    config_.confidence_threshold = declare_parameter<int>("depth.confidence_threshold", config_.confidence_threshold);
+    config_.left_right_check = declare_parameter<bool>("depth.left_right_check", config_.left_right_check);
     config_.subpixel = declare_parameter<bool>("depth.subpixel", config_.subpixel);
-    config_.extended_disparity =
-      declare_parameter<bool>("depth.extended_disparity", config_.extended_disparity);
-    config_.median_filter =
-      declare_parameter<std::string>("depth.median_filter", config_.median_filter);
-    config_.projection.roi_width_ratio =
-      declare_parameter<double>("roi.width_ratio", config_.projection.roi_width_ratio);
-    config_.projection.roi_height_ratio =
-      declare_parameter<double>("roi.height_ratio", config_.projection.roi_height_ratio);
-    config_.projection.roi_bottom_offset_ratio =
-      declare_parameter<double>("roi.bottom_offset_ratio",
-        config_.projection.roi_bottom_offset_ratio);
-    config_.projection.min_range_m =
-      declare_parameter<double>("range.min_m", config_.projection.min_range_m);
-    config_.projection.max_range_m =
-      declare_parameter<double>("range.max_m", config_.projection.max_range_m);
-    config_.projection.range_offset_m =
-      declare_parameter<double>("range.offset_m", config_.projection.range_offset_m);
-    config_.projection.pixel_stride =
-      declare_parameter<int>("points.pixel_stride", config_.projection.pixel_stride);
-    config_.cluster.min_points = declare_parameter<int>("cluster.min_points", config_.cluster.min_points);
-    config_.cluster.min_cells = declare_parameter<int>("cluster.min_cells", config_.cluster.min_cells);
-    config_.grid.resolution_m = declare_parameter<double>("grid.resolution_m", config_.grid.resolution_m);
-    config_.grid.x_min_m = declare_parameter<double>("grid.x_min_m", config_.grid.x_min_m);
-    config_.grid.x_max_m = declare_parameter<double>("grid.x_max_m", config_.grid.x_max_m);
-    config_.grid.y_min_m = declare_parameter<double>("grid.y_min_m", config_.grid.y_min_m);
-    config_.grid.y_max_m = declare_parameter<double>("grid.y_max_m", config_.grid.y_max_m);
-    config_.grid.min_points_per_cell = declare_parameter<int>("grid.min_points_per_cell", config_.grid.min_points_per_cell);
-    config_.ground.roi_width_ratio =
-      declare_parameter<double>("ground.roi_width_ratio", config_.ground.roi_width_ratio);
-    config_.ground.roi_height_ratio =
-      declare_parameter<double>("ground.roi_height_ratio", config_.ground.roi_height_ratio);
-    config_.ground.roi_bottom_offset_ratio =
-      declare_parameter<double>("ground.roi_bottom_offset_ratio", config_.ground.roi_bottom_offset_ratio);
-    config_.ground.pixel_stride =
-      declare_parameter<int>("ground.pixel_stride", config_.ground.pixel_stride);
-    config_.ground.max_samples =
-      declare_parameter<int>("ground.max_samples", config_.ground.max_samples);
-    config_.ground.max_iterations =
-      declare_parameter<int>("ground.max_iterations", config_.ground.max_iterations);
-    config_.ground.min_depth_m =
-      declare_parameter<double>("ground.min_depth_m", config_.ground.min_depth_m);
-    config_.ground.max_depth_m =
-      declare_parameter<double>("ground.max_depth_m", config_.ground.max_depth_m);
-    config_.ground.inlier_distance_m =
-      declare_parameter<double>("ground.inlier_distance_m", config_.ground.inlier_distance_m);
-    config_.ground.min_inlier_points =
-      declare_parameter<int>("ground.min_inlier_points", config_.ground.min_inlier_points);
-    config_.ground.min_inlier_ratio =
-      declare_parameter<double>("ground.min_inlier_ratio", config_.ground.min_inlier_ratio);
-    config_.ground.min_spread_m =
-      declare_parameter<double>("ground.min_spread_m", config_.ground.min_spread_m);
-    config_.ground.max_rmse_m =
-      declare_parameter<double>("ground.max_rmse_m", config_.ground.max_rmse_m);
-    config_.ground.reference_up_x =
-      declare_parameter<double>("ground.reference_up_x", config_.ground.reference_up_x);
-    config_.ground.reference_up_y =
-      declare_parameter<double>("ground.reference_up_y", config_.ground.reference_up_y);
-    config_.ground.reference_up_z =
-      declare_parameter<double>("ground.reference_up_z", config_.ground.reference_up_z);
-    config_.ground.max_tilt_deg =
-      declare_parameter<double>("ground.max_tilt_deg", config_.ground.max_tilt_deg);
-    config_.ground.min_camera_height_m =
-      declare_parameter<double>("ground.min_camera_height_m", config_.ground.min_camera_height_m);
-    config_.ground.max_camera_height_m =
-      declare_parameter<double>("ground.max_camera_height_m", config_.ground.max_camera_height_m);
-    config_.ground.min_height_m =
-      declare_parameter<double>("ground.min_height_m", config_.ground.min_height_m);
-    config_.ground.max_height_m =
-      declare_parameter<double>("ground.max_height_m", config_.ground.max_height_m);
-    config_.ground.noise_scale =
-      declare_parameter<double>("ground.noise_scale", config_.ground.noise_scale);
-    config_.ground.release_ratio =
-      declare_parameter<double>("ground.release_ratio", config_.ground.release_ratio);
-    config_.ground.reset_history_angle_deg =
-      declare_parameter<double>("ground.reset_history_angle_deg", config_.ground.reset_history_angle_deg);
-    config_.ground.reset_history_height_m =
-      declare_parameter<double>("ground.reset_history_height_m", config_.ground.reset_history_height_m);
-    config_.stabilization.enabled =
-      declare_parameter<bool>("stabilization.enabled", config_.stabilization.enabled);
-    config_.stabilization.confirm_hits =
-      declare_parameter<int>("stabilization.confirm_hits", config_.stabilization.confirm_hits);
-    config_.stabilization.window_frames =
-      declare_parameter<int>("stabilization.window_frames", config_.stabilization.window_frames);
-    config_.stabilization.hold_sec =
-      declare_parameter<double>("stabilization.hold_sec", config_.stabilization.hold_sec);
-    config_.stabilization.max_frame_gap_sec =
-      declare_parameter<double>("stabilization.max_frame_gap_sec", config_.stabilization.max_frame_gap_sec);
+    config_.extended_disparity = declare_parameter<bool>("depth.extended_disparity", config_.extended_disparity);
+    config_.median_filter = declare_parameter<std::string>("depth.median_filter", config_.median_filter);
+    config_.projection.roi_width_ratio = declare_parameter<double>("roi.width_ratio", config_.projection.roi_width_ratio);
+    config_.projection.roi_height_ratio = declare_parameter<double>("roi.height_ratio", config_.projection.roi_height_ratio);
+    config_.projection.roi_bottom_offset_ratio = declare_parameter<double>("roi.bottom_offset_ratio", config_.projection.roi_bottom_offset_ratio);
+    config_.projection.min_range_m = declare_parameter<double>("range.min_m", config_.projection.min_range_m);
+    config_.projection.max_range_m = declare_parameter<double>("range.max_m", config_.projection.max_range_m);
+    config_.projection.range_offset_m = declare_parameter<double>("range.offset_m", config_.projection.range_offset_m);
+    config_.projection.pixel_stride = declare_parameter<int>("points.pixel_stride", config_.projection.pixel_stride);
+    config_.projection.min_depth_m = declare_parameter<double>("points.min_depth_m", config_.projection.min_depth_m);
+    config_.projection.max_depth_m = declare_parameter<double>("points.max_depth_m", config_.projection.max_depth_m);
+    config_.projection.min_height_m = declare_parameter<double>("height.min_m", config_.projection.min_height_m);
+    config_.projection.max_height_m = declare_parameter<double>("height.max_m", config_.projection.max_height_m);
+    config_.projection.angle_min_deg = declare_parameter<double>("scan.angle_min_deg", config_.projection.angle_min_deg);
+    config_.projection.angle_max_deg = declare_parameter<double>("scan.angle_max_deg", config_.projection.angle_max_deg);
+    config_.projection.bins = declare_parameter<int>("scan.bins", config_.projection.bins);
+    config_.projection.min_points_per_bin = declare_parameter<int>("scan.min_points_per_bin", config_.projection.min_points_per_bin);
+    config_.projection.min_neighbors = declare_parameter<int>("filter.min_neighbors", config_.projection.min_neighbors);
+    config_.projection.neighbor_delta_m = declare_parameter<double>("filter.neighbor_delta_m", config_.projection.neighbor_delta_m);
+    config_.hold_sec = declare_parameter<double>("scan.hold_sec", config_.hold_sec);
+    config_.max_age_sec = declare_parameter<double>("input.max_age_sec", config_.max_age_sec);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
     config_.nv12_fps = declare_parameter<double>("nv12.fps", config_.nv12_fps);
     config_.nv12_width = declare_parameter<int>("nv12.width", config_.nv12_width);
@@ -508,262 +321,174 @@ public:
     config_.preview_gui = declare_parameter<bool>("preview.gui", config_.preview_gui);
     config_.preview_fps = declare_parameter<double>("preview.fps", config_.preview_fps);
     config_.preview_size_px = declare_parameter<int>("preview.size_px", config_.preview_size_px);
-    config_.preview_scale = declare_parameter<int>("preview.scale", config_.preview_scale);
-    config_.stereo_preview_enabled =
-      declare_parameter<bool>("stereo_preview.enabled", config_.stereo_preview_enabled);
-    config_.stereo_preview_gui =
-      declare_parameter<bool>("stereo_preview.gui", config_.stereo_preview_gui);
-    config_.stereo_preview_fps =
-      declare_parameter<double>("stereo_preview.fps", config_.stereo_preview_fps);
-    config_.bev_x_min_m = declare_parameter<double>("bev.x_min_m", config_.bev_x_min_m);
-    config_.bev_x_max_m = declare_parameter<double>("bev.x_max_m", config_.bev_x_max_m);
-    config_.bev_y_min_m = declare_parameter<double>("bev.y_min_m", config_.bev_y_min_m);
-    config_.bev_y_max_m = declare_parameter<double>("bev.y_max_m", config_.bev_y_max_m);
-    config_.bev_meter_per_pixel =
-      declare_parameter<double>("bev.meter_per_pixel", config_.bev_meter_per_pixel);
+    config_.stereo_preview_enabled = declare_parameter<bool>("stereo_preview.enabled", config_.stereo_preview_enabled);
+    config_.stereo_preview_gui = declare_parameter<bool>("stereo_preview.gui", config_.stereo_preview_gui);
+    config_.stereo_preview_fps = declare_parameter<double>("stereo_preview.fps", config_.stereo_preview_fps);
     config_.sensor_x_m = declare_parameter<double>("sensor.x_m", config_.sensor_x_m);
     config_.sensor_y_m = declare_parameter<double>("sensor.y_m", config_.sensor_y_m);
     config_.sensor_yaw_deg = declare_parameter<double>("sensor.yaw_deg", config_.sensor_yaw_deg);
-    config_.metrics_interval_sec =
-      declare_parameter<double>("metrics.print_interval_sec", config_.metrics_interval_sec);
+    config_.metrics_interval_sec = declare_parameter<double>("metrics.print_interval_sec", config_.metrics_interval_sec);
     config_.frame_id = declare_parameter<std::string>("frame_id", config_.frame_id);
-
+    startup_.ir_dot_projector_intensity = 0.0;
+    startup_.roi_preview_enabled = false;
+    rcl_interfaces::msg::ParameterDescriptor read_only;
+    read_only.read_only = true;
+    startup_.device_id = declare_parameter<std::string>("startup.device_id", startup_.device_id, read_only);
+    startup_.roi_width = declare_parameter<int>("startup.roi_width", startup_.roi_width, read_only);
+    startup_.roi_height = declare_parameter<int>("startup.roi_height", startup_.roi_height, read_only);
+    startup_.roi_vertical_offset_px = declare_parameter<int>("startup.roi_vertical_offset_px", startup_.roi_vertical_offset_px, read_only);
+    startup_.roi_preview_enabled = declare_parameter<bool>("startup.roi_preview_enabled", startup_.roi_preview_enabled, read_only);
+    startup_.point_sample_step = declare_parameter<int>("startup.point_sample_step", startup_.point_sample_step, read_only);
+    startup_.minimum_valid_points = declare_parameter<int>("startup.minimum_valid_points", startup_.minimum_valid_points, read_only);
+    startup_.minimum_depth_m = declare_parameter<double>("startup.minimum_depth_m", startup_.minimum_depth_m, read_only);
+    startup_.maximum_depth_m = declare_parameter<double>("startup.maximum_depth_m", startup_.maximum_depth_m, read_only);
+    startup_.minimum_height_m = declare_parameter<double>("startup.minimum_height_m", startup_.minimum_height_m, read_only);
+    startup_.maximum_height_m = declare_parameter<double>("startup.maximum_height_m", startup_.maximum_height_m, read_only);
+    startup_.plane_ransac_iterations = declare_parameter<int>("startup.plane_ransac_iterations", startup_.plane_ransac_iterations, read_only);
+    startup_.plane_inlier_threshold_m = declare_parameter<double>("startup.plane_inlier_threshold_m", startup_.plane_inlier_threshold_m, read_only);
+    startup_.plane_minimum_inliers = declare_parameter<int>("startup.plane_minimum_inliers", startup_.plane_minimum_inliers, read_only);
+    startup_.plane_minimum_inlier_ratio = declare_parameter<double>("startup.plane_minimum_inlier_ratio", startup_.plane_minimum_inlier_ratio, read_only);
+    startup_.plane_maximum_residual_mad_m = declare_parameter<double>("startup.plane_maximum_residual_mad_m", startup_.plane_maximum_residual_mad_m, read_only);
+    startup_.plane_maximum_imu_difference_deg = declare_parameter<double>("startup.plane_maximum_imu_difference_deg", startup_.plane_maximum_imu_difference_deg, read_only);
+    startup_.stable_plane_frame_count = declare_parameter<int>("startup.stable_plane_frame_count", startup_.stable_plane_frame_count, read_only);
+    startup_.maximum_height_stddev_m = declare_parameter<double>("startup.maximum_height_stddev_m", startup_.maximum_height_stddev_m, read_only);
+    startup_.maximum_plane_normal_rms_deg = declare_parameter<double>("startup.maximum_plane_normal_rms_deg", startup_.maximum_plane_normal_rms_deg, read_only);
+    startup_.timeout_sec = declare_parameter<double>("startup.timeout_sec", startup_.timeout_sec, read_only);
+    startup_.warmup_sec = declare_parameter<double>("startup.warmup_sec", startup_.warmup_sec, read_only);
+    startup_.ir_dot_projector_intensity = declare_parameter<double>("startup.ir_dot_projector_intensity", startup_.ir_dot_projector_intensity, read_only);
+    startup_.imu_sample_count = declare_parameter<int>("startup.imu_sample_count", startup_.imu_sample_count, read_only);
+    startup_.imu_max_direction_rms_deg = declare_parameter<double>("startup.imu_max_direction_rms_deg", startup_.imu_max_direction_rms_deg, read_only);
+    startup_.imu_gyroscope_mean_maximum_degps = declare_parameter<double>("startup.imu_gyroscope_mean_maximum_degps", startup_.imu_gyroscope_mean_maximum_degps, read_only);
+    startup_.imu_gyroscope_stddev_maximum_degps = declare_parameter<double>("startup.imu_gyroscope_stddev_maximum_degps", startup_.imu_gyroscope_stddev_maximum_degps, read_only);
+    startup_.imu_roll_bias_deg = declare_parameter<double>("startup.imu_roll_bias_deg", startup_.imu_roll_bias_deg, read_only);
+    startup_.imu_pitch_bias_deg = declare_parameter<double>("startup.imu_pitch_bias_deg", startup_.imu_pitch_bias_deg, read_only);
+    startup_.stereo_confidence_threshold = declare_parameter<int>("startup.stereo_confidence_threshold", startup_.stereo_confidence_threshold, read_only);
+    startup_.attitude_source = oak_startup::parseStartupAttitudeSource(
+      declare_parameter<std::string>("startup.attitude_source", "depth", read_only));
     std::string reason;
-    if (!validateNodeConfig(config_, reason)) {
-      throw std::invalid_argument("invalid initial parameter: " + reason);
-    }
+    if (!validateNodeConfig(config_, reason)) { throw std::invalid_argument(reason); }
+    // Reject obsolete profiles instead of silently using defaults for removed stages.
     for (const auto & entry : get_node_parameters_interface()->get_parameter_overrides()) {
-      if (entry.first.rfind("floor.", 0) == 0 || entry.first == "cluster.neighbor_distance_m"
-          || entry.first == "cluster.radius_margin_m" || entry.first == "cluster.min_radius_m"
-          || entry.first == "stabilization.match_distance_m") {
-        throw std::invalid_argument("obsolete floor/circle parameters; use the current occupancy-grid YAML");
+      const auto & name = entry.first;
+      if (name.rfind("ground.", 0) == 0 || name.rfind("floor.", 0) == 0
+          || name.rfind("grid.", 0) == 0 || name.rfind("cluster.", 0) == 0
+          || name.rfind("stabilization.", 0) == 0 || name.rfind("bev.", 0) == 0
+          || name == "scan.range_selection" || name == "preview.scale") {
+        throw std::invalid_argument("Obsolete depth_lidar parameter: " + name + "; use the fixed-pose scan YAML");
       }
     }
-
-    const auto qos = rclcpp::SensorDataQoS().keep_last(1);
-    cells_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/occupied_cells", qos);
-    occupancy_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>("~/occupancy", qos);
-    contours_publisher_ = create_publisher<visualization_msgs::msg::MarkerArray>("~/contours", qos);
-    ground_status_publisher_ = create_publisher<std_msgs::msg::String>("~/ground_status",
-      rclcpp::QoS(1).reliable().transient_local());
-    ground_valid_publisher_ = create_publisher<std_msgs::msg::Bool>("~/ground_valid",
-      rclcpp::QoS(1).reliable().transient_local());
-    preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/preview", qos);
-    stereo_preview_publisher_ = create_publisher<sensor_msgs::msg::Image>("~/stereo_preview", qos);
+    scan_pub_ = create_publisher<sensor_msgs::msg::LaserScan>("~/scan", rclcpp::SensorDataQoS());
+    points_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/scan_points", rclcpp::SensorDataQoS());
+    status_pub_ = create_publisher<std_msgs::msg::String>("~/status", rclcpp::QoS(1).transient_local());
+    pose_pub_ = create_publisher<std_msgs::msg::String>("~/startup_pose", rclcpp::QoS(1).transient_local());
+    ready_pub_ = create_publisher<std_msgs::msg::Bool>("~/ready", rclcpp::QoS(1).transient_local());
+    preview_pub_ = create_publisher<sensor_msgs::msg::Image>("~/preview", rclcpp::SensorDataQoS());
+    stereo_pub_ = create_publisher<sensor_msgs::msg::Image>("~/stereo_preview", rclcpp::SensorDataQoS());
     parameter_callback_ = add_on_set_parameters_callback(
-      std::bind(&DepthLidarNode::onParameters, this, std::placeholders::_1));
-    worker_ = std::thread(&DepthLidarNode::cameraLoop, this);
+      [this](const std::vector<rclcpp::Parameter> & parameters) {
+        rcl_interfaces::msg::SetParametersResult result;
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        auto next = config_;
+        try {
+          for (const auto & p : parameters) {
+            if (p.get_name() == "camera.fps") { next.camera_fps = p.as_double(); }
+            else if (p.get_name() == "camera.resolution") { next.camera_resolution = p.as_string(); }
+            else if (p.get_name() == "depth.mode") { next.depth_mode = p.as_string(); }
+            else if (p.get_name() == "depth.confidence_threshold") { next.confidence_threshold = p.as_int(); }
+            else if (p.get_name() == "depth.left_right_check") { next.left_right_check = p.as_bool(); }
+            else if (p.get_name() == "depth.subpixel") { next.subpixel = p.as_bool(); }
+            else if (p.get_name() == "depth.extended_disparity") { next.extended_disparity = p.as_bool(); }
+            else if (p.get_name() == "depth.median_filter") { next.median_filter = p.as_string(); }
+            else if (p.get_name() == "roi.width_ratio") { next.projection.roi_width_ratio = p.as_double(); }
+            else if (p.get_name() == "roi.height_ratio") { next.projection.roi_height_ratio = p.as_double(); }
+            else if (p.get_name() == "roi.bottom_offset_ratio") { next.projection.roi_bottom_offset_ratio = p.as_double(); }
+            else if (p.get_name() == "range.min_m") { next.projection.min_range_m = p.as_double(); }
+            else if (p.get_name() == "range.max_m") { next.projection.max_range_m = p.as_double(); }
+            else if (p.get_name() == "range.offset_m") { next.projection.range_offset_m = p.as_double(); }
+            else if (p.get_name() == "points.pixel_stride") { next.projection.pixel_stride = p.as_int(); }
+            else if (p.get_name() == "points.min_depth_m") { next.projection.min_depth_m = p.as_double(); }
+            else if (p.get_name() == "points.max_depth_m") { next.projection.max_depth_m = p.as_double(); }
+            else if (p.get_name() == "height.min_m") { next.projection.min_height_m = p.as_double(); }
+            else if (p.get_name() == "height.max_m") { next.projection.max_height_m = p.as_double(); }
+            else if (p.get_name() == "scan.angle_min_deg") { next.projection.angle_min_deg = p.as_double(); }
+            else if (p.get_name() == "scan.angle_max_deg") { next.projection.angle_max_deg = p.as_double(); }
+            else if (p.get_name() == "scan.bins") { next.projection.bins = p.as_int(); }
+            else if (p.get_name() == "scan.min_points_per_bin") { next.projection.min_points_per_bin = p.as_int(); }
+            else if (p.get_name() == "filter.min_neighbors") { next.projection.min_neighbors = p.as_int(); }
+            else if (p.get_name() == "filter.neighbor_delta_m") { next.projection.neighbor_delta_m = p.as_double(); }
+            else if (p.get_name() == "scan.hold_sec") { next.hold_sec = p.as_double(); }
+            else if (p.get_name() == "input.max_age_sec") { next.max_age_sec = p.as_double(); }
+            else if (p.get_name() == "nv12.enabled") { next.nv12_enabled = p.as_bool(); }
+            else if (p.get_name() == "nv12.fps") { next.nv12_fps = p.as_double(); }
+            else if (p.get_name() == "nv12.width") { next.nv12_width = p.as_int(); }
+            else if (p.get_name() == "nv12.height") { next.nv12_height = p.as_int(); }
+            else if (p.get_name() == "preview.enabled") { next.preview_enabled = p.as_bool(); }
+            else if (p.get_name() == "preview.gui") { next.preview_gui = p.as_bool(); }
+            else if (p.get_name() == "preview.fps") { next.preview_fps = p.as_double(); }
+            else if (p.get_name() == "preview.size_px") { next.preview_size_px = p.as_int(); }
+            else if (p.get_name() == "stereo_preview.enabled") { next.stereo_preview_enabled = p.as_bool(); }
+            else if (p.get_name() == "stereo_preview.gui") { next.stereo_preview_gui = p.as_bool(); }
+            else if (p.get_name() == "stereo_preview.fps") { next.stereo_preview_fps = p.as_double(); }
+            else if (p.get_name() == "sensor.x_m") { next.sensor_x_m = p.as_double(); }
+            else if (p.get_name() == "sensor.y_m") { next.sensor_y_m = p.as_double(); }
+            else if (p.get_name() == "sensor.yaw_deg") { next.sensor_yaw_deg = p.as_double(); }
+            else if (p.get_name() == "metrics.print_interval_sec") { next.metrics_interval_sec = p.as_double(); }
+            else if (p.get_name() == "frame_id") { next.frame_id = p.as_string(); }
+            else if (p.get_name() != "use_sim_time") { throw std::invalid_argument("Unknown/read-only parameter: " + p.get_name()); }
+          }
+          if (!validateNodeConfig(next, result.reason)) { return result; }
+          config_ = next;
+          restart_requested_.store(true);
+          result.successful = true;
+        } catch (const std::exception & e) { result.reason = e.what(); }
+        return result;
+      });
+    worker_ = std::thread([this]() { cameraLoop(); });
   }
-
   ~DepthLidarNode() override
   {
     stop_requested_.store(true);
-    restart_requested_.store(true);
-    if (worker_.joinable()) {
-      worker_.join();
-    }
-    cv::destroyAllWindows();
+    if (worker_.joinable()) { worker_.join(); }
   }
-
 private:
-  rcl_interfaces::msg::SetParametersResult onParameters(
-    const std::vector<rclcpp::Parameter> & parameters)
+  bool stopping() const { return stop_requested_.load() || !rclcpp::ok(); }
+  void status(const std::string & text, bool ready)
   {
-    rcl_interfaces::msg::SetParametersResult result;
-    result.successful = false;
-
-    NodeConfig previous;
-    NodeConfig next;
-    {
-      std::lock_guard<std::mutex> lock(config_mutex_);
-      previous = config_;
-      next = config_;
-    }
-
-    try {
-      for (const auto & parameter : parameters) {
-        const std::string & name = parameter.get_name();
-        if (name == "camera.fps") {
-          next.camera_fps = parameter.as_double();
-        } else if (name == "camera.resolution") {
-          next.camera_resolution = parameter.as_string();
-        } else if (name == "depth.mode") {
-          next.depth_mode = parameter.as_string();
-        } else if (name == "depth.confidence_threshold") {
-          next.confidence_threshold = static_cast<int>(parameter.as_int());
-        } else if (name == "depth.left_right_check") {
-          next.left_right_check = parameter.as_bool();
-        } else if (name == "depth.subpixel") {
-          next.subpixel = parameter.as_bool();
-        } else if (name == "depth.extended_disparity") {
-          next.extended_disparity = parameter.as_bool();
-        } else if (name == "depth.median_filter") {
-          next.median_filter = parameter.as_string();
-        } else if (name == "roi.width_ratio") {
-          next.projection.roi_width_ratio = parameter.as_double();
-        } else if (name == "roi.height_ratio") {
-          next.projection.roi_height_ratio = parameter.as_double();
-        } else if (name == "roi.bottom_offset_ratio") {
-          next.projection.roi_bottom_offset_ratio = parameter.as_double();
-        } else if (name == "range.min_m") {
-          next.projection.min_range_m = parameter.as_double();
-        } else if (name == "range.max_m") {
-          next.projection.max_range_m = parameter.as_double();
-        } else if (name == "range.offset_m") {
-          next.projection.range_offset_m = parameter.as_double();
-        } else if (name == "points.pixel_stride") {
-          next.projection.pixel_stride = static_cast<int>(parameter.as_int());
-        } else if (name == "cluster.min_points") {
-          next.cluster.min_points = static_cast<int>(parameter.as_int());
-        } else if (name == "cluster.min_cells") {
-          next.cluster.min_cells = static_cast<int>(parameter.as_int());
-        } else if (name == "grid.resolution_m") {
-          next.grid.resolution_m = parameter.as_double();
-        } else if (name == "grid.x_min_m") {
-          next.grid.x_min_m = parameter.as_double();
-        } else if (name == "grid.x_max_m") {
-          next.grid.x_max_m = parameter.as_double();
-        } else if (name == "grid.y_min_m") {
-          next.grid.y_min_m = parameter.as_double();
-        } else if (name == "grid.y_max_m") {
-          next.grid.y_max_m = parameter.as_double();
-        } else if (name == "grid.min_points_per_cell") {
-          next.grid.min_points_per_cell = static_cast<int>(parameter.as_int());
-        } else if (name == "ground.roi_width_ratio") {
-          next.ground.roi_width_ratio = parameter.as_double();
-        } else if (name == "ground.roi_height_ratio") {
-          next.ground.roi_height_ratio = parameter.as_double();
-        } else if (name == "ground.roi_bottom_offset_ratio") {
-          next.ground.roi_bottom_offset_ratio = parameter.as_double();
-        } else if (name == "ground.pixel_stride") {
-          next.ground.pixel_stride = static_cast<int>(parameter.as_int());
-        } else if (name == "ground.max_samples") {
-          next.ground.max_samples = static_cast<int>(parameter.as_int());
-        } else if (name == "ground.max_iterations") {
-          next.ground.max_iterations = static_cast<int>(parameter.as_int());
-        } else if (name == "ground.min_depth_m") {
-          next.ground.min_depth_m = parameter.as_double();
-        } else if (name == "ground.max_depth_m") {
-          next.ground.max_depth_m = parameter.as_double();
-        } else if (name == "ground.inlier_distance_m") {
-          next.ground.inlier_distance_m = parameter.as_double();
-        } else if (name == "ground.min_inlier_points") {
-          next.ground.min_inlier_points = static_cast<int>(parameter.as_int());
-        } else if (name == "ground.min_inlier_ratio") {
-          next.ground.min_inlier_ratio = parameter.as_double();
-        } else if (name == "ground.min_spread_m") {
-          next.ground.min_spread_m = parameter.as_double();
-        } else if (name == "ground.max_rmse_m") {
-          next.ground.max_rmse_m = parameter.as_double();
-        } else if (name == "ground.reference_up_x") {
-          next.ground.reference_up_x = parameter.as_double();
-        } else if (name == "ground.reference_up_y") {
-          next.ground.reference_up_y = parameter.as_double();
-        } else if (name == "ground.reference_up_z") {
-          next.ground.reference_up_z = parameter.as_double();
-        } else if (name == "ground.max_tilt_deg") {
-          next.ground.max_tilt_deg = parameter.as_double();
-        } else if (name == "ground.min_camera_height_m") {
-          next.ground.min_camera_height_m = parameter.as_double();
-        } else if (name == "ground.max_camera_height_m") {
-          next.ground.max_camera_height_m = parameter.as_double();
-        } else if (name == "ground.min_height_m") {
-          next.ground.min_height_m = parameter.as_double();
-        } else if (name == "ground.max_height_m") {
-          next.ground.max_height_m = parameter.as_double();
-        } else if (name == "ground.noise_scale") {
-          next.ground.noise_scale = parameter.as_double();
-        } else if (name == "ground.release_ratio") {
-          next.ground.release_ratio = parameter.as_double();
-        } else if (name == "ground.reset_history_angle_deg") {
-          next.ground.reset_history_angle_deg = parameter.as_double();
-        } else if (name == "ground.reset_history_height_m") {
-          next.ground.reset_history_height_m = parameter.as_double();
-        } else if (name == "stabilization.enabled") {
-          next.stabilization.enabled = parameter.as_bool();
-        } else if (name == "stabilization.confirm_hits") {
-          next.stabilization.confirm_hits = static_cast<int>(parameter.as_int());
-        } else if (name == "stabilization.window_frames") {
-          next.stabilization.window_frames = static_cast<int>(parameter.as_int());
-        } else if (name == "stabilization.hold_sec") {
-          next.stabilization.hold_sec = parameter.as_double();
-        } else if (name == "stabilization.max_frame_gap_sec") {
-          next.stabilization.max_frame_gap_sec = parameter.as_double();
-        } else if (name == "nv12.enabled") {
-          next.nv12_enabled = parameter.as_bool();
-        } else if (name == "nv12.fps") {
-          next.nv12_fps = parameter.as_double();
-        } else if (name == "nv12.width") {
-          next.nv12_width = static_cast<int>(parameter.as_int());
-        } else if (name == "nv12.height") {
-          next.nv12_height = static_cast<int>(parameter.as_int());
-        } else if (name == "preview.enabled") {
-          next.preview_enabled = parameter.as_bool();
-        } else if (name == "preview.gui") {
-          next.preview_gui = parameter.as_bool();
-        } else if (name == "preview.fps") {
-          next.preview_fps = parameter.as_double();
-        } else if (name == "preview.size_px") {
-          next.preview_size_px = static_cast<int>(parameter.as_int());
-        } else if (name == "preview.scale") {
-          next.preview_scale = static_cast<int>(parameter.as_int());
-        } else if (name == "stereo_preview.enabled") {
-          next.stereo_preview_enabled = parameter.as_bool();
-        } else if (name == "stereo_preview.gui") {
-          next.stereo_preview_gui = parameter.as_bool();
-        } else if (name == "stereo_preview.fps") {
-          next.stereo_preview_fps = parameter.as_double();
-        } else if (name == "bev.x_min_m") {
-          next.bev_x_min_m = parameter.as_double();
-        } else if (name == "bev.x_max_m") {
-          next.bev_x_max_m = parameter.as_double();
-        } else if (name == "bev.y_min_m") {
-          next.bev_y_min_m = parameter.as_double();
-        } else if (name == "bev.y_max_m") {
-          next.bev_y_max_m = parameter.as_double();
-        } else if (name == "bev.meter_per_pixel") {
-          next.bev_meter_per_pixel = parameter.as_double();
-        } else if (name == "sensor.x_m") {
-          next.sensor_x_m = parameter.as_double();
-        } else if (name == "sensor.y_m") {
-          next.sensor_y_m = parameter.as_double();
-        } else if (name == "sensor.yaw_deg") {
-          next.sensor_yaw_deg = parameter.as_double();
-        } else if (name == "metrics.print_interval_sec") {
-          next.metrics_interval_sec = parameter.as_double();
-        } else if (name == "frame_id") {
-          next.frame_id = parameter.as_string();
-        }
+    std_msgs::msg::String message; message.data = text; status_pub_->publish(message);
+    std_msgs::msg::Bool flag; flag.data = ready; ready_pub_->publish(flag);
+  }
+  void publishScan(const ScanResult & scan, const NodeConfig & c,
+    const builtin_interfaces::msg::Time & stamp, double scan_time)
+  {
+    constexpr double rad = 3.14159265358979323846 / 180.0;
+    sensor_msgs::msg::LaserScan message;
+    message.header.stamp = stamp; message.header.frame_id = c.frame_id;
+    message.angle_min = c.projection.angle_min_deg * rad;
+    message.angle_max = c.projection.angle_max_deg * rad;
+    message.angle_increment = (message.angle_max - message.angle_min) / (c.projection.bins - 1);
+    message.time_increment = 0.0F; message.scan_time = scan_time;
+    message.range_min = c.projection.min_range_m; message.range_max = c.projection.max_range_m;
+    message.ranges = scan.ranges; // NaN means unobserved; never claim free space.
+    scan_pub_->publish(message);
+    if (!points_pub_->get_subscription_count()) { return; }
+    sensor_msgs::msg::PointCloud2 points;
+    points.header = message.header;
+    sensor_msgs::PointCloud2Modifier modifier(points);
+    using F = sensor_msgs::msg::PointField;
+    modifier.setPointCloud2Fields(4, "x", 1, F::FLOAT32, "y", 1, F::FLOAT32,
+      "z", 1, F::FLOAT32, "observation_age_sec", 1, F::FLOAT32);
+    modifier.resize(scan.valid_bins); points.is_dense = true;
+    if (scan.valid_bins) {
+      sensor_msgs::PointCloud2Iterator<float> x(points,"x"), y(points,"y"), z(points,"z"), age(points,"observation_age_sec");
+      for (std::size_t i = 0; i < scan.ranges.size(); ++i) {
+        if (!std::isfinite(scan.ranges[i])) { continue; }
+        const double angle = message.angle_min + i * message.angle_increment;
+        *x = scan.ranges[i] * std::cos(angle); *y = scan.ranges[i] * std::sin(angle);
+        *z = 0.0F; *age = scan.ages[i]; ++x; ++y; ++z; ++age;
       }
-    } catch (const rclcpp::ParameterTypeException & error) {
-      result.reason = error.what();
-      return result;
     }
-
-    if (!validateNodeConfig(next, result.reason)) {
-      return result;
-    }
-
-    const bool restart_camera = cameraConfigChanged(previous, next);
-    {
-      std::lock_guard<std::mutex> lock(config_mutex_);
-      config_ = next;
-    }
-    if (restart_camera) {
-      restart_requested_.store(true);
-      RCLCPP_INFO(get_logger(), "Camera parameter changed; restarting the DepthAI pipeline");
-    }
-    result.successful = true;
-    result.reason.clear();
-    return result;
+    points_pub_->publish(points);
   }
-
-  NodeConfig configSnapshot() const
-  {
-    std::lock_guard<std::mutex> lock(config_mutex_);
-    return config_;
-  }
-
   void configurePipeline(dai::Pipeline & pipeline,
     const NodeConfig & config,
     std::shared_ptr<dai::node::Camera> & left,
@@ -787,7 +512,7 @@ private:
     stereo->setLeftRightCheck(config.left_right_check);
     stereo->setSubpixel(config.subpixel);
     stereo->setExtendedDisparity(config.extended_disparity);
-    // Keep both ground/detection ROIs in the right rectified preview perspective.
+    // Runtime depth and ROI use the right rectified optical frame.
     stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
 
     nv12_output = nullptr;
@@ -807,508 +532,230 @@ private:
 
   void cameraLoop()
   {
-    bool radar_window_open = false;
-    bool stereo_window_open = false;
-    GroundPlane previous_ground;
-    GridStabilizer stabilizer;
-    std::vector<std::uint8_t> foreground_mask;
-    std::string active_stabilization_context;
-    bool have_detection_time = false;
-    double previous_detection_time = 0.0;
-    const auto clear_history = [&]() {
-      stabilizer.clear();
-      foreground_mask.clear();
-      previous_ground = GroundPlane{};
-      active_stabilization_context.clear();
-      have_detection_time = false;
-    };
-    std::string ground_status;
-    std::size_t published_cell_count = 0U;
-    // Idle expiry redraws use the last measured averages, not fabricated zeros.
-    double measured_depth_rx_fps = 0.0;
-    double measured_nv12_rx_fps = 0.0;
-    double measured_object_processing_fps = 0.0;
-    double measured_object_processing_ms = 0.0;
-    const auto set_ground_status = [&](const std::string & status) {
-      if (ground_status == status) { return; }
-      ground_status = status;
-      std_msgs::msg::String message;
-      message.data = status;
-      ground_status_publisher_->publish(message);
-      std_msgs::msg::Bool validity;
-      validity.data = status.rfind("VALID |", 0) == 0;
-      ground_valid_publisher_->publish(validity);
-    };
-    const auto publish_detection = [&](const NodeConfig & config, const DetectionResult & detection,
-        const builtin_interfaces::msg::Time & stamp) {
-      occupancy_publisher_->publish(occupancyMessage(detection, stamp, config.frame_id));
-      if (contours_publisher_->get_subscription_count() > 0) {
-        contours_publisher_->publish(contourMessage(detection, stamp, config.frame_id));
+    oak_startup::OakStartupMeasurement pose;
+    status("MEASURING STARTUP POSE: keep vehicle stationary on level ground", false);
+    try {
+      pose = oak_startup::measureOakStartupExtrinsics(startup_, [this]() { return stopping(); });
+      std::ostringstream description;
+      description << std::setprecision(9) << "CAM_A fixed pose: device=" << pose.device_id
+        << " roll_deg=" << pose.roll_deg << " pitch_down_deg=" << pose.pitch_down_deg
+        << " height_m=" << pose.height_m << " source=" << pose.attitude_source;
+      std_msgs::msg::String message; message.data = description.str(); pose_pub_->publish(message);
+      RCLCPP_INFO(get_logger(), "%s", message.data.c_str());
+    } catch (const std::exception & e) {
+      if (!stopping()) {
+        status(std::string("STARTUP FAILED: ") + e.what() + "; restart while stationary", false);
+        RCLCPP_ERROR(get_logger(), "Startup measurement failed: %s", e.what());
       }
-      if (cells_publisher_->get_subscription_count() > 0) {
-        cells_publisher_->publish(occupiedCellMessage(detection, stamp, config.frame_id));
+      return; // Never silently calibrate later while the car might be moving.
+    }
+    while (!stopping()) {
+      NodeConfig c;
+      {
+        std::lock_guard<std::mutex> lock(config_mutex_);
+        restart_requested_.store(false);
+        c = config_;
       }
-      published_cell_count = detection.occupied_cells;
-    };
-    const auto publish_status_result = [&](const NodeConfig & config, const DetectionResult & detection,
-        bool waiting_for_depth) {
-      const auto stamp = now();
-      publish_detection(config, detection, stamp);
-      if (config.preview_enabled) {
-        auto preview = makeScanPreview(detection, ground_status, config,
-          measured_depth_rx_fps, measured_nv12_rx_fps,
-          measured_object_processing_fps, measured_object_processing_ms, waiting_for_depth);
-        preview_publisher_->publish(matToImageMessage(preview, stamp, config.frame_id));
-        if (config.preview_gui) {
-          cv::imshow("depth_lidar radar preview", preview);
-          radar_window_open = true;
-        }
-      }
-    };
-    const auto publish_empty = [&](const NodeConfig & config) {
-      publish_status_result(config, emptyGrid(config.grid, config.cluster), false);
-    };
-    set_ground_status("WAITING FOR CAMERA | LIVE MSAC");
-    while (rclcpp::ok() && !stop_requested_.load()) {
-      restart_requested_.store(false);
-      const NodeConfig startup_config = configSnapshot();
       try {
-        clear_history();
-        measured_depth_rx_fps = 0.0;
-        measured_nv12_rx_fps = 0.0;
-        measured_object_processing_fps = 0.0;
-        measured_object_processing_ms = 0.0;
-        set_ground_status("WAITING FOR CAMERA | HISTORY CLEARED");
-        publish_empty(startup_config);
-        auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
+        status("OPENING DEPTH PIPELINE / FIXED POSE", false);
+        publishScan(emptyScan(c.projection), c, now(), 1.0/c.camera_fps);
+        auto device = std::make_shared<dai::Device>(dai::DeviceInfo(pose.device_id), dai::UsbSpeed::SUPER);
+        auto calibration = device->getCalibration();
+        const auto vehicle_from_rgb = cameraMount(pose.roll_deg, pose.pitch_down_deg,
+          c.sensor_yaw_deg, c.sensor_x_m, c.sensor_y_m, pose.height_m);
+        const auto transform = compose(vehicle_from_rgb, rgbFromRectifiedRight(calibration));
         dai::Pipeline pipeline(device);
+        pipeline.setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
         pipeline.setXLinkChunkSize(0);
-        std::shared_ptr<dai::node::Camera> left;
-        std::shared_ptr<dai::node::Camera> right;
+        std::shared_ptr<dai::node::Camera> left, right;
         std::shared_ptr<dai::node::StereoDepth> stereo;
         dai::Node::Output * nv12_output = nullptr;
-        configurePipeline(pipeline, startup_config, left, right, stereo, nv12_output);
-
+        configurePipeline(pipeline, c, left, right, stereo, nv12_output);
         auto depth_queue = stereo->depth.createOutputQueue(1, false);
-        std::shared_ptr<dai::MessageQueue> stereo_left_queue;
-        std::shared_ptr<dai::MessageQueue> stereo_right_queue;
-        if (startup_config.stereo_preview_enabled) {
-          stereo_left_queue = stereo->rectifiedLeft.createOutputQueue(1, false);
-          stereo_right_queue = stereo->rectifiedRight.createOutputQueue(1, false);
+        std::shared_ptr<dai::MessageQueue> left_queue, right_queue, nv12_queue;
+        if (c.stereo_preview_enabled) {
+          left_queue = stereo->rectifiedLeft.createOutputQueue(1, false);
+          right_queue = stereo->rectifiedRight.createOutputQueue(1, false);
         }
-        std::shared_ptr<dai::MessageQueue> nv12_queue;
-        if (nv12_output != nullptr) {
-          nv12_queue = nv12_output->createOutputQueue(1, false);
-        }
+        if (nv12_output) { nv12_queue = nv12_output->createOutputQueue(1, false); }
         pipeline.build();
-        const auto depth_bridge = stereo->depth.getXLinkBridge();
-        if (!depth_bridge || !depth_bridge->xLinkOut) {
-          throw std::runtime_error("DepthAI did not create the depth XLink bridge");
-        }
-        depth_bridge->xLinkOut->input.setMaxSize(1);
-        depth_bridge->xLinkOut->input.setBlocking(false);
-        if (nv12_output != nullptr) {
-          const auto bridge = nv12_output->getXLinkBridge();
-          if (!bridge || !bridge->xLinkOut) {
-            throw std::runtime_error("DepthAI did not create the NV12 XLink bridge");
-          }
-          bridge->xLinkOut->input.setMaxSize(1);
-          bridge->xLinkOut->input.setBlocking(false);
-        }
-        if (startup_config.stereo_preview_enabled) {
-          for (auto * output : {&stereo->rectifiedLeft, &stereo->rectifiedRight}) {
-            const auto bridge = output->getXLinkBridge();
-            if (!bridge || !bridge->xLinkOut) {
-              throw std::runtime_error("DepthAI did not create a rectified image XLink bridge");
-            }
-            bridge->xLinkOut->input.setMaxSize(1);
-            bridge->xLinkOut->input.setBlocking(false);
-          }
-        }
+        const auto bound = [](dai::Node::Output & output) {
+          const auto bridge = output.getXLinkBridge();
+          if (!bridge || !bridge->xLinkOut) { throw std::runtime_error("Missing XLink bridge"); }
+          bridge->xLinkOut->input.setMaxSize(1); bridge->xLinkOut->input.setBlocking(false);
+        };
+        bound(stereo->depth);
+        if (left_queue) { bound(stereo->rectifiedLeft); bound(stereo->rectifiedRight); }
+        if (nv12_output) { bound(*nv12_output); }
         pipeline.start();
-        RCLCPP_INFO(get_logger(),
-          "DepthAI started: depth=%s @ %.1f FPS, mode=%s, NV12=%s",
-          startup_config.camera_resolution.c_str(),
-          startup_config.camera_fps,
-          startup_config.depth_mode.c_str(),
-          startup_config.nv12_enabled ? "enabled" : "disabled");
-
-        CameraGeometry camera;
-        std::atomic_bool nv12_receiver_stop{false};
-        std::atomic_bool nv12_receiver_failed{false};
-        std::atomic<std::uint64_t> nv12_received_total{0U};
-        std::thread nv12_receiver;
+        std::atomic_bool nv12_stop{false}, nv12_failed{false};
+        std::atomic<std::uint64_t> nv12_count{0};
+        std::thread receiver;
         if (nv12_queue) {
-          nv12_receiver = std::thread(
-            [this, nv12_queue, &nv12_receiver_stop, &nv12_receiver_failed, &nv12_received_total]() {
-              try {
-                while (rclcpp::ok() && !stop_requested_.load() && !restart_requested_.load()
-                       && !nv12_receiver_stop.load())
-                {
-                  auto frame = nv12_queue->tryGet<dai::ImgFrame>();
-                  if (!frame) {
-                    std::this_thread::sleep_for(250us);
-                    continue;
-                  }
-                  if (frame->getType() != dai::ImgFrame::Type::NV12 || frame->getData().empty()) {
-                    throw std::runtime_error("camera returned an invalid NV12 host frame");
-                  }
-                  nv12_received_total.fetch_add(1U, std::memory_order_relaxed);
-                }
-              } catch (const std::exception & error) {
-                RCLCPP_ERROR(get_logger(), "NV12 receiver error: %s", error.what());
-                nv12_receiver_failed.store(true);
+          receiver = std::thread([&]() {
+            try {
+              while (!stopping() && !nv12_stop.load() && !restart_requested_.load()) {
+                if (auto frame = nv12_queue->tryGet<dai::ImgFrame>()) {
+                  if (frame->getType() != dai::ImgFrame::Type::NV12) { throw std::runtime_error("Invalid NV12 frame"); }
+                  ++nv12_count;
+                } else { std::this_thread::sleep_for(250us); }
               }
-            });
+            } catch (...) { nv12_failed.store(true); }
+          });
         }
-
-        bool intrinsics_logged = false;
-        auto metrics_start = std::chrono::steady_clock::now();
-        auto preview_last = metrics_start - 1s;
-        auto stereo_preview_last = metrics_start - 1s;
-        std::shared_ptr<dai::ImgFrame> stereo_left_frame;
-        std::shared_ptr<dai::ImgFrame> stereo_right_frame;
-        int latest_depth_width = 0;
-        int latest_depth_height = 0;
-        std::size_t metric_frames = 0;
-        double metric_delay_sum_ms = 0.0;
-        double metric_object_processing_sum_ms = 0.0;
-        std::uint64_t previous_nv12_total = 0U;
-        std::size_t last_foreground_points = 0;
-        std::size_t last_obstacle_count = 0;
-        double measured_delay_ms = 0.0;
-        auto last_valid_depth_rx = std::chrono::steady_clock::now();
-        bool depth_stale = false;
-
-        std::exception_ptr processing_error;
-        try {
-          while (rclcpp::ok() && !stop_requested_.load() && !restart_requested_.load()) {
-            if (nv12_receiver_failed.load()) {
-              throw std::runtime_error("NV12 receiver stopped unexpectedly");
-            }
-            const NodeConfig display_config = configSnapshot();
-            if (radar_window_open && (!display_config.preview_enabled || !display_config.preview_gui)) {
-              cv::destroyWindow("depth_lidar radar preview");
-              radar_window_open = false;
-            }
-            if (stereo_window_open
-                && (!display_config.stereo_preview_enabled || !display_config.stereo_preview_gui))
-            {
-              cv::destroyWindow("depth_lidar stereo ROI");
-              stereo_window_open = false;
-            }
-            if (radar_window_open || stereo_window_open) {
-              const int key = cv::waitKey(1) & 0xff;
-              if (key == 'c' || key == 'C') {
-                // Use the ROS parameter path so GUI and command-line state agree.
-                const auto result = set_parameters_atomically({rclcpp::Parameter(
-                  "stereo_preview.enabled", !display_config.stereo_preview_enabled)});
-                if (!result.successful) {
-                  RCLCPP_WARN(get_logger(), "Could not toggle stereo preview: %s", result.reason.c_str());
-                }
-                continue;
-              }
-            }
-            if (stereo_left_queue && stereo_right_queue && display_config.stereo_preview_enabled) {
-              if (auto frame = stereo_left_queue->tryGet<dai::ImgFrame>()) {
-                stereo_left_frame = std::move(frame);
-              }
-              if (auto frame = stereo_right_queue->tryGet<dai::ImgFrame>()) {
-                stereo_right_frame = std::move(frame);
-              }
-              // Never block depth processing while waiting for the matching eye.
-              if (stereo_left_frame && stereo_right_frame) {
-                const auto left_sequence = stereo_left_frame->getSequenceNum();
-                const auto right_sequence = stereo_right_frame->getSequenceNum();
-                if (left_sequence < right_sequence) {
-                  stereo_left_frame.reset();
-                } else if (right_sequence < left_sequence) {
-                  stereo_right_frame.reset();
-                } else if (latest_depth_width > 0 && latest_depth_height > 0) {
-                  const auto display_now = std::chrono::steady_clock::now();
-                  if (display_now - stereo_preview_last
-                      >= std::chrono::duration<double>(1.0 / display_config.stereo_preview_fps))
-                  {
-                    const auto & roi_config = display_config.projection;
-                    const auto roi = computeRoi(latest_depth_width, latest_depth_height,
-                      roi_config.roi_width_ratio, roi_config.roi_height_ratio,
-                      roi_config.roi_bottom_offset_ratio);
-                    const auto ground_roi = computeRoi(latest_depth_width, latest_depth_height,
-                      display_config.ground.roi_width_ratio, display_config.ground.roi_height_ratio,
-                      display_config.ground.roi_bottom_offset_ratio);
-                    cv::Mat preview = makeStereoPreview(stereoGrayFrame(*stereo_left_frame),
-                      stereoGrayFrame(*stereo_right_frame), roi, latest_depth_width, latest_depth_height, &ground_roi);
-                    stereo_preview_publisher_->publish(
-                      matToImageMessage(preview, now(), display_config.frame_id));
-                    if (display_config.stereo_preview_gui) {
-                      cv::imshow("depth_lidar stereo ROI", preview);
-                      stereo_window_open = true;
-                    }
-                    stereo_preview_last = display_now;
-                  }
-                  stereo_left_frame.reset();
-                  stereo_right_frame.reset();
-                }
-              }
-            }
-            if (!depth_stale && std::chrono::duration<double>(
-                std::chrono::steady_clock::now() - last_valid_depth_rx).count()
-                > display_config.stabilization.max_frame_gap_sec) {
-              clear_history();
-              depth_stale = true;
-              set_ground_status("DEPTH STALE | WAITING FOR FRAME");
-              publish_empty(display_config);
-            }
-            auto depth_frame = depth_queue->tryGet<dai::ImgFrame>();
-            if (!depth_frame) {
-              if (published_cell_count > 0U && display_config.stabilization.enabled) {
-                const double clock_sec = std::chrono::duration<double>(
-                  std::chrono::steady_clock::now().time_since_epoch()).count();
-                // No full-grid scan on every 1ms poll: only when a cell can expire.
-                if (clock_sec > stabilizer.nextExpiryTime()) {
-                  const auto remaining = stabilizer.snapshot(clock_sec, display_config.stabilization);
-                  if (remaining.occupied_cells < published_cell_count) {
-                    publish_status_result(display_config, remaining, true);
-                  }
-                }
-              }
-              std::this_thread::sleep_for(1ms);
-              continue;
-            }
-
-            const auto processing_start = std::chrono::steady_clock::now();
-            // Track TTL begins when a frame is available to the host. Both update
-            // and idle snapshot use this clock; capture timestamps below still
-            // reject stale/replayed frames. USB latency must not consume hold_sec.
-            const double observation_time_sec = std::chrono::duration<double>(
-              processing_start.time_since_epoch()).count();
-            const int depth_width = depth_frame->getWidth();
-            const int depth_height = depth_frame->getHeight();
-            const auto & depth_data = depth_frame->getData();
-            const std::size_t packed_stride = static_cast<std::size_t>(std::max(0, depth_width)) * sizeof(std::uint16_t);
-            const std::size_t depth_stride = depth_frame->getStride() == 0U ? packed_stride : depth_frame->getStride();
-            if (depth_width <= 0 || depth_height <= 0 || depth_stride < packed_stride
-                || depth_stride % sizeof(std::uint16_t) != 0U
-                || depth_frame->getType() != dai::ImgFrame::Type::RAW16
-                || depth_data.size() < depth_stride * static_cast<std::size_t>(depth_height - 1) + packed_stride)
-            {
-              RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "Invalid RAW16 depth frame/stride");
-              continue;
-            }
-            const double frame_time_sec = std::chrono::duration<double>(
-              depth_frame->getTimestamp().time_since_epoch()).count();
-            if (std::chrono::duration<double>(std::chrono::steady_clock::now()
-                - depth_frame->getTimestamp()).count() > display_config.stabilization.max_frame_gap_sec) {
-              continue;
-            }
-            last_valid_depth_rx = std::chrono::steady_clock::now();
-            depth_stale = false;
-            latest_depth_width = camera.width = depth_width;
-            latest_depth_height = camera.height = depth_height;
-            const auto & transformation = depth_frame->getTransformation();
-            if (!transformation.isValid()) {
-              throw std::runtime_error("depth frame has no valid rectified intrinsics");
-            }
-            const auto intrinsics = transformation.getIntrinsicMatrix();
-            camera.fx = intrinsics[0][0]; camera.fy = intrinsics[1][1];
-            camera.cx = intrinsics[0][2]; camera.cy = intrinsics[1][2];
-            if (!intrinsics_logged) {
-              RCLCPP_INFO(get_logger(), "Depth %dx%d, fx=%.2f fy=%.2f cx=%.2f cy=%.2f; per-frame MSAC ground",
-                depth_width, depth_height, camera.fx, camera.fy, camera.cx, camera.cy);
-              intrinsics_logged = true;
-            }
-            const NodeConfig current = configSnapshot();
-            const auto * depth = reinterpret_cast<const std::uint16_t *>(depth_data.data());
-            const auto stride_elements = depth_stride / sizeof(std::uint16_t);
-            std::ostringstream context;
-            context << std::setprecision(17) << camera.width << '|' << camera.height
-              << '|' << camera.fx << '|' << camera.fy << '|' << camera.cx << '|' << camera.cy;
-            // Configuration changes clear transient pixel/cell labels. Plane estimation
-            // always uses this frame alone, including after a failed estimate.
-            context << '|' << current.frame_id << '|' << current.projection.roi_width_ratio
-              << '|' << current.projection.roi_height_ratio << '|' << current.projection.roi_bottom_offset_ratio
-              << '|' << current.projection.pixel_stride << '|' << current.projection.min_range_m
-              << '|' << current.projection.max_range_m << '|' << current.projection.range_offset_m
-              << '|' << current.cluster.min_points << '|' << current.cluster.min_cells
-              << '|' << current.grid.resolution_m << '|' << current.grid.x_min_m << '|' << current.grid.x_max_m
-              << '|' << current.grid.y_min_m << '|' << current.grid.y_max_m << '|' << current.grid.min_points_per_cell
-              << '|' << current.stabilization.enabled << '|' << current.stabilization.confirm_hits
-              << '|' << current.stabilization.window_frames << '|' << current.stabilization.hold_sec
-              << '|' << current.stabilization.max_frame_gap_sec;
-            context
-              << '|' << current.ground.roi_width_ratio << '|' << current.ground.roi_height_ratio << '|' << current.ground.roi_bottom_offset_ratio
-              << '|' << current.ground.pixel_stride << '|' << current.ground.max_samples << '|' << current.ground.max_iterations
-              << '|' << current.ground.min_depth_m << '|' << current.ground.max_depth_m << '|' << current.ground.inlier_distance_m
-              << '|' << current.ground.min_inlier_points << '|' << current.ground.min_inlier_ratio << '|' << current.ground.min_spread_m
-              << '|' << current.ground.max_rmse_m << '|' << current.ground.reference_up_x << '|' << current.ground.reference_up_y
-              << '|' << current.ground.reference_up_z << '|' << current.ground.max_tilt_deg << '|' << current.ground.min_camera_height_m
-              << '|' << current.ground.max_camera_height_m << '|' << current.ground.min_height_m << '|' << current.ground.max_height_m
-              << '|' << current.ground.noise_scale << '|' << current.ground.release_ratio << '|' << current.ground.reset_history_angle_deg
-              << '|' << current.ground.reset_history_height_m;
-            if (active_stabilization_context != context.str()
-                || (have_detection_time && frame_time_sec - previous_detection_time
-                    > current.stabilization.max_frame_gap_sec)) {
-              clear_history();
-              active_stabilization_context = context.str();
-            }
-            if (have_detection_time && frame_time_sec <= previous_detection_time) {
-              // Replayed frames must not re-confirm a cell or preserve pixel labels.
-              clear_history();
-              set_ground_status("INVALID | NON-MONOTONIC FRAME TIME");
-              publish_empty(current);
-              continue;
-            }
-            previous_detection_time = frame_time_sec;
-            have_detection_time = true;
-            const auto ground = estimateGroundPlane(depth, stride_elements, camera, current.ground);
-            if (ground.valid) {
-              if (previous_ground.valid && ground.changedFrom(previous_ground, current.ground)) {
-                // Height labels depend on the plane, but cells use camera XY.
-                // Reclassify pixels without forcing unchanged cells to reconfirm.
-                foreground_mask.clear();
-              }
-              previous_ground = ground;
-              std::ostringstream status;
-              status << "VALID | MSAC " << ground.inlier_points << "/" << ground.sample_points
-                << std::fixed << std::setprecision(3) << " | H " << ground.offset_m
-                << "m | RMSE " << ground.rmse_m << "m";
-              set_ground_status(status.str());
-            } else {
-              // A failed fit is a missed observation, not a coordinate change.
-              // Never reuse its plane or pixel labels. Keep confirmed cells only
-              // within hold_sec, without refreshing their last observation time.
-              foreground_mask.clear();
-              previous_ground = GroundPlane{};
-              set_ground_status("INVALID | " + ground.reason);
-            }
-            const auto raw_detection = detectForeground(depth, stride_elements, camera, ground,
-              current.ground, current.projection, current.grid, current.cluster,
-              current.stabilization.enabled ? &foreground_mask : nullptr);
-            // Invalid ground produces an empty raw detection; update counts a miss
-            // and expires cells normally while ground_valid remains false.
-            const auto detection = stabilizer.update(raw_detection, observation_time_sec, current.stabilization);
-            const auto object_processing_end = std::chrono::steady_clock::now();
-            const double object_processing_ms =
-              std::chrono::duration<double, std::milli>(object_processing_end - processing_start)
-                .count();
-            const builtin_interfaces::msg::Time ros_stamp = now();
-
-            publish_detection(current, detection, ros_stamp);
-
-            const auto before_preview = std::chrono::steady_clock::now();
-            const double delay_ms = std::max(0.0,
-              std::chrono::duration<double, std::milli>(
-                before_preview - depth_frame->getTimestamp())
-                .count());
-            ++metric_frames;
-            metric_delay_sum_ms += delay_ms;
-            metric_object_processing_sum_ms += object_processing_ms;
-            last_foreground_points = detection.observed_points;
-            last_obstacle_count = detection.obstacles.size();
-
-            const double metric_elapsed_sec =
-              std::chrono::duration<double>(before_preview - metrics_start).count();
-            if (metric_elapsed_sec >= current.metrics_interval_sec) {
-              measured_depth_rx_fps = static_cast<double>(metric_frames) / metric_elapsed_sec;
-              const std::uint64_t nv12_total = nv12_received_total.load(std::memory_order_relaxed);
-              measured_nv12_rx_fps =
-                startup_config.nv12_enabled
-                  ? static_cast<double>(nv12_total - previous_nv12_total) / metric_elapsed_sec
-                  : 0.0;
-              previous_nv12_total = nv12_total;
-              measured_delay_ms = metric_delay_sum_ms / static_cast<double>(metric_frames);
-              measured_object_processing_ms =
-                metric_object_processing_sum_ms / static_cast<double>(metric_frames);
-              measured_object_processing_fps =
-                measured_object_processing_ms > 0.0 ? 1000.0 / measured_object_processing_ms : 0.0;
-              const double fps_achievement_percent =
-                measured_depth_rx_fps / startup_config.camera_fps * 100.0;
-              RCLCPP_INFO(get_logger(),
-                "depth RX %.1f FPS (%.1f%%) | NV12 RX %.1f/%.1f FPS | "
-                "object processing %.3f ms / %.1f FPS | objects %zu | delay "
-                "%.2f ms | "
-                "foreground points %zu | ROI %dx%d | %s",
-                measured_depth_rx_fps,
-                fps_achievement_percent,
-                measured_nv12_rx_fps,
-                startup_config.nv12_enabled ? startup_config.nv12_fps : 0.0,
-                measured_object_processing_ms,
-                measured_object_processing_fps,
-                last_obstacle_count,
-                measured_delay_ms,
-                last_foreground_points,
-                detection.roi.width,
-                detection.roi.height,
-                ground_status.c_str());
-              metrics_start = before_preview;
-              metric_frames = 0;
-              metric_delay_sum_ms = 0.0;
-              metric_object_processing_sum_ms = 0.0;
-            }
-
-            const bool preview_due = (before_preview - preview_last)
-                                     >= std::chrono::duration<double>(1.0 / current.preview_fps);
-            if (current.preview_enabled && preview_due) {
-              cv::Mat preview = makeScanPreview(detection,
-                ground_status,
-                current,
-                measured_depth_rx_fps,
-                measured_nv12_rx_fps,
-                measured_object_processing_fps,
-                measured_object_processing_ms);
-              preview_publisher_->publish(matToImageMessage(preview, ros_stamp, current.frame_id));
-              if (current.preview_gui) {
-                cv::imshow("depth_lidar radar preview", preview);
-                radar_window_open = true;
-              }
-              preview_last = before_preview;
-            }
-          }
-        } catch (...) {
-          processing_error = std::current_exception();
-        }
-
-        nv12_receiver_stop.store(true);
-        if (nv12_receiver.joinable()) {
-          nv12_receiver.join();
-        }
+        std::exception_ptr error;
+        try { processFrames(c, transform, depth_queue, left_queue, right_queue, nv12_count, nv12_failed); }
+        catch (...) { error = std::current_exception(); }
+        nv12_stop.store(true);
+        if (receiver.joinable()) { receiver.join(); }
         pipeline.stop();
-        if (stereo_window_open) {
-          cv::destroyWindow("depth_lidar stereo ROI");
-          stereo_window_open = false;
-        }
-        if (processing_error) {
-          std::rethrow_exception(processing_error);
-        }
-      } catch (const std::exception & error) {
-        clear_history();
-        set_ground_status("CAMERA UNAVAILABLE | RECONNECTING");
-        publish_empty(configSnapshot());
-        RCLCPP_ERROR(get_logger(), "DepthAI pipeline error: %s", error.what());
-        for (int i = 0; i < 10 && rclcpp::ok() && !stop_requested_.load(); ++i) {
-          std::this_thread::sleep_for(100ms);
+        if (error) { std::rethrow_exception(error); }
+      } catch (const std::exception & e) {
+        if (!stopping()) {
+          status(std::string("DEPTH UNAVAILABLE: ") + e.what(), false);
+          publishScan(emptyScan(c.projection), c, now(), 1.0/c.camera_fps);
+          RCLCPP_ERROR(get_logger(), "Depth pipeline: %s", e.what());
+          for (int i=0; i<10 && !stopping(); ++i) { std::this_thread::sleep_for(100ms); }
         }
       }
     }
   }
 
-  mutable std::mutex config_mutex_;
+  void processFrames(const NodeConfig & c, const FixedTransform & transform,
+    const std::shared_ptr<dai::MessageQueue> & depth_queue,
+    const std::shared_ptr<dai::MessageQueue> & left_queue,
+    const std::shared_ptr<dai::MessageQueue> & right_queue,
+    const std::atomic<std::uint64_t> & nv12_count, const std::atomic_bool & nv12_failed)
+  {
+    ScanProjector projector;
+    ScanHold hold;
+    CameraGeometry camera;
+    auto displayed = emptyScan(c.projection);
+    bool configured = false, ready = false, radar_open = false, stereo_open = false;
+    double last_rx = hostSeconds(), previous_frame = -1.0;
+    double last_preview = 0.0, last_stereo = 0.0, metric_start = last_rx;
+    double processing_sum = 0.0, delay_sum = 0.0, fps = 0.0, ms = 0.0, nv12_fps = 0.0;
+    std::size_t frames = 0;
+    std::uint64_t previous_nv12 = 0;
+    std::shared_ptr<dai::ImgFrame> left_frame, right_frame;
+    const auto close_windows = [&]() {
+      if (radar_open) { cv::destroyWindow("depth_lidar radar preview"); }
+      if (stereo_open) { cv::destroyWindow("depth_lidar stereo ROI"); }
+    };
+    try {
+      while (!stopping() && !restart_requested_.load()) {
+        if (nv12_failed.load()) { throw std::runtime_error("NV12 receiver failed"); }
+        const double clock = hostSeconds();
+        if (radar_open || stereo_open) {
+          const int key = cv::waitKey(1) & 0xff;
+          if (key == 'c' || key == 'C') {
+            const auto result = set_parameters_atomically({rclcpp::Parameter("stereo_preview.enabled", !c.stereo_preview_enabled)});
+            if (!result.successful) { RCLCPP_WARN(get_logger(), "%s", result.reason.c_str()); }
+            continue;
+          }
+        }
+        if (ready && clock - last_rx > c.max_age_sec) {
+          hold.clear(); displayed = emptyScan(c.projection); ready = false;
+          status("DEPTH STALE / FIXED POSE RETAINED", false);
+          publishScan(displayed, c, now(), 1.0/c.camera_fps);
+        } else if (clock > hold.nextExpiryTime()) {
+          displayed = hold.snapshot(clock, c.hold_sec);
+          publishScan(displayed, c, now(), 1.0/c.camera_fps);
+        }
+        auto frame = depth_queue->tryGet<dai::ImgFrame>();
+        if (frame) {
+          const double start = hostSeconds();
+          const double capture = std::chrono::duration<double>(frame->getTimestamp().time_since_epoch()).count();
+          const double age = start - capture;
+          const int width = frame->getWidth(), height = frame->getHeight();
+          const auto & bytes = frame->getData();
+          const std::size_t packed = static_cast<std::size_t>(std::max(0,width))*sizeof(std::uint16_t);
+          const std::size_t stride = frame->getStride() ? frame->getStride() : packed;
+          if (width <= 0 || height <= 0 || stride < packed || stride % 2
+              || frame->getType() != dai::ImgFrame::Type::RAW16
+              || bytes.size() < stride * static_cast<std::size_t>(height-1) + packed
+              || age < -0.01 || age > c.max_age_sec || capture <= previous_frame) {
+            continue; // Replayed/stale frames cannot renew the hold.
+          }
+          if (previous_frame >= 0 && capture - previous_frame > c.max_age_sec) { hold.clear(); }
+          const double scan_time = previous_frame < 0 ? 1.0/c.camera_fps : capture - previous_frame;
+          previous_frame = capture;
+          const auto & metadata = frame->getTransformation();
+          if (!metadata.isValid()) { throw std::runtime_error("Missing rectified depth intrinsics"); }
+          const auto k = metadata.getIntrinsicMatrix();
+          CameraGeometry next{width, height, k[0][0], k[1][1], k[0][2], k[1][2]};
+          if (!configured || camera.width != width || camera.height != height
+              || camera.fx != next.fx || camera.fy != next.fy || camera.cx != next.cx || camera.cy != next.cy) {
+            camera = next; projector.configure(camera, transform, c.projection); hold.clear(); configured = true;
+            RCLCPP_INFO(get_logger(), "Fixed projection: %dx%d, %zu cached rays, %d angle bins",
+              width, height, projector.rayCount(), c.projection.bins);
+          }
+          const auto raw = projector.project(reinterpret_cast<const std::uint16_t *>(bytes.data()), stride/2);
+          displayed = hold.update(raw, start, c.hold_sec);
+          const double processing_ms = (hostSeconds()-start)*1000.0;
+          if (!ready) { status("READY / FIXED STARTUP POSE", true); ready = true; }
+          last_rx = start;
+          const auto stamp = now() - rclcpp::Duration::from_seconds(std::max(0.0, hostSeconds()-capture));
+          publishScan(displayed, c, stamp, scan_time);
+          ++frames; processing_sum += processing_ms; delay_sum += age*1000.0;
+        }
+        if (left_queue) {
+          if (auto f = left_queue->tryGet<dai::ImgFrame>()) { left_frame = std::move(f); }
+          if (auto f = right_queue->tryGet<dai::ImgFrame>()) { right_frame = std::move(f); }
+          if (left_frame && right_frame) {
+            if (left_frame->getSequenceNum() < right_frame->getSequenceNum()) { left_frame.reset(); }
+            else if (right_frame->getSequenceNum() < left_frame->getSequenceNum()) { right_frame.reset(); }
+            else if (configured && clock-last_stereo >= 1.0/c.stereo_preview_fps) {
+              auto preview = makeStereoPreview(stereoGrayFrame(*left_frame), stereoGrayFrame(*right_frame),
+                projector.roi(), camera.width, camera.height);
+              stereo_pub_->publish(matToImageMessage(preview, now(), c.frame_id));
+              if (c.stereo_preview_gui) { cv::imshow("depth_lidar stereo ROI", preview); stereo_open = true; }
+              last_stereo = clock; left_frame.reset(); right_frame.reset();
+            }
+          }
+        }
+        if (clock-metric_start >= c.metrics_interval_sec) {
+          fps = frames / (clock-metric_start); ms = frames ? processing_sum/frames : 0.0;
+          const auto total = nv12_count.load(); nv12_fps = (total-previous_nv12)/(clock-metric_start);
+          RCLCPP_INFO(get_logger(), "depth %.1f FPS | project+filter %.3f ms | bins %zu/%d | delay %.1f ms | NV12 %.1f FPS",
+            fps, ms, displayed.valid_bins, c.projection.bins, frames ? delay_sum/frames : 0.0, nv12_fps);
+          previous_nv12 = total; frames = 0; processing_sum = delay_sum = 0; metric_start = clock;
+        }
+        if (c.preview_enabled && clock-last_preview >= 1.0/c.preview_fps) {
+          auto preview = makeRadarPreview(displayed, c.projection, c.preview_size_px, ready);
+          std::ostringstream metrics;
+          metrics << std::fixed << std::setprecision(1) << "DEPTH " << fps << " FPS | NV12 " << nv12_fps
+            << " FPS | PROJECT " << std::setprecision(3) << ms << " ms";
+          cv::putText(preview, metrics.str(), cv::Point(8,preview.rows-10), cv::FONT_HERSHEY_SIMPLEX, .35, cv::Scalar(65,65,65),1,cv::LINE_AA);
+          cv::putText(preview, ready ? "FIXED POSE | C: CAMERA ON/OFF" : "WAITING FOR DEPTH | FIXED POSE",
+            cv::Point(8,56),cv::FONT_HERSHEY_SIMPLEX,.35,cv::Scalar(65,65,65),1,cv::LINE_AA);
+          std::ostringstream band;
+          band << "HEIGHT " << c.projection.min_height_m << ".." << c.projection.max_height_m
+            << "m | ORANGE: current / GRAY: held";
+          cv::putText(preview, band.str(), cv::Point(8,74),cv::FONT_HERSHEY_SIMPLEX,.35,cv::Scalar(65,65,65),1,cv::LINE_AA);
+          preview_pub_->publish(matToImageMessage(preview, now(), c.frame_id));
+          if (c.preview_gui) { cv::imshow("depth_lidar radar preview", preview); radar_open = true; }
+          last_preview = clock;
+        }
+        if (!frame) { std::this_thread::sleep_for(1ms); }
+      }
+    } catch (...) { close_windows(); throw; }
+    close_windows();
+  }
+
+  std::mutex config_mutex_;
   NodeConfig config_;
-  std::atomic_bool stop_requested_{false};
-  std::atomic_bool restart_requested_{false};
+  oak_startup::OakStartupMeasurementConfig startup_;
+  std::atomic_bool stop_requested_{false}, restart_requested_{false};
   std::thread worker_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cells_publisher_;
-  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_publisher_;
-  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr contours_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr ground_status_publisher_;
-  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ground_valid_publisher_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_publisher_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr stereo_preview_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr points_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_, pose_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ready_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_pub_, stereo_pub_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameter_callback_;
 };
-
 } // namespace depth_lidar
-
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);

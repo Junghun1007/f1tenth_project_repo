@@ -1,9 +1,9 @@
+# One-shot BEV-style startup pose -> fixed height band -> nearest virtual scan.
+# Start stationary on level ground. No online pose/ground-plane estimation.
 depth_lidar:
   ros__parameters:
-    # Camera pipeline parameters. Changes restart only this package's camera pipeline.
     camera.fps: 30.0
     camera.resolution: "400p"       # 400p, 480p, 720p, 800p
-
     depth.mode: "high_density"      # default, high_density, high_accuracy
     depth.confidence_threshold: 200
     depth.left_right_check: true
@@ -11,109 +11,88 @@ depth_lidar:
     depth.extended_disparity: false
     depth.median_filter: "3x3"      # off, 3x3, 5x5, 7x7
 
-    # Centered ROI. Its bottom edge is this ratio above the image bottom.
-    roi.width_ratio: 1.0
-    roi.height_ratio: 0.30
-    roi.bottom_offset_ratio: 0.25
+    # Measured ONCE before the runtime pipeline. startup.* is read-only at runtime.
+    # Same IMU/stationary-ground algorithm as bev_processor, in CAM_A coordinates.
+    startup.device_id: ""           # Empty: first OAK; runtime reopens that same device.
+    startup.attitude_source: "depth" # depth or imu; both use IMU stationarity checks.
+    startup.roi_preview_enabled: false
+    # Startup uses RGB-aligned 1280x800 depth, independent of camera.resolution.
+    startup.roi_width: 456
+    startup.roi_height: 228
+    startup.roi_vertical_offset_px: 80
+    startup.point_sample_step: 2
+    startup.minimum_valid_points: 5080
+    startup.minimum_depth_m: 0.30
+    startup.maximum_depth_m: 3.0
+    startup.minimum_height_m: 0.10
+    startup.maximum_height_m: 0.40
+    startup.plane_ransac_iterations: 200
+    startup.plane_inlier_threshold_m: 0.008
+    startup.plane_minimum_inliers: 3656
+    startup.plane_minimum_inlier_ratio: 0.70
+    startup.plane_maximum_residual_mad_m: 0.005
+    startup.plane_maximum_imu_difference_deg: 5.0
+    startup.stable_plane_frame_count: 45
+    startup.maximum_height_stddev_m: 0.003
+    startup.maximum_plane_normal_rms_deg: 0.25
+    startup.imu_sample_count: 1200
+    startup.imu_max_direction_rms_deg: 0.50
+    startup.imu_gyroscope_mean_maximum_degps: 0.80
+    startup.imu_gyroscope_stddev_maximum_degps: 1.40
+    startup.imu_roll_bias_deg: 0.0
+    startup.imu_pitch_bias_deg: 0.0
+    startup.stereo_confidence_threshold: 55
+    startup.warmup_sec: 2.0
+    startup.timeout_sec: 45.0
+    # 0 disables active illumination; >0 requires an OAK Pro dot projector.
+    startup.ir_dot_projector_intensity: 0.0
 
+    # CAM_A position/yaw relative to the front-axle ground origin (meters/degrees).
+    # Roll, pitch and height come from startup. CAM_C/rectification uses EEPROM.
+    sensor.x_m: -0.16
+    sensor.y_m: 0.0
+    sensor.yaw_deg: 0.0
+    frame_id: "front_axle"           # +X forward, +Y left, +Z up; origin at ground.
+
+    # Full image: a downward camera needs different rows at different distances.
+    # Green preview rectangle is only a sampling ROI, NOT the height band.
+    roi.width_ratio: 1.0
+    roi.height_ratio: 1.0
+    roi.bottom_offset_ratio: 0.0
+    points.pixel_stride: 2           # One sample per 2x2 block.
+    points.min_depth_m: 0.10         # Raw optical-axis depth limits.
+    points.max_depth_m: 4.0
+    height.min_m: 0.05               # Height above fixed startup ground.
+    height.max_m: 0.40
+
+    # Horizontal distance/angle from frame_id origin AFTER the fixed transform.
     range.min_m: 0.10
     range.max_m: 3.0
-    # corrected range = measured range + offset. Negative values make obstacles closer.
-    range.offset_m: 0.0
-    # Sample 1 of each 2x2 pixel block (quarter of the ROI samples).
-    points.pixel_stride: 2
+    range.offset_m: 0.0              # Added to horizontal range, not floor subtraction.
+    scan.angle_min_deg: -70.0
+    scan.angle_max_deg: 70.0
+    scan.bins: 141                  # 1-degree bins; outside actual camera FOV stays NaN.
+    scan.min_points_per_bin: 2
+    # Reject isolated depth speckles using four neighbors at pixel_stride spacing.
+    filter.min_neighbors: 1         # 0 disables; 1..4 requires supporting neighbors.
+    filter.neighbor_delta_m: 0.08
+    # Missing bins may retain their last observation briefly; fresh returns replace it.
+    scan.hold_sec: 0.08             # 0 = latest frame only, no inter-frame hold.
+    input.max_age_sec: 0.20         # Reject stale/replayed frames; stop publishing old data.
 
-    # Estimate a fresh ground plane from THIS frame; no file or B calibration.
-    # Blue ROI = ground fitting; green roi.* = obstacle detection.
-    ground.roi_width_ratio: 0.90
-    ground.roi_height_ratio: 0.55
-    ground.roi_bottom_offset_ratio: 0.0
-    # Sampling step grows automatically if needed to respect max_samples.
-    ground.pixel_stride: 4
-    ground.max_samples: 1500
-    ground.max_iterations: 120
-    ground.min_depth_m: 0.10
-    ground.max_depth_m: 4.0
-    ground.inlier_distance_m: 0.02
-    ground.min_inlier_points: 100
-    ground.min_inlier_ratio: 0.35
-    ground.min_spread_m: 0.05
-    ground.max_rmse_m: 0.015
-
-    # Expected ground normal in CAMERA forward/left/up coordinates, normalized internally.
-    # Narrow direction and camera-height limits to the actual mounting geometry.
-    ground.reference_up_x: 0.0
-    ground.reference_up_y: 0.0
-    ground.reference_up_z: 1.0
-    ground.max_tilt_deg: 60.0
-    ground.min_camera_height_m: 0.05
-    ground.max_camera_height_m: 1.0
-
-    # Height ABOVE the live plane, not per-pixel depth difference.
-    # New candidates: height > max(min_height, noise_scale * plane RMSE).
-    ground.min_height_m: 0.05
-    ground.max_height_m: 1.0
-    ground.noise_scale: 3.0
-    # Release threshold cannot fall below inlier_distance_m.
-    ground.release_ratio: 0.60
-    # Large plane changes clear pixel labels only; camera-XY cells keep normal hold.
-    ground.reset_history_angle_deg: 3.0
-    ground.reset_history_height_m: 0.03
-
-    # Each occupied cell: confirm in 2 of 3 frames; hold at most 80ms.
-    # Hold uses host observation time; capture/USB delay does not consume it.
-    # No cluster-pair matching, long-term accumulation, or motion compensation.
-    stabilization.enabled: true
-    stabilization.confirm_hits: 2
-    stabilization.window_frames: 3
-    stabilization.hold_sec: 0.08
-    stabilization.max_frame_gap_sec: 0.20
-
-    # Camera XY occupancy: 60 forward columns x 120 left/right rows = 7200 cells.
-    # 100 = observed obstacle (or brief hold); all other cells = -1 UNKNOWN.
-    grid.resolution_m: 0.05
-    grid.x_min_m: 0.0
-    grid.x_max_m: 3.0
-    grid.y_min_m: -3.0
-    grid.y_max_m: 3.0
-    grid.min_points_per_cell: 2
-    # 8-connected occupied cells; preserve concavities and holes, no inflation.
-    cluster.min_points: 6
-    cluster.min_cells: 2
-
-    # Optional USB load generator. Disabled for the compute/USB-optimized profile.
+    # Optional USB load generator; no conversion or publication.
     nv12.enabled: false
     nv12.fps: 30.0
     nv12.width: 1280
     nv12.height: 800
 
-    # White radar with exact occupied-cell boundary edges (no circles/labels).
-    # Camera frame: top=forward, left=camera left.
-    # Range rings extend to range.max_m; size_px sets the image width.
+    # White radar: orange=current return, gray=held return; no clusters or circles.
     preview.enabled: true
     preview.gui: false
-    preview.fps: 10.0
+    preview.fps: 15.0
     preview.size_px: 700
-
-    # Rectified left/right preview: green=obstacles ROI, blue=live ground ROI.
-    # enabled toggles USB streams (pipeline restart); gui toggles only the window.
-    # Press C in either preview window to toggle enabled.
+    # C in either runtime window toggles camera streams; fixed startup pose survives.
     stereo_preview.enabled: false
     stereo_preview.gui: false
     stereo_preview.fps: 10.0
-
-    # Legacy BEV settings below are accepted but not used by the radar preview.
-    preview.scale: 3
-    bev.x_min_m: 0.0
-    bev.x_max_m: 3.0
-    bev.y_min_m: -0.6
-    bev.y_max_m: 0.6
-    bev.meter_per_pixel: 0.01
-
-    # Legacy sensor pose, unused by the camera-frame radar preview.
-    sensor.x_m: -0.16
-    sensor.y_m: 0.0
-    sensor.yaw_deg: 0.0
-
     metrics.print_interval_sec: 1.0
-    frame_id: "depth_lidar"

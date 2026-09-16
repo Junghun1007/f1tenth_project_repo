@@ -19,6 +19,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(oak_startup REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(bev_handoff REQUIRED)
 find_package(camera_driver REQUIRED)
@@ -50,31 +51,6 @@ target_include_directories(bev_geometry
 )
 target_link_libraries(bev_geometry PUBLIC ${OpenCV_LIBS})
 
-add_library(bev_ground_plane STATIC
-  src/ground_plane_estimator.cpp
-)
-set_target_properties(bev_ground_plane PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(bev_ground_plane
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-    ${OpenCV_INCLUDE_DIRS}
-)
-target_link_libraries(bev_ground_plane PUBLIC ${OpenCV_LIBS})
-
-add_library(bev_startup_attitude STATIC
-  src/startup_attitude.cpp
-)
-set_target_properties(
-  bev_startup_attitude PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(bev_startup_attitude
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-    ${OpenCV_INCLUDE_DIRS}
-)
-target_link_libraries(bev_startup_attitude PUBLIC ${OpenCV_LIBS})
-
 add_library(bev_cuda STATIC
   src/cuda_bev_processor.cu
 )
@@ -89,25 +65,6 @@ target_compile_options(bev_cuda PRIVATE
   $<$<COMPILE_LANGUAGE:CUDA>:--use_fast_math>
 )
 target_link_libraries(bev_cuda PUBLIC CUDA::cudart ${OpenCV_LIBS})
-
-add_library(bev_startup_measurement STATIC
-  src/oak_startup_measurement.cpp
-)
-set_target_properties(
-  bev_startup_measurement PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_include_directories(bev_startup_measurement
-  PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-    ${OpenCV_INCLUDE_DIRS}
-)
-target_link_libraries(
-  bev_startup_measurement
-  PUBLIC
-    depthai::core
-    bev_ground_plane
-    bev_startup_attitude
-    ${OpenCV_LIBS})
 
 add_library(bev_processor_component SHARED
   src/bev_processor_node.cpp
@@ -126,7 +83,7 @@ ament_target_dependencies(bev_processor_component
 target_link_libraries(bev_processor_component
   bev_geometry
   bev_cuda
-  bev_startup_measurement
+  oak_startup::measurement
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -145,7 +102,7 @@ if(BUILD_TESTING)
     ground_plane_estimator_test test/ground_plane_estimator_test.cpp)
   target_link_libraries(
     ground_plane_estimator_test
-    bev_ground_plane
+    oak_startup::measurement
     bev_geometry
     ${OpenCV_LIBS}
   )
@@ -153,16 +110,14 @@ if(BUILD_TESTING)
     NAME ground_plane_estimator_test COMMAND ground_plane_estimator_test)
 
   add_executable(startup_attitude_test test/startup_attitude_test.cpp)
+  target_include_directories(startup_attitude_test PRIVATE include)
   target_link_libraries(
-    startup_attitude_test bev_startup_attitude ${OpenCV_LIBS})
+    startup_attitude_test oak_startup::measurement ${OpenCV_LIBS})
   add_test(NAME startup_attitude_test COMMAND startup_attitude_test)
 endif()
 
 install(TARGETS
   bev_geometry
-  bev_ground_plane
-  bev_startup_attitude
-  bev_startup_measurement
   bev_processor_component
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -178,5 +133,5 @@ install(
 
 ament_export_include_directories(include)
 ament_export_dependencies(
-  bev_handoff camera_driver OpenCV rclcpp_components geometry_msgs)
+  bev_handoff camera_driver oak_startup OpenCV rclcpp_components geometry_msgs)
 ament_package()

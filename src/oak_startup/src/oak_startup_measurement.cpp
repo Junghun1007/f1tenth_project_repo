@@ -1,4 +1,4 @@
-#include "bev_processor/oak_startup_measurement.hpp"
+#include "oak_startup/oak_startup_measurement.hpp"
 
 #include <algorithm>
 #include <array>
@@ -19,10 +19,10 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include "depthai/depthai.hpp"
-#include "bev_processor/ground_plane_estimator.hpp"
-#include "bev_processor/startup_attitude.hpp"
+#include "oak_startup/ground_plane_estimator.hpp"
+#include "oak_startup/startup_attitude.hpp"
 
-namespace bev_processor
+namespace oak_startup
 {
 
 namespace
@@ -35,7 +35,7 @@ constexpr std::uint32_t kOv9282FullHeight = 800U;
 constexpr double kRadiansToDegrees =
   180.0 / 3.141592653589793238462643383279502884;
 constexpr char kStartupRoiPreviewWindowName[] =
-  "BEV startup ground-plane ROI";
+  "OAK startup ground-plane ROI";
 
 struct PlaneCandidate
 {
@@ -491,7 +491,8 @@ void stopPipeline(
 }  // namespace
 
 OakStartupMeasurement measureOakStartupExtrinsics(
-  const OakStartupMeasurementConfig & config)
+  const OakStartupMeasurementConfig & config,
+  const std::function<bool()> & should_stop)
 {
   validateConfig(config);
 
@@ -501,7 +502,9 @@ OakStartupMeasurement measureOakStartupExtrinsics(
   std::shared_ptr<dai::MessageQueue> imu_queue;
 
   try {
-    device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
+    device = config.device_id.empty()
+      ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER)
+      : std::make_shared<dai::Device>(dai::DeviceInfo(config.device_id), dai::UsbSpeed::SUPER);
     pipeline = std::make_unique<dai::Pipeline>(device);
     // DepthAI 3.6 enables startup auto-calibration by default and may flash
     // user EEPROM calibration. Measurement startup must be deterministic and
@@ -639,6 +642,7 @@ OakStartupMeasurement measureOakStartupExtrinsics(
       config.roi_preview_enabled && !config.manual_camera_height_enabled);
 
     while (std::chrono::steady_clock::now() < deadline) {
+      if (should_stop && should_stop()) { throw std::runtime_error("startup measurement cancelled"); }
       if (!pipeline->isRunning()) {
         throw std::runtime_error(
                 "OAK pipeline stopped during startup measurement");
@@ -775,6 +779,7 @@ OakStartupMeasurement measureOakStartupExtrinsics(
               corrected_up[0], corrected_up[1], corrected_up[2]};
             if (config.manual_camera_height_enabled) {
               OakStartupMeasurement result;
+              result.device_id = device->getDeviceId();
               result.height_m = config.manual_camera_height_m;
               result.height_source = "manual";
               result.roll_deg =
@@ -891,6 +896,7 @@ OakStartupMeasurement measureOakStartupExtrinsics(
             }
 
             OakStartupMeasurement result;
+            result.device_id = device->getDeviceId();
             result.height_m = median_height_m;
             result.height_source = "depth_plane_offset";
             result.roll_deg = attitude.roll_deg;
@@ -943,4 +949,4 @@ OakStartupMeasurement measureOakStartupExtrinsics(
   }
 }
 
-}  // namespace bev_processor
+}  // namespace oak_startup

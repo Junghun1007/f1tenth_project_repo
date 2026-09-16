@@ -1,10 +1,10 @@
-#include "bev_processor/startup_attitude.hpp"
+#include "oak_startup/startup_attitude.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
 
-namespace bev_processor
+namespace oak_startup
 {
 
 namespace
@@ -131,4 +131,4 @@ StartupAttitudeSelection selectStartupAttitude(
   return result;
 }
 
-}  // namespace bev_processor
+}  // namespace oak_startup

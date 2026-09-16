@@ -27,7 +27,7 @@
 ```bash
 source /opt/ros/humble/setup.bash
 colcon build \
-  --packages-select camera_driver bev_handoff bev_processor \
+  --packages-up-to bev_processor \
   --cmake-clean-cache \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
@@ -214,3 +214,5 @@ manual_camera_height_m: 0.20
 - launch: `launch/bev_processor.launch.py`
 - BEV 투영·수집 설정: `config/bev_config.yaml`
 - 카메라 설정: `camera_driver/config/camera_config.yaml`
+
+초기 IMU·바닥 평면 측정 구현은 `oak_startup` 공용 패키지로 분리되어 `depth_lidar`도 같은 알고리즘을 사용합니다. BEV의 기존 측정 파라미터와 처리 순서는 유지합니다. 기존 설치에서도 `oak_startup`과 `bev_processor`를 함께 다시 빌드해야 합니다.
