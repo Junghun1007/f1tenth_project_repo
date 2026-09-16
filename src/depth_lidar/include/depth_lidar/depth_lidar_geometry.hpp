@@ -28,15 +28,21 @@ struct ProjectionConfig
   double min_range_m{0.10};
   double max_range_m{3.0};
   double range_offset_m{0.0};
-  int pixel_stride{1};
+  int pixel_stride{2};
+};
+
+struct GridConfig
+{
+  double resolution_m{0.05};
+  double x_min_m{0.0}, x_max_m{3.0};
+  double y_min_m{-3.0}, y_max_m{3.0};
+  int min_points_per_cell{2};
 };
 
 struct ClusterConfig
 {
-  int min_points{20};
-  double neighbor_distance_m{0.08};
-  double radius_margin_m{0.04};
-  double min_radius_m{0.05};
+  int min_points{6};
+  int min_cells{2};
 };
 
 struct GroundConfig
@@ -45,8 +51,8 @@ struct GroundConfig
   double roi_height_ratio{0.55};
   double roi_bottom_offset_ratio{0.0};
   int pixel_stride{4};
-  int max_samples{3000};
-  int max_iterations{200};
+  int max_samples{1500};
+  int max_iterations{120};
   double min_depth_m{0.10};
   double max_depth_m{4.0};
   double inlier_distance_m{0.02};
@@ -83,30 +89,41 @@ struct GroundPlane
   bool changedFrom(const GroundPlane & previous, const GroundConfig & config) const;
 };
 
-struct ForegroundPoint
+struct OccupiedCell
 {
-  double forward_m{0.0};
-  double left_m{0.0};
-  double up_m{0.0};
-  int u{0};
-  int v{0};
+  std::uint32_t support_points{0}; // Zero means unknown, never free.
+  double observation_age_sec{0.0};
 };
 
-struct ObstacleCircle
+struct GridCluster
 {
-  double forward_m{0.0};
-  double left_m{0.0};
-  double radius_m{0.0};
+  std::vector<std::size_t> cells;
   std::size_t support_points{0};
-  double observation_age_sec{0.0};
+};
+
+// Exact exposed cell edges, including hole boundaries. No hull, filling or inflation.
+struct BoundaryEdge
+{
+  double x1, y1, x2, y2;
+  double observation_age_sec;
 };
 
 struct DetectionResult
 {
   RoiRect roi;
-  std::vector<ForegroundPoint> points;
-  std::vector<ObstacleCircle> obstacles;
+  GridConfig grid;
+  ClusterConfig cluster;
+  int width{0}, height{0}; // Row-major: index = left-row * width + forward-column.
+  std::vector<OccupiedCell> cells;
+  std::vector<GridCluster> obstacles;
+  std::vector<BoundaryEdge> boundary;
+  std::size_t occupied_cells{0};
+  std::size_t observed_points{0};
 };
+
+bool validateGridConfig(const GridConfig & config, std::string & reason);
+DetectionResult emptyGrid(const GridConfig & grid, const ClusterConfig & cluster);
+void buildGridClusters(DetectionResult & result);
 
 bool validateProjectionConfig(const ProjectionConfig & config, std::string & reason);
 bool validateClusterConfig(const ClusterConfig & config, std::string & reason);
@@ -122,6 +139,6 @@ GroundPlane estimateGroundPlane(const std::uint16_t * depth_mm,
 DetectionResult detectForeground(const std::uint16_t * depth_mm,
   std::size_t row_stride_elements, const CameraGeometry & camera,
   const GroundPlane & ground, const GroundConfig & ground_config,
-  const ProjectionConfig & projection, const ClusterConfig & cluster,
+  const ProjectionConfig & projection, const GridConfig & grid, const ClusterConfig & cluster,
   std::vector<std::uint8_t> * foreground_mask = nullptr);
 } // namespace depth_lidar

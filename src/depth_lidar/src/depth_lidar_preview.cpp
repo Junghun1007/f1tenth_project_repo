@@ -109,12 +109,14 @@ cv::Mat makeRadarPreview(const DetectionResult & detection,
       labelAt(label, end + cv::Point(-8, -7), 0.35);
     }
   }
-  for (const auto & obstacle : detection.obstacles) {
-    const auto center = pointAt(std::hypot(obstacle.forward_m, obstacle.left_m),
-      std::atan2(obstacle.left_m, obstacle.forward_m));
-    const int radius = std::max(1, static_cast<int>(std::lround(obstacle.radius_m * pixels_per_meter)));
-    const bool held = obstacle.observation_age_sec > 0.0;
-    cv::circle(image, center, radius, held ? cv::Scalar(150, 150, 150) : cv::Scalar(0, 150, 230), 2, cv::LINE_AA);
+  const auto gridPoint = [&](double x, double y) {
+    return cv::Point(origin.x - static_cast<int>(std::lround(y * pixels_per_meter)),
+      origin.y - static_cast<int>(std::lround(x * pixels_per_meter)));
+  };
+  for (const auto & edge : detection.boundary) {
+    cv::line(image, gridPoint(edge.x1, edge.y1), gridPoint(edge.x2, edge.y2),
+      edge.observation_age_sec > 0.0 ? cv::Scalar(150, 150, 150) : cv::Scalar(0, 150, 230),
+      2, cv::LINE_AA);
   }
   cv::drawMarker(image, origin, ink, cv::MARKER_CROSS, 10, 2, cv::LINE_AA);
   labelAt(width_px < 400 ? "0m" : "CAMERA / 0m",
@@ -122,8 +124,8 @@ cv::Mat makeRadarPreview(const DetectionResult & detection,
   labelAt(width_px < 400 ? "L (+)" : "LEFT (+)", cv::Point(8, origin.y + 17), 0.35);
   labelAt(width_px < 400 ? "R (-)" : "RIGHT (-)",
     cv::Point(width_px - (width_px < 400 ? 40 : 75), origin.y + 17), 0.35);
-  labelAt("OBSTACLES / CAMERA FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
-  labelAt("POINTS " + std::to_string(detection.points.size()) + " | OBJECTS " + std::to_string(detection.obstacles.size()),
+  labelAt("OCCUPANCY OUTLINES / CAMERA FRAME", cv::Point(10, 20), width_px < 400 ? 0.36 : 0.5);
+  labelAt("CELLS " + std::to_string(detection.occupied_cells) + " | OBJECTS " + std::to_string(detection.obstacles.size()),
     cv::Point(10, 38), 0.35);
   if (detection.obstacles.empty()) {
     labelAt(ground_valid ? "NO DETECTED CLUSTERS" : "GROUND UNAVAILABLE", cv::Point(origin.x - 60, origin.y - radius_px / 2), 0.4);

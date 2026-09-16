@@ -14,6 +14,9 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <std_msgs/msg/bool.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <visualization_msgs/msg/marker_array.hpp>
+#include <geometry_msgs/msg/point.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -45,7 +48,7 @@ constexpr std::uint32_t kColorSensorHeight = 800U;
 
 struct NodeConfig
 {
-  double camera_fps{60.0};
+  double camera_fps{30.0};
   std::string camera_resolution{"400p"};
   std::string depth_mode{"high_density"};
   int confidence_threshold{200};
@@ -55,10 +58,11 @@ struct NodeConfig
   std::string median_filter{"3x3"};
   ProjectionConfig projection;
   ClusterConfig cluster;
+  GridConfig grid;
   GroundConfig ground;
   StabilizationConfig stabilization;
-  bool nv12_enabled{true};
-  double nv12_fps{60.0};
+  bool nv12_enabled{false};
+  double nv12_fps{30.0};
   int nv12_width{1280};
   int nv12_height{800};
   bool preview_enabled{true};
@@ -68,7 +72,7 @@ struct NodeConfig
   int preview_scale{3};
   bool stereo_preview_enabled{false};
   bool stereo_preview_gui{false};
-  double stereo_preview_fps{15.0};
+  double stereo_preview_fps{10.0};
   double bev_x_min_m{0.0};
   double bev_x_max_m{3.0};
   double bev_y_min_m{-0.6};
@@ -185,7 +189,7 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   if (!validateProjectionConfig(config.projection, reason)) {
     return false;
   }
-  return validateClusterConfig(config.cluster, reason) && validateGroundConfig(config.ground, reason)
+  return validateGridConfig(config.grid, reason) && validateClusterConfig(config.cluster, reason) && validateGroundConfig(config.ground, reason)
     && validateStabilizationConfig(config.stabilization, reason);
 }
 
@@ -262,7 +266,7 @@ cv::Mat makeScanPreview(const DetectionResult & detection,
                  << " FPS | NV12 RX " << nv12_rx_fps << " FPS";
   draw_status(receive_status.str(), height - 28);
   std::ostringstream processing_status;
-  processing_status << std::fixed << std::setprecision(1) << "CLUSTER+POS " << object_processing_fps
+  processing_status << std::fixed << std::setprecision(1) << "DETECT+GRID " << object_processing_fps
                     << " FPS (" << std::setprecision(3) << object_processing_ms << " ms AVG) | OBJECTS "
                     << detection.obstacles.size();
   draw_status(processing_status.str(), height - 10);
@@ -309,7 +313,62 @@ sensor_msgs::msg::Image matToImageMessage(const cv::Mat & image,
   return message;
 }
 
-sensor_msgs::msg::PointCloud2 obstacleMessage(const DetectionResult & detection,
+nav_msgs::msg::OccupancyGrid occupancyMessage(const DetectionResult & detection,
+  const builtin_interfaces::msg::Time & stamp, const std::string & frame_id)
+{
+  nav_msgs::msg::OccupancyGrid message;
+  message.header.stamp = stamp;
+  message.header.frame_id = frame_id;
+  message.info.resolution = static_cast<float>(detection.grid.resolution_m);
+  message.info.width = detection.width;
+  message.info.height = detection.height;
+  message.info.origin.position.x = detection.grid.x_min_m;
+  message.info.origin.position.y = detection.grid.y_min_m;
+  message.info.origin.orientation.w = 1.0;
+  message.data.resize(detection.cells.size(), -1);
+  for (std::size_t i = 0; i < detection.cells.size(); ++i) {
+    if (detection.cells[i].support_points) { message.data[i] = 100; }
+  }
+  return message;
+}
+
+visualization_msgs::msg::MarkerArray contourMessage(const DetectionResult & detection,
+  const builtin_interfaces::msg::Time & stamp, const std::string & frame_id)
+{
+  visualization_msgs::msg::MarkerArray message;
+  message.markers.resize(2);
+  for (int held = 0; held < 2; ++held) {
+    auto & marker = message.markers[held];
+    marker.header.stamp = stamp;
+    marker.header.frame_id = frame_id;
+    marker.ns = "depth_grid_boundary";
+    marker.id = held;
+    marker.type = visualization_msgs::msg::Marker::LINE_LIST;
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = 0.01;
+    marker.color.r = held ? 0.59F : 0.90F;
+    marker.color.g = 0.59F;
+    marker.color.b = held ? 0.59F : 0.0F;
+    marker.color.a = 1.0F;
+    marker.lifetime.sec = 1; // Also expires the view if the process disappears.
+  }
+  for (const auto & edge : detection.boundary) {
+    auto & marker = message.markers[edge.observation_age_sec > 0.0 ? 1 : 0];
+    geometry_msgs::msg::Point start, end;
+    start.x = edge.x1; start.y = edge.y1;
+    end.x = edge.x2; end.y = edge.y2;
+    marker.points.push_back(start);
+    marker.points.push_back(end);
+  }
+  for (auto & marker : message.markers) {
+    marker.action = marker.points.empty() ? visualization_msgs::msg::Marker::DELETE
+      : visualization_msgs::msg::Marker::ADD;
+  }
+  return message;
+}
+
+// One point per occupied cell, not per obstacle center. No circle/radius fields.
+sensor_msgs::msg::PointCloud2 occupiedCellMessage(const DetectionResult & detection,
   const builtin_interfaces::msg::Time & stamp, const std::string & frame_id)
 {
   sensor_msgs::msg::PointCloud2 message;
@@ -317,25 +376,23 @@ sensor_msgs::msg::PointCloud2 obstacleMessage(const DetectionResult & detection,
   message.header.frame_id = frame_id;
   sensor_msgs::PointCloud2Modifier modifier(message);
   using Field = sensor_msgs::msg::PointField;
-  modifier.setPointCloud2Fields(6, "x", 1, Field::FLOAT32, "y", 1, Field::FLOAT32,
-    "z", 1, Field::FLOAT32, "radius", 1, Field::FLOAT32, "point_count", 1, Field::UINT32,
-    "observation_age_sec", 1, Field::FLOAT32);
-  modifier.resize(detection.obstacles.size());
+  modifier.setPointCloud2Fields(5, "x", 1, Field::FLOAT32, "y", 1, Field::FLOAT32,
+    "z", 1, Field::FLOAT32, "point_count", 1, Field::UINT32, "observation_age_sec", 1, Field::FLOAT32);
+  modifier.resize(detection.occupied_cells);
   message.is_dense = true;
-  // Avoid creating iterators over an empty cloud on ROS versions whose iterator
-  // implementation takes &data.front(). The empty message still clears results.
-  if (detection.obstacles.empty()) { return message; }
-  sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z"), radius(message, "radius");
+  if (!detection.occupied_cells) { return message; }
+  sensor_msgs::PointCloud2Iterator<float> x(message, "x"), y(message, "y"), z(message, "z");
   sensor_msgs::PointCloud2Iterator<std::uint32_t> count(message, "point_count");
   sensor_msgs::PointCloud2Iterator<float> age(message, "observation_age_sec");
-  for (const auto & obstacle : detection.obstacles) {
-    *x = static_cast<float>(obstacle.forward_m);
-    *y = static_cast<float>(obstacle.left_m);
+  for (std::size_t i = 0; i < detection.cells.size(); ++i) {
+    const auto & cell = detection.cells[i];
+    if (!cell.support_points) { continue; }
+    *x = static_cast<float>(detection.grid.x_min_m + (i % detection.width + 0.5) * detection.grid.resolution_m);
+    *y = static_cast<float>(detection.grid.y_min_m + (i / detection.width + 0.5) * detection.grid.resolution_m);
     *z = 0.0F;
-    *radius = static_cast<float>(obstacle.radius_m);
-    *count = static_cast<std::uint32_t>(obstacle.support_points);
-    *age = static_cast<float>(obstacle.observation_age_sec);
-    ++x; ++y; ++z; ++radius; ++count; ++age;
+    *count = cell.support_points;
+    *age = static_cast<float>(cell.observation_age_sec);
+    ++x; ++y; ++z; ++count; ++age;
   }
   return message;
 }
@@ -376,12 +433,13 @@ public:
     config_.projection.pixel_stride =
       declare_parameter<int>("points.pixel_stride", config_.projection.pixel_stride);
     config_.cluster.min_points = declare_parameter<int>("cluster.min_points", config_.cluster.min_points);
-    config_.cluster.neighbor_distance_m =
-      declare_parameter<double>("cluster.neighbor_distance_m", config_.cluster.neighbor_distance_m);
-    config_.cluster.radius_margin_m =
-      declare_parameter<double>("cluster.radius_margin_m", config_.cluster.radius_margin_m);
-    config_.cluster.min_radius_m =
-      declare_parameter<double>("cluster.min_radius_m", config_.cluster.min_radius_m);
+    config_.cluster.min_cells = declare_parameter<int>("cluster.min_cells", config_.cluster.min_cells);
+    config_.grid.resolution_m = declare_parameter<double>("grid.resolution_m", config_.grid.resolution_m);
+    config_.grid.x_min_m = declare_parameter<double>("grid.x_min_m", config_.grid.x_min_m);
+    config_.grid.x_max_m = declare_parameter<double>("grid.x_max_m", config_.grid.x_max_m);
+    config_.grid.y_min_m = declare_parameter<double>("grid.y_min_m", config_.grid.y_min_m);
+    config_.grid.y_max_m = declare_parameter<double>("grid.y_max_m", config_.grid.y_max_m);
+    config_.grid.min_points_per_cell = declare_parameter<int>("grid.min_points_per_cell", config_.grid.min_points_per_cell);
     config_.ground.roi_width_ratio =
       declare_parameter<double>("ground.roi_width_ratio", config_.ground.roi_width_ratio);
     config_.ground.roi_height_ratio =
@@ -440,8 +498,6 @@ public:
       declare_parameter<int>("stabilization.window_frames", config_.stabilization.window_frames);
     config_.stabilization.hold_sec =
       declare_parameter<double>("stabilization.hold_sec", config_.stabilization.hold_sec);
-    config_.stabilization.match_distance_m =
-      declare_parameter<double>("stabilization.match_distance_m", config_.stabilization.match_distance_m);
     config_.stabilization.max_frame_gap_sec =
       declare_parameter<double>("stabilization.max_frame_gap_sec", config_.stabilization.max_frame_gap_sec);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
@@ -477,13 +533,17 @@ public:
       throw std::invalid_argument("invalid initial parameter: " + reason);
     }
     for (const auto & entry : get_node_parameters_interface()->get_parameter_overrides()) {
-      if (entry.first.rfind("floor.", 0) == 0) {
-        throw std::invalid_argument("floor.* parameters were removed; use the current ground.* YAML");
+      if (entry.first.rfind("floor.", 0) == 0 || entry.first == "cluster.neighbor_distance_m"
+          || entry.first == "cluster.radius_margin_m" || entry.first == "cluster.min_radius_m"
+          || entry.first == "stabilization.match_distance_m") {
+        throw std::invalid_argument("obsolete floor/circle parameters; use the current occupancy-grid YAML");
       }
     }
 
     const auto qos = rclcpp::SensorDataQoS().keep_last(1);
-    obstacles_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/obstacles", qos);
+    cells_publisher_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/occupied_cells", qos);
+    occupancy_publisher_ = create_publisher<nav_msgs::msg::OccupancyGrid>("~/occupancy", qos);
+    contours_publisher_ = create_publisher<visualization_msgs::msg::MarkerArray>("~/contours", qos);
     ground_status_publisher_ = create_publisher<std_msgs::msg::String>("~/ground_status",
       rclcpp::QoS(1).reliable().transient_local());
     ground_valid_publisher_ = create_publisher<std_msgs::msg::Bool>("~/ground_valid",
@@ -555,12 +615,20 @@ private:
           next.projection.pixel_stride = static_cast<int>(parameter.as_int());
         } else if (name == "cluster.min_points") {
           next.cluster.min_points = static_cast<int>(parameter.as_int());
-        } else if (name == "cluster.neighbor_distance_m") {
-          next.cluster.neighbor_distance_m = parameter.as_double();
-        } else if (name == "cluster.radius_margin_m") {
-          next.cluster.radius_margin_m = parameter.as_double();
-        } else if (name == "cluster.min_radius_m") {
-          next.cluster.min_radius_m = parameter.as_double();
+        } else if (name == "cluster.min_cells") {
+          next.cluster.min_cells = static_cast<int>(parameter.as_int());
+        } else if (name == "grid.resolution_m") {
+          next.grid.resolution_m = parameter.as_double();
+        } else if (name == "grid.x_min_m") {
+          next.grid.x_min_m = parameter.as_double();
+        } else if (name == "grid.x_max_m") {
+          next.grid.x_max_m = parameter.as_double();
+        } else if (name == "grid.y_min_m") {
+          next.grid.y_min_m = parameter.as_double();
+        } else if (name == "grid.y_max_m") {
+          next.grid.y_max_m = parameter.as_double();
+        } else if (name == "grid.min_points_per_cell") {
+          next.grid.min_points_per_cell = static_cast<int>(parameter.as_int());
         } else if (name == "ground.roi_width_ratio") {
           next.ground.roi_width_ratio = parameter.as_double();
         } else if (name == "ground.roi_height_ratio") {
@@ -619,8 +687,6 @@ private:
           next.stabilization.window_frames = static_cast<int>(parameter.as_int());
         } else if (name == "stabilization.hold_sec") {
           next.stabilization.hold_sec = parameter.as_double();
-        } else if (name == "stabilization.match_distance_m") {
-          next.stabilization.match_distance_m = parameter.as_double();
         } else if (name == "stabilization.max_frame_gap_sec") {
           next.stabilization.max_frame_gap_sec = parameter.as_double();
         } else if (name == "nv12.enabled") {
@@ -744,7 +810,7 @@ private:
     bool radar_window_open = false;
     bool stereo_window_open = false;
     GroundPlane previous_ground;
-    ClusterStabilizer stabilizer;
+    GridStabilizer stabilizer;
     std::vector<std::uint8_t> foreground_mask;
     std::string active_stabilization_context;
     bool have_detection_time = false;
@@ -757,7 +823,7 @@ private:
       have_detection_time = false;
     };
     std::string ground_status;
-    std::size_t published_obstacle_count = 0U;
+    std::size_t published_cell_count = 0U;
     // Idle expiry redraws use the last measured averages, not fabricated zeros.
     double measured_depth_rx_fps = 0.0;
     double measured_nv12_rx_fps = 0.0;
@@ -773,11 +839,21 @@ private:
       validity.data = status.rfind("VALID |", 0) == 0;
       ground_valid_publisher_->publish(validity);
     };
+    const auto publish_detection = [&](const NodeConfig & config, const DetectionResult & detection,
+        const builtin_interfaces::msg::Time & stamp) {
+      occupancy_publisher_->publish(occupancyMessage(detection, stamp, config.frame_id));
+      if (contours_publisher_->get_subscription_count() > 0) {
+        contours_publisher_->publish(contourMessage(detection, stamp, config.frame_id));
+      }
+      if (cells_publisher_->get_subscription_count() > 0) {
+        cells_publisher_->publish(occupiedCellMessage(detection, stamp, config.frame_id));
+      }
+      published_cell_count = detection.occupied_cells;
+    };
     const auto publish_status_result = [&](const NodeConfig & config, const DetectionResult & detection,
         bool waiting_for_depth) {
       const auto stamp = now();
-      obstacles_publisher_->publish(obstacleMessage(detection, stamp, config.frame_id));
-      published_obstacle_count = detection.obstacles.size();
+      publish_detection(config, detection, stamp);
       if (config.preview_enabled) {
         auto preview = makeScanPreview(detection, ground_status, config,
           measured_depth_rx_fps, measured_nv12_rx_fps,
@@ -790,7 +866,7 @@ private:
       }
     };
     const auto publish_empty = [&](const NodeConfig & config) {
-      publish_status_result(config, DetectionResult{}, false);
+      publish_status_result(config, emptyGrid(config.grid, config.cluster), false);
     };
     set_ground_status("WAITING FOR CAMERA | LIVE MSAC");
     while (rclcpp::ok() && !stop_requested_.load()) {
@@ -985,13 +1061,15 @@ private:
             }
             auto depth_frame = depth_queue->tryGet<dai::ImgFrame>();
             if (!depth_frame) {
-              if (published_obstacle_count > 0U && display_config.stabilization.enabled
-                  && display_config.stabilization.hold_sec > 0.0) {
+              if (published_cell_count > 0U && display_config.stabilization.enabled) {
                 const double clock_sec = std::chrono::duration<double>(
                   std::chrono::steady_clock::now().time_since_epoch()).count();
-                const auto remaining = stabilizer.snapshot(clock_sec, display_config.stabilization);
-                if (remaining.obstacles.size() < published_obstacle_count) {
-                  publish_status_result(display_config, remaining, true);
+                // No full-grid scan on every 1ms poll: only when a cell can expire.
+                if (clock_sec > stabilizer.nextExpiryTime()) {
+                  const auto remaining = stabilizer.snapshot(clock_sec, display_config.stabilization);
+                  if (remaining.occupied_cells < published_cell_count) {
+                    publish_status_result(display_config, remaining, true);
+                  }
                 }
               }
               std::this_thread::sleep_for(1ms);
@@ -1045,17 +1123,18 @@ private:
             std::ostringstream context;
             context << std::setprecision(17) << camera.width << '|' << camera.height
               << '|' << camera.fx << '|' << camera.fy << '|' << camera.cx << '|' << camera.cy;
-            // Configuration changes clear transient labels/tracks. Plane estimation
+            // Configuration changes clear transient pixel/cell labels. Plane estimation
             // always uses this frame alone, including after a failed estimate.
             context << '|' << current.frame_id << '|' << current.projection.roi_width_ratio
               << '|' << current.projection.roi_height_ratio << '|' << current.projection.roi_bottom_offset_ratio
               << '|' << current.projection.pixel_stride << '|' << current.projection.min_range_m
               << '|' << current.projection.max_range_m << '|' << current.projection.range_offset_m
-              << '|' << current.cluster.min_points << '|' << current.cluster.neighbor_distance_m
-              << '|' << current.cluster.radius_margin_m << '|' << current.cluster.min_radius_m
+              << '|' << current.cluster.min_points << '|' << current.cluster.min_cells
+              << '|' << current.grid.resolution_m << '|' << current.grid.x_min_m << '|' << current.grid.x_max_m
+              << '|' << current.grid.y_min_m << '|' << current.grid.y_max_m << '|' << current.grid.min_points_per_cell
               << '|' << current.stabilization.enabled << '|' << current.stabilization.confirm_hits
               << '|' << current.stabilization.window_frames << '|' << current.stabilization.hold_sec
-              << '|' << current.stabilization.match_distance_m << '|' << current.stabilization.max_frame_gap_sec;
+              << '|' << current.stabilization.max_frame_gap_sec;
             context
               << '|' << current.ground.roi_width_ratio << '|' << current.ground.roi_height_ratio << '|' << current.ground.roi_bottom_offset_ratio
               << '|' << current.ground.pixel_stride << '|' << current.ground.max_samples << '|' << current.ground.max_iterations
@@ -1073,7 +1152,7 @@ private:
               active_stabilization_context = context.str();
             }
             if (have_detection_time && frame_time_sec <= previous_detection_time) {
-              // Replayed frames must not re-confirm a track or preserve pixel labels.
+              // Replayed frames must not re-confirm a cell or preserve pixel labels.
               clear_history();
               set_ground_status("INVALID | NON-MONOTONIC FRAME TIME");
               publish_empty(current);
@@ -1084,8 +1163,8 @@ private:
             const auto ground = estimateGroundPlane(depth, stride_elements, camera, current.ground);
             if (ground.valid) {
               if (previous_ground.valid && ground.changedFrom(previous_ground, current.ground)) {
-                // Height labels depend on the plane, but tracks use camera XY.
-                // Reclassify pixels without forcing unchanged objects to reconfirm.
+                // Height labels depend on the plane, but cells use camera XY.
+                // Reclassify pixels without forcing unchanged cells to reconfirm.
                 foreground_mask.clear();
               }
               previous_ground = ground;
@@ -1096,17 +1175,17 @@ private:
               set_ground_status(status.str());
             } else {
               // A failed fit is a missed observation, not a coordinate change.
-              // Never reuse its plane or pixel labels. Keep confirmed tracks only
+              // Never reuse its plane or pixel labels. Keep confirmed cells only
               // within hold_sec, without refreshing their last observation time.
               foreground_mask.clear();
               previous_ground = GroundPlane{};
               set_ground_status("INVALID | " + ground.reason);
             }
             const auto raw_detection = detectForeground(depth, stride_elements, camera, ground,
-              current.ground, current.projection, current.cluster,
+              current.ground, current.projection, current.grid, current.cluster,
               current.stabilization.enabled ? &foreground_mask : nullptr);
             // Invalid ground produces an empty raw detection; update counts a miss
-            // and expires tracks normally while ground_valid remains false.
+            // and expires cells normally while ground_valid remains false.
             const auto detection = stabilizer.update(raw_detection, observation_time_sec, current.stabilization);
             const auto object_processing_end = std::chrono::steady_clock::now();
             const double object_processing_ms =
@@ -1114,8 +1193,7 @@ private:
                 .count();
             const builtin_interfaces::msg::Time ros_stamp = now();
 
-            obstacles_publisher_->publish(obstacleMessage(detection, ros_stamp, current.frame_id));
-            published_obstacle_count = detection.obstacles.size();
+            publish_detection(current, detection, ros_stamp);
 
             const auto before_preview = std::chrono::steady_clock::now();
             const double delay_ms = std::max(0.0,
@@ -1125,7 +1203,7 @@ private:
             ++metric_frames;
             metric_delay_sum_ms += delay_ms;
             metric_object_processing_sum_ms += object_processing_ms;
-            last_foreground_points = detection.points.size();
+            last_foreground_points = detection.observed_points;
             last_obstacle_count = detection.obstacles.size();
 
             const double metric_elapsed_sec =
@@ -1205,8 +1283,7 @@ private:
       } catch (const std::exception & error) {
         clear_history();
         set_ground_status("CAMERA UNAVAILABLE | RECONNECTING");
-        obstacles_publisher_->publish(obstacleMessage(DetectionResult{}, now(), configSnapshot().frame_id));
-        published_obstacle_count = 0U;
+        publish_empty(configSnapshot());
         RCLCPP_ERROR(get_logger(), "DepthAI pipeline error: %s", error.what());
         for (int i = 0; i < 10 && rclcpp::ok() && !stop_requested_.load(); ++i) {
           std::this_thread::sleep_for(100ms);
@@ -1220,7 +1297,9 @@ private:
   std::atomic_bool stop_requested_{false};
   std::atomic_bool restart_requested_{false};
   std::thread worker_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr obstacles_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cells_publisher_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr occupancy_publisher_;
+  rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr contours_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr ground_status_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr ground_valid_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_publisher_;

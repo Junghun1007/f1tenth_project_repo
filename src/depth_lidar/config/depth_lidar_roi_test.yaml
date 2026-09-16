@@ -1,8 +1,8 @@
-# Per-frame MSAC ground estimation. Starts automatically. C: camera ON/OFF.
+# MSAC + occupied-cell outlines. Compute-bounded defaults. Starts automatically. C: camera ON/OFF.
 depth_lidar:
   ros__parameters:
     # Camera pipeline parameters. Changes restart only this package's camera pipeline.
-    camera.fps: 60.0
+    camera.fps: 30.0
     camera.resolution: "400p"       # 400p, 480p, 720p, 800p
 
     depth.mode: "high_density"      # default, high_density, high_accuracy
@@ -21,7 +21,8 @@ depth_lidar:
     range.max_m: 3.0
     # corrected range = measured range + offset. Negative values make obstacles closer.
     range.offset_m: 0.0
-    points.pixel_stride: 1
+    # Sample 1 of each 2x2 pixel block (quarter of the ROI samples).
+    points.pixel_stride: 2
 
     # Estimate a fresh ground plane from THIS frame; no file or B calibration.
     # Blue ROI = ground fitting; green roi.* = obstacle detection.
@@ -30,8 +31,8 @@ depth_lidar:
     ground.roi_bottom_offset_ratio: 0.0
     # Sampling step grows automatically if needed to respect max_samples.
     ground.pixel_stride: 4
-    ground.max_samples: 3000
-    ground.max_iterations: 200
+    ground.max_samples: 1500
+    ground.max_iterations: 120
     ground.min_depth_m: 0.10
     ground.max_depth_m: 4.0
     ground.inlier_distance_m: 0.02
@@ -56,39 +57,43 @@ depth_lidar:
     ground.noise_scale: 3.0
     # Release threshold cannot fall below inlier_distance_m.
     ground.release_ratio: 0.60
-    # Large plane changes clear pixel labels only; camera-XY tracks keep normal hold.
+    # Large plane changes clear pixel labels only; camera-XY cells keep normal hold.
     ground.reset_history_angle_deg: 3.0
     ground.reset_history_height_m: 0.03
 
-    # Confirm in 2 of 3 frames; hold up to 80ms, including brief ground-fit failures.
+    # Each occupied cell: confirm in 2 of 3 frames; hold at most 80ms.
     # Hold uses host observation time; capture/USB delay does not consume it.
-    # Matching uses camera-frame XY centers; no odometry/motion compensation.
+    # No cluster-pair matching, long-term accumulation, or motion compensation.
     stabilization.enabled: true
     stabilization.confirm_hits: 2
     stabilization.window_frames: 3
     stabilization.hold_sec: 0.08
-    stabilization.match_distance_m: 0.15
     stabilization.max_frame_gap_sec: 0.20
 
-    # Cluster foreground pixels before computing mean X/Y and covering radius.
-    # 8-connected image neighbors must also be within this 3D distance.
-    cluster.min_points: 20
-    cluster.neighbor_distance_m: 0.08
-    cluster.radius_margin_m: 0.04
-    cluster.min_radius_m: 0.05
+    # Camera XY occupancy: 60 forward columns x 120 left/right rows = 7200 cells.
+    # 100 = observed obstacle (or brief hold); all other cells = -1 UNKNOWN.
+    grid.resolution_m: 0.05
+    grid.x_min_m: 0.0
+    grid.x_max_m: 3.0
+    grid.y_min_m: -3.0
+    grid.y_max_m: 3.0
+    grid.min_points_per_cell: 2
+    # 8-connected occupied cells; preserve concavities and holes, no inflation.
+    cluster.min_points: 6
+    cluster.min_cells: 2
 
-    # Pull CAM_A NV12 to a dedicated latest-frame host receiver without
-    # converting, publishing, or previewing it. This measures concurrent USB load.
-    nv12.enabled: true
-    nv12.fps: 60.0
+    # Optional USB load generator. Disabled for the compute/USB-optimized profile.
+    nv12.enabled: false
+    nv12.fps: 30.0
     nv12.width: 1280
     nv12.height: 800
 
-    # White radar preview in the camera frame: top=forward, left=camera left.
+    # White radar with exact occupied-cell boundary edges (no circles/labels).
+    # Camera frame: top=forward, left=camera left.
     # Range rings extend to range.max_m; size_px sets the image width.
     preview.enabled: true
     preview.gui: true
-    preview.fps: 30.0
+    preview.fps: 15.0
     preview.size_px: 700
 
     # Rectified left/right preview: green=obstacles ROI, blue=live ground ROI.
@@ -96,7 +101,7 @@ depth_lidar:
     # Press C in either preview window to toggle enabled.
     stereo_preview.enabled: true
     stereo_preview.gui: true
-    stereo_preview.fps: 30.0
+    stereo_preview.fps: 10.0
 
     # Legacy BEV settings below are accepted but not used by the radar preview.
     preview.scale: 3

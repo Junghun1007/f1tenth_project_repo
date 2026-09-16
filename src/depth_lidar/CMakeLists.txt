@@ -16,6 +16,9 @@ find_package(rclcpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core highgui imgproc)
 find_package(depthai CONFIG REQUIRED)
 
@@ -30,7 +33,7 @@ target_link_libraries(depth_lidar_geometry PRIVATE opencv_core)
 
 add_executable(depth_lidar_node src/depth_lidar_node.cpp src/depth_lidar_preview.cpp)
 target_include_directories(depth_lidar_node PRIVATE include ${OpenCV_INCLUDE_DIRS})
-ament_target_dependencies(depth_lidar_node builtin_interfaces rclcpp rcl_interfaces sensor_msgs std_msgs)
+ament_target_dependencies(depth_lidar_node builtin_interfaces rclcpp rcl_interfaces sensor_msgs std_msgs nav_msgs geometry_msgs visualization_msgs)
 target_link_libraries(depth_lidar_node depth_lidar_geometry depthai::core ${OpenCV_LIBS})
 
 install(

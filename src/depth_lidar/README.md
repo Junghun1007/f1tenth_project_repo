@@ -1,13 +1,12 @@
 # depth_lidar
 
-OAK 스테레오 깊이를 3D 점으로 복원하고 **매 프레임 MSAC으로 현재 바닥 평면을 추정**합니다.
-바닥보다 충분히 높은 점을 군집화해 위치와 반지름을 출력합니다. 저장한 배경 깊이와의 비교,
-사전 바닥 측정, 바닥 파일 저장·로드 기능은 제거했습니다.
+OAK 스테레오 깊이에서 매 프레임 MSAC으로 바닥을 추정하고, 바닥보다 높은 점을
+**점유격자에 집계해 연결 영역과 정확한 격자 경계선**을 출력합니다. 벽을 큰 원으로 감싸지
+않으며 ㄱ자 모양과 구멍을 유지합니다. 저장된 바닥 파일이나 사전 측정은 사용하지 않습니다.
 
 ## 실행
 
-ROS 2, DepthAI C++ 3.x, OpenCV와 연결된 OAK가 필요합니다.
-같은 장치를 사용하는 다른 카메라 노드는 종료합니다.
+ROS 2, DepthAI C++ 3.x, OpenCV가 필요합니다. 같은 OAK를 사용하는 다른 노드는 종료합니다.
 
 ```bash
 colcon build --packages-select depth_lidar --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
@@ -15,144 +14,112 @@ source install/setup.bash
 ros2 launch depth_lidar depth_lidar.launch.py config_file:="$(ros2 pkg prefix depth_lidar)/share/depth_lidar/config/depth_lidar_roi_test.yaml"
 ```
 
-테스트 YAML은 레이더와 좌우 카메라 GUI를 켭니다. 다른 파일을 쓰려면 실행 PC의 절대 경로를
-`config_file`에 전달합니다. 기본 `config/depth_lidar.yaml`은 GUI를 끄고 이미지 토픽을 발행합니다.
-**시작 즉시 추정합니다. B키나 빈 바닥 촬영 절차는 없습니다.** 장애물이 있어도 주변 바닥이 충분히
-보이면 추정을 시도합니다. 실제 장치에서의 처리율과 검출 성능은 별도 확인이 필요합니다.
+시작 즉시 동작합니다. B키 측정은 없습니다. C키는 정렬 좌우 영상 전송을 토글하며 카메라
+파이프라인을 재시작합니다. `stereo_preview.gui=false`는 창만 숨깁니다. 테스트 YAML은
+레이더/카메라 창을 켜고, 기본 YAML은 창을 끕니다. 빌드·실장치 성능 검증은 별도 필요합니다.
 
-## 이전 설정에서 전환
+## 처리 과정과 형상
 
-- `floor.*`, `/depth_lidar/measure_floor`, `/depth_lidar/floor_status`, B키를 제거했습니다.
-- 새 YAML의 `ground.*`를 사용합니다. `floor.*`가 남은 YAML로 시작하면 설명과 함께 거부합니다.
-- 이전 `floor_reference.bin`은 읽거나 수정하지 않습니다. 삭제하거나 다시 측정할 필요가 없습니다.
-- 장애물 토픽의 좌표계와 24바이트 필드 구성은 유지합니다. 평면 유효성은 새 `ground_valid`를 확인합니다.
-- 기본 `frame_id`는 계속 `depth_lidar`이며 레이더의 장애물은 주황/회색 원만 표시합니다.
+1. 매 프레임 파란 바닥 ROI에서 깊이 유효점을 균일하게 샘플링합니다.
+2. MSAC 후보에 법선 방향·카메라 높이·지지점 수/비율 제약을 적용하고 최소 비용 평면을 선택합니다.
+   비용은 `sum(min(distance², inlier_distance_m²))`이며, 최소제곱 보정·분포·RMSE 검사도 수행합니다.
+3. 초록 탐지 ROI에서 `height > max(min_height_m, noise_scale × RMSE)`인 점을 채택합니다.
+   픽셀 히스테리시스 해제 임계값은 `max(inlier_distance_m, 신규 임계값 × release_ratio)`입니다.
+4. 샘플 점을 카메라 XY 격자에 직접 집계합니다. 칸별 최소 점 수를 통과하면 관측 1회입니다.
+5. 칸별 최근 3프레임 중 2회 확인과 짧은 누락 유지를 적용합니다. 군집 중심 간 일대일 매칭은 없습니다.
+6. 확정된 점유 칸을 8방향 연결로 묶고 최소 칸 수·지지점 수보다 작은 영역은 제거합니다.
+7. 이웃이 점유되지 않은 칸의 변만 경계로 추출합니다. 노출된 변에는 구멍의 안쪽 경계도 포함됩니다.
 
-## 한 프레임의 처리
+격자는 채우기·팽창·convex hull 연산을 하지 않습니다. 벽의 측정 위치가 3m라면 그 근처의
+격자 칸을 표시하며 벽 길이에 비례하는 원 반지름을 추가하지 않습니다. 5cm 격자 자체의
+양자화로 칸은 관측점보다 각 축에서 최대 약 5cm 넓어질 수 있습니다. 경계는 폐곡선 꼭짓점
+목록이 아니라 노출된 **선분 쌍**입니다. 벽/상자의 의미 분류나 안 보이는 뒷면 복원은 하지 않습니다.
 
-1. 오른쪽 정렬 영상 기준 깊이와 그 프레임의 내부 파라미터로 3D 점을 만듭니다.
-   카메라 좌표는 전방 X, 좌측 Y, 상방 Z입니다. 깊이 0은 무효입니다.
-2. 파란 `ground.roi_*` 영역을 균일하게 샘플링합니다. `ground.pixel_stride`에서 시작하고
-   샘플 격자가 `ground.max_samples`를 넘으면 간격을 늘립니다. 지정 광축 깊이 범위 밖은 제외합니다.
-3. 점 3개씩으로 평면 후보를 만들고 방향·카메라 높이 제약을 적용합니다.
-   각 후보의 점-평면 거리 r에 대해 `sum(min(r², inlier_distance_m²))`인 **MSAC 비용**을 계산합니다.
-   최소 지지점 수·비율을 만족하는 후보 중 비용이 가장 작은 것을 고릅니다.
-4. 지지점의 최소제곱 평면으로 보정한 뒤 지지점 분포·수·비율, 방향·높이, RMSE를 다시 검사합니다.
-5. 초록 `roi.*` 영역에서 바닥 위 높이 조건과 거리 조건을 통과하는 점들을 군집화합니다.
-6. 3프레임 중 2회 확인과 짧은 누락 유지를 적용해 장애물 토픽·레이더로 출력합니다.
+## 좌표와 점유 의미
 
-현재 프레임에서 실패하면 이전 평면으로 대신 판정하지 않습니다. 픽셀 히스테리시스를 지우고
-`ground_valid=false`, `INVALID | 이유`를 출력합니다. 실패 프레임은 군집의 미관측으로 처리하며,
-이미 확인된 군집만 마지막 관측부터 `stabilization.hold_sec`까지 회색으로 유지합니다.
-실패가 반복돼도 유지 시간을 연장하거나 새 군집을 확인하지 않으며, 만료되면 빈 목록을 출력합니다.
+기존 `depth_lidar` 카메라 좌표를 유지합니다. X=카메라 전방, Y=카메라 좌측, Z=카메라 상방이며,
+격자 출력 Z=0입니다. 카메라 내부 파라미터로 복원한 점에서 높이 판정만 MSAC 평면을 사용합니다.
+**차량/지면 축으로 회전하거나 차량 원점으로 이동하는 변환은 포함하지 않습니다.** 카메라가
+기울어져 있으면 이 XY는 지면 수평 좌표와 다릅니다. 차량 경로계획 연결 시 실제 장착 자세를
+사용한 좌표 변환과 차량 외형을 고려한 충돌 영역 확장이 필요합니다.
+`bev.*`, `sensor.*`, `preview.scale`은 과거 설정 호환용이며 이 격자에 영향을 주지 않습니다.
 
-## 높이 판정과 좌표
+격자 값은 `100=장애물 관측 또는 유지`, `-1=미확인`입니다. **0=자유 공간은 출력하지 않습니다.**
+점이 없거나 바닥이 보이는 것만으로 주행 가능한 공간을 선언하지 않습니다. 가려진 공간,
+ROI 밖, 거리 범위 밖, 무효 깊이도 미확인입니다. 이 출력은 장애물 레이어이며 완전한 주행 지도는
+아닙니다. 유지가 끝난 칸도 미확인으로 돌아갑니다. 차량 여유 거리/차체 크기는 여기에 포함하지 않습니다.
 
-추정 평면은 `n.x*X + n.y*Y + n.z*Z + d = 0`입니다. n은 단위 법선이며 지정 상방을 향합니다.
-카메라는 원점이므로 d는 카메라에서 바닥 평면까지의 수직 거리입니다.
-점의 부호 있는 높이는 `h=n·point+d`로 계산합니다.
+## 연산량을 제한한 초기값
 
-```text
-신규 후보: h > max(ground.min_height_m, ground.noise_scale × 이번 평면 RMSE)
-           그리고 h <= ground.max_height_m
-유지 후보: h > max(ground.inlier_distance_m, 신규 문턱 × ground.release_ratio)
-           그리고 h <= ground.max_height_m
-```
-
-기본 신규 문턱은 최소 5cm, 최대 후보 높이는 1m입니다. 5cm 미만의 물체 표면은 신규 후보에서
-제외될 수 있습니다. 히스테리시스 유지 문턱도 바닥 지지점 허용 범위 아래로 내려가지 않습니다.
-RMSE는 **현재 평면의 지지점 적합 오차**로, 모든 깊이 픽셀의 측정 오차를 나타내지는 않습니다.
-
-후보는 영상 8방향 이웃이면서 3D 거리 `cluster.neighbor_distance_m` 이내인 점끼리 연결합니다.
-`cluster.min_points` 미만은 제거합니다. 중심은 카메라 X/Y 평균, 반지름은 중심에서 가장 먼
-군집점의 X/Y 거리에 여유를 더한 값입니다. 반지름 상한으로 큰 물체를 잘라내지 않습니다.
-
-**평면은 높이 판정에 사용하고, 출력 X/Y는 고정된 카메라 축을 유지합니다.** 매 프레임 추정된
-바닥 축으로 회전시키지 않습니다. 따라서 카메라가 기울어졌다면 출력 X/Y는 바닥 수평 좌표와
-다릅니다. 출력 Z=0은 레이더용 2D 군집 표현이며 실제 높이가 0이라는 뜻이 아닙니다.
-차량 앞차축/BEV 변환과 TF 발행은 포함하지 않습니다. 차량 크기·가려진 물체 범위·회피 여유는
-사용처에서 고려해야 합니다. `range.offset_m`은 후보 판정 뒤 기존 카메라 XY 거리 보정에 적용합니다.
-
-## 먼저 맞출 설정
-
-| 설정 | 기본값 | 의미와 조절 방향 |
+| 설정 | 값 | 목적/손실 |
 |---|---|---|
-| `ground.roi_width_ratio`, `height_ratio`, `bottom_offset_ratio` | 0.90 / 0.55 / 0.0 | 바닥이 넓게 보이는 추정 영역. 장애물 탐지 ROI와 별개 |
-| `ground.min_camera_height_m`, `max_camera_height_m` | 0.05 / 1.0m | 실제 카메라 설치 높이 주변으로 좁혀 다른 평면 선택을 줄임 |
-| `ground.reference_up_x/y/z` | 0 / 0 / 1 | 카메라 전방/좌측/상방 축으로 표현한 예상 바닥 법선. 내부에서 정규화 |
-| `ground.max_tilt_deg` | 60도 | 예상 법선에서 허용하는 편차. 실제 장착 기울기에 맞춰 방향과 범위를 설정 |
-| `ground.inlier_distance_m` | 0.02m | 바닥 지지점의 평면 거리 허용치. 크게 하면 잡음뿐 아니라 낮은 물체도 흡수 가능 |
-| `ground.min_inlier_points`, `min_inlier_ratio` | 100 / 0.35 | 유효 샘플 중 최소 바닥 지지 조건. 높이면 엄격해지지만 가림에 취약 |
-| `ground.min_spread_m` | 0.05m | 지지점이 선처럼 모이지 않도록 평면 내 두 번째 주축 표준편차의 최솟값 |
-| `ground.max_rmse_m` | 0.015m | 적합 오차 상한. 넘으면 바닥 판정 실패 |
-| `ground.min_height_m`, `max_height_m` | 0.05 / 1.0m | 장애물 후보의 바닥 위 높이 범위 |
-| `ground.noise_scale`, `release_ratio` | 3.0 / 0.60 | 평면 오차 계수, 픽셀 유지 문턱 비율 |
-| `ground.max_samples`, `max_iterations` | 3000 / 200 | 연산량 제한. 늘리면 더 많은 표본·후보를 보지만 처리 부하 증가 |
-| `ground.min_depth_m`, `max_depth_m` | 0.10 / 4.0m | 추정용 광축 깊이 범위. 장애물 검출 거리와 별개 |
+| `camera.fps`, 해상도 | 30, 400p | 수신·깊이 처리량 제한. 60 FPS보다 시간 해상도 감소 |
+| `points.pixel_stride` | 2 | ROI 샘플 수 약 1/4. 작은/얇은 물체는 누락 가능 |
+| `grid.resolution_m` | 0.05m | 전방 3m × 좌우 총 6m = 60×120, 7,200칸 |
+| `grid.min_points_per_cell` | 2 | 한 점 잡음 억제 |
+| `cluster.min_points`, `min_cells` | 6, 2 | 작은 독립 잡음 영역 억제 |
+| `ground.max_samples`, `max_iterations` | 1500, 120 | MSAC 거리 평가 상한 180,000/프레임(보정 단계 제외) |
+| `nv12.enabled` | false | 부하 측정용 CAM_A USB 스트림 제거 |
+| 테스트 `preview.fps`, `stereo_preview.fps` | 15, 10 | 화면 변환/그리기 횟수 제한 |
+| `stabilization.hold_sec` | 0.08s | 잠깐 누락 유지, 장기간 위치 누적 방지 |
 
-기본 높이·각도 범위는 설치값을 모르는 상태의 넓은 범위입니다. MSAC은 바닥이라는 의미를
-스스로 알지 못합니다. 큰 상자 윗면도 조건을 만족하면 선택될 수 있으므로 **실제 설치 높이와
-예상 법선 제약을 맞추고 바닥 지지 영역을 확보**해야 합니다. 바닥이 많이 가려지거나 계단·여러
-높이의 바닥이 섞이면 단일 평면 가정이 맞지 않을 수 있습니다.
+640×400에서 탐지 ROI는 x=0, y=180, w=640, h=120입니다. stride=2일 때 최대 19,200픽셀을
+검사합니다. 바닥 ROI는 x=32, y=180, w=576, h=220이며 샘플 간격은 max_samples에 맞춰 증가합니다.
+바닥 제거 이후 집계·칸별 확인·연결 영역·경계 추출은 `O(P+G)`입니다(P=샘플 픽셀, G=전체 칸).
+점마다 3D 이웃 그래프를 만들거나 군집 쌍을 정렬하지 않습니다. MSAC 후보의 인덱스 버퍼도 재사용합니다.
+대기 루프는 다음 만료 시각이 됐을 때만 격자를 갱신하며, 보조 메시지는 구독자가 있을 때만 구성합니다.
+스테레오 preview.fps는 호스트 표시 주기이며 정렬 영상 USB 전송률 제한은 아닙니다. C키로 스트림을
+끄면 전송 부하도 줄어듭니다. 값들은 **실측 최적값이 아니라 계산량을 제한한 시작값**입니다.
+
+## 튜닝
+
+- 벽이 끊기면 먼저 깊이 품질과 ROI를 확인하고 `grid.min_points_per_cell: 1`을 비교합니다.
+  얇은 물체가 빠지면 `points.pixel_stride: 1`로 복원합니다(ROI 처리량 약 4배).
+- 작은 장애물이 제거되면 `cluster.min_cells: 1`, `cluster.min_points: 3` 등으로 낮춥니다.
+  잡음 통과도 늘어납니다. 칸 수 조건은 물체 전체 크기가 아니라 관측된 표면의 수평 투영 크기입니다.
+- 3cm 격자는 같은 범위에서 20,000칸입니다. 격자를 줄이면 점이 분산돼 칸별 점 수도 감소합니다.
+  범위 길이는 해상도의 정수배여야 하며 1축 최대 1,000칸/전체 최대 100,000칸으로 제한합니다.
+- 멀리 보려면 `range.max_m`과 `grid.x_max_m`, `grid.y_*`를 함께 설정합니다. 거리 필터는
+  카메라 XY 반경이므로 직사각 격자의 모서리 전체가 탐지 범위에 속하지는 않습니다.
+- 바닥 추정 실패가 늘면 ROI·깊이 품질·실제 장착 높이/방향을 먼저 확인하고 MSAC 샘플/반복을 늘립니다.
+  기본 방향 허용 60도와 높이 0.05~1m는 넓은 초기값입니다. 실제 장착값 근처로 좁히면
+  다른 평면 선택을 줄일 수 있으나 테이블 상판 등을 완전히 구분해 주지는 않습니다.
+- 1,500점/120회는 이전 3,000점/200회보다 평가 상한이 70% 작지만 약한 바닥 지지점에서 실패할 수 있습니다.
 
 ## 안정화와 실패 상태
 
-`stabilization.*`의 2/3 확인, 80ms 유지, 카메라 XY 중심 15cm 이내 일대일 연결은 유지합니다.
-신규 관측은 주황 원, 누락 유지는 회색 원입니다. 좌표 글씨·개별 점·군집 중심 십자는 표시하지 않습니다.
-`stabilization.enabled=false`는 픽셀 히스테리시스와 군집 안정화를 끕니다. 평면 추정은 계속 수행합니다.
+확인은 군집이 아니라 **칸별 2/3회**입니다. 주황 경계는 현재 관측된 칸, 회색 경계는 이전 관측을
+잠깐 유지하는 칸입니다. 같은 군집 내 색이 섞일 수 있으며 군집 개수는 연결 상태에 따라 달라집니다.
+유지 시간은 호스트가 해당 프레임 처리를 시작한 시각부터 세므로 USB 지연을 유지 시간에서 빼지 않습니다.
+촬영 시각에 따른 오래된 영상·역순 영상 검사는 별도로 유지합니다. 위치/군집 ID 추적은 제공하지 않습니다.
+카메라 고정 격자를 사용하므로 차량 이동 보정은 없고 이동 중에는 유지 형상이 짧은 잔상으로 남을 수 있습니다.
 
-군집 갱신과 프레임 대기 중 만료 판정은 모두 호스트 단조 시계를 사용합니다. 마지막으로 해당
-군집을 관측한 프레임의 호스트 처리 시작 시점부터 80ms를 세므로 USB 전송 지연이 유지 시간을
-미리 소모하지 않습니다. 촬영 시각은 별도로 오래된 영상·역순 영상·프레임 공백 검사에 사용합니다.
-대기 중 만료 화면에는 `WAITING FOR DEPTH`를 표시하고 마지막 측정 FPS 평균을 유지합니다.
-이 화면의 빈 목록은 새 프레임에서 장애물이 없다고 판정한 것이 아니라 기존 관측이 만료된 것입니다.
+평면이 실패하면 `ground_valid=false`와 실패 이유를 발행합니다. 이전 평면으로 새 점을 판정하지 않으며,
+이미 확인된 칸만 기존 hold_sec까지 남습니다. 실패가 반복돼도 관측 시각을 갱신하지 않습니다.
+유효 평면이 3도/3cm보다 많이 바뀌면 픽셀 이력만 지웁니다. 설정 변경·카메라 재시작·허용치 초과
+프레임 공백에서는 격자 이력도 비웁니다. 대기 중 만료 화면은 `WAITING FOR DEPTH`와 마지막 평균 FPS를 표시합니다.
 
-이전 유효 프레임과 법선이 `ground.reset_history_angle_deg`(3도)보다 많이 바뀌거나 카메라 높이가
-`ground.reset_history_height_m`(3cm)보다 많이 달라지면 픽셀 히스테리시스만 비우고 새 유효 평면으로
-높이를 다시 판정합니다. 군집 좌표는 카메라 XY이므로 이 변화만으로 군집 확인 이력을 지우지는
-않습니다. 평면을 시간 평균하거나 이전 평면을 대체 사용하지 않습니다.
-탐지/추정 설정 변경·카메라 재시작·허용치를 넘는 프레임 공백에는 군집 이력까지 비웁니다.
+## 출력과 이전 버전에서 전환
 
-원이 완전히 사라지는 것과 주황/회색 전환은 구분해야 합니다. 주황/회색 전환은 현재 관측과
-일시 유지의 차이입니다. 계속 사라진다면 `ground_status`의 실패 이유와 실제 처리 FPS를 확인합니다.
-`VALID`가 유지되면서 잠깐 누락되는 경우에는 `hold_sec`를 0.08에서 0.12로 늘려 비교할 수 있지만,
-주행 중 과거 위치를 더 오래 유지하게 됩니다. `hold_sec`는 `max_frame_gap_sec` 이하여야 합니다.
-
-영상이 없을 때에도 수신 루프에서 유지 군집을 시간으로 만료시킵니다. 유효 영상 수신 공백 또는
-영상 나이가 `stabilization.max_frame_gap_sec`(200ms)를 넘으면 이력 초기화/오래된 영상 제외를
-적용합니다. `DEPTH STALE`이나 `CAMERA UNAVAILABLE`에서는 유효성 false와 빈 결과를 출력합니다.
-유지 군집은 마지막 카메라 좌표를 사용하며 **차량 이동 보정은 없습니다**.
-
-## 토픽과 화면
-
-| 토픽 | 의미 |
+| 토픽 | 형식/내용 |
 |---|---|
-| `/depth_lidar/obstacles` | PointCloud2: x/y/z/radius(float32), point_count(uint32), observation_age_sec(float32). point_step=24 |
+| `/depth_lidar/occupancy` | nav_msgs/OccupancyGrid, 100 또는 -1. 기본 60×120, 해상도 0.05m |
+| `/depth_lidar/contours` | visualization_msgs/MarkerArray, 현재/유지 경계를 LINE_LIST 2개로 출력 |
+| `/depth_lidar/occupied_cells` | PointCloud2, 점유 칸 중심마다 x/y/z(float32), point_count(uint32), observation_age_sec(float32), 20바이트 |
 | `/depth_lidar/ground_valid` | Bool, 현재 바닥 추정 유효 여부. reliable/transient-local |
-| `/depth_lidar/ground_status` | String, VALID + 지지점/샘플 수·높이·RMSE 또는 실패 이유. reliable/transient-local |
-| `/depth_lidar/preview` | 군집 원과 레이더 격자, 평면 상태, 수신/연산 성능 |
-| `/depth_lidar/stereo_preview` | 정렬 좌우 영상. 초록=탐지 ROI, 파랑=바닥 추정 ROI. 오른쪽이 실제 depth 기준 |
+| `/depth_lidar/ground_status` | String, 지지점/샘플 수·카메라 높이·RMSE 또는 실패 이유 |
+| `/depth_lidar/preview` | 레이더 격자와 점유 칸 외곽선 |
+| `/depth_lidar/stereo_preview` | 초록=탐지 ROI, 파랑=바닥 추정 ROI. 오른쪽이 깊이 기준 영상 |
 
-**빈 장애물 목록과 추정 실패는 같은 뜻이 아닙니다.** 사용처는 유효성과 데이터 수신 시각을 함께
-확인해야 합니다. `ground_valid=true`도 ROI 밖이나 무효 깊이 영역까지 빈 공간임을 보장하지 않습니다.
-`ground_valid=false`일 때 남아 있는 군집은 이전 관측의 단기 유지이며 현재 검출 결과가 아닙니다.
-`observation_age_sec=0`은 해당 depth 프레임에서 관측, 양수는 마지막 관측을 유지 중임을 뜻합니다.
-유지군집의 `point_count`도 마지막 관측값입니다. 경과 시간은 호스트 처리 시작 시각 기준이며
-촬영 이후의 전송 지연은 포함하지 않습니다. 프레임 중단 시 만료 갱신에도 같은 단조 시계를 사용합니다.
+OccupancyGrid 인덱스는 `left_row * width + forward_column`입니다. 원점은 (x_min_m,y_min_m),
+orientation.w=1이며 각 칸은 해당 좌표부터 resolution_m만큼의 사각형입니다.
+`occupied_cells`의 support와 age는 칸별 값입니다. age=0은 이번 프레임 관측, 양수는 유지이며
+호스트 관측 이후 경과 시간입니다(촬영~전송 지연은 제외). occupancy에서는 현재/유지를 같은 100으로
+표시하므로 나이가 필요하면 occupied_cells를 함께 사용합니다. 메시지 시각과 ground_valid를 함께 확인합니다.
+실패/미확인 출력은 장애물 없는 공간을 뜻하지 않습니다. 구독 QoS는 sensor-data best-effort입니다.
+Marker ID 0/1은 현재/유지 경계이며 비어지면 DELETE를 발행하고, 프로세스가 중단되면 1초 후 만료됩니다.
 
-C키로 좌우 영상 전송·창을 토글합니다. 창만 숨기려면 `stereo_preview.gui=false`를 사용합니다.
-640×400 기본값에서 초록 ROI는 x=0, y=180, w=640, h=120이고 파란 ROI는 x=32, y=180,
-w=576, h=220입니다. `height_ratio + bottom_offset_ratio <= 1`이어야 합니다.
-
-```bash
-ros2 topic echo /depth_lidar/ground_valid
-ros2 topic echo /depth_lidar/ground_status
-ros2 param set /depth_lidar ground.min_height_m 0.04
-ros2 param set /depth_lidar ground.roi_height_ratio 0.60
-ros2 param set /depth_lidar stereo_preview.gui false
-```
-
-`ground.min_height_m`은 `ground.inlier_distance_m`보다 커야 하고, `ground.max_rmse_m`은
-`ground.inlier_distance_m` 이하여야 합니다. 설정 변경은 다음 처리 프레임부터 적용되며 유지하려면
-YAML에도 기록해야 합니다. `preview.scale`, `bev.*`, `sensor.*`는 이전 호환용으로 현재 표시에는
-사용하지 않습니다. NV12 수신 부하 측정은 유지하며 처리시간에는 MSAC·군집·안정화 연산이 포함됩니다.
+기존 원 중심+반지름 `/depth_lidar/obstacles` 토픽은 제거했습니다. 소비자는 새 격자/경계 토픽으로
+변경해야 합니다. `cluster.neighbor_distance_m`, `cluster.radius_margin_m`, `cluster.min_radius_m`,
+`stabilization.match_distance_m`, `floor.*`가 남은 YAML은 시작 시 거부합니다. 최신 YAML을 사용합니다.
+이전 바닥 파일은 읽거나 수정하지 않습니다. 메시지 이름만 바꾸고 기존 radius 파서를 사용하는 것은 호환되지 않습니다.

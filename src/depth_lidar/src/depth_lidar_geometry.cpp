@@ -45,17 +45,114 @@ bool validateProjectionConfig(const ProjectionConfig & c, std::string & reason)
   return true;
 }
 
-bool validateClusterConfig(const ClusterConfig & c, std::string & reason)
+bool validateGridConfig(const GridConfig & c, std::string & reason)
 {
-  if (c.min_points < 1 || c.min_points > 1000000
-      || !std::isfinite(c.neighbor_distance_m) || c.neighbor_distance_m <= 0.0
-      || !std::isfinite(c.radius_margin_m) || c.radius_margin_m < 0.0
-      || !std::isfinite(c.min_radius_m) || c.min_radius_m <= 0.0) {
-    reason = "cluster requires positive min_points/neighbor_distance/min_radius and nonnegative margin";
+  if (!std::isfinite(c.resolution_m) || c.resolution_m < 0.01 || c.resolution_m > 0.25
+      || !std::isfinite(c.x_min_m) || !std::isfinite(c.x_max_m)
+      || !std::isfinite(c.y_min_m) || !std::isfinite(c.y_max_m)
+      || c.x_min_m < 0.0 || c.x_max_m <= c.x_min_m || c.y_max_m <= c.y_min_m
+      || c.min_points_per_cell < 1 || c.min_points_per_cell > 1000) {
+    reason = "grid requires finite ordered bounds, resolution [0.01,0.25], positive cell support";
+    return false;
+  }
+  const double width = (c.x_max_m - c.x_min_m) / c.resolution_m;
+  const double height = (c.y_max_m - c.y_min_m) / c.resolution_m;
+  if (!std::isfinite(width) || !std::isfinite(height) || width < 1 || height < 1
+      || width > 1000 || height > 1000 || std::round(width) * std::round(height) > 100000
+      || std::abs(width - std::round(width)) > 1e-6
+      || std::abs(height - std::round(height)) > 1e-6) {
+    reason = "grid spans must be multiples of resolution, <=1000 per axis and <=100000 cells";
     return false;
   }
   reason.clear();
   return true;
+}
+
+bool validateClusterConfig(const ClusterConfig & c, std::string & reason)
+{
+  if (c.min_points < 1 || c.min_points > 1000000 || c.min_cells < 1 || c.min_cells > 100000) {
+    reason = "cluster requires min_points [1,1000000] and min_cells [1,100000]";
+    return false;
+  }
+  reason.clear();
+  return true;
+}
+
+DetectionResult emptyGrid(const GridConfig & grid, const ClusterConfig & cluster)
+{
+  std::string reason;
+  if (!validateGridConfig(grid, reason) || !validateClusterConfig(cluster, reason)) {
+    throw std::invalid_argument(reason);
+  }
+  DetectionResult result;
+  result.grid = grid;
+  result.cluster = cluster;
+  result.width = static_cast<int>(std::lround((grid.x_max_m - grid.x_min_m) / grid.resolution_m));
+  result.height = static_cast<int>(std::lround((grid.y_max_m - grid.y_min_m) / grid.resolution_m));
+  result.cells.resize(static_cast<std::size_t>(result.width) * result.height);
+  return result;
+}
+
+void buildGridClusters(DetectionResult & result)
+{
+  result.obstacles.clear();
+  result.boundary.clear();
+  result.occupied_cells = result.observed_points = 0;
+  const int width = result.width, height = result.height;
+  if (width <= 0 || height <= 0 || result.cells.size() != static_cast<std::size_t>(width) * height) {
+    throw std::invalid_argument("invalid occupancy grid layout");
+  }
+  std::vector<std::uint8_t> visited(result.cells.size(), 0);
+  std::vector<std::size_t> component;
+  for (std::size_t seed = 0; seed < result.cells.size(); ++seed) {
+    if (visited[seed] || !result.cells[seed].support_points) { continue; }
+    component.clear();
+    component.push_back(seed);
+    visited[seed] = 1;
+    std::size_t support = 0;
+    for (std::size_t head = 0; head < component.size(); ++head) {
+      const auto cell = component[head];
+      support += result.cells[cell].support_points;
+      const int row = static_cast<int>(cell / width), col = static_cast<int>(cell % width);
+      for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+          const int x = col + dx, y = row + dy;
+          if (x < 0 || x >= width || y < 0 || y >= height) { continue; }
+          const auto next = static_cast<std::size_t>(y) * width + x;
+          if (!visited[next] && result.cells[next].support_points) {
+            visited[next] = 1;
+            component.push_back(next);
+          }
+        }
+      }
+    }
+    if (component.size() < static_cast<std::size_t>(result.cluster.min_cells)
+        || support < static_cast<std::size_t>(result.cluster.min_points)) {
+      for (auto cell : component) { result.cells[cell] = {}; }
+      continue;
+    }
+    result.obstacles.push_back({component, support});
+    result.occupied_cells += component.size();
+  }
+  // Linear boundary extraction preserves concavities, disconnected edges and holes.
+  // It never bridges empty cells or encloses a wall in a circle/convex polygon.
+  const auto & g = result.grid;
+  for (const auto & cluster : result.obstacles) {
+    for (const auto id : cluster.cells) {
+      const int row = static_cast<int>(id / width), col = static_cast<int>(id % width);
+      const auto & cell = result.cells[id];
+      if (cell.observation_age_sec == 0.0) { result.observed_points += cell.support_points; }
+      const double x = g.x_min_m + col * g.resolution_m, y = g.y_min_m + row * g.resolution_m;
+      const double xx = x + g.resolution_m, yy = y + g.resolution_m;
+      const auto edge = [&](double x1, double y1, double x2, double y2) {
+        result.boundary.push_back({x1, y1, x2, y2, cell.observation_age_sec});
+      };
+      if (col == 0 || !result.cells[id - 1].support_points) { edge(x, y, x, yy); }
+      if (col == width - 1 || !result.cells[id + 1].support_points) { edge(xx, yy, xx, y); }
+      if (row == 0 || !result.cells[id - width].support_points) { edge(xx, y, x, y); }
+      if (row == height - 1 || !result.cells[id + width].support_points) { edge(x, yy, xx, yy); }
+    }
+  }
 }
 
 bool validateGroundConfig(const GroundConfig & c, std::string & reason)
@@ -161,8 +258,10 @@ GroundPlane estimateGroundPlane(const std::uint16_t * depth, std::size_t stride,
   const double truncation = c.inlier_distance_m * c.inlier_distance_m;
   // MSAC score: sum of truncated squared point-to-plane distances. Outliers
   // contribute a bounded penalty; inlier fit accuracy also affects the score.
+  std::vector<std::size_t> inliers;
+  inliers.reserve(points.size());
   const auto evaluate = [&](const cv::Vec3d & n, double d, double & score, double & error) {
-    std::vector<std::size_t> inliers;
+    inliers.clear();
     score = 0.0;
     error = 0.0;
     for (std::size_t i = 0; i < points.size(); ++i) {
@@ -171,7 +270,6 @@ GroundPlane estimateGroundPlane(const std::uint16_t * depth, std::size_t stride,
       score += std::min(squared, truncation);
       if (squared <= truncation) { inliers.push_back(i); error += squared; }
     }
-    return inliers;
   };
   std::mt19937 random(0x4d534143U);
   std::uniform_int_distribution<std::size_t> pick(0, points.size() - 1);
@@ -188,10 +286,10 @@ GroundPlane estimateGroundPlane(const std::uint16_t * depth, std::size_t stride,
     const double d = -n.dot(points[a]);
     if (!allowed(n, d)) { continue; }
     double score, error;
-    auto inliers = evaluate(n, d, score, error);
+    evaluate(n, d, score, error);
     if (inliers.size() >= required && (score < best_score
         || (score == best_score && inliers.size() > best.size()))) {
-      best = std::move(inliers);
+      best = inliers;
       best_score = score;
     }
   }
@@ -230,7 +328,8 @@ GroundPlane estimateGroundPlane(const std::uint16_t * depth, std::size_t stride,
       return result;
     }
     double score;
-    best = evaluate(normal, offset, score, squared_error);
+    evaluate(normal, offset, score, squared_error);
+    best.swap(inliers);
     if (best.size() < required) {
       result.reason = "INSUFFICIENT REFINED GROUND SUPPORT";
       return result;
@@ -255,16 +354,15 @@ GroundPlane estimateGroundPlane(const std::uint16_t * depth, std::size_t stride,
 
 DetectionResult detectForeground(const std::uint16_t * depth, std::size_t stride,
   const CameraGeometry & camera, const GroundPlane & ground, const GroundConfig & ground_config,
-  const ProjectionConfig & projection, const ClusterConfig & cluster,
+  const ProjectionConfig & projection, const GridConfig & grid, const ClusterConfig & cluster,
   std::vector<std::uint8_t> * foreground_mask)
 {
   std::string reason;
   if (!validCamera(camera) || !depth || stride < static_cast<std::size_t>(camera.width)
-      || !validateProjectionConfig(projection, reason) || !validateClusterConfig(cluster, reason)
-      || !validateGroundConfig(ground_config, reason)) {
+      || !validateProjectionConfig(projection, reason) || !validateGroundConfig(ground_config, reason)) {
     throw std::invalid_argument("invalid foreground input: " + reason);
   }
-  DetectionResult result;
+  auto result = emptyGrid(grid, cluster);
   result.roi = computeRoi(camera.width, camera.height, projection.roi_width_ratio,
     projection.roi_height_ratio, projection.roi_bottom_offset_ratio);
   if (!ground.valid) {
@@ -273,85 +371,42 @@ DetectionResult detectForeground(const std::uint16_t * depth, std::size_t stride
   }
   const auto pixels = static_cast<std::size_t>(camera.width) * camera.height;
   if (foreground_mask && foreground_mask->size() != pixels) { foreground_mask->assign(pixels, 0U); }
-  const int step = projection.pixel_stride;
-  const int cols = (result.roi.width + step - 1) / step;
-  const int rows = (result.roi.height + step - 1) / step;
-  std::vector<int> grid(static_cast<std::size_t>(cols) * rows, -1);
-  std::vector<ForegroundPoint> candidates;
-  candidates.reserve(grid.size());
   const double threshold = std::max(ground_config.min_height_m, ground_config.noise_scale * ground.rmse_m);
-  // Even retained pixels must remain outside the ground inlier band.
   const double release = std::max(ground_config.inlier_distance_m, threshold * ground_config.release_ratio);
-  for (int row = 0; row < rows; ++row) {
-    const int v = result.roi.y + row * step;
-    for (int col = 0; col < cols; ++col) {
-      const int u = result.roi.x + col * step;
+  const double inverse_resolution = 1.0 / grid.resolution_m;
+  const double inverse_fx = 1.0 / camera.fx, inverse_fy = 1.0 / camera.fy;
+  for (int v = result.roi.y; v < result.roi.y + result.roi.height; v += projection.pixel_stride) {
+    const double vertical_ray = (camera.cy - v) * inverse_fy;
+    for (int u = result.roi.x; u < result.roi.x + result.roi.width; u += projection.pixel_stride) {
       const auto raw = depth[static_cast<std::size_t>(v) * stride + u];
       const auto pixel = static_cast<std::size_t>(v) * camera.width + u;
       const bool previous = foreground_mask && (*foreground_mask)[pixel] != 0U;
       const double forward = raw * 0.001;
-      const double left = (camera.cx - u) * forward / camera.fx;
-      const double up = (camera.cy - v) * forward / camera.fy;
-      const double height = ground.height(forward, left, up);
-      const bool foreground = raw && height > (previous ? release : threshold)
-        && height <= ground_config.max_height_m;
-      if (foreground_mask) { (*foreground_mask)[pixel] = foreground ? 1U : 0U; }
-      if (!foreground) { continue; }
-      const double range = std::hypot(forward, left);
-      const double corrected = range + projection.range_offset_m;
-      if (corrected < projection.min_range_m || corrected > projection.max_range_m) {
+      const double left = (camera.cx - u) * forward * inverse_fx;
+      const double h = ground.height(forward, left, vertical_ray * forward);
+      if (!raw || h <= (previous ? release : threshold) || h > ground_config.max_height_m) {
         if (foreground_mask) { (*foreground_mask)[pixel] = 0U; }
         continue;
       }
+      const double range = std::hypot(forward, left), corrected = range + projection.range_offset_m;
       const double scale = corrected / range;
-      grid[static_cast<std::size_t>(row) * cols + col] = static_cast<int>(candidates.size());
-      candidates.push_back({forward * scale, left * scale, up * scale, u, v});
-    }
-  }
-  std::vector<bool> visited(grid.size(), false);
-  std::vector<std::size_t> component;
-  const double max_gap_squared = cluster.neighbor_distance_m * cluster.neighbor_distance_m;
-  for (std::size_t seed = 0; seed < grid.size(); ++seed) {
-    if (visited[seed] || grid[seed] < 0) { continue; }
-    component.clear();
-    component.push_back(seed);
-    visited[seed] = true;
-    double forward_sum = 0.0, left_sum = 0.0;
-    for (std::size_t head = 0; head < component.size(); ++head) {
-      const auto cell = component[head];
-      const auto & point = candidates[grid[cell]];
-      forward_sum += point.forward_m;
-      left_sum += point.left_m;
-      const int row = static_cast<int>(cell / cols), col = static_cast<int>(cell % cols);
-      for (int dy = -1; dy <= 1; ++dy) {
-        for (int dx = -1; dx <= 1; ++dx) {
-          const int nr = row + dy, nc = col + dx;
-          if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) { continue; }
-          const auto next = static_cast<std::size_t>(nr) * cols + nc;
-          if (visited[next] || grid[next] < 0) { continue; }
-          const auto & neighbor = candidates[grid[next]];
-          const double df = point.forward_m - neighbor.forward_m;
-          const double dl = point.left_m - neighbor.left_m;
-          const double du = point.up_m - neighbor.up_m;
-          if (df * df + dl * dl + du * du <= max_gap_squared) {
-            visited[next] = true;
-            component.push_back(next);
-          }
-        }
+      const double x = forward * scale, y = left * scale;
+      if (corrected < projection.min_range_m || corrected > projection.max_range_m
+          || x < grid.x_min_m || x >= grid.x_max_m || y < grid.y_min_m || y >= grid.y_max_m) {
+        if (foreground_mask) { (*foreground_mask)[pixel] = 0U; }
+        continue;
       }
+      if (foreground_mask) { (*foreground_mask)[pixel] = 1U; }
+      const int col = std::min(result.width - 1, static_cast<int>((x - grid.x_min_m) * inverse_resolution));
+      const int row = std::min(result.height - 1, static_cast<int>((y - grid.y_min_m) * inverse_resolution));
+      ++result.cells[static_cast<std::size_t>(row) * result.width + col].support_points;
     }
-    if (component.size() < static_cast<std::size_t>(cluster.min_points)) { continue; }
-    const double x = forward_sum / component.size(), y = left_sum / component.size();
-    double radius = 0.0;
-    for (const auto cell : component) {
-      const auto & point = candidates[grid[cell]];
-      radius = std::max(radius, std::hypot(point.forward_m - x, point.left_m - y));
-      result.points.push_back(point);
-    }
-    // Do not cap the radius: a cap would under-represent a large obstacle.
-    result.obstacles.push_back({x, y,
-      std::max(cluster.min_radius_m, radius + cluster.radius_margin_m), component.size()});
   }
+  for (auto & cell : result.cells) {
+    if (cell.support_points < static_cast<std::uint32_t>(grid.min_points_per_cell)) { cell = {}; }
+  }
+  // Build clusters after temporal stabilization; raw cell observations need no
+  // per-pixel neighbor graph, sorting, or component allocations.
   return result;
 }
 } // namespace depth_lidar
