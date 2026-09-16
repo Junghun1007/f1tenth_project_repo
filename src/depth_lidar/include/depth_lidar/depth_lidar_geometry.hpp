@@ -1,6 +1,5 @@
 #pragma once
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -44,24 +43,10 @@ struct FloorConfig
 {
   int measure_frames{60};
   double min_valid_ratio{0.5};
-  double measure_roi_width_ratio{0.8};
-  double measure_roi_height_ratio{0.35};
-  double measure_roi_bottom_offset_ratio{0.05};
-  int fit_pixel_stride{4};
-  double fit_max_depth_m{4.0};
-  int ransac_iterations{200};
-  double inlier_distance_m{0.02};
-  int min_inlier_points{100};
-  double min_inlier_ratio{0.60};
-  double max_tilt_deg{60.0};
-  double min_camera_height_m{0.05};
-  double max_camera_height_m{1.0};
-  double min_height_m{0.05};
-  double max_height_m{1.0};
+  double min_delta_m{0.05};
   double noise_scale{3.0};
 };
 
-// Ground-aligned forward/left and height above the calibrated floor.
 struct ForegroundPoint
 {
   double forward_m{0.0};
@@ -92,8 +77,7 @@ bool validateFloorConfig(const FloorConfig & config, std::string & reason);
 RoiRect computeRoi(int image_width, int image_height,
   double width_ratio, double height_ratio, double bottom_offset_ratio);
 
-// Explicit, frozen plane in camera forward/left/up coordinates. Unit normal
-// points upward, d > 0 is camera height. A new measurement replaces prior data.
+// Explicit, frozen per-pixel background. Learning always replaces all prior data.
 class FloorReference
 {
 public:
@@ -101,16 +85,12 @@ public:
   void begin(const CameraGeometry & camera, const FloorConfig & config);
   bool accumulate(const std::uint16_t * depth_mm, std::size_t row_stride_elements);
   bool compatible(const CameraGeometry & camera) const;
-  bool ready() const { return !measuring_ && inlier_points_ > 0; }
+  bool ready() const { return !measuring_ && valid_pixels_ > 0; }
   bool measuring() const { return measuring_; }
   int frames() const { return frames_; }
   int targetFrames() const { return target_frames_; }
-  std::size_t inlierPoints() const { return inlier_points_; }
-  double cameraHeight() const { return plane_[3]; }
-  double rmse() const { return rmse_m_; }
-  const std::string & failureReason() const { return failure_reason_; }
-  std::array<double, 3> groundCoordinates(double forward, double left, double up) const;
-  bool isObstacleHeight(double height_m, const FloorConfig & config) const;
+  std::size_t validPixels() const { return valid_pixels_; }
+  bool isForeground(std::size_t pixel, double depth_m, const FloorConfig & config) const;
   void save(const std::string & path) const;
   bool load(const std::string & path, const CameraGeometry & camera);
 
@@ -120,17 +100,9 @@ private:
   int target_frames_{0};
   int min_samples_{0};
   bool measuring_{false};
-  FloorConfig measurement_config_;
-  std::array<double, 4> plane_{{0.0, 0.0, 1.0, 0.0}};
-  std::array<double, 3> forward_axis_{{1.0, 0.0, 0.0}};
-  std::array<double, 3> left_axis_{{0.0, 1.0, 0.0}};
-  double rmse_m_{0.0};
-  std::size_t sample_points_{0};
-  std::size_t inlier_points_{0};
-  std::string failure_reason_;
-  bool fitPlane();
-  void updateGroundAxes();
+  std::size_t valid_pixels_{0};
   std::vector<double> mean_m_;
+  std::vector<double> m2_;
   std::vector<std::uint32_t> counts_;
 };
 

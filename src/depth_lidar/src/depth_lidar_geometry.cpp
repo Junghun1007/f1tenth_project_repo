@@ -1,13 +1,9 @@
 #include "depth_lidar/depth_lidar_geometry.hpp"
 
-#include <opencv2/core.hpp>
-
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <limits>
-#include <random>
 #include <stdexcept>
 #include <utility>
 
@@ -71,29 +67,11 @@ bool validateClusterConfig(const ClusterConfig & c, std::string & reason)
 
 bool validateFloorConfig(const FloorConfig & c, std::string & reason)
 {
-  ProjectionConfig roi;
-  roi.roi_width_ratio = c.measure_roi_width_ratio;
-  roi.roi_height_ratio = c.measure_roi_height_ratio;
-  roi.roi_bottom_offset_ratio = c.measure_roi_bottom_offset_ratio;
-  roi.pixel_stride = c.fit_pixel_stride;
-  if (!validateProjectionConfig(roi, reason)) {
-    reason = "floor measurement " + reason;
-    return false;
-  }
   if (c.measure_frames < 2 || c.measure_frames > 3600
       || !std::isfinite(c.min_valid_ratio) || c.min_valid_ratio <= 0.0 || c.min_valid_ratio > 1.0
-      || !std::isfinite(c.fit_max_depth_m) || c.fit_max_depth_m <= 0.0 || c.fit_max_depth_m > 65.535
-      || c.ransac_iterations < 1 || c.ransac_iterations > 5000
-      || !std::isfinite(c.inlier_distance_m) || c.inlier_distance_m <= 0.0
-      || c.min_inlier_points < 3 || c.min_inlier_points > 1000000
-      || !std::isfinite(c.min_inlier_ratio) || c.min_inlier_ratio <= 0.0 || c.min_inlier_ratio > 1.0
-      || !std::isfinite(c.max_tilt_deg) || c.max_tilt_deg <= 0.0 || c.max_tilt_deg >= 85.0
-      || !std::isfinite(c.min_camera_height_m) || c.min_camera_height_m <= 0.0
-      || !std::isfinite(c.max_camera_height_m) || c.max_camera_height_m <= c.min_camera_height_m
-      || !std::isfinite(c.min_height_m) || c.min_height_m <= 0.0
-      || !std::isfinite(c.max_height_m) || c.max_height_m <= c.min_height_m
+      || !std::isfinite(c.min_delta_m) || c.min_delta_m <= 0.0
       || !std::isfinite(c.noise_scale) || c.noise_scale < 0.0) {
-    reason = "invalid floor sampling, RANSAC, tilt/camera-height limits or obstacle height band";
+    reason = "floor requires frames [2,3600], valid_ratio (0,1], delta > 0, noise_scale >= 0";
     return false;
   }
   reason.clear();
@@ -123,11 +101,11 @@ void FloorReference::begin(const CameraGeometry & camera, const FloorConfig & co
     throw std::invalid_argument("invalid floor measurement geometry/config: " + reason);
   }
   camera_ = camera;
-  measurement_config_ = config;
   target_frames_ = config.measure_frames;
   min_samples_ = std::max(2, static_cast<int>(std::ceil(target_frames_ * config.min_valid_ratio)));
   const auto size = static_cast<std::size_t>(camera.width) * camera.height;
   mean_m_.assign(size, 0.0);
+  m2_.assign(size, 0.0);
   counts_.assign(size, 0U);
   measuring_ = true;
 }
@@ -145,176 +123,47 @@ bool FloorReference::accumulate(const std::uint16_t * depth, std::size_t stride)
   if (!measuring_ || depth == nullptr || stride < static_cast<std::size_t>(camera_.width)) {
     throw std::invalid_argument("floor measurement requires a valid depth frame and active session");
   }
-  const auto & c = measurement_config_;
-  const auto roi = computeRoi(camera_.width, camera_.height, c.measure_roi_width_ratio,
-    c.measure_roi_height_ratio, c.measure_roi_bottom_offset_ratio);
-  for (int v = roi.y; v < roi.y + roi.height; v += c.fit_pixel_stride) {
-    for (int u = roi.x; u < roi.x + roi.width; u += c.fit_pixel_stride) {
-      const double value = depth[static_cast<std::size_t>(v) * stride + u] * 0.001;
-      if (value <= 0.0 || value > c.fit_max_depth_m) { continue; }
+  // Learn the entire frame, independent of detection ROI/range limits. This
+  // allows ROI tuning and detecting an object in front of a more distant floor.
+  for (int v = 0; v < camera_.height; ++v) {
+    for (int u = 0; u < camera_.width; ++u) {
+      const auto raw = depth[static_cast<std::size_t>(v) * stride + u];
+      if (raw == 0U) { continue; }
       const auto i = static_cast<std::size_t>(v) * camera_.width + u;
+      const double value = raw * 0.001;
       const auto count = ++counts_[i];
-      mean_m_[i] += (value - mean_m_[i]) / count;
+      const double delta = value - mean_m_[i];
+      mean_m_[i] += delta / count;
+      m2_[i] += delta * (value - mean_m_[i]);
     }
   }
   if (++frames_ < target_frames_) { return false; }
   measuring_ = false;
-  fitPlane();
-  // Only the fitted plane is retained and saved, not a background depth image.
-  std::vector<double>().swap(mean_m_);
-  std::vector<std::uint32_t>().swap(counts_);
+  for (const auto count : counts_) {
+    if (count >= static_cast<std::uint32_t>(min_samples_)) { ++valid_pixels_; }
+  }
   return true;
 }
 
-bool FloorReference::fitPlane()
+bool FloorReference::isForeground(std::size_t i, double depth_m, const FloorConfig & c) const
 {
-  const auto & c = measurement_config_;
-  std::vector<cv::Vec3d> points;
-  for (int v = 0; v < camera_.height; ++v) {
-    for (int u = 0; u < camera_.width; ++u) {
-      const auto i = static_cast<std::size_t>(v) * camera_.width + u;
-      if (counts_[i] < static_cast<std::uint32_t>(min_samples_)) { continue; }
-      const double z = mean_m_[i];
-      points.emplace_back(z, (camera_.cx - u) * z / camera_.fx, (camera_.cy - v) * z / camera_.fy);
-    }
-  }
-  sample_points_ = points.size();
-  const auto required = std::max(static_cast<std::size_t>(c.min_inlier_points),
-    static_cast<std::size_t>(std::ceil(c.min_inlier_ratio * points.size())));
-  if (points.size() < required) {
-    failure_reason_ = "too few stable depth samples in floor measurement ROI";
+  if (!ready() || i >= counts_.size() || counts_[i] < static_cast<std::uint32_t>(min_samples_)) {
     return false;
   }
-  const double min_up = std::cos(c.max_tilt_deg * CV_PI / 180.0);
-  const auto allowed = [&](const cv::Vec3d & n, double d) {
-    return n[2] >= min_up && d >= c.min_camera_height_m && d <= c.max_camera_height_m;
-  };
-  const auto collect = [&](const cv::Vec3d & n, double d, double & squared_error) {
-    std::vector<std::size_t> indices;
-    squared_error = 0.0;
-    for (std::size_t i = 0; i < points.size(); ++i) {
-      const double distance = n.dot(points[i]) + d;
-      if (std::abs(distance) <= c.inlier_distance_m) {
-        indices.push_back(i);
-        squared_error += distance * distance;
-      }
-    }
-    return indices;
-  };
-  std::mt19937 random(0x464c4f52U);
-  std::uniform_int_distribution<std::size_t> pick(0, points.size() - 1);
-  std::vector<std::size_t> best;
-  double best_error = std::numeric_limits<double>::infinity();
-  cv::Vec3d normal(0.0, 0.0, 1.0);
-  double offset = 0.0;
-  for (int iteration = 0; iteration < c.ransac_iterations; ++iteration) {
-    const auto a = pick(random), b = pick(random), e = pick(random);
-    if (a == b || a == e || b == e) { continue; }
-    cv::Vec3d n = (points[b] - points[a]).cross(points[e] - points[a]);
-    const double length = cv::norm(n);
-    if (length < 1e-8) { continue; }
-    n *= 1.0 / length;
-    if (n[2] < 0.0) { n *= -1.0; }
-    const double d = -n.dot(points[a]);
-    if (!allowed(n, d)) { continue; }
-    double error;
-    auto indices = collect(n, d, error);
-    if (indices.size() > best.size() || (indices.size() == best.size() && error < best_error)) {
-      best = std::move(indices);
-      best_error = error;
-      normal = n;
-      offset = d;
-    }
-  }
-  if (best.size() < required) {
-    failure_reason_ = "no floor plane satisfies inlier, tilt and camera-height limits";
-    return false;
-  }
-  // Least-squares refinement of RANSAC inliers. Reject nearly collinear support.
-  for (int pass = 0; pass < 2; ++pass) {
-    cv::Vec3d center(0.0, 0.0, 0.0);
-    for (const auto i : best) { center += points[i]; }
-    center *= 1.0 / best.size();
-    cv::Matx33d covariance = cv::Matx33d::zeros();
-    for (const auto i : best) {
-      const cv::Vec3d delta = points[i] - center;
-      for (int row = 0; row < 3; ++row) {
-        for (int col = 0; col < 3; ++col) { covariance(row, col) += delta[row] * delta[col]; }
-      }
-    }
-    covariance *= 1.0 / best.size();
-    cv::Mat eigenvalues, eigenvectors;
-    if (!cv::eigen(cv::Mat(covariance), eigenvalues, eigenvectors)
-        || eigenvalues.at<double>(1) < 0.0001) {
-      failure_reason_ = "floor samples do not span a sufficient planar area";
-      return false;
-    }
-    normal = cv::Vec3d(eigenvectors.at<double>(2, 0), eigenvectors.at<double>(2, 1),
-      eigenvectors.at<double>(2, 2));
-    normal *= 1.0 / cv::norm(normal);
-    if (normal[2] < 0.0) { normal *= -1.0; }
-    offset = -normal.dot(center);
-    if (!allowed(normal, offset)) {
-      failure_reason_ = "refined floor plane violates tilt or camera-height limits";
-      return false;
-    }
-    best = collect(normal, offset, best_error);
-    if (best.size() < required) {
-      failure_reason_ = "refined floor plane has insufficient inliers";
-      return false;
-    }
-  }
-  rmse_m_ = std::sqrt(best_error / best.size());
-  if (std::max(c.min_height_m, c.noise_scale * rmse_m_) >= c.max_height_m) {
-    failure_reason_ = "floor fit noise exceeds the obstacle height band";
-    return false;
-  }
-  plane_ = {{normal[0], normal[1], normal[2], offset}};
-  inlier_points_ = best.size();
-  updateGroundAxes();
-  failure_reason_.clear();
-  return true;
-}
-
-void FloorReference::updateGroundAxes()
-{
-  const cv::Vec3d n(plane_[0], plane_[1], plane_[2]);
-  cv::Vec3d forward = cv::Vec3d(1.0, 0.0, 0.0) - n * n[0];
-  forward *= 1.0 / cv::norm(forward);
-  const cv::Vec3d left = n.cross(forward);
-  for (int i = 0; i < 3; ++i) { forward_axis_[i] = forward[i]; left_axis_[i] = left[i]; }
-}
-
-std::array<double, 3> FloorReference::groundCoordinates(double forward, double left, double up) const
-{
-  const std::array<double, 3> point{{forward, left, up}};
-  std::array<double, 3> result{{0.0, 0.0, plane_[3]}};
-  // Origin is the perpendicular foot of the camera on the floor. Its dot
-  // product with either tangential axis is zero, so no XY translation is needed.
-  for (int i = 0; i < 3; ++i) {
-    result[0] += forward_axis_[i] * point[i];
-    result[1] += left_axis_[i] * point[i];
-    result[2] += plane_[i] * point[i];
-  }
-  return result;
-}
-
-bool FloorReference::isObstacleHeight(double height_m, const FloorConfig & c) const
-{
-  return ready() && std::isfinite(height_m)
-    && height_m >= std::max(c.min_height_m, c.noise_scale * rmse_m_) && height_m <= c.max_height_m;
+  const double sigma = std::sqrt(std::max(0.0, m2_[i] / (counts_[i] - 1U)));
+  return mean_m_[i] - depth_m > std::max(c.min_delta_m, c.noise_scale * sigma);
 }
 
 void FloorReference::save(const std::string & path) const
 {
-  if (!ready()) { throw std::runtime_error("no valid floor plane to save"); }
+  if (!ready()) { throw std::runtime_error("no valid floor reference to save"); }
   const std::filesystem::path target(path);
   if (!target.parent_path().empty()) { std::filesystem::create_directories(target.parent_path()); }
   const auto temporary = path + ".tmp";
   try {
     std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
-    if (!stream) { throw std::runtime_error("cannot write floor plane: " + temporary); }
-    stream.write("DLPLANE2", 8);
+    if (!stream) { throw std::runtime_error("cannot write floor reference: " + temporary); }
+    stream.write("DLFLOOR1", 8);
     writeValue(stream, std::uint32_t{0x01020304});
     writeValue(stream, static_cast<std::uint32_t>(camera_.width));
     writeValue(stream, static_cast<std::uint32_t>(camera_.height));
@@ -323,14 +172,15 @@ void FloorReference::save(const std::string & path) const
     stream.write(camera_.signature.data(), static_cast<std::streamsize>(camera_.signature.size()));
     writeValue(stream, static_cast<std::uint32_t>(frames_));
     writeValue(stream, static_cast<std::uint32_t>(min_samples_));
-    for (const auto value : plane_) { writeValue(stream, value); }
-    writeValue(stream, rmse_m_);
-    writeValue(stream, static_cast<std::uint32_t>(sample_points_));
-    writeValue(stream, static_cast<std::uint32_t>(inlier_points_));
+    for (std::size_t i = 0; i < counts_.size(); ++i) {
+      writeValue(stream, mean_m_[i]);
+      writeValue(stream, m2_[i]);
+      writeValue(stream, counts_[i]);
+    }
     stream.flush();
-    if (!stream) { throw std::runtime_error("failed to write floor plane: " + path); }
+    if (!stream) { throw std::runtime_error("failed to write floor reference: " + path); }
     stream.close();
-    if (!stream) { throw std::runtime_error("failed to close floor plane: " + path); }
+    if (!stream) { throw std::runtime_error("failed to close floor reference: " + path); }
     std::filesystem::rename(temporary, target);
   } catch (...) {
     std::error_code error;
@@ -346,9 +196,7 @@ bool FloorReference::load(const std::string & path, const CameraGeometry & camer
   std::ifstream stream(path, std::ios::binary);
   char magic[8]{};
   stream.read(magic, 8);
-  if (!stream || std::string(magic, 8) != "DLPLANE2") {
-    throw std::runtime_error("unsupported floor file; press B to measure and save a ground plane");
-  }
+  if (!stream || std::string(magic, 8) != "DLFLOOR1") { throw std::runtime_error("invalid floor file header"); }
   std::uint32_t endian, width, height, length, frames, minimum;
   readValue(stream, endian);
   readValue(stream, width);
@@ -374,22 +222,23 @@ bool FloorReference::load(const std::string & path, const CameraGeometry & camer
   }
   candidate.frames_ = candidate.target_frames_ = static_cast<int>(frames);
   candidate.min_samples_ = static_cast<int>(minimum);
-  for (auto & value : candidate.plane_) { readValue(stream, value); }
-  readValue(stream, candidate.rmse_m_);
-  std::uint32_t samples, inliers;
-  readValue(stream, samples);
-  readValue(stream, inliers);
-  const auto & p = candidate.plane_;
-  const double norm = std::sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
-  if (!std::isfinite(norm) || std::abs(norm - 1.0) > 1e-6
-      || p[2] <= std::cos(85.0 * CV_PI / 180.0) || !std::isfinite(p[3]) || p[3] <= 0.0
-      || !std::isfinite(candidate.rmse_m_) || candidate.rmse_m_ < 0.0
-      || samples > static_cast<std::size_t>(width) * height || inliers < 3 || inliers > samples) {
-    throw std::runtime_error("invalid saved floor plane or fit statistics");
+  const auto size = static_cast<std::size_t>(width) * height;
+  candidate.mean_m_.resize(size);
+  candidate.m2_.resize(size);
+  candidate.counts_.resize(size);
+  for (std::size_t i = 0; i < size; ++i) {
+    readValue(stream, candidate.mean_m_[i]);
+    readValue(stream, candidate.m2_[i]);
+    readValue(stream, candidate.counts_[i]);
+    if (!std::isfinite(candidate.mean_m_[i]) || candidate.mean_m_[i] < 0.0
+        || candidate.mean_m_[i] > 65.535 || !std::isfinite(candidate.m2_[i]) || candidate.m2_[i] < -1e-9
+        || candidate.counts_[i] > frames
+        || (candidate.counts_[i] > 0U && candidate.mean_m_[i] <= 0.0)) {
+      throw std::runtime_error("invalid floor pixel statistics");
+    }
+    if (candidate.counts_[i] >= minimum) { ++candidate.valid_pixels_; }
   }
-  candidate.sample_points_ = samples;
-  candidate.inlier_points_ = inliers;
-  candidate.updateGroundAxes();
+  if (!candidate.ready()) { return false; }
   *this = std::move(candidate);
   return true;
 }
@@ -419,17 +268,17 @@ DetectionResult detectForeground(const std::uint16_t * depth, std::size_t stride
     for (int col = 0; col < cols; ++col) {
       const int u = result.roi.x + col * step;
       const auto raw = depth[static_cast<std::size_t>(v) * stride + u];
-      if (!raw) { continue; }
-      const double z = raw * 0.001;
-      const auto ground = floor.groundCoordinates(z, (camera.cx - u) * z / camera.fx,
-        (camera.cy - v) * z / camera.fy);
-      if (ground[0] <= 0.0 || !floor.isObstacleHeight(ground[2], floor_config)) { continue; }
-      const double range = std::hypot(ground[0], ground[1]);
+      if (!raw || !floor.isForeground(static_cast<std::size_t>(v) * camera.width + u,
+          raw * 0.001, floor_config)) { continue; }
+      const double forward = raw * 0.001;
+      const double left = (camera.cx - u) * forward / camera.fx;
+      const double up = (camera.cy - v) * forward / camera.fy;
+      const double range = std::hypot(forward, left);
       const double corrected = range + projection.range_offset_m;
       if (corrected < projection.min_range_m || corrected > projection.max_range_m) { continue; }
       const double scale = corrected / range;
       grid[static_cast<std::size_t>(row) * cols + col] = static_cast<int>(candidates.size());
-      candidates.push_back({ground[0] * scale, ground[1] * scale, ground[2], u, v});
+      candidates.push_back({forward * scale, left * scale, up * scale, u, v});
     }
   }
   std::vector<bool> visited(grid.size(), false);

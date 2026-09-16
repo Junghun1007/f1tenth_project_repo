@@ -79,16 +79,8 @@ struct NodeConfig
   double sensor_y_m{0.0};
   double sensor_yaw_deg{0.0};
   double metrics_interval_sec{1.0};
-  std::string frame_id{"depth_lidar_ground"};
+  std::string frame_id{"depth_lidar"};
 };
-
-std::string planeSummary(const FloorReference & floor)
-{
-  std::ostringstream message;
-  message << std::fixed << std::setprecision(3) << " | H " << floor.cameraHeight()
-          << "m | RMSE " << floor.rmse() << "m | INLIERS " << floor.inlierPoints();
-  return message.str();
-}
 
 bool isOneOf(const std::string & value, const std::vector<std::string> & choices)
 {
@@ -409,34 +401,7 @@ public:
       declare_parameter<double>("cluster.min_radius_m", config_.cluster.min_radius_m);
     config_.floor.measure_frames = declare_parameter<int>("floor.measure_frames", config_.floor.measure_frames);
     config_.floor.min_valid_ratio = declare_parameter<double>("floor.min_valid_ratio", config_.floor.min_valid_ratio);
-    config_.floor.measure_roi_width_ratio =
-      declare_parameter<double>("floor.measure_roi_width_ratio", config_.floor.measure_roi_width_ratio);
-    config_.floor.measure_roi_height_ratio =
-      declare_parameter<double>("floor.measure_roi_height_ratio", config_.floor.measure_roi_height_ratio);
-    config_.floor.measure_roi_bottom_offset_ratio =
-      declare_parameter<double>("floor.measure_roi_bottom_offset_ratio", config_.floor.measure_roi_bottom_offset_ratio);
-    config_.floor.fit_pixel_stride =
-      declare_parameter<int>("floor.fit_pixel_stride", config_.floor.fit_pixel_stride);
-    config_.floor.fit_max_depth_m =
-      declare_parameter<double>("floor.fit_max_depth_m", config_.floor.fit_max_depth_m);
-    config_.floor.ransac_iterations =
-      declare_parameter<int>("floor.ransac_iterations", config_.floor.ransac_iterations);
-    config_.floor.inlier_distance_m =
-      declare_parameter<double>("floor.inlier_distance_m", config_.floor.inlier_distance_m);
-    config_.floor.min_inlier_points =
-      declare_parameter<int>("floor.min_inlier_points", config_.floor.min_inlier_points);
-    config_.floor.min_inlier_ratio =
-      declare_parameter<double>("floor.min_inlier_ratio", config_.floor.min_inlier_ratio);
-    config_.floor.max_tilt_deg =
-      declare_parameter<double>("floor.max_tilt_deg", config_.floor.max_tilt_deg);
-    config_.floor.min_camera_height_m =
-      declare_parameter<double>("floor.min_camera_height_m", config_.floor.min_camera_height_m);
-    config_.floor.max_camera_height_m =
-      declare_parameter<double>("floor.max_camera_height_m", config_.floor.max_camera_height_m);
-    config_.floor.min_height_m =
-      declare_parameter<double>("floor.min_height_m", config_.floor.min_height_m);
-    config_.floor.max_height_m =
-      declare_parameter<double>("floor.max_height_m", config_.floor.max_height_m);
+    config_.floor.min_delta_m = declare_parameter<double>("floor.min_delta_m", config_.floor.min_delta_m);
     config_.floor.noise_scale = declare_parameter<double>("floor.noise_scale", config_.floor.noise_scale);
     config_.floor_file = declare_parameter<std::string>("floor.file", config_.floor_file);
     config_.nv12_enabled = declare_parameter<bool>("nv12.enabled", config_.nv12_enabled);
@@ -561,34 +526,8 @@ private:
           next.floor.measure_frames = static_cast<int>(parameter.as_int());
         } else if (name == "floor.min_valid_ratio") {
           next.floor.min_valid_ratio = parameter.as_double();
-        } else if (name == "floor.measure_roi_width_ratio") {
-          next.floor.measure_roi_width_ratio = parameter.as_double();
-        } else if (name == "floor.measure_roi_height_ratio") {
-          next.floor.measure_roi_height_ratio = parameter.as_double();
-        } else if (name == "floor.measure_roi_bottom_offset_ratio") {
-          next.floor.measure_roi_bottom_offset_ratio = parameter.as_double();
-        } else if (name == "floor.fit_pixel_stride") {
-          next.floor.fit_pixel_stride = static_cast<int>(parameter.as_int());
-        } else if (name == "floor.fit_max_depth_m") {
-          next.floor.fit_max_depth_m = parameter.as_double();
-        } else if (name == "floor.ransac_iterations") {
-          next.floor.ransac_iterations = static_cast<int>(parameter.as_int());
-        } else if (name == "floor.inlier_distance_m") {
-          next.floor.inlier_distance_m = parameter.as_double();
-        } else if (name == "floor.min_inlier_points") {
-          next.floor.min_inlier_points = static_cast<int>(parameter.as_int());
-        } else if (name == "floor.min_inlier_ratio") {
-          next.floor.min_inlier_ratio = parameter.as_double();
-        } else if (name == "floor.max_tilt_deg") {
-          next.floor.max_tilt_deg = parameter.as_double();
-        } else if (name == "floor.min_camera_height_m") {
-          next.floor.min_camera_height_m = parameter.as_double();
-        } else if (name == "floor.max_camera_height_m") {
-          next.floor.max_camera_height_m = parameter.as_double();
-        } else if (name == "floor.min_height_m") {
-          next.floor.min_height_m = parameter.as_double();
-        } else if (name == "floor.max_height_m") {
-          next.floor.max_height_m = parameter.as_double();
+        } else if (name == "floor.min_delta_m") {
+          next.floor.min_delta_m = parameter.as_double();
         } else if (name == "floor.noise_scale") {
           next.floor.noise_scale = parameter.as_double();
         } else if (name == "floor.file") {
@@ -694,7 +633,7 @@ private:
     stereo->setLeftRightCheck(config.left_right_check);
     stereo->setSubpixel(config.subpixel);
     stereo->setExtendedDisparity(config.extended_disparity);
-    // Keep depth and both ROIs in the right rectified preview perspective.
+    // Keep the scan ROI in the same perspective as the right rectified preview.
     stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
 
     nv12_output = nullptr;
@@ -913,12 +852,8 @@ private:
                     const auto roi = computeRoi(latest_depth_width, latest_depth_height,
                       roi_config.roi_width_ratio, roi_config.roi_height_ratio,
                       roi_config.roi_bottom_offset_ratio);
-                    const auto & floor_config = display_config.floor;
-                    const auto floor_roi = computeRoi(latest_depth_width, latest_depth_height,
-                      floor_config.measure_roi_width_ratio, floor_config.measure_roi_height_ratio,
-                      floor_config.measure_roi_bottom_offset_ratio);
                     cv::Mat preview = makeStereoPreview(stereoGrayFrame(*stereo_left_frame),
-                      stereoGrayFrame(*stereo_right_frame), roi, latest_depth_width, latest_depth_height, &floor_roi);
+                      stereoGrayFrame(*stereo_right_frame), roi, latest_depth_width, latest_depth_height);
                     stereo_preview_publisher_->publish(
                       matToImageMessage(preview, now(), display_config.frame_id));
                     if (display_config.stereo_preview_gui) {
@@ -979,7 +914,7 @@ private:
               if (allow_reference_load && !start_floor_measurement) {
                 try {
                   if (floor.load(floor_path, camera)) {
-                    set_floor_status("READY | LOADED FLOOR" + planeSummary(floor));
+                    set_floor_status("READY | LOADED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
                   } else {
                     set_floor_status("NO COMPATIBLE FLOOR | B: MEASURE");
                   }
@@ -994,7 +929,7 @@ private:
               start_floor_measurement = false;
             }
             if (floor.ready() && floor_status.rfind("READY", 0) != 0) {
-              set_floor_status("READY | RETAINED FLOOR" + planeSummary(floor));
+              set_floor_status("READY | RETAINED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
             }
             if (floor.measuring()) {
               const bool finished = floor.accumulate(depth, stride_elements);
@@ -1002,15 +937,14 @@ private:
                 + std::to_string(floor.targetFrames()) + " | KEEP FLOOR CLEAR");
               if (finished) {
                 if (!floor.ready()) {
-                  set_floor_status("MEASUREMENT FAILED | SEE LOG | B: RETRY");
-                  RCLCPP_ERROR(get_logger(), "Floor plane measurement rejected: %s", floor.failureReason().c_str());
+                  set_floor_status("MEASUREMENT FAILED: NO VALID FLOOR | B: RETRY");
                 } else {
                   try {
                     floor.save(floor_path);
                     allow_reference_load = true;
-                    set_floor_status("READY | SAVED FLOOR" + planeSummary(floor));
-                    RCLCPP_INFO(get_logger(), "Saved new floor plane: %s%s",
-                      floor_path.c_str(), planeSummary(floor).c_str());
+                    set_floor_status("READY | SAVED FLOOR | PIXELS " + std::to_string(floor.validPixels()));
+                    RCLCPP_INFO(get_logger(), "Saved new floor reference: %s (%zu valid pixels)",
+                      floor_path.c_str(), floor.validPixels());
                   } catch (const std::exception & error) {
                     set_floor_status("READY IN MEMORY | SAVE FAILED: SEE LOG");
                     RCLCPP_ERROR(get_logger(), "Floor reference save failed: %s", error.what());

@@ -22,30 +22,13 @@ depth_lidar:
     range.offset_m: 0.0
     points.pixel_stride: 1
 
-    # Persistent ground plane, loaded on startup; never auto-measured.
-    # B or /depth_lidar/measure_floor discards the previous model AND file first.
-    # Keep the blue measurement ROI clear of objects while stationary.
+    # Persistent per-pixel floor reference, loaded on startup; never auto-measured.
+    # Press B or call /depth_lidar/measure_floor only when the scene contains floor.
+    # A new measurement discards the previous in-memory reference AND file first.
     floor.file: "~/.ros/depth_lidar/floor_reference.bin"
     floor.measure_frames: 60
     floor.min_valid_ratio: 0.50
-    # Separate lower ROI for plane fitting; green roi.* remains the detection ROI.
-    floor.measure_roi_width_ratio: 0.80
-    floor.measure_roi_height_ratio: 0.35
-    floor.measure_roi_bottom_offset_ratio: 0.05
-    floor.fit_pixel_stride: 4
-    floor.fit_max_depth_m: 4.0
-    floor.ransac_iterations: 200
-    floor.inlier_distance_m: 0.02
-    floor.min_inlier_points: 100
-    floor.min_inlier_ratio: 0.60
-    # Limits apply to NEW measurements. Narrow height limits to the actual mount.
-    # Tilt is the angle between floor normal and camera up, including pitch/roll.
-    floor.max_tilt_deg: 60.0
-    floor.min_camera_height_m: 0.05
-    floor.max_camera_height_m: 1.0
-    # Candidates must be above the floor: max(min_height, noise_scale * fit RMSE).
-    floor.min_height_m: 0.05
-    floor.max_height_m: 1.0
+    floor.min_delta_m: 0.05
     floor.noise_scale: 3.0
 
     # Cluster foreground pixels before computing mean X/Y and covering radius.
@@ -62,14 +45,14 @@ depth_lidar:
     nv12.width: 1280
     nv12.height: 800
 
-    # White radar on the ground plane: origin=camera foot, top=forward, left=left.
+    # White radar preview in the camera frame: top=forward, left=camera left.
     # Range rings extend to range.max_m; size_px sets the image width.
     preview.enabled: true
     preview.gui: false
     preview.fps: 10.0
     preview.size_px: 700
 
-    # Rectified images: green=detection ROI, blue=floor measurement ROI.
+    # Optional rectified left/right camera images with detection ROI overlay.
     # enabled toggles USB streams (pipeline restart); gui toggles only the window.
     # Press C in either preview window to toggle enabled.
     stereo_preview.enabled: false
@@ -84,10 +67,10 @@ depth_lidar:
     bev.y_max_m: 0.6
     bev.meter_per_pixel: 0.01
 
-    # Legacy sensor pose, unused by the ground-aligned radar preview.
+    # Legacy sensor pose, unused by the camera-frame radar preview.
     sensor.x_m: -0.16
     sensor.y_m: 0.0
     sensor.yaw_deg: 0.0
 
     metrics.print_interval_sec: 1.0
-    frame_id: "depth_lidar_ground"
+    frame_id: "depth_lidar"
