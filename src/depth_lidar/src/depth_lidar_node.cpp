@@ -79,6 +79,7 @@ struct NodeConfig
   bool preview_gui{false};
   double preview_fps{15.0};
   int preview_size_px{700};
+  std::string preview_mode{"both"};
   bool stereo_preview_enabled{false};
   bool stereo_preview_gui{false};
   double stereo_preview_fps{10.0};
@@ -132,6 +133,10 @@ bool validateNodeConfig(const NodeConfig & config, std::string & reason)
   if (!std::isfinite(config.stereo_preview_fps)
       || config.stereo_preview_fps <= 0.0 || config.stereo_preview_fps > 120.0) {
     reason = "stereo_preview.fps must be in (0.0, 120.0]";
+    return false;
+  }
+  if (!isOneOf(config.preview_mode, {"points", "clusters", "both"})) {
+    reason = "preview.mode must be one of: points, clusters, both";
     return false;
   }
   if (config.preview_size_px < 240 || config.preview_size_px > 2000) {
@@ -358,6 +363,7 @@ public:
     config_.preview_gui = declare_parameter<bool>("preview.gui", config_.preview_gui);
     config_.preview_fps = declare_parameter<double>("preview.fps", config_.preview_fps);
     config_.preview_size_px = declare_parameter<int>("preview.size_px", config_.preview_size_px);
+    config_.preview_mode = declare_parameter<std::string>("preview.mode", config_.preview_mode);
     config_.stereo_preview_enabled = declare_parameter<bool>("stereo_preview.enabled", config_.stereo_preview_enabled);
     config_.stereo_preview_gui = declare_parameter<bool>("stereo_preview.gui", config_.stereo_preview_gui);
     config_.stereo_preview_fps = declare_parameter<double>("stereo_preview.fps", config_.stereo_preview_fps);
@@ -431,8 +437,12 @@ public:
         rcl_interfaces::msg::SetParametersResult result;
         std::lock_guard<std::mutex> lock(config_mutex_);
         auto next = config_;
+        bool restart_runtime = false;
         try {
           for (const auto & p : parameters) {
+            if (p.get_name() != "preview.mode") {
+              restart_runtime = true;
+            }
             if (p.get_name() == "camera.fps") { next.camera_fps = p.as_double(); }
             else if (p.get_name() == "camera.resolution") { next.camera_resolution = p.as_string(); }
             else if (p.get_name() == "depth.mode") { next.depth_mode = p.as_string(); }
@@ -481,6 +491,7 @@ public:
             else if (p.get_name() == "preview.gui") { next.preview_gui = p.as_bool(); }
             else if (p.get_name() == "preview.fps") { next.preview_fps = p.as_double(); }
             else if (p.get_name() == "preview.size_px") { next.preview_size_px = p.as_int(); }
+            else if (p.get_name() == "preview.mode") { next.preview_mode = p.as_string(); }
             else if (p.get_name() == "stereo_preview.enabled") { next.stereo_preview_enabled = p.as_bool(); }
             else if (p.get_name() == "stereo_preview.gui") { next.stereo_preview_gui = p.as_bool(); }
             else if (p.get_name() == "stereo_preview.fps") { next.stereo_preview_fps = p.as_double(); }
@@ -493,7 +504,7 @@ public:
           }
           if (!validateNodeConfig(next, result.reason)) { return result; }
           config_ = next;
-          restart_requested_.store(true);
+          if (restart_runtime) { restart_requested_.store(true); }
           result.successful = true;
         } catch (const std::exception & e) { result.reason = e.what(); }
         return result;
@@ -788,6 +799,12 @@ private:
         const double clock = hostSeconds();
         if (radar_open || stereo_open) {
           const int key = cv::waitKey(1) & 0xff;
+          if (key >= '1' && key <= '3') {
+            const std::string mode = key == '1' ? "points" : (key == '2' ? "clusters" : "both");
+            const auto result = set_parameters_atomically({rclcpp::Parameter("preview.mode", mode)});
+            if (!result.successful) { RCLCPP_WARN(get_logger(), "%s", result.reason.c_str()); }
+            last_preview = 0.0;
+          }
           if (key == 'c' || key == 'C') {
             const auto result = set_parameters_atomically({rclcpp::Parameter("stereo_preview.enabled", !c.stereo_preview_enabled)});
             if (!result.successful) { RCLCPP_WARN(get_logger(), "%s", result.reason.c_str()); }
@@ -862,16 +879,21 @@ private:
           previous_nv12 = total; frames = 0; processing_sum = delay_sum = 0; metric_start = clock;
         }
         if (c.preview_enabled && clock-last_preview >= 1.0/c.preview_fps) {
-          auto preview = makeRadarPreview(displayed, displayed_grid, c.projection, c.preview_size_px, ready);
+          std::string preview_mode;
+          {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            preview_mode = config_.preview_mode;
+          }
+          auto preview = makeRadarPreview(displayed, displayed_grid, c.projection, c.preview_size_px, ready, preview_mode);
           std::ostringstream metrics;
           metrics << std::fixed << std::setprecision(1) << "DEPTH " << fps << " FPS | NV12 " << nv12_fps
             << " FPS | PROJECT+GRID " << std::setprecision(3) << ms << " ms";
           cv::putText(preview, metrics.str(), cv::Point(8,preview.rows-10), cv::FONT_HERSHEY_SIMPLEX, .35, cv::Scalar(65,65,65),1,cv::LINE_AA);
-          cv::putText(preview, ready ? "FIXED POSE | C: CAMERA ON/OFF" : "WAITING FOR DEPTH | FIXED POSE",
+          cv::putText(preview, ready ? "FIXED POSE | C: CAMERA | 1: POINTS  2: CLUSTERS  3: BOTH" : "WAITING FOR DEPTH | 1: POINTS  2: CLUSTERS  3: BOTH",
             cv::Point(8,56),cv::FONT_HERSHEY_SIMPLEX,.35,cv::Scalar(65,65,65),1,cv::LINE_AA);
           std::ostringstream band;
           band << "HEIGHT " << c.projection.min_height_m << ".." << c.projection.max_height_m
-            << "m | ORANGE: current / GRAY: held";
+            << "m | BLUE: points / ORANGE: clusters / GRAY: held";
           cv::putText(preview, band.str(), cv::Point(8,74),cv::FONT_HERSHEY_SIMPLEX,.35,cv::Scalar(65,65,65),1,cv::LINE_AA);
           preview_pub_->publish(matToImageMessage(preview, now(), c.frame_id));
           if (c.preview_gui) { cv::imshow("depth_lidar radar preview", preview); radar_open = true; }

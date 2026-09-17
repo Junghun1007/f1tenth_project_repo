@@ -4,13 +4,16 @@
 #include "depth_lidar/depth_lidar_grid.hpp"
 
 #include <opencv2/core.hpp>
+#include <string>
 
 namespace depth_lidar
 {
 
-// Cluster cell outlines in the fixed vehicle frame; orange=current, gray=held.
+// Fixed vehicle-frame scan points (before grid filtering) and/or cluster outlines.
+// mode: points, clusters, both. Blue points / orange outlines; gray = held.
 // Leaves the bottom 40 pixels available for receiver/processing metrics.
-cv::Mat makeRadarPreview(const ScanResult & scan, const GridResult & detection, const ProjectionConfig & config, int width_px, bool ready = true);
+cv::Mat makeRadarPreview(const ScanResult & scan, const GridResult & detection, const ProjectionConfig & config, int width_px, bool ready = true,
+  const std::string & mode = "both");
 
 // Draw the actual depth ROI scaled into rectified left/right images. Right is
 // the depth reference; the left rectangle is a guide, not a correspondence.

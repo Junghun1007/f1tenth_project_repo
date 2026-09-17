@@ -111,11 +111,14 @@ depth_lidar:
     nv12.width: 1280
     nv12.height: 800
 
-    # White radar: cluster cell outlines; orange=current, gray=held. No circles/labels.
+    # White radar: blue=confirmed scan points, orange=cluster outlines, gray=held.
     preview.enabled: true
     preview.gui: true
     preview.fps: 15.0
     preview.size_px: 700
+    # points=군집화 전 확정 스캔점, clusters=군집 외곽선, both=둘 다.
+    # 창에서 1/2/3으로 전환. 표시만 변경하며 카메라/확인 이력은 유지.
+    preview.mode: "both"
     # C in either runtime window toggles camera streams; fixed startup pose survives.
     stereo_preview.enabled: true
     stereo_preview.gui: true

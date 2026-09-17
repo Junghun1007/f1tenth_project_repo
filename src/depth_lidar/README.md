@@ -29,7 +29,8 @@ ros2 launch depth_lidar depth_lidar.launch.py config_file:=$(ros2 pkg prefix --s
    초기 측정 실패 시 원인을 `/depth_lidar/status`와 로그에 표시하고 검출을 시작하지 않는다.
    정지 상태와 ROI를 확인한 후 노드를 재시작한다. 이동 중 자동 재측정은 없다.
 
-`startup.*`는 실행 중 변경할 수 없다. 다른 파라미터를 변경하면 runtime 카메라
+`startup.*`는 실행 중 변경할 수 없다. `preview.mode`는 표시만 즉시 전환한다.
+그 외 검출/카메라 파라미터를 변경하면 runtime 카메라
 파이프라인과 짧은 거리 보존 이력을 재시작하지만 초기 자세는 유지한다.
 C 키는 runtime 카메라 창/USB 스트림을 켜고 끈다. 기본 실행은 GUI를 사용하지 않는다.
 
@@ -197,6 +198,35 @@ ros2 run depth_lidar depth_lidar_node --ros-args --params-file /path/to/depth_li
 - `cell_count/return_count`: 점유 셀 수/지지 스캔점 수.
 - `observation_age_sec`: 셀별 최신 관측 나이 중 최댓값. USB 지연은 제외한다.
 
+## 레이더 표시 선택
+
+```yaml
+preview.mode: "both"  # points / clusters / both
+```
+
+- `points` 또는 창에서 **1**: 군집화 전 확정 스캔점만 표시.
+- `clusters` 또는 **2**: 군집 조건을 통과한 셀 외곽선만 표시.
+- `both` 또는 **3**: 같은 프레임의 점과 외곽선을 함께 표시(기본값).
+
+파란 채운 점은 현재 확정 스캔점, 주황 선은 현재 군집 외곽선이다.
+유지 중인 포인트는 회색 빈 점, 유지 중인 셀 외곽선은 회색 선으로 표시한다.
+레이더 또는 스테레오 창에 포커스를 두고 키를 누르면 전환되며 ROS 파라미터에도 반영된다.
+실행 중 다음 명령으로도 바꿀 수 있다.
+
+```bash
+ros2 param set /depth_lidar preview.mode both
+```
+
+`preview.mode`만 바꾸면 파이프라인 재시작이나 시간 확인 이력 초기화 없이 다음
+프리뷰부터 적용된다. `/preview` 이미지 토픽과 GUI에 같은 모드를 적용한다.
+검출·군집화와 스캔/격자/군집 토픽은 모든 표시 모드에서 계속 처리한다.
+키/ROS 명령 변경은 YAML에 저장되지 않으므로 재실행 기본값은 YAML에서 변경한다.
+
+표시 포인트는 raw depth 전체가 아니라 **높이·공간 필터와 시간 확인을 통과한
+각도별 스캔점**이며 `/scan_points`와 같은 좌표를 사용한다. 격자 범위나 군집 최소
+조건에서 제외된 스캔점도 표시하므로, 점은 있는데 외곽선이 없는 구간을 확인할 수 있다.
+점 자체가 없으면 군집화 이전의 깊이 측정/필터 단계를 확인해야 한다.
+
 ## 출력
 
 | 토픽 | 형식 | 내용 |
@@ -209,7 +239,7 @@ ros2 run depth_lidar depth_lidar_node --ros-args --params-file /path/to/depth_li
 | `/depth_lidar/status` | `std_msgs/String` | 초기 측정/준비/입력 장애 상태. transient-local. |
 | `/depth_lidar/ready` | `std_msgs/Bool` | 초기 측정 성공 후 유효한 최신 depth를 처리 중인지. 검출점 개수와 별개. |
 | `/depth_lidar/startup_pose` | `std_msgs/String` | 고정 CAM_A roll/pitch/높이, 장치 ID, 자세 출처. 진단용, TF 아님. |
-| `/depth_lidar/preview` | `sensor_msgs/Image` | 흰 레이더의 군집 셀 외곽선. 주황=현재 관측 셀, 회색=유지 중인 셀. |
+| `/depth_lidar/preview` | `sensor_msgs/Image` | `preview.mode`로 스캔점/군집 외곽선/둘 다 선택. 파랑=현재 점, 주황=현재 외곽선, 회색=유지 중. |
 | `/depth_lidar/stereo_preview` | `sensor_msgs/Image` | 좌/우 정렬 영상과 초록 샘플링 ROI. 왼쪽 ROI는 위치 안내이며 정확한 대응점 아님. |
 
 스캔 원점은 차량 원점이므로 카메라 원점과 다르고, 여러 높이의 반환값을 합친다.
