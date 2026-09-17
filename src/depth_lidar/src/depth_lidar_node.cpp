@@ -345,6 +345,7 @@ public:
     config_.grid.y_min_m = declare_parameter<double>("grid.y_min_m", config_.grid.y_min_m);
     config_.grid.y_max_m = declare_parameter<double>("grid.y_max_m", config_.grid.y_max_m);
     config_.grid.min_returns_per_cell = declare_parameter<int>("grid.min_returns_per_cell", config_.grid.min_returns_per_cell);
+    config_.cluster.connectivity = declare_parameter<int>("cluster.connectivity", config_.cluster.connectivity);
     config_.cluster.min_cells = declare_parameter<int>("cluster.min_cells", config_.cluster.min_cells);
     config_.cluster.min_returns = declare_parameter<int>("cluster.min_returns", config_.cluster.min_returns);
     config_.hold_sec = declare_parameter<double>("scan.hold_sec", config_.hold_sec);
@@ -467,6 +468,7 @@ public:
             else if (p.get_name() == "grid.y_min_m") { next.grid.y_min_m = p.as_double(); }
             else if (p.get_name() == "grid.y_max_m") { next.grid.y_max_m = p.as_double(); }
             else if (p.get_name() == "grid.min_returns_per_cell") { next.grid.min_returns_per_cell = p.as_int(); }
+            else if (p.get_name() == "cluster.connectivity") { next.cluster.connectivity = p.as_int(); }
             else if (p.get_name() == "cluster.min_cells") { next.cluster.min_cells = p.as_int(); }
             else if (p.get_name() == "cluster.min_returns") { next.cluster.min_returns = p.as_int(); }
             else if (p.get_name() == "scan.hold_sec") { next.hold_sec = p.as_double(); }

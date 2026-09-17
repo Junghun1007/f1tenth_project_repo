@@ -7,6 +7,10 @@
 namespace depth_lidar {
 bool validateGridConfig(const GridConfig & g, const ClusterConfig & c, std::string & reason)
 {
+  if (c.connectivity != 4 && c.connectivity != 8) {
+    reason = "cluster.connectivity must be 4 or 8";
+    return false;
+  }
   if (!std::isfinite(g.resolution_m) || g.resolution_m < 0.01 || g.resolution_m > 0.25
       || !std::isfinite(g.x_min_m) || !std::isfinite(g.x_max_m)
       || !std::isfinite(g.y_min_m) || !std::isfinite(g.y_max_m)
@@ -70,6 +74,8 @@ GridResult clusterScan(const ScanResult & scan, const ProjectionConfig & p,
       const int col=static_cast<int>(id%result.width), row=static_cast<int>(id/result.width);
       for (int dy=-1; dy<=1; ++dy) {
         for (int dx=-1; dx<=1; ++dx) {
+          if (dx == 0 && dy == 0) { continue; }
+          if (c.connectivity == 4 && dx != 0 && dy != 0) { continue; }
           const int x=col+dx,y=row+dy;
           if (x<0 || x>=result.width || y<0 || y>=result.height) { continue; }
           const auto next=static_cast<std::size_t>(y)*result.width+x;

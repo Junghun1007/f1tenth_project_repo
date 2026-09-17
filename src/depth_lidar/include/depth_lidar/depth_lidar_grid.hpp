@@ -8,7 +8,10 @@ struct GridConfig {
   double x_min_m{0.0}, x_max_m{3.0}, y_min_m{-3.0}, y_max_m{3.0};
   int min_returns_per_cell{1};
 };
-struct ClusterConfig { int min_cells{2}, min_returns{2}; };
+struct ClusterConfig {
+  int min_cells{2}, min_returns{2};
+  int connectivity{8}; // 4: shared sides only; 8: shared sides or corners.
+};
 struct OccupiedCell {
   std::uint32_t returns{0};
   double sum_x{0}, sum_y{0};
