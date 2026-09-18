@@ -130,7 +130,10 @@ def _apply_parameter_file_defaults(
     apply_avoidance = apply_avoidance.lower() == "true"
     if apply_avoidance and obstacles_enabled != "true":
         raise RuntimeError("avoidance_control_enabled requires obstacles_enabled:=true")
-    if apply_avoidance:
+    slowdown_enabled = controller_defaults.get("obstacle_slowdown_enabled", True)
+    if not isinstance(slowdown_enabled, bool):
+        raise RuntimeError("obstacle_slowdown_enabled must be a YAML boolean")
+    if apply_avoidance or (slowdown_enabled and obstacles_enabled == "true"):
         avoidance = True
     context.launch_configurations["effective_avoidance_control_enabled"] = "true" if apply_avoidance else "false"
     deformation_only = controller_defaults.get("avoidance_deformation_only", True)

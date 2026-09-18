@@ -70,7 +70,11 @@ auto_control:
     avoidance_control_enabled: false
     avoidance_deformation_only: true # false=기존 충돌/곡률 검사 및 회피 보호 정지 모드
     avoidance_max_age_sec: 0.20
-    # 회피 전용 속도 상한 없음. 주행 속도는 maximum_speed_mps로 설정.
+    # 일반 주행은 maximum_speed_mps. 장애물이 있을 때만 아래 일시 감속 적용.
+    # 차선 안 장애물 첫 검출 즉시 감속. 마지막 유효 검출 후 아래 시간 동안 재검출 없으면 해제.
+    obstacle_slowdown_enabled: true
+    obstacle_slowdown_speed_mps: 0.5 # 일반/신호등 목표보다 높으면 목표를 올리지 않음
+    obstacle_slowdown_clear_sec: 1.0 # 재검출 시 해제 타이머 갱신. 시작 시 적용
     avoidance_brake_current_amps: 2.5 # deformation_only=false인 검사 모드에서 사용
     avoidance_wheelbase_m: 0.33 # 실측 축간거리. 곡률 한계=tan(최대 조향각)/축간거리
     enable_topic: "/auto/enabled"
@@ -164,7 +168,8 @@ auto_control:
     speed_pid_integral_limit: 1.0
     speed_filter_time_constant_sec: 0.05
 
-    # 일반 주행 전기 제동 설정. 신호등 접근의 진입/해제는 traffic_brake_* 기준 사용.
+    # 일반 주행/장애물 감속 전기 제동 설정. 장애물 감속 중에는 아래 enable=false여도 허용.
+    # 신호등 접근의 진입/해제는 traffic_brake_* 기준 사용.
     # 실제 속도가 목표 속도보다 0.10m/s 이상 높으면 duty를 즉시 버리고
     # COMM_SET_CURRENT_BRAKE로 전환한다. 오차가 0.03m/s 이하가 될 때까지
     # 제동을 유지해 경계에서 duty/브레이크가 반복 전환되는 것을 막는다.

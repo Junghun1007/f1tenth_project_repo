@@ -143,6 +143,7 @@ private:
         }
         previous=lane;
         const auto planning_started=Clock::now();
+        const bool lane_obstacle_detected=avoidance::hasInLaneObstacle(*lane,*obstacles);
         auto result=std::make_shared<bev_handoff::AvoidancePreview>(planner_->plan(
           *lane,*obstacles,double(obstacles->header.stamp.sec)+obstacles->header.stamp.nanosec*1e-9));
         result->display_delta_sec=std::min(max_age_,1/max_fps_+max_sync_);
@@ -170,6 +171,7 @@ private:
         message.header=lane->header; message.depth_stamp=obstacles->header.stamp;
         message.control_ready=control_requested_;
         message.deformation_only=deformation_only_;
+        message.lane_obstacle_detected=lane_obstacle_detected;
         message.follow_centerline=result->follow_centerline;
         message.valid=!result->selected.empty();
         message.status=result->status; message.speed_limit_mps=result->recommended_speed;

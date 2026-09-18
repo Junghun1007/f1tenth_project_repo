@@ -86,7 +86,7 @@ public:
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
-    if (avoidance_control_enabled_) {
+    if (avoidance_control_enabled_ || obstacle_slowdown_enabled_) {
       avoidance_sub_=create_subscription<auto_control::msg::AvoidancePlan>(
         "/auto/avoidance_plan",sensor_qos,
         std::bind(&AutoControlNode::on_avoidance_plan,this,std::placeholders::_1));
@@ -152,6 +152,8 @@ public:
     RCLCPP_INFO(get_logger(),"Avoidance control=%s: plan=/auto/avoidance_plan speed=maximum_speed_mps (%.2fm/s), no avoidance cap; age=%.2fs guard_brake=%.2fA",
       avoidance_control_enabled_?"ON":"OFF",maximum_speed_mps_,avoidance_max_age_,avoidance_brake_current_);
     RCLCPP_INFO(get_logger(),"Avoidance mode=%s",avoidance_deformation_only_?"DEFORM: unavailable plan uses centerline; normal longitudinal control":"CHECKED: unavailable plan brakes");
+    RCLCPP_INFO(get_logger(),"Obstacle slowdown=%s: speed=%.2fm/s clear=%.2fs, in-lane detections only",
+      obstacle_slowdown_enabled_?"ON":"OFF",obstacle_slowdown_speed_mps_,obstacle_slowdown_clear_sec_);
     RCLCPP_INFO(get_logger(), "Staged departure: start duty=%.3f (0=disabled), then rise=%.3f/s",
       longitudinal_start_duty_, duty_rise_rate_per_sec_);
     RCLCPP_INFO(get_logger(),
@@ -194,6 +196,9 @@ private:
     avoidance_descriptor.description="Startup-only mode; deformation-only planning never gates centerline departure";
     avoidance_control_enabled_=declare_parameter<bool>("avoidance_control_enabled",false,avoidance_descriptor);
     avoidance_deformation_only_=declare_parameter<bool>("avoidance_deformation_only",true,avoidance_descriptor);
+    obstacle_slowdown_enabled_=declare_parameter<bool>("obstacle_slowdown_enabled",true,avoidance_descriptor);
+    obstacle_slowdown_speed_mps_=declare_parameter<double>("obstacle_slowdown_speed_mps",.5,avoidance_descriptor);
+    obstacle_slowdown_clear_sec_=declare_parameter<double>("obstacle_slowdown_clear_sec",1.0,avoidance_descriptor);
     avoidance_max_age_=declare_parameter<double>("avoidance_max_age_sec",.20,avoidance_descriptor);
     // Compatibility with external YAMLs; never affects speed or validation.
     auto legacy_speed_descriptor=avoidance_descriptor;
@@ -349,6 +354,10 @@ private:
 
   void validate_parameters() const
   {
+    if (!std::isfinite(obstacle_slowdown_speed_mps_) || obstacle_slowdown_speed_mps_<=0 ||
+      !std::isfinite(obstacle_slowdown_clear_sec_) || obstacle_slowdown_clear_sec_<=0) {
+      throw std::invalid_argument("obstacle slowdown speed/clear time must be finite and positive");
+    }
     if (!std::isfinite(avoidance_max_age_) || avoidance_max_age_<.05 || avoidance_max_age_>.20 ||
       !std::isfinite(avoidance_brake_current_) || avoidance_brake_current_<=0 || avoidance_brake_current_>10 ||
       !std::isfinite(avoidance_wheelbase_) || avoidance_wheelbase_<.1 || avoidance_wheelbase_>1) {
@@ -540,9 +549,46 @@ private:
     }
   }
 
+  bool refresh_obstacle_slowdown()
+  {
+    if (!obstacle_slowdown_active_ || !obstacle_last_seen_at_) {return false;}
+    if (std::chrono::duration<double>(std::chrono::steady_clock::now()-*obstacle_last_seen_at_).count()<
+      obstacle_slowdown_clear_sec_) {return false;}
+    obstacle_slowdown_active_=false;
+    RCLCPP_INFO(get_logger(),"Obstacle slowdown OFF: no new in-lane detection for %.2fs; resume cruise target",
+      obstacle_slowdown_clear_sec_);
+    return true;
+  }
+
+  bool observe_obstacle_slowdown(const auto_control::msg::AvoidancePlan & message,std::int64_t received)
+  {
+    if (!obstacle_slowdown_enabled_) {return false;}
+    const auto source=stamp_nanoseconds(message.header.stamp),depth=stamp_nanoseconds(message.depth_stamp);
+    // Invalid/unavailable plans have no detection timestamp. Replayed depth
+    // must not keep extending the last-detection timer.
+    if (!source || !depth || message.header.frame_id!=lane_result_frame_id_ ||
+      received<*source || received<*depth || seconds(received-*source)>avoidance_max_age_ ||
+      seconds(received-*depth)>avoidance_max_age_ || std::abs(seconds(*source-*depth))>.10 ||
+      (obstacle_last_depth_ns_ && *depth<=*obstacle_last_depth_ns_)) {return false;}
+    obstacle_last_depth_ns_=depth;
+    if (!message.lane_obstacle_detected) {return false;}
+    obstacle_last_seen_at_=std::chrono::steady_clock::now();
+    if (obstacle_slowdown_active_) {return false;}
+    obstacle_slowdown_active_=true;
+    longitudinal_pid_->reset();
+    RCLCPP_INFO(get_logger(),"Obstacle slowdown ON: first in-lane detection; target <= %.2fm/s, release after %.2fs without detection",
+      std::min(maximum_speed_mps_,obstacle_slowdown_speed_mps_),obstacle_slowdown_clear_sec_);
+    return true;
+  }
+
   void on_avoidance_plan(const auto_control::msg::AvoidancePlan::ConstSharedPtr message)
   {
     const auto received=now().nanoseconds();
+    const bool slowdown_started=observe_obstacle_slowdown(*message,received);
+    if (!avoidance_control_enabled_) {
+      if (slowdown_started) {std::int64_t finished=0; update_control_from_path(finished);}
+      return;
+    }
     const auto steady=std::chrono::steady_clock::now();
     const auto source=stamp_nanoseconds(message->header.stamp),depth=stamp_nanoseconds(message->depth_stamp);
     auto reject=[&](const std::string & reason) {
@@ -914,7 +960,7 @@ private:
     const bool zero_target = target <= 0.0;
     if (zero_target != longitudinal_zero_target_) {longitudinal_pid_->reset();}
     longitudinal_zero_target_ = zero_target;
-    const bool braking_allowed = traffic_stop || electrical_brake_enabled_;
+    const bool braking_allowed = traffic_stop || electrical_brake_enabled_ || obstacle_slowdown_active_;
     const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
     required_deceleration_mps2_ = kUnavailable;
     const bool approaching = traffic_stop && !zero_target && stop_remaining_;
@@ -954,7 +1000,7 @@ private:
           required_deceleration_mps2_ > coast_decel + traffic_brake_decel_hysteresis_);
       } else {coast_probe_elapsed_ = 0.0;}
     } else {
-      // Normal cruising still respects the electrical-brake enable switch.
+      // Detection slowdown also permits the existing speed-error brake; ordinary cruise respects its enable switch.
       service_brake_requested_ = braking_allowed && overspeed >
         (service_brake_requested_ ? brake_exit_speed_error_mps_ : brake_entry_speed_error_mps_);
       coast_probe_elapsed_ = 0.0;
@@ -1089,7 +1135,7 @@ private:
     const double effort = longitudinal_pid_->update(target, feedback_speed, 0.0, dt);
     latest_pid_effort_ = effort;
     latest_desired_duty_ = target > 0 ? std::max(0.0, effort) * maximum_duty_ : 0.0;
-    const bool braking_allowed = traffic_stop || electrical_brake_enabled_;
+    const bool braking_allowed = traffic_stop || electrical_brake_enabled_ || obstacle_slowdown_active_;
     const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
     double brake = braking_allowed ? std::max(0.0, -effort) * brake_cap : 0.0;
     if (traffic_stop && target <= 0 && std::abs(current_speed_mps_) < 0.05) {
@@ -1215,7 +1261,9 @@ private:
     double target_speed = curvature_speed_control_enabled_ ? curvature_target_speed(
       curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_) :
       maximum_speed_mps_;
-    // Obstacle planning changes the path only; speed uses normal cruise/traffic settings.
+    refresh_obstacle_slowdown();
+    if (obstacle_slowdown_active_) {target_speed=std::min(target_speed,obstacle_slowdown_speed_mps_);}
+    // Traffic/curvature may request a lower target; release never overrides them.
     const bool traffic_stop = traffic_stop_requested();
     if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
     const auto stanley = stanley_control(
@@ -1259,7 +1307,7 @@ private:
       longitudinal_phase_ = "suppressed";
       service_brake_requested_ = traction_recovery_ = false;
       coast_probe_elapsed_ = 0.0;
-    } else if (longitudinal_pid_enabled_ || traffic_stop) {
+    } else if (longitudinal_pid_enabled_ || traffic_stop || obstacle_slowdown_active_) {
       motor_mode = longitudinal_motor(target_speed, dt, traffic_stop);
     } else {
       longitudinal_phase_ = "legacy_speed_pid";
@@ -1451,9 +1499,12 @@ private:
 
   void on_watchdog()
   {
+    const bool slowdown_released=refresh_obstacle_slowdown();
     if (const auto reason = stop_reason(now().nanoseconds())) {
       if (avoidance_control_enabled_ && *reason!="avoidance_confirming") {avoidance_confirmations_=0;}
       publish_guard_stop(*reason);
+    } else if (slowdown_released) {
+      std::int64_t finished=0; update_control_from_path(finished);
     }
   }
 
@@ -1560,7 +1611,7 @@ private:
         "predicted_stop_distance_m,predicted_overshoot_m,red_age_s,path_held,"
         "feedforward_duty,requested_brake_current_a,required_deceleration_mps2,"
         "measured_deceleration_mps2,coast_deceleration_mps2,coast_age_s,coast_probe_elapsed_s,"
-        "traction_recovery,terminal_tracking,brake_delay_s,brake_rise_limit_a_per_s,centerline_xy_m",
+        "traction_recovery,terminal_tracking,brake_delay_s,brake_rise_limit_a_per_s,obstacle_slowdown_active,centerline_xy_m",
         parameters);
       driving_log_started_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
@@ -1578,7 +1629,8 @@ private:
       last_logged_motor_ != last_motor_mode_ || last_logged_signal_ != latest_signal_state_ ||
       last_logged_steering_held_ != steering_held_ ||
       last_logged_traffic_status_ != traffic_status() || last_logged_path_held_ != path_hold_active_ ||
-      last_logged_longitudinal_phase_ != longitudinal_phase_;
+      last_logged_longitudinal_phase_ != longitudinal_phase_ ||
+      last_logged_obstacle_slowdown_active_ != obstacle_slowdown_active_;
     if (!changed && last_driving_log_ &&
       std::chrono::duration<double>(steady - *last_driving_log_).count() <
       1.0 / driving_log_rate_hz_) {return;}
@@ -1590,6 +1642,7 @@ private:
     last_logged_traffic_status_ = traffic_status();
     last_logged_path_held_ = path_hold_active_;
     last_logged_longitudinal_phase_ = longitudinal_phase_;
+    last_logged_obstacle_slowdown_active_=obstacle_slowdown_active_;
     const auto ns = now().nanoseconds();
     const auto age = [ns](const std::optional<std::int64_t> & stamp) {
         return stamp ? seconds(ns - *stamp) : kUnavailable;
@@ -1623,7 +1676,7 @@ private:
       required_deceleration_mps2_, measured_deceleration_mps2_,
       coast_deceleration_seen_ns_ ? coast_deceleration_mps2_ : kUnavailable,
       age(coast_deceleration_seen_ns_), coast_probe_elapsed_, double(traction_recovery_),
-      double(terminal_tracking_active_), latest_brake_delay_sec_, latest_brake_rise_};
+      double(terminal_tracking_active_), latest_brake_delay_sec_, latest_brake_rise_, double(obstacle_slowdown_active_)};
     if (path_) {frame.path = path_->points;}
     driving_log_->enqueue(std::move(frame));
   }
@@ -1648,7 +1701,7 @@ private:
       "Auto status | state=%s | path_points=%zu | speed=%.2f/%.2fm/s | curvature=%.3f/m | "
       "cte=%+.3fm | heading=%+.1fdeg | guard=%s | raw/final_steering=%+.1f/%+.1fdeg | "
       "servo=%.3f | motor=%s | duty=%.4f | brake=%.2fA | longitudinal=%s | lane_rx=%zu | lane_status=%s | "
-      "source_points=%zu | last_rx_age=%s | capture_age_at_rx=%s",
+      "source_points=%zu | last_rx_age=%s | capture_age_at_rx=%s | obstacle_slowdown=%s",
       last_stop_reason_.c_str(), path_ ? path_->points.size() : 0U,
       current_speed_mps_, latest_target_speed_mps_, latest_curvature_per_m_,
       latest_cross_track_error_m_, latest_heading_error_rad_ * 180.0 / kPi,
@@ -1657,7 +1710,7 @@ private:
       latest_servo_position_, last_motor_mode_.c_str(), command_duty_, command_brake_current_,
       longitudinal_phase_.c_str(),
       lane_result_count_, lane_result_status_.c_str(), lane_result_points_,
-      receive_age.c_str(), capture_age.c_str());
+      receive_age.c_str(), capture_age.c_str(),obstacle_slowdown_active_?"ON":"OFF");
     if (traffic_stop_enabled_) {
       RCLCPP_INFO(get_logger(), "Traffic stop | red_latched=%s | hold=%s | remaining=%s | phase=%s | line_rejected=%llu | signal_seen=%s",
         traffic_red_ ? "yes" : "no", traffic_holding_ ? "yes" : "no",
@@ -1761,6 +1814,11 @@ private:
   int path_minimum_points_, motor_pole_pairs_, motor_pinion_teeth_, spur_gear_teeth_;
   int differential_pinion_teeth_, differential_ring_teeth_;
 
+  bool obstacle_slowdown_enabled_{true},obstacle_slowdown_active_{false};
+  bool last_logged_obstacle_slowdown_active_{false};
+  double obstacle_slowdown_speed_mps_{.5},obstacle_slowdown_clear_sec_{1.0};
+  std::optional<std::chrono::steady_clock::time_point> obstacle_last_seen_at_;
+  std::optional<std::int64_t> obstacle_last_depth_ns_;
   bool avoidance_control_enabled_{false};
   bool avoidance_deformation_only_{true};
   bool avoidance_follow_centerline_{false};

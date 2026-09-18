@@ -117,6 +117,53 @@ inline double segmentDistance(cv::Point2d a,cv::Point2d b,cv::Point2d c,cv::Poin
   }
   return std::min({pointSegment(a,c,d),pointSegment(b,c,d),pointSegment(c,a,b),pointSegment(d,a,b)});
 }
+// Detection membership is independent of path feasibility and deformation size.
+// A lane-side obstacle must slow the car even if no lateral offset is needed.
+inline bool hasInLaneObstacle(const bev_handoff::PlanningLane & lane,
+  const bev_handoff::ObstacleFrame & obstacles)
+{
+  if (!lane.valid || lane.center.size()<2 || lane.center.size()>2000) {return false;}
+  for (const auto & cluster:obstacles.clusters) {
+    const cv::Point2d center(cluster.center.x,cluster.center.y);
+    if (!finite(center) || center.x<0 || center.x>lane.x_max || std::abs(center.y)>lane.y_max) {continue;}
+    double best=std::numeric_limits<double>::infinity();
+    cv::Point2d projection,normal;
+    bool outside=false;
+    for (std::size_t i=1;i<lane.center.size();++i) {
+      const auto a=lane.center[i-1],b=lane.center[i];
+      if (!finite(a) || !finite(b)) {continue;}
+      const auto d=b-a; const double square=d.dot(d);
+      if (square<1e-12 || square>.2*.2) {continue;}
+      const double t=(center-a).dot(d)/square;
+      const auto q=a+std::clamp(t,0.0,1.0)*d;
+      const double error=distance(center,q);
+      if (error>=best) {continue;}
+      best=error; projection=q; normal=cv::Point2d(-d.y,d.x)/std::sqrt(square);
+      outside=(i==1 && t<0) || (i+1==lane.center.size() && t>1);
+    }
+    if (!std::isfinite(best) || outside) {continue;}
+    double left=std::numeric_limits<double>::infinity(),right=-left;
+    for (const auto & line:lane.boundaries) {
+      for (std::size_t i=1;i<line.size();++i) {
+        const auto a=line[i-1],b=line[i];
+        if (!finite(a) || !finite(b) || distance(a,b)>.2) {continue;}
+        const auto d=b-a; const double den=cross(normal,d);
+        if (std::abs(den)<1e-9) {continue;}
+        const double along=cross(a-projection,normal)/den;
+        if (along<0 || along>1) {continue;}
+        const double across=cross(a-projection,d)/den;
+        if (across>0) {left=std::min(left,across);}
+        if (across<0) {right=std::max(right,across);}
+      }
+    }
+    const double half=std::isfinite(lane.lane_width_m) && lane.lane_width_m>0 ? lane.lane_width_m/2 : 0;
+    if (!std::isfinite(left)) {left=half;}
+    if (!std::isfinite(right)) {right=-half;}
+    const double lateral=(center-projection).dot(normal);
+    if (lateral>right && lateral<left) {return true;}
+  }
+  return false;
+}
 // Build one local displacement profile along the existing ordered centerline.
 // Each blocking obstacle chooses its OWN passing side; no global side latch.
 class Planner

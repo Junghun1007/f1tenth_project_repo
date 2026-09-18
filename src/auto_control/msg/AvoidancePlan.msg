@@ -7,6 +7,8 @@ bool control_ready
 bool valid
 # Shape-only experiment; receiver must use the same startup mode.
 bool deformation_only
+# Fresh matched depth contains an obstacle inside the lane, independent of path validity.
+bool lane_obstacle_detected
 # Use the original centerline (in deformation mode this is not an obstacle-clear certificate).
 # In this mode points is empty; false with valid=true means an avoidance path.
 bool follow_centerline

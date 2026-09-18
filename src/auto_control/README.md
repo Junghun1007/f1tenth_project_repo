@@ -537,5 +537,8 @@ BEV에 표시한다. 기본 OFF이며 `/auto_obstacles`의 `obstacles.avoidance.
 기존 충돌/곡률 검사와 실패 시 제동은 `avoidance_deformation_only: false`에서만 적용한다.
 주행 속도는 `maximum_speed_mps`로 설정한다. `avoidance_speed_cap_mps`와
 `obstacles.avoidance.max_speed_mps`는 폐기되어 기존 YAML에 남아 있어도 무시한다.
+차선 안 장애물 최초 검출 시 `obstacle_slowdown_speed_mps`(기본 0.5m/s)로 일시 감속하고,
+마지막 검출 후 `obstacle_slowdown_clear_sec`(기본 1초)가 지나면 일반 속도로 복귀한다.
+`obstacle_slowdown_enabled: false`로 이 감속을 끌 수 있다.
 기본 OFF이며 `manual_test:=true`에서는 여전히 액추에이터 출력이 없다.
 [실제 적용 실행과 제한](AUTO_CONTROL_OBSTACLES.md)을 확인한다.

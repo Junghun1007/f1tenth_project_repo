@@ -158,8 +158,8 @@ ros2 topic echo /auto/avoidance_preview/status
   수동 모드, 신호등 제어, 조향각·조향 변화율 제한은 기존대로 동작한다.
 - 변형 중에도 기존 일반 longitudinal 제어를 사용한다. 따라서 단계 제어를 켰다면
   `longitudinal_start_duty`와 단계식 PID가 적용된다. 회피 전용 signed PID로 전환하지 않는다.
-- 주행 속도는 `maximum_speed_mps`로 설정한다. 회피 전용 속도 제한이나 장애물 검출에 따른
-  감속은 없다. 신호등 정지 및 명시적으로 켠 일반 곡률 감속은 기존대로 적용된다.
+- 일반 주행 속도는 `maximum_speed_mps`로 설정한다. 차선 안 장애물 첫 검출 시 아래의
+  일시 감속을 적용하고, 재검출이 없는 시간이 지나면 복귀한다. 신호등/일반 곡률 감속도 유지한다.
 
 변형량은 `obstacles.avoidance.safety_margin_m`(0 허용), `max_offset_m`, 연결 길이는
 `transition_m`으로 조정한다. `unknown_extent_m`, `vehicle_half_length_m`, `max_curvature_per_m`,
@@ -169,6 +169,42 @@ ros2 topic echo /auto/avoidance_preview/status
 프리뷰는 원래 중앙선 노랑, 변형 경로 청록, 가정한 장애물 크기 주황 사각형으로 표시한다.
 `APPLY DEFORM`은 변형 경로 요청, `APPLY CENTERLINE`은 기존 중앙선 사용 표시다.
 충돌 확장 사각형은 그리지 않는다. 프리뷰는 실차 제어 승인 또는 실제 추종 성공의 표시가 아니다.
+
+### 차선 안 장애물 검출 시 일시 감속
+
+제어 YAML의 `auto_control.ros__parameters`:
+
+```yaml
+    obstacle_slowdown_enabled: true
+    obstacle_slowdown_speed_mps: 0.5
+    obstacle_slowdown_clear_sec: 1.0
+```
+
+최신 차선과 매칭된 Depth에서 차선 안 장애물을 처음 한 번 검출하면 목표 속도를
+`min(일반 목표, obstacle_slowdown_speed_mps)`로 즉시 낮춘다. 실제 속도는 기존 PID/제동으로
+따라간다. 기존 BEV 범위 안 대표점으로 판단하고, 차선이 일부 누락되면 중앙선과 기존
+차선 폭으로 누락 경계를 추정한다. 경로를 휘게 할 필요가 없는 차선 가장자리 장애물도 포함한다.
+차선 밖 장애물, 오래된 프레임, 같은 Depth의 반복 수신은 감속 타이머를 갱신하지 않는다.
+회피 경로 유효성이나 연속 관측 확인과 독립적인 검출 신호다.
+
+유효한 차선 안 장애물이 재검출될 때마다 마지막 검출 수신 시각을 갱신한다. 빈 관측 한 번에
+감속을 풀지 않고, 마지막 검출 후 `clear_sec`가 지나면 일반 속도 제어로 복귀한다.
+새 감속 목표를 시작할 때 기존 적분을 초기화하고, 복귀 가속은 기존 duty 상승률을 따른다.
+해제는 제어 watchdog에서도 처리하므로 새 장애물 메시지가 안 와도 동작한다.
+이는 마지막 검출 타이머이며 센서 입력 중단/OFF도 재검출 없음으로 취급한다.
+기존 중앙선/ERPM 유실 정지와 신호등 정지는 해제로 취소하지 않는다.
+
+감속 중에는 `electrical_brake_enabled: false`여도 속도 오차에 따른 전류 제동을 허용한다.
+기존 `brake_entry_speed_error_mps`, `brake_exit_speed_error_mps`, `brake_maximum_current_amps`,
+전류 상승/하강률을 사용한다(단계 제어 기준). 별도 장애물 제동 전류를 새로 만들지 않는다.
+감속 중에는 일반 longitudinal PID를 사용하며, 감속 기능 OFF 또는 미검출 상태에서는
+일반 주행 설정을 따른다. `manual_test`의 실차 출력 차단도 유지된다.
+
+launch는 이 감속 기능이 켜져 있으면 차선 내 장애물 판정을 위한 planner를 자동으로 켠다.
+`avoidance_control_enabled: false`로 경로 변형을 끈 상태에서도 감속만 사용할 수 있다.
+전체 기능을 끄려면 `obstacle_slowdown_enabled: false`로 재실행한다. 모두 시작 시 설정이다.
+로그의 `Obstacle slowdown ON/OFF`, 주기 상태의 `obstacle_slowdown=ON/OFF`,
+주행 CSV의 `obstacle_slowdown_active`로 상태를 확인한다. 설정값에 1.0m/s 상한은 없다.
 
 ### 기존 검사 모드 (`avoidance_deformation_only: false`)
 
@@ -287,7 +323,7 @@ Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못
 1.0m/s 하드코딩 상한도 없다. 기존 `avoidance_speed_cap_mps`와
 `obstacles.avoidance.max_speed_mps`는 호환을 위해 선언만 하며 값은 무시한다.
 기존 파일에 남아 있어도 주행 속도를 제한하거나 값의 범위 때문에 실행을 막지 않는다.
-기능은 경로만 수정하며, 장애물 검출에 따른 감속은 하지 않는다.
+지속적인 회피 속도 상한은 없으며, 차선 안 장애물 검출 시에만 아래의 일시 감속을 적용한다.
 `curvature_speed_control_enabled: true`인 일반 곡률 감속과 신호등 정지는 별개로 유지된다.
 
 launch는 최종 `maximum_speed_mps`(명시적 launch 인자 우선)를 planner의
