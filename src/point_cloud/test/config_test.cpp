@@ -12,9 +12,6 @@ int main()
   if (Config{}.fps != 50.0 || Config{}.ground.distance_m != 0.03) {
     throw std::runtime_error("Requested FPS/ground defaults lost");
   }
-  if (Config{}.temporal.enabled || !Config{}.tracking.enabled) {
-    throw std::runtime_error("Object stabilization defaults lost");
-  }
   for (const auto & name : {"400p", "480p", "720p", "800p"}) {
     Config c;
     c.resolution = name;
@@ -26,14 +23,6 @@ int main()
       try {validate(c);} catch (const std::invalid_argument &) {return;}
       throw std::runtime_error("Invalid settings unexpectedly accepted");
     };
-  rejects([](Config & c) {c.temporal.min_hits = c.temporal.window_frames + 1;});
-  rejects([](Config & c) {c.cluster.support_height_m = c.cluster.min_height_m;});
-  rejects([](Config & c) {c.cluster.base_radius_m = -1;});
-  rejects([](Config & c) {c.tracking.hold_sec = 0;});
-  rejects([](Config & c) {c.tracking.match_distance_m = 1;});
-  rejects([](Config & c) {c.tracking.min_hits = 0;});
-  rejects([](Config & c) {c.blob.min_area_m2 = 0;});
-  rejects([](Config & c) {c.cluster.min_points = 0;});
   rejects([](Config & c) {c.resolution = "1080p";});
   rejects([](Config & c) {c.dot_intensity = 1.1;});
   rejects([](Config & c) {c.flood_intensity = -0.1;});

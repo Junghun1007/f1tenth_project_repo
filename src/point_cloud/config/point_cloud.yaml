@@ -1,4 +1,4 @@
-# One depth frame -> original XYZ plus optional ground-filtered visualization.
+# One depth frame -> ground removal -> calibrated BEV transform and XY crop.
 point_cloud:
   ros__parameters:
     device_id: ""                    # Empty: first available OAK; restarts reuse its ID.
@@ -46,43 +46,6 @@ point_cloud:
     ground.max_height_m: 0.50
     ground.max_tilt_deg: 45.0        # Maximum floor normal tilt from optical +Y.
     ground.min_inlier_ratio: 0.35    # Minimum floor fraction in sampled lower-half points.
-    # Repeated 3D observations before clustering; assumes a stationary vehicle.
-    # Current points only: never replay vanished points. OFF restores per-frame detection.
-    temporal.enabled: false          # Fixed-voxel gate is optional; moving/sparse points can fail it.
-    temporal.voxel_size_m: 0.04       # 4cm 3D cells aggregate observations, not output points.
-    temporal.match_distance_m: 0.04   # Match current/previous cell centroids within 4cm in XYZ.
-    temporal.window_frames: 5        # Sliding window including current fresh frame.
-    temporal.min_hits: 4             # Require observations in >=4 different frames.
-    temporal.max_age_sec: 0.25        # Discard old evidence even if fewer frames arrived.
-
-    # Per-frame obstacle classification in the measured BEV vehicle frame.
-    # All cluster.* settings are live; no camera restart or temporal tracking.
-    cluster.cell_size_m: 0.02         # XY aggregation cell; original accepted points are displayed.
-    cluster.tolerance_m: 0.08         # Connect only HIGH-point XY cell centroids within 8cm.
-    cluster.min_points: 20            # Original points per connected component.
-    cluster.min_height_m: 0.03        # Exclude near-ground points BEFORE connecting cells.
-    cluster.max_height_m: 2.0         # Upper candidate height above startup ground.
-    cluster.support_height_m: 0.06    # Only points >=6cm seed/connect obstacles; MUST exceed min_height.
-    cluster.min_support_points: 5     # Minimum such points; a single high outlier is insufficient.
-    cluster.min_support_ratio: 0.30   # At least 30% of candidate points must have height support.
-    cluster.min_extent_m: 0.03        # Minimum max(X extent, Y extent) of HIGH core points only.
-    cluster.base_radius_m: 0.02       # Attach low base points within 2cm of a high core centroid.
-                                    # No recursive growth; 0=show only high core points.
-    # Final BEV blob shape filter: close tiny gaps, remove thin links, split blobs.
-    # Shape is for acceptance only; preview still contains original 3D points.
-    blob.enabled: true
-    blob.cell_size_m: 0.01            # Independent 1cm raster for shape inspection.
-    blob.closing_radius_cells: 1      # 3x3 closing; 0 disables small-gap filling.
-    blob.opening_radius_cells: 1      # 3x3 opening; removes thin lines/bridges; 0 disables.
-    blob.min_area_m2: 0.0009          # At least 9cm^2 of originally occupied surviving cells.
-    blob.min_thickness_m: 0.03        # At least 3cm short side of rotated bounding rectangle.
-    blob.min_fill_ratio: 0.35         # Occupied surviving area / rotated rectangle area.
-    blob.max_aspect_ratio: 6.0        # Long side / short side; reject elongated ribbons.
-    # RViz-only object association and bounded dropout hold. No motion compensation.
-    tracking.enabled: true
-    tracking.match_distance_m: 0.15   # Maximum 3D centroid change for one-to-one association.
-    tracking.hold_sec: 0.20           # Expire since LAST observation, even if depth stops.
-    tracking.min_hits: 2              # Distinct observations before first display; gaps allowed.
     publish.depth_image: true        # 16UC1, millimeters. CameraInfo is always published.
     input.max_age_sec: 0.5           # Drop old/replayed frames; do not accumulate clouds.
     metrics.print_interval_sec: 1.0  # Actual FPS, valid points, age, host ms, XYZ MB/s.

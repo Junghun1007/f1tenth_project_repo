@@ -40,10 +40,6 @@ void validate(const Config & c)
 {
   validateGround(c.ground);
   validateBev(c.bev);
-  validateClusters(c.cluster);
-  validateTemporal(c.temporal);
-  validateBlobs(c.blob);
-  validateTracking(c.tracking);
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);
