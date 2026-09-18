@@ -1,6 +1,7 @@
 #pragma once
 
 #include "point_cloud/depth_projection.hpp"
+#include "point_cloud/ground_filter.hpp"
 
 #include <depthai/depthai.hpp>
 
@@ -29,6 +30,7 @@ struct Config
   bool hole_filling{false};
   bool adaptive_median{false};
   ProjectionOptions projection;
+  GroundOptions ground;
   bool publish_depth{true};
   double max_age_sec{0.5};
   double metrics_interval{1.0};

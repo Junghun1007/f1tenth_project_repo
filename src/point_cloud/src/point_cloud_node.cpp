@@ -42,6 +42,13 @@ namespace point_cloud
   X("points.pixel_stride", projection.pixel_stride, as_int) \
   X("points.min_depth_m", projection.min_depth_m, as_double) \
   X("points.max_depth_m", projection.max_depth_m, as_double) \
+  X("ground.enabled", ground.enabled, as_bool) \
+  X("ground.distance_m", ground.distance_m, as_double) \
+  X("ground.max_depth_m", ground.max_depth_m, as_double) \
+  X("ground.min_height_m", ground.min_height_m, as_double) \
+  X("ground.max_height_m", ground.max_height_m, as_double) \
+  X("ground.max_tilt_deg", ground.max_tilt_deg, as_double) \
+  X("ground.min_inlier_ratio", ground.min_inlier_ratio, as_double) \
   X("publish.depth_image", publish_depth, as_bool) \
   X("input.max_age_sec", max_age_sec, as_double) \
   X("metrics.print_interval_sec", metrics_interval, as_double)
@@ -93,6 +100,7 @@ public:
     config_ = fromParameters(last_parameters_);
     const auto qos = rclcpp::SensorDataQoS().keep_last(1);
     cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points", qos);
+    filtered_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_filtered", qos);
     depth_pub_ = create_publisher<sensor_msgs::msg::Image>("~/depth/image_raw", qos);
     info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("~/depth/camera_info", qos);
     status_pub_ = create_publisher<std_msgs::msg::String>("~/status", rclcpp::QoS(1).transient_local());
@@ -138,19 +146,24 @@ private:
   void syncParameters()
   {
     const auto parameters = get_parameters(parameter_names_);
-    bool changed = false;
+    bool changed = false, reopen = false;
     for (std::size_t i = 0; i < parameters.size(); ++i) {
-      if (parameters[i].to_parameter_msg() != last_parameters_[i].to_parameter_msg()) {changed = true; break;}
+      if (parameters[i].to_parameter_msg() != last_parameters_[i].to_parameter_msg()) {
+        changed = true;
+        if (parameter_names_[i].compare(0, 7, "ground.") != 0) {reopen = true;}
+      }
     }
     if (!changed) {return;}
     const auto next = fromParameters(parameters);
     {
       std::lock_guard<std::mutex> lock(config_mutex_);
       config_ = next;
-      ++revision_;
+      if (reopen) {++revision_;}
     }
     last_parameters_ = parameters;
-    RCLCPP_INFO(get_logger(), "Parameters committed; reopening depth pipeline with the new settings");
+    RCLCPP_INFO(get_logger(), "%s", reopen ?
+      "Parameters committed; reopening depth pipeline with the new settings" :
+      "Ground filter settings applied without restarting the camera");
   }
 
   void status(const std::string & value)
@@ -184,7 +197,12 @@ private:
     return message;
   }
 
-  void clearCloud() {cloud_pub_->publish(cloudMessage(Cloud{}, now()));}
+  void clearCloud()
+  {
+    const auto empty = cloudMessage(Cloud{}, now());
+    cloud_pub_->publish(empty);
+    filtered_pub_->publish(empty);
+  }
 
   void publishImages(
     const dai::ImgFrame & frame, const Intrinsics & k, const rclcpp::Time & stamp, bool publish_depth)
@@ -268,10 +286,22 @@ private:
           const Intrinsics k{matrix[0][0], matrix[1][1], matrix[0][2], matrix[1][2]};
           const auto & bytes = frame->getData();
           const auto stride = frame->getStride() ? frame->getStride() : frame->getWidth() * 2;
-          const auto cloud = projectDepth(bytes.data(), bytes.size(), frame->getWidth(),
+          auto cloud = projectDepth(bytes.data(), bytes.size(), frame->getWidth(),
             frame->getHeight(), stride, k, c.projection);
           if (revision_.load() != revision || stopping()) {break;}
           cloud_pub_->publish(cloudMessage(cloud, stamp));
+          const auto raw_valid = cloud.valid_points;
+          GroundOptions ground;
+          {
+            std::lock_guard<std::mutex> lock(config_mutex_);
+            ground = config_.ground;
+          }
+          const auto ground_result = removeGround(cloud, ground);
+          if (ground.enabled && !ground_result.detected) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+              "Ground plane not found; points_filtered contains the original points");
+          }
+          filtered_pub_->publish(cloudMessage(cloud, stamp));
           publishImages(*frame, k, stamp, c.publish_depth);
           if (first || stale) {
             status("STREAMING");
@@ -293,7 +323,7 @@ private:
             RCLCPP_INFO(get_logger(),
               "depth=%ux%u cloud=%ux%u FPS=%.1f valid=%zu/%zu (%.1f%%) age=%.1fms host=%.2fms XYZ=%.1fMB/s",
               frame->getWidth(), frame->getHeight(), cloud.width, cloud.height, frames / elapsed,
-              cloud.valid_points, total, 100.0 * cloud.valid_points / total, age * 1000,
+              raw_valid, total, 100.0 * raw_valid / total, age * 1000,
               processing_ms / frames, cloud.xyz.size() * sizeof(float) * frames / elapsed / 1e6);
             frames = 0;
             processing_ms = 0;
@@ -321,7 +351,7 @@ private:
   std::atomic_bool stop_{false};
   std::atomic<std::uint64_t> revision_{0};
   std::thread worker_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr cloud_pub_, filtered_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr depth_pub_;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr info_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;

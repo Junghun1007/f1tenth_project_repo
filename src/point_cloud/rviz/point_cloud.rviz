@@ -17,8 +17,31 @@ Visualization Manager:
       Radius: 0.01
       Reference Frame: point_cloud_view
     - Class: rviz_default_plugins/PointCloud2
-      Name: Depth point cloud
+      Name: Ground-filtered point cloud
       Enabled: true
+      Topic:
+        Value: /point_cloud/points_filtered
+        Depth: 1
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+      Queue Size: 1
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.005
+      Alpha: 1
+      Position Transformer: XYZ
+      Color Transformer: AxisColor
+      Axis: X
+      Use Fixed Frame: true
+      Autocompute Value Bounds: false
+      Min Value: 0
+      Max Value: 4
+      Decay Time: 0
+      Selectable: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Original point cloud (includes ground)
+      Enabled: false
       Topic:
         Value: /point_cloud/points
         Depth: 1

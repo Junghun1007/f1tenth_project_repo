@@ -8,10 +8,17 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 
+def _boolean(value):
+    if value.lower() not in ("true", "false"):
+        raise ValueError("ground must be true or false")
+    return value.lower() == "true"
+
+
 def _nodes(context):
     # Empty shortcuts preserve the YAML values, including custom config files.
     overrides = {}
     for argument, parameter, convert in (
+        ("ground", "ground.enabled", _boolean),
         ("resolution", "camera.resolution", str),
         ("fps", "camera.fps", float),
         ("dot", "depth.ir_dot_projector_intensity", float),
@@ -50,6 +57,7 @@ def generate_launch_description():
             DeclareLaunchArgument("fps", default_value="", description="Requested FPS; empty uses YAML"),
             DeclareLaunchArgument("dot", default_value="", description="Dot projector 0..1; empty uses YAML"),
             DeclareLaunchArgument("flood", default_value="", description="IR flood light 0..1; empty uses YAML"),
+            DeclareLaunchArgument("ground", default_value="", description="Remove ground: true / false; empty uses YAML"),
             OpaqueFunction(function=_nodes),
         ]
     )

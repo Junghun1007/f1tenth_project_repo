@@ -1,4 +1,4 @@
-# One depth frame -> organized XYZ point cloud. No startup pose/ground removal.
+# One depth frame -> original XYZ plus optional ground-filtered visualization.
 point_cloud:
   ros__parameters:
     device_id: ""                    # Empty: first available OAK; restarts reuse its ID.
@@ -33,6 +33,15 @@ point_cloud:
     points.pixel_stride: 1           # 1=all pixels; 2=one point per 2x2 block; 1..16.
     points.min_depth_m: 0.0          # Optical-axis Z; 0=no additional minimum.
     points.max_depth_m: 0.0          # 0=no additional maximum; e.g. 4.0 for a close view.
+    # Per-frame floor fit in optical coordinates; does not change the view frame.
+    # Host-only settings: live changes do not restart the camera.
+    ground.enabled: true             # false: points_filtered also shows the original cloud.
+    ground.distance_m: 0.02           # Remove points within 2cm of the detected floor.
+    ground.max_depth_m: 3.0          # Fit AND remove only within this optical Z range.
+    ground.min_height_m: 0.08        # Allowed perpendicular camera-to-floor distance.
+    ground.max_height_m: 0.50
+    ground.max_tilt_deg: 45.0        # Maximum floor normal tilt from optical +Y.
+    ground.min_inlier_ratio: 0.35    # Minimum floor fraction in sampled lower-half points.
     publish.depth_image: true        # 16UC1, millimeters. CameraInfo is always published.
     input.max_age_sec: 0.5           # Drop old/replayed frames; do not accumulate clouds.
     metrics.print_interval_sec: 1.0  # Actual FPS, valid points, age, host ms, XYZ MB/s.

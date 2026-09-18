@@ -38,6 +38,7 @@ dai::StereoDepthConfig::MedianFilter median(const std::string & value)
 
 void validate(const Config & c)
 {
+  validateGround(c.ground);
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);
