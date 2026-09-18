@@ -57,6 +57,15 @@ namespace point_cloud
   X("ground.max_height_m", ground.max_height_m, as_double) \
   X("ground.max_tilt_deg", ground.max_tilt_deg, as_double) \
   X("ground.min_inlier_ratio", ground.min_inlier_ratio, as_double) \
+  X("cluster.cell_size_m", cluster.cell_size_m, as_double) \
+  X("cluster.tolerance_m", cluster.tolerance_m, as_double) \
+  X("cluster.min_points", cluster.min_points, as_int) \
+  X("cluster.min_height_m", cluster.min_height_m, as_double) \
+  X("cluster.max_height_m", cluster.max_height_m, as_double) \
+  X("cluster.support_height_m", cluster.support_height_m, as_double) \
+  X("cluster.min_support_points", cluster.min_support_points, as_int) \
+  X("cluster.min_support_ratio", cluster.min_support_ratio, as_double) \
+  X("cluster.min_extent_m", cluster.min_extent_m, as_double) \
   X("publish.depth_image", publish_depth, as_bool) \
   X("input.max_age_sec", max_age_sec, as_double) \
   X("metrics.print_interval_sec", metrics_interval, as_double)
@@ -122,6 +131,7 @@ public:
     cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points", qos);
     filtered_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_filtered", qos);
     bev_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_bev", qos);
+    clusters_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_clusters", qos);
     boundary_pub_ = create_publisher<visualization_msgs::msg::Marker>(
       "~/bev_bounds", rclcpp::QoS(1).transient_local());
     depth_pub_ = create_publisher<sensor_msgs::msg::Image>("~/depth/image_raw", qos);
@@ -174,7 +184,8 @@ private:
       if (parameters[i].to_parameter_msg() != last_parameters_[i].to_parameter_msg()) {
         changed = true;
         if (parameter_names_[i].compare(0, 7, "ground.") != 0 &&
-          parameter_names_[i].compare(0, 4, "bev.") != 0) {reopen = true;}
+          parameter_names_[i].compare(0, 4, "bev.") != 0 &&
+          parameter_names_[i].compare(0, 8, "cluster.") != 0) {reopen = true;}
       }
     }
     if (!changed) {return;}
@@ -187,7 +198,7 @@ private:
     last_parameters_ = parameters;
     RCLCPP_INFO(get_logger(), "%s", reopen ?
       "Parameters committed; reopening depth pipeline with the new settings" :
-      "Ground/BEV settings applied without restarting the camera");
+      "Ground/BEV/cluster settings applied without restarting the camera");
   }
 
   void status(const std::string & value)
@@ -221,14 +232,46 @@ private:
     return message;
   }
 
+  sensor_msgs::msg::PointCloud2 clusterMessage(const ClusterResult & result, const rclcpp::Time & stamp)
+  {
+    auto message = cloudMessage(Cloud{}, stamp);
+    message.header.frame_id = bev_frame_id_;
+    message.width = result.points.width;
+    message.height = 1;
+    message.is_dense = true;
+    message.point_step = 5 * sizeof(float);
+    message.row_step = message.width * message.point_step;
+    sensor_msgs::msg::PointField field;
+    field.name = "rgb"; field.offset = 12; field.count = 1;
+    field.datatype = sensor_msgs::msg::PointField::FLOAT32;
+    message.fields.push_back(field);
+    field.name = "cluster_id"; field.offset = 16;
+    field.datatype = sensor_msgs::msg::PointField::UINT32;
+    message.fields.push_back(field);
+    message.data.resize(message.row_step);
+    constexpr std::array<std::uint32_t, 8> colors{
+      0xff6060, 0x60ff90, 0x60b0ff, 0xffd060, 0xc080ff, 0x60ffff, 0xff80c0, 0xe0ff80};
+    for (std::size_t i = 0; i < result.ids.size(); ++i) {
+      auto * target = message.data.data() + i * message.point_step;
+      const auto id = result.ids[i];
+      const auto rgb = colors[(id - 1) % colors.size()];
+      std::memcpy(target, result.points.xyz.data() + i*3, 12);
+      std::memcpy(target + 12, &rgb, 4);
+      std::memcpy(target + 16, &id, 4);
+    }
+    return message;
+  }
+
   void clearCloud()
   {
-    const auto empty = cloudMessage(Cloud{}, now());
+    const auto stamp = now();
+    const auto empty = cloudMessage(Cloud{}, stamp);
     cloud_pub_->publish(empty);
     filtered_pub_->publish(empty);
     auto bev_empty = empty;
     bev_empty.header.frame_id = bev_frame_id_;
     bev_pub_->publish(bev_empty);
+    clusters_pub_->publish(clusterMessage(ClusterResult{}, stamp));
   }
 
   void publishImages(
@@ -377,10 +420,12 @@ private:
           const auto raw_valid = cloud.valid_points;
           GroundOptions ground;
           BevOptions bev;
+          ClusterOptions cluster;
           {
             std::lock_guard<std::mutex> lock(config_mutex_);
             ground = config_.ground;
             bev = config_.bev;
+            cluster = config_.cluster;
           }
           const auto ground_result = removeGround(cloud, ground);
           if (ground.enabled && !ground_result.detected) {
@@ -399,6 +444,8 @@ private:
           auto bev_message = cloudMessage(cloud, stamp);
           bev_message.header.frame_id = bev_frame_id_;
           bev_pub_->publish(bev_message);
+          const auto clusters = obstacleClusters(cloud, cluster);
+          clusters_pub_->publish(clusterMessage(clusters, stamp));
           publishImages(*frame, k, stamp, c.publish_depth);
           if (first || stale) {
             status("STREAMING");
@@ -418,10 +465,11 @@ private:
           if (elapsed >= c.metrics_interval) {
             const std::size_t total = static_cast<std::size_t>(cloud.width) * cloud.height;
             RCLCPP_INFO(get_logger(),
-              "depth=%ux%u cloud=%ux%u FPS=%.1f valid=%zu/%zu (%.1f%%) age=%.1fms host=%.2fms XYZ=%.1fMB/s",
+              "depth=%ux%u cloud=%ux%u FPS=%.1f valid=%zu/%zu (%.1f%%) age=%.1fms host=%.2fms XYZ=%.1fMB/s clusters=%zu/%zu obstacle_points=%zu",
               frame->getWidth(), frame->getHeight(), cloud.width, cloud.height, frames / elapsed,
               raw_valid, total, 100.0 * raw_valid / total, age * 1000,
-              processing_ms / frames, cloud.xyz.size() * sizeof(float) * frames / elapsed / 1e6);
+              processing_ms / frames, cloud.xyz.size() * sizeof(float) * frames / elapsed / 1e6,
+              clusters.accepted, clusters.candidates, clusters.points.valid_points);
             frames = 0;
             processing_ms = 0;
             report_start = host_now;
@@ -444,7 +492,7 @@ private:
   oak_startup::OakStartupMeasurementConfig startup_config_;
   double camera_x_{-0.16}, camera_y_{0.0}, camera_yaw_{0.0};
   std::string bev_frame_id_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr bev_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr bev_pub_, clusters_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr boundary_pub_;
   std::string device_id_, frame_id_, view_frame_id_;
   std::vector<std::string> parameter_names_;

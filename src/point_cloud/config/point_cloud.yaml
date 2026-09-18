@@ -9,7 +9,7 @@ point_cloud:
     # 400p=640x400, 480p=640x480, 720p=1280x720, 800p=1280x800.
     # Different aspect ratios may change crop/FOV. Device support is required.
     camera.resolution: "400p"
-    camera.fps: 30.0                 # 1..60 requested; achieved rate depends on mode/USB/host.
+    camera.fps: 50.0                 # 1..60 requested; achieved rate depends on mode/USB/host.
     depth.mode: "high_density"      # default, high_density, high_accuracy
     depth.ir_dot_projector_intensity: 0.5 # 0..1; 0=OFF. Positive values require supported OAK Pro.
     depth.ir_flood_light_intensity: 0.0   # 0..1; independent of the dot projector.
@@ -40,12 +40,23 @@ point_cloud:
     # Per-frame floor fit in optical coordinates; does not change the view frame.
     # Host-only settings: live changes do not restart the camera.
     ground.enabled: true             # false: points_filtered also shows the original cloud.
-    ground.distance_m: 0.02           # Remove points within 2cm of the detected floor.
+    ground.distance_m: 0.03           # Remove points within 3cm of the detected floor.
     ground.max_depth_m: 3.0          # Fit AND remove only within this optical Z range.
     ground.min_height_m: 0.08        # Allowed perpendicular camera-to-floor distance.
     ground.max_height_m: 0.50
     ground.max_tilt_deg: 45.0        # Maximum floor normal tilt from optical +Y.
     ground.min_inlier_ratio: 0.35    # Minimum floor fraction in sampled lower-half points.
+    # Per-frame obstacle classification in the measured BEV vehicle frame.
+    # All cluster.* settings are live; no camera restart or temporal tracking.
+    cluster.cell_size_m: 0.02         # XY aggregation cell; original accepted points are displayed.
+    cluster.tolerance_m: 0.08         # Link XY cell centroids within 8cm (not camera range).
+    cluster.min_points: 20            # Original points per connected component.
+    cluster.min_height_m: 0.03        # Exclude near-ground points BEFORE connecting cells.
+    cluster.max_height_m: 2.0         # Upper candidate height above startup ground.
+    cluster.support_height_m: 0.06    # Count points at least 6cm above ground as height support.
+    cluster.min_support_points: 5     # Minimum such points; a single high outlier is insufficient.
+    cluster.min_support_ratio: 0.30   # At least 30% of candidate points must have height support.
+    cluster.min_extent_m: 0.03        # Minimum max(X extent, Y extent); reject tiny speckles.
     publish.depth_image: true        # 16UC1, millimeters. CameraInfo is always published.
     input.max_age_sec: 0.5           # Drop old/replayed frames; do not accumulate clouds.
     metrics.print_interval_sec: 1.0  # Actual FPS, valid points, age, host ms, XYZ MB/s.

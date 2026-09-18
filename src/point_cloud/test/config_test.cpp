@@ -9,6 +9,9 @@ int main()
 {
   using namespace point_cloud;
   validate(Config{});
+  if (Config{}.fps != 50.0 || Config{}.ground.distance_m != 0.03) {
+    throw std::runtime_error("Requested FPS/ground defaults lost");
+  }
   for (const auto & name : {"400p", "480p", "720p", "800p"}) {
     Config c;
     c.resolution = name;
@@ -20,6 +23,7 @@ int main()
       try {validate(c);} catch (const std::invalid_argument &) {return;}
       throw std::runtime_error("Invalid settings unexpectedly accepted");
     };
+  rejects([](Config & c) {c.cluster.min_points = 0;});
   rejects([](Config & c) {c.resolution = "1080p";});
   rejects([](Config & c) {c.dot_intensity = 1.1;});
   rejects([](Config & c) {c.flood_intensity = -0.1;});

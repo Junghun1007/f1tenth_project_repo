@@ -40,6 +40,7 @@ void validate(const Config & c)
 {
   validateGround(c.ground);
   validateBev(c.bev);
+  validateClusters(c.cluster);
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);

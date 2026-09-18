@@ -4,7 +4,8 @@ OAK의 **한 depth 프레임을 원본 해상도의 XYZ 점군으로 표시**하
 해상도와 IR 조명을 바꾸면서 바닥·벽·장애물의 깊이 품질을 비교한다.
 원본 점군, 바닥 제거 점군, **BEV 차량 좌표로 변환하고 표시 영역을 제한한 3D 점군**을 발행한다.
 시작 시 `oak_startup`으로 BEV와 같은 방식의 카메라 높이·roll·pitch 측정을 수행한다.
-각도별 최단점 축약, 군집화, 시간 누적은 하지 않는다.
+BEV 점군을 XY 클러스터로 묶어 장애물 조건을 통과한 포인트만 기본 RViz 프리뷰에 표시한다.
+시간 추적/누적은 하지 않는다. 일반 점군 생성의 기본 요청 FPS는 50이며 실제 속도는 로그로 확인한다.
 
 여기서 원본은 **StereoDepth가 계산한 depth의 유효 픽셀 전체**를 뜻한다. 센서 RAW 영상이나
 필터 이전 disparity가 아니다. 스테레오 매칭·신뢰도·좌우 일치 검사에 의해 무효화된 점은
@@ -26,9 +27,9 @@ ros2 launch point_cloud point_cloud.launch.py
 ```
 
 RViz가 함께 열린다. 먼저 차량을 평평한 바닥에 정지시키고 중앙 측정 영역에서 장애물을 치운다.
-BEV와 같은 시작 측정이 완료되면 **앞차축 지면 중심 기준의 BEV 영역 3D 점군**을 표시한다.
+BEV와 같은 시작 측정이 완료되면 **앞차축 지면 중심 기준의 장애물 클러스터 포인트만** 표시한다.
 녹색 테두리는 지면 Z=0에서의 BEV 범위다. 점의 높이는 그대로 유지하며 회전/확대할 수 있다.
-색은 전방 거리 0~4m를 나타내며, 이 색 범위가 점을 잘라내지는 않는다.
+클러스터 프리뷰는 묶음별 색상을 사용한다. 기존 원본/BEV 디버그 표시는 전방 거리 색상을 유지한다.
 `Decay Time: 0`은 최신 점군만 표시한다. Axes는 앞차축 지면 중심이다.
 장치 연결이나 설정 적용 오류는 터미널과 `/point_cloud/status`에 표시한다.
 
@@ -70,7 +71,8 @@ ros2 param set /point_cloud bev.enabled true
 ros2 param set /point_cloud bev.x_max_m 2.0
 ```
 
-RViz에서는 **BEV region 3D points**와 **BEV ground footprint**만 켜져 있다.
+RViz에서는 **Obstacle cluster points**와 **BEV ground footprint**만 켜져 있다.
+클러스터 판정 전 BEV 점군은 **BEV region 3D points**를 켜서 비교할 수 있다.
 범위 밖의 점이 보이면 기존 `Ground-filtered point cloud` 또는 `Original point cloud`가
 동시에 켜져 있는지 확인한다. `bev.enabled=false`일 때도 테두리는 BEV 기준 영역으로 남는다.
 위에서 보려면 RViz Views의 Type을 `TopDownOrtho`로 바꾸고 Target Frame을 `front_axle_bev`로 둔다.
@@ -86,6 +88,55 @@ RGB BEV의 유효 픽셀 마스크까지 적용하지는 않으며, 깊이 카�
 BEV 실행과 별도 측정하므로 측정 오차가 있을 수 있고, 주행 중 IMU 흔들림 보정/프레임 동기화는
 아직 이 점군에 적용하지 않는다. 우선 정지 상태에서 영역과 장애물 위치를 확인한다.
 
+## 장애물 클러스터 프리뷰
+
+`/point_cloud/points_bev` → 높이 후보 선택 → XY 격자 집계/인접 연결 → 클러스터 판정 →
+`/point_cloud/points_clusters` 순서다. RViz 기본 체크는 **Obstacle cluster points** 하나이며,
+검출 결과가 없으면 빈 점군을 발행해 직전 장애물이 남지 않게 한다. 영역 테두리와 원점 축은 유지한다.
+BEV 이미지에 합성하는 단계는 아직 없으며, 이번 프리뷰는 동일 차량 좌표에서의 3D 포인트 표시다.
+
+- 먼저 시작 측정 지면 기준 Z=3cm 미만/2m 초과 점을 후보에서 제외한다. 낮은 잔여점이 물체 사이를 연결하는 것을 줄인다.
+- 후보를 XY 2cm 격자에 집계하고, 격자별 XY 중심의 거리가 8cm 이내면 연결한다. 카메라까지의 거리로 묶지 않는다.
+- 묶음마다 원본 점 20개 이상, 높이 6cm 이상 점 5개 이상이면서 비율 30% 이상,
+  가로/세로 중 큰 폭이 3cm 이상이어야 통과한다. 이 조건은 모두 AND다.
+- 통과한 묶음의 **원래 3D 점**을 표시한다. 격자 중심으로 대체하지 않고 높이도 유지한다.
+  높이 후보에서 제외한 점과 실패한 묶음은 프리뷰에 나오지 않는다.
+
+모든 `cluster.*` 파라미터는 실행 중 변경 가능하며 카메라를 재시작하지 않는다.
+색상과 `cluster_id`는 한 프레임 안에서 묶음을 구분하는 용도이며 프레임 간 고정 ID가 아니다.
+시간 추적/검출 유지/이동 보정은 적용하지 않는다. 높이가 실제 장애물과 비슷하게 잘못 측정된
+바닥 잔여점은 이 조건만으로도 통과할 수 있으므로 아래 설정을 실제 장면과 비교해 조정한다.
+
+| 파라미터 | 기본값 | 의미 / 조절 방향 |
+|---|---:|---|
+| `cluster.cell_size_m` | 0.02 | XY 집계 해상도. 작으면 세밀하지만 격자 수와 연산량 증가. |
+| `cluster.tolerance_m` | 0.08 | 격자 중심 연결 거리. 커지면 갈라진 물체가 합쳐지지만 서로 다른 물체도 합쳐질 수 있음. |
+| `cluster.min_points` | 20 | 묶음의 최소 원본 후보 점 개수. 올리면 작은 잡음 제외, 먼/작은 물체도 탈락 가능. |
+| `cluster.min_height_m` | 0.03 | 묶기 전 최소 지면 위 높이. 올리면 낮은 바닥 연결점과 낮은 장애물 점 모두 제외. |
+| `cluster.max_height_m` | 2.0 | 묶기 전 최대 지면 위 높이. |
+| `cluster.support_height_m` | 0.06 | 장애물 높이 증거로 인정할 점의 최소 높이. |
+| `cluster.min_support_points` | 5 | 위 높이 이상의 점 최소 개수. 높이 잡음 하나로 통과하지 않게 함. |
+| `cluster.min_support_ratio` | 0.30 | 위 높이 이상의 점 / 묶음 전체 후보 점 비율의 하한. |
+| `cluster.min_extent_m` | 0.03 | 묶음의 max(X 폭, Y 폭) 최소값. 작은 점 덩어리 제외. |
+
+```bash
+# 물체가 여러 조각으로 갈라질 때 연결 거리 조절
+ros2 param set /point_cloud cluster.tolerance_m 0.10
+
+# 작은 잡음 묶음을 더 엄격히 제외
+ros2 param set /point_cloud cluster.min_points 30
+ros2 param set /point_cloud cluster.min_support_ratio 0.5
+
+# 낮은 물체도 후보로 볼 때 (높이 증거 기준도 같이 검토)
+ros2 param set /point_cloud cluster.min_height_m 0.02
+ros2 param set /point_cloud cluster.support_height_m 0.04
+```
+
+단위는 미터다. cell_size는 0.005~0.2m, 연결 거리는 cell_size 이상이며 0.5m 및
+cell_size의 10배 이하로 제한한다. 후보 높이 범위 안에 support_height를 둬야 한다.
+점 개수는 격자 수가 아닌 **후보 원본 점 수**라 해상도나 `points.pixel_stride`를 바꾸면 다시 조정한다.
+격자 집계 때문에 연결은 근사적이며 좁은 틈을 구분하려면 cell_size와 tolerance를 함께 줄인다.
+
 ## 바닥 제거 켜기 / 끄기
 
 ```bash
@@ -97,18 +148,19 @@ ros2 param set /point_cloud ground.enabled true
 ros2 param set /point_cloud ground.enabled false
 
 # 바닥 두께가 남을 때 제거 허용 거리 조절 (미터)
-ros2 param set /point_cloud ground.distance_m 0.03
+ros2 param set /point_cloud ground.distance_m 0.04
 ```
 
-RViz 왼쪽 Displays에서 **BEV region 3D points**가 기본 체크되어 있다.
-**Original point cloud (includes ground)**를 체크하고 BEV 점군을 해제하면 전체 원본을 비교할 수 있다.
+RViz 왼쪽 Displays에서 **Obstacle cluster points**가 기본 체크되어 있다.
+**Original point cloud (includes ground)**를 체크하고 클러스터 점군을 해제하면 전체 원본을 비교할 수 있다.
 두 항목을 동시에 체크하면 원본의 바닥도 겹쳐 보인다. `ground.enabled=false`면
 `points_filtered`는 원본을 그대로 표시하고, `points_bev`는 바닥을 포함한 BEV 영역을 표시한다.
+클러스터 프리뷰는 별도의 높이·크기 조건을 계속 적용하므로 ground OFF만으로 전체 바닥이 표시되지는 않는다.
 원본 `/point_cloud/points`는 항상 보존된다.
 
 현재 프레임의 하단 절반에서 최대 2,000점을 샘플링하고 RANSAC으로 바닥 평면을 찾는다.
 카메라 아래 방향과의 각도, 카메라와 평면의 수직 거리, 지지점 비율/분포로 후보를 제한하여
-수직 벽을 제외한다. 기본 제거 범위는 광축 거리 3m 이내, 바닥 평면에서 ±2cm이다.
+수직 벽을 제외한다. 기본 제거 범위는 광축 거리 3m 이내, 바닥 평면에서 ±3cm이다.
 이 광축 범위 밖 점은 바닥 필터 단계에서는 유지한다. 이후 BEV 토픽에만 차량 좌표 변환과 X/Y 제한을 적용한다.
 제거한 점은 XYZ 모두 NaN으로 바꾸어 organized cloud 구조를 유지한다.
 
@@ -133,8 +185,8 @@ ros2 param set /point_cloud depth.median_filter 3x3
 ```
 
 위 카메라/깊이 설정 변경이 확정되면 **파이프라인을 닫고 같은 장치를 다시 열어 적용**한다.
-`ground.*` 또는 `bev.enabled`/`bev.x_min_m`/`bev.x_max_m`/`bev.y_min_m`/`bev.y_max_m`만 변경하면 카메라를 재시작하지 않고 호스트 필터에 적용한다. 잠시 점군 출력이
-멈추며 IR 강도도 매번 재적용한다. 파라미터 서비스의 성공은 값 검증/저장 성공을 뜻한다.
+이때 잠시 점군 출력이 멈추며 IR 강도도 매번 재적용한다.
+`cluster.*`, `ground.*` 또는 BEV 영역 설정만 변경하면 카메라를 재시작하지 않고 호스트 처리에 적용한다. 파라미터 서비스의 성공은 값 검증/저장 성공을 뜻한다.
 실제 장치 적용 성공은 `/point_cloud/status`의 `STREAMING`과 새 프레임 로그로 확인한다.
 지원하지 않는 조명/모드 조합은 오류로 표시하며 설정을 몰래 낮추지 않는다.
 오류 상태에서도 파라미터를 수정할 수 있고, 2초 간격으로 연결을 재시도한다.
@@ -155,7 +207,8 @@ ros2 param set /point_cloud depth.median_filter 3x3
 동작한다. 비율이 다른 해상도는 크롭/FOV도 달라질 수 있어 단순 픽셀 수 비교와 구별한다.
 
 800p·30 FPS의 XYZ만 약 369 MB/s이며 이는 **호스트 ROS 메시지 데이터량**이다.
-세 점군 토픽을 모두 구독하면 XYZ 메시지 데이터량은 최대 세 배가 된다.
+원본/필터/BEV 세 토픽의 XYZ는 각각 같은 슬롯 수다. 클러스터 토픽은 통과한 점만
+20 bytes/point(XYZ, RGB, cluster_id)로 압축해서 발행한다.
 영역 밖 점도 NaN 슬롯을 유지하므로 영역 제한 자체가 메시지 바이트 수를 줄이지는 않는다.
 USB에서는 16비트 depth를 수신하고 호스트가 XYZ로 변환하므로 XYZ 수치가 USB 사용량은 아니다.
 ROS 직렬화, RViz, depth 이미지 발행 비용이 더해진다. 로그의 FPS는 카메라 설정값이 아닌
@@ -163,7 +216,7 @@ ROS 직렬화, RViz, depth 이미지 발행 비용이 더해진다. 로그의 FP
 
 처음에는 동일한 장면/조명/스테레오 설정에서 400p와 800p를 비교한다.
 작은 장애물의 점 밀도, 바닥의 두께/흔들림, 물체 경계, 유효 점 비율, FPS를 함께 본다.
-로그의 `host`는 XYZ 복원·바닥 필터·BEV 변환/영역 제한·메시지 생성/발행 호출 시간이며 카메라 연산과 RViz 렌더링은 제외한다.
+로그의 `host`는 XYZ 복원·바닥 필터·BEV 변환/영역 제한·클러스터링·메시지 생성/발행 호출 시간이며 카메라 연산과 RViz 렌더링은 제외한다.
 `age`는 수신 시점의 프레임 나이다. 워밍업 구간을 지난 로그로 비교한다.
 
 ## 주요 옵션
@@ -186,7 +239,7 @@ ROS 직렬화, RViz, depth 이미지 발행 비용이 더해진다. 로그의 FP
 | `bev.x_min_m` / `x_max_m` | 전방 범위. launch에서 BEV YAML을 읽으며 기본 0~3m. |
 | `bev.y_min_m` / `y_max_m` | 좌우 범위. launch에서 BEV YAML을 읽으며 기본 -0.6~0.6m. |
 | `ground.enabled` | 바닥 제거 ON/OFF. 기본 true, 원본 토픽에는 영향 없음. |
-| `ground.distance_m` | 평면에서 제거할 거리. 기본 0.02m, 허용 (0, 0.10]. |
+| `ground.distance_m` | 평면에서 제거할 거리. 기본 0.03m, 허용 (0, 0.10]. |
 | `ground.max_depth_m` | 평면 추정 및 제거 범위의 광축 Z 상한. 기본 3m, 양수. |
 | `ground.min_height_m` / `max_height_m` | 카메라-평면 수직 거리 후보 범위. 기본 0.08~0.50m. |
 | `ground.max_tilt_deg` | 광학 +Y 대비 바닥 법선의 최대 기울기. 기본 45도, 허용 (0, 60]. |
@@ -204,6 +257,7 @@ ROS 직렬화, RViz, depth 이미지 발행 비용이 더해진다. 로그의 FP
 | `/point_cloud/points` | `sensor_msgs/PointCloud2`, 원본 XYZ float32, 미터, organized cloud |
 | `/point_cloud/points_filtered` | 같은 형식/frame/stamp. 바닥 제거 결과, OFF/검출 실패 시 원본 |
 | `/point_cloud/points_bev` | `sensor_msgs/PointCloud2`, 앞차축 기준 3D 점군, BEV 범위 밖은 NaN, ground 토글 반영 |
+| `/point_cloud/points_clusters` | `sensor_msgs/PointCloud2`, 차량 좌표, 통과한 원본 XYZ + rgb + cluster_id, compact cloud |
 | `/point_cloud/bev_bounds` | `visualization_msgs/Marker`, 지면의 BEV 영역 테두리, transient local |
 | `/point_cloud/depth/image_raw` | `sensor_msgs/Image`, rectified-right depth, 16UC1 밀리미터, 0=무효 |
 | `/point_cloud/depth/camera_info` | `sensor_msgs/CameraInfo`, 해당 전체 depth 이미지의 실제 내부 파라미터 |
@@ -211,8 +265,8 @@ ROS 직렬화, RViz, depth 이미지 발행 비용이 더해진다. 로그의 FP
 | `/tf_static` | front_axle_bev → point_cloud_view → point_cloud_optical_frame |
 
 데이터 토픽 QoS는 **Best Effort / Volatile / Keep Last 1**이다. 제공 RViz 설정도 동일하다.
-다른 RViz 설정을 사용하면 Fixed Frame=`front_axle_bev`, PointCloud2 topic=`/point_cloud/points_bev`,
-Reliability=`Best Effort`, Color Transformer=`AxisColor`로 설정한다.
+다른 RViz 설정을 사용하면 Fixed Frame=`front_axle_bev`, PointCloud2 topic=`/point_cloud/points_clusters`,
+Reliability=`Best Effort`, Color Transformer=`RGB8`로 설정한다.
 `bev.frame_id`를 바꾸면 RViz Fixed Frame/Target Frame/Axes도 맞춘다.
 
 원본/바닥 필터 점군 좌표는 **rectified CAM_C optical**: +X 오른쪽, +Y 아래, +Z 전방.
@@ -226,13 +280,13 @@ Reliability=`Best Effort`, Color Transformer=`AxisColor`로 설정한다.
 RViz의 기본 Fixed Frame은 별도의 `front_axle_bev`이므로 측정된 장착 변환을 통해
 지면 기준으로 표시된다. Fixed Frame을 `point_cloud_view`로 바꾸면 다시 카메라 기준으로 보인다.
 ROS 타임스탬프는 수신 시 ROS 시각에서 DepthAI steady-clock 프레임 나이를 빼 추정하며,
-원본/필터/BEV 점군과 이미지/CameraInfo는 같은 stamp를 사용한다. 이전 프레임을 재발행하거나 누적하지 않는다.
+원본/필터/BEV/클러스터 점군과 이미지/CameraInfo는 같은 stamp를 사용한다. 이전 프레임을 재발행하거나 누적하지 않는다.
 
 ## 기록과 검사
 
 ```bash
 ros2 topic echo /point_cloud/status --qos-durability transient_local
-ros2 bag record /point_cloud/points /point_cloud/points_filtered /point_cloud/points_bev /point_cloud/bev_bounds /point_cloud/depth/image_raw /point_cloud/depth/camera_info /tf_static
+ros2 bag record /point_cloud/points /point_cloud/points_filtered /point_cloud/points_bev /point_cloud/points_clusters /point_cloud/bev_bounds /point_cloud/depth/image_raw /point_cloud/depth/camera_info /tf_static
 colcon test --packages-select point_cloud --event-handlers console_direct+
 colcon test-result --verbose
 ```
@@ -241,7 +295,9 @@ colcon test-result --verbose
 잘못된 프레임 및 옵션 조합을 검사한다. 바닥 필터 테스트는 기울어진 바닥/깊이 잡음,
 장애물 보존, 거리 범위, ON/OFF, 벽 제외, NaN/퇴화 입력과 옵션 검증을 검사한다.
 BEV 테스트는 변환 순서·센서 이동 단위·영역 경계·높이 보존을 검사하고,
-27가지 roll/pitch/yaw 조합을 실제 `bev_processor` 회전 구현과 비교한다. 실제 FPS, 해상도별 FOV/품질, IR 작동,
+27가지 roll/pitch/yaw 조합을 실제 `bev_processor` 회전 구현과 비교한다.
+클러스터 테스트는 분리된 장애물, 낮은 바닥 연결점, 높이 이상점/비율, 최소 크기/점 개수,
+실행 중 설정 변화, 원래 좌표와 ID 보존, 빈 프레임에서 결과 지우기를 검사한다. 실제 FPS, 해상도별 FOV/품질, IR 작동,
 RViz 표시와 재연결은 ROS 2와 OAK가 연결된 환경에서 확인해야 한다.
 
 DepthAI 참고: [StereoDepth](https://docs.luxonis.com/software-v3/depthai/depthai-components/nodes/stereo_depth),

@@ -11,7 +11,7 @@ namespace point_cloud
 struct GroundOptions
 {
   bool enabled{true};
-  double distance_m{0.02};
+  double distance_m{0.03};
   double max_depth_m{3.0};
   double min_height_m{0.08};
   double max_height_m{0.50};

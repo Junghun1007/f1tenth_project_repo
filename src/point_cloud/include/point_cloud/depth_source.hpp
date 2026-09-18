@@ -3,6 +3,7 @@
 #include "point_cloud/depth_projection.hpp"
 #include "point_cloud/ground_filter.hpp"
 #include "point_cloud/bev_crop.hpp"
+#include "point_cloud/obstacle_clusters.hpp"
 #include <map>
 
 #include <depthai/depthai.hpp>
@@ -16,7 +17,7 @@ namespace point_cloud
 struct Config
 {
   std::string resolution{"400p"};
-  double fps{30.0};
+  double fps{50.0};
   std::string mode{"high_density"};
   double dot_intensity{0.5};
   double flood_intensity{0.0};
@@ -34,6 +35,7 @@ struct Config
   ProjectionOptions projection;
   GroundOptions ground;
   BevOptions bev;
+  ClusterOptions cluster;
   bool publish_depth{true};
   double max_age_sec{0.5};
   double metrics_interval{1.0};
