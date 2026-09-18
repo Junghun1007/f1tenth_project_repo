@@ -1,17 +1,25 @@
 #pragma once
 #include "roi_lidar/scan.hpp"
+#include "roi_lidar/view.hpp"
 #include <opencv2/core.hpp>
 #include <string>
 namespace roi_lidar
 {
-cv::Point mapPixel(double x, double y, const Options & o, int size);
-cv::Mat mapPreview(const Scan & scan, const Options & o, int size, const std::string & status, const cv::Mat & background = {});
+struct MapLayout
+{
+  double scale, center_x, origin_y;
+  cv::Size canvas;
+  cv::Rect area;
+};
+MapLayout mapLayout(const ViewOptions & view, int size);
+cv::Point mapPixel(double x, double y, const ViewOptions & view, int size);
+cv::Mat mapPreview(const Scan & scan, const Options & o, const ViewOptions & view, int size, const std::string & status, const cv::Mat & background = {});
 class BevProjector
 {
   cv::Mat map_x_, map_y_;
 public:
   void configure(int width, int height, const point_cloud::Intrinsics & k,
-    const point_cloud::RigidTransform & vehicle_from_camera, const Options & o, int size);
+    const point_cloud::RigidTransform & vehicle_from_camera, const ViewOptions & view, int size);
   cv::Mat render(const cv::Mat & bgr) const;
 };
 cv::Mat roiPreview(const cv::Mat & gray_or_depth, const Options & o, bool depth);

@@ -4,69 +4,104 @@
 #include <sstream>
 namespace roi_lidar
 {
-cv::Point mapPixel(double x, double y, const Options & o, int size)
+MapLayout mapLayout(const ViewOptions & view, int size)
 {
-  const double scale=(size-80)/(2.0*o.max_range);
-  return {static_cast<int>(std::lround(size/2.0-y*scale)),
-    static_cast<int>(std::lround(size*0.5+40-x*scale))};
+  validateView(view);
+  if (size<240 || size>1600) {throw std::invalid_argument("Invalid BEV preview size");}
+  const double scale=(size-160)/std::max(view.width_m,view.forward_m);
+  const int plot_width=static_cast<int>(std::lround(view.width_m*scale));
+  const int plot_height=static_cast<int>(std::lround(view.forward_m*scale));
+  const int width=std::max(420,plot_width+80);
+  const double center=width/2.0, bottom=80+view.forward_m*scale;
+  const int left=static_cast<int>(std::lround(center-view.width_m*scale/2));
+  return {scale,center,bottom,{width,plot_height+160},{left,80,plot_width+1,plot_height+1}};
 }
-cv::Mat mapPreview(const Scan & scan, const Options & o, int size, const std::string & status, const cv::Mat & background)
+cv::Point mapPixel(double x, double y, const ViewOptions & view, int size)
 {
-  const int height=static_cast<int>(size*.5)+140;
-  cv::Mat canvas(height,size,CV_8UC3,cv::Scalar(245,245,245));
-  if (!background.empty()) {background.copyTo(canvas);}
-  cv::rectangle(canvas,{0,0,size,80},{245,245,245},cv::FILLED);
-  const int footer=static_cast<int>(size*.5)+44;
-  cv::rectangle(canvas,{0,footer,size,height-footer},{245,245,245},cv::FILLED);
-  const double step=o.max_range<=15 ? 1.0 : 5.0;
-  for (double x=0;x<=o.max_range;x+=step) {
-    cv::line(canvas,mapPixel(x,-o.max_range,o,size),mapPixel(x,o.max_range,o,size),{220,220,220});
-    cv::putText(canvas,std::to_string(static_cast<int>(x))+"m",mapPixel(x,-o.max_range,o,size)+cv::Point(-30,0),
-      cv::FONT_HERSHEY_SIMPLEX,.35,{180,180,180},1,cv::LINE_AA);
+  const auto layout=mapLayout(view,size);
+  return {static_cast<int>(std::lround(layout.center_x-y*layout.scale)),
+    static_cast<int>(std::lround(layout.origin_y-x*layout.scale))};
+}
+cv::Mat mapPreview(const Scan & scan, const Options & o, const ViewOptions & view,
+  int size, const std::string & status, const cv::Mat & background)
+{
+  const auto layout=mapLayout(view,size);
+  cv::Mat canvas(layout.canvas,CV_8UC3,cv::Scalar(245,245,245));
+  if (!background.empty()) {
+    if (background.size()!=layout.canvas || background.type()!=CV_8UC3) {
+      throw std::invalid_argument("RGB BEV background does not match the display footprint");
+    }
+    background(layout.area).copyTo(canvas(layout.area));
   }
-  for (double y=-o.max_range;y<=o.max_range;y+=step) {
-    cv::line(canvas,mapPixel(0,y,o,size),mapPixel(o.max_range,y,o,size),{225,225,225});
+  const auto pixel=[&](double x,double y) {return mapPixel(x,y,view,size);};
+  const double step=std::max(view.forward_m,view.width_m)<=6 ? 0.5 :
+    (std::max(view.forward_m,view.width_m)<=15 ? 1.0 : 5.0);
+  for (double x=0;x<=view.forward_m+1e-9;x+=step) {
+    cv::line(canvas,pixel(x,-view.width_m/2),pixel(x,view.width_m/2),{170,170,170});
+    std::ostringstream label; label<<std::fixed<<std::setprecision(step<1 ? 1 : 0)<<x<<"m";
+    cv::putText(canvas,label.str(),pixel(x,-view.width_m/2)+cv::Point(5,4),
+      cv::FONT_HERSHEY_SIMPLEX,.35,{90,90,90},1,cv::LINE_AA);
   }
-  const auto origin=mapPixel(0,0,o,size);
+  for (double y=std::ceil(-view.width_m/2/step)*step;y<=view.width_m/2;y+=step) {
+    cv::line(canvas,pixel(0,y),pixel(view.forward_m,y),{170,170,170});
+  }
+  cv::rectangle(canvas,layout.area,{130,130,130});
+  const auto origin=pixel(0,0);
   for (const double angle : {o.angle_min,o.angle_max}) {
-    cv::line(canvas,origin,mapPixel(o.max_range*std::cos(angle*radians),
-      o.max_range*std::sin(angle*radians),o,size),{190,180,120},1,cv::LINE_AA);
+    auto a=origin, b=pixel(o.max_range*std::cos(angle*radians),o.max_range*std::sin(angle*radians));
+    if (cv::clipLine(layout.area,a,b)) {cv::line(canvas,a,b,{190,180,120},1,cv::LINE_AA);}
   }
   float closest=std::numeric_limits<float>::infinity();
   cv::Point nearest;
+  auto plot=canvas(layout.area);
   for (std::size_t i=0;i<scan.ranges.size();++i) {
     const float r=scan.ranges[i];
     if (!std::isfinite(r) || r<o.min_range || r>o.max_range) {continue;}
     const double a=(o.angle_min+i*(o.angle_max-o.angle_min)/(o.bins-1))*radians;
-    const auto p=mapPixel(r*std::cos(a),r*std::sin(a),o,size);
-    cv::circle(canvas,p,3,{30,85,225},-1,cv::LINE_AA);
+    const double x=r*std::cos(a), y=r*std::sin(a);
+    if (!insideView(x,y,view)) {continue;}
+    const auto p=pixel(x,y);
+    cv::circle(plot,p-layout.area.tl(),3,{30,85,225},-1,cv::LINE_AA);
     if (r<closest) {closest=r; nearest=p;}
   }
   cv::arrowedLine(canvas,origin,origin+cv::Point(0,-22),{80,150,30},3,cv::LINE_AA);
-  cv::putText(canvas,"FRONT AXLE | +X forward / +Y left",origin+cv::Point(-140,28),cv::FONT_HERSHEY_SIMPLEX,.45,{50,50,50},1,cv::LINE_AA);
-  if (std::isfinite(closest)) {
+  cv::putText(canvas,"FRONT AXLE | +X forward / +Y left",{20,layout.canvas.height-48},
+    cv::FONT_HERSHEY_SIMPLEX,.4,{50,50,50},1,cv::LINE_AA);
+  if (std::isfinite(closest) && layout.area.width>=80 && layout.area.height>=20) {
     std::ostringstream label; label<<std::fixed<<std::setprecision(2)<<closest<<" m";
-    cv::putText(canvas,label.str(),nearest+cv::Point(8,-8),cv::FONT_HERSHEY_SIMPLEX,.5,{245,245,245},3,cv::LINE_AA);
-    cv::putText(canvas,label.str(),nearest+cv::Point(8,-8),cv::FONT_HERSHEY_SIMPLEX,.5,{20,60,190},1,cv::LINE_AA);
+    const auto at=cv::Point(std::clamp(nearest.x+8,layout.area.x,std::max(layout.area.x,layout.area.br().x-80)),
+      std::clamp(nearest.y-8,layout.area.y+15,layout.area.br().y-4));
+    cv::putText(canvas,label.str(),at,cv::FONT_HERSHEY_SIMPLEX,.45,{245,245,245},3,cv::LINE_AA);
+    cv::putText(canvas,label.str(),at,cv::FONT_HERSHEY_SIMPLEX,.45,{20,60,190},1,cv::LINE_AA);
   }
-  cv::putText(canvas,"ROI LIDAR | current obstacle surface returns",{20,30},cv::FONT_HERSHEY_SIMPLEX,.55,{40,40,40},1,cv::LINE_AA);
-  cv::putText(canvas,status,{20,55},cv::FONT_HERSHEY_SIMPLEX,.4,{50,50,50},1,cv::LINE_AA);
-  cv::putText(canvas,"Unobserved area is UNKNOWN | Q: quit | R: full ROI",{20,height-25},cv::FONT_HERSHEY_SIMPLEX,.4,{65,65,65},1,cv::LINE_AA);
+  std::ostringstream title; title<<"BEV "<<std::fixed<<std::setprecision(2)<<view.width_m<<"m wide x "<<view.forward_m<<"m forward";
+  cv::putText(canvas,title.str(),{12,22},cv::FONT_HERSHEY_SIMPLEX,.45,{40,40,40},1,cv::LINE_AA);
+  std::istringstream words(status); std::string word,line; int row=42;
+  while (words>>word) {
+    const auto next=line.empty() ? word : line+" "+word;
+    if (!line.empty() && cv::getTextSize(next,cv::FONT_HERSHEY_SIMPLEX,.35,1,nullptr).width>layout.canvas.width-24) {
+      cv::putText(canvas,line,{12,row},cv::FONT_HERSHEY_SIMPLEX,.35,{50,50,50},1,cv::LINE_AA);
+      row+=15; line=word; if (row>72) {line.clear(); break;}
+    } else {line=next;}
+  }
+  if (!line.empty()) {cv::putText(canvas,line,{12,row},cv::FONT_HERSHEY_SIMPLEX,.35,{50,50,50},1,cv::LINE_AA);}
+  cv::putText(canvas,"Unobserved = UNKNOWN | Q: quit | R: full ROI",{12,layout.canvas.height-20},
+    cv::FONT_HERSHEY_SIMPLEX,.35,{65,65,65},1,cv::LINE_AA);
   return canvas;
 }
 void BevProjector::configure(int width, int height, const point_cloud::Intrinsics & k,
-  const point_cloud::RigidTransform & t, const Options & o, int size)
+  const point_cloud::RigidTransform & t, const ViewOptions & view, int size)
 {
   if (width<1 || height<1 || size<240 || size>1600 || k.fx<=0 || k.fy<=0) {
     throw std::invalid_argument("Invalid RGB BEV geometry");
   }
-  map_x_=cv::Mat(static_cast<int>(size*.5)+140,size,CV_32F,cv::Scalar(-1));
-  map_y_=cv::Mat(static_cast<int>(size*.5)+140,size,CV_32F,cv::Scalar(-1));
-  const double scale=(size-80)/(2.0*o.max_range);
+  const auto layout=mapLayout(view,size);
+  map_x_=cv::Mat(layout.canvas,CV_32F,cv::Scalar(-1));
+  map_y_=cv::Mat(layout.canvas,CV_32F,cv::Scalar(-1));
   for (int row=0;row<map_x_.rows;++row) {
-    for (int col=0;col<size;++col) {
-      const double x=(size*.5+40-row)/scale, y=(size/2.0-col)/scale;
-      if (x<0 || x>o.max_range || std::abs(y)>o.max_range) {continue;}
+    for (int col=0;col<map_x_.cols;++col) {
+      const double x=(layout.origin_y-row)/layout.scale, y=(layout.center_x-col)/layout.scale;
+      if (!insideView(x,y,view)) {continue;}
       const point_cloud::Vector3 delta{x-t.translation[0],y-t.translation[1],-t.translation[2]};
       point_cloud::Vector3 camera{};
       for (int axis=0;axis<3;++axis) {

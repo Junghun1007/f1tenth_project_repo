@@ -267,7 +267,7 @@ class Node : public rclcpp::Node
       if (rgb_fresh) {
         const auto key=geometryKey(*s.rgb,s.vehicle_from_rgb);
         if (key!=rgb_key_) {
-          bev_.configure(s.rgb->getWidth(),s.rgb->getHeight(),intrinsics(*s.rgb),s.vehicle_from_rgb,c.scan,c.preview_size);
+          bev_.configure(s.rgb->getWidth(),s.rgb->getHeight(),intrinsics(*s.rgb),s.vehicle_from_rgb,c.view,c.preview_size);
           rgb_key_=key;
         }
         background=bev_.render(frameView(*s.rgb,CV_8UC3));
@@ -277,7 +277,7 @@ class Node : public rclcpp::Node
       if (!rgb_fresh) {text<<" | WAIT RGB";}
       else if (!aligned) {text<<" | OVERLAY WAIT SYNC";}
       else {text<<" | delta "<<std::abs(s.capture-seconds(s.rgb->getTimestamp()))*1000<<" ms";}
-      auto image=mapPreview(aligned ? s.scan : emptyScan(c.scan),c.scan,c.preview_size,text.str(),background);
+      auto image=mapPreview(aligned ? s.scan : emptyScan(c.scan),c.scan,c.view,c.preview_size,text.str(),background);
       if (c.publish_preview) {preview_pub_->publish(imageMessage(image,now()));}
       cv::Mat roi;
       if (fresh) {

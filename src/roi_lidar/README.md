@@ -15,7 +15,10 @@
 클러스터, 물체 ID, 시간 확인/유지, 가상 장애물 점, 빈 영역의 자유 공간 추정은 없다.
 빨간 점은 **물체 중심이 아닌 관측된 가장 가까운 표면 위치**다. 각도 bin 때문에 약간의 위치 양자화가 있다.
 초록 화살표는 앞차축 지면 원점이며, 화면 위가 전방 +X, 왼쪽이 차량 좌측 +Y다.
-거리 표시는 가장 가까운 반환점의 수평 거리다. 회색 격자는 미터 눈금이다.
+BEV 표시 영역은 **가로 1.5m(좌우 Y=-0.75~+0.75m), 세로 전방 X=0~4m**다.
+RGB 배경과 장애물 표시에 동일한 범위를 적용하며, 가로·세로 미터당 픽셀 비율도 같다.
+영역 밖 반환점은 프리뷰에서만 숨기고 `/scan`의 검출 사거리는 유지한다.
+거리 표시는 표시 영역 안에서 가장 가까운 반환점의 수평 거리다. 회색 격자는 미터 눈금이다.
 
 ## 빌드 / 실행
 
@@ -86,6 +89,10 @@ ros2 param set /roi_lidar height.max_m 1.0
 ros2 param set /roi_lidar ground.enabled false
 ros2 param set /roi_lidar ground.enabled true
 
+# BEV 표시 범위: 검출 사거리와 독립, 카메라 재시작 없이 적용
+ros2 param set /roi_lidar preview.width_m 1.5
+ros2 param set /roi_lidar preview.forward_m 4.0
+
 # 거리와 샘플링
 ros2 param set /roi_lidar range.max_m 12.0
 ros2 param set /roi_lidar points.max_depth_m 20.0
@@ -108,7 +115,7 @@ ros2 param set /roi_lidar preview.gui false
 ros2 param set /roi_lidar preview.publish false
 ```
 
-ROI/바닥/높이/거리/scan 설정 변경은 카메라를 재시작하지 않는다. 카메라/깊이 설정,
+BEV 표시 폭·길이 및 ROI/바닥/높이/거리/scan 설정 변경은 카메라를 재시작하지 않는다. 카메라/깊이 설정,
 RGB FPS, GUI/발행 활성화, ROI 카메라 스트림 토글은 파이프라인을 재시작한다.
 초기 측정 자세는 재연결 때도 유지한다. 차량 장착 자세나 바닥 경사가 바뀌면 노드를 재시작해 측정한다.
 실행 중 변경과 마우스 ROI는 YAML에 자동 저장되지 않는다. `ros2 param dump /roi_lidar`로 저장하거나 YAML에 반영한다.
@@ -124,7 +131,8 @@ RGB FPS, GUI/발행 활성화, ROI 카메라 스트림 토글은 파이프라인
 | `scan.support_distance_m` | 0.15 | min_samples 검사에서 최근접 거리로부터 표본을 인정할 거리 차이. |
 | `preview.max_sync_sec` | 0.08 | RGB와 depth의 최대 촬영 시각 차이. 초과하면 overlay 생략, scan은 계속 발행. |
 | `input.max_age_sec` | 0.25 | 입력·표시 신선도 제한. 만료 시 빈 scan/표시로 지움. |
-| `preview.size_px` | 800 | BEV 프리뷰 가로 크기. 실제 RGB 수신은 640×400. |
+| `preview.width_m` / `preview.forward_m` | 1.5 / 4.0 | BEV 가로 폭 / 전방 길이(m). 차량 중심을 기준으로 좌우 대칭. |
+| `preview.size_px` | 800 | 긴 변 기준 픽셀 예산(정보 표시 여백 포함), 미터 비율 유지. 실제 RGB 수신은 640×400. |
 
 일반 depth/IR 옵션은 `config/roi_lidar.yaml`에 있다. subpixel과 extended disparity는 동시에 켤 수 없다.
 초기 측정 dot 강도는 별도 `measurement_ir_dot_projector_intensity`다.

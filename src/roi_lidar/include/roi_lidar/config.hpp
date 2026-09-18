@@ -1,5 +1,6 @@
 #pragma once
 #include "roi_lidar/scan.hpp"
+#include "roi_lidar/view.hpp"
 #include <point_cloud/depth_source.hpp>
 namespace roi_lidar
 {
@@ -7,6 +8,7 @@ struct Config
 {
   point_cloud::Config camera;
   Options scan;
+  ViewOptions view;
   bool gui{true}, publish_preview{true}, camera_image{true};
   double preview_fps{15}, rgb_fps{15}, sync_sec{0.08}, max_age{0.25};
   int preview_size{800};
@@ -14,7 +16,7 @@ struct Config
 };
 inline void validate(const Config & c)
 {
-  point_cloud::validate(c.camera); validate(c.scan);
+  point_cloud::validate(c.camera); validate(c.scan); validateView(c.view);
   if (!std::isfinite(c.preview_fps) || c.preview_fps<1 || c.preview_fps>60 ||
     !std::isfinite(c.rgb_fps) || c.rgb_fps<1 || c.rgb_fps>60 ||
     !std::isfinite(c.sync_sec) || c.sync_sec<0.005 || c.sync_sec>0.25 ||
@@ -61,5 +63,7 @@ inline void validate(const Config & c)
   X("preview.fps",preview_fps,as_double) \
   X("preview.rgb_fps",rgb_fps,as_double) \
   X("preview.max_sync_sec",sync_sec,as_double) \
+  X("preview.width_m",view.width_m,as_double) \
+  X("preview.forward_m",view.forward_m,as_double) \
   X("preview.size_px",preview_size,as_int) \
   X("input.max_age_sec",max_age,as_double)

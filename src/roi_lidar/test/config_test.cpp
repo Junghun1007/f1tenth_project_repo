@@ -16,6 +16,8 @@ int main()
   rejects([](auto & p){p.rgb_fps=121;});
   rejects([](auto & p){p.sync_sec=-1;});
   rejects([](auto & p){p.max_age=std::numeric_limits<double>::quiet_NaN();});
+  rejects([](auto & p){p.view.width_m=0;});
+  rejects([](auto & p){p.view.forward_m=std::numeric_limits<double>::quiet_NaN();});
   rejects([](auto & p){p.preview_size=10000;});
   rejects([](auto & p){p.scan.roi_width=2;});
   rejects([](auto & p){p.camera.subpixel=true; p.camera.extended=true;});

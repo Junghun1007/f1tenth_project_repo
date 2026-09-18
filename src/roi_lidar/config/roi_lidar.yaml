@@ -47,4 +47,6 @@ roi_lidar:
     preview.fps: 15.0
     preview.rgb_fps: 15.0           # 640x400 undistorted CAM_A; same device session as stereo.
     preview.max_sync_sec: 0.08      # Suppress overlay if RGB/depth timestamps differ more than this.
-    preview.size_px: 800
+    preview.width_m: 1.5           # Vehicle Y: -0.75..+0.75m. Display only.
+    preview.forward_m: 4.0         # Vehicle X: 0..4m. Scan range remains independent.
+    preview.size_px: 800           # Long-side pixel budget including header/footer.
