@@ -1,3 +1,6 @@
+# 이 파일을 직접 수정한 뒤 실행:
+# ros2 launch roi_lidar roi_lidar.launch.py config_file:=/absolute/path/roi_lidar.yaml
+# profile 기본값 yaml: 이 파일의 값을 그대로 사용. 저장 후 노드 재시작(재빌드 불필요).
 roi_lidar:
   ros__parameters:
     device_id: ""
@@ -27,20 +30,35 @@ roi_lidar:
     points.pixel_stride: 2
     points.min_depth_m: 0.1
     points.max_depth_m: 20.0
-    # Measured startup plane is Z=0. Remove on/below floor+5cm, no per-frame RANSAC.
+    # 시작 측정 지면(Z=0) 기준 제거 두께:
+    # min(max_distance_m, distance_m + distance_per_meter * 수평거리).
+    # 기본 1m에서 6cm, 4m에서 9cm, 7m 이상에서 최대 12cm. 낮은 장애물도 제외될 수 있음.
     ground.enabled: true
     ground.distance_m: 0.05
+    ground.distance_per_meter: 0.01 # 거리 1m마다 제거 높이 1cm 증가. 0이면 고정 두께.
+    ground.max_distance_m: 0.12     # 제거 높이 증가 상한. distance_m 이상.
     height.max_m: 1.0
     range.min_m: 0.1
     range.max_m: 12.0               # Software limit, NOT a guaranteed detection range.
     scan.angle_min_deg: -70.0
     scan.angle_max_deg: 70.0
     scan.bins: 281                  # 0.5-degree bins; unsupported directions remain NaN.
-    scan.min_samples: 1             # Optional same-frame support only; no temporal gate.
+    scan.min_samples: 2             # 같은 방향·최근접 거리 주변의 최소 depth 픽셀 수. 시간 필터 아님.
     scan.support_distance_m: 0.15   # Other samples must be near the nearest return.
     input.max_age_sec: 0.25
 
+    # 장애물 군집: 높이 근거가 있는 2D 스캔점만 연결. 바닥 점을 연결 경로로 쓰지 않음.
+    cluster.enabled: true
+    cluster.tolerance_m: 0.15       # 이웃 반환점 XY 간격 15cm 이내. 크면 서로 다른 물체도 합쳐짐.
+    cluster.min_bins: 2             # 최소 스캔 방향 수(depth 픽셀 수 아님). 1은 고립점도 허용.
+    cluster.max_gap_bins: 1         # 연결 사이에 허용하는 미관측/제외 방향 개수.
+    cluster.min_height_m: 0.10      # 선택 거리 주변에서 지면 위 10cm 이상의 높이 근거 필요.
+
     # Separate RGB/GUI rates preserve headroom for depth processing.
+    preview.show_raw_points: false # true: 군집 전 스캔점도 회색으로 비교 표시.
+    # RGB BEV 영상 보간만 변경. 장애물 좌표/클러스터에는 영향 없음.
+    # nearest: 최근접 / linear: 쌍선형(기본) / cubic: 3차 / lanczos4: Lanczos 4
+    preview.interpolation: "linear"
     preview.gui: true
     preview.publish: true
     preview.camera_image: true     # Rectified-right grayscale ROI; false uses depth colors, saves USB.

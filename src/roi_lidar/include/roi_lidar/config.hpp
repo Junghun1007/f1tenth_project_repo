@@ -1,5 +1,5 @@
 #pragma once
-#include "roi_lidar/scan.hpp"
+#include "roi_lidar/clusters.hpp"
 #include "roi_lidar/view.hpp"
 #include <point_cloud/depth_source.hpp>
 namespace roi_lidar
@@ -8,15 +8,24 @@ struct Config
 {
   point_cloud::Config camera;
   Options scan;
+  ClusterOptions cluster;
   ViewOptions view;
   bool gui{true}, publish_preview{true}, camera_image{true};
   double preview_fps{15}, rgb_fps{15}, sync_sec{0.08}, max_age{0.25};
   int preview_size{800};
+  bool show_raw_points{false};
+  std::string interpolation{"linear"};
   Config() {camera.fps=90; camera.subpixel=true; camera.dot_intensity=0.7;}
 };
 inline void validate(const Config & c)
 {
-  point_cloud::validate(c.camera); validate(c.scan); validateView(c.view);
+  point_cloud::validate(c.camera); validate(c.scan); validateView(c.view); validateClusters(c.cluster);
+  if (c.cluster.min_height_m>c.scan.max_height) {
+    throw std::invalid_argument("cluster.min_height_m must not exceed height.max_m");
+  }
+  if (c.interpolation!="nearest" && c.interpolation!="linear" && c.interpolation!="cubic" && c.interpolation!="lanczos4") {
+    throw std::invalid_argument("preview.interpolation: nearest / linear / cubic / lanczos4");
+  }
   if (!std::isfinite(c.preview_fps) || c.preview_fps<1 || c.preview_fps>60 ||
     !std::isfinite(c.rgb_fps) || c.rgb_fps<1 || c.rgb_fps>60 ||
     !std::isfinite(c.sync_sec) || c.sync_sec<0.005 || c.sync_sec>0.25 ||
@@ -49,6 +58,8 @@ inline void validate(const Config & c)
   X("points.max_depth_m",scan.max_depth,as_double) \
   X("ground.enabled",scan.ground_enabled,as_bool) \
   X("ground.distance_m",scan.ground_distance,as_double) \
+  X("ground.distance_per_meter",scan.ground_distance_per_meter,as_double) \
+  X("ground.max_distance_m",scan.ground_max_distance,as_double) \
   X("height.max_m",scan.max_height,as_double) \
   X("range.min_m",scan.min_range,as_double) \
   X("range.max_m",scan.max_range,as_double) \
@@ -57,6 +68,13 @@ inline void validate(const Config & c)
   X("scan.bins",scan.bins,as_int) \
   X("scan.min_samples",scan.min_samples,as_int) \
   X("scan.support_distance_m",scan.support_distance,as_double) \
+  X("cluster.enabled",cluster.enabled,as_bool) \
+  X("cluster.tolerance_m",cluster.tolerance_m,as_double) \
+  X("cluster.min_bins",cluster.min_bins,as_int) \
+  X("cluster.max_gap_bins",cluster.max_gap_bins,as_int) \
+  X("cluster.min_height_m",cluster.min_height_m,as_double) \
+  X("preview.show_raw_points",show_raw_points,as_bool) \
+  X("preview.interpolation",interpolation,as_string) \
   X("preview.gui",gui,as_bool) \
   X("preview.publish",publish_preview,as_bool) \
   X("preview.camera_image",camera_image,as_bool) \

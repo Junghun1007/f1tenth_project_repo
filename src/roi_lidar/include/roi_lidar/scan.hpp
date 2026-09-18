@@ -15,24 +15,27 @@ struct Options
   double roi_x{0}, roi_y{0}, roi_width{1}, roi_height{1}; // normalized image rectangle
   int pixel_stride{2};
   bool ground_enabled{true};
-  double ground_distance{0.05}, max_height{1.0}; // measured plane is vehicle Z=0
+  double ground_distance{0.05}, ground_distance_per_meter{0.01}, ground_max_distance{0.12};
+  double max_height{1.0}; // measured plane is vehicle Z=0
   double min_depth{0.1}, max_depth{20.0};
   double min_range{0.1}, max_range{12.0};
   double angle_min{-70}, angle_max{70};
-  int bins{281}, min_samples{1};
+  int bins{281}, min_samples{2};
   double support_distance{0.15};
 };
 inline void validate(const Options & o)
 {
   for (const auto v : {o.roi_x,o.roi_y,o.roi_width,o.roi_height,o.ground_distance,
-    o.max_height,o.min_depth,o.max_depth,o.min_range,o.max_range,o.angle_min,
+    o.ground_distance_per_meter,o.ground_max_distance,o.max_height,o.min_depth,o.max_depth,o.min_range,o.max_range,o.angle_min,
     o.angle_max,o.support_distance}) {
     if (!std::isfinite(v)) {throw std::invalid_argument("ROI/scan values must be finite");}
   }
   if (o.roi_x < 0 || o.roi_y < 0 || o.roi_width <= 0 || o.roi_height <= 0 ||
     o.roi_x+o.roi_width > 1.0000001 || o.roi_y+o.roi_height > 1.0000001 ||
     o.pixel_stride < 1 || o.pixel_stride > 16 || o.ground_distance < 0 ||
-    o.ground_distance > 0.3 || o.max_height <= o.ground_distance || o.max_height > 10 ||
+    o.ground_distance > 0.3 || o.ground_distance_per_meter<0 || o.ground_distance_per_meter>0.1 ||
+    o.ground_max_distance<o.ground_distance || o.ground_max_distance>0.5 ||
+    o.max_height <= o.ground_max_distance || o.max_height > 10 ||
     o.min_depth <= 0 || o.max_depth <= o.min_depth || o.max_depth > 65.535 ||
     o.min_range <= 0 || o.max_range <= o.min_range || o.max_range > 65.535 ||
     o.angle_min < -90 || o.angle_max > 90 || o.angle_max <= o.angle_min ||
@@ -57,11 +60,13 @@ inline Rect imageRoi(int width, int height, const Options & o)
 struct Scan
 {
   std::vector<float> ranges;
+  std::vector<float> max_heights; // Height evidence only from samples near the selected range.
   std::size_t depth_points{0}, ground_removed{0}, height_removed{0}, accepted_points{0}, valid_bins{0};
 };
 inline Scan emptyScan(const Options & o)
 {
-  Scan s; s.ranges.assign(o.bins, std::numeric_limits<float>::quiet_NaN()); return s;
+  Scan s; s.ranges.assign(o.bins, std::numeric_limits<float>::quiet_NaN());
+  s.max_heights=s.ranges; return s;
 }
 class Projector
 {
@@ -104,8 +109,8 @@ public:
     }
     const auto & o=options_;
     auto out=emptyScan(o);
-    std::vector<std::pair<int,float>> samples;
-    if (o.min_samples > 1) {samples.reserve(rays_.size());}
+    struct Sample {int bin; float range, height;};
+    std::vector<Sample> samples; samples.reserve(rays_.size());
     for (const auto & ray : rays_) {
       const auto offset=static_cast<std::size_t>(ray.v)*stride+ray.u*2;
       const auto raw=static_cast<std::uint16_t>(bytes[offset] | (bytes[offset+1]<<8));
@@ -113,26 +118,34 @@ public:
       if (!raw || depth<o.min_depth || depth>o.max_depth) {continue;}
       ++out.depth_points;
       const double z=ray.direction[2]*depth+transform_.translation[2];
-      if (o.ground_enabled && z<=o.ground_distance) {++out.ground_removed; continue;}
       if (z>o.max_height) {++out.height_removed; continue;}
       const double x=ray.direction[0]*depth+transform_.translation[0];
       const double y=ray.direction[1]*depth+transform_.translation[1];
       if (x<=0) {continue;}
-      const double range=std::hypot(x,y), angle=std::atan2(y,x)/radians;
-      if (range<o.min_range || range>o.max_range || angle<o.angle_min || angle>o.angle_max) {continue;}
+      const double range=std::hypot(x,y);
+      const double floor_margin=std::min(o.ground_max_distance,
+        o.ground_distance+o.ground_distance_per_meter*range);
+      if (o.ground_enabled && z<=floor_margin) {++out.ground_removed; continue;}
+      if (range<o.min_range || range>o.max_range) {continue;}
+      const double angle=std::atan2(y,x)/radians;
+      if (angle<o.angle_min || angle>o.angle_max) {continue;}
       const int bin=std::clamp(static_cast<int>(std::lround(
         (angle-o.angle_min)*(o.bins-1)/(o.angle_max-o.angle_min))),0,o.bins-1);
       auto & nearest=out.ranges[bin];
       if (!std::isfinite(nearest) || range<nearest) {nearest=range;}
-      if (o.min_samples>1) {samples.emplace_back(bin,range);}
+      samples.push_back({bin,static_cast<float>(range),static_cast<float>(z)});
       ++out.accepted_points;
     }
     std::vector<int> support(o.bins,0);
     for (const auto & sample : samples) {
-      if (sample.second-out.ranges[sample.first]<=o.support_distance) {++support[sample.first];}
+      if (sample.range-out.ranges[sample.bin]<=o.support_distance) {
+        ++support[sample.bin];
+        auto & height=out.max_heights[sample.bin];
+        if (!std::isfinite(height) || sample.height>height) {height=sample.height;}
+      }
     }
     for (int i=0;i<o.bins;++i) {
-      if (o.min_samples>1 && support[i]<o.min_samples) {out.ranges[i]=std::numeric_limits<float>::quiet_NaN();}
+      if (support[i]<o.min_samples) {out.ranges[i]=out.max_heights[i]=std::numeric_limits<float>::quiet_NaN();}
       out.valid_bins+=std::isfinite(out.ranges[i]);
     }
     return out;

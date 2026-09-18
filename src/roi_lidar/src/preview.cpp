@@ -1,6 +1,7 @@
 #include "roi_lidar/preview.hpp"
 #include <opencv2/imgproc.hpp>
 #include <iomanip>
+#include <array>
 #include <sstream>
 namespace roi_lidar
 {
@@ -23,7 +24,8 @@ cv::Point mapPixel(double x, double y, const ViewOptions & view, int size)
     static_cast<int>(std::lround(layout.origin_y-x*layout.scale))};
 }
 cv::Mat mapPreview(const Scan & scan, const Options & o, const ViewOptions & view,
-  int size, const std::string & status, const cv::Mat & background)
+  int size, const std::string & status, const cv::Mat & background,
+  const Clusters * clusters, bool show_raw_points)
 {
   const auto layout=mapLayout(view,size);
   cv::Mat canvas(layout.canvas,CV_8UC3,cv::Scalar(245,245,245));
@@ -54,20 +56,51 @@ cv::Mat mapPreview(const Scan & scan, const Options & o, const ViewOptions & vie
   float closest=std::numeric_limits<float>::infinity();
   cv::Point nearest;
   auto plot=canvas(layout.area);
-  for (std::size_t i=0;i<scan.ranges.size();++i) {
-    const float r=scan.ranges[i];
-    if (!std::isfinite(r) || r<o.min_range || r>o.max_range) {continue;}
-    const double a=(o.angle_min+i*(o.angle_max-o.angle_min)/(o.bins-1))*radians;
-    const double x=r*std::cos(a), y=r*std::sin(a);
-    if (!insideView(x,y,view)) {continue;}
-    const auto p=pixel(x,y);
-    cv::circle(plot,p-layout.area.tl(),3,{30,85,225},-1,cv::LINE_AA);
-    if (r<closest) {closest=r; nearest=p;}
+  if (!clusters || show_raw_points) {
+    for (std::size_t i=0;i<scan.ranges.size();++i) {
+      const float r=scan.ranges[i];
+      if (!std::isfinite(r) || r<o.min_range || r>o.max_range) {continue;}
+      const double a=(o.angle_min+i*(o.angle_max-o.angle_min)/(o.bins-1))*radians;
+      const double x=r*std::cos(a), y=r*std::sin(a);
+      if (!insideView(x,y,view)) {continue;}
+      const auto p=pixel(x,y);
+      cv::circle(plot,p-layout.area.tl(),clusters ? 2 : 3,
+        clusters ? cv::Scalar(160,160,160) : cv::Scalar(30,85,225),-1,cv::LINE_AA);
+      if (r<closest) {closest=r; nearest=p;}
+    }
+  }
+  if (clusters) {
+    const std::array<cv::Scalar,6> colors{{{60,180,255},{100,235,100},{255,180,80},
+      {220,110,245},{90,235,235},{190,190,255}}};
+    for (std::size_t id=0;id<clusters->objects.size();++id) {
+      const auto & object=clusters->objects[id];
+      const auto color=colors[id%colors.size()];
+      std::vector<cv::Point> points;
+      for (const auto bin:object.bins) {
+        const double r=scan.ranges[bin];
+        const double a=(o.angle_min+bin*(o.angle_max-o.angle_min)/(o.bins-1))*radians;
+        points.push_back(pixel(r*std::cos(a),r*std::sin(a))-layout.area.tl());
+      }
+      // Outline of observed front surfaces only; never a claimed full footprint.
+      if (points.size()>=3) {
+        std::vector<cv::Point> hull; cv::convexHull(points,hull);
+        cv::polylines(plot,std::vector<std::vector<cv::Point>>{hull},true,color,2,cv::LINE_AA);
+      } else if (points.size()==2) {cv::line(plot,points[0],points[1],color,2,cv::LINE_AA);}
+      for (const auto & point:points) {cv::circle(plot,point,3,color,-1,cv::LINE_AA);}
+      if (insideView(object.x,object.y,view)) {
+        const auto center=pixel(object.x,object.y)-layout.area.tl();
+        cv::drawMarker(plot,center,color,cv::MARKER_CROSS,10,2,cv::LINE_AA);
+        std::ostringstream label; label<<"#"<<id+1<<" "<<std::fixed<<std::setprecision(2)<<object.nearest_range<<"m";
+        const cv::Point at(std::clamp(center.x+8,0,std::max(0,plot.cols-100)),std::clamp(center.y-8,15,std::max(15,plot.rows-4)));
+        cv::putText(plot,label.str(),at,cv::FONT_HERSHEY_SIMPLEX,.4,{25,25,25},3,cv::LINE_AA);
+        cv::putText(plot,label.str(),at,cv::FONT_HERSHEY_SIMPLEX,.4,color,1,cv::LINE_AA);
+      }
+    }
   }
   cv::arrowedLine(canvas,origin,origin+cv::Point(0,-22),{80,150,30},3,cv::LINE_AA);
   cv::putText(canvas,"FRONT AXLE | +X forward / +Y left",{20,layout.canvas.height-48},
     cv::FONT_HERSHEY_SIMPLEX,.4,{50,50,50},1,cv::LINE_AA);
-  if (std::isfinite(closest) && layout.area.width>=80 && layout.area.height>=20) {
+  if (!clusters && std::isfinite(closest) && layout.area.width>=80 && layout.area.height>=20) {
     std::ostringstream label; label<<std::fixed<<std::setprecision(2)<<closest<<" m";
     const auto at=cv::Point(std::clamp(nearest.x+8,layout.area.x,std::max(layout.area.x,layout.area.br().x-80)),
       std::clamp(nearest.y-8,layout.area.y+15,layout.area.br().y-4));
@@ -114,11 +147,17 @@ void BevProjector::configure(int width, int height, const point_cloud::Intrinsic
     }
   }
 }
-cv::Mat BevProjector::render(const cv::Mat & bgr) const
+cv::Mat BevProjector::render(const cv::Mat & bgr, const std::string & interpolation) const
 {
   if (map_x_.empty() || bgr.type()!=CV_8UC3) {throw std::invalid_argument("Unconfigured RGB BEV preview");}
+  int method=cv::INTER_LINEAR;
+  if (interpolation=="nearest") {method=cv::INTER_NEAREST;}
+  else if (interpolation=="linear") {method=cv::INTER_LINEAR;}
+  else if (interpolation=="cubic") {method=cv::INTER_CUBIC;}
+  else if (interpolation=="lanczos4") {method=cv::INTER_LANCZOS4;}
+  else {throw std::invalid_argument("Unknown BEV interpolation: "+interpolation);}
   cv::Mat out;
-  cv::remap(bgr,out,map_x_,map_y_,cv::INTER_LINEAR,cv::BORDER_CONSTANT,cv::Scalar(35,35,35));
+  cv::remap(bgr,out,map_x_,map_y_,method,cv::BORDER_CONSTANT,cv::Scalar(35,35,35));
   return out;
 }
 cv::Mat roiPreview(const cv::Mat & input, const Options & o, bool depth)

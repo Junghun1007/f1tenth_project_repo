@@ -1,5 +1,5 @@
 #pragma once
-#include "roi_lidar/scan.hpp"
+#include "roi_lidar/clusters.hpp"
 #include "roi_lidar/view.hpp"
 #include <opencv2/core.hpp>
 #include <string>
@@ -13,14 +13,14 @@ struct MapLayout
 };
 MapLayout mapLayout(const ViewOptions & view, int size);
 cv::Point mapPixel(double x, double y, const ViewOptions & view, int size);
-cv::Mat mapPreview(const Scan & scan, const Options & o, const ViewOptions & view, int size, const std::string & status, const cv::Mat & background = {});
+cv::Mat mapPreview(const Scan & scan, const Options & o, const ViewOptions & view, int size, const std::string & status, const cv::Mat & background = {}, const Clusters * clusters = nullptr, bool show_raw_points = false);
 class BevProjector
 {
   cv::Mat map_x_, map_y_;
 public:
   void configure(int width, int height, const point_cloud::Intrinsics & k,
     const point_cloud::RigidTransform & vehicle_from_camera, const ViewOptions & view, int size);
-  cv::Mat render(const cv::Mat & bgr) const;
+  cv::Mat render(const cv::Mat & bgr, const std::string & interpolation = "linear") const;
 };
 cv::Mat roiPreview(const cv::Mat & gray_or_depth, const Options & o, bool depth);
 }
