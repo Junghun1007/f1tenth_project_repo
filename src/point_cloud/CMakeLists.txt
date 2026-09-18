@@ -21,13 +21,20 @@ find_package(depthai 3.6 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(point_cloud_depth_source STATIC src/depth_source.cpp)
-target_include_directories(point_cloud_depth_source PUBLIC include)
+target_include_directories(point_cloud_depth_source PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
 target_link_libraries(point_cloud_depth_source PUBLIC depthai::core)
 
 add_executable(point_cloud_node src/point_cloud_node.cpp)
 ament_target_dependencies(point_cloud_node
   rclcpp rcl_interfaces sensor_msgs std_msgs geometry_msgs tf2_ros tf2 visualization_msgs)
 target_link_libraries(point_cloud_node point_cloud_depth_source oak_startup::measurement Threads::Threads)
+
+install(TARGETS point_cloud_depth_source EXPORT point_cloud_depth_targets ARCHIVE DESTINATION lib)
+install(DIRECTORY include/ DESTINATION include)
+ament_export_targets(point_cloud_depth_targets HAS_LIBRARY_TARGET)
+ament_export_dependencies(depthai)
 
 install(TARGETS point_cloud_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})

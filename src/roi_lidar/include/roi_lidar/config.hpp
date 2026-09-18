@@ -1,0 +1,65 @@
+#pragma once
+#include "roi_lidar/scan.hpp"
+#include <point_cloud/depth_source.hpp>
+namespace roi_lidar
+{
+struct Config
+{
+  point_cloud::Config camera;
+  Options scan;
+  bool gui{true}, publish_preview{true}, camera_image{true};
+  double preview_fps{15}, rgb_fps{15}, sync_sec{0.08}, max_age{0.25};
+  int preview_size{800};
+  Config() {camera.fps=90; camera.subpixel=true; camera.dot_intensity=0.7;}
+};
+inline void validate(const Config & c)
+{
+  point_cloud::validate(c.camera); validate(c.scan);
+  if (!std::isfinite(c.preview_fps) || c.preview_fps<1 || c.preview_fps>60 ||
+    !std::isfinite(c.rgb_fps) || c.rgb_fps<1 || c.rgb_fps>60 ||
+    !std::isfinite(c.sync_sec) || c.sync_sec<0.005 || c.sync_sec>0.25 ||
+    !std::isfinite(c.max_age) || c.max_age<0.05 || c.max_age>2 ||
+    c.preview_size<240 || c.preview_size>1600) {
+    throw std::invalid_argument("preview/rgb FPS=1..60, sync=0.005..0.25s, age=0.05..2s, size=240..1600");
+  }
+}
+}
+// Shared declaration/snapshot/validation table; startup and mount are read-only.
+#define ROI_PARAMETERS(X) \
+  X("camera.resolution",camera.resolution,as_string) \
+  X("camera.fps",camera.fps,as_double) \
+  X("depth.mode",camera.mode,as_string) \
+  X("depth.ir_dot_projector_intensity",camera.dot_intensity,as_double) \
+  X("depth.ir_flood_light_intensity",camera.flood_intensity,as_double) \
+  X("depth.confidence_threshold",camera.confidence,as_int) \
+  X("depth.left_right_check",camera.lr_check,as_bool) \
+  X("depth.left_right_threshold",camera.lr_threshold,as_int) \
+  X("depth.subpixel",camera.subpixel,as_bool) \
+  X("depth.subpixel_fractional_bits",camera.subpixel_bits,as_int) \
+  X("depth.extended_disparity",camera.extended,as_bool) \
+  X("depth.median_filter",camera.median,as_string) \
+  X("roi.x",scan.roi_x,as_double) \
+  X("roi.y",scan.roi_y,as_double) \
+  X("roi.width",scan.roi_width,as_double) \
+  X("roi.height",scan.roi_height,as_double) \
+  X("points.pixel_stride",scan.pixel_stride,as_int) \
+  X("points.min_depth_m",scan.min_depth,as_double) \
+  X("points.max_depth_m",scan.max_depth,as_double) \
+  X("ground.enabled",scan.ground_enabled,as_bool) \
+  X("ground.distance_m",scan.ground_distance,as_double) \
+  X("height.max_m",scan.max_height,as_double) \
+  X("range.min_m",scan.min_range,as_double) \
+  X("range.max_m",scan.max_range,as_double) \
+  X("scan.angle_min_deg",scan.angle_min,as_double) \
+  X("scan.angle_max_deg",scan.angle_max,as_double) \
+  X("scan.bins",scan.bins,as_int) \
+  X("scan.min_samples",scan.min_samples,as_int) \
+  X("scan.support_distance_m",scan.support_distance,as_double) \
+  X("preview.gui",gui,as_bool) \
+  X("preview.publish",publish_preview,as_bool) \
+  X("preview.camera_image",camera_image,as_bool) \
+  X("preview.fps",preview_fps,as_double) \
+  X("preview.rgb_fps",rgb_fps,as_double) \
+  X("preview.max_sync_sec",sync_sec,as_double) \
+  X("preview.size_px",preview_size,as_int) \
+  X("input.max_age_sec",max_age,as_double)

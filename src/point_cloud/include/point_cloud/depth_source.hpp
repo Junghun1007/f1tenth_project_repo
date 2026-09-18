@@ -46,9 +46,11 @@ void validate(const Config & config);
 class DepthSource
 {
 public:
-  DepthSource(const Config & config, const std::string & device_id);
+  DepthSource(const Config & config, const std::string & device_id, bool right_preview = false, double rgb_fps = 0.0);
   ~DepthSource();
   std::shared_ptr<dai::ImgFrame> tryGet();
+  std::shared_ptr<dai::ImgFrame> tryGetRight();
+  std::shared_ptr<dai::ImgFrame> tryGetRgb();
   std::string deviceId() const;
   RigidTransform rgbFromFrame(dai::ImgFrame & frame);
 
@@ -56,6 +58,6 @@ private:
   std::map<dai::CameraBoardSocket, RigidTransform> rgb_from_reference_;
   std::shared_ptr<dai::Device> device_;
   std::unique_ptr<dai::Pipeline> pipeline_;
-  std::shared_ptr<dai::MessageQueue> queue_;
+  std::shared_ptr<dai::MessageQueue> queue_, right_queue_, rgb_queue_;
 };
 }  // namespace point_cloud

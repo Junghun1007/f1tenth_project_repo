@@ -1,0 +1,50 @@
+roi_lidar:
+  ros__parameters:
+    device_id: ""
+    # Request, not a measured/guaranteed device rate. 'fast' profile disables subpixel.
+    camera.resolution: "400p"
+    camera.fps: 90.0
+    depth.mode: "high_density"
+    depth.subpixel: true
+    depth.subpixel_fractional_bits: 3
+    depth.extended_disparity: false
+    depth.median_filter: "off"
+    depth.confidence_threshold: 200
+    depth.left_right_check: true
+    depth.left_right_threshold: 10
+    depth.ir_dot_projector_intensity: 0.7
+    depth.ir_flood_light_intensity: 0.0
+    # Startup IR is separate. Set both intensities to 0.0 on a non-Pro device.
+    measurement_ir_dot_projector_intensity: 0.7
+    measurement_roi_preview_enabled: false
+
+    # Normalized image ROI: top-left X/Y and width/height in [0,1].
+    # Full image initially; drag in the depth/right ROI window to select a rectangle.
+    roi.x: 0.0
+    roi.y: 0.0
+    roi.width: 1.0
+    roi.height: 1.0
+    points.pixel_stride: 2
+    points.min_depth_m: 0.1
+    points.max_depth_m: 20.0
+    # Measured startup plane is Z=0. Remove on/below floor+5cm, no per-frame RANSAC.
+    ground.enabled: true
+    ground.distance_m: 0.05
+    height.max_m: 1.0
+    range.min_m: 0.1
+    range.max_m: 12.0               # Software limit, NOT a guaranteed detection range.
+    scan.angle_min_deg: -70.0
+    scan.angle_max_deg: 70.0
+    scan.bins: 281                  # 0.5-degree bins; unsupported directions remain NaN.
+    scan.min_samples: 1             # Optional same-frame support only; no temporal gate.
+    scan.support_distance_m: 0.15   # Other samples must be near the nearest return.
+    input.max_age_sec: 0.25
+
+    # Separate RGB/GUI rates preserve headroom for depth processing.
+    preview.gui: true
+    preview.publish: true
+    preview.camera_image: true     # Rectified-right grayscale ROI; false uses depth colors, saves USB.
+    preview.fps: 15.0
+    preview.rgb_fps: 15.0           # 640x400 undistorted CAM_A; same device session as stereo.
+    preview.max_sync_sec: 0.08      # Suppress overlay if RGB/depth timestamps differ more than this.
+    preview.size_px: 800

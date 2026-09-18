@@ -12,6 +12,7 @@ int main()
   if (Config{}.fps != 50.0 || Config{}.ground.distance_m != 0.03) {
     throw std::runtime_error("Requested FPS/ground defaults lost");
   }
+  Config high_rate; high_rate.fps = 120; validate(high_rate);
   for (const auto & name : {"400p", "480p", "720p", "800p"}) {
     Config c;
     c.resolution = name;
@@ -27,6 +28,7 @@ int main()
   rejects([](Config & c) {c.dot_intensity = 1.1;});
   rejects([](Config & c) {c.flood_intensity = -0.1;});
   rejects([](Config & c) {c.fps = std::numeric_limits<double>::quiet_NaN();});
+  rejects([](Config & c) {c.fps = 121;});
   rejects([](Config & c) {c.confidence = 256;});
   rejects([](Config & c) {c.subpixel = true; c.extended = true;});
   rejects([](Config & c) {c.subpixel = true; c.subpixel_bits = 5; c.median = "3x3";});

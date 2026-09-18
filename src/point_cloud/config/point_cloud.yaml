@@ -9,7 +9,7 @@ point_cloud:
     # 400p=640x400, 480p=640x480, 720p=1280x720, 800p=1280x800.
     # Different aspect ratios may change crop/FOV. Device support is required.
     camera.resolution: "400p"
-    camera.fps: 50.0                 # 1..60 requested; achieved rate depends on mode/USB/host.
+    camera.fps: 50.0                 # 1..120 requested; achieved rate depends on mode/USB/host.
     depth.mode: "high_density"      # default, high_density, high_accuracy
     depth.ir_dot_projector_intensity: 0.5 # 0..1; 0=OFF. Positive values require supported OAK Pro.
     depth.ir_flood_light_intensity: 0.0   # 0..1; independent of the dot projector.

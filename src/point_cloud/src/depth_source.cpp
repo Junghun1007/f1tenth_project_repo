@@ -43,8 +43,8 @@ void validate(const Config & c)
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);
-  if (!std::isfinite(c.fps) || c.fps < 1 || c.fps > 60) {
-    throw std::invalid_argument("camera.fps must be 1..60; achievable FPS depends on the device/mode");
+  if (!std::isfinite(c.fps) || c.fps < 1 || c.fps > 120) {
+    throw std::invalid_argument("camera.fps must be 1..120; achievable FPS depends on the device/mode");
   }
   for (const double intensity : {c.dot_intensity, c.flood_intensity}) {
     if (!std::isfinite(intensity) || intensity < 0 || intensity > 1) {
@@ -77,9 +77,12 @@ void validate(const Config & c)
   }
 }
 
-DepthSource::DepthSource(const Config & c, const std::string & device_id)
+DepthSource::DepthSource(const Config & c, const std::string & device_id, bool right_preview, double rgb_fps)
 {
   validate(c);
+  if (!std::isfinite(rgb_fps) || rgb_fps < 0 || rgb_fps > 60) {
+    throw std::invalid_argument("RGB preview FPS must be 0..60");
+  }
   device_ = device_id.empty() ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
     std::make_shared<dai::Device>(dai::DeviceInfo(device_id), dai::UsbSpeed::SUPER);
   pipeline_ = std::make_unique<dai::Pipeline>(device_);
@@ -112,11 +115,32 @@ DepthSource::DepthSource(const Config & c, const std::string & device_id)
   post.thresholdFilter.minRange = 0;
   post.thresholdFilter.maxRange = 65535;
   queue_ = stereo->depth.createOutputQueue(1, false);
+  if (right_preview) {right_queue_ = stereo->rectifiedRight.createOutputQueue(1, false);}
+  dai::Node::Output * rgb_output = nullptr;
+  if (rgb_fps > 0) {
+    auto rgb = pipeline_->create<dai::node::Camera>();
+    rgb->build(dai::CameraBoardSocket::CAM_A);
+    rgb_output = rgb->requestOutput({640,400}, dai::ImgFrame::Type::BGR888i,
+      dai::ImgResizeMode::CROP, static_cast<float>(rgb_fps), true);
+    rgb_queue_ = rgb_output->createOutputQueue(1, false);
+  }
   pipeline_->build();
   const auto bridge = stereo->depth.getXLinkBridge();
   if (!bridge || !bridge->xLinkOut) {throw std::runtime_error("Missing depth XLink bridge");}
   bridge->xLinkOut->input.setMaxSize(1);
   bridge->xLinkOut->input.setBlocking(false);
+  if (right_preview) {
+    const auto right_bridge = stereo->rectifiedRight.getXLinkBridge();
+    if (!right_bridge || !right_bridge->xLinkOut) {throw std::runtime_error("Missing right preview bridge");}
+    right_bridge->xLinkOut->input.setMaxSize(1);
+    right_bridge->xLinkOut->input.setBlocking(false);
+  }
+  if (rgb_output) {
+    const auto rgb_bridge = rgb_output->getXLinkBridge();
+    if (!rgb_bridge || !rgb_bridge->xLinkOut) {throw std::runtime_error("Missing RGB preview bridge");}
+    rgb_bridge->xLinkOut->input.setMaxSize(1);
+    rgb_bridge->xLinkOut->input.setBlocking(false);
+  }
   pipeline_->start();
   if (!device_->setIrLaserDotProjectorIntensity(static_cast<float>(c.dot_intensity)) && c.dot_intensity > 0) {
     throw std::runtime_error("Dot projector unavailable: use a supported OAK Pro or set depth.ir_dot_projector_intensity=0.0");
@@ -135,6 +159,16 @@ std::shared_ptr<dai::ImgFrame> DepthSource::tryGet()
 {
   if (!pipeline_->isRunning()) {throw std::runtime_error("Depth pipeline stopped");}
   return queue_->tryGet<dai::ImgFrame>();
+}
+
+std::shared_ptr<dai::ImgFrame> DepthSource::tryGetRight()
+{
+  return right_queue_ ? right_queue_->tryGet<dai::ImgFrame>() : nullptr;
+}
+
+std::shared_ptr<dai::ImgFrame> DepthSource::tryGetRgb()
+{
+  return rgb_queue_ ? rgb_queue_->tryGet<dai::ImgFrame>() : nullptr;
 }
 
 RigidTransform DepthSource::rgbFromFrame(dai::ImgFrame & frame)
