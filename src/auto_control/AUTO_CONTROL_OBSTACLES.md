@@ -176,7 +176,7 @@ ros2 topic echo /auto/avoidance_preview/status
 
 ```yaml
     obstacle_slowdown_enabled: true
-    obstacle_slowdown_speed_mps: 0.5
+    obstacle_slowdown_speed_mps: 1.0
     obstacle_slowdown_clear_sec: 1.0
 ```
 

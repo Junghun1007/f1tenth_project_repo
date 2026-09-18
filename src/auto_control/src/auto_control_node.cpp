@@ -197,7 +197,7 @@ private:
     avoidance_control_enabled_=declare_parameter<bool>("avoidance_control_enabled",false,avoidance_descriptor);
     avoidance_deformation_only_=declare_parameter<bool>("avoidance_deformation_only",true,avoidance_descriptor);
     obstacle_slowdown_enabled_=declare_parameter<bool>("obstacle_slowdown_enabled",true,avoidance_descriptor);
-    obstacle_slowdown_speed_mps_=declare_parameter<double>("obstacle_slowdown_speed_mps",.5,avoidance_descriptor);
+    obstacle_slowdown_speed_mps_=declare_parameter<double>("obstacle_slowdown_speed_mps",1.0,avoidance_descriptor);
     obstacle_slowdown_clear_sec_=declare_parameter<double>("obstacle_slowdown_clear_sec",1.0,avoidance_descriptor);
     avoidance_max_age_=declare_parameter<double>("avoidance_max_age_sec",.20,avoidance_descriptor);
     // Compatibility with external YAMLs; never affects speed or validation.
@@ -1816,7 +1816,7 @@ private:
 
   bool obstacle_slowdown_enabled_{true},obstacle_slowdown_active_{false};
   bool last_logged_obstacle_slowdown_active_{false};
-  double obstacle_slowdown_speed_mps_{.5},obstacle_slowdown_clear_sec_{1.0};
+  double obstacle_slowdown_speed_mps_{1.0},obstacle_slowdown_clear_sec_{1.0};
   std::optional<std::chrono::steady_clock::time_point> obstacle_last_seen_at_;
   std::optional<std::int64_t> obstacle_last_depth_ns_;
   bool avoidance_control_enabled_{false};
