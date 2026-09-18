@@ -164,6 +164,15 @@ Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못
 
 ### 13×13cm 장애물과 파라미터
 
+정지 중 `BLOCKED` 뒤의 `lane`, `curve`, `obs`, `input`, `side`는 각각 차선/BEV 경계,
+곡률, 장애물 충돌, 경로 입력, 기존 회피 방향 유지 때문에 탈락한 후보 수다.
+각 후보의 **첫 번째 탈락 조건**을 센 것이므로 다른 조건도 동시에 실패할 수 있다.
+`AVOIDANCE rejected` 로그는 좌우 이동량별 구체적인 탈락 조건과 검사 중 곡률 최댓값을
+2초마다 표시한다. `AVOIDANCE geometry` 시작 로그에는 YAML에 보이지 않는 속도 보정까지
+반영한 실제 여유와 차량 폭이 나온다. `lane_required_width`는 직선에서 필요한 기본 폭이며
+표본 간격과 회전에 필요한 공간은 추가된다. 해당 진단은 경로 허용 조건을 완화하지 않는다.
+`ros2 topic echo /auto/avoidance_preview/status --once`로 지속되는 정지 상태도 확인할 수 있다.
+
 기존 `obstacles_test.yaml`의 `auto_obstacles.ros__parameters`에 필요하면 추가한다.
 생략해도 코드 기본값은 0.13이다.
 

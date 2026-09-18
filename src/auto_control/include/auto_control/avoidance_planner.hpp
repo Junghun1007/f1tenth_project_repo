@@ -284,7 +284,27 @@ public:
         out.candidates.push_back(std::move(candidate));
       }
     }
-    if (out.selected.empty()) {out.status="BLOCKED: no safe candidate"; return out;}
+    if (out.selected.empty()) {
+      // Report the first failed check for each candidate instead of hiding all
+      // failures behind "no safe candidate". This does not change acceptance.
+      int lane_failures=0,curve_failures=0,obstacle_failures=0,other_failures=0,side_failures=0;
+      for (const auto & c:out.candidates) {
+        if (c.valid) {++side_failures;}
+        else if (c.reason=="lane edge" || c.reason=="lane clearance" ||
+          c.reason=="observed lane clearance" || c.reason=="unobserved lane edge" ||
+          c.reason=="BEV edge") {++lane_failures;}
+        else if (c.reason=="curvature") {++curve_failures;}
+        else if (c.reason=="obstacle") {++obstacle_failures;}
+        else {++other_failures;}
+      }
+      out.status="BLOCKED:";
+      if (lane_failures) {out.status+=" lane="+std::to_string(lane_failures);}
+      if (curve_failures) {out.status+=" curve="+std::to_string(curve_failures);}
+      if (obstacle_failures) {out.status+=" obs="+std::to_string(obstacle_failures);}
+      if (other_failures) {out.status+=" input="+std::to_string(other_failures);}
+      if (side_failures) {out.status+=" side="+std::to_string(side_failures);}
+      return out;
+    }
     held_side_=out.status=="LEFT"?1:-1; if (current_target) {target_=current_target;}
     out.recommended_speed=std::min(o_.max_speed,std::sqrt(o_.lateral_acceleration/std::max(.001,out.max_curvature)));
     if (!o_.control) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*approach));}

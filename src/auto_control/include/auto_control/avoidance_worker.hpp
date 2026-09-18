@@ -50,6 +50,13 @@ public:
       o.margin+=.01+.5*o.max_curvature*o.motion_margin*o.motion_margin;
     }
     planner_=std::make_unique<avoidance::Planner>(o);
+    RCLCPP_INFO(node_.get_logger(),
+      "AVOIDANCE geometry: vehicle_width=%.3fm half_length=%.3fm effective_margin=%.3fm "
+      "motion_margin=%.3fm unknown_extent=%.3fm obstacle_size=%.3fm "
+      "lane_required_width=%.3fm (+sampling/turning) offset_step/max=%.3f/%.3fm "
+      "curvature_limit=%.3f/m speed_limit=%.3fm/s",
+      2*o.half_width,o.half_length,o.margin,o.motion_margin,o.unknown_extent,o.obstacle_size,
+      2*(o.half_width+o.margin),o.offset_step,o.max_offset,o.max_curvature,o.max_speed);
     // Read on the worker thread: ros2 param set can enable/disable at runtime.
     node_.declare_parameter<bool>("obstacles.avoidance.enabled",false);
     status_=node_.create_publisher<std_msgs::msg::String>("/auto/avoidance_preview/status",rclcpp::QoS(1));
@@ -74,8 +81,10 @@ private:
   }
   void report(const std::string & status)
   {
-    if (status==last_status_ || !rclcpp::ok()) {return;}
-    last_status_=status; std_msgs::msg::String message; message.data=status; status_->publish(message);
+    if (!rclcpp::ok()) {return;}
+    // Publish regularly so a late-joining topic echo also sees a persistent
+    // BLOCKED state. Do not suppress a state forever after a throttled change.
+    std_msgs::msg::String message; message.data=status; status_->publish(message);
     RCLCPP_INFO_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,
       "AVOIDANCE: %s (control_requested=%s)",status.c_str(),control_requested_?"true":"false");
   }
@@ -130,6 +139,16 @@ private:
           std::chrono::duration<double>(finished-obstacles->captured_at).count()>max_age_) {
           unavailable("WAIT: planning expired"); continue;
         }
+        if (result->selected.empty() && !result->candidates.empty()) {
+          std::string failures;
+          for (const auto & candidate:result->candidates) {
+            if (!failures.empty()) {failures+="; ";}
+            failures+=cv::format("%+.2fm:%s(k=%.2f)",candidate.offset,
+              candidate.valid?"held-side exclusion":candidate.reason.c_str(),candidate.max_curvature);
+          }
+          RCLCPP_INFO_THROTTLE(node_.get_logger(),*node_.get_clock(),2000,
+            "AVOIDANCE rejected (first failed check per offset): %s",failures.c_str());
+        }
         result->control_requested=control_requested_;
         auto_control::msg::AvoidancePlan message;
         message.header=lane->header; message.depth_stamp=obstacles->header.stamp;
@@ -159,7 +178,6 @@ private:
   std::mutex mutex_;
   std::condition_variable wake_;
   bool stop_{false};
-  std::string last_status_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_;
   std::thread thread_;
 };
