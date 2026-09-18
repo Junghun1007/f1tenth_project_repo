@@ -3,7 +3,7 @@
 
 namespace bev_handoff
 {
-// Process-local display channel. Control receives a separately validated ROS plan.
+// Process-local display channel. Control receives a separate ROS path with an explicit planning mode.
 struct PlanningLane
 {
   std_msgs::msg::Header header;
@@ -44,6 +44,8 @@ struct AvoidancePreview
 };
 bool avoidancePreviewEnabled();
 bool avoidanceControlRequested();
+bool avoidanceDeformationOnly();
+void setAvoidanceDeformationOnly(bool enabled);
 void setAvoidanceControlRequested(bool enabled);
 void setAvoidancePreviewEnabled(bool enabled);
 void publishPlanningLane(std::shared_ptr<const PlanningLane> lane);

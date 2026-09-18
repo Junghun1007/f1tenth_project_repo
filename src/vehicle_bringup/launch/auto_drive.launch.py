@@ -133,8 +133,14 @@ def _apply_parameter_file_defaults(
     if apply_avoidance:
         avoidance = True
     context.launch_configurations["effective_avoidance_control_enabled"] = "true" if apply_avoidance else "false"
+    deformation_only = controller_defaults.get("avoidance_deformation_only", True)
+    if not isinstance(deformation_only, bool):
+        raise RuntimeError("avoidance_deformation_only must be a YAML boolean")
+    context.launch_configurations["effective_avoidance_deformation_only"] = str(deformation_only).lower()
+    context.launch_configurations["effective_avoidance_speed_cap"] = str(controller_defaults.get("avoidance_speed_cap_mps", .4))
     planner_overrides = {"obstacles.avoidance.enabled": avoidance,
-                         "obstacles.avoidance.control_requested": apply_avoidance}
+                         "obstacles.avoidance.control_requested": apply_avoidance,
+                         "obstacles.avoidance.deformation_only": deformation_only}
     # Share the normal controller's rules; do not invent separate departure gates.
     for key, default in {
         "path_minimum_points": 8, "path_minimum_span_m": .12,
@@ -157,6 +163,11 @@ def _apply_parameter_file_defaults(
                 float(planner_config.get("obstacles.avoidance.max_curvature_per_m", 2.0))),
             "obstacles.avoidance.max_age_sec": min(age, float(planner_config.get("obstacles.avoidance.max_age_sec", .25))),
         })
+        if deformation_only:
+            # Keep the configured planner/controller speed ceilings even when
+            # depth is absent and steering falls back to the central path.
+            context.launch_configurations["effective_avoidance_speed_cap"] = str(
+                planner_overrides["obstacles.avoidance.max_speed_mps"])
     if manual_test == "true":
         # Keep inference/diagnostics active, suppress all automatic actuators.
         context.launch_configurations["auto_control_mode"] = "monitor_only"
@@ -354,6 +365,7 @@ def _apply_parameter_file_defaults(
         " | traffic observation=" + traffic_enabled + " | traffic stop=" + context.launch_configurations["traffic_stop_enabled"] +
         " | obstacles=" + obstacles_enabled + " | obstacle_yaml=" + obstacle_file +
         " | avoidance_preview=" + str(avoidance) + " | avoidance_control=" + str(apply_avoidance) +
+        " | deformation_only=" + str(deformation_only) +
         " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
     )), *manual_actions, bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
@@ -620,6 +632,8 @@ def generate_launch_description():
 
     controller_overrides.update({
         "avoidance_control_enabled": ParameterValue(LaunchConfiguration("effective_avoidance_control_enabled"), value_type=bool),
+        "avoidance_deformation_only": ParameterValue(LaunchConfiguration("effective_avoidance_deformation_only"), value_type=bool),
+        "avoidance_speed_cap_mps": ParameterValue(LaunchConfiguration("effective_avoidance_speed_cap"), value_type=float),
         **{name: LaunchConfiguration("effective_" + name) for name in (
             "measured_erpm_topic", "connection_status_topic", "duty_topic", "brake_current_topic", "servo_position_topic")},
         "lane_result_topic": LaunchConfiguration("ml_lane_result_topic"),
@@ -711,7 +725,7 @@ def generate_launch_description():
             DeclareLaunchArgument("controller_name_contains", default_value="8BitDo"),
             DeclareLaunchArgument("obstacles_enabled", default_value="true"),
             DeclareLaunchArgument("avoidance_control_enabled", default_value=_PARAMETER_FILE_DEFAULT,
-                                  description="Use validated avoidance path for steering/speed; unavailable planner brakes. Default false"),
+                                  description="Use obstacle-deformed centerline for steering. Default false; behavior follows avoidance_deformation_only in controller YAML"),
             DeclareLaunchArgument("avoidance_test_enabled", default_value=_PARAMETER_FILE_DEFAULT,
                                   description="Preview-only local avoidance candidates; defaults to obstacle YAML (false). Never commands actuators"),
             DeclareLaunchArgument("obstacle_params_file", default_value=os.path.join(auto_control_share, "config", "obstacles.yaml")),

@@ -66,11 +66,12 @@ auto_control:
     # monitor_only: actuator output 없이 lateral/heading 오차만 계산 및 발행
     control_mode: "drive"
     # 실험적 실제 회피 제어. launch avoidance_control_enabled:=true로 활성화.
-    # 시작 시 고정. planner OFF/WAIT/BLOCKED/만료는 중앙 경로 복귀가 아니라 제동.
+    # 시작 시 고정. 기본은 중앙선 변형만 적용하며 planner OFF/유실/만료 시 기존 중앙선 사용.
     avoidance_control_enabled: false
+    avoidance_deformation_only: true # false=기존 충돌/곡률 검사 및 회피 보호 정지 모드
     avoidance_max_age_sec: 0.20
     avoidance_speed_cap_mps: 0.4 # 허용 (0, 1.0]m/s. 계획 속도/곡률 제한과 비교해 작은 값 사용.
-    avoidance_brake_current_amps: 2.5
+    avoidance_brake_current_amps: 2.5 # deformation_only=false인 검사 모드에서 사용
     avoidance_wheelbase_m: 0.33 # 실측 축간거리. 곡률 한계=tan(최대 조향각)/축간거리
     enable_topic: "/auto/enabled"
     lane_result_topic: "/line_detactor/result"

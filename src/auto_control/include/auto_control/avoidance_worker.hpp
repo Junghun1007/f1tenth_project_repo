@@ -17,9 +17,11 @@ public:
   explicit AvoidanceWorker(rclcpp::Node & node):node_(node)
   {
     rcl_interfaces::msg::ParameterDescriptor mode; mode.read_only=true;
-    mode.description="Apply mode is fixed at startup; disabling planning while armed requests a stop";
+    mode.description="Startup-only mode; deformation mode falls back to the original centerline";
     control_requested_=node_.declare_parameter<bool>("obstacles.avoidance.control_requested",false,mode);
     avoidance::Options o;
+    o.deformation_only=node_.declare_parameter<bool>("obstacles.avoidance.deformation_only",true,mode);
+    deformation_only_=o.deformation_only;
     // auto_drive imports these from auto_control's existing path settings.
     o.minimum_points=node_.declare_parameter<int>("obstacles.avoidance.path_minimum_points",8,mode);
     parameter("path_minimum_span_m",o.minimum_span);
@@ -47,15 +49,16 @@ public:
     }
     // Bound uncorrected capture-to-control movement in low-speed apply mode.
     o.control=control_requested_;
-    if (o.control) {
+    if (o.control && !o.deformation_only) {
       o.motion_margin=o.max_speed*.20;
       o.margin+=.01+.5*o.max_curvature*o.motion_margin*o.motion_margin;
     }
     planner_=std::make_unique<avoidance::Planner>(o);
+    RCLCPP_INFO(node_.get_logger(),"AVOIDANCE mode=%s",o.deformation_only?"DEFORM (nonblocking centerline offsets)":"CHECKED");
     RCLCPP_INFO(node_.get_logger(),
       "AVOIDANCE geometry: model=fixed-square-at-detected-point vehicle_width=%.3fm half_length=%.3fm effective_margin=%.3fm "
       "motion_margin=%.3fm unknown_extent=%.3fm obstacle_size=%.3fm "
-      "lane_required_width=%.3fm (+sampling/turning) local_transition/max_offset=%.3f/%.3fm "
+      "nominal_width_with_margin=%.3fm local_transition/max_offset=%.3f/%.3fm "
       "curvature_limit=%.3f/m speed_limit=%.3fm/s",
       2*o.half_width,o.half_length,o.margin,o.motion_margin,o.unknown_extent,o.obstacle_size,
       2*(o.half_width+o.margin),o.transition,o.max_offset,o.max_curvature,o.max_speed);
@@ -63,6 +66,7 @@ public:
     node_.declare_parameter<bool>("obstacles.avoidance.enabled",false);
     status_=node_.create_publisher<std_msgs::msg::String>("/auto/avoidance_preview/status",rclcpp::QoS(1));
     plans_=node_.create_publisher<auto_control::msg::AvoidancePlan>("/auto/avoidance_plan",rclcpp::QoS(1).best_effort());
+    bev_handoff::setAvoidanceDeformationOnly(deformation_only_);
     bev_handoff::setAvoidanceControlRequested(control_requested_);
     thread_=std::thread([this]() {run();});
   }
@@ -95,7 +99,7 @@ private:
     planner_->unavailable(); bev_handoff::publishAvoidancePreview(nullptr); report(why);
     if (control_requested_ && rclcpp::ok()) {
       auto_control::msg::AvoidancePlan invalid;
-      invalid.control_ready=true; invalid.status=why; plans_->publish(invalid);
+      invalid.deformation_only=deformation_only_; invalid.control_ready=true; invalid.status=why; plans_->publish(invalid);
     }
   }
   void run()
@@ -160,6 +164,7 @@ private:
         auto_control::msg::AvoidancePlan message;
         message.header=lane->header; message.depth_stamp=obstacles->header.stamp;
         message.control_ready=control_requested_;
+        message.deformation_only=deformation_only_;
         message.follow_centerline=result->follow_centerline;
         message.valid=!result->selected.empty() && result->recommended_speed>0;
         message.status=result->status; message.speed_limit_mps=result->recommended_speed;
@@ -177,6 +182,7 @@ private:
       }
     }
   }
+  bool deformation_only_{true};
   rclcpp::Node & node_;
   std::unique_ptr<avoidance::Planner> planner_;
   bool control_requested_{false};

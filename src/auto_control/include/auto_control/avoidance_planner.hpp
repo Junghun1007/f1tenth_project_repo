@@ -12,7 +12,7 @@ namespace auto_control::avoidance
 {
 struct Options
 {
-  bool control{false}, centerline_fallback{true};
+  bool control{false}, centerline_fallback{true}, deformation_only{true};
   double obstacle_size{.13}, motion_margin{0};
   double half_width{.15}, half_length{.25}, margin{.04}, unknown_extent{.04};
   double step{.025}, max_offset{.40}, transition{.70};
@@ -24,16 +24,27 @@ struct Options
 };
 inline void validate(const Options & o)
 {
-  for (double v : {o.half_width,o.half_length,o.margin,o.unknown_extent,o.step,o.max_offset,
-      o.transition,o.max_curvature,o.max_speed,o.lateral_acceleration,
-      o.deceleration,o.clear_sec,o.obstacle_size}) {
-    if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("avoidance options must be finite and positive");}
-  }
-  if (o.half_width>.5 || o.half_length>1 || o.margin>.3 || o.unknown_extent>.5 ||
-    o.step<.02 || o.step>.05 || o.max_offset>.6 ||
-    o.transition<.3 || o.transition>2 || o.max_curvature>5 || o.max_speed>1 ||
-    o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5 || o.obstacle_size>1) {
-    throw std::invalid_argument("avoidance preview settings exceed bounded planner limits");
+  if (o.deformation_only) {
+    for (double v:{o.half_width,o.obstacle_size,o.step,o.transition,o.max_speed}) {
+      if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("deformation settings must be finite and positive");}
+    }
+    if (!std::isfinite(o.margin) || o.margin<0 || !std::isfinite(o.max_offset) || o.max_offset<0 ||
+      o.half_width>.5 || o.obstacle_size>1 || o.step<.02 || o.step>.05 ||
+      o.transition<.3 || o.transition>2 || o.max_offset>.6 || o.max_speed>1) {
+      throw std::invalid_argument("Invalid centerline deformation settings");
+    }
+  } else {
+    for (double v : {o.half_width,o.half_length,o.margin,o.unknown_extent,o.step,o.max_offset,
+        o.transition,o.max_curvature,o.max_speed,o.lateral_acceleration,
+        o.deceleration,o.clear_sec,o.obstacle_size}) {
+      if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("avoidance options must be finite and positive");}
+    }
+    if (o.half_width>.5 || o.half_length>1 || o.margin>.3 || o.unknown_extent>.5 ||
+      o.step<.02 || o.step>.05 || o.max_offset>.6 ||
+      o.transition<.3 || o.transition>2 || o.max_curvature>5 || o.max_speed>1 ||
+      o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5 || o.obstacle_size>1) {
+      throw std::invalid_argument("avoidance preview settings exceed bounded planner limits");
+    }
   }
   if (o.minimum_points<2 || !std::isfinite(o.minimum_span) || o.minimum_span<=0 ||
     !std::isfinite(o.minimum_x) || !std::isfinite(o.maximum_x) || o.maximum_x<=o.minimum_x ||
@@ -146,6 +157,7 @@ public:
       normals.emplace_back(-std::sin(heading),std::cos(heading));
     }
     out.horizon_m=length;
+    if (o_.deformation_only) {return deform(lane,obstacles,std::move(out),arc,normals);}
     std::vector<bev_handoff::SafetyBox> boxes;
     std::vector<cv::Point2d> centers;
     // The displayed representative point is the assumed object center. The
@@ -460,6 +472,117 @@ public:
   }
   void unavailable() {clear_since_=0;}
 private:
+  // Experimental shape generator: no collision approval, target latch,
+  // curvature feasibility, clear confirmation, or departure decision.
+  bev_handoff::AvoidancePreview deform(const bev_handoff::PlanningLane & lane,
+    const bev_handoff::ObstacleFrame & obstacles,bev_handoff::AvoidancePreview out,
+    const std::vector<double> & arc,const std::vector<cv::Point2d> & normals) const
+  {
+    std::vector<std::pair<cv::Point2d,cv::Point2d>> edges;
+    for (const auto & line:lane.boundaries) {
+      for (std::size_t i=1;i<line.size();++i) {
+        if (finite(line[i-1]) && finite(line[i]) && distance(line[i-1],line[i])<=.2) {
+          edges.emplace_back(line[i-1],line[i]);
+        }
+      }
+    }
+    const auto bounds=[&](const cv::Point2d & p,const cv::Point2d & n) {
+      double left=std::numeric_limits<double>::infinity(),right=-left;
+      for (const auto & edge:edges) {
+        const auto d=edge.second-edge.first;
+        const double den=cross(n,d);
+        if (std::abs(den)<1e-9) {continue;}
+        const double along=cross(edge.first-p,n)/den;
+        if (along<0 || along>1) {continue;}
+        const double across=cross(edge.first-p,d)/den;
+        if (across>0) {left=std::min(left,across);}
+        if (across<0) {right=std::max(right,across);}
+      }
+      // Missing edges do not prevent central-path driving. Infer only the
+      // missing side for obstacle membership from the existing lane width.
+      if (!std::isfinite(left) || !std::isfinite(right)) {out.inferred_boundaries=true;}
+      const double half=std::isfinite(lane.lane_width_m) && lane.lane_width_m>0 ? lane.lane_width_m/2 : 0;
+      if (!std::isfinite(left)) {left=half;}
+      if (!std::isfinite(right)) {right=-half;}
+      return std::make_pair(right,left);
+    };
+    std::vector<Region> anchors;
+    for (const auto & cluster:obstacles.clusters) {
+      const cv::Point2d center(cluster.center.x,cluster.center.y);
+      if (!finite(center) || center.x<0 || center.x>lane.x_max || std::abs(center.y)>lane.y_max) {continue;}
+      double best=std::numeric_limits<double>::infinity(),s=0,lateral=0;
+      cv::Point2d projection,normal;
+      bool outside_horizon=false;
+      for (std::size_t i=1;i<out.original.size();++i) {
+        const auto a=out.original[i-1],d=out.original[i]-a;
+        const double square=d.dot(d);
+        if (square<1e-12) {continue;}
+        const double t=(center-a).dot(d)/square;
+        const double u=std::clamp(t,0.0,1.0);
+        const auto q=a+u*d;
+        const double error=distance(center,q);
+        if (error>=best) {continue;}
+        best=error; projection=q; normal=cv::Point2d(-d.y,d.x)/std::sqrt(square);
+        outside_horizon=(i==1 && t<0) || (i+1==out.original.size() && t>1);
+        lateral=(center-q).dot(normal); s=arc[i-1]+u*(arc[i]-arc[i-1]);
+      }
+      if (!std::isfinite(best) || outside_horizon) {continue;}
+      const auto corridor=bounds(projection,normal);
+      if (lateral<=corridor.first || lateral>=corridor.second) {continue;}
+      const double half=o_.obstacle_size/2;
+      out.assumed_boxes.push_back({center.x-half,center.x+half,center.y-half,center.y+half});
+      // Explicit margin affects the requested shape only. No hidden motion,
+      // sampling, uncertainty or rotated-body envelopes are added here.
+      const double clearance=o_.half_width+half+o_.margin;
+      const double magnitude=std::min(o_.max_offset,std::max(0.0,clearance-std::abs(lateral)));
+      if (magnitude<1e-6) {continue;}
+      const double offset=lateral>=0 ? -magnitude : magnitude;
+      anchors.push_back({s,s,offset,s,s});
+    }
+    out.obstacle_count=anchors.size();
+    std::stable_sort(anchors.begin(),anchors.end(),[](const auto & a,const auto & b) {return a.begin<b.begin;});
+    std::vector<Region> profile;
+    for (const auto & anchor:anchors) {
+      // Coincident obstacles cannot have two lateral targets at the same arc.
+      // Keep the larger deformation deterministically; never block departure.
+      if (!profile.empty() && anchor.begin-profile.back().begin<1e-3) {
+        if (std::abs(anchor.offset)>std::abs(profile.back().offset)) {profile.back()=anchor;}
+      } else {profile.push_back(anchor);}
+    }
+    out.region_count=profile.size();
+    out.selected=out.original; out.recommended_speed=o_.max_speed;
+    out.follow_centerline=profile.empty();
+    out.status=profile.empty()?"CENTERLINE: no local deformation":"DEFORM: centerline offsets only";
+    if (profile.empty()) {return out;}
+    const double lead=std::hypot(out.original.front().x,out.original.front().y);
+    for (std::size_t i=0;i<out.selected.size();++i) {
+      const auto corridor=bounds(out.original[i],normals[i]);
+      // Limit the center offset to the lane's nominal straight-body room.
+      // Clipping a requested bend is not a swept-body collision guarantee.
+      const double low=std::max(-o_.max_offset,std::min(0.0,corridor.first+o_.half_width));
+      const double high=std::min(o_.max_offset,std::max(0.0,corridor.second-o_.half_width));
+      const double offset=std::clamp(displacement(arc[i],profile,o_.transition,lead,arc.back()),low,high);
+      out.selected[i]+=offset*normals[i];
+    }
+    OrderedPath shaped; shaped.geometry_window_m=o_.geometry_window;
+    double length=0;
+    for (const auto & p:out.selected) {
+      if (!shaped.points.empty()) {
+        const auto & q=shaped.points.back();
+        const double gap=std::hypot(p.x-q.x,p.y-q.y);
+        if (gap<1e-5) {continue;}
+        length+=gap;
+      }
+      shaped.points.push_back({p.x,p.y}); shaped.arc_m.push_back(length);
+    }
+    if (shaped.points.size()>1) {
+      for (const auto s:shaped.arc_m) {
+        const double k=std::abs(shaped.curvature(s));
+        if (std::isfinite(k)) {out.max_curvature=std::max(out.max_curvature,k);}
+      }
+    }
+    return out;
+  }
   static double blend(double a,double b,double s,double begin,double end)
   {return a+(b-a)*smooth((s-begin)/std::max(1e-9,end-begin));}
   static double displacement(double s,const std::vector<Region> & regions,

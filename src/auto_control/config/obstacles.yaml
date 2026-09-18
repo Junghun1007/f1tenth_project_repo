@@ -55,6 +55,10 @@ auto_obstacles:
     # 회피 경로 테스트. 기본 화면 전용, avoidance_control_enabled:=true이면 실제 제어 연결.
     # enabled만 ros2 param set으로 즉시 변경 가능. 나머지는 재실행 필요.
     obstacles.avoidance.enabled: false
+    # auto_drive에서는 auto_control YAML의 avoidance_deformation_only가 아래 값을 덮어씀.
+    obstacles.avoidance.deformation_only: true # 차선 안 장애물의 반대쪽으로 중앙선 변형; 출발 차단 없음
+    # true일 때 unknown_extent, half_length, max_curvature, lateral_acceleration,
+    # deceleration, clear_confirm은 변형 계산에 미사용. safety_margin은 변형량에만 적용(0 허용).
     obstacles.avoidance.max_fps: 10.0 # 차선과 독립 스레드. 최대 계획 빈도
     obstacles.avoidance.max_age_sec: 0.25
     obstacles.avoidance.max_sync_sec: 0.06

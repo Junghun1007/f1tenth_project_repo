@@ -7,11 +7,14 @@ namespace
 {
 std::atomic<bool> enabled{false};
 std::atomic<bool> control_requested{false};
+std::atomic<bool> deformation_only{true};
 std::shared_ptr<const PlanningLane> lane;
 std::shared_ptr<const AvoidancePreview> plan;
 }
 bool avoidancePreviewEnabled() {return enabled.load();}
 bool avoidanceControlRequested() {return control_requested.load();}
+bool avoidanceDeformationOnly() {return deformation_only.load();}
+void setAvoidanceDeformationOnly(bool value) {deformation_only.store(value);}
 void setAvoidanceControlRequested(bool value) {control_requested.store(value);}
 void setAvoidancePreviewEnabled(bool value)
 {

@@ -45,8 +45,8 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 - 관측 포인트를 외곽선으로 연결해 물체 크기처럼 표시하지 않는다. 회피 ON일 때 대표점을
   중심으로 가정한 13×13cm 정사각형을 별도로 표시한다. 색상/#번호는 프레임 내 구분이며 추적 ID가 아니다.
 
-기본은 장애물 표시만 수행한다. **`avoidance_control_enabled:=true`를 명시하면 검증된
-회피 경로를 실제 조향·속도 제어에 사용하고, 계획이 없으면 제동한다.**
+기본은 장애물 표시만 수행한다. **`avoidance_control_enabled:=true`이면 차선 안 장애물의
+반대쪽으로 변형한 중앙선을 조향에 사용한다. 기본 변형 모드에서 계획이 없으면 기존 중앙선으로 주행한다.**
 `manual_test:=true`는 이 옵션을 켜도 monitor_only를 유지하므로 액추에이터 출력은 없다.
 독립 `roi_lidar` 패키지는 유지하며 이 통합 실행에서는 시작하지 않는다.
 
@@ -91,7 +91,7 @@ Depth 기본 요청은 400p/60FPS다. 실제 속도는 화면과 `OBSTACLES` 로
 ## 실제 회피 제어 연결 (실험 기능, 기본 OFF)
 
 `avoidance_test_enabled`는 화면용이고 **`avoidance_control_enabled`가 실제 제어 적용 스위치**다.
-새 `auto_control/msg/AvoidancePlan` 메시지를 추가했으므로 기존 설치에서 재빌드가 필요하다.
+`auto_control/msg/AvoidancePlan`에 계획 모드를 추가했으므로 기존 설치에서 재빌드가 필요하다.
 
 ```bash
 colcon build --packages-up-to vehicle_bringup --cmake-args -DCMAKE_BUILD_TYPE=Release
@@ -117,8 +117,8 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
   VESC/조이스틱/운동 모니터도 필요 없으면 `manual_enabled:=false dynamics_enabled:=false` 추가.
 - 기존 화면 전용: `manual_test:=true avoidance_control_enabled:=false avoidance_test_enabled:=true`.
 - 적용 ON에서는 계획 계산도 자동으로 ON. `avoidance_test_enabled:=false`로 실제 적용을 해제할 수 없다.
-- 실행 중 계획 OFF는 아래와 같이 가능하지만 **적용 ON 상태에서는 정지 요청**이다.
-  중앙 경로로 몰래 복귀하지 않는다. 실제 적용 여부는 시작 시 고정(read-only)이다.
+- 실행 중 계획 OFF는 아래와 같이 가능하다. 기본 변형 모드에서는 기존 중앙선으로 복귀한다.
+  검사 모드(`avoidance_deformation_only: false`)에서는 정지 요청이다. 실제 적용 여부와 모드는 시작 시 고정이다.
 
 ```bash
 ros2 param set /auto_obstacles obstacles.avoidance.enabled false
@@ -127,7 +127,54 @@ ros2 topic echo /auto/avoidance_plan
 ros2 topic echo /auto/avoidance_preview/status
 ```
 
-### 중앙선 주행과 장애물 회피
+### 기본 동작: 출발을 차단하지 않는 중앙선 변형
+
+기존 외부 YAML에도 새 모드 기본값 **`avoidance_deformation_only: true`**가 적용된다.
+`auto_control_test.yaml`의 `auto_control.ros__parameters`에 명시할 수도 있다.
+
+```yaml
+    avoidance_control_enabled: true
+    avoidance_deformation_only: true
+```
+
+`auto_drive`가 이 모드를 `auto_obstacles`의 `obstacles.avoidance.deformation_only`에도
+동일하게 전달한다. 단독 노드를 실행할 때는 두 노드의 모드를 맞춘다.
+메시지에도 모드를 포함하므로 검사 모드 제어기가 변형 전용 경로를 검사 완료로 오인하지 않는다.
+
+- 기존 중앙선에 가장 가까운 위치로 각 장애물 대표점을 투영한다. 해당 위치의 좌우 차선
+  사이에 있는 장애물만 사용한다. 관측 경계가 없으면 기존 `lane_width_m`으로 누락된 쪽을 추정한다.
+- 왼쪽 장애물은 오른쪽, 오른쪽 장애물은 왼쪽으로 중앙선을 이동한다. 정확히 중앙이면 오른쪽을 선택한다.
+  크기는 대표점을 중심으로 한 **13×13cm** 가정이며 포인트 퍼짐으로 크기를 늘리지 않는다.
+- 이동량은 `차량 반폭 + 장애물 반폭 + safety_margin - 중앙선과 장애물의 횡거리`이며
+  음수이면 변형하지 않는다. `max_offset_m`과 차선 내 명목상 반폭 여유로 이동량을 제한한다.
+  이는 경로 모양 제한이며, 회전한 차체 전체의 차선 이탈/충돌 여부를 검사하는 것은 아니다.
+- 장애물 개수에 제한을 두지 않는다. 전방 순서대로 이동 지점을 만들고 5차 smoothstep으로
+  연결하여 반대 방향 장애물 사이에서는 S자를 만든다. 같은 전방 위치에 상충하는 장애물이 있으면
+  더 큰 이동량 하나를 사용하며 통과 가능성을 판정하지 않는다.
+- 충돌 검사, 물체 확장 영역, 곡률 초과, 반대쪽 장애물 구간 겹침, 목표 유실,
+  복귀 확인 시간, 연속 3회 경로 확인은 **이 모드의 출발 조건이 아니다**.
+- 변형 결과 없음/OFF/유실/만료/숫자·좌표계 오류는 변형 경로만 버리고 기존 중앙선으로 복귀한다.
+  회피 때문에 보호 제동을 요청하지 않는다. 중앙선 자체의 유효성, enable, VESC/ERPM,
+  수동 모드, 신호등 제어, 조향각·조향 변화율 제한은 기존대로 동작한다.
+- 변형 중에도 기존 일반 longitudinal 제어를 사용한다. 따라서 단계 제어를 켰다면
+  `longitudinal_start_duty`와 단계식 PID가 적용된다. 회피 전용 signed PID로 전환하지 않는다.
+- launch에서 제어 속도 상한과 `obstacles.avoidance.max_speed_mps` 중 작은 값을 고정 상한으로
+  공유한다. 변형 데이터가 유실되어도 이 상한은 그대로다. 신호등/일반 속도 설정은 추가로 속도를 낮출 수 있다.
+
+변형량은 `obstacles.avoidance.safety_margin_m`(0 허용), `max_offset_m`, 연결 길이는
+`transition_m`으로 조정한다. `unknown_extent_m`, `vehicle_half_length_m`, `max_curvature_per_m`,
+`lateral_acceleration_mps2`, `deceleration_mps2`, `clear_confirm_sec`은 이 모드에서
+경로를 거부하거나 출발을 차단하는 데 사용하지 않는다. 속도에 따른 숨은 여유도 추가하지 않는다.
+
+프리뷰는 원래 중앙선 노랑, 변형 경로 청록, 가정한 장애물 크기 주황 사각형으로 표시한다.
+`APPLY DEFORM`은 변형 경로 요청, `APPLY CENTERLINE`은 기존 중앙선 사용 표시다.
+충돌 확장 사각형은 그리지 않는다. 프리뷰는 실차 제어 승인 또는 실제 추종 성공의 표시가 아니다.
+
+### 기존 검사 모드 (`avoidance_deformation_only: false`)
+
+**아래의 충돌·곡률·복귀 확인·보호 정지 설명은 검사 모드에만 해당하며, 기본 변형 모드에는 적용하지 않는다.**
+
+### 검사 모드의 중앙선 주행과 장애물 회피
 
 기본 주행은 기존 `auto_control`의 중앙선 `path_`와 기존 Stanley/출발/속도 제어를
 그대로 사용한다. 신선한 Depth로 중앙선과 차량 크기를 반영한 장애물 충돌을 검사하고,

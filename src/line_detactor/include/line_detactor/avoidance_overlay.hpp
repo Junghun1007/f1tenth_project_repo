@@ -11,7 +11,10 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
   if (!bev_handoff::avoidancePreviewEnabled()) {return {};}
   const auto plan=bev_handoff::latestAvoidancePreview();
   const std::string mode=bev_handoff::avoidanceControlRequested()?"APPLY ":"TEST ";
-  if (!plan) {return mode+"WAIT: lane/depth";}
+  const auto unavailable=[&](const std::string & why) {
+    return mode+(bev_handoff::avoidanceDeformationOnly()?"CENTERLINE: deformation unavailable - ":"WAIT: ")+why;
+  };
+  if (!plan) {return unavailable("lane/depth");}
   const auto now=std::chrono::steady_clock::now();
   const double age=std::chrono::duration<double>(now-plan->lane_received_at).count();
   const double depth_age=std::chrono::duration<double>(now-plan->depth_captured_at).count();
@@ -19,10 +22,10 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
     (double(header.stamp.nanosec)-plan->header.stamp.nanosec)*1e-9);
   const double display_delta=std::min(max_age,std::max(max_delta,plan->display_delta_sec));
   if (plan->header.frame_id!=header.frame_id || age<0 || age>max_age || depth_age<0 || depth_age>max_age || delta>display_delta) {
-    return mode+"WAIT: stale/unsynced";
+    return unavailable("stale/unsynced");
   }
   if (plan->width!=width || plan->height!=height || image.cols!=width+2*padding || image.rows!=height) {
-    return mode+"WAIT: geometry";
+    return unavailable("geometry");
   }
   auto plot=image(cv::Rect(padding,0,width,height));
   const auto pixel=[&](double x,double y) {
@@ -50,7 +53,7 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
   path(plan->original,cv::Scalar(0,255,255),1);
   path(plan->selected,cv::Scalar(255,255,0),2);
   // Show the reason instead of a generic WAIT with zero speed/curvature.
-  if (plan->selected.empty()) {return mode+plan->status;}
+  if (plan->selected.empty()) {return bev_handoff::avoidanceDeformationOnly()?unavailable(plan->status):mode+plan->status;}
   // C=inferred corridor from centerline width (only for avoidance candidates).
   // Full details remain on /auto/avoidance_preview/status.
   return mode+plan->status.substr(0,plan->status.find(':'))+
