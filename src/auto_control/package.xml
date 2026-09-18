@@ -11,6 +11,14 @@
 
   <depend>builtin_interfaces</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_components</depend>
+  <depend>rcl_interfaces</depend>
+  <depend>bev_handoff</depend>
+  <depend>bev_processor</depend>
+  <depend>camera_driver</depend>
+  <depend>point_cloud</depend>
+  <depend>geometry_msgs</depend>
+  <depend>libopencv-dev</depend>
   <depend>std_msgs</depend>
   <depend>line_detactor</depend>
   <depend>traffic_detection_test</depend>

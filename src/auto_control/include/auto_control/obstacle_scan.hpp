@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <vector>
 
-namespace bev_processor::obstacle
+namespace auto_control::obstacle
 {
 constexpr double radians = 3.14159265358979323846 / 180.0;
 struct Options
@@ -151,4 +151,4 @@ public:
     return out;
   }
 };
-} // namespace bev_processor::obstacle
+} // namespace auto_control::obstacle

@@ -1,5 +1,6 @@
-# 이 파일을 직접 수정하고 params_file:=/absolute/path/manual_obstacle_view.yaml 로 실행.
+# 이 파일을 직접 수정하고 obstacle_params_file:=/absolute/path/obstacles.yaml 로 실행.
 # 저장 후 통합 launch 재시작. 아래 장애물 옵션은 시작 시 적용되며 실시간 변경하지 않음.
+# auto_drive.launch.py에서 사용. manual_test:=true이면 수동주행으로 통합 확인.
 # roi_lidar는 실행하지 않음. 기존 차선 BEV 120cm x 300cm / 모델 120x300 유지.
 camera_driver:
   ros__parameters:
@@ -19,7 +20,10 @@ camera_driver:
 
 bev_processor:
   ros__parameters:
-    obstacles.enabled: true
+    obstacles.share_reference: true # 시작 측정/BEV 기하만 auto_control에 공유. 검출은 수행하지 않음.
+
+auto_obstacles:
+  ros__parameters:
     # Depth 전체 영상에서의 정규화 ROI. RGB/BEV 픽셀 기준이 아님.
     obstacles.roi.x: 0.0
     obstacles.roi.y: 0.0
@@ -53,4 +57,3 @@ line_detactor:
     obstacles.overlay_enabled: true
     obstacles.max_sync_sec: 0.06 # 차선 결과와 장애물 촬영 시각 차이 상한
     obstacles.max_age_sec: 0.25  # 만료 장애물은 GUI에서 삭제 (입력 중단 시에도 갱신)
-    preview_fps: 30.0

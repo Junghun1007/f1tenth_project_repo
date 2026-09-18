@@ -23,7 +23,6 @@ find_package(oak_startup REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(bev_handoff REQUIRED)
 find_package(camera_driver REQUIRED)
-find_package(point_cloud REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
@@ -70,7 +69,6 @@ target_link_libraries(bev_cuda PUBLIC CUDA::cudart ${OpenCV_LIBS})
 
 add_library(bev_processor_component SHARED
   src/bev_processor_node.cpp
-  src/obstacle_worker.cpp
 )
 target_include_directories(
   bev_processor_component PRIVATE ${OpenCV_INCLUDE_DIRS})
@@ -88,7 +86,6 @@ target_link_libraries(bev_processor_component
   bev_geometry
   bev_cuda
   oak_startup::measurement
-  point_cloud::point_cloud_depth_source
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -143,5 +140,5 @@ install(
 
 ament_export_include_directories(include)
 ament_export_dependencies(
-  bev_handoff camera_driver point_cloud oak_startup OpenCV rclcpp_components rcl_interfaces geometry_msgs)
+  bev_handoff camera_driver oak_startup OpenCV rclcpp_components rcl_interfaces geometry_msgs)
 ament_package()

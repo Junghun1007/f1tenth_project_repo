@@ -36,7 +36,6 @@
 
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "bev_processor/bev_geometry.hpp"
-#include "bev_processor/obstacle_worker.hpp"
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
@@ -170,8 +169,7 @@ public:
     }
     const auto measurement =
       measureOakStartupExtrinsics(startup_measurement_config_);
-    const bool obstacles_enabled=get_parameter("obstacles.enabled").as_bool();
-    if (obstacles_enabled) {bev_handoff::setObstacleDeviceId(measurement.device_id);}
+    const bool share_obstacle_reference=get_parameter("obstacles.share_reference").as_bool();
     camera_model_.position_vehicle_m[2] = measurement.height_m;
     startup_roll_deg_ = measurement.roll_deg;
     startup_pitch_down_deg_ = measurement.pitch_down_deg;
@@ -232,11 +230,21 @@ public:
       "depth-plane attitude + depth-plane offset height" :
       "IMU attitude + depth-plane offset height");
 
-    if (obstacles_enabled) {
-      auto model=camera_model_;
-      model.rotation_vehicle_from_camera=mountRotationVehicleFromCamera(
+    if (share_obstacle_reference) {
+      auto reference=std::make_shared<bev_handoff::ObstacleReference>();
+      reference->device_id=measurement.device_id; reference->frame_id=output_frame_id_;
+      reference->input_topic=input_topic_; reference->settle_sec=stabilization_settle_sec_;
+      reference->rotation_vehicle_from_camera=mountRotationVehicleFromCamera(
         degToRad(startup_roll_deg_),degToRad(startup_pitch_down_deg_),degToRad(camera_yaw_deg_));
-      obstacle_worker_=std::make_unique<ObstacleWorker>(*this,model,bev_config_,output_frame_id_);
+      reference->position_vehicle_m=camera_model_.position_vehicle_m;
+      reference->fx=camera_model_.fx; reference->fy=camera_model_.fy;
+      reference->cx=camera_model_.cx; reference->cy=camera_model_.cy;
+      reference->source_width=camera_model_.image_width; reference->source_height=camera_model_.image_height;
+      reference->x_min=bev_config_.x_min_m; reference->x_max=bev_config_.x_max_m;
+      reference->y_min=bev_config_.y_min_m; reference->y_max=bev_config_.y_max_m;
+      reference->meter_per_pixel=bev_config_.meter_per_pixel;
+      reference->width=bev_config_.output_width; reference->height=bev_config_.output_height;
+      bev_handoff::publishObstacleReference(std::move(reference));
     }
 
     auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
@@ -374,7 +382,6 @@ public:
 
   ~BevProcessorNode() override
   {
-    obstacle_worker_.reset();
     stop_.store(true, std::memory_order_release);
     input_cv_.notify_all();
     output_cv_.notify_all();
@@ -401,7 +408,7 @@ private:
     declare_parameter<int>("configuration_version", 0);
     rcl_interfaces::msg::ParameterDescriptor obstacle_descriptor;
     obstacle_descriptor.read_only=true;
-    declare_parameter<bool>("obstacles.enabled",false,obstacle_descriptor);
+    declare_parameter<bool>("obstacles.share_reference",false,obstacle_descriptor);
     declare_parameter<bool>("performance_measurement_enabled", false);
 
     declare_parameter<std::string>("input_topic", "/camera/bev_input");
@@ -1011,8 +1018,6 @@ private:
       stabilization_settle_total_.fetch_add(1U, std::memory_order_relaxed);
       return;
     }
-
-    if (obstacle_worker_) {obstacle_worker_->observe(*message);}
 
     recordPipelineLatency(
       message->header,
@@ -2043,7 +2048,6 @@ private:
   std::shared_ptr<const BevFrame> latest_output_;
 
   std::atomic<bool> stop_{false};
-  std::unique_ptr<ObstacleWorker> obstacle_worker_;
   std::thread processing_thread_;
   std::thread publishing_thread_;
   std::thread preview_thread_;

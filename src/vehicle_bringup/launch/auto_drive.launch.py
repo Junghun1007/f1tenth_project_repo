@@ -12,7 +12,7 @@ from launch.actions import (
     OpaqueFunction,
     RegisterEventHandler,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -94,6 +94,45 @@ def _apply_parameter_file_defaults(
         LaunchConfiguration("line_detactor_params_file").perform(context),
         "line_detactor",
     )
+    manual_test = LaunchConfiguration("manual_test").perform(context).lower()
+    obstacles_enabled = LaunchConfiguration("obstacles_enabled").perform(context).lower()
+    if manual_test not in ("true", "false") or obstacles_enabled not in ("true", "false"):
+        raise RuntimeError("manual_test / obstacles_enabled must be true or false")
+    obstacle_file = os.path.abspath(os.path.expanduser(LaunchConfiguration("obstacle_params_file").perform(context)))
+    context.launch_configurations["obstacle_params_file"] = obstacle_file
+    context.launch_configurations["effective_perception_params_file"] = (
+        obstacle_file if obstacles_enabled == "true"
+        else LaunchConfiguration("bev_params_file").perform(context)
+    )
+    if obstacles_enabled == "true":
+        for section in ("camera_driver", "bev_processor", "auto_obstacles", "line_detactor"):
+            values = _ros_parameters(obstacle_file, section)
+            if not values or any(not key.startswith("obstacles.") for key in values):
+                raise RuntimeError(f"{obstacle_file}: {section} must contain only obstacles.* parameters")
+        detector.update(_ros_parameters(obstacle_file, "line_detactor"))
+        detector["bev_theme_enable"] = False
+    detector["obstacles.overlay_enabled"] = obstacles_enabled == "true"
+    if manual_test == "true":
+        # Keep inference/diagnostics active, suppress all automatic actuators.
+        context.launch_configurations["auto_control_mode"] = "monitor_only"
+        context.launch_configurations["auto_enabled"] = "true"
+        context.launch_configurations["traffic_stop_enabled"] = "false"
+        context.launch_configurations["performance_measurement_enabled"] = "false"
+        context.launch_configurations["dataset_collection_enabled"] = "false"
+        context.launch_configurations["preview_result_only_enabled"] = "true"
+    ns = LaunchConfiguration("vehicle_namespace").perform(context).strip("/")
+    prefix = f"/{ns}" if ns else ""
+    for name, fallback in (("measured_erpm_topic", "/vesc/measured_erpm"),
+                           ("connection_status_topic", "/vesc/connected"),
+                           ("duty_topic", "/vesc/duty"),
+                           ("brake_current_topic", "/vesc/brake_current"),
+                           ("servo_position_topic", "/vesc/servo_position")):
+        context.launch_configurations["effective_" + name] = (
+            prefix + fallback if manual_test == "true" else str(controller_defaults.get(name, fallback)))
+    context.launch_configurations["perception_erpm_topic"] = (
+        prefix + "/vesc/measured_erpm" if manual_test == "true" else _PARAMETER_FILE_DEFAULT)
+    context.launch_configurations["perception_acceleration_topic"] = (
+        prefix + "/vehicle/dynamics/acceleration" if manual_test == "true" else _PARAMETER_FILE_DEFAULT)
     context.launch_configurations["ml_engine_precision"] = str(
         detector.get("engine_precision", "fp32")
     )
@@ -117,6 +156,9 @@ def _apply_parameter_file_defaults(
         raise RuntimeError("BEV output size and metric extent disagree")
     if width != int(detector["model_input_width"]) or height != int(detector["model_input_height"]):
         raise RuntimeError("BEV output size must match the static line_detactor model input")
+    if obstacles_enabled == "true" and not (
+        math.isclose(x_max, 3.0) and math.isclose(y_max-y_min, 1.2) and width == 120 and height == 300):
+        raise RuntimeError("Obstacle integration retains the existing 120x300cm / 120x300px lane BEV")
     for required in ("connection_enabled", "centerline_enabled", "result_publish_enabled"):
         if detector.get(required) is not True:
             raise RuntimeError(f"ML auto drive requires line_detactor {required}: true")
@@ -162,6 +204,8 @@ def _apply_parameter_file_defaults(
         if theme.lower() not in ("true", "false"):
             raise RuntimeError("bev_theme_enable must be true or false")
         detector["bev_theme_enable"] = theme.lower() == "true"
+    if obstacles_enabled == "true" and detector.get("bev_theme_enable", False):
+        raise RuntimeError("Obstacle overlay uses the existing lane result view; set bev_theme_enable:=false")
     preview = context.launch_configurations["preview_enabled"].lower()
     if preview not in ("true", "false"):
         raise RuntimeError("preview_enabled must be true or false")
@@ -230,6 +274,27 @@ def _apply_parameter_file_defaults(
             name="traffic_light_detector", parameters=traffic_parameters,
             extra_arguments=[{"use_intra_process_comms": True}],
         ))
+    if obstacles_enabled == "true":
+        nodes.append(ComposableNode(
+            package="auto_control", plugin="auto_control::ObstacleDetectorNode", name="auto_obstacles",
+            parameters=[obstacle_file], extra_arguments=[{"use_intra_process_comms": True}],
+        ))
+    manual_actions = []
+    if manual_test == "true":
+        for flag in ("manual_enabled", "dynamics_enabled"):
+            if LaunchConfiguration(flag).perform(context).lower() not in ("true", "false"):
+                raise RuntimeError(f"{flag} must be true or false")
+        if LaunchConfiguration("manual_enabled").perform(context).lower() == "true":
+            manual_actions.append(IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("vehicle_bringup"), "launch", "manual_drive.launch.py")),
+                launch_arguments={"vehicle_namespace": ns,
+                                  "vesc_port": LaunchConfiguration("vesc_port").perform(context),
+                                  "controller_name_contains": LaunchConfiguration("controller_name_contains").perform(context)}.items()))
+        if LaunchConfiguration("dynamics_enabled").perform(context).lower() == "true":
+            manual_actions.append(IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("vehicle_dynamics_monitor"), "launch", "vehicle_dynamics_monitor.launch.py")),
+                launch_arguments={"vehicle_namespace": ns, **{name: LaunchConfiguration(name).perform(context)
+                    for name in ("input_mode", "can_interface", "slcan_channel", "slcan_bitrate", "can_controller_id")}}.items()))
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -240,8 +305,10 @@ def _apply_parameter_file_defaults(
         " | pipeline=direct CUDA BEV -> " + str(detector["result_topic"]) +
         " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
         " | performance measurement=" + measurement +
-        " | traffic observation=" + traffic_enabled + " | traffic stop=" + context.launch_configurations["traffic_stop_enabled"]
-    )), bev_launch, LoadComposableNodes(
+        " | traffic observation=" + traffic_enabled + " | traffic stop=" + context.launch_configurations["traffic_stop_enabled"] +
+        " | obstacles=" + obstacles_enabled + " | obstacle_yaml=" + obstacle_file +
+        " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
+    )), *manual_actions, bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
         composable_node_descriptions=nodes,
     )]
@@ -489,6 +556,10 @@ def generate_launch_description():
         launch_arguments={
             "bev_params_file": bev_params_file,
             "camera_params_file": LaunchConfiguration("camera_params_file"),
+            "obstacles_enabled": LaunchConfiguration("obstacles_enabled"),
+            "perception_params_file": LaunchConfiguration("effective_perception_params_file"),
+            "measured_erpm_topic": LaunchConfiguration("perception_erpm_topic"),
+            "vehicle_acceleration_topic": LaunchConfiguration("perception_acceleration_topic"),
             "preview_enabled": "false",
             "publish_enabled": "false",
             "direct_output_enabled": "true",
@@ -501,6 +572,8 @@ def generate_launch_description():
     )
 
     controller_overrides.update({
+        **{name: LaunchConfiguration("effective_" + name) for name in (
+            "measured_erpm_topic", "connection_status_topic", "duty_topic", "brake_current_topic", "servo_position_topic")},
         "lane_result_topic": LaunchConfiguration("ml_lane_result_topic"),
         "lane_result_frame_id": LaunchConfiguration("ml_lane_frame_id"),
         "bev_x_max_m": ParameterValue(LaunchConfiguration("ml_bev_x_max_m"), value_type=float),
@@ -560,6 +633,7 @@ def generate_launch_description():
         package="vesc_bridge",
         executable="vesc_bridge_node",
         name="vesc_bridge_node",
+        condition=UnlessCondition(LaunchConfiguration("manual_test")),
         output="screen",
         parameters=[vesc_config, {"port": vesc_port}],
     )
@@ -567,6 +641,7 @@ def generate_launch_description():
     dynamics_node = Node(
         package="vehicle_dynamics_monitor", executable="vehicle_dynamics_node",
         name="vehicle_dynamics_node", output="screen",
+        condition=UnlessCondition(LaunchConfiguration("manual_test")),
         parameters=[dynamics_config, {
             "input_mode": LaunchConfiguration("input_mode"),
             "can_interface": LaunchConfiguration("can_interface"),
@@ -579,6 +654,15 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
+            DeclareLaunchArgument("manual_test", default_value="false",
+                                  description="Keep all perception and auto_control diagnostics; force monitor_only and use manual driving"),
+            DeclareLaunchArgument("manual_enabled", default_value="true",
+                                  description="In manual_test, start joystick/VESC; false when manual_drive already runs"),
+            DeclareLaunchArgument("dynamics_enabled", default_value="true"),
+            DeclareLaunchArgument("vehicle_namespace", default_value="autopilot03"),
+            DeclareLaunchArgument("controller_name_contains", default_value="8BitDo"),
+            DeclareLaunchArgument("obstacles_enabled", default_value="true"),
+            DeclareLaunchArgument("obstacle_params_file", default_value=os.path.join(auto_control_share, "config", "obstacles.yaml")),
             DeclareLaunchArgument("camera_params_file", default_value=camera_config),
             DeclareLaunchArgument("traffic_light_enabled", default_value="true",
                                   description="Observe traffic signal state only; does not command brakes or drive"),

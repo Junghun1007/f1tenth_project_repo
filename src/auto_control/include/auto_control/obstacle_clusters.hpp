@@ -1,7 +1,7 @@
 #pragma once
-#include "bev_processor/obstacle_scan.hpp"
+#include "auto_control/obstacle_scan.hpp"
 #include <utility>
-namespace bev_processor::obstacle
+namespace auto_control::obstacle
 {
 struct ClusterOptions
 {

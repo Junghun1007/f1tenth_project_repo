@@ -1204,7 +1204,7 @@ private:
   {
     rcl_interfaces::msg::ParameterDescriptor descriptor;
     descriptor.read_only=true;
-    descriptor.description="Edit manual_obstacle_view.yaml and restart to change shared depth";
+    descriptor.description="Edit auto_control/config/obstacles.yaml and restart to change shared depth";
     depth_enabled_=node_.declare_parameter<bool>("obstacles.depth.enabled",false,descriptor);
     if (depth_enabled_) {
       if (camera_socket_!=dai::CameraBoardSocket::CAM_A || !fused_bev_output_enabled_) {
@@ -1225,7 +1225,7 @@ private:
     }
     const auto shared_device_id=depth_enabled_ ? bev_handoff::obstacleDeviceId() : std::string{};
     if (depth_enabled_ && shared_device_id.empty()) {
-      throw std::runtime_error("Load obstacle-enabled bev_processor before camera_driver in the same container");
+      throw std::runtime_error("Load bev_processor with obstacles.share_reference before camera_driver in the same container");
     }
     auto device=shared_device_id.empty() ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
       std::make_shared<dai::Device>(dai::DeviceInfo(shared_device_id),dai::UsbSpeed::SUPER);

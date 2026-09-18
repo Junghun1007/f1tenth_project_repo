@@ -353,8 +353,9 @@ the commanded duty is already zero. A rejected change is not stored or replayed
 later. `vesc_bridge` communicates through `/dev/ttyTHS1` and does not access the
 Bluetooth controller transport.
 
-## 수동주행 중 차선 BEV + 장애물 확인
+## 기존 auto_drive에서 장애물 매핑을 수동으로 확인
 
-[실행·설정 안내](MANUAL_OBSTACLE_VIEW.md)를 참고한다.
-`manual_obstacle_view.launch.py`는 기존 120×300cm 차선 BEV에 Depth 군집을 합성하며,
-수동주행만 실행하고 auto_control 및 roi_lidar 노드는 시작하지 않는다.
+`auto_drive.launch.py manual_test:=true`는 기존 차선·신호등 검출과 auto_control의 장애물
+검출을 함께 실행한다. auto_control의 액추에이터 출력은 monitor_only로 차단하며 조작은
+수동으로 한다. 별도 manual_obstacle_view launch는 이 구성으로 대체했다.
+[실행 및 YAML 안내](../auto_control/AUTO_CONTROL_OBSTACLES.md).

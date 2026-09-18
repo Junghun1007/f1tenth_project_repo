@@ -60,6 +60,15 @@ def _apply_parameter_file_defaults(
             context.launch_configurations[launch_name] = _launch_default(
                 parameters, parameter_name, fallback
             )
+    camera = _ros_parameters(
+        LaunchConfiguration("camera_params_file").perform(context), "camera_driver"
+    )
+    for argument, parameter, fallback in (
+        ("measured_erpm_topic", "imu_stabilization_measured_erpm_topic", "/vesc/measured_erpm"),
+        ("vehicle_acceleration_topic", "imu_stabilization_can_acceleration_topic", "/vehicle/dynamics/acceleration"),
+    ):
+        if context.launch_configurations[argument] == _PARAMETER_FILE_DEFAULT:
+            context.launch_configurations[argument] = str(camera.get(parameter, fallback))
     return []
 
 
@@ -202,6 +211,11 @@ def generate_launch_description():
                     "BEV parameter YAML; its root must be bev_processor"
                 ),
             ),
+            DeclareLaunchArgument("obstacles_enabled", default_value="false"),
+            DeclareLaunchArgument("measured_erpm_topic", default_value=_PARAMETER_FILE_DEFAULT),
+            DeclareLaunchArgument("vehicle_acceleration_topic", default_value=_PARAMETER_FILE_DEFAULT),
+            DeclareLaunchArgument("perception_params_file", default_value=LaunchConfiguration("bev_params_file"),
+                                  description="Optional shared obstacle parameters; default reuses the selected BEV YAML"),
             DeclareLaunchArgument(
                 "performance_measurement_enabled",
                 default_value=_PARAMETER_FILE_DEFAULT,
@@ -323,7 +337,9 @@ def generate_launch_description():
                         parameters=[
                             bev_params,
                             LaunchConfiguration("bev_params_file"),
+                            LaunchConfiguration("perception_params_file"),
                             {
+                                "obstacles.share_reference": ParameterValue(LaunchConfiguration("obstacles_enabled"), value_type=bool),
                                 "performance_measurement_enabled": (
                                     performance_measurement_parameter
                                 ),
@@ -354,7 +370,11 @@ def generate_launch_description():
                         name="camera_driver",
                         parameters=[
                             LaunchConfiguration("camera_params_file"),
+                            LaunchConfiguration("perception_params_file"),
                             {
+                                "obstacles.depth.enabled": ParameterValue(LaunchConfiguration("obstacles_enabled"), value_type=bool),
+                                "imu_stabilization_measured_erpm_topic": LaunchConfiguration("measured_erpm_topic"),
+                                "imu_stabilization_can_acceleration_topic": LaunchConfiguration("vehicle_acceleration_topic"),
                                 "preview_enabled": False,
                                 "publish_enabled": False,
                                 "fused_bev_output_enabled": True,

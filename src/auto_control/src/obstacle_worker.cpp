@@ -1,10 +1,10 @@
-#include "bev_processor/obstacle_worker.hpp"
+#include "auto_control/obstacle_worker.hpp"
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <chrono>
 #include <optional>
 
-namespace bev_processor
+namespace auto_control
 {
 namespace
 {
@@ -14,7 +14,7 @@ template<class T> void parameter(rclcpp::Node & node,const std::string & name,T 
 {
   rcl_interfaces::msg::ParameterDescriptor descriptor;
   descriptor.read_only=true;
-  descriptor.description="Startup setting: edit YAML and restart the manual obstacle launch";
+  descriptor.description="Startup setting: edit YAML and restart the auto_drive launch";
   value=node.declare_parameter<T>("obstacles."+name,value,descriptor);
 }
 cv::Matx33d matrix(const std::array<double,9> & values)
@@ -47,7 +47,7 @@ ObstacleWorker::ObstacleWorker(rclcpp::Node & node,const RectifiedCameraModel & 
     !std::isfinite(max_sync_) || max_sync_<.001 || max_sync_>.1) {
     throw std::invalid_argument("Obstacle height/age/sync settings invalid");
   }
-  publisher_=node.create_publisher<geometry_msgs::msg::PoseArray>("~/obstacles",rclcpp::SensorDataQoS().keep_last(1));
+  publisher_=node.create_publisher<geometry_msgs::msg::PoseArray>("/auto/obstacles",rclcpp::SensorDataQoS().keep_last(1));
   bev_handoff::clearObstacles();
   thread_=std::thread(&ObstacleWorker::run,this);
 }

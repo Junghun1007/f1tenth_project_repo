@@ -1,6 +1,6 @@
 #pragma once
 #include "bev_processor/bev_geometry.hpp"
-#include "bev_processor/obstacle_clusters.hpp"
+#include "auto_control/obstacle_clusters.hpp"
 #include "camera_driver/msg/bev_input.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
@@ -9,8 +9,10 @@
 #include <mutex>
 #include <thread>
 
-namespace bev_processor
+namespace auto_control
 {
+using bev_processor::RectifiedCameraModel;
+using bev_processor::BevConfig;
 // Independent processing thread; never opens a camera or waits on BEV inference.
 class ObstacleWorker
 {

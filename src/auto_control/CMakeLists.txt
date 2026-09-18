@@ -18,6 +18,24 @@ find_package(std_msgs REQUIRED)
 find_package(line_detactor REQUIRED)
 find_package(traffic_detection_test REQUIRED)
 find_package(Threads REQUIRED)
+find_package(rclcpp_components REQUIRED)
+find_package(rcl_interfaces REQUIRED)
+find_package(bev_handoff REQUIRED)
+find_package(bev_processor REQUIRED)
+find_package(camera_driver REQUIRED)
+find_package(point_cloud REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core)
+
+add_library(auto_obstacle_component SHARED
+  src/obstacle_detector_node.cpp src/obstacle_worker.cpp)
+target_include_directories(auto_obstacle_component PRIVATE include ${OpenCV_INCLUDE_DIRS})
+ament_target_dependencies(auto_obstacle_component
+  rclcpp rclcpp_components rcl_interfaces bev_handoff bev_processor camera_driver geometry_msgs)
+target_link_libraries(auto_obstacle_component point_cloud::point_cloud_depth_source ${OpenCV_LIBS} Threads::Threads)
+rclcpp_components_register_nodes(auto_obstacle_component "auto_control::ObstacleDetectorNode")
+install(TARGETS auto_obstacle_component LIBRARY DESTINATION lib)
+
 
 add_executable(auto_control_node
   src/auto_control_node.cpp
@@ -51,6 +69,7 @@ install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(FILES
   README.md
   AUTO_CONTROL_PARAMETER_TUNING_KO.txt
+  AUTO_CONTROL_OBSTACLES.md
   DESTINATION share/${PROJECT_NAME}
 )
 

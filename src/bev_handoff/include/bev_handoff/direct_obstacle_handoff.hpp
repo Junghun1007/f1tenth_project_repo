@@ -24,7 +24,18 @@ struct DirectDepthFrame
   std::array<double,9> rgb_from_depth_rotation{};
   std::array<double,3> rgb_from_depth_translation{};
 };
-void setObstacleDeviceId(const std::string & id);
+struct ObstacleReference
+{
+  std::string device_id, frame_id, input_topic;
+  cv::Matx33d rotation_vehicle_from_camera;
+  cv::Vec3d position_vehicle_m;
+  double fx{0},fy{0},cx{0},cy{0},settle_sec{0};
+  int source_width{0},source_height{0};
+  double x_min{0},x_max{3},y_min{-.6},y_max{.6},meter_per_pixel{.01};
+  int width{120},height{300};
+};
+void publishObstacleReference(std::shared_ptr<const ObstacleReference> reference);
+std::shared_ptr<const ObstacleReference> obstacleReference();
 std::string obstacleDeviceId();
 void publishDirectDepth(std::shared_ptr<const DirectDepthFrame> frame);
 std::shared_ptr<const DirectDepthFrame> latestDirectDepth();

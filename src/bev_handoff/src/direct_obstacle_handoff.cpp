@@ -9,15 +9,17 @@ namespace
 {
 std::shared_ptr<const DirectDepthFrame> depth;
 std::mutex mutex;
-std::string device_id;
+std::shared_ptr<const ObstacleReference> reference;
 std::deque<std::shared_ptr<const ObstacleFrame>> history;
 double seconds(const std_msgs::msg::Header & h)
 {return double(h.stamp.sec)+double(h.stamp.nanosec)*1e-9;}
 }
-void setObstacleDeviceId(const std::string & id)
-{std::lock_guard<std::mutex> lock(mutex); device_id=id; history.clear();}
+void publishObstacleReference(std::shared_ptr<const ObstacleReference> value)
+{std::lock_guard<std::mutex> lock(mutex); reference=std::move(value); history.clear();}
+std::shared_ptr<const ObstacleReference> obstacleReference()
+{std::lock_guard<std::mutex> lock(mutex); return reference;}
 std::string obstacleDeviceId()
-{std::lock_guard<std::mutex> lock(mutex); return device_id;}
+{std::lock_guard<std::mutex> lock(mutex); return reference ? reference->device_id : std::string{};}
 void publishDirectDepth(std::shared_ptr<const DirectDepthFrame> frame)
 {std::atomic_store(&depth,std::move(frame));}
 std::shared_ptr<const DirectDepthFrame> latestDirectDepth()

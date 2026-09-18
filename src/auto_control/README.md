@@ -520,3 +520,10 @@ RED 직후 정지 원인은 `control_state`/`traffic_phase`로 구분한다.
 제어 입력 실패로 제동 상한 명령을 내린 것이다. `approach`이면서 목표 속도는 남아
 있는데 차가 먼저 멈춘다면 PID 출력, 제동 전류, duty 회복 속도를 함께 분석한다.
 한 번 임시 정지를 거쳤다면 거리 복구 후에도 `slow_reapproach` 속도 제한이 유지된다.
+
+## 장애물 검출을 포함한 수동 통합 확인
+
+기존 `vehicle_bringup/auto_drive.launch.py manual_test:=true`로 차선·신호등·장애물 BEV 표시를
+함께 실행한다. 장애물 검출은 이 패키지의 `ObstacleDetectorNode`에서 처리하며,
+`auto_control_node`는 monitor_only로 자동 액추에이터 출력을 차단한다.
+[실행·YAML·구조 설명](AUTO_CONTROL_OBSTACLES.md).
