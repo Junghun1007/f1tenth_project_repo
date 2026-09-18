@@ -786,6 +786,34 @@ private:
     message.detector_result_ready_stamp =
       static_cast<builtin_interfaces::msg::Time>(node_.get_clock()->now());
     result_publisher_->publish(std::move(message));
+    if (bev_handoff::avoidancePreviewEnabled()) {
+      auto lane=std::make_shared<bev_handoff::PlanningLane>();
+      lane->header=input.header; lane->received_at=input_received_at;
+      lane->width=input.width; lane->height=input.height;
+      lane->x_max=centerline_.bev_height_m; lane->y_max=centerline_.bev_width_m/2;
+      lane->meter_per_pixel=centerline_.bev_width_m/input.width;
+      const auto metric=[&](const cv::Point2f & p) {
+        return cv::Point2d(lane->x_max-(p.y+.5)*centerline_.bev_height_m/input.height,
+          lane->y_max-(p.x-connection_.padding_px+.5)*lane->meter_per_pixel);
+      };
+      lane->valid=!result.centerline.sample_limit_reached && result.centerline.points.size()>=3 &&
+        result.centerline.points.size()<=2000 && !result.observed_paths[0].empty() &&
+        !result.observed_paths[1].empty();
+      if (lane->valid) {
+        for (const auto & p:result.centerline.points) {lane->center.push_back(metric(p));}
+        std::size_t count=0;
+        for (const auto & side:result.observed_paths) {
+          for (const auto & curve:side) {
+            if ((count+=curve.size())>2000) {lane->valid=false; break;}
+            std::vector<cv::Point2d> boundary;
+            for (const auto & p:curve) {boundary.push_back(metric(p));}
+            if (boundary.size()>=2) {lane->boundaries.push_back(std::move(boundary));}
+          }
+          if (!lane->valid) {break;}
+        }
+      }
+      bev_handoff::publishPlanningLane(std::move(lane));
+    }
     if (!result.image.empty() &&
       (result_image_publisher_->get_subscription_count() > 0U ||
       result_image_publisher_->get_intra_process_subscription_count() > 0U))
@@ -793,6 +821,8 @@ private:
       if (obstacle_overlay_enabled_) {
         auto display=result.image.clone();
         drawObstacleOverlay(display,input.header,model_input_width_,model_input_height_,connection_.padding_px,
+          obstacle_sync_sec_,obstacle_age_sec_);
+        drawAvoidancePreview(display,input.header,model_input_width_,model_input_height_,connection_.padding_px,
           obstacle_sync_sec_,obstacle_age_sec_);
         result_image_publisher_->publish(image_message(display,input,"bgr8"));
       } else {result_image_publisher_->publish(image_message(result.image,input,"bgr8"));}
@@ -825,10 +855,11 @@ private:
     const double stop_line_distance_m,
     const double preview_fps,
     const std::uint8_t traffic_signal,
-    const std::string & obstacle_status = "") const
+    const std::string & obstacle_status = "",
+    const std::string & avoidance_status = "") const
   {
     cv::Mat banner = cv::Mat::zeros(
-      kBannerHeight+(obstacle_overlay_enabled_ ? 14 : 0), overlay.cols, CV_8UC3);
+      kBannerHeight+(obstacle_overlay_enabled_ ? 14 : 0)+(avoidance_status.empty()?0:28), overlay.cols, CV_8UC3);
     const double inference_fps = average_inference_milliseconds > 0.0 ?
       1000.0 / average_inference_milliseconds : 0.0;
     const double postprocess_fps = average_postprocess_milliseconds > 0.0 ?
@@ -862,6 +893,11 @@ private:
     if (obstacle_overlay_enabled_) {
       cv::putText(banner,obstacle_status,{3,kBannerHeight+10},cv::FONT_HERSHEY_SIMPLEX,.28,
         cv::Scalar(255,180,70),1,cv::LINE_AA);
+    }
+    if (!avoidance_status.empty()) {
+      const int top=kBannerHeight+(obstacle_overlay_enabled_?14:0);
+      cv::putText(banner,avoidance_status,{3,top+10},cv::FONT_HERSHEY_SIMPLEX,.21,cv::Scalar(255,255,0),1,cv::LINE_AA);
+      cv::putText(banner,"PREVIEW ONLY - no control",{3,top+24},cv::FONT_HERSHEY_SIMPLEX,.25,cv::Scalar(255,255,0),1,cv::LINE_AA);
     }
     cv::Mat canvas;
     cv::vconcat(overlay, banner, canvas);
@@ -1224,9 +1260,12 @@ private:
                 cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
             }
             std::string obstacle_status;
+            std::string avoidance_status;
             if (obstacle_overlay_enabled_) {
               overlay=overlay.clone();
               obstacle_status=drawObstacleOverlay(overlay,frame->header,model_input_width_,model_input_height_,
+                connection_.padding_px,obstacle_sync_sec_,obstacle_age_sec_);
+              avoidance_status=drawAvoidancePreview(overlay,frame->header,model_input_width_,model_input_height_,
                 connection_.padding_px,obstacle_sync_sec_,obstacle_age_sec_);
             }
             canvas = preview_canvas(
@@ -1234,7 +1273,7 @@ private:
               frame->average_inference_milliseconds,
               frame->average_postprocess_milliseconds,
               average_control_milliseconds,
-              frame->result.stop_line_distance_m, display_fps, traffic_signal,obstacle_status);
+              frame->result.stop_line_distance_m, display_fps, traffic_signal,obstacle_status,avoidance_status);
           }
           cv::imshow(preview_window_name_, canvas);
           displayed_theme = theme;

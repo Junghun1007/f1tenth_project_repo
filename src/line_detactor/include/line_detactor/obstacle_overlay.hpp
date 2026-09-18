@@ -1,5 +1,7 @@
 #pragma once
 #include "bev_handoff/direct_obstacle_handoff.hpp"
+#include "bev_handoff/avoidance_handoff.hpp"
+#include "line_detactor/avoidance_overlay.hpp"
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <array>

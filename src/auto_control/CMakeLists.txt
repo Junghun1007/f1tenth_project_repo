@@ -31,7 +31,7 @@ add_library(auto_obstacle_component SHARED
   src/obstacle_detector_node.cpp src/obstacle_worker.cpp)
 target_include_directories(auto_obstacle_component PRIVATE include ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(auto_obstacle_component
-  rclcpp rclcpp_components rcl_interfaces bev_handoff bev_processor camera_driver geometry_msgs)
+  rclcpp rclcpp_components rcl_interfaces bev_handoff bev_processor camera_driver geometry_msgs std_msgs)
 target_link_libraries(auto_obstacle_component point_cloud::point_cloud_depth_source ${OpenCV_LIBS} Threads::Threads)
 rclcpp_components_register_nodes(auto_obstacle_component "auto_control::ObstacleDetectorNode")
 install(TARGETS auto_obstacle_component LIBRARY DESTINATION lib)

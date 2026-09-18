@@ -527,3 +527,7 @@ RED 직후 정지 원인은 `control_state`/`traffic_phase`로 구분한다.
 함께 실행한다. 장애물 검출은 이 패키지의 `ObstacleDetectorNode`에서 처리하며,
 `auto_control_node`는 monitor_only로 자동 액추에이터 출력을 차단한다.
 [실행·YAML·구조 설명](AUTO_CONTROL_OBSTACLES.md).
+
+`avoidance_test_enabled:=true`를 추가하면 장애물 회피 후보/선택 경로와 권고 속도를
+BEV에 표시한다. 기본 OFF이며 `/auto_obstacles`의 `obstacles.avoidance.enabled`로
+실행 중 전환할 수 있다. 화면 전용 테스트이며 기존 실제 제어 경로는 변경하지 않는다.

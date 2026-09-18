@@ -112,6 +112,16 @@ def _apply_parameter_file_defaults(
         detector.update(_ros_parameters(obstacle_file, "line_detactor"))
         detector["bev_theme_enable"] = False
     detector["obstacles.overlay_enabled"] = obstacles_enabled == "true"
+    avoidance = LaunchConfiguration("avoidance_test_enabled").perform(context)
+    if avoidance == _PARAMETER_FILE_DEFAULT:
+        avoidance = _launch_default(
+            _ros_parameters(obstacle_file, "auto_obstacles") if obstacles_enabled == "true" else {},
+            "obstacles.avoidance.enabled", False)
+    if avoidance.lower() not in ("true", "false"):
+        raise RuntimeError("avoidance_test_enabled must be true or false")
+    avoidance = avoidance.lower() == "true"
+    if avoidance and obstacles_enabled != "true":
+        raise RuntimeError("avoidance_test_enabled requires obstacles_enabled:=true")
     if manual_test == "true":
         # Keep inference/diagnostics active, suppress all automatic actuators.
         context.launch_configurations["auto_control_mode"] = "monitor_only"
@@ -277,7 +287,8 @@ def _apply_parameter_file_defaults(
     if obstacles_enabled == "true":
         nodes.append(ComposableNode(
             package="auto_control", plugin="auto_control::ObstacleDetectorNode", name="auto_obstacles",
-            parameters=[obstacle_file], extra_arguments=[{"use_intra_process_comms": True}],
+            parameters=[obstacle_file, {"obstacles.avoidance.enabled": avoidance}],
+            extra_arguments=[{"use_intra_process_comms": True}],
         ))
     manual_actions = []
     if manual_test == "true":
@@ -307,6 +318,7 @@ def _apply_parameter_file_defaults(
         " | performance measurement=" + measurement +
         " | traffic observation=" + traffic_enabled + " | traffic stop=" + context.launch_configurations["traffic_stop_enabled"] +
         " | obstacles=" + obstacles_enabled + " | obstacle_yaml=" + obstacle_file +
+        " | avoidance_preview=" + str(avoidance) +
         " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
     )), *manual_actions, bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
@@ -662,6 +674,8 @@ def generate_launch_description():
             DeclareLaunchArgument("vehicle_namespace", default_value="autopilot03"),
             DeclareLaunchArgument("controller_name_contains", default_value="8BitDo"),
             DeclareLaunchArgument("obstacles_enabled", default_value="true"),
+            DeclareLaunchArgument("avoidance_test_enabled", default_value=_PARAMETER_FILE_DEFAULT,
+                                  description="Preview-only local avoidance candidates; defaults to obstacle YAML (false). Never commands actuators"),
             DeclareLaunchArgument("obstacle_params_file", default_value=os.path.join(auto_control_share, "config", "obstacles.yaml")),
             DeclareLaunchArgument("camera_params_file", default_value=camera_config),
             DeclareLaunchArgument("traffic_light_enabled", default_value="true",

@@ -1,4 +1,5 @@
 #include "auto_control/obstacle_worker.hpp"
+#include "auto_control/avoidance_worker.hpp"
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include <rclcpp_components/register_node_macro.hpp>
 
@@ -12,6 +13,7 @@ public:
   explicit ObstacleDetectorNode(const rclcpp::NodeOptions & options)
   : Node("auto_obstacles",options)
   {
+    avoidance_=std::make_unique<AvoidanceWorker>(*this);
     // Component load order need not block on the one-shot BEV measurement.
     timer_=create_wall_timer(std::chrono::milliseconds(100),[this]() {connect();});
   }
@@ -44,6 +46,7 @@ private:
       reference->y_max-reference->y_min,reference->x_max-reference->x_min);
   }
   std::unique_ptr<ObstacleWorker> worker_;
+  std::unique_ptr<AvoidanceWorker> avoidance_;
   rclcpp::Subscription<camera_driver::msg::BevInput>::SharedPtr subscription_;
   rclcpp::TimerBase::SharedPtr timer_;
   std::chrono::steady_clock::time_point first_input_;
