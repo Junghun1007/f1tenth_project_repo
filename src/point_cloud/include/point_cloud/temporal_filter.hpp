@@ -10,7 +10,7 @@ namespace point_cloud
 {
 struct TemporalOptions
 {
-  bool enabled{true};
+  bool enabled{false};
   double voxel_size_m{0.04};
   double match_distance_m{0.04};
   int window_frames{5};

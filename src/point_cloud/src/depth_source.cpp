@@ -43,6 +43,7 @@ void validate(const Config & c)
   validateClusters(c.cluster);
   validateTemporal(c.temporal);
   validateBlobs(c.blob);
+  validateTracking(c.tracking);
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);

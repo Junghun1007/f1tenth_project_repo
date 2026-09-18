@@ -48,7 +48,7 @@ point_cloud:
     ground.min_inlier_ratio: 0.35    # Minimum floor fraction in sampled lower-half points.
     # Repeated 3D observations before clustering; assumes a stationary vehicle.
     # Current points only: never replay vanished points. OFF restores per-frame detection.
-    temporal.enabled: true
+    temporal.enabled: false          # Fixed-voxel gate is optional; moving/sparse points can fail it.
     temporal.voxel_size_m: 0.04       # 4cm 3D cells aggregate observations, not output points.
     temporal.match_distance_m: 0.04   # Match current/previous cell centroids within 4cm in XYZ.
     temporal.window_frames: 5        # Sliding window including current fresh frame.
@@ -78,6 +78,11 @@ point_cloud:
     blob.min_thickness_m: 0.03        # At least 3cm short side of rotated bounding rectangle.
     blob.min_fill_ratio: 0.35         # Occupied surviving area / rotated rectangle area.
     blob.max_aspect_ratio: 6.0        # Long side / short side; reject elongated ribbons.
+    # RViz-only object association and bounded dropout hold. No motion compensation.
+    tracking.enabled: true
+    tracking.match_distance_m: 0.15   # Maximum 3D centroid change for one-to-one association.
+    tracking.hold_sec: 0.20           # Expire since LAST observation, even if depth stops.
+    tracking.min_hits: 2              # Distinct observations before first display; gaps allowed.
     publish.depth_image: true        # 16UC1, millimeters. CameraInfo is always published.
     input.max_age_sec: 0.5           # Drop old/replayed frames; do not accumulate clouds.
     metrics.print_interval_sec: 1.0  # Actual FPS, valid points, age, host ms, XYZ MB/s.

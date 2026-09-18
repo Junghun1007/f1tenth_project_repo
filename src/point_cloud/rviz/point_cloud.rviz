@@ -26,8 +26,31 @@ Visualization Manager:
         Durability Policy: Transient Local
         History Policy: Keep Last
     - Class: rviz_default_plugins/PointCloud2
-      Name: Obstacle cluster points
+      Name: Tracked obstacle points
       Enabled: true
+      Topic:
+        Value: /point_cloud/points_tracked
+        Depth: 1
+        Reliability Policy: Best Effort
+        Durability Policy: Volatile
+        History Policy: Keep Last
+      Queue Size: 1
+      Style: Points
+      Size (Pixels): 2
+      Size (m): 0.005
+      Alpha: 1
+      Position Transformer: XYZ
+      Color Transformer: RGB8
+      Axis: X
+      Use Fixed Frame: true
+      Autocompute Value Bounds: false
+      Min Value: 0
+      Max Value: 4
+      Decay Time: 0
+      Selectable: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Current obstacle detections
+      Enabled: false
       Topic:
         Value: /point_cloud/points_clusters
         Depth: 1

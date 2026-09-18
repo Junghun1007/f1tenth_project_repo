@@ -81,6 +81,10 @@ namespace point_cloud
   X("blob.min_thickness_m", blob.min_thickness_m, as_double) \
   X("blob.min_fill_ratio", blob.min_fill_ratio, as_double) \
   X("blob.max_aspect_ratio", blob.max_aspect_ratio, as_double) \
+  X("tracking.enabled", tracking.enabled, as_bool) \
+  X("tracking.match_distance_m", tracking.match_distance_m, as_double) \
+  X("tracking.hold_sec", tracking.hold_sec, as_double) \
+  X("tracking.min_hits", tracking.min_hits, as_int) \
   X("publish.depth_image", publish_depth, as_bool) \
   X("input.max_age_sec", max_age_sec, as_double) \
   X("metrics.print_interval_sec", metrics_interval, as_double)
@@ -147,6 +151,7 @@ public:
     filtered_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_filtered", qos);
     bev_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_bev", qos);
     clusters_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_clusters", qos);
+    tracked_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_tracked", qos);
     boundary_pub_ = create_publisher<visualization_msgs::msg::Marker>(
       "~/bev_bounds", rclcpp::QoS(1).transient_local());
     depth_pub_ = create_publisher<sensor_msgs::msg::Image>("~/depth/image_raw", qos);
@@ -202,7 +207,8 @@ private:
           parameter_names_[i].compare(0, 4, "bev.") != 0 &&
           parameter_names_[i].compare(0, 8, "cluster.") != 0 &&
           parameter_names_[i].compare(0, 9, "temporal.") != 0 &&
-          parameter_names_[i].compare(0, 5, "blob.") != 0) {reopen = true;}
+          parameter_names_[i].compare(0, 5, "blob.") != 0 &&
+          parameter_names_[i].compare(0, 9, "tracking.") != 0) {reopen = true;}
       }
     }
     if (!changed) {return;}
@@ -216,7 +222,7 @@ private:
     last_parameters_ = parameters;
     RCLCPP_INFO(get_logger(), "%s", reopen ?
       "Parameters committed; reopening depth pipeline with the new settings" :
-      "Ground/BEV/cluster/temporal/blob settings applied without restarting the camera");
+      "Ground/BEV/cluster/temporal/blob/tracking settings applied without restarting the camera");
   }
 
   void status(const std::string & value)
@@ -250,14 +256,15 @@ private:
     return message;
   }
 
-  sensor_msgs::msg::PointCloud2 clusterMessage(const ClusterResult & result, const rclcpp::Time & stamp)
+  sensor_msgs::msg::PointCloud2 clusterMessage(const ClusterResult & result, const rclcpp::Time & stamp,
+    const TrackedClusters * tracked = nullptr)
   {
     auto message = cloudMessage(Cloud{}, stamp);
     message.header.frame_id = bev_frame_id_;
     message.width = result.points.width;
     message.height = 1;
     message.is_dense = true;
-    message.point_step = 5 * sizeof(float);
+    message.point_step = (tracked ? 7 : 5) * sizeof(float);
     message.row_step = message.width * message.point_step;
     sensor_msgs::msg::PointField field;
     field.name = "rgb"; field.offset = 12; field.count = 1;
@@ -266,13 +273,27 @@ private:
     field.name = "cluster_id"; field.offset = 16;
     field.datatype = sensor_msgs::msg::PointField::UINT32;
     message.fields.push_back(field);
+    if (tracked) {
+      field.name = "observation_age_sec"; field.offset = 20;
+      field.datatype = sensor_msgs::msg::PointField::FLOAT32;
+      message.fields.push_back(field);
+      field.name = "held"; field.offset = 24;
+      field.datatype = sensor_msgs::msg::PointField::UINT32;
+      message.fields.push_back(field);
+    }
     message.data.resize(message.row_step);
     constexpr std::array<std::uint32_t, 8> colors{
       0xff6060, 0x60ff90, 0x60b0ff, 0xffd060, 0xc080ff, 0x60ffff, 0xff80c0, 0xe0ff80};
     for (std::size_t i = 0; i < result.ids.size(); ++i) {
       auto * target = message.data.data() + i * message.point_step;
       const auto id = result.ids[i];
-      const auto rgb = colors[(id - 1) % colors.size()];
+      auto rgb = colors[(id - 1) % colors.size()];
+      if (tracked) {
+        const std::uint32_t held = tracked->held[i] ? 1 : 0;
+        if (held) {rgb = (rgb & 0xfefefe) >> 1;}  // Older observations are visibly dimmer.
+        std::memcpy(target + 20, &tracked->observation_age_sec[i], 4);
+        std::memcpy(target + 24, &held, 4);
+      }
       std::memcpy(target, result.points.xyz.data() + i*3, 12);
       std::memcpy(target + 12, &rgb, 4);
       std::memcpy(target + 16, &id, 4);
@@ -283,6 +304,7 @@ private:
   void clearCloud()
   {
     temporal_filter_.clear();
+    cluster_tracker_.clear();
     const auto stamp = now();
     const auto empty = cloudMessage(Cloud{}, stamp);
     cloud_pub_->publish(empty);
@@ -291,6 +313,8 @@ private:
     bev_empty.header.frame_id = bev_frame_id_;
     bev_pub_->publish(bev_empty);
     clusters_pub_->publish(clusterMessage(ClusterResult{}, stamp));
+    const TrackedClusters empty_tracks;
+    tracked_pub_->publish(clusterMessage(empty_tracks.clusters, stamp, &empty_tracks));
   }
 
   void publishImages(
@@ -405,12 +429,18 @@ private:
         auto report_start = last_frame;
         auto previous_capture = std::chrono::steady_clock::time_point::min();
         std::size_t frames = 0;
+        std::size_t empty_raw = 0, empty_ground = 0, empty_bev = 0, empty_temporal = 0, empty_core = 0, empty_blob = 0;
         double processing_ms = 0;
         bool stale = false, first = true;
         auto last_view_publish = std::chrono::steady_clock::time_point::min();
         while (!stopping() && revision_.load() == revision) {
           auto frame = source.tryGet();
           const auto host_now = std::chrono::steady_clock::now();
+          const double host_sec = std::chrono::duration<double>(host_now.time_since_epoch()).count();
+          if (cluster_tracker_.expire(host_sec)) {
+            const auto tracked = cluster_tracker_.snapshot(host_sec);
+            tracked_pub_->publish(clusterMessage(tracked.clusters, now(), &tracked));
+          }
           if (std::chrono::duration<double>(host_now - last_frame).count() > c.max_age_sec && !stale) {
             clearCloud();
             status("STALE: no fresh depth");
@@ -442,6 +472,7 @@ private:
           ClusterOptions cluster;
           TemporalOptions temporal;
           BlobOptions blob;
+          TrackingOptions tracking;
           std::uint64_t temporal_revision;
           {
             std::lock_guard<std::mutex> lock(config_mutex_);
@@ -450,6 +481,7 @@ private:
             cluster = config_.cluster;
             temporal = config_.temporal;
             blob = config_.blob;
+            tracking = config_.tracking;
             temporal_revision = temporal_revision_;
           }
           const auto ground_result = removeGround(cloud, ground);
@@ -458,8 +490,10 @@ private:
               "Ground plane not found; points_filtered contains the original points");
           }
           filtered_pub_->publish(cloudMessage(cloud, stamp));
+          const auto ground_points = cloud.valid_points;
           const auto vehicle_from_optical = compose(vehicle_from_rgb, source.rgbFromFrame(*frame));
           transformAndCrop(cloud, vehicle_from_optical, bev);
+          const auto bev_points = cloud.valid_points;
           if (first || last_view_publish == std::chrono::steady_clock::time_point::min() ||
             std::chrono::duration<double>(host_now - last_view_publish).count() >= 0.2)
           {
@@ -471,6 +505,7 @@ private:
           bev_pub_->publish(bev_message);
           if (temporal_revision != applied_temporal_revision_) {
             temporal_filter_.clear();
+            cluster_tracker_.clear();
             applied_temporal_revision_ = temporal_revision;
           }
           const auto temporal_points = temporal_filter_.apply(cloud,
@@ -484,6 +519,26 @@ private:
               "Blob grid exceeded 1M cells; oversized candidates omitted");
           }
           clusters_pub_->publish(clusterMessage(clusters, stamp));
+          cluster_tracker_.update(clusters,
+            std::chrono::duration<double>(capture.time_since_epoch()).count(), tracking);
+          const double publish_sec = std::chrono::duration<double>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+          auto tracked = cluster_tracker_.snapshot(publish_sec);
+          if (!tracking.enabled) {
+            tracked.clusters = clusters;
+            tracked.live_tracks = clusters.accepted;
+            tracked.held.assign(clusters.ids.size(), false);
+            tracked.observation_age_sec.assign(clusters.ids.size(),
+              static_cast<float>(std::max(0.0, publish_sec -
+                std::chrono::duration<double>(capture.time_since_epoch()).count())));
+          }
+          tracked_pub_->publish(clusterMessage(tracked.clusters, now(), &tracked));
+          empty_raw += raw_valid == 0;
+          empty_ground += ground_points == 0;
+          empty_bev += bev_points == 0;
+          empty_temporal += temporal_points == 0;
+          empty_core += candidates.accepted == 0;
+          empty_blob += clusters.accepted == 0;
           publishImages(*frame, k, stamp, c.publish_depth);
           if (first || stale) {
             status("STREAMING");
@@ -503,12 +558,17 @@ private:
           if (elapsed >= c.metrics_interval) {
             const std::size_t total = static_cast<std::size_t>(cloud.width) * cloud.height;
             RCLCPP_INFO(get_logger(),
-              "depth=%ux%u cloud=%ux%u FPS=%.1f valid=%zu/%zu (%.1f%%) age=%.1fms host=%.2fms XYZ=%.1fMB/s clusters=%zu/%zu obstacle_points=%zu persistent_points=%zu",
+              "depth=%ux%u cloud=%ux%u FPS=%.1f valid=%zu/%zu (%.1f%%) age=%.1fms host=%.2fms XYZ=%.1fMB/s "
+              "clusters=%zu/%zu obstacle_points=%zu persistent_points=%zu ground_points=%zu bev_points=%zu core_clusters=%zu tracks_live=%zu tracks_held=%zu "
+              "empty_frames(raw/ground/bev/temporal/core/blob)=%zu/%zu/%zu/%zu/%zu/%zu of %zu",
               frame->getWidth(), frame->getHeight(), cloud.width, cloud.height, frames / elapsed,
               raw_valid, total, 100.0 * raw_valid / total, age * 1000,
               processing_ms / frames, cloud.xyz.size() * sizeof(float) * frames / elapsed / 1e6,
-              clusters.accepted, clusters.candidates, clusters.points.valid_points, temporal_points);
+              clusters.accepted, clusters.candidates, clusters.points.valid_points, temporal_points,
+              ground_points, bev_points, candidates.accepted, tracked.live_tracks, tracked.held_tracks,
+              empty_raw, empty_ground, empty_bev, empty_temporal, empty_core, empty_blob, frames);
             frames = 0;
+            empty_raw = empty_ground = empty_bev = empty_temporal = empty_core = empty_blob = 0;
             processing_ms = 0;
             report_start = host_now;
           }
@@ -527,13 +587,14 @@ private:
   }
 
   Config config_;
+  ClusterTracker cluster_tracker_;  // Worker only; reset alongside temporal history.
   TemporalFilter temporal_filter_;  // Accessed only by cameraLoop/clearCloud on worker.
   std::uint64_t temporal_revision_{0};  // Protected by config_mutex_.
   std::uint64_t applied_temporal_revision_{0};  // Worker only.
   oak_startup::OakStartupMeasurementConfig startup_config_;
   double camera_x_{-0.16}, camera_y_{0.0}, camera_yaw_{0.0};
   std::string bev_frame_id_;
-  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr bev_pub_, clusters_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr bev_pub_, clusters_pub_, tracked_pub_;
   rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr boundary_pub_;
   std::string device_id_, frame_id_, view_frame_id_;
   std::vector<std::string> parameter_names_;

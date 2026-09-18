@@ -28,6 +28,7 @@ int main()
   using namespace point_cloud;
   TemporalFilter filter;
   TemporalOptions options;
+  options.enabled = true;
   for (int frame=0; frame<12; ++frame) {
     Cloud c;
     patch(c,1 + 0.001f*(frame%2));

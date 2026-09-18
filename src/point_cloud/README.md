@@ -6,7 +6,8 @@ OAK의 **한 depth 프레임을 원본 해상도의 XYZ 점군으로 표시**하
 시작 시 `oak_startup`으로 BEV와 같은 방식의 카메라 높이·roll·pitch 측정을 수행한다.
 BEV 점군을 XY 클러스터로 묶고 **면적·두께가 있는 덩어리 형태까지 통과한 포인트만**
 기본 RViz 프리뷰에 표시한다.
-클러스터링 전에 최근 프레임의 3D 위치 반복성을 검사한다. 물체 ID 추적이나 과거 점의 재표시는 하지 않는다.
+기본 프리뷰는 물체를 연결해 ID를 유지하고, 짧은 누락은 마지막 관측 점을 최대 0.2초 유지한다.
+개별 점의 3D 위치 반복성 검사는 선택 기능이며 기본 OFF다.
 일반 점군 생성의 기본 요청 FPS는 50이며 실제 속도는 로그로 확인한다.
 
 여기서 원본은 **StereoDepth가 계산한 depth의 유효 픽셀 전체**를 뜻한다. 센서 RAW 영상이나
@@ -73,7 +74,7 @@ ros2 param set /point_cloud bev.enabled true
 ros2 param set /point_cloud bev.x_max_m 2.0
 ```
 
-RViz에서는 **Obstacle cluster points**와 **BEV ground footprint**만 켜져 있다.
+RViz에서는 **Tracked obstacle points**와 **BEV ground footprint**만 켜져 있다.
 클러스터 판정 전 BEV 점군은 **BEV region 3D points**를 켜서 비교할 수 있다.
 범위 밖의 점이 보이면 기존 `Ground-filtered point cloud` 또는 `Original point cloud`가
 동시에 켜져 있는지 확인한다. `bev.enabled=false`일 때도 테두리는 BEV 기준 영역으로 남는다.
@@ -90,9 +91,59 @@ RGB BEV의 유효 픽셀 마스크까지 적용하지는 않으며, 깊이 카�
 BEV 실행과 별도 측정하므로 측정 오차가 있을 수 있고, 주행 중 IMU 흔들림 보정/프레임 동기화는
 아직 이 점군에 적용하지 않는다. 우선 정지 상태에서 영역과 장애물 위치를 확인한다.
 
+## 물체 단위 깜빡임 완화
+
+한 프레임의 점 수나 형태가 문턱값 아래로 내려가면 실시간 검출은 사라진다. `tracking.*`는
+최종 통과한 클러스터의 3D 중심을 가까운 순서로 일대일 연결한다. 서로 다른 2개 프레임에서
+연결된 물체만 표시하며, 그 뒤 검출 누락은 마지막 관측부터 최대 0.2초 유지한다.
+그 안에 다시 관측되면 ID/색을 유지하고 **점 전체를 새 관측으로 교체**한다. 점을 누적하지 않는다.
+유지 중인 점은 절반 밝기로 표시하고 `held=1`로 표시한다. 다시 관측되면 원래 밝기로 돌아온다.
+`held=0`은 최신 처리 depth 프레임의 관측이며, `observation_age_sec`는 발행 시점의 실제 나이다.
+
+| 파라미터 | 기본값 | 의미 |
+|---|---:|---|
+| `tracking.enabled` | true | 물체 연결과 짧은 누락 유지. OFF면 실시간 검출을 그대로 프리뷰. |
+| `tracking.match_distance_m` | 0.15 | 이전 물체 중심과 새 중심의 최대 XYZ 거리, 15cm. 범위 (0, 0.5]. |
+| `tracking.hold_sec` | 0.20 | 마지막 실제 관측 이후 유지 시간. 0.02~0.5초. 길수록 잔상 증가. |
+| `tracking.min_hits` | 2 | 최초 표시까지 필요한 서로 다른 관측 횟수. 1~10. 누락 프레임은 횟수에 미포함. |
+
+확정 전에도 관측 사이 간격이 `hold_sec` 이상이면 기록이 만료된다. 50FPS로 연속 관측되면
+기본 최초 표시는 약 20ms 이후다. 프레임 공급이 멈춰도 worker에서 시간을 검사해 만료 점을 지운다.
+오류/재연결/처리 설정 변경 시에는 추적 기록을 비운다. 최대 128개 물체를 유지하고,
+한 프레임에 후보가 더 많으면 점 수가 많은 128개를 연결 대상으로 삼는다.
+
+```bash
+# 기존의 고정 위치 점 반복성 검사는 끄고 물체 단위 안정화 사용
+ros2 param set /point_cloud temporal.enabled false
+ros2 param set /point_cloud tracking.enabled true
+ros2 param set /point_cloud tracking.match_distance_m 0.15
+ros2 param set /point_cloud tracking.hold_sec 0.2
+ros2 param set /point_cloud tracking.min_hits 2
+
+# 같은 RViz 토픽에서 유지 없이 비교
+ros2 param set /point_cloud tracking.enabled false
+```
+
+RViz 기존 설정을 재사용하면 토픽을 `/point_cloud/points_tracked`로 변경한다.
+새 설정에서는 **Tracked obstacle points**가 기본 ON이고 **Current obstacle detections**는
+실시간 `/point_cloud/points_clusters` 비교용이다. 비교할 때 하나씩 켠다.
+
+이 기능은 **짧은 관측 누락을 감추는 프리뷰용**이다. 애초에 검출되지 않거나 0.2초 이상 계속
+탈락하는 물체를 복구하지 못한다. odometry/속도 예측이 없으므로 이동 중 유지 점은 이전 차량
+좌표에 잠깐 남는다. 서로 가까운 물체가 합쳐지거나 갈라지면 ID가 바뀌거나 유지 잔상이 함께
+보일 수 있다. 연결 거리를 크게 하면 다른 물체와 연결할 가능성도 커진다.
+BEV 매핑/주행 판단에서 유지 점을 새 센서 측정으로 취급하지 말고 실시간 검출과 관측 나이를 구분한다.
+
+로그의 `ground_points`, `bev_points`, `persistent_points`, `core_clusters`, `clusters`는
+마지막 프레임의 단계별 결과다. `tracks_live/held`는 추적 출력의 새 관측/유지 물체 수다.
+`empty_frames(raw/ground/bev/temporal/core/blob)`는 **로그 기간 동안 각 단계가 완전히 비었던
+프레임 수**다. 개별 장애물의 탈락 횟수는 아니다. core는 살아 있는데 blob만 비는 경우 형태
+조건을, raw부터 비는 경우 깊이 입력을 확인할 수 있다. 일부 물체만 깜빡이는 경우에는
+`/points_bev`와 `/points_clusters`를 같은 구간의 bag으로 비교한다.
+
 ## 깜빡이는 점의 반복성 검사
 
-기본 ON인 `temporal.*` 필터는 클러스터 전체가 아니라 **3D 위치별 관측 기록**을 검사한다.
+기본 OFF인 `temporal.*` 필터는 클러스터 전체가 아니라 **3D 위치별 관측 기록**을 검사한다.
 따라서 콘과 연결된 선 모양 점도 반복성이 낮으면 클러스터링 전에 제외할 수 있다.
 XY만 비교하지 않고 Z도 비교하므로 같은 바닥 위치의 서로 다른 높이를 혼동하지 않는다.
 
@@ -107,7 +158,7 @@ XY만 비교하지 않고 Z도 비교하므로 같은 바닥 위치의 서로 �
 
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
-| `temporal.enabled` | true | 반복성 검사 ON/OFF. OFF면 기존 프레임별 클러스터 판정. |
+| `temporal.enabled` | false | 반복성 검사 ON/OFF. OFF면 기존 프레임별 클러스터 판정. |
 | `temporal.voxel_size_m` | 0.04 | 기록을 집계할 3D 격자 크기. 작으면 세밀하지만 비용 증가. |
 | `temporal.match_distance_m` | 0.04 | 이전 프레임 격자 중심과 현재 중심의 최대 XYZ 거리. 크면 흔들림 허용 증가, 주변 잡음도 통과 가능. |
 | `temporal.window_frames` | 5 | 현재를 포함해 검사할 최근 fresh 프레임 수. |
@@ -127,7 +178,7 @@ ros2 param set /point_cloud temporal.min_hits 3
 ```
 
 조건 변경 후에는 기록을 비우고 다시 수집한다. 카메라 재연결/프레임 공급 중단/설정 변경 시에도
-과거 조건의 기록을 재사용하지 않는다. 기본값의 최초 통과는 실제 50FPS일 때 최소 약 60ms 후이며,
+과거 조건의 기록을 재사용하지 않는다. 이 필터를 켰을 때 기본 문턱값의 최초 통과는 실제 50FPS일 때 최소 약 60ms 후이며,
 검출 상태·실제 FPS·처리 지연에 따라 더 늦어진다. `min_hits <= window_frames`여야 하고
 최대 기록 나이 안에 충분한 프레임이 들어와야 한다. 연결 허용 거리는 voxel_size의 2배 이하다.
 
@@ -135,7 +186,8 @@ ros2 param set /point_cloud temporal.min_hits 3
 진짜 장애물도 늦게 보이거나 제외될 수 있다. 주행 중 사용하려면 프레임 사이 차량 움직임을 보정한
 공통 좌표 비교가 필요하다. 우선 정지 상태에서 콘과 선 모양 잡음이 분리되는지 확인한다.
 계속 같은 위치에 생기는 잘못된 깊이 점은 이 검사로도 통과할 수 있다.
-이 기능은 물체 추적이 아니므로 클러스터 색상/ID는 여전히 프레임마다 바뀔 수 있다.
+이 기능 자체는 물체 추적이 아니다. `/points_clusters` ID는 프레임별이며,
+기본 프리뷰 `/points_tracked`의 ID는 물체 추적 단계에서 유지한다.
 
 ## BEV 덩어리 형태 검사
 
@@ -191,8 +243,9 @@ ros2 param set /point_cloud blob.min_thickness_m 0.02
 ## 장애물 클러스터 프리뷰
 
 `/point_cloud/points_bev` → 높이 후보 선택/3D 위치 반복성 검사 → 높은 점만 XY 연결 → 제한된 밑부분 포함 → 클러스터 판정 → BEV 덩어리 형태 검사 →
-`/point_cloud/points_clusters` 순서다. RViz 기본 체크는 **Obstacle cluster points** 하나이며,
-검출 결과가 없으면 빈 점군을 발행해 직전 장애물이 남지 않게 한다. 영역 테두리와 원점 축은 유지한다.
+`/point_cloud/points_clusters` → 물체 연결/누락 유지 → `/point_cloud/points_tracked` 순서다.
+RViz 기본 체크는 **Tracked obstacle points** 하나다. 실시간 검출 토픽은 빈 프레임을 그대로 발행하고,
+추적 프리뷰만 확정된 물체의 직전 점을 짧게 유지한다. 영역 테두리와 원점 축은 유지한다.
 BEV 이미지에 합성하는 단계는 아직 없으며, 이번 프리뷰는 동일 차량 좌표에서의 3D 포인트 표시다.
 
 - 먼저 시작 측정 지면 기준 Z=3cm 미만/2m 초과 점을 후보에서 제외한다.
@@ -212,8 +265,8 @@ BEV 이미지에 합성하는 단계는 아직 없으며, 이번 프리뷰는 �
 `cluster.base_radius_m=0`으로 설정하면 밑부분 추가를 완전히 끄고 높은 중심부만 표시한다.
 
 모든 `cluster.*` 파라미터는 실행 중 변경 가능하며 카메라를 재시작하지 않는다.
-색상과 `cluster_id`는 한 프레임 안에서 묶음을 구분하는 용도이며 프레임 간 고정 ID가 아니다.
-위치 반복성 필터와 별개로 물체 ID 추적/사라진 검출 유지/이동 보정은 적용하지 않는다. 높이가 실제 장애물과 비슷하게 잘못 측정된
+`/points_clusters`의 색상과 `cluster_id`는 한 프레임 안에서 묶음을 구분하는 용도다.
+`/points_tracked`에서는 물체 연결이 유지되는 동안 같은 ID/색을 사용한다. 높이가 실제 장애물과 비슷하게 잘못 측정된
 바닥 잔여점은 이 조건만으로도 통과할 수 있으므로 아래 설정을 실제 장면과 비교해 조정한다.
 
 | 파라미터 | 기본값 | 의미 / 조절 방향 |
@@ -270,7 +323,7 @@ ros2 param set /point_cloud ground.enabled false
 ros2 param set /point_cloud ground.distance_m 0.04
 ```
 
-RViz 왼쪽 Displays에서 **Obstacle cluster points**가 기본 체크되어 있다.
+RViz 왼쪽 Displays에서 **Tracked obstacle points**가 기본 체크되어 있다.
 **Original point cloud (includes ground)**를 체크하고 클러스터 점군을 해제하면 전체 원본을 비교할 수 있다.
 두 항목을 동시에 체크하면 원본의 바닥도 겹쳐 보인다. `ground.enabled=false`면
 `points_filtered`는 원본을 그대로 표시하고, `points_bev`는 바닥을 포함한 BEV 영역을 표시한다.
@@ -305,7 +358,7 @@ ros2 param set /point_cloud depth.median_filter 3x3
 
 위 카메라/깊이 설정 변경이 확정되면 **파이프라인을 닫고 같은 장치를 다시 열어 적용**한다.
 이때 잠시 점군 출력이 멈추며 IR 강도도 매번 재적용한다.
-`blob.*`, `temporal.*`, `cluster.*`, `ground.*` 또는 BEV 영역 설정만 변경하면 카메라를 재시작하지 않고 호스트 처리에 적용한다. 파라미터 서비스의 성공은 값 검증/저장 성공을 뜻한다.
+`tracking.*`, `blob.*`, `temporal.*`, `cluster.*`, `ground.*` 또는 BEV 영역 설정만 변경하면 카메라를 재시작하지 않고 호스트 처리에 적용한다. 파라미터 서비스의 성공은 값 검증/저장 성공을 뜻한다.
 실제 장치 적용 성공은 `/point_cloud/status`의 `STREAMING`과 새 프레임 로그로 확인한다.
 지원하지 않는 조명/모드 조합은 오류로 표시하며 설정을 몰래 낮추지 않는다.
 오류 상태에서도 파라미터를 수정할 수 있고, 2초 간격으로 연결을 재시도한다.
@@ -377,6 +430,7 @@ ROS 직렬화, RViz, depth 이미지 발행 비용이 더해진다. 로그의 FP
 | `/point_cloud/points_filtered` | 같은 형식/frame/stamp. 바닥 제거 결과, OFF/검출 실패 시 원본 |
 | `/point_cloud/points_bev` | `sensor_msgs/PointCloud2`, 앞차축 기준 3D 점군, BEV 범위 밖은 NaN, ground 토글 반영 |
 | `/point_cloud/points_clusters` | `sensor_msgs/PointCloud2`, 차량 좌표, 통과한 원본 XYZ + rgb + cluster_id, compact cloud |
+| `/point_cloud/points_tracked` | `sensor_msgs/PointCloud2`, RViz용 확정/유지 점군, XYZ + rgb + 지속 cluster_id + observation_age_sec + held |
 | `/point_cloud/bev_bounds` | `visualization_msgs/Marker`, 지면의 BEV 영역 테두리, transient local |
 | `/point_cloud/depth/image_raw` | `sensor_msgs/Image`, rectified-right depth, 16UC1 밀리미터, 0=무효 |
 | `/point_cloud/depth/camera_info` | `sensor_msgs/CameraInfo`, 해당 전체 depth 이미지의 실제 내부 파라미터 |
@@ -384,7 +438,7 @@ ROS 직렬화, RViz, depth 이미지 발행 비용이 더해진다. 로그의 FP
 | `/tf_static` | front_axle_bev → point_cloud_view → point_cloud_optical_frame |
 
 데이터 토픽 QoS는 **Best Effort / Volatile / Keep Last 1**이다. 제공 RViz 설정도 동일하다.
-다른 RViz 설정을 사용하면 Fixed Frame=`front_axle_bev`, PointCloud2 topic=`/point_cloud/points_clusters`,
+다른 RViz 설정을 사용하면 Fixed Frame=`front_axle_bev`, PointCloud2 topic=`/point_cloud/points_tracked`,
 Reliability=`Best Effort`, Color Transformer=`RGB8`로 설정한다.
 `bev.frame_id`를 바꾸면 RViz Fixed Frame/Target Frame/Axes도 맞춘다.
 
@@ -399,13 +453,14 @@ Reliability=`Best Effort`, Color Transformer=`RGB8`로 설정한다.
 RViz의 기본 Fixed Frame은 별도의 `front_axle_bev`이므로 측정된 장착 변환을 통해
 지면 기준으로 표시된다. Fixed Frame을 `point_cloud_view`로 바꾸면 다시 카메라 기준으로 보인다.
 ROS 타임스탬프는 수신 시 ROS 시각에서 DepthAI steady-clock 프레임 나이를 빼 추정하며,
-원본/필터/BEV/클러스터 점군과 이미지/CameraInfo는 같은 stamp를 사용한다. 이전 프레임을 재발행하거나 누적하지 않는다.
+원본/필터/BEV/실시간 클러스터 점군과 이미지/CameraInfo는 같은 stamp를 사용하며 이전 점을 누적하지 않는다.
+추적 프리뷰는 발행 시각을 stamp로 사용하고 각 점의 마지막 관측 나이를 `observation_age_sec`로 제공한다.
 
 ## 기록과 검사
 
 ```bash
 ros2 topic echo /point_cloud/status --qos-durability transient_local
-ros2 bag record /point_cloud/points /point_cloud/points_filtered /point_cloud/points_bev /point_cloud/points_clusters /point_cloud/bev_bounds /point_cloud/depth/image_raw /point_cloud/depth/camera_info /tf_static
+ros2 bag record /point_cloud/points /point_cloud/points_filtered /point_cloud/points_bev /point_cloud/points_clusters /point_cloud/points_tracked /point_cloud/bev_bounds /point_cloud/depth/image_raw /point_cloud/depth/camera_info /tf_static
 colcon test --packages-select point_cloud --event-handlers console_direct+
 colcon test-result --verbose
 ```
@@ -423,6 +478,8 @@ BEV 테스트는 변환 순서·센서 이동 단위·영역 경계·높이 보�
 기록 만료, 중복 프레임, ON/OFF/재연결 초기화, 잔상 방지를 검사한다. 형태 테스트는 콘에 붙은 선 제거, 가는 다리로 연결된 두 덩어리 분리,
 대각선/긴 띠/빈 외곽 제외, 면적 증거, 가상 포인트 미생성, 높이 조건 재검사와 메모리 제한을 검사한다. 실제 FPS, 해상도별 FOV/품질, IR 작동,
 RViz 표시와 재연결은 ROS 2와 OAK가 연결된 환경에서 확인해야 한다.
+물체 추적 테스트는 단발성 후보 미확정, 짧은 개별/전체 누락, ID 순서 변경, 관측 나이,
+점 교체, 마지막 관측 기준 만료, 프레임 중단, 중복 시각, 설정/시각 초기화, 거리/높이 연결 범위를 검사한다.
 
 DepthAI 참고: [StereoDepth](https://docs.luxonis.com/software-v3/depthai/depthai-components/nodes/stereo_depth),
 [IR Projectors Control](https://docs.luxonis.com/software-v3/depthai/examples/misc/projectors).
