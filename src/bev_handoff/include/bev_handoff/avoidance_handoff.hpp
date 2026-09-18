@@ -28,7 +28,8 @@ struct AvoidancePreview
   std_msgs::msg::Header header;
   std::chrono::steady_clock::time_point lane_received_at, depth_captured_at;
   bool control_requested{false};
-  bool inferred_boundaries{false}, truncated{false};
+  bool follow_centerline{false};
+  bool inferred_boundaries{false};
   double horizon_m{0};
   double x_max{3}, y_max{.6}, meter_per_pixel{.01};
   int width{120}, height{300};

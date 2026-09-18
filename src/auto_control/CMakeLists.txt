@@ -33,7 +33,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 rosidl_get_typesupport_target(avoidance_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 
 add_library(auto_obstacle_component SHARED
-  src/obstacle_detector_node.cpp src/obstacle_worker.cpp)
+  src/obstacle_detector_node.cpp src/obstacle_worker.cpp src/control_core.cpp)
 target_include_directories(auto_obstacle_component PRIVATE include ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(auto_obstacle_component
   rclcpp rclcpp_components rcl_interfaces bev_handoff bev_processor camera_driver geometry_msgs std_msgs)

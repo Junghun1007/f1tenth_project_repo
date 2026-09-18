@@ -135,6 +135,13 @@ def _apply_parameter_file_defaults(
     context.launch_configurations["effective_avoidance_control_enabled"] = "true" if apply_avoidance else "false"
     planner_overrides = {"obstacles.avoidance.enabled": avoidance,
                          "obstacles.avoidance.control_requested": apply_avoidance}
+    # Share the normal controller's rules; do not invent separate departure gates.
+    for key, default in {
+        "path_minimum_points": 8, "path_minimum_span_m": .12,
+        "path_minimum_x_m": .01, "path_maximum_x_m": 2.98,
+        "path_maximum_gap_m": .15, "path_geometry_window_m": .16,
+    }.items():
+        planner_overrides["obstacles.avoidance." + key] = controller_defaults.get(key, default)
     if apply_avoidance:
         planner_config = _ros_parameters(obstacle_file, "auto_obstacles")
         speed = float(controller_defaults.get("avoidance_speed_cap_mps", .4))

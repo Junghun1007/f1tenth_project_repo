@@ -42,10 +42,10 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
   path(plan->selected,cv::Scalar(255,255,0),2);
   // Show the reason instead of a generic WAIT with zero speed/curvature.
   if (plan->selected.empty()) {return mode+plan->status;}
-  // C=inferred corridor from centerline width; P=connected prefix was cropped.
+  // C=inferred corridor from centerline width (only for avoidance candidates).
   // Full details remain on /auto/avoidance_preview/status.
   return mode+plan->status.substr(0,plan->status.find(':'))+
-    (plan->inferred_boundaries?" C":"")+(plan->truncated?" P":"")+
+    (plan->inferred_boundaries?" C":"")+
     cv::format(" L%.1f v%.2f",plan->horizon_m,plan->recommended_speed);
 }
 }

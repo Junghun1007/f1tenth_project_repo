@@ -4,6 +4,9 @@ std_msgs/Header header
 builtin_interfaces/Time depth_stamp
 bool control_ready
 bool valid
+# Fresh obstacle-clear decision: use the controller's existing centerline path.
+# In this mode points is empty; false with valid=true means an avoidance path.
+bool follow_centerline
 string status
 float64 speed_limit_mps
 float64 max_curvature_per_m

@@ -58,7 +58,7 @@ auto_obstacles:
     obstacles.avoidance.max_fps: 10.0 # 차선과 독립 스레드. 최대 계획 빈도
     obstacles.avoidance.max_age_sec: 0.25
     obstacles.avoidance.max_sync_sec: 0.06
-    obstacles.avoidance.centerline_fallback_enabled: true # 누락 경계는 기존 중앙선+차선 폭으로 추정
+    obstacles.avoidance.centerline_fallback_enabled: true # 회피 후보의 누락 경계 추정. 기본 중앙선 주행은 양쪽 경계를 요구하지 않음.
     obstacles.avoidance.vehicle_half_width_m: 0.15
     obstacles.avoidance.vehicle_half_length_m: 0.25 # 앞차축 기준 가장 먼 차체 끝까지 거리로 설정
     obstacles.avoidance.obstacle_size_m: 0.13 # 관측 표면 뒤 물체 깊이 / 최소 가로 폭 (13x13cm)
@@ -67,12 +67,12 @@ auto_obstacles:
     obstacles.avoidance.sample_step_m: 0.025
     obstacles.avoidance.max_offset_m: 0.40
     obstacles.avoidance.offset_step_m: 0.05
-    obstacles.avoidance.transition_m: 0.70 # 이동/복귀 각각의 최소 전방 길이. 공간이 더 있으면 완만하게 사용
+    obstacles.avoidance.transition_m: 0.70 # 장애물 이후 중앙선 복귀 길이. 접근은 현재 위치부터 장애물까지 곡선 생성.
     obstacles.avoidance.max_curvature_per_m: 2.0 # 최소 회전반경 0.5m. 차량 한계 이하로 설정
     obstacles.avoidance.max_speed_mps: 0.5 # 실제 적용 ON이면 제어 속도 상한에도 반영
     obstacles.avoidance.lateral_acceleration_mps2: 0.4
-    obstacles.avoidance.deceleration_mps2: 0.5 # 유효 경로 끝까지 정지 가능한 목표 속도 계산용 감속도
-    obstacles.avoidance.stop_response_sec: 0.35 # 영상 나이+제어/제동 응답 여유, 허용 0.20..2.0초
+    obstacles.avoidance.deceleration_mps2: 0.5 # 화면 전용 모드의 장애물 접근 권고 속도 계산
+    # 기존 stop_response_sec는 호환용으로만 수용. 중앙선 길이로 출발을 제한하지 않음.
     obstacles.avoidance.clear_confirm_sec: 1.0 # 새 Depth에서 연속으로 중앙 경로가 비어야 복귀 표시
 
 line_detactor:

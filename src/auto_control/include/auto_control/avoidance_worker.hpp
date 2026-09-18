@@ -20,6 +20,11 @@ public:
     mode.description="Apply mode is fixed at startup; disabling planning while armed requests a stop";
     control_requested_=node_.declare_parameter<bool>("obstacles.avoidance.control_requested",false,mode);
     avoidance::Options o;
+    // auto_drive imports these from auto_control's existing path settings.
+    o.minimum_points=node_.declare_parameter<int>("obstacles.avoidance.path_minimum_points",8,mode);
+    parameter("path_minimum_span_m",o.minimum_span);
+    parameter("path_minimum_x_m",o.minimum_x); parameter("path_maximum_x_m",o.maximum_x);
+    parameter("path_maximum_gap_m",o.maximum_gap); parameter("path_geometry_window_m",o.geometry_window);
     o.centerline_fallback=node_.declare_parameter<bool>(
       "obstacles.avoidance.centerline_fallback_enabled",true,mode);
     parameter("vehicle_half_width_m",o.half_width); parameter("vehicle_half_length_m",o.half_length);
@@ -129,11 +134,14 @@ private:
         auto_control::msg::AvoidancePlan message;
         message.header=lane->header; message.depth_stamp=obstacles->header.stamp;
         message.control_ready=control_requested_;
+        message.follow_centerline=result->follow_centerline;
         message.valid=!result->selected.empty() && result->recommended_speed>0;
         message.status=result->status; message.speed_limit_mps=result->recommended_speed;
         message.max_curvature_per_m=result->max_curvature;
-        for (const auto & p:result->selected) {
-          geometry_msgs::msg::Point32 point; point.x=p.x; point.y=p.y; message.points.push_back(point);
+        if (!result->follow_centerline) {
+          for (const auto & p:result->selected) {
+            geometry_msgs::msg::Point32 point; point.x=p.x; point.y=p.y; message.points.push_back(point);
+          }
         }
         plans_->publish(message);
         report(result->status); bev_handoff::publishAvoidancePreview(std::move(result));

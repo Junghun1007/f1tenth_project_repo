@@ -507,7 +507,7 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
         "Rejected ML centerline: %s", exception.what());
     }
-    if (!avoidance_control_enabled_ && !path_ && may_hold_path && previous_path && last_valid_path_received_ns_ &&
+    if ((!avoidance_control_enabled_ || avoidance_follow_centerline_) && !path_ && may_hold_path && previous_path && last_valid_path_received_ns_ &&
       path_capture_ns_ && path_hold_timeout_sec_ > 0.0 &&
       received_ros.nanoseconds() >= *last_valid_path_received_ns_ &&
       seconds(received_ros.nanoseconds() - *last_valid_path_received_ns_) <= path_hold_timeout_sec_ &&
@@ -542,7 +542,8 @@ private:
     const auto steady=std::chrono::steady_clock::now();
     const auto source=stamp_nanoseconds(message->header.stamp),depth=stamp_nanoseconds(message->depth_stamp);
     auto reject=[&](const std::string & reason) {
-      avoidance_path_.reset(); avoidance_confirmations_=0; avoidance_speed_limit_=0;
+      avoidance_path_.reset(); avoidance_follow_centerline_=false;
+      avoidance_confirmations_=0; avoidance_speed_limit_=0;
       avoidance_status_=reason; publish_guard_stop("avoidance_"+reason);
     };
     if (!message->control_ready || !message->valid) {reject(message->status.empty()?"unavailable":message->status); return;}
@@ -551,10 +552,20 @@ private:
       seconds(received-*depth)>avoidance_max_age_ || std::abs(seconds(*source-*depth))>.10 ||
       (avoidance_lane_ns_ && *source<=*avoidance_lane_ns_) ||
       (avoidance_depth_ns_ && *depth<*avoidance_depth_ns_)) {reject("invalid_timestamp_or_frame"); return;}
+    if (message->follow_centerline) {
+      if (!message->points.empty() || !std::isfinite(message->speed_limit_mps) || message->speed_limit_mps<=0) {
+        reject("invalid_centerline_decision"); return;
+      }
+      avoidance_path_.reset(); avoidance_follow_centerline_=true;
+      avoidance_lane_ns_=source; avoidance_depth_ns_=depth; avoidance_received_at_=steady;
+      avoidance_speed_limit_=std::min(avoidance_speed_cap_,message->speed_limit_mps);
+      avoidance_confirmations_=3; avoidance_status_="CENTERLINE";
+      std::int64_t finished=0; update_control_from_path(finished); return;
+    }
     if (!std::isfinite(message->speed_limit_mps) || message->speed_limit_mps<=0 ||
       !std::isfinite(message->max_curvature_per_m) || message->max_curvature_per_m<0 ||
       message->max_curvature_per_m>std::tan(maximum_steering_angle_rad_)/avoidance_wheelbase_ ||
-      message->points.size()<8 || message->points.size()>160) {reject("invalid_limits"); return;}
+      message->points.size()<static_cast<std::size_t>(path_minimum_points_) || message->points.size()>160) {reject("invalid_limits"); return;}
     OrderedPath candidate; candidate.geometry_window_m=path_geometry_window_m_;
     double arc=0;
     for (const auto & p:message->points) {
@@ -563,29 +574,29 @@ private:
       if (!candidate.points.empty()) {
         const auto & q=candidate.points.back();
         const double gap=std::hypot(p.x-q.x,p.y-q.y);
-        if (p.x<=q.x || gap<1e-5 || gap>.15) {reject("invalid_path_order"); return;}
+        if (gap<1e-5 || gap>path_maximum_gap_m_) {reject("invalid_path_order"); return;}
         arc+=gap;
       }
       candidate.points.push_back({p.x,p.y}); candidate.arc_m.push_back(arc);
     }
-    if (arc<.5 || candidate.points.front().x>.25 || std::abs(candidate.points.front().y)>.02) {
-      reject("invalid_ego_connection"); return;
+    if (arc<path_minimum_span_m_) {
+      reject("insufficient_path_span"); return;
     }
-    // Recompute curvature rather than trusting the publisher's limit field.
+    // Use the same geometry window as normal central-path steering, rather
+    // than amplifying pixel-scale wiggles with an adjacent-three-point test.
     const double limit=std::tan(maximum_steering_angle_rad_)/avoidance_wheelbase_;
-    for (std::size_t i=1;i+1<candidate.points.size();++i) {
-      const auto a=candidate.points[i-1],b=candidate.points[i],c=candidate.points[i+1];
-      const double ab=std::hypot(b.x-a.x,b.y-a.y),bc=std::hypot(c.x-b.x,c.y-b.y),ac=std::hypot(c.x-a.x,c.y-a.y);
-      const double k=2*std::abs((b.x-a.x)*(c.y-b.y)-(b.y-a.y)*(c.x-b.x))/(ab*bc*ac);
+    for (const double s:candidate.arc_m) {
+      const double k=std::abs(candidate.curvature(s));
       if (!std::isfinite(k) || k>limit+1e-3) {reject("curvature_limit"); return;}
     }
-    const bool contiguous=avoidance_path_ && avoidance_lane_ns_ &&
+    const bool contiguous=(avoidance_path_ || avoidance_follow_centerline_) && avoidance_lane_ns_ &&
       seconds(*source-*avoidance_lane_ns_)<=avoidance_max_age_ &&
       std::chrono::duration<double>(steady-avoidance_received_at_).count()<=avoidance_max_age_;
     const bool new_depth=!avoidance_depth_ns_ || *depth>*avoidance_depth_ns_;
     avoidance_confirmations_=contiguous?std::min(3,avoidance_confirmations_+(new_depth?1:0)):1;
     avoidance_lane_ns_=source; avoidance_depth_ns_=depth; avoidance_received_at_=steady;
-    avoidance_path_=std::move(candidate); avoidance_speed_limit_=std::min(avoidance_speed_cap_,message->speed_limit_mps);
+    avoidance_path_=std::move(candidate); avoidance_follow_centerline_=false;
+    avoidance_speed_limit_=std::min(avoidance_speed_cap_,message->speed_limit_mps);
     avoidance_status_=avoidance_confirmations_<3?"confirming":message->status;
     std::int64_t finished=0; update_control_from_path(finished);
   }
@@ -1137,7 +1148,7 @@ private:
       if (seconds(now_ns - *last_erpm_ns_) > erpm_timeout_sec_) {return "erpm_timeout";}
     }
     if (avoidance_control_enabled_) {
-      if (!avoidance_path_ || !avoidance_lane_ns_ || !avoidance_depth_ns_) {
+      if ((!avoidance_path_ && !avoidance_follow_centerline_) || !avoidance_lane_ns_ || !avoidance_depth_ns_) {
         return "avoidance_"+avoidance_status_;
       }
       if (now_ns<*avoidance_lane_ns_ || now_ns<*avoidance_depth_ns_ ||
@@ -1147,7 +1158,7 @@ private:
         return "avoidance_stale";
       }
       if (std::abs(current_speed_mps_)>avoidance_speed_cap_+.15) {return "avoidance_overspeed";}
-      if (avoidance_confirmations_<3) {return "avoidance_confirming";}
+      if (!avoidance_follow_centerline_ && avoidance_confirmations_<3) {return "avoidance_confirming";}
     }
     if (!path_ || !last_path_received_ns_) {return "centerline_missing";}
     if (path_hold_active_ && (!last_valid_path_received_ns_ ||
@@ -1180,7 +1191,8 @@ private:
     }
     advance_stop_distance(now_ns);
     update_traffic_decision(now_ns);
-    const auto & selected_path=avoidance_control_enabled_?*avoidance_path_:*path_;
+    const bool following_avoidance=avoidance_control_enabled_ && !avoidance_follow_centerline_;
+    const auto & selected_path=following_avoidance?*avoidance_path_:*path_;
     const double curvature = representative_curvature(
       selected_path, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
       curvature_percentile_);
@@ -1233,7 +1245,7 @@ private:
       longitudinal_phase_ = "suppressed";
       service_brake_requested_ = traction_recovery_ = false;
       coast_probe_elapsed_ = 0.0;
-    } else if (avoidance_control_enabled_ && !traffic_stop) {
+    } else if (following_avoidance && !traffic_stop) {
       // Direct signed PID avoids legacy minimum-duty/start boosts bypassing
       // the low-speed limit. Decelerate even if normal cruise braking is OFF.
       if (longitudinal_phase_!="avoidance_speed_limit") {longitudinal_pid_->reset();}
@@ -1757,6 +1769,7 @@ private:
   int differential_pinion_teeth_, differential_ring_teeth_;
 
   bool avoidance_control_enabled_{false};
+  bool avoidance_follow_centerline_{false};
   double avoidance_max_age_{.20},avoidance_speed_cap_{.4},avoidance_brake_current_{2.5},avoidance_wheelbase_{.33};
   double avoidance_speed_limit_{0};
   int avoidance_confirmations_{0};
