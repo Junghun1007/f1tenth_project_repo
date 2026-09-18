@@ -897,7 +897,8 @@ private:
     if (!avoidance_status.empty()) {
       const int top=kBannerHeight+(obstacle_overlay_enabled_?14:0);
       cv::putText(banner,avoidance_status,{3,top+10},cv::FONT_HERSHEY_SIMPLEX,.21,cv::Scalar(255,255,0),1,cv::LINE_AA);
-      cv::putText(banner,"PREVIEW ONLY - no control",{3,top+24},cv::FONT_HERSHEY_SIMPLEX,.25,cv::Scalar(255,255,0),1,cv::LINE_AA);
+      cv::putText(banner,bev_handoff::avoidanceControlRequested()?"CONTROL PATH REQUESTED":"PREVIEW ONLY - no control",
+        {3,top+24},cv::FONT_HERSHEY_SIMPLEX,.25,cv::Scalar(255,255,0),1,cv::LINE_AA);
     }
     cv::Mat canvas;
     cv::vconcat(overlay, banner, canvas);

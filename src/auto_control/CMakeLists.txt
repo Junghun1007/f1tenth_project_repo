@@ -26,13 +26,18 @@ find_package(camera_driver REQUIRED)
 find_package(point_cloud REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core)
+find_package(rosidl_default_generators REQUIRED)
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "msg/AvoidancePlan.msg"
+  DEPENDENCIES builtin_interfaces std_msgs geometry_msgs)
+rosidl_get_typesupport_target(avoidance_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 
 add_library(auto_obstacle_component SHARED
   src/obstacle_detector_node.cpp src/obstacle_worker.cpp)
 target_include_directories(auto_obstacle_component PRIVATE include ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(auto_obstacle_component
   rclcpp rclcpp_components rcl_interfaces bev_handoff bev_processor camera_driver geometry_msgs std_msgs)
-target_link_libraries(auto_obstacle_component point_cloud::point_cloud_depth_source ${OpenCV_LIBS} Threads::Threads)
+target_link_libraries(auto_obstacle_component point_cloud::point_cloud_depth_source ${OpenCV_LIBS} Threads::Threads ${avoidance_typesupport})
 rclcpp_components_register_nodes(auto_obstacle_component "auto_control::ObstacleDetectorNode")
 install(TARGETS auto_obstacle_component LIBRARY DESTINATION lib)
 
@@ -52,11 +57,13 @@ ament_target_dependencies(auto_control_node
   builtin_interfaces
   rclcpp
   std_msgs
+  rcl_interfaces
 )
 # These packages also export camera/inference components. Control consumes
 # only their ROS messages; do not link every exported implementation target.
 target_link_libraries(auto_control_node
   Threads::Threads
+  ${avoidance_typesupport}
   line_detactor::line_detactor__rosidl_typesupport_cpp
   traffic_detection_test::traffic_detection_test__rosidl_typesupport_cpp
 )
@@ -80,4 +87,5 @@ if(BUILD_TESTING)
   add_test(NAME staged_brake_test COMMAND staged_brake_test)
 endif()
 
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

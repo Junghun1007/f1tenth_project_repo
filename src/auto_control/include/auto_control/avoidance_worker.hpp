@@ -1,5 +1,6 @@
 #pragma once
 #include "auto_control/avoidance_planner.hpp"
+#include "auto_control/msg/avoidance_plan.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -15,8 +16,12 @@ class AvoidanceWorker
 public:
   explicit AvoidanceWorker(rclcpp::Node & node):node_(node)
   {
+    rcl_interfaces::msg::ParameterDescriptor mode; mode.read_only=true;
+    mode.description="Apply mode is fixed at startup; disabling planning while armed requests a stop";
+    control_requested_=node_.declare_parameter<bool>("obstacles.avoidance.control_requested",false,mode);
     avoidance::Options o;
     parameter("vehicle_half_width_m",o.half_width); parameter("vehicle_half_length_m",o.half_length);
+    parameter("obstacle_size_m",o.obstacle_size);
     parameter("safety_margin_m",o.margin); parameter("unknown_extent_m",o.unknown_extent);
     parameter("sample_step_m",o.step); parameter("max_offset_m",o.max_offset);
     parameter("offset_step_m",o.offset_step); parameter("transition_m",o.transition);
@@ -28,12 +33,20 @@ public:
     avoidance::validate(o);
     if (!std::isfinite(max_age_)||max_age_<.05||max_age_>.3||!std::isfinite(max_sync_)||
       max_sync_<.001||max_sync_>.1||!std::isfinite(max_fps_)||max_fps_<1||max_fps_>30) {
-      throw std::invalid_argument("avoidance preview age/sync/FPS invalid");
+      throw std::invalid_argument("avoidance: max_age_sec must be 0.05..0.30, max_sync_sec 0.001..0.10, max_fps 1..30");
+    }
+    // Bound uncorrected capture-to-control movement in low-speed apply mode.
+    o.control=control_requested_;
+    if (o.control) {
+      o.motion_margin=o.max_speed*.20;
+      o.margin+=.01+.5*o.max_curvature*o.motion_margin*o.motion_margin;
     }
     planner_=std::make_unique<avoidance::Planner>(o);
     // Read on the worker thread: ros2 param set can enable/disable at runtime.
     node_.declare_parameter<bool>("obstacles.avoidance.enabled",false);
     status_=node_.create_publisher<std_msgs::msg::String>("/auto/avoidance_preview/status",rclcpp::QoS(1));
+    plans_=node_.create_publisher<auto_control::msg::AvoidancePlan>("/auto/avoidance_plan",rclcpp::QoS(1).best_effort());
+    bev_handoff::setAvoidanceControlRequested(control_requested_);
     thread_=std::thread([this]() {run();});
   }
   ~AvoidanceWorker()
@@ -42,12 +55,13 @@ public:
     wake_.notify_all();
     if (thread_.joinable()) {thread_.join();}
     bev_handoff::setAvoidancePreviewEnabled(false);
+    bev_handoff::setAvoidanceControlRequested(false);
   }
 private:
   void parameter(const std::string & name,double & value)
   {
     rcl_interfaces::msg::ParameterDescriptor d; d.read_only=true;
-    d.description="Preview only; edit obstacle YAML and restart";
+    d.description="Avoidance setting; edit obstacle YAML and restart";
     value=node_.declare_parameter<double>("obstacles.avoidance."+name,value,d);
   }
   void report(const std::string & status)
@@ -55,11 +69,15 @@ private:
     if (status==last_status_ || !rclcpp::ok()) {return;}
     last_status_=status; std_msgs::msg::String message; message.data=status; status_->publish(message);
     RCLCPP_INFO_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,
-      "AVOIDANCE PREVIEW: %s (no actuator output)",status.c_str());
+      "AVOIDANCE: %s (control_requested=%s)",status.c_str(),control_requested_?"true":"false");
   }
   void unavailable(const std::string & why)
   {
     planner_->unavailable(); bev_handoff::publishAvoidancePreview(nullptr); report(why);
+    if (control_requested_ && rclcpp::ok()) {
+      auto_control::msg::AvoidancePlan invalid;
+      invalid.control_ready=true; invalid.status=why; plans_->publish(invalid);
+    }
   }
   void run()
   {
@@ -78,7 +96,7 @@ private:
           planner_->reset(); previous.reset(); bev_handoff::setAvoidancePreviewEnabled(enabled);
           previous_enabled=enabled; report(enabled?"WAIT":"OFF");
         }
-        if (!enabled) {continue;}
+        if (!enabled) {if (control_requested_) {unavailable("OFF: planning disabled");} continue;}
         const auto lane=bev_handoff::latestPlanningLane();
         const auto now=Clock::now();
         const double lane_age=lane?std::chrono::duration<double>(now-lane->received_at).count():1e9;
@@ -104,6 +122,17 @@ private:
           std::chrono::duration<double>(finished-obstacles->captured_at).count()>max_age_) {
           unavailable("WAIT: planning expired"); continue;
         }
+        result->control_requested=control_requested_;
+        auto_control::msg::AvoidancePlan message;
+        message.header=lane->header; message.depth_stamp=obstacles->header.stamp;
+        message.control_ready=control_requested_;
+        message.valid=!result->selected.empty() && result->recommended_speed>0;
+        message.status=result->status; message.speed_limit_mps=result->recommended_speed;
+        message.max_curvature_per_m=result->max_curvature;
+        for (const auto & p:result->selected) {
+          geometry_msgs::msg::Point32 point; point.x=p.x; point.y=p.y; message.points.push_back(point);
+        }
+        plans_->publish(message);
         report(result->status); bev_handoff::publishAvoidancePreview(std::move(result));
       } catch (const std::exception & e) {
         unavailable("WAIT: planner error");
@@ -113,6 +142,8 @@ private:
   }
   rclcpp::Node & node_;
   std::unique_ptr<avoidance::Planner> planner_;
+  bool control_requested_{false};
+  rclcpp::Publisher<auto_control::msg::AvoidancePlan>::SharedPtr plans_;
   double max_age_{.25},max_sync_{.06},max_fps_{10};
   std::mutex mutex_;
   std::condition_variable wake_;

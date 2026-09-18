@@ -6,10 +6,13 @@ namespace bev_handoff
 namespace
 {
 std::atomic<bool> enabled{false};
+std::atomic<bool> control_requested{false};
 std::shared_ptr<const PlanningLane> lane;
 std::shared_ptr<const AvoidancePreview> plan;
 }
 bool avoidancePreviewEnabled() {return enabled.load();}
+bool avoidanceControlRequested() {return control_requested.load();}
+void setAvoidanceControlRequested(bool value) {control_requested.store(value);}
 void setAvoidancePreviewEnabled(bool value)
 {
   enabled.store(value);

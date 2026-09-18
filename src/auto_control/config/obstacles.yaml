@@ -52,7 +52,7 @@ auto_obstacles:
     obstacles.max_age_sec: 0.25
     obstacles.max_sync_sec: 0.04 # Depth와 자세 보정에 쓰는 RGB 촬영 시각 차이 상한
 
-    # 회피 경로 테스트: 화면/진단만. 실제 조향·속도·제동에는 절대로 연결하지 않음.
+    # 회피 경로 테스트. 기본 화면 전용, avoidance_control_enabled:=true이면 실제 제어 연결.
     # enabled만 ros2 param set으로 즉시 변경 가능. 나머지는 재실행 필요.
     obstacles.avoidance.enabled: false
     obstacles.avoidance.max_fps: 10.0 # 차선과 독립 스레드. 최대 계획 빈도
@@ -60,6 +60,7 @@ auto_obstacles:
     obstacles.avoidance.max_sync_sec: 0.06
     obstacles.avoidance.vehicle_half_width_m: 0.15
     obstacles.avoidance.vehicle_half_length_m: 0.25 # 앞차축 기준 가장 먼 차체 끝까지 거리로 설정
+    obstacles.avoidance.obstacle_size_m: 0.13 # 관측 표면 뒤 물체 깊이 / 최소 가로 폭 (13x13cm)
     obstacles.avoidance.safety_margin_m: 0.04
     obstacles.avoidance.unknown_extent_m: 0.04 # Depth에서 보이지 않는 물체 뒷면/측면 여유
     obstacles.avoidance.sample_step_m: 0.025

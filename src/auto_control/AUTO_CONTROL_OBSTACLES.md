@@ -45,9 +45,9 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 - 장애물 외곽선은 관측 표면의 볼록 외곽선이고 물체 전체 영역을 복원한 것은 아니다.
   색상/#번호는 프레임 안에서의 구분이며 추적 ID가 아니다.
 
-장애물로 실제 제어 경로를 바꾸거나 자동 제동하지 않는다. 회피 경로는 아래 테스트 옵션으로
-화면에만 표시한다. `manual_test:=false`인 기존 자동주행 모드도 현재는 장애물을 표시만 하므로
-장애물 회피 주행이 구현된 것으로 해석하면 안 된다.
+기본은 장애물 표시만 수행한다. **`avoidance_control_enabled:=true`를 명시하면 검증된
+회피 경로를 실제 조향·속도 제어에 사용하고, 계획이 없으면 제동한다.**
+`manual_test:=true`는 이 옵션을 켜도 monitor_only를 유지하므로 액추에이터 출력은 없다.
 독립 `roi_lidar` 패키지는 유지하며 이 통합 실행에서는 시작하지 않는다.
 
 ## YAML 조정
@@ -88,83 +88,127 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 Depth 기본 요청은 400p/60FPS다. 실제 속도는 화면과 `OBSTACLES` 로그에서 확인한다.
 코드 수정에서는 요청대로 빌드·테스트·실차 실행을 하지 않았다.
 
-## 회피 경로 테스트 (기본 OFF, 실제 제어 미연결)
+## 실제 회피 제어 연결 (실험 기능, 기본 OFF)
 
-기존 실행 명령에 `avoidance_test_enabled:=true`를 추가한다. 차선/신호등/BEV/제어의
-외부 test YAML 인수는 그대로 유지한다. 기존 `obstacles_test.yaml`에 새 항목이 없어도
-코드 기본값으로 실행된다. 튜닝하려면 `config/obstacles.yaml`의 `auto_obstacles` 아래
-`obstacles.avoidance.*` 항목을 복사한다. 기존 파일 전체를 덮어쓸 필요는 없다.
+`avoidance_test_enabled`는 화면용이고 **`avoidance_control_enabled`가 실제 제어 적용 스위치**다.
+새 `auto_control/msg/AvoidancePlan` 메시지를 추가했으므로 기존 설치에서 재빌드가 필요하다.
 
 ```bash
+colcon build --packages-up-to vehicle_bringup --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+
+# 기존 실행을 종료한 뒤 사용. 아래 명령은 실제 조향/구동/제동을 활성화한다.
 ros2 launch vehicle_bringup auto_drive.launch.py \
-  manual_test:=true \
-  avoidance_test_enabled:=true \
+  manual_test:=false \
+  avoidance_control_enabled:=true \
+  auto_control_mode:=drive \
+  auto_enabled:=true \
   obstacle_params_file:="$(pwd)/obstacles_test.yaml" \
   auto_control_params_file:="$(pwd)/auto_control_test.yaml" \
   bev_params_file:="$(pwd)/bev_config_test.yaml" \
   line_detactor_params_file:="$(pwd)/line_detactor_test.yaml" \
   traffic_light_params_file:="$(pwd)/traffic_light_test.yaml" \
   input_mode:=slcan slcan_channel:=/dev/ttyACM0 slcan_bitrate:=500000 \
-  can_controller_id:=112 preview_enabled:=true
+  can_controller_id:=112 preview_enabled:=true preview_result_only_enabled:=true
+```
 
-# 실행 중 ON / OFF (다음 계획 주기 안에 반영, 기본 약 100ms + 계산 시간)
-ros2 param set /auto_obstacles obstacles.avoidance.enabled true
+- 실제 적용 OFF: 재실행할 때 `avoidance_control_enabled:=false`. 기존 차선 추종으로 돌아간다.
+- 실제 적용 알고리즘을 구동 없이 확인: `manual_test:=true avoidance_control_enabled:=true`.
+  VESC/조이스틱/운동 모니터도 필요 없으면 `manual_enabled:=false dynamics_enabled:=false` 추가.
+- 기존 화면 전용: `manual_test:=true avoidance_control_enabled:=false avoidance_test_enabled:=true`.
+- 적용 ON에서는 계획 계산도 자동으로 ON. `avoidance_test_enabled:=false`로 실제 적용을 해제할 수 없다.
+- 실행 중 계획 OFF는 아래와 같이 가능하지만 **적용 ON 상태에서는 정지 요청**이다.
+  중앙 경로로 몰래 복귀하지 않는다. 실제 적용 여부는 시작 시 고정(read-only)이다.
+
+```bash
 ros2 param set /auto_obstacles obstacles.avoidance.enabled false
-
-# 상세 상태/거절 이유
+ros2 param set /auto_obstacles obstacles.avoidance.enabled true
+ros2 topic echo /auto/avoidance_plan
 ros2 topic echo /auto/avoidance_preview/status
 ```
 
-launch에서 `avoidance_test_enabled`를 생략하면 YAML의 `obstacles.avoidance.enabled`를
-사용하며, YAML에도 없으면 false다. 명시한 launch 값이 YAML보다 우선한다.
-`obstacles_enabled:=false`로 Depth 전체를 끈 실행에서는 이 기능을 켤 수 없다.
-`manual_test:=true`는 기존과 같이 자동 액추에이터 출력을 막는다.
-회피 테스트 자체는 `manual_test` 값과 관계없이 **화면 전용**이며 기존 중앙 경로 메시지,
-조향/속도/신호등 정지 로직을 변경하지 않는다. `v`는 실제 목표 속도 명령이 아니다.
+### 제어 흐름과 중단 조건
 
-표시: 노란색=원래 중앙 경로, 흐린색=좌우 후보(녹색 계열은 통과 조건 만족),
-청록색=선택 경로, 붉은 사각형=장애물 표면을 차량 크기/여유 거리만큼 확장한 영역.
-`TEST LEFT/RIGHT`는 선택 방향, `CLEAR`는 중앙 경로 사용, `WAIT`는 관측/동기화 대기,
-`BLOCKED`는 통과 가능한 후보가 없는 상태다. `v`는 권고 속도(m/s), `k`는 선택 경로의
-최대 절대 곡률(1/m)이다. WAIT/BLOCKED에서는 선택 경로를 지우고 권고 속도를 0으로 둔다.
+`auto_obstacles`가 미터 좌표 경로와 차선/Depth 촬영 시각을 발행하고, `auto_control`은
+프레임·시간·점 순서·간격·시작 위치·곡률을 다시 검사한 뒤 기존 Stanley 조향 계산에 넣는다.
+기존 차선 경로와 신호등 정지 입력은 계속 수신하지만, 회피 적용 중 조향 경로를 차선 중앙으로
+대체하지 않는다. 차선 자체가 끊겨도 정지하며 기존 경로 유지 기능은 적용 모드에서 사용하지 않는다.
 
-알고리즘은 전방으로 진행하는 중앙 경로에 5차 smoothstep 횡방향 이동/복귀 곡선을
-적용한다. 중앙 경로에 걸리는 장애물 전체 구간을 회피하고, 후보마다 **모든 검출 군집**,
-양쪽 관측 차선, BEV 좌우 범위, 최대 곡률을 확인한다. 후보가 없으면 반대 차선 밖으로
-강제 우회하지 않는다. 이전 선택 방향을 유지하며 그 방향이 막히면 BLOCKED로 둔다.
-장애물이 사라졌을 때는 새로운 Depth 관측에서 중앙 경로가 연속으로 비어 있는지
-`clear_confirm_sec` 동안 확인한다. 입력 만료/동기화 실패는 이 확인 시간을 초기화한다.
-이것은 깜빡임 완화이며 물체 ID 추적·차량 이동 보정에 의한 통과 판정은 아니다.
+회피 경로가 없거나 WAIT/BLOCKED/OFF/잘못된 값/만료이면 구동 0과 제동 전류를 요청한다.
+ROS 시각뿐 아니라 수신 후 steady-clock 경과도 확인하며, planner 노드가 죽거나 메시지가
+멈춰도 기존 watchdog이 제동한다. 회복에는 새 Depth를 포함한 유효 계획 3회가 연속 필요하다.
+일반 주행의 `electrical_brake_enabled=false` 설정으로 회피 정지 제동이 꺼지지 않는다.
+신호등 정지가 활성화되어 있으면 속도는 두 제한 중 작은 값을 따르고, 입력 실패 시 제동은
+신호등/회피 제동 중 큰 값을 사용한다. 신호등 검출 ON과 신호등 정지 제어 ON은 별도 설정이다.
+
+최대 조향각/축간거리로 가능한 곡률을 제한한다. 기본 목표 속도 상한은 **0.4m/s**이며,
+기존 test YAML의 minimum_speed=0.8 같은 값이 이 상한을 올리지 않는다. 회피 주행에는
+최소 duty/출발 부스트를 적용하지 않는 signed PID를 사용한다. 목표 상한보다 0.15m/s 이상
+빠르면 제동 요청으로 전환한다. 이는 실측 속도를 즉시 0.4로 만드는 보장이 아니다.
+
+### 13×13cm 장애물과 파라미터
+
+기존 `obstacles_test.yaml`의 `auto_obstacles.ros__parameters`에 필요하면 추가한다.
+생략해도 코드 기본값은 0.13이다.
+
+```yaml
+    obstacles.avoidance.obstacle_size_m: 0.13
+```
+
+Depth는 물체 중심이 아니라 앞 표면을 보므로, 관측 표면 뒤로 13cm를 확보하고 최소 가로 폭도
+13cm로 잡는다. 부분 관측의 횡방향 위치 오차 여유는 `unknown_extent_m`와 반폭 6.5cm 중
+큰 값을 쓴다. 여기에 실제 차량 반폭·반길이·안전 여유를 적용한다. 붉은 영역은 단순히
+13cm 정사각형이 아니라 차량 중심이 피해야 하는 확장 영역이다.
+
+`auto_control_test.yaml`의 `auto_control.ros__parameters`에 추가 가능한 제어 설정:
+
+```yaml
+    avoidance_control_enabled: false  # launch의 명시값이 우선
+    avoidance_max_age_sec: 0.20
+    avoidance_speed_cap_mps: 0.4
+    avoidance_brake_current_amps: 2.5
+    avoidance_wheelbase_m: 0.33
+```
+
+차량 축간거리/차체 크기/제동 전류는 실차에 맞춰야 한다. 제어 옵션은 모두 시작 시 고정이다.
+기존 외부 YAML에 이 항목들이 없어도 기본값으로 동작한다. 실제 적용 시 planner의 속도·곡률·
+유효 시간 상한은 제어기 설정과 비교해 더 작은 값으로 맞춘다.
 
 | `obstacles.avoidance.*` | 기본값 | 의미 |
 |---|---:|---|
-| `enabled` | false | 회피 경로 프리뷰 ON/OFF. 유일한 실시간 변경 항목 |
-| `max_fps` | 10.0 | 별도 스레드의 계획 주기 상한. 차선 FPS 제한 아님 |
-| `max_age_sec` / `max_sync_sec` | 0.25 / 0.06 | 계획 입력 만료 / RGB-Depth 시각 차이 |
-| `vehicle_half_width_m` / `vehicle_half_length_m` | 0.15 / 0.25 | 앞차축 기준 차체의 좌우/전후 최대 거리 |
-| `safety_margin_m` / `unknown_extent_m` | 0.04 / 0.04 | 차량 여유 / 관측하지 못한 물체 표면 여유 |
-| `sample_step_m` | 0.025 | 후보 경로 샘플 간격 |
-| `max_offset_m` / `offset_step_m` | 0.40 / 0.05 | 좌우 이동량 최대값 / 후보 증가 간격 |
-| `transition_m` | 0.70 | 이동/복귀 각각의 최소 길이. 남는 관측 공간을 활용해 더 완만하게 생성 |
-| `max_curvature_per_m` | 2.0 | 최대 곡률. 2이면 최소 회전반경 0.5m |
-| `max_speed_mps` | 0.5 | 표시할 권고 속도 상한 |
-| `lateral_acceleration_mps2` | 0.4 | 곡률에 따른 권고 속도 제한 |
-| `deceleration_mps2` | 0.5 | 장애물까지 거리로 계산하는 정지 가능 속도 기준 |
-| `clear_confirm_sec` | 1.0 | 중앙 경로가 다시 비었다고 판단하기 위한 연속 관측 시간 |
+| `enabled` | false | 계산 ON/OFF. 실시간 변경 가능, 적용 중 OFF는 정지 |
+| `max_fps` | 10.0 | 계산 주기 상한, 허용 1..30. Depth FPS와 별개 |
+| `max_age_sec` / `max_sync_sec` | 0.25 / 0.06 | 입력 만료 / RGB-Depth 시각 차이. 적용 시 만료는 최대 0.20 |
+| `vehicle_half_width_m` / `vehicle_half_length_m` | 0.15 / 0.25 | 앞차축 기준 차체 좌우/전후 최대 거리 |
+| `obstacle_size_m` | 0.13 | 관측 물체의 최소 가로 폭과 표면 뒤 깊이 |
+| `safety_margin_m` / `unknown_extent_m` | 0.04 / 0.04 | 차량 여유 / 물체 관측 오차 여유 |
+| `sample_step_m` | 0.025 | 경로 샘플 간격 |
+| `max_offset_m` / `offset_step_m` | 0.40 / 0.05 | 좌우 이동 최대값 / 후보 간격 |
+| `transition_m` | 0.70 | 최초 회피 최소 접근 길이, 공간이 있으면 완만하게 사용 |
+| `max_curvature_per_m` | 2.0 | 최대 곡률. 적용 시 차량 조향 한계로 추가 제한 |
+| `max_speed_mps` | 0.5 | 계획 속도. 적용 시 기본 제어 상한 0.4로 추가 제한 |
+| `lateral_acceleration_mps2` | 0.4 | 곡률에 따른 속도 제한 |
+| `deceleration_mps2` | 0.5 | 화면 전용 모드의 접근 권고 속도 계산 |
+| `clear_confirm_sec` | 1.0 | 중앙 경로 복귀 전 연속 관측 시간 |
 
-차체를 경로 접선 방향의 선분과 반폭의 원으로 감싸는 보수적인 캡슐 모델을 사용한다.
-차선 여유는 차량 반폭 + 안전 여유 + 샘플 간 이동/회전 여유다. 앞차축에서 전후로
-`vehicle_half_length_m`만큼 뻗은 선분으로 차량 길이를 반영하고, 장애물에는
-`unknown_extent_m`를 추가한다. 붉은 사각형은 차량이 정면을 향할 때의 확장 영역이며,
-실제 후보 검사는 각 위치의 회전 방향을 적용한다. 실제 차체 치수를 기준으로 설정한다.
-차선 폭이 좁아 차량과 장애물이 함께 통과할 수 없으면 BLOCKED가 정상이다.
+### 화면과 현재 제한
 
-급격한 U자/비단조 경로, 양쪽 차선의 관측 공백, 3m BEV 안에서 이동·복귀 공간이 부족한
-경우는 WAIT/BLOCKED로 제한한다. 정적인 국소 후보 생성이며 주행 중 이동 보정,
-움직이는 장애물 예측, 차량 현재 조향과의 연속성 및 실제 저속 제어 연결은 후속 단계다.
-이번 변경은 수동주행 화면에서 경로 기하를 검토하는 단계이며 빌드·테스트·실차 실행은 하지 않았다.
+노랑=기존 중앙 경로, 청록=선택 경로, 흐린색=후보, 붉은 영역=차량 크기를 반영한 장애물 영역.
+`APPLY`/`CONTROL PATH REQUESTED`는 제어 적용 설정이며, `manual_test`/`auto_enabled` 등
+최종 구동 조건까지 충족해야 실제로 움직인다. `TEST`는 화면 전용이다.
 
-계획 주기가 차선 표시보다 느리므로 화면은 마지막 계획을 짧게 재사용한다.
-현재 차선 화면과 계획의 촬영 시각 차이는 기본 최대 160ms(1/max_fps + max_sync_sec,
-max_age_sec 이하)이며, 차선 입력/Depth 자체가 250ms를 넘으면 즉시 지운다.
-이 표시 유지에는 차량 이동 보정이 없으므로 수동주행 화면 검토용으로만 사용한다.
+적용 모드 경로는 차량 현재 위치/방향에서 출발하도록 보정하고, 남은 전방 시야 안에서
+복귀 공간이 부족하면 옆으로 피한 상태를 유지하는 후보도 만든다. 모든 후보에 대해 관측
+양쪽 차선, 다른 군집, 회전 방향을 반영한 차체 캡슐, 곡률을 검사한다. 좁은 차선에서는
+13cm 장애물이라도 회피 공간이 없을 수 있으며 이때 정지가 정상이다.
+
+회피 대상으로 보던 물체가 시야에서 사라지면 **통과했다고 간주하지 않고 BLOCKED**로 둔다.
+후방 센서/차량 이동 보정에 의한 통과 검증이 없어, 통과 끝에서 정지할 수도 있다.
+차량 정지와 주변을 확인한 뒤 planner를 OFF→ON하면 이 보류 상태를 초기화할 수 있다.
+물체가 다시 관측되면 정상 검증을 거쳐 회복한다. 이 제한을 없애려면 별도 추적/이동 보정이 필요하다.
+
+계획은 최대 200ms 안의 입력만 제어에 사용한다. 이동 오차를 줄이기 위해 저속 상한과
+전방 이동/곡률 여유를 추가하지만, odometry로 과거 경로를 현재 차량 위치에 변환하는 구현은
+없다. 화면은 계획 주기에 맞춰 직전 경로를 잠깐 재사용하나 제어 유효 시간 검사는 별도로 한다.
+바닥 잔여점·미검출·보정 오차와 실제 제동 성능은 코드만으로 확인할 수 없다.
+이번 변경은 요청대로 빌드·테스트·실차 실행 없이 작성했으며 실제 회피 성공은 검증하지 않았다.

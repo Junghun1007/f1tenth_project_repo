@@ -3,7 +3,7 @@
 
 namespace bev_handoff
 {
-// Preview-only planning channel. Never consumed by the actuator controller.
+// Process-local display channel. Control receives a separately validated ROS plan.
 struct PlanningLane
 {
   std_msgs::msg::Header header;
@@ -26,6 +26,7 @@ struct AvoidancePreview
 {
   std_msgs::msg::Header header;
   std::chrono::steady_clock::time_point lane_received_at, depth_captured_at;
+  bool control_requested{false};
   double x_max{3}, y_max{.6}, meter_per_pixel{.01};
   int width{120}, height{300};
   std::vector<cv::Point2d> original, selected;
@@ -36,6 +37,8 @@ struct AvoidancePreview
   double display_delta_sec{.16};
 };
 bool avoidancePreviewEnabled();
+bool avoidanceControlRequested();
+void setAvoidanceControlRequested(bool enabled);
 void setAvoidancePreviewEnabled(bool enabled);
 void publishPlanningLane(std::shared_ptr<const PlanningLane> lane);
 std::shared_ptr<const PlanningLane> latestPlanningLane();

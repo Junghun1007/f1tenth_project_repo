@@ -122,6 +122,34 @@ def _apply_parameter_file_defaults(
     avoidance = avoidance.lower() == "true"
     if avoidance and obstacles_enabled != "true":
         raise RuntimeError("avoidance_test_enabled requires obstacles_enabled:=true")
+    apply_avoidance = LaunchConfiguration("avoidance_control_enabled").perform(context)
+    if apply_avoidance == _PARAMETER_FILE_DEFAULT:
+        apply_avoidance = _launch_default(controller_defaults, "avoidance_control_enabled", False)
+    if apply_avoidance.lower() not in ("true", "false"):
+        raise RuntimeError("avoidance_control_enabled must be true or false")
+    apply_avoidance = apply_avoidance.lower() == "true"
+    if apply_avoidance and obstacles_enabled != "true":
+        raise RuntimeError("avoidance_control_enabled requires obstacles_enabled:=true")
+    if apply_avoidance:
+        avoidance = True
+    context.launch_configurations["effective_avoidance_control_enabled"] = "true" if apply_avoidance else "false"
+    planner_overrides = {"obstacles.avoidance.enabled": avoidance,
+                         "obstacles.avoidance.control_requested": apply_avoidance}
+    if apply_avoidance:
+        planner_config = _ros_parameters(obstacle_file, "auto_obstacles")
+        speed = float(controller_defaults.get("avoidance_speed_cap_mps", .4))
+        wheelbase = float(controller_defaults.get("avoidance_wheelbase_m", .33))
+        steering = float(controller_defaults.get("maximum_steering_angle_deg", 30.0))
+        age = float(controller_defaults.get("avoidance_max_age_sec", .20))
+        if not all(math.isfinite(v) for v in (speed, wheelbase, steering, age)) or not (
+            0 < speed <= .5 and .1 <= wheelbase <= 1 and 0 < steering < 80 and .05 <= age <= .20):
+            raise RuntimeError("Invalid avoidance control speed/wheelbase/steering/age settings")
+        planner_overrides.update({
+            "obstacles.avoidance.max_speed_mps": min(speed, float(planner_config.get("obstacles.avoidance.max_speed_mps", .5))),
+            "obstacles.avoidance.max_curvature_per_m": min(.98*math.tan(math.radians(steering))/wheelbase,
+                float(planner_config.get("obstacles.avoidance.max_curvature_per_m", 2.0))),
+            "obstacles.avoidance.max_age_sec": min(age, float(planner_config.get("obstacles.avoidance.max_age_sec", .25))),
+        })
     if manual_test == "true":
         # Keep inference/diagnostics active, suppress all automatic actuators.
         context.launch_configurations["auto_control_mode"] = "monitor_only"
@@ -287,7 +315,7 @@ def _apply_parameter_file_defaults(
     if obstacles_enabled == "true":
         nodes.append(ComposableNode(
             package="auto_control", plugin="auto_control::ObstacleDetectorNode", name="auto_obstacles",
-            parameters=[obstacle_file, {"obstacles.avoidance.enabled": avoidance}],
+            parameters=[obstacle_file, planner_overrides],
             extra_arguments=[{"use_intra_process_comms": True}],
         ))
     manual_actions = []
@@ -318,7 +346,7 @@ def _apply_parameter_file_defaults(
         " | performance measurement=" + measurement +
         " | traffic observation=" + traffic_enabled + " | traffic stop=" + context.launch_configurations["traffic_stop_enabled"] +
         " | obstacles=" + obstacles_enabled + " | obstacle_yaml=" + obstacle_file +
-        " | avoidance_preview=" + str(avoidance) +
+        " | avoidance_preview=" + str(avoidance) + " | avoidance_control=" + str(apply_avoidance) +
         " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
     )), *manual_actions, bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
@@ -584,6 +612,7 @@ def generate_launch_description():
     )
 
     controller_overrides.update({
+        "avoidance_control_enabled": ParameterValue(LaunchConfiguration("effective_avoidance_control_enabled"), value_type=bool),
         **{name: LaunchConfiguration("effective_" + name) for name in (
             "measured_erpm_topic", "connection_status_topic", "duty_topic", "brake_current_topic", "servo_position_topic")},
         "lane_result_topic": LaunchConfiguration("ml_lane_result_topic"),
@@ -674,6 +703,8 @@ def generate_launch_description():
             DeclareLaunchArgument("vehicle_namespace", default_value="autopilot03"),
             DeclareLaunchArgument("controller_name_contains", default_value="8BitDo"),
             DeclareLaunchArgument("obstacles_enabled", default_value="true"),
+            DeclareLaunchArgument("avoidance_control_enabled", default_value=_PARAMETER_FILE_DEFAULT,
+                                  description="Use validated avoidance path for steering/speed; unavailable planner brakes. Default false"),
             DeclareLaunchArgument("avoidance_test_enabled", default_value=_PARAMETER_FILE_DEFAULT,
                                   description="Preview-only local avoidance candidates; defaults to obstacle YAML (false). Never commands actuators"),
             DeclareLaunchArgument("obstacle_params_file", default_value=os.path.join(auto_control_share, "config", "obstacles.yaml")),

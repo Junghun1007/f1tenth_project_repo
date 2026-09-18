@@ -40,7 +40,7 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
   path(plan->original,cv::Scalar(0,255,255),1);
   path(plan->selected,cv::Scalar(255,255,0),2);
   // Detailed rejection reason is available on /auto/avoidance_preview/status.
-  return "TEST "+plan->status.substr(0,plan->status.find(':'))+
+  return std::string(plan->control_requested?"APPLY ":"TEST ")+plan->status.substr(0,plan->status.find(':'))+
     cv::format(" v%.2f k%.1f",plan->recommended_speed,plan->max_curvature);
 }
 }

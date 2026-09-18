@@ -1,4 +1,6 @@
 #include "auto_control/control_core.hpp"
+#include "auto_control/msg/avoidance_plan.hpp"
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "auto_control/driving_log.hpp"
 #include "auto_control/performance_measurement.hpp"
 
@@ -84,6 +86,11 @@ public:
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
+    if (avoidance_control_enabled_) {
+      avoidance_sub_=create_subscription<auto_control::msg::AvoidancePlan>(
+        "/auto/avoidance_plan",sensor_qos,
+        std::bind(&AutoControlNode::on_avoidance_plan,this,std::placeholders::_1));
+    }
     if (traffic_stop_enabled_ || driving_log_enabled_) {
       traffic_sub_ = create_subscription<traffic_detection_test::msg::TrafficLightState>(
         traffic_state_topic_, sensor_qos,
@@ -142,6 +149,8 @@ public:
       curvature_speed_control_enabled_ ? "on" : "off", longitudinal_kp_, longitudinal_ki_, longitudinal_kd_);
     RCLCPP_INFO(get_logger(), "Staged brake gains: speed=%.3f, missing deceleration=%.3f",
       longitudinal_brake_speed_gain_, traffic_brake_decel_gain_);
+    RCLCPP_INFO(get_logger(),"Avoidance control=%s: plan=/auto/avoidance_plan speed_cap=%.2fm/s age=%.2fs guard_brake=%.2fA",
+      avoidance_control_enabled_?"ON":"OFF",avoidance_speed_cap_,avoidance_max_age_,avoidance_brake_current_);
     RCLCPP_INFO(get_logger(), "Staged departure: start duty=%.3f (0=disabled), then rise=%.3f/s",
       longitudinal_start_duty_, duty_rise_rate_per_sec_);
     RCLCPP_INFO(get_logger(),
@@ -179,6 +188,14 @@ private:
 
   void declare_and_read_parameters()
   {
+    rcl_interfaces::msg::ParameterDescriptor avoidance_descriptor;
+    avoidance_descriptor.read_only=true;
+    avoidance_descriptor.description="Startup-only actuator gate; restart to change. Planner OFF while armed stops the vehicle";
+    avoidance_control_enabled_=declare_parameter<bool>("avoidance_control_enabled",false,avoidance_descriptor);
+    avoidance_max_age_=declare_parameter<double>("avoidance_max_age_sec",.20,avoidance_descriptor);
+    avoidance_speed_cap_=declare_parameter<double>("avoidance_speed_cap_mps",.4,avoidance_descriptor);
+    avoidance_brake_current_=declare_parameter<double>("avoidance_brake_current_amps",2.5,avoidance_descriptor);
+    avoidance_wheelbase_=declare_parameter<double>("avoidance_wheelbase_m",.33,avoidance_descriptor);
     driving_log_enabled_ = parameter("driving_log_enabled", false);
     driving_log_rate_hz_ = parameter("driving_log_rate_hz", 20.0);
     driving_log_directory_ = parameter<std::string>("driving_log_directory", "driving_logs");
@@ -327,6 +344,12 @@ private:
 
   void validate_parameters() const
   {
+    if (!std::isfinite(avoidance_max_age_) || avoidance_max_age_<.05 || avoidance_max_age_>.20 ||
+      !std::isfinite(avoidance_speed_cap_) || avoidance_speed_cap_<=0 || avoidance_speed_cap_>.5 ||
+      !std::isfinite(avoidance_brake_current_) || avoidance_brake_current_<=0 || avoidance_brake_current_>10 ||
+      !std::isfinite(avoidance_wheelbase_) || avoidance_wheelbase_<.1 || avoidance_wheelbase_>1) {
+      throw std::invalid_argument("avoidance control: age 0.05..0.20s, speed (0,0.5]m/s, brake (0,10]A, wheelbase 0.1..1m");
+    }
     if (!std::isfinite(driving_log_rate_hz_) || driving_log_rate_hz_ <= 0.0 ||
       driving_log_rate_hz_ > 100.0 || driving_log_directory_.empty())
     {throw std::invalid_argument("driving log needs a directory and rate in (0, 100] Hz");}
@@ -484,7 +507,7 @@ private:
       RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
         "Rejected ML centerline: %s", exception.what());
     }
-    if (!path_ && may_hold_path && previous_path && last_valid_path_received_ns_ &&
+    if (!avoidance_control_enabled_ && !path_ && may_hold_path && previous_path && last_valid_path_received_ns_ &&
       path_capture_ns_ && path_hold_timeout_sec_ > 0.0 &&
       received_ros.nanoseconds() >= *last_valid_path_received_ns_ &&
       seconds(received_ros.nanoseconds() - *last_valid_path_received_ns_) <= path_hold_timeout_sec_ &&
@@ -511,6 +534,60 @@ private:
         publish_float(input_to_control_decision_pub_, total_milliseconds);
       }
     }
+  }
+
+  void on_avoidance_plan(const auto_control::msg::AvoidancePlan::ConstSharedPtr message)
+  {
+    const auto received=now().nanoseconds();
+    const auto steady=std::chrono::steady_clock::now();
+    const auto source=stamp_nanoseconds(message->header.stamp),depth=stamp_nanoseconds(message->depth_stamp);
+    auto reject=[&](const std::string & reason) {
+      avoidance_path_.reset(); avoidance_confirmations_=0; avoidance_speed_limit_=0;
+      avoidance_status_=reason; publish_guard_stop("avoidance_"+reason);
+    };
+    if (!message->control_ready || !message->valid) {reject(message->status.empty()?"unavailable":message->status); return;}
+    if (!source || !depth || message->header.frame_id!=lane_result_frame_id_ ||
+      received<*source || received<*depth || seconds(received-*source)>avoidance_max_age_ ||
+      seconds(received-*depth)>avoidance_max_age_ || std::abs(seconds(*source-*depth))>.10 ||
+      (avoidance_lane_ns_ && *source<=*avoidance_lane_ns_) ||
+      (avoidance_depth_ns_ && *depth<*avoidance_depth_ns_)) {reject("invalid_timestamp_or_frame"); return;}
+    if (!std::isfinite(message->speed_limit_mps) || message->speed_limit_mps<=0 ||
+      !std::isfinite(message->max_curvature_per_m) || message->max_curvature_per_m<0 ||
+      message->max_curvature_per_m>std::tan(maximum_steering_angle_rad_)/avoidance_wheelbase_ ||
+      message->points.size()<8 || message->points.size()>160) {reject("invalid_limits"); return;}
+    OrderedPath candidate; candidate.geometry_window_m=path_geometry_window_m_;
+    double arc=0;
+    for (const auto & p:message->points) {
+      if (!std::isfinite(p.x)||!std::isfinite(p.y)||!std::isfinite(p.z)||std::abs(p.z)>1e-6 ||
+        p.x<0 || p.x>bev_x_max_m_ || std::abs(p.y)>bev_y_max_m_) {reject("invalid_point"); return;}
+      if (!candidate.points.empty()) {
+        const auto & q=candidate.points.back();
+        const double gap=std::hypot(p.x-q.x,p.y-q.y);
+        if (p.x<=q.x || gap<1e-5 || gap>.15) {reject("invalid_path_order"); return;}
+        arc+=gap;
+      }
+      candidate.points.push_back({p.x,p.y}); candidate.arc_m.push_back(arc);
+    }
+    if (arc<.5 || candidate.points.front().x>.25 || std::abs(candidate.points.front().y)>.02) {
+      reject("invalid_ego_connection"); return;
+    }
+    // Recompute curvature rather than trusting the publisher's limit field.
+    const double limit=std::tan(maximum_steering_angle_rad_)/avoidance_wheelbase_;
+    for (std::size_t i=1;i+1<candidate.points.size();++i) {
+      const auto a=candidate.points[i-1],b=candidate.points[i],c=candidate.points[i+1];
+      const double ab=std::hypot(b.x-a.x,b.y-a.y),bc=std::hypot(c.x-b.x,c.y-b.y),ac=std::hypot(c.x-a.x,c.y-a.y);
+      const double k=2*std::abs((b.x-a.x)*(c.y-b.y)-(b.y-a.y)*(c.x-b.x))/(ab*bc*ac);
+      if (!std::isfinite(k) || k>limit+1e-3) {reject("curvature_limit"); return;}
+    }
+    const bool contiguous=avoidance_path_ && avoidance_lane_ns_ &&
+      seconds(*source-*avoidance_lane_ns_)<=avoidance_max_age_ &&
+      std::chrono::duration<double>(steady-avoidance_received_at_).count()<=avoidance_max_age_;
+    const bool new_depth=!avoidance_depth_ns_ || *depth>*avoidance_depth_ns_;
+    avoidance_confirmations_=contiguous?std::min(3,avoidance_confirmations_+(new_depth?1:0)):1;
+    avoidance_lane_ns_=source; avoidance_depth_ns_=depth; avoidance_received_at_=steady;
+    avoidance_path_=std::move(candidate); avoidance_speed_limit_=std::min(avoidance_speed_cap_,message->speed_limit_mps);
+    avoidance_status_=avoidance_confirmations_<3?"confirming":message->status;
+    std::int64_t finished=0; update_control_from_path(finished);
   }
 
   void validate_and_build_path(const line_detactor::msg::LaneResult & message)
@@ -1030,6 +1107,7 @@ private:
     // A missing lane must not release a red-light brake. Retain the latest
     // steering command while stopping. Motor handling of disconnected/disabled
     // modes is unchanged; steering follows stop_steering_hold_enabled.
+    const bool avoidance_braking=avoidance_control_enabled_ && enabled_ && control_mode_=="drive" && vesc_connected_;
     const bool keep_braking = traffic_stop_requested() && enabled_ &&
       control_mode_ == "drive" && vesc_connected_;
     stop_control(reason);
@@ -1039,10 +1117,14 @@ private:
       traffic_phase_ = "temporary_stop_control_input";
       stop_line_seen_ns_.reset();
       stop_candidate_count_ = 0;
-      command_brake_current_ = traffic_brake_max_;
+      command_brake_current_ = avoidance_braking ? std::max(traffic_brake_max_,avoidance_brake_current_) : traffic_brake_max_;
       requested_brake_current_ = command_brake_current_;
       brake_mode_active_ = true;
       publish_commands(0.0, command_brake_current_, latest_servo_position_, "brake");
+    } else if (avoidance_braking) {
+      command_brake_current_=avoidance_brake_current_;
+      requested_brake_current_=command_brake_current_; brake_mode_active_=true;
+      publish_commands(0.0,command_brake_current_,latest_servo_position_,"brake");
     } else {publish_commands(0.0, 0.0, latest_servo_position_, "stop");}
   }
 
@@ -1053,6 +1135,19 @@ private:
       if (!vesc_connected_) {return "vesc_disconnected";}
       if (!last_erpm_ns_) {return "waiting_for_erpm";}
       if (seconds(now_ns - *last_erpm_ns_) > erpm_timeout_sec_) {return "erpm_timeout";}
+    }
+    if (avoidance_control_enabled_) {
+      if (!avoidance_path_ || !avoidance_lane_ns_ || !avoidance_depth_ns_) {
+        return "avoidance_"+avoidance_status_;
+      }
+      if (now_ns<*avoidance_lane_ns_ || now_ns<*avoidance_depth_ns_ ||
+        seconds(now_ns-*avoidance_lane_ns_)>avoidance_max_age_ ||
+        seconds(now_ns-*avoidance_depth_ns_)>avoidance_max_age_ ||
+        std::chrono::duration<double>(std::chrono::steady_clock::now()-avoidance_received_at_).count()>avoidance_max_age_) {
+        return "avoidance_stale";
+      }
+      if (std::abs(current_speed_mps_)>avoidance_speed_cap_+.15) {return "avoidance_overspeed";}
+      if (avoidance_confirmations_<3) {return "avoidance_confirming";}
     }
     if (!path_ || !last_path_received_ns_) {return "centerline_missing";}
     if (path_hold_active_ && (!last_valid_path_received_ns_ ||
@@ -1078,22 +1173,27 @@ private:
     latest_brake_delay_sec_ = latest_brake_rise_ = kUnavailable;
     requested_brake_current_ = 0.0;
     if (const auto reason = stop_reason(now_ns)) {
+      if (avoidance_control_enabled_ && *reason!="avoidance_confirming") {avoidance_confirmations_=0;}
       publish_guard_stop(*reason);
       decision_finished_ros_ns = now().nanoseconds();
       return false;
     }
     advance_stop_distance(now_ns);
     update_traffic_decision(now_ns);
+    const auto & selected_path=avoidance_control_enabled_?*avoidance_path_:*path_;
     const double curvature = representative_curvature(
-      *path_, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
+      selected_path, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
       curvature_percentile_);
     double target_speed = curvature_speed_control_enabled_ ? curvature_target_speed(
       curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_) :
       maximum_speed_mps_;
+    if (avoidance_control_enabled_) {
+      target_speed=std::min({target_speed,avoidance_speed_limit_,avoidance_speed_cap_});
+    }
     const bool traffic_stop = traffic_stop_requested();
     if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
     const auto stanley = stanley_control(
-      *path_, current_speed_mps_, stanley_gain_, stanley_softening_speed_mps_,
+      selected_path, current_speed_mps_, stanley_gain_, stanley_softening_speed_mps_,
       stanley_heading_lookahead_m_, maximum_steering_angle_rad_,
       stanley_corner_heading_threshold_rad_, stanley_corner_opposing_correction_ratio_);
     // Freeze the final command at standstill, with speed hysteresis to prevent
@@ -1133,6 +1233,27 @@ private:
       longitudinal_phase_ = "suppressed";
       service_brake_requested_ = traction_recovery_ = false;
       coast_probe_elapsed_ = 0.0;
+    } else if (avoidance_control_enabled_ && !traffic_stop) {
+      // Direct signed PID avoids legacy minimum-duty/start boosts bypassing
+      // the low-speed limit. Decelerate even if normal cruise braking is OFF.
+      if (longitudinal_phase_!="avoidance_speed_limit") {longitudinal_pid_->reset();}
+      service_brake_requested_=traction_recovery_=false; coast_probe_elapsed_=0;
+      speed_pid_->reset(); brake_profile_->reset();
+      const double effort=longitudinal_pid_->update(target_speed,current_speed_mps_,0.0,dt);
+      latest_pid_effort_=effort;
+      if (effort<0) {
+        command_duty_=0; command_brake_current_=std::min(avoidance_brake_current_, -effort*avoidance_brake_current_);
+        requested_brake_current_=command_brake_current_; brake_mode_active_=true; motor_mode="brake";
+      } else if (brake_mode_active_) {
+        command_duty_=command_brake_current_=0; brake_mode_active_=false; motor_mode="brake_release";
+      } else {
+        const double desired=std::max(0.0,effort)*maximum_duty_;
+        command_duty_=move_toward(command_duty_,desired,
+          (desired>command_duty_?duty_rise_rate_per_sec_:duty_fall_rate_per_sec_)*dt);
+        command_brake_current_=0; motor_mode="duty";
+        longitudinal_pid_->apply_output_limit(effort,command_duty_/maximum_duty_);
+      }
+      longitudinal_phase_="avoidance_speed_limit";
     } else if (longitudinal_pid_enabled_ || traffic_stop) {
       motor_mode = longitudinal_motor(target_speed, dt, traffic_stop);
     } else {
@@ -1326,6 +1447,7 @@ private:
   void on_watchdog()
   {
     if (const auto reason = stop_reason(now().nanoseconds())) {
+      if (avoidance_control_enabled_ && *reason!="avoidance_confirming") {avoidance_confirmations_=0;}
       publish_guard_stop(*reason);
     }
   }
@@ -1634,6 +1756,15 @@ private:
   int path_minimum_points_, motor_pole_pairs_, motor_pinion_teeth_, spur_gear_teeth_;
   int differential_pinion_teeth_, differential_ring_teeth_;
 
+  bool avoidance_control_enabled_{false};
+  double avoidance_max_age_{.20},avoidance_speed_cap_{.4},avoidance_brake_current_{2.5},avoidance_wheelbase_{.33};
+  double avoidance_speed_limit_{0};
+  int avoidance_confirmations_{0};
+  std::string avoidance_status_{"waiting_for_plan"};
+  std::optional<OrderedPath> avoidance_path_;
+  std::optional<std::int64_t> avoidance_lane_ns_,avoidance_depth_ns_;
+  std::chrono::steady_clock::time_point avoidance_received_at_;
+  rclcpp::Subscription<auto_control::msg::AvoidancePlan>::SharedPtr avoidance_sub_;
   std::optional<OrderedPath> path_;
   std::optional<std::int64_t> last_path_received_ns_, path_capture_ns_, last_erpm_ns_;
   std::optional<std::int64_t> last_valid_path_received_ns_, last_lane_capture_ns_;

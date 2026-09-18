@@ -3,12 +3,15 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 namespace auto_control::avoidance
 {
 struct Options
 {
+  bool control{false};
+  double obstacle_size{.13}, motion_margin{0};
   double half_width{.15}, half_length{.25}, margin{.04}, unknown_extent{.04};
   double step{.025}, max_offset{.40}, offset_step{.05}, transition{.70};
   double max_curvature{2.0}, max_speed{.5}, lateral_acceleration{.4};
@@ -18,13 +21,13 @@ inline void validate(const Options & o)
 {
   for (double v : {o.half_width,o.half_length,o.margin,o.unknown_extent,o.step,o.max_offset,
       o.offset_step,o.transition,o.max_curvature,o.max_speed,o.lateral_acceleration,
-      o.deceleration,o.clear_sec}) {
+      o.deceleration,o.clear_sec,o.obstacle_size}) {
     if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("avoidance options must be finite and positive");}
   }
   if (o.half_width>.5 || o.half_length>1 || o.margin>.3 || o.unknown_extent>.5 ||
     o.step<.02 || o.step>.05 || o.max_offset>.6 || o.offset_step<.04 || o.offset_step>o.max_offset ||
     o.transition<.3 || o.transition>2 || o.max_curvature>5 || o.max_speed>1 ||
-    o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5) {
+    o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5 || o.obstacle_size>1) {
     throw std::invalid_argument("avoidance preview settings exceed bounded planner limits");
   }
 }
@@ -75,7 +78,7 @@ class Planner
 {
 public:
   explicit Planner(Options options):o_(options) {validate(o_);}
-  void reset() {held_side_=0; clear_since_=0;}
+  void reset() {held_side_=0; clear_since_=0; target_.reset();}
   bev_handoff::AvoidancePreview plan(const bev_handoff::PlanningLane & lane,
     const bev_handoff::ObstacleFrame & obstacles,double stamp)
   {
@@ -120,7 +123,7 @@ public:
     // Capsule along the candidate heading covers the rectangular vehicle.
     // Display boxes describe the envelope for a forward-facing vehicle;
     // the collision check below rotates the capsule for each candidate pose.
-    const double radius=o_.half_width+o_.margin+o_.unknown_extent;
+    const double radius=o_.half_width+o_.margin+std::max(o_.unknown_extent,o_.obstacle_size/2);
     std::vector<bev_handoff::SafetyBox> collision_boxes;
     for (const auto & cluster:obstacles.clusters) {
       if (cluster.surface_xy.empty()) {continue;}
@@ -131,23 +134,54 @@ public:
         box.y0=std::min(box.y0,double(p.y)); box.y1=std::max(box.y1,double(p.y));
       }
       if (box.x0>box.x1) {continue;}
+      // Observed points are a FRONT surface. Extend the unseen depth by
+      // a full known side (13cm), and enforce at least that lateral width.
+      // radius includes >= half a side for uncertain lateral surface location.
+      const double center_y=(box.y0+box.y1)/2;
+      box.y0=std::min(box.y0,center_y-o_.obstacle_size/2);
+      box.y1=std::max(box.y1,center_y+o_.obstacle_size/2);
+      box.x1+=o_.obstacle_size;
+      box.x0-=o_.motion_margin; box.x1+=o_.motion_margin;
       box.x0-=radius; box.x1+=radius; box.y0-=radius; box.y1+=radius;
       collision_boxes.push_back(box);
       box.x0-=o_.half_length; box.x1+=o_.half_length;
       out.boxes.push_back(box);
     }
     double first=1e9,last=-1e9;
+    std::optional<cv::Point2d> current_target;
     for (const auto & box:out.boxes) {
-      if (hits(out.original,box)) {first=std::min(first,box.x0); last=std::max(last,box.x1);}
+      if (hits(out.original,box)) {
+        if (box.x0<first) {current_target=cv::Point2d((box.x0+box.x1)/2,(box.y0+box.y1)/2);}
+        first=std::min(first,box.x0); last=std::max(last,box.x1);
+      }
+    }
+    // Without rear sensing/odometry, a vanished obstacle is not proof that
+    // the entire vehicle passed it. Do not automatically resume into a blind spot.
+    bool target_visible=!target_;
+    if (target_) {
+      double nearest=.25;
+      for (const auto & box:out.boxes) {
+        const cv::Point2d center((box.x0+box.x1)/2,(box.y0+box.y1)/2);
+        const double d=distance(center,*target_);
+        if (d<nearest) {nearest=d; current_target=center; target_visible=true;}
+      }
+      if (target_visible && current_target) {target_=current_target;}
+    }
+    if (o_.control && held_side_ && !target_visible) {
+      out.status="BLOCKED: target lost; reset after inspection"; clear_since_=0; return out;
     }
     const auto check=[&](bev_handoff::AvoidanceCandidate & c) {
       c.valid=false;
+      if (o_.control && (start>.25 || std::abs(c.path.front().y)>.02)) {
+        c.reason="ego connection"; return;
+      }
       for (std::size_t i=0;i<c.path.size();++i) {
         const auto & p=c.path[i];
         const auto & before=c.path[i?i-1:i];
         const auto & after=c.path[std::min(i+1,c.path.size()-1)];
         const auto tangent=(after-before)*(1.0/std::max(1e-9,distance(before,after)));
-        const auto front=p+o_.half_length*tangent,rear=p-o_.half_length*tangent;
+        const auto front=p+o_.half_length*tangent;
+        const auto rear=(o_.control && i==0)?cv::Point2d(-o_.half_length,0):p-o_.half_length*tangent;
         // Sampling allowance accounts for translation and rotation between
         // adjacent poses, using the accepted maximum curvature as the bound.
         const double sampling=.5*std::max(distance(p,before),distance(p,after))*(1+o_.half_length*o_.max_curvature);
@@ -177,19 +211,31 @@ public:
       if (c.max_curvature>o_.max_curvature) {c.reason="curvature"; return;}
       c.valid=true; c.reason="valid";
     };
-    bev_handoff::AvoidanceCandidate nominal; nominal.path=out.original; check(nominal);
+    const double slope=(out.original[1].y-out.original[0].y)/(out.original[1].x-out.original[0].x);
+    const auto anchor=[&](const cv::Point2d & p,double blend) {
+      return o_.control ? (-out.original.front().y-slope*(p.x-start))*(1-blend) : 0.0;
+    };
+    bev_handoff::AvoidanceCandidate nominal; nominal.path=out.original;
+    if (o_.control) {
+      for (auto & p:nominal.path) {
+        p.y+=anchor(p,smooth((p.x-start)/std::min(end-start,std::max(1.0,o_.transition))));
+      }
+    }
+    check(nominal);
     if (nominal.valid) {first=1e9;}
     if (first==1e9) {
       if (!nominal.valid) {out.status="BLOCKED: "+nominal.reason; clear_since_=0; return out;}
       if (held_side_) {
         if (!clear_since_ || stamp<clear_since_) {clear_since_=stamp;}
         if (stamp-clear_since_<o_.clear_sec) {out.status="WAIT: confirm clear"; return out;}
-        held_side_=0;
+        held_side_=0; target_.reset();
       }
-      out.selected=out.original; out.max_curvature=nominal.max_curvature; out.status="CLEAR";
+      out.selected=nominal.path; out.max_curvature=nominal.max_curvature; out.status="CLEAR";
     } else {
       clear_since_=0;
-      if (first-start<o_.transition || end-last<o_.transition) {
+      const bool already_offset=o_.control && held_side_ &&
+        -out.original.front().y*held_side_>.05;
+      if ((!already_offset && first-start<o_.transition) || (!o_.control && end-last<o_.transition)) {
         out.status="BLOCKED: transition space"; return out;
       }
       double best=1e9;
@@ -200,8 +246,16 @@ public:
             // Use all observed approach/return space to reduce curvature;
             // transition is the minimum required length, not a fixed ramp.
             const double weight=p.x<first?smooth((p.x-start)/(first-start)):
-              p.x>last?1-smooth((p.x-last)/(end-last)):1;
-            candidate.path.emplace_back(p.x,p.y+candidate.offset*weight);
+              (p.x>last && end-last>=o_.transition)?1-smooth((p.x-last)/(end-last)):1;
+            double y=p.y+candidate.offset*weight;
+            if (o_.control) {
+              const double approach=smooth((p.x-start)/std::max(o_.transition,first-start));
+              const double initial=-out.original.front().y-slope*(p.x-start);
+              double shift=initial*(1-approach)+candidate.offset*approach;
+              if (p.x>last && end-last>=o_.transition) {shift*=1-smooth((p.x-last)/(end-last));}
+              y=p.y+shift;
+            }
+            candidate.path.emplace_back(p.x,y);
           }
           check(candidate);
           const double cost=magnitude+.05*candidate.max_curvature;
@@ -214,10 +268,11 @@ public:
       }
       if (out.selected.empty()) {out.status="BLOCKED: no safe candidate"; return out;}
       held_side_=out.status=="LEFT"?1:-1;
+      if (current_target) {target_=current_target;}
     }
     out.recommended_speed=std::min(o_.max_speed,std::sqrt(o_.lateral_acceleration/std::max(.001,out.max_curvature)));
     // Advisory speed also allows a stop before the first nominal-path obstacle.
-    if (first<1e9) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*std::max(0.0,first-start)));}
+    if (!o_.control && first<1e9) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*std::max(0.0,first-start)));}
     return out;
   }
   void unavailable() {clear_since_=0;}
@@ -225,5 +280,6 @@ private:
   Options o_;
   int held_side_{0};
   double clear_since_{0};
+  std::optional<cv::Point2d> target_;
 };
 }  // namespace auto_control::avoidance
