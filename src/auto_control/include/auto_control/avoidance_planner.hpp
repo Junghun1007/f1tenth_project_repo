@@ -143,23 +143,21 @@ public:
     out.horizon_m=length;
     std::vector<bev_handoff::SafetyBox> boxes;
     std::vector<cv::Point2d> centers;
-    // Keep the established physical/uncertainty envelope. Changing how the path
-    // is constructed must not silently shrink obstacle or vehicle dimensions.
-    const double radius=o_.half_width+o_.margin+std::max(o_.unknown_extent,o_.obstacle_size/2);
+    // The displayed representative point is the assumed object center. The
+    // observed point spread is NOT an object-size estimate. Apply the configured
+    // fixed square, then add explicit uncertainty and vehicle clearance once.
+    const double radius=o_.half_width+o_.margin+o_.unknown_extent;
     for (const auto & cluster:obstacles.clusters) {
-      bev_handoff::SafetyBox box{1e9,-1e9,1e9,-1e9};
-      for (const auto & p:cluster.surface_xy) {
-        if (!std::isfinite(p.x)||!std::isfinite(p.y)) {continue;}
-        box.x0=std::min(box.x0,double(p.x)); box.x1=std::max(box.x1,double(p.x));
-        box.y0=std::min(box.y0,double(p.y)); box.y1=std::max(box.y1,double(p.y));
+      if (!std::isfinite(cluster.center.x)||!std::isfinite(cluster.center.y)) {
+        out.status="WAIT: invalid obstacle position"; return out;
       }
-      if (box.x0>box.x1) {continue;}
-      const double y=(box.y0+box.y1)/2;
-      centers.emplace_back((box.x0+box.x1)/2,y);
-      box.y0=std::min(box.y0,y-o_.obstacle_size/2)-radius;
-      box.y1=std::max(box.y1,y+o_.obstacle_size/2)+radius;
+      const double x=cluster.center.x,y=cluster.center.y,half=o_.obstacle_size/2;
+      centers.emplace_back(x,y);
+      bev_handoff::SafetyBox box{x-half,x+half,y-half,y+half};
+      out.assumed_boxes.push_back(box);
+      box.y0-=radius; box.y1+=radius;
       box.x0-=radius+o_.motion_margin;
-      box.x1+=o_.obstacle_size+radius+o_.motion_margin;
+      box.x1+=radius+o_.motion_margin;
       boxes.push_back(box);
       box.x0-=o_.half_length; box.x1+=o_.half_length;
       out.boxes.push_back(box);

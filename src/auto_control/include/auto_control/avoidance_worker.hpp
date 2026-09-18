@@ -53,7 +53,7 @@ public:
     }
     planner_=std::make_unique<avoidance::Planner>(o);
     RCLCPP_INFO(node_.get_logger(),
-      "AVOIDANCE geometry: vehicle_width=%.3fm half_length=%.3fm effective_margin=%.3fm "
+      "AVOIDANCE geometry: model=fixed-square-at-detected-point vehicle_width=%.3fm half_length=%.3fm effective_margin=%.3fm "
       "motion_margin=%.3fm unknown_extent=%.3fm obstacle_size=%.3fm "
       "lane_required_width=%.3fm (+sampling/turning) local_transition/max_offset=%.3f/%.3fm "
       "curvature_limit=%.3f/m speed_limit=%.3fm/s",

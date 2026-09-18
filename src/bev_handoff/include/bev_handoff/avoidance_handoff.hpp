@@ -35,7 +35,8 @@ struct AvoidancePreview
   double x_max{3}, y_max{.6}, meter_per_pixel{.01};
   int width{120}, height{300};
   std::vector<cv::Point2d> original, selected;
-  std::vector<SafetyBox> boxes;
+  std::vector<SafetyBox> assumed_boxes; // Fixed object footprints, centered on detected representative points.
+  std::vector<SafetyBox> boxes; // Expanded clearance envelopes, not measured object dimensions.
   std::vector<AvoidanceCandidate> candidates;
   std::string status{"WAIT"};
   double recommended_speed{0}, max_curvature{0};

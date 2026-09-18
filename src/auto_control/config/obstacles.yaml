@@ -61,9 +61,9 @@ auto_obstacles:
     obstacles.avoidance.centerline_fallback_enabled: true # 회피 후보의 누락 경계 추정. 기본 중앙선 주행은 양쪽 경계를 요구하지 않음.
     obstacles.avoidance.vehicle_half_width_m: 0.15
     obstacles.avoidance.vehicle_half_length_m: 0.25 # 앞차축 기준 가장 먼 차체 끝까지 거리로 설정
-    obstacles.avoidance.obstacle_size_m: 0.13 # 관측 표면 뒤 물체 깊이 / 최소 가로 폭 (13x13cm)
+    obstacles.avoidance.obstacle_size_m: 0.13 # 검출 대표점을 중심으로 가정하는 정사각형 한 변. 포인트 퍼짐으로 크기를 추정하지 않음.
     obstacles.avoidance.safety_margin_m: 0.04
-    obstacles.avoidance.unknown_extent_m: 0.04 # Depth에서 보이지 않는 물체 뒷면/측면 여유
+    obstacles.avoidance.unknown_extent_m: 0.04 # 가정한 물체 외곽에 추가하는 위치/관측 오차 여유. 설정값 그대로 적용.
     obstacles.avoidance.sample_step_m: 0.025
     obstacles.avoidance.max_offset_m: 0.40
     # offset_step_m은 폐기. 기존 외부 YAML 값은 호환용으로 읽지만 계산에 사용하지 않음.

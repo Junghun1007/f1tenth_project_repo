@@ -40,10 +40,8 @@ inline std::string drawObstacleOverlay(cv::Mat & image,const std_msgs::msg::Head
     }
     if (!inside) {continue;}
     ++visible;
-    if (points.size()>=3) {
-      std::vector<cv::Point> hull; cv::convexHull(points,hull);
-      cv::polylines(plot,std::vector<std::vector<cv::Point>>{hull},true,color,1,cv::LINE_AA);
-    } else if (points.size()==2) {cv::line(plot,points[0],points[1],color,1,cv::LINE_AA);}
+    // Observations locate the object; their spread is not its physical outline.
+    // The avoidance preview separately draws the assumed fixed-size footprint.
     for (const auto & q:points) {cv::circle(plot,q,1,color,-1,cv::LINE_AA);}
     if (std::isfinite(cluster.center.x) && std::isfinite(cluster.center.y)) {
       const auto center=pixel(cluster.center);

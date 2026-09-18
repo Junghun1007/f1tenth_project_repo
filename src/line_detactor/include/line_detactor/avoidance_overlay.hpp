@@ -30,7 +30,12 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
       static_cast<int>(std::lround((plan->x_max-x)/plan->meter_per_pixel-.5)));
   };
   for (const auto & box:plan->boxes) {
-    cv::rectangle(plot,pixel(box.x0,box.y0),pixel(box.x1,box.y1),cv::Scalar(70,70,180),1);
+    cv::rectangle(plot,pixel(box.x0,box.y0),pixel(box.x1,box.y1),cv::Scalar(45,45,85),1);
+  }
+  for (const auto & box:plan->assumed_boxes) {
+    cv::rectangle(plot,pixel(box.x0,box.y0),pixel(box.x1,box.y1),cv::Scalar(0,165,255),1);
+    cv::drawMarker(plot,pixel((box.x0+box.x1)/2,(box.y0+box.y1)/2),
+      cv::Scalar(0,165,255),cv::MARKER_CROSS,5,1,cv::LINE_AA);
   }
   const auto path=[&](const std::vector<cv::Point2d> & points,const cv::Scalar & color,int thickness) {
     for (std::size_t i=1;i<points.size();++i) {
