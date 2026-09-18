@@ -11,6 +11,7 @@ bool deformation_only
 # In this mode points is empty; false with valid=true means an avoidance path.
 bool follow_centerline
 string status
+# Legacy field name: reference cruise speed for display, NOT a control limit.
 float64 speed_limit_mps
 float64 max_curvature_per_m
 geometry_msgs/Point32[] points

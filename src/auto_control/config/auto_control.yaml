@@ -70,7 +70,7 @@ auto_control:
     avoidance_control_enabled: false
     avoidance_deformation_only: true # false=기존 충돌/곡률 검사 및 회피 보호 정지 모드
     avoidance_max_age_sec: 0.20
-    avoidance_speed_cap_mps: 0.4 # 허용 (0, 1.0]m/s. 계획 속도/곡률 제한과 비교해 작은 값 사용.
+    # 회피 전용 속도 상한 없음. 주행 속도는 maximum_speed_mps로 설정.
     avoidance_brake_current_amps: 2.5 # deformation_only=false인 검사 모드에서 사용
     avoidance_wheelbase_m: 0.33 # 실측 축간거리. 곡률 한계=tan(최대 조향각)/축간거리
     enable_topic: "/auto/enabled"

@@ -137,10 +137,16 @@ def _apply_parameter_file_defaults(
     if not isinstance(deformation_only, bool):
         raise RuntimeError("avoidance_deformation_only must be a YAML boolean")
     context.launch_configurations["effective_avoidance_deformation_only"] = str(deformation_only).lower()
-    context.launch_configurations["effective_avoidance_speed_cap"] = str(controller_defaults.get("avoidance_speed_cap_mps", .4))
     planner_overrides = {"obstacles.avoidance.enabled": avoidance,
                          "obstacles.avoidance.control_requested": apply_avoidance,
                          "obstacles.avoidance.deformation_only": deformation_only}
+    reference_speed = LaunchConfiguration("maximum_speed_mps").perform(context)
+    if reference_speed == _PARAMETER_FILE_DEFAULT:
+        reference_speed = controller_defaults.get("maximum_speed_mps", 1.8)
+    reference_speed = float(reference_speed)
+    if not math.isfinite(reference_speed) or reference_speed <= 0:
+        raise RuntimeError("maximum_speed_mps must be finite and positive")
+    planner_overrides["obstacles.avoidance.reference_speed_mps"] = reference_speed
     # Share the normal controller's rules; do not invent separate departure gates.
     for key, default in {
         "path_minimum_points": 8, "path_minimum_span_m": .12,
@@ -150,24 +156,17 @@ def _apply_parameter_file_defaults(
         planner_overrides["obstacles.avoidance." + key] = controller_defaults.get(key, default)
     if apply_avoidance:
         planner_config = _ros_parameters(obstacle_file, "auto_obstacles")
-        speed = float(controller_defaults.get("avoidance_speed_cap_mps", .4))
         wheelbase = float(controller_defaults.get("avoidance_wheelbase_m", .33))
         steering = float(controller_defaults.get("maximum_steering_angle_deg", 30.0))
         age = float(controller_defaults.get("avoidance_max_age_sec", .20))
-        if not all(math.isfinite(v) for v in (speed, wheelbase, steering, age)) or not (
-            0 < speed <= 1.0 and .1 <= wheelbase <= 1 and 0 < steering < 80 and .05 <= age <= .20):
-            raise RuntimeError("Invalid avoidance control settings: speed (0,1.0]m/s, wheelbase 0.1..1m, steering (0,80)deg, age 0.05..0.20s")
+        if not all(math.isfinite(v) for v in (wheelbase, steering, age)) or not (
+            .1 <= wheelbase <= 1 and 0 < steering < 80 and .05 <= age <= .20):
+            raise RuntimeError("Invalid avoidance control settings: wheelbase 0.1..1m, steering (0,80)deg, age 0.05..0.20s")
         planner_overrides.update({
-            "obstacles.avoidance.max_speed_mps": min(speed, float(planner_config.get("obstacles.avoidance.max_speed_mps", .5))),
             "obstacles.avoidance.max_curvature_per_m": min(.98*math.tan(math.radians(steering))/wheelbase,
                 float(planner_config.get("obstacles.avoidance.max_curvature_per_m", 2.0))),
             "obstacles.avoidance.max_age_sec": min(age, float(planner_config.get("obstacles.avoidance.max_age_sec", .25))),
         })
-        if deformation_only:
-            # Keep the configured planner/controller speed ceilings even when
-            # depth is absent and steering falls back to the central path.
-            context.launch_configurations["effective_avoidance_speed_cap"] = str(
-                planner_overrides["obstacles.avoidance.max_speed_mps"])
     if manual_test == "true":
         # Keep inference/diagnostics active, suppress all automatic actuators.
         context.launch_configurations["auto_control_mode"] = "monitor_only"
@@ -633,7 +632,6 @@ def generate_launch_description():
     controller_overrides.update({
         "avoidance_control_enabled": ParameterValue(LaunchConfiguration("effective_avoidance_control_enabled"), value_type=bool),
         "avoidance_deformation_only": ParameterValue(LaunchConfiguration("effective_avoidance_deformation_only"), value_type=bool),
-        "avoidance_speed_cap_mps": ParameterValue(LaunchConfiguration("effective_avoidance_speed_cap"), value_type=float),
         **{name: LaunchConfiguration("effective_" + name) for name in (
             "measured_erpm_topic", "connection_status_topic", "duty_topic", "brake_current_topic", "servo_position_topic")},
         "lane_result_topic": LaunchConfiguration("ml_lane_result_topic"),

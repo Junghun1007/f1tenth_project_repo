@@ -16,7 +16,7 @@ struct Options
   double obstacle_size{.13}, motion_margin{0};
   double half_width{.15}, half_length{.25}, margin{.04}, unknown_extent{.04};
   double step{.025}, max_offset{.40}, transition{.70};
-  double max_curvature{2.0}, max_speed{.5}, lateral_acceleration{.4};
+  double max_curvature{2.0}, reference_speed{.5}, lateral_acceleration{.4};
   double deceleration{.5}, clear_sec{1.0};
   // Imported from the EXISTING controller YAML, not additional departure gates.
   int minimum_points{8};
@@ -25,23 +25,23 @@ struct Options
 inline void validate(const Options & o)
 {
   if (o.deformation_only) {
-    for (double v:{o.half_width,o.obstacle_size,o.step,o.transition,o.max_speed}) {
+    for (double v:{o.half_width,o.obstacle_size,o.step,o.transition,o.reference_speed}) {
       if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("deformation settings must be finite and positive");}
     }
     if (!std::isfinite(o.margin) || o.margin<0 || !std::isfinite(o.max_offset) || o.max_offset<0 ||
       o.half_width>.5 || o.obstacle_size>1 || o.step<.02 || o.step>.05 ||
-      o.transition<.3 || o.transition>2 || o.max_offset>.6 || o.max_speed>1) {
+      o.transition<.3 || o.transition>2 || o.max_offset>.6) {
       throw std::invalid_argument("Invalid centerline deformation settings");
     }
   } else {
     for (double v : {o.half_width,o.half_length,o.margin,o.unknown_extent,o.step,o.max_offset,
-        o.transition,o.max_curvature,o.max_speed,o.lateral_acceleration,
+        o.transition,o.max_curvature,o.reference_speed,o.lateral_acceleration,
         o.deceleration,o.clear_sec,o.obstacle_size}) {
       if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("avoidance options must be finite and positive");}
     }
     if (o.half_width>.5 || o.half_length>1 || o.margin>.3 || o.unknown_extent>.5 ||
       o.step<.02 || o.step>.05 || o.max_offset>.6 ||
-      o.transition<.3 || o.transition>2 || o.max_curvature>5 || o.max_speed>1 ||
+      o.transition<.3 || o.transition>2 || o.max_curvature>5 ||
       o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5 || o.obstacle_size>1) {
       throw std::invalid_argument("avoidance preview settings exceed bounded planner limits");
     }
@@ -283,7 +283,7 @@ public:
         reset();
       }
       out.follow_centerline=true; out.selected=out.original;
-      out.status="CENTERLINE"; out.recommended_speed=o_.max_speed; return out;
+      out.status="CENTERLINE"; out.recommended_speed=o_.reference_speed; return out;
     }
     clear_since_=0;
     std::vector<std::pair<cv::Point2d,cv::Point2d>> edges;
@@ -460,8 +460,7 @@ public:
           });
           if (found==targets_.end()) {targets_.push_back(target);}
         }
-        out.recommended_speed=std::min(o_.max_speed,std::sqrt(o_.lateral_acceleration/std::max(.001,out.max_curvature)));
-        if (!o_.control) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*(lead+profile.front().begin)));}
+        out.recommended_speed=o_.reference_speed; // Display only; controller owns speed.
         out.candidates.push_back(std::move(candidate));
         return out;
       }
@@ -550,7 +549,7 @@ private:
       } else {profile.push_back(anchor);}
     }
     out.region_count=profile.size();
-    out.selected=out.original; out.recommended_speed=o_.max_speed;
+    out.selected=out.original; out.recommended_speed=o_.reference_speed;
     out.follow_centerline=profile.empty();
     out.status=profile.empty()?"CENTERLINE: no local deformation":"DEFORM: centerline offsets only";
     if (profile.empty()) {return out;}

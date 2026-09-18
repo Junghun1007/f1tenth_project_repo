@@ -158,8 +158,8 @@ ros2 topic echo /auto/avoidance_preview/status
   수동 모드, 신호등 제어, 조향각·조향 변화율 제한은 기존대로 동작한다.
 - 변형 중에도 기존 일반 longitudinal 제어를 사용한다. 따라서 단계 제어를 켰다면
   `longitudinal_start_duty`와 단계식 PID가 적용된다. 회피 전용 signed PID로 전환하지 않는다.
-- launch에서 제어 속도 상한과 `obstacles.avoidance.max_speed_mps` 중 작은 값을 고정 상한으로
-  공유한다. 변형 데이터가 유실되어도 이 상한은 그대로다. 신호등/일반 속도 설정은 추가로 속도를 낮출 수 있다.
+- 주행 속도는 `maximum_speed_mps`로 설정한다. 회피 전용 속도 제한이나 장애물 검출에 따른
+  감속은 없다. 신호등 정지 및 명시적으로 켠 일반 곡률 감속은 기존대로 적용된다.
 
 변형량은 `obstacles.avoidance.safety_margin_m`(0 허용), `max_offset_m`, 연결 길이는
 `transition_m`으로 조정한다. `unknown_extent_m`, `vehicle_half_length_m`, `max_curvature_per_m`,
@@ -232,8 +232,8 @@ ros2 topic echo /auto/avoidance_preview/status
 Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못한 상황을 빈 경로로 간주하지 않는다.
 이때와 계획 OFF/잘못된 메시지/중앙선 입력 유실에는 기존 보호 정지 및 watchdog을 유지한다.
 `electrical_brake_enabled=false`로 회피 보호 정지 제동이 꺼지지 않는다.
-신호등 정지와 기존 속도 상한도 유지한다. 중앙선 주행은 기존 구동 제어를 사용하고,
-실제 회피 경로를 추종할 때는 기존 회피용 signed PID를 사용한다.
+신호등 정지와 일반 주행 속도 설정은 유지한다. 중앙선과 회피 경로 모두 기존 일반 구동
+제어를 사용하며, 회피 전용 signed PID 및 회피 과속 보호 정지는 제거했다.
 
 ### 13×13cm 장애물과 파라미터
 
@@ -274,20 +274,27 @@ Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못
 ```yaml
     avoidance_control_enabled: false  # launch의 명시값이 우선
     avoidance_max_age_sec: 0.20
-    avoidance_speed_cap_mps: 0.4
+    maximum_speed_mps: 1.0
     avoidance_brake_current_amps: 2.5
     avoidance_wheelbase_m: 0.33
 ```
 
 차량 축간거리/차체 크기/제동 전류는 실차에 맞춰야 한다. 제어 옵션은 모두 시작 시 고정이다.
-기존 외부 YAML에 이 항목들이 없어도 기본값으로 동작한다. 실제 적용 시 planner의 속도·곡률·
+기존 외부 YAML에 이 항목들이 없어도 기본값으로 동작한다. 실제 적용 시 planner의 곡률·
 유효 시간 상한은 제어기 설정과 비교해 더 작은 값으로 맞춘다.
 
-`avoidance_speed_cap_mps`의 허용 범위는 0 초과 ~ 1.0m/s 이하이다. 1.0m/s까지
-목표 속도를 허용하려면 제어 YAML의 이 값과 장애물 YAML의
-`obstacles.avoidance.max_speed_mps`를 모두 1.0으로 설정하고 일반 속도 상한도 확인한다.
-곡률/신호등 제한은 계속 적용되므로 항상 1.0m/s로 주행한다는 뜻은 아니다.
-허용 범위 확장은 실차에서 해당 속도의 회피·제동 성능을 검증했다는 뜻이 아니다.
+주행 속도는 **`auto_control.maximum_speed_mps` 하나로 설정**한다. 회피 속도의
+1.0m/s 하드코딩 상한도 없다. 기존 `avoidance_speed_cap_mps`와
+`obstacles.avoidance.max_speed_mps`는 호환을 위해 선언만 하며 값은 무시한다.
+기존 파일에 남아 있어도 주행 속도를 제한하거나 값의 범위 때문에 실행을 막지 않는다.
+기능은 경로만 수정하며, 장애물 검출에 따른 감속은 하지 않는다.
+`curvature_speed_control_enabled: true`인 일반 곡률 감속과 신호등 정지는 별개로 유지된다.
+
+launch는 최종 `maximum_speed_mps`(명시적 launch 인자 우선)를 planner의
+`obstacles.avoidance.reference_speed_mps`에 전달한다. 이 값은 표시 및 검사 모드의
+이동 여유 계산용이며 제어기로 되돌아오는 속도 상한이 아니다. 단독 planner 실행 시에만
+이 표시 기준값을 직접 지정할 수 있다. 기존 메시지 필드 `speed_limit_mps`도 호환용 이름을
+유지하지만 참고 속도만 담으며 제어기는 속도 계산에 사용하지 않는다.
 
 | `obstacles.avoidance.*` | 기본값 | 의미 |
 |---|---:|---|
@@ -303,9 +310,9 @@ Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못
 | `offset_step_m` | 0.05 | 폐기된 전역 후보 간격. 기존 YAML 호환용으로만 읽으며 경로에 영향 없음 |
 | `transition_m` | 0.70 | 국소 회피 진입/복귀 연결 길이. 보정 시 1.5배/2배; 가까운 반대 방향 구간 사이는 사용 가능한 간격에서 직접 연결 |
 | `max_curvature_per_m` | 2.0 | 최대 곡률. 적용 시 차량 조향 한계로 추가 제한 |
-| `max_speed_mps` | 0.5 | 계획 속도. 적용 시 기본 제어 상한 0.4로 추가 제한 |
-| `lateral_acceleration_mps2` | 0.4 | 곡률에 따른 속도 제한 |
-| `deceleration_mps2` | 0.5 | 화면 전용 모드의 장애물 접근 권고 속도 계산 |
+| `max_speed_mps` | 폐기 | 기존 YAML 호환용. 값 무시 |
+| `lateral_acceleration_mps2` | 0.4 | 구버전 호환용. 회피 감속 미사용 |
+| `deceleration_mps2` | 0.5 | 구버전 호환용. 회피 감속 미사용 |
 | `stop_response_sec` | 0.35 | 이전 YAML 호환용. 현재 제어/출발 조건에는 사용하지 않음 |
 | `clear_confirm_sec` | 1.0 | 중앙 경로 복귀 전 연속 관측 시간 |
 
@@ -318,7 +325,7 @@ Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못
 `CENTERLINE`은 기존 중앙선 주행, `LOCAL`은 여러 장애물의 국소 회피 구간을 연결한 경로 사용을 뜻한다.
 `n`은 회피에 포함된 장애물 군집 수다.
 상태의 `C`는 회피 후보에서 추정 경계를 사용함을 뜻한다.
-`L`은 중앙선 길이(m), `v`는 목표 속도 상한(m/s)이다.
+`L`은 중앙선 길이(m), `vref`는 설정된 일반 주행 기준 속도(m/s)이다. 실제 속도나 신호등까지 반영한 최종 목표 속도가 아니다.
 WAIT/BLOCKED일 때는 속도 0만 보여주는 대신 거부 이유를 표시한다.
 전체 이유는 `/auto/avoidance_preview/status` 및 제어기 상태 로그에서도 확인할 수 있다.
 

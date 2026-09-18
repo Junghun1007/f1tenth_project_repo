@@ -34,7 +34,12 @@ public:
     parameter("safety_margin_m",o.margin); parameter("unknown_extent_m",o.unknown_extent);
     parameter("sample_step_m",o.step); parameter("max_offset_m",o.max_offset);
     parameter("transition_m",o.transition);
-    parameter("max_curvature_per_m",o.max_curvature); parameter("max_speed_mps",o.max_speed);
+    parameter("max_curvature_per_m",o.max_curvature);
+    // Imported from the controller for preview and checked-mode geometry only.
+    parameter("reference_speed_mps",o.reference_speed);
+    rcl_interfaces::msg::ParameterDescriptor legacy_speed; legacy_speed.read_only=true;
+    legacy_speed.description="Deprecated and ignored; use auto_control.maximum_speed_mps";
+    node_.declare_parameter<double>("obstacles.avoidance.max_speed_mps",.5,legacy_speed);
     parameter("lateral_acceleration_mps2",o.lateral_acceleration); parameter("deceleration_mps2",o.deceleration);
     parameter("clear_confirm_sec",o.clear_sec);
     // Read old files without retaining the global-offset enumeration behavior.
@@ -50,7 +55,7 @@ public:
     // Bound uncorrected capture-to-control movement in low-speed apply mode.
     o.control=control_requested_;
     if (o.control && !o.deformation_only) {
-      o.motion_margin=o.max_speed*.20;
+      o.motion_margin=o.reference_speed*.20;
       o.margin+=.01+.5*o.max_curvature*o.motion_margin*o.motion_margin;
     }
     planner_=std::make_unique<avoidance::Planner>(o);
@@ -59,9 +64,9 @@ public:
       "AVOIDANCE geometry: model=fixed-square-at-detected-point vehicle_width=%.3fm half_length=%.3fm effective_margin=%.3fm "
       "motion_margin=%.3fm unknown_extent=%.3fm obstacle_size=%.3fm "
       "nominal_width_with_margin=%.3fm local_transition/max_offset=%.3f/%.3fm "
-      "curvature_limit=%.3f/m speed_limit=%.3fm/s",
+      "curvature_limit=%.3f/m reference_speed=%.3fm/s (display/geometry only)",
       2*o.half_width,o.half_length,o.margin,o.motion_margin,o.unknown_extent,o.obstacle_size,
-      2*(o.half_width+o.margin),o.transition,o.max_offset,o.max_curvature,o.max_speed);
+      2*(o.half_width+o.margin),o.transition,o.max_offset,o.max_curvature,o.reference_speed);
     // Read on the worker thread: ros2 param set can enable/disable at runtime.
     node_.declare_parameter<bool>("obstacles.avoidance.enabled",false);
     status_=node_.create_publisher<std_msgs::msg::String>("/auto/avoidance_preview/status",rclcpp::QoS(1));
@@ -166,7 +171,7 @@ private:
         message.control_ready=control_requested_;
         message.deformation_only=deformation_only_;
         message.follow_centerline=result->follow_centerline;
-        message.valid=!result->selected.empty() && result->recommended_speed>0;
+        message.valid=!result->selected.empty();
         message.status=result->status; message.speed_limit_mps=result->recommended_speed;
         message.max_curvature_per_m=result->max_curvature;
         if (!result->follow_centerline) {

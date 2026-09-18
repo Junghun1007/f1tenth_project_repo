@@ -58,6 +58,6 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
   // Full details remain on /auto/avoidance_preview/status.
   return mode+plan->status.substr(0,plan->status.find(':'))+
     (plan->inferred_boundaries?" C":"")+
-    cv::format(" n%zu L%.1f v%.2f",plan->obstacle_count,plan->horizon_m,plan->recommended_speed);
+    cv::format(" n%zu L%.1f vref%.2f",plan->obstacle_count,plan->horizon_m,plan->recommended_speed);
 }
 }

@@ -149,8 +149,8 @@ public:
       curvature_speed_control_enabled_ ? "on" : "off", longitudinal_kp_, longitudinal_ki_, longitudinal_kd_);
     RCLCPP_INFO(get_logger(), "Staged brake gains: speed=%.3f, missing deceleration=%.3f",
       longitudinal_brake_speed_gain_, traffic_brake_decel_gain_);
-    RCLCPP_INFO(get_logger(),"Avoidance control=%s: plan=/auto/avoidance_plan speed_cap=%.2fm/s age=%.2fs guard_brake=%.2fA",
-      avoidance_control_enabled_?"ON":"OFF",avoidance_speed_cap_,avoidance_max_age_,avoidance_brake_current_);
+    RCLCPP_INFO(get_logger(),"Avoidance control=%s: plan=/auto/avoidance_plan speed=maximum_speed_mps (%.2fm/s), no avoidance cap; age=%.2fs guard_brake=%.2fA",
+      avoidance_control_enabled_?"ON":"OFF",maximum_speed_mps_,avoidance_max_age_,avoidance_brake_current_);
     RCLCPP_INFO(get_logger(),"Avoidance mode=%s",avoidance_deformation_only_?"DEFORM: unavailable plan uses centerline; normal longitudinal control":"CHECKED: unavailable plan brakes");
     RCLCPP_INFO(get_logger(), "Staged departure: start duty=%.3f (0=disabled), then rise=%.3f/s",
       longitudinal_start_duty_, duty_rise_rate_per_sec_);
@@ -195,7 +195,10 @@ private:
     avoidance_control_enabled_=declare_parameter<bool>("avoidance_control_enabled",false,avoidance_descriptor);
     avoidance_deformation_only_=declare_parameter<bool>("avoidance_deformation_only",true,avoidance_descriptor);
     avoidance_max_age_=declare_parameter<double>("avoidance_max_age_sec",.20,avoidance_descriptor);
-    avoidance_speed_cap_=declare_parameter<double>("avoidance_speed_cap_mps",.4,avoidance_descriptor);
+    // Compatibility with external YAMLs; never affects speed or validation.
+    auto legacy_speed_descriptor=avoidance_descriptor;
+    legacy_speed_descriptor.description="Deprecated and ignored; use maximum_speed_mps";
+    declare_parameter<double>("avoidance_speed_cap_mps",.4,legacy_speed_descriptor);
     avoidance_brake_current_=declare_parameter<double>("avoidance_brake_current_amps",2.5,avoidance_descriptor);
     avoidance_wheelbase_=declare_parameter<double>("avoidance_wheelbase_m",.33,avoidance_descriptor);
     driving_log_enabled_ = parameter("driving_log_enabled", false);
@@ -347,10 +350,9 @@ private:
   void validate_parameters() const
   {
     if (!std::isfinite(avoidance_max_age_) || avoidance_max_age_<.05 || avoidance_max_age_>.20 ||
-      !std::isfinite(avoidance_speed_cap_) || avoidance_speed_cap_<=0 || avoidance_speed_cap_>1.0 ||
       !std::isfinite(avoidance_brake_current_) || avoidance_brake_current_<=0 || avoidance_brake_current_>10 ||
       !std::isfinite(avoidance_wheelbase_) || avoidance_wheelbase_<.1 || avoidance_wheelbase_>1) {
-      throw std::invalid_argument("avoidance control: age 0.05..0.20s, speed (0,1.0]m/s, brake (0,10]A, wheelbase 0.1..1m");
+      throw std::invalid_argument("avoidance control: age 0.05..0.20s, brake (0,10]A, wheelbase 0.1..1m");
     }
     if (!std::isfinite(driving_log_rate_hz_) || driving_log_rate_hz_ <= 0.0 ||
       driving_log_rate_hz_ > 100.0 || driving_log_directory_.empty())
@@ -545,7 +547,7 @@ private:
     const auto source=stamp_nanoseconds(message->header.stamp),depth=stamp_nanoseconds(message->depth_stamp);
     auto reject=[&](const std::string & reason) {
       avoidance_path_.reset(); avoidance_follow_centerline_=false;
-      avoidance_confirmations_=0; avoidance_speed_limit_=0;
+      avoidance_confirmations_=0;
       avoidance_status_=reason;
       if (avoidance_deformation_only_) {
         // Drop only the optional deformation. Normal lane/traffic/vehicle
@@ -561,17 +563,15 @@ private:
       (avoidance_lane_ns_ && *source<=*avoidance_lane_ns_) ||
       (avoidance_depth_ns_ && *depth<*avoidance_depth_ns_)) {reject("invalid_timestamp_or_frame"); return;}
     if (message->follow_centerline) {
-      if (!message->points.empty() || !std::isfinite(message->speed_limit_mps) || message->speed_limit_mps<=0) {
+      if (!message->points.empty()) {
         reject("invalid_centerline_decision"); return;
       }
       avoidance_path_.reset(); avoidance_follow_centerline_=true;
       avoidance_lane_ns_=source; avoidance_depth_ns_=depth; avoidance_received_at_=steady;
-      avoidance_speed_limit_=std::min(avoidance_speed_cap_,message->speed_limit_mps);
       avoidance_confirmations_=3; avoidance_status_="CENTERLINE";
       std::int64_t finished=0; update_control_from_path(finished); return;
     }
-    if (!std::isfinite(message->speed_limit_mps) || message->speed_limit_mps<=0 ||
-      !std::isfinite(message->max_curvature_per_m) || message->max_curvature_per_m<0 ||
+    if (!std::isfinite(message->max_curvature_per_m) || message->max_curvature_per_m<0 ||
       (!avoidance_deformation_only_ && message->max_curvature_per_m>std::tan(maximum_steering_angle_rad_)/avoidance_wheelbase_) ||
       message->points.size()<static_cast<std::size_t>(avoidance_deformation_only_?2:path_minimum_points_) || message->points.size()>160) {reject("invalid_limits"); return;}
     OrderedPath candidate; candidate.geometry_window_m=path_geometry_window_m_;
@@ -605,7 +605,6 @@ private:
     avoidance_confirmations_=avoidance_deformation_only_?3:(contiguous?std::min(3,avoidance_confirmations_+(new_depth?1:0)):1);
     avoidance_lane_ns_=source; avoidance_depth_ns_=depth; avoidance_received_at_=steady;
     avoidance_path_=std::move(candidate); avoidance_follow_centerline_=false;
-    avoidance_speed_limit_=std::min(avoidance_speed_cap_,message->speed_limit_mps);
     avoidance_status_=avoidance_confirmations_<3?"confirming":message->status;
     std::int64_t finished=0; update_control_from_path(finished);
   }
@@ -1166,7 +1165,6 @@ private:
         std::chrono::duration<double>(std::chrono::steady_clock::now()-avoidance_received_at_).count()>avoidance_max_age_) {
         return "avoidance_stale";
       }
-      if (std::abs(current_speed_mps_)>avoidance_speed_cap_+.15) {return "avoidance_overspeed";}
       if (!avoidance_follow_centerline_ && avoidance_confirmations_<3) {return "avoidance_confirming";}
     }
     if (!path_ || !last_path_received_ns_) {return "centerline_missing";}
@@ -1217,12 +1215,7 @@ private:
     double target_speed = curvature_speed_control_enabled_ ? curvature_target_speed(
       curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_) :
       maximum_speed_mps_;
-    if (avoidance_control_enabled_) {
-      // Shape-only planning changes steering, not the longitudinal control
-      // branch or departure permission. Launch imports its fixed speed cap.
-      target_speed=avoidance_deformation_only_?std::min(target_speed,avoidance_speed_cap_):
-        std::min({target_speed,avoidance_speed_limit_,avoidance_speed_cap_});
-    }
+    // Obstacle planning changes the path only; speed uses normal cruise/traffic settings.
     const bool traffic_stop = traffic_stop_requested();
     if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
     const auto stanley = stanley_control(
@@ -1266,27 +1259,6 @@ private:
       longitudinal_phase_ = "suppressed";
       service_brake_requested_ = traction_recovery_ = false;
       coast_probe_elapsed_ = 0.0;
-    } else if (following_avoidance && !avoidance_deformation_only_ && !traffic_stop) {
-      // Direct signed PID avoids legacy minimum-duty/start boosts bypassing
-      // the low-speed limit. Decelerate even if normal cruise braking is OFF.
-      if (longitudinal_phase_!="avoidance_speed_limit") {longitudinal_pid_->reset();}
-      service_brake_requested_=traction_recovery_=false; coast_probe_elapsed_=0;
-      speed_pid_->reset(); brake_profile_->reset();
-      const double effort=longitudinal_pid_->update(target_speed,current_speed_mps_,0.0,dt);
-      latest_pid_effort_=effort;
-      if (effort<0) {
-        command_duty_=0; command_brake_current_=std::min(avoidance_brake_current_, -effort*avoidance_brake_current_);
-        requested_brake_current_=command_brake_current_; brake_mode_active_=true; motor_mode="brake";
-      } else if (brake_mode_active_) {
-        command_duty_=command_brake_current_=0; brake_mode_active_=false; motor_mode="brake_release";
-      } else {
-        const double desired=std::max(0.0,effort)*maximum_duty_;
-        command_duty_=move_toward(command_duty_,desired,
-          (desired>command_duty_?duty_rise_rate_per_sec_:duty_fall_rate_per_sec_)*dt);
-        command_brake_current_=0; motor_mode="duty";
-        longitudinal_pid_->apply_output_limit(effort,command_duty_/maximum_duty_);
-      }
-      longitudinal_phase_="avoidance_speed_limit";
     } else if (longitudinal_pid_enabled_ || traffic_stop) {
       motor_mode = longitudinal_motor(target_speed, dt, traffic_stop);
     } else {
@@ -1792,8 +1764,7 @@ private:
   bool avoidance_control_enabled_{false};
   bool avoidance_deformation_only_{true};
   bool avoidance_follow_centerline_{false};
-  double avoidance_max_age_{.20},avoidance_speed_cap_{.4},avoidance_brake_current_{2.5},avoidance_wheelbase_{.33};
-  double avoidance_speed_limit_{0};
+  double avoidance_max_age_{.20},avoidance_brake_current_{2.5},avoidance_wheelbase_{.33};
   int avoidance_confirmations_{0};
   std::string avoidance_status_{"waiting_for_plan"};
   std::optional<OrderedPath> avoidance_path_;

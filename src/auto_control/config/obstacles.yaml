@@ -73,9 +73,9 @@ auto_obstacles:
     # offset_step_m은 폐기. 기존 외부 YAML 값은 호환용으로 읽지만 계산에 사용하지 않음.
     obstacles.avoidance.transition_m: 0.70 # 장애물별 진입/복귀 연결 길이. 가까운 반대쪽 장애물은 S자로 연결.
     obstacles.avoidance.max_curvature_per_m: 2.0 # 최소 회전반경 0.5m. 차량 한계 이하로 설정
-    obstacles.avoidance.max_speed_mps: 0.5 # 실제 적용 ON이면 제어 속도 상한에도 반영
-    obstacles.avoidance.lateral_acceleration_mps2: 0.4
-    obstacles.avoidance.deceleration_mps2: 0.5 # 화면 전용 모드의 장애물 접근 권고 속도 계산
+    # max_speed_mps는 폐기(기존 YAML 값 무시). auto_control.maximum_speed_mps로 속도 설정.
+    obstacles.avoidance.lateral_acceleration_mps2: 0.4 # 구버전 호환용; 회피 감속에는 미사용
+    obstacles.avoidance.deceleration_mps2: 0.5 # 구버전 호환용; 회피 감속에는 미사용
     # 기존 stop_response_sec는 호환용으로만 수용. 중앙선 길이로 출발을 제한하지 않음.
     obstacles.avoidance.clear_confirm_sec: 1.0 # 새 Depth에서 연속으로 중앙 경로가 비어야 복귀 표시
 
