@@ -68,7 +68,39 @@ int main()
   const auto empty = obstacleClusters(Cloud{},{});
   check(empty.accepted == 0 && empty.points.xyz.empty() && empty.ids.empty(),"Old clusters persisted into empty frame");
 
-  for (int i = 0; i < 8; ++i) {
+  // Regression: a persistent 4.5cm sheet surrounds and bridges two cones.
+  // Such points pass min_height and temporal persistence, but must not supply connectivity.
+  Cloud water;
+  for (int i=0; i<5; ++i) {patch(water,1,0,0.12f); patch(water,1.7f,0,0.12f);}
+  for (int x=0;x<101;++x) {
+    for (int y=0;y<81;++y) {add(water,0.9f+0.01f*x,-0.4f+0.01f*y,0.045f);}
+  }
+  add(water,1.4f,0,0.2f); // isolated high noise cannot recruit the surrounding floor
+  const auto dry = obstacleClusters(water,{});
+  check(dry.accepted==2 && dry.points.valid_points>=400,"Low sheet merged or erased cones");
+  for (std::size_t j=0;j<dry.points.xyz.size();j+=3) {
+    const double x=dry.points.xyz[j], y=dry.points.xyz[j+1];
+    check((x>=0.98-1e-6 && x<=1.076+1e-6) || (x>=1.68-1e-6 && x<=1.776+1e-6),
+      "Base expansion leaked along low sheet");
+    check(y>=-0.02-1e-6 && y<=0.052+1e-6,"Base expansion exceeded allowed radius");
+  }
+  auto core_only = ClusterOptions{}; core_only.base_radius_m=0;
+  const auto cores = obstacleClusters(water,core_only);
+  check(cores.accepted==2 && cores.points.valid_points==400,"Core-only mode retained floor or high outlier");
+  for (std::size_t j=2;j<cores.points.xyz.size();j+=3) {
+    check(cores.points.xyz[j]>=core_only.support_height_m,"Low point attached in core-only mode");
+  }
+  Cloud shared_base;
+  for (int i=0;i<5;++i) {patch(shared_base,1,0,0.12f); patch(shared_base,1.2f,0,0.12f);}
+  for (int i=0;i<30;++i) {add(shared_base,1.0f+0.01f*i,0,0.045f);}
+  auto wide_base = ClusterOptions{}; wide_base.base_radius_m=0.08;
+  check(obstacleClusters(shared_base,wide_base).accepted==2,"Overlapping base regions merged independent cores");
+  Cloud fake_core;
+  patch(fake_core,1,0,0.045f);
+  for (int i=0;i<5;++i) {add(fake_core,1.02f,0.01f,0.12f);}
+  check(obstacleClusters(fake_core,{}).accepted==0,"Floor inflated high-core extent");
+
+  for (int i = 0; i < 11; ++i) {
     ClusterOptions invalid;
     switch(i) {
       case 0: invalid.cell_size_m = 0; break;
@@ -79,6 +111,9 @@ int main()
       case 5: invalid.min_support_ratio = 0; break;
       case 6: invalid.min_points = 0; break;
       case 7: invalid.min_extent_m = std::numeric_limits<double>::quiet_NaN(); break;
+      case 8: invalid.support_height_m = invalid.min_height_m; break;
+      case 9: invalid.base_radius_m = -0.01; break;
+      case 10: invalid.base_radius_m = 0.21; break;
     }
     bool rejected = false;
     try {obstacleClusters(scene,invalid);} catch (const std::invalid_argument &) {rejected = true;}

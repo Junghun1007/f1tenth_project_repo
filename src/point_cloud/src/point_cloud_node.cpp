@@ -66,6 +66,7 @@ namespace point_cloud
   X("cluster.min_support_points", cluster.min_support_points, as_int) \
   X("cluster.min_support_ratio", cluster.min_support_ratio, as_double) \
   X("cluster.min_extent_m", cluster.min_extent_m, as_double) \
+  X("cluster.base_radius_m", cluster.base_radius_m, as_double) \
   X("temporal.enabled", temporal.enabled, as_bool) \
   X("temporal.voxel_size_m", temporal.voxel_size_m, as_double) \
   X("temporal.match_distance_m", temporal.match_distance_m, as_double) \

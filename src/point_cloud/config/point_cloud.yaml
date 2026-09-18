@@ -58,14 +58,16 @@ point_cloud:
     # Per-frame obstacle classification in the measured BEV vehicle frame.
     # All cluster.* settings are live; no camera restart or temporal tracking.
     cluster.cell_size_m: 0.02         # XY aggregation cell; original accepted points are displayed.
-    cluster.tolerance_m: 0.08         # Link XY cell centroids within 8cm (not camera range).
+    cluster.tolerance_m: 0.08         # Connect only HIGH-point XY cell centroids within 8cm.
     cluster.min_points: 20            # Original points per connected component.
     cluster.min_height_m: 0.03        # Exclude near-ground points BEFORE connecting cells.
     cluster.max_height_m: 2.0         # Upper candidate height above startup ground.
-    cluster.support_height_m: 0.06    # Count points at least 6cm above ground as height support.
+    cluster.support_height_m: 0.06    # Only points >=6cm seed/connect obstacles; MUST exceed min_height.
     cluster.min_support_points: 5     # Minimum such points; a single high outlier is insufficient.
     cluster.min_support_ratio: 0.30   # At least 30% of candidate points must have height support.
-    cluster.min_extent_m: 0.03        # Minimum max(X extent, Y extent); reject tiny speckles.
+    cluster.min_extent_m: 0.03        # Minimum max(X extent, Y extent) of HIGH core points only.
+    cluster.base_radius_m: 0.02       # Attach low base points within 2cm of a high core centroid.
+                                    # No recursive growth; 0=show only high core points.
     publish.depth_image: true        # 16UC1, millimeters. CameraInfo is always published.
     input.max_age_sec: 0.5           # Drop old/replayed frames; do not accumulate clouds.
     metrics.print_interval_sec: 1.0  # Actual FPS, valid points, age, host ms, XYZ MB/s.

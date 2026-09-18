@@ -49,6 +49,18 @@ int main()
   filter.apply(delayed,2.0,options,0.03,2);
   check(delayed.valid_points==0,"Expired observations retained");
 
+  // Even persistent low clutter must fail the new spatial core rule.
+  filter.clear();
+  for (int frame=0;frame<6;++frame) {
+    Cloud c; patch(c,1); patch(c,1.12f,0.045f);
+    filter.apply(c,2.2+frame*0.02,options,0.03,2);
+    if (frame>=3) {
+      check(c.valid_points==80,"Persistent low clutter should reach spatial classifier");
+      const auto clean=obstacleClusters(c,{});
+      check(clean.accepted==1 && clean.points.valid_points==40,"Persistent low tail survived core classifier");
+    }
+  }
+
   // Thousands of points in a frame cannot count as several observations.
   filter.clear(); Cloud dense;
   for (int i=0;i<1000;++i) {dense.xyz.insert(dense.xyz.end(),{1,0,0.12f});}
