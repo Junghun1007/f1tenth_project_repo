@@ -2,9 +2,9 @@
 #include "bev_handoff/avoidance_handoff.hpp"
 #include "auto_control/control_core.hpp"
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
-#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -15,9 +15,9 @@ struct Options
   bool control{false}, centerline_fallback{true};
   double obstacle_size{.13}, motion_margin{0};
   double half_width{.15}, half_length{.25}, margin{.04}, unknown_extent{.04};
-  double step{.025}, max_offset{.40}, offset_step{.05}, transition{.70};
+  double step{.025}, max_offset{.40}, transition{.70};
   double max_curvature{2.0}, max_speed{.5}, lateral_acceleration{.4};
-  double deceleration{.5}, clear_sec{1.0}, stop_response{.35}; // stop_response: legacy YAML compatibility only
+  double deceleration{.5}, clear_sec{1.0};
   // Imported from the EXISTING controller YAML, not additional departure gates.
   int minimum_points{8};
   double minimum_span{.12}, minimum_x{.01}, maximum_x{2.98}, maximum_gap{.15}, geometry_window{.16};
@@ -25,12 +25,12 @@ struct Options
 inline void validate(const Options & o)
 {
   for (double v : {o.half_width,o.half_length,o.margin,o.unknown_extent,o.step,o.max_offset,
-      o.offset_step,o.transition,o.max_curvature,o.max_speed,o.lateral_acceleration,
+      o.transition,o.max_curvature,o.max_speed,o.lateral_acceleration,
       o.deceleration,o.clear_sec,o.obstacle_size}) {
     if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("avoidance options must be finite and positive");}
   }
   if (o.half_width>.5 || o.half_length>1 || o.margin>.3 || o.unknown_extent>.5 ||
-    o.step<.02 || o.step>.05 || o.max_offset>.6 || o.offset_step<.04 || o.offset_step>o.max_offset ||
+    o.step<.02 || o.step>.05 || o.max_offset>.6 ||
     o.transition<.3 || o.transition>2 || o.max_curvature>5 || o.max_speed>1 ||
     o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5 || o.obstacle_size>1) {
     throw std::invalid_argument("avoidance preview settings exceed bounded planner limits");
@@ -60,11 +60,6 @@ inline bool intersects(cv::Point2d a,cv::Point2d b,const bev_handoff::SafetyBox 
   };
   return axis(a.x,b.x-a.x,box.x0,box.x1)&&axis(a.y,b.y-a.y,box.y0,box.y1);
 }
-inline bool hits(const std::vector<cv::Point2d> & path,const bev_handoff::SafetyBox & box)
-{
-  for (std::size_t i=1;i<path.size();++i) {if (intersects(path[i-1],path[i],box)) {return true;}}
-  return false;
-}
 inline double pointSegment(cv::Point2d p,cv::Point2d a,cv::Point2d b)
 {
   const auto d=b-a;
@@ -81,12 +76,15 @@ inline double segmentDistance(cv::Point2d a,cv::Point2d b,cv::Point2d c,cv::Poin
   }
   return std::min({pointSegment(a,c,d),pointSegment(b,c,d),pointSegment(c,a,b),pointSegment(d,a,b)});
 }
-// Centerline driving is the default. Only an obstacle conflict requests a new path.
+// Build one local displacement profile along the existing ordered centerline.
+// Each blocking obstacle chooses its OWN passing side; no global side latch.
 class Planner
 {
+  struct Target {cv::Point2d center; int side;};
+  struct Region {double begin, end, offset;};
 public:
   explicit Planner(Options options):o_(options) {validate(o_);}
-  void reset() {held_side_=0; clear_since_=0; target_.reset();}
+  void reset() {targets_.clear(); clear_since_=0;}
   bev_handoff::AvoidancePreview plan(const bev_handoff::PlanningLane & lane,
     const bev_handoff::ObstacleFrame & obstacles,double stamp)
   {
@@ -101,8 +99,6 @@ public:
     const auto reference=build_ordered_path(input,o_.minimum_points,o_.minimum_span,
       o_.minimum_x,o_.maximum_x,o_.maximum_gap,o_.geometry_window);
     if (!reference) {out.status="WAIT: centerline input"; return out;}
-    // Ordered arc length handles horizontal/reversing corner segments exactly
-    // as the normal controller does. No forward-X, 25cm-start or 50cm-span gate.
     const double length=reference->arc_m.back();
     const auto count=std::min<std::size_t>(159,std::max<std::size_t>(
       static_cast<std::size_t>(o_.minimum_points-1),static_cast<std::size_t>(std::ceil(length/o_.step))));
@@ -116,6 +112,9 @@ public:
     }
     out.horizon_m=length;
     std::vector<bev_handoff::SafetyBox> boxes;
+    std::vector<cv::Point2d> centers;
+    // Keep the established physical/uncertainty envelope. Changing how the path
+    // is constructed must not silently shrink obstacle or vehicle dimensions.
     const double radius=o_.half_width+o_.margin+std::max(o_.unknown_extent,o_.obstacle_size/2);
     for (const auto & cluster:obstacles.clusters) {
       bev_handoff::SafetyBox box{1e9,-1e9,1e9,-1e9};
@@ -126,6 +125,7 @@ public:
       }
       if (box.x0>box.x1) {continue;}
       const double y=(box.y0+box.y1)/2;
+      centers.emplace_back((box.x0+box.x1)/2,y);
       box.y0=std::min(box.y0,y-o_.obstacle_size/2)-radius;
       box.y1=std::max(box.y1,y+o_.obstacle_size/2)+radius;
       box.x0-=radius+o_.motion_margin;
@@ -145,47 +145,92 @@ public:
       box.y0-=allowance; box.y1+=allowance;
       return intersects(pose.first,pose.second,box);
     };
-    // Inspect the actual baseline points/segments, not a cropped substitute.
-    double first=length,last=0;
-    bool blocked=false;
-    std::optional<cv::Point2d> current_target;
+    // Per-object matching stabilizes passing direction across frames without
+    // forcing all later objects to share the first object's direction.
+    std::vector<int> sides(boxes.size(),0);
+    std::vector<bool> matched(boxes.size(),false);
+    std::vector<Target> visible_targets;
+    for (auto & target:targets_) {
+      std::size_t best=boxes.size(); double nearest=.25;
+      for (std::size_t j=0;j<centers.size();++j) {
+        const double d=distance(target.center,centers[j]);
+        if (!matched[j] && d<nearest) {best=j; nearest=d;}
+      }
+      if (best==boxes.size()) {
+        if (o_.control) {out.status="BLOCKED: target lost; reset after inspection"; return out;}
+        continue;
+      }
+      matched[best]=true; sides[best]=target.side; target.center=centers[best];
+      visible_targets.push_back(target);
+    }
+    targets_=std::move(visible_targets);
+    // Geometry is independent of obstacle count; compute it once per frame.
+    struct Sample {
+      cv::Point2d point,normal;
+      std::pair<cv::Point2d,cv::Point2d> pose;
+      double arc,gap,allowance;
+    };
+    std::vector<Sample> baseline;
+    baseline.reserve(reference->points.size());
     for (std::size_t i=0;i<reference->points.size();++i) {
-      const auto & p=reference->points[i];
-      const double s=reference->arc_m[i];
+      const auto p=reference->points[i]; const double s=reference->arc_m[i];
+      const double heading=reference->heading(s);
       const double gap=std::max(i?s-reference->arc_m[i-1]:0,
         i+1<reference->arc_m.size()?reference->arc_m[i+1]-s:0);
       const double allowance=.5*gap*(1+o_.half_length*std::max(o_.max_curvature,std::abs(reference->curvature(s))));
-      const auto pose=body({p.x,p.y},reference->heading(s),i==0);
-      for (const auto & box:boxes) {
-        if (!collision(pose,box,allowance)) {continue;}
-        if (!blocked || s<first) {current_target=cv::Point2d((box.x0+box.x1)/2,(box.y0+box.y1)/2);}
-        blocked=true; first=std::min(first,s); last=std::max(last,s);
+      baseline.push_back({{p.x,p.y},{-std::sin(heading),std::cos(heading)},
+        body({p.x,p.y},heading,i==0),s,gap,allowance});
+    }
+    std::vector<Region> regions;
+    std::vector<bool> active(boxes.size(),false);
+    std::vector<int> preferred_sides(boxes.size(),0);
+    std::vector<Target> active_targets;
+    const double sampling=.5*(length/count)*(1+o_.half_length*o_.max_curvature);
+    for (std::size_t j=0;j<boxes.size();++j) {
+      // Find the obstacle's local side with respect to the nearest segment,
+      // not vehicle Y. This keeps left/right meaningful around corners.
+      double nearest=std::numeric_limits<double>::infinity(),at=0;
+      for (std::size_t i=1;i<reference->points.size();++i) {
+        const auto a=reference->points[i-1],b=reference->points[i];
+        const cv::Point2d origin(a.x,a.y),d(b.x-a.x,b.y-a.y);
+        const double t=std::clamp((centers[j]-origin).dot(d)/d.dot(d),0.0,1.0);
+        const double gap=distance(centers[j],origin+t*d);
+        if (gap<nearest) {nearest=gap; at=reference->arc_m[i-1]+t*(reference->arc_m[i]-reference->arc_m[i-1]);}
       }
-    }
-    bool target_visible=!target_;
-    if (target_) {
-      double nearest=.25;
-      for (const auto & box:boxes) {
-        const cv::Point2d center((box.x0+box.x1)/2,(box.y0+box.y1)/2);
-        const double d=distance(center,*target_);
-        if (d<nearest) {nearest=d; current_target=center; target_visible=true;}
+      const auto middle=reference->point(at);
+      const double heading=reference->heading(at);
+      const cv::Point2d normal(-std::sin(heading),std::cos(heading));
+      const double lateral=(centers[j]-cv::Point2d(middle.x,middle.y)).dot(normal);
+      // Exact-center objects deterministically pass left. Matching then holds
+      // that choice for this object only; the final lane check still applies.
+      const int side=sides[j]?sides[j]:(lateral>0?-1:1);
+      preferred_sides[j]=side;
+      double begin=length,end=0,offset=0;
+      bool blocking=false;
+      for (const auto & sample:baseline) {
+        if (!collision(sample.pose,boxes[j],sample.allowance)) {continue;}
+        blocking=true;
+        begin=std::min(begin,std::max(0.0,sample.arc-sample.gap));
+        end=std::max(end,std::min(length,sample.arc+sample.gap));
+        for (const auto & corner:corners(boxes[j])) {
+          const double required=(corner-sample.point).dot(sample.normal)+side*std::max(sampling,sample.allowance);
+          offset=side>0?std::max(offset,required):std::min(offset,required);
+        }
       }
-      if (target_visible && current_target) {target_=current_target;}
+      if (!blocking) {continue;}
+      ++out.obstacle_count; active[j]=true;
+      if (std::abs(offset)>o_.max_offset) {out.status="BLOCKED: local offset limit"; return out;}
+      regions.push_back({begin,end,offset});
+      active_targets.push_back({centers[j],side});
     }
-    if (o_.control && held_side_ && !target_visible) {
-      out.status="BLOCKED: target lost; reset after inspection"; return out;
-    }
-    if (!blocked) {
-      if (held_side_) {
+    if (regions.empty()) {
+      if (!targets_.empty()) {
         if (!clear_since_ || stamp<clear_since_) {clear_since_=stamp;}
         if (stamp-clear_since_<o_.clear_sec) {out.status="WAIT: confirm clear"; return out;}
         reset();
       }
-      // A positive, fresh obstacle-clear decision selects the normal path_ in
-      // auto_control. Missing/invalid depth is never treated as obstacle-clear.
       out.follow_centerline=true; out.selected=out.original;
-      out.status="CENTERLINE"; out.recommended_speed=o_.max_speed;
-      return out;
+      out.status="CENTERLINE"; out.recommended_speed=o_.max_speed; return out;
     }
     clear_since_=0;
     std::vector<std::pair<cv::Point2d,cv::Point2d>> edges;
@@ -193,21 +238,17 @@ public:
     for (const auto & line:lane.boundaries) {
       if ((edge_points+=line.size())>2000) {out.status="WAIT: boundary sample limit"; return out;}
       for (std::size_t j=1;j<line.size();++j) {
-        if (finite(line[j-1])&&finite(line[j])&&distance(line[j-1],line[j])<=.2) {
-          edges.emplace_back(line[j-1],line[j]);
-        }
+        if (finite(line[j-1])&&finite(line[j])&&distance(line[j-1],line[j])<=.2) {edges.emplace_back(line[j-1],line[j]);}
       }
     }
     if (!std::isfinite(lane.lane_width_m)||lane.lane_width_m<=0) {out.status="WAIT: lane width"; return out;}
-    // Cross-sections follow the local centerline normal, including corners.
     std::vector<std::pair<cv::Point2d,cv::Point2d>> corridor;
     std::vector<bool> covered;
     for (std::size_t i=0;i<out.original.size();++i) {
       const auto p=out.original[i],n=normals[i];
       double left=std::numeric_limits<double>::infinity(),right=-left;
       for (const auto & edge:edges) {
-        const auto d=edge.second-edge.first;
-        const double den=cross(n,d);
+        const auto d=edge.second-edge.first; const double den=cross(n,d);
         if (std::abs(den)<1e-9) {continue;}
         const double along=cross(edge.first-p,n)/den;
         if (along<0 || along>1) {continue;}
@@ -223,9 +264,6 @@ public:
       corridor.emplace_back(p+left*n,p+right*n);
     }
     const double lead=std::hypot(out.original.front().x,out.original.front().y);
-    const double approach=lead+first;
-    if (approach<=1e-6) {out.status="BLOCKED: obstacle at vehicle"; return out;}
-    const double maneuver_end=std::min(length,last+o_.transition);
     const auto check=[&](bev_handoff::AvoidanceCandidate & c) {
       OrderedPath path; path.geometry_window_m=o_.geometry_window;
       double s=0;
@@ -239,7 +277,7 @@ public:
       for (std::size_t i=0;i<c.path.size();++i) {
         const double k=std::abs(path.curvature(path.arc_m[i]));
         c.max_curvature=std::max(c.max_curvature,k);
-        if (k>o_.max_curvature) {c.reason="curvature"; return;}
+        if (k>o_.max_curvature) {c.reason="curvature at s="+std::to_string(path.arc_m[i]); return;}
         const auto pose=body(c.path[i],path.heading(path.arc_m[i]),i==0);
         const double gap=std::max(i?path.arc_m[i]-path.arc_m[i-1]:0,
           i+1<c.path.size()?path.arc_m[i+1]-path.arc_m[i]:0);
@@ -252,7 +290,7 @@ public:
           std::min(pose.first.y,pose.second.y)-lane_radius<-lane.y_max) {c.reason="lane edge"; return;}
         for (std::size_t j=1;j<corridor.size();++j) {
           if (segmentDistance(pose.first,pose.second,corridor[j-1].first,corridor[j].first)<lane_radius ||
-            segmentDistance(pose.first,pose.second,corridor[j-1].second,corridor[j].second)<lane_radius) {c.reason="lane clearance"; return;}
+            segmentDistance(pose.first,pose.second,corridor[j-1].second,corridor[j].second)<lane_radius) {c.reason="lane clearance at s="+std::to_string(path.arc_m[i]); return;}
         }
         for (const auto & edge:edges) {
           if (std::max(edge.first.x,edge.second.x)<std::min(pose.first.x,pose.second.x)-lane_radius ||
@@ -261,61 +299,136 @@ public:
             std::min(edge.first.y,edge.second.y)>std::max(pose.first.y,pose.second.y)+lane_radius) {continue;}
           if (segmentDistance(pose.first,pose.second,edge.first,edge.second)<lane_radius) {c.reason="observed lane clearance"; return;}
         }
-        for (const auto & box:boxes) {if (collision(pose,box,sampling)) {c.reason="obstacle"; return;}}
+        for (const auto & box:boxes) {if (collision(pose,box,sampling)) {c.reason="obstacle at s="+std::to_string(path.arc_m[i]); return;}}
       }
       c.valid=true; c.reason="valid";
     };
-    double best=std::numeric_limits<double>::infinity();
-    for (int side:{1,-1}) {
-      for (double magnitude=o_.offset_step;magnitude<=o_.max_offset+1e-9;magnitude+=o_.offset_step) {
-        bev_handoff::AvoidanceCandidate candidate; candidate.offset=side*magnitude;
-        for (std::size_t i=0;i<arc.size();++i) {
-          double weight=smooth((lead+arc[i])/approach);
-          if (arc[i]>last && length-last>=o_.transition) {weight*=1-smooth((arc[i]-last)/o_.transition);}
-          candidate.path.push_back(out.original[i]+normals[i]*(candidate.offset*weight));
-          if (arc[i]>=maneuver_end) {break;}
+    // Only three smoothing lengths, independent of the number of obstacles.
+    // Each attempt is already a multi-obstacle path, not a global left/right offset.
+    for (double scale:{1.0,1.5,2.0}) {
+      std::sort(regions.begin(),regions.end(),[](const Region & a,const Region & b) {return a.begin<b.begin;});
+      std::vector<Region> merged;
+      for (const auto & region:regions) {
+        if (std::abs(region.offset)>o_.max_offset) {out.status="BLOCKED: local offset limit"; return out;}
+        if (merged.empty() || region.begin>merged.back().end+1e-9) {merged.push_back(region); continue;}
+        auto & previous=merged.back();
+        // A zero-offset zone means a previously clear object now requires a
+        // return to the baseline. Do not overwrite it with a passing plateau.
+        if ((previous.offset>0)!=(region.offset>0) || (previous.offset<0)!=(region.offset<0)) {
+          out.status="BLOCKED: opposing obstacle zones overlap"; return out;
         }
-        check(candidate);
-        const double cost=magnitude+.05*candidate.max_curvature;
-        if (candidate.valid && (!held_side_||held_side_==side) && cost<best) {
-          best=cost; out.selected=candidate.path; out.max_curvature=candidate.max_curvature;
-          out.status=side>0?"LEFT":"RIGHT";
+        previous.end=std::max(previous.end,region.end);
+        previous.offset=region.offset>0?std::max(previous.offset,region.offset):std::min(previous.offset,region.offset);
+      }
+      regions=std::move(merged); out.region_count=regions.size();
+      const double transition=o_.transition*scale;
+      const double maneuver_end=std::min(length,regions.back().end+transition);
+      bev_handoff::AvoidanceCandidate candidate; candidate.transition_m=transition;
+      for (std::size_t i=0;i<arc.size();++i) {
+        const double offset=displacement(arc[i],regions,transition,lead,length);
+        candidate.max_offset_m=std::max(candidate.max_offset_m,std::abs(offset));
+        candidate.path.push_back(out.original[i]+normals[i]*offset);
+        if (arc[i]>=maneuver_end) {break;}
+      }
+      // A detour may encounter objects that did not intersect the baseline.
+      // Activate ALL such objects in this pass, not just a single nearest one.
+      OrderedPath proposed; proposed.geometry_window_m=o_.geometry_window;
+      double proposed_arc=0;
+      for (std::size_t i=0;i<candidate.path.size();++i) {
+        if (i) {proposed_arc+=distance(candidate.path[i-1],candidate.path[i]);}
+        proposed.points.push_back({candidate.path[i].x,candidate.path[i].y});
+        proposed.arc_m.push_back(proposed_arc);
+      }
+      std::vector<std::pair<cv::Point2d,cv::Point2d>> proposed_poses;
+      std::vector<double> proposed_allowances;
+      for (std::size_t i=0;i<candidate.path.size();++i) {
+        proposed_poses.push_back(body(candidate.path[i],proposed.heading(proposed.arc_m[i]),i==0));
+        const double gap=std::max(i?proposed.arc_m[i]-proposed.arc_m[i-1]:0,
+          i+1<proposed.arc_m.size()?proposed.arc_m[i+1]-proposed.arc_m[i]:0);
+        proposed_allowances.push_back(.5*gap*(1+o_.half_length*o_.max_curvature));
+      }
+      bool added=false;
+      for (std::size_t j=0;j<boxes.size();++j) {
+        if (active[j]) {continue;}
+        const int side=preferred_sides[j];
+        double begin=length,end=0,offset=0;
+        bool hit=false;
+        for (std::size_t i=0;i<candidate.path.size();++i) {
+          const double allowance=proposed_allowances[i];
+          if (!collision(proposed_poses[i],boxes[j],allowance)) {continue;}
+          hit=true;
+          begin=std::min(begin,std::max(0.0,arc[i]-length/count));
+          end=std::max(end,std::min(length,arc[i]+length/count));
+          for (const auto & corner:corners(boxes[j])) {
+            const double required=(corner-out.original[i]).dot(normals[i])+side*allowance;
+            offset=side>0?std::max(offset,required):std::min(offset,required);
+          }
         }
+        if (!hit) {continue;}
+        regions.push_back({begin,end,offset}); active[j]=true; added=true;
+        ++out.obstacle_count; active_targets.push_back({centers[j],side});
+      }
+      if (added) {
+        candidate.reason="additional obstacle constraints";
         out.candidates.push_back(std::move(candidate));
+        continue;
       }
-    }
-    if (out.selected.empty()) {
-      // Report the first failed check for each candidate instead of hiding all
-      // failures behind "no safe candidate". This does not change acceptance.
-      int lane_failures=0,curve_failures=0,obstacle_failures=0,other_failures=0,side_failures=0;
-      for (const auto & c:out.candidates) {
-        if (c.valid) {++side_failures;}
-        else if (c.reason=="lane edge" || c.reason=="lane clearance" ||
-          c.reason=="observed lane clearance" || c.reason=="unobserved lane edge" ||
-          c.reason=="BEV edge") {++lane_failures;}
-        else if (c.reason=="curvature") {++curve_failures;}
-        else if (c.reason=="obstacle") {++obstacle_failures;}
-        else {++other_failures;}
+      check(candidate);
+      if (candidate.valid) {
+        out.selected=candidate.path; out.max_curvature=candidate.max_curvature;
+        out.status="LOCAL: obstacles="+std::to_string(out.obstacle_count)+" zones="+std::to_string(out.region_count);
+        // Preserve every previously committed target until a confirmed clear
+        // decision, rather than dropping an occluded object when another appears.
+        for (const auto & target:active_targets) {
+          const auto found=std::find_if(targets_.begin(),targets_.end(),[&](const Target & old) {
+            return distance(old.center,target.center)<1e-6;
+          });
+          if (found==targets_.end()) {targets_.push_back(target);}
+        }
+        out.recommended_speed=std::min(o_.max_speed,std::sqrt(o_.lateral_acceleration/std::max(.001,out.max_curvature)));
+        if (!o_.control) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*(lead+regions.front().begin)));}
+        out.candidates.push_back(std::move(candidate));
+        return out;
       }
-      out.status="BLOCKED:";
-      if (lane_failures) {out.status+=" lane="+std::to_string(lane_failures);}
-      if (curve_failures) {out.status+=" curve="+std::to_string(curve_failures);}
-      if (obstacle_failures) {out.status+=" obs="+std::to_string(obstacle_failures);}
-      if (other_failures) {out.status+=" input="+std::to_string(other_failures);}
-      if (side_failures) {out.status+=" side="+std::to_string(side_failures);}
-      return out;
+      out.candidates.push_back(std::move(candidate));
     }
-    held_side_=out.status=="LEFT"?1:-1; if (current_target) {target_=current_target;}
-    out.recommended_speed=std::min(o_.max_speed,std::sqrt(o_.lateral_acceleration/std::max(.001,out.max_curvature)));
-    if (!o_.control) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*approach));}
-    if (out.inferred_boundaries) {out.status+=": centerline corridor";}
+    out.status="BLOCKED: "+out.candidates.back().reason;
     return out;
   }
   void unavailable() {clear_since_=0;}
 private:
+  static std::array<cv::Point2d,4> corners(const bev_handoff::SafetyBox & b)
+  {return {{{b.x0,b.y0},{b.x0,b.y1},{b.x1,b.y0},{b.x1,b.y1}}};}
+  static double blend(double a,double b,double s,double begin,double end)
+  {return a+(b-a)*smooth((s-begin)/std::max(1e-9,end-begin));}
+  static double displacement(double s,const std::vector<Region> & regions,
+    double transition,double lead,double length)
+  {
+    const auto & first=regions.front();
+    if (s<first.begin) {
+      return blend(0,first.offset,s,std::max(-lead,first.begin-transition),first.begin);
+    }
+    for (std::size_t j=0;j<regions.size();++j) {
+      const auto & current=regions[j];
+      if (s<=current.end) {return current.offset;}
+      if (j+1<regions.size()) {
+        const auto & next=regions[j+1];
+        if (s>=next.begin) {continue;}
+        if (next.begin-current.end<2*transition || current.offset*next.offset>0) {
+          // A direct smooth connection can change sign: right -> left -> right
+          // for any number of ordered obstacles, without summing opposite bumps.
+          return blend(current.offset,next.offset,s,current.end,next.begin);
+        }
+        if (s<current.end+transition) {return blend(current.offset,0,s,current.end,current.end+transition);}
+        return blend(0,next.offset,s,next.begin-transition,next.begin);
+      }
+      if (length-current.end<transition) {return current.offset;}
+      return blend(current.offset,0,s,current.end,current.end+transition);
+    }
+    return 0;
+  }
   Options o_;
-  int held_side_{0};
+  std::vector<Target> targets_;
   double clear_since_{0};
-  std::optional<cv::Point2d> target_;
 };
 }  // namespace auto_control::avoidance

@@ -37,7 +37,11 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
       cv::line(plot,pixel(points[i-1].x,points[i-1].y),pixel(points[i].x,points[i].y),color,thickness,cv::LINE_AA);
     }
   };
-  for (const auto & c:plan->candidates) {path(c.path,c.valid?cv::Scalar(110,150,110):cv::Scalar(65,65,95),1);}
+  // No fan of global left/right candidates. Only show the attempted local
+  // profile when blocked, or the selected complete multi-obstacle route.
+  if (plan->selected.empty() && !plan->candidates.empty()) {
+    path(plan->candidates.back().path,cv::Scalar(65,65,160),1);
+  }
   path(plan->original,cv::Scalar(0,255,255),1);
   path(plan->selected,cv::Scalar(255,255,0),2);
   // Show the reason instead of a generic WAIT with zero speed/curvature.
@@ -46,6 +50,6 @@ inline std::string drawAvoidancePreview(cv::Mat & image,const std_msgs::msg::Hea
   // Full details remain on /auto/avoidance_preview/status.
   return mode+plan->status.substr(0,plan->status.find(':'))+
     (plan->inferred_boundaries?" C":"")+
-    cv::format(" L%.1f v%.2f",plan->horizon_m,plan->recommended_speed);
+    cv::format(" n%zu L%.1f v%.2f",plan->obstacle_count,plan->horizon_m,plan->recommended_speed);
 }
 }

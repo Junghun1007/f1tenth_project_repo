@@ -20,7 +20,7 @@ struct AvoidanceCandidate
 {
   std::vector<cv::Point2d> path;
   bool valid{false};
-  double offset{0}, max_curvature{0};
+  double transition_m{0}, max_offset_m{0}, max_curvature{0};
   std::string reason;
 };
 struct AvoidancePreview
@@ -31,6 +31,7 @@ struct AvoidancePreview
   bool follow_centerline{false};
   bool inferred_boundaries{false};
   double horizon_m{0};
+  std::size_t obstacle_count{0}, region_count{0};
   double x_max{3}, y_max{.6}, meter_per_pixel{.01};
   int width{120}, height{300};
   std::vector<cv::Point2d> original, selected;

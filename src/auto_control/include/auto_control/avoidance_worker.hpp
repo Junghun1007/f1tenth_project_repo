@@ -31,11 +31,13 @@ public:
     parameter("obstacle_size_m",o.obstacle_size);
     parameter("safety_margin_m",o.margin); parameter("unknown_extent_m",o.unknown_extent);
     parameter("sample_step_m",o.step); parameter("max_offset_m",o.max_offset);
-    parameter("offset_step_m",o.offset_step); parameter("transition_m",o.transition);
+    parameter("transition_m",o.transition);
     parameter("max_curvature_per_m",o.max_curvature); parameter("max_speed_mps",o.max_speed);
     parameter("lateral_acceleration_mps2",o.lateral_acceleration); parameter("deceleration_mps2",o.deceleration);
     parameter("clear_confirm_sec",o.clear_sec);
-    parameter("stop_response_sec",o.stop_response);
+    // Read old files without retaining the global-offset enumeration behavior.
+    double legacy_offset_step=.05,legacy_stop_response=.35;
+    parameter("offset_step_m",legacy_offset_step); parameter("stop_response_sec",legacy_stop_response);
     parameter("max_age_sec",max_age_); parameter("max_sync_sec",max_sync_);
     parameter("max_fps",max_fps_);
     avoidance::validate(o);
@@ -53,10 +55,10 @@ public:
     RCLCPP_INFO(node_.get_logger(),
       "AVOIDANCE geometry: vehicle_width=%.3fm half_length=%.3fm effective_margin=%.3fm "
       "motion_margin=%.3fm unknown_extent=%.3fm obstacle_size=%.3fm "
-      "lane_required_width=%.3fm (+sampling/turning) offset_step/max=%.3f/%.3fm "
+      "lane_required_width=%.3fm (+sampling/turning) local_transition/max_offset=%.3f/%.3fm "
       "curvature_limit=%.3f/m speed_limit=%.3fm/s",
       2*o.half_width,o.half_length,o.margin,o.motion_margin,o.unknown_extent,o.obstacle_size,
-      2*(o.half_width+o.margin),o.offset_step,o.max_offset,o.max_curvature,o.max_speed);
+      2*(o.half_width+o.margin),o.transition,o.max_offset,o.max_curvature,o.max_speed);
     // Read on the worker thread: ros2 param set can enable/disable at runtime.
     node_.declare_parameter<bool>("obstacles.avoidance.enabled",false);
     status_=node_.create_publisher<std_msgs::msg::String>("/auto/avoidance_preview/status",rclcpp::QoS(1));
@@ -131,6 +133,7 @@ private:
           unavailable("WAIT: geometry mismatch"); continue;
         }
         previous=lane;
+        const auto planning_started=Clock::now();
         auto result=std::make_shared<bev_handoff::AvoidancePreview>(planner_->plan(
           *lane,*obstacles,double(obstacles->header.stamp.sec)+obstacles->header.stamp.nanosec*1e-9));
         result->display_delta_sec=std::min(max_age_,1/max_fps_+max_sync_);
@@ -139,15 +142,19 @@ private:
           std::chrono::duration<double>(finished-obstacles->captured_at).count()>max_age_) {
           unavailable("WAIT: planning expired"); continue;
         }
+        RCLCPP_INFO_THROTTLE(node_.get_logger(),*node_.get_clock(),2000,
+          "AVOIDANCE local: observed=%zu blocking=%zu zones=%zu attempts=%zu plan=%.2fms status=%s",
+          obstacles->clusters.size(),result->obstacle_count,result->region_count,result->candidates.size(),
+          std::chrono::duration<double,std::milli>(finished-planning_started).count(),result->status.c_str());
         if (result->selected.empty() && !result->candidates.empty()) {
           std::string failures;
           for (const auto & candidate:result->candidates) {
             if (!failures.empty()) {failures+="; ";}
-            failures+=cv::format("%+.2fm:%s(k=%.2f)",candidate.offset,
-              candidate.valid?"held-side exclusion":candidate.reason.c_str(),candidate.max_curvature);
+            failures+=cv::format("transition=%.2fm offset_max=%.2fm:%s(k=%.2f)",
+              candidate.transition_m,candidate.max_offset_m,candidate.reason.c_str(),candidate.max_curvature);
           }
           RCLCPP_INFO_THROTTLE(node_.get_logger(),*node_.get_clock(),2000,
-            "AVOIDANCE rejected (first failed check per offset): %s",failures.c_str());
+            "AVOIDANCE rejected (first failed check per local profile): %s",failures.c_str());
         }
         result->control_requested=control_requested_;
         auto_control::msg::AvoidancePlan message;

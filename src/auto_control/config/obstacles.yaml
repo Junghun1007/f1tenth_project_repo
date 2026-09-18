@@ -66,8 +66,8 @@ auto_obstacles:
     obstacles.avoidance.unknown_extent_m: 0.04 # Depth에서 보이지 않는 물체 뒷면/측면 여유
     obstacles.avoidance.sample_step_m: 0.025
     obstacles.avoidance.max_offset_m: 0.40
-    obstacles.avoidance.offset_step_m: 0.05
-    obstacles.avoidance.transition_m: 0.70 # 장애물 이후 중앙선 복귀 길이. 접근은 현재 위치부터 장애물까지 곡선 생성.
+    # offset_step_m은 폐기. 기존 외부 YAML 값은 호환용으로 읽지만 계산에 사용하지 않음.
+    obstacles.avoidance.transition_m: 0.70 # 장애물별 진입/복귀 연결 길이. 가까운 반대쪽 장애물은 S자로 연결.
     obstacles.avoidance.max_curvature_per_m: 2.0 # 최소 회전반경 0.5m. 차량 한계 이하로 설정
     obstacles.avoidance.max_speed_mps: 0.5 # 실제 적용 ON이면 제어 속도 상한에도 반영
     obstacles.avoidance.lateral_acceleration_mps2: 0.4
