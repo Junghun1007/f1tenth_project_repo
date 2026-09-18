@@ -345,10 +345,10 @@ private:
   void validate_parameters() const
   {
     if (!std::isfinite(avoidance_max_age_) || avoidance_max_age_<.05 || avoidance_max_age_>.20 ||
-      !std::isfinite(avoidance_speed_cap_) || avoidance_speed_cap_<=0 || avoidance_speed_cap_>.5 ||
+      !std::isfinite(avoidance_speed_cap_) || avoidance_speed_cap_<=0 || avoidance_speed_cap_>1.0 ||
       !std::isfinite(avoidance_brake_current_) || avoidance_brake_current_<=0 || avoidance_brake_current_>10 ||
       !std::isfinite(avoidance_wheelbase_) || avoidance_wheelbase_<.1 || avoidance_wheelbase_>1) {
-      throw std::invalid_argument("avoidance control: age 0.05..0.20s, speed (0,0.5]m/s, brake (0,10]A, wheelbase 0.1..1m");
+      throw std::invalid_argument("avoidance control: age 0.05..0.20s, speed (0,1.0]m/s, brake (0,10]A, wheelbase 0.1..1m");
     }
     if (!std::isfinite(driving_log_rate_hz_) || driving_log_rate_hz_ <= 0.0 ||
       driving_log_rate_hz_ > 100.0 || driving_log_directory_.empty())

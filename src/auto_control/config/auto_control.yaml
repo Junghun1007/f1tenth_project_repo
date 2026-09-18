@@ -69,7 +69,7 @@ auto_control:
     # 시작 시 고정. planner OFF/WAIT/BLOCKED/만료는 중앙 경로 복귀가 아니라 제동.
     avoidance_control_enabled: false
     avoidance_max_age_sec: 0.20
-    avoidance_speed_cap_mps: 0.4
+    avoidance_speed_cap_mps: 0.4 # 허용 (0, 1.0]m/s. 계획 속도/곡률 제한과 비교해 작은 값 사용.
     avoidance_brake_current_amps: 2.5
     avoidance_wheelbase_m: 0.33 # 실측 축간거리. 곡률 한계=tan(최대 조향각)/축간거리
     enable_topic: "/auto/enabled"

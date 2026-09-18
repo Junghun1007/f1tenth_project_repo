@@ -142,8 +142,8 @@ def _apply_parameter_file_defaults(
         steering = float(controller_defaults.get("maximum_steering_angle_deg", 30.0))
         age = float(controller_defaults.get("avoidance_max_age_sec", .20))
         if not all(math.isfinite(v) for v in (speed, wheelbase, steering, age)) or not (
-            0 < speed <= .5 and .1 <= wheelbase <= 1 and 0 < steering < 80 and .05 <= age <= .20):
-            raise RuntimeError("Invalid avoidance control speed/wheelbase/steering/age settings")
+            0 < speed <= 1.0 and .1 <= wheelbase <= 1 and 0 < steering < 80 and .05 <= age <= .20):
+            raise RuntimeError("Invalid avoidance control settings: speed (0,1.0]m/s, wheelbase 0.1..1m, steering (0,80)deg, age 0.05..0.20s")
         planner_overrides.update({
             "obstacles.avoidance.max_speed_mps": min(speed, float(planner_config.get("obstacles.avoidance.max_speed_mps", .5))),
             "obstacles.avoidance.max_curvature_per_m": min(.98*math.tan(math.radians(steering))/wheelbase,
