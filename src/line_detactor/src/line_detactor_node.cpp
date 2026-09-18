@@ -792,13 +792,15 @@ private:
       lane->width=input.width; lane->height=input.height;
       lane->x_max=centerline_.bev_height_m; lane->y_max=centerline_.bev_width_m/2;
       lane->meter_per_pixel=centerline_.bev_width_m/input.width;
+      lane->lane_width_m=centerline_.lane_width_m;
       const auto metric=[&](const cv::Point2f & p) {
         return cv::Point2d(lane->x_max-(p.y+.5)*centerline_.bev_height_m/input.height,
           lane->y_max-(p.x-connection_.padding_px+.5)*lane->meter_per_pixel);
       };
+      // The existing centerline generator already supports a single observed side.
+      // Do not add a stricter two-boundary requirement just for avoidance.
       lane->valid=!result.centerline.sample_limit_reached && result.centerline.points.size()>=3 &&
-        result.centerline.points.size()<=2000 && !result.observed_paths[0].empty() &&
-        !result.observed_paths[1].empty();
+        result.centerline.points.size()<=2000;
       if (lane->valid) {
         for (const auto & p:result.centerline.points) {lane->center.push_back(metric(p));}
         std::size_t count=0;

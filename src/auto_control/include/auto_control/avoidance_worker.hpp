@@ -20,6 +20,8 @@ public:
     mode.description="Apply mode is fixed at startup; disabling planning while armed requests a stop";
     control_requested_=node_.declare_parameter<bool>("obstacles.avoidance.control_requested",false,mode);
     avoidance::Options o;
+    o.centerline_fallback=node_.declare_parameter<bool>(
+      "obstacles.avoidance.centerline_fallback_enabled",true,mode);
     parameter("vehicle_half_width_m",o.half_width); parameter("vehicle_half_length_m",o.half_length);
     parameter("obstacle_size_m",o.obstacle_size);
     parameter("safety_margin_m",o.margin); parameter("unknown_extent_m",o.unknown_extent);
@@ -28,6 +30,7 @@ public:
     parameter("max_curvature_per_m",o.max_curvature); parameter("max_speed_mps",o.max_speed);
     parameter("lateral_acceleration_mps2",o.lateral_acceleration); parameter("deceleration_mps2",o.deceleration);
     parameter("clear_confirm_sec",o.clear_sec);
+    parameter("stop_response_sec",o.stop_response);
     parameter("max_age_sec",max_age_); parameter("max_sync_sec",max_sync_);
     parameter("max_fps",max_fps_);
     avoidance::validate(o);

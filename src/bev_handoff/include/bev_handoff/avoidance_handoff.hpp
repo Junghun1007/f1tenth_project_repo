@@ -12,6 +12,7 @@ struct PlanningLane
   std::vector<std::vector<cv::Point2d>> boundaries;
   bool valid{false};
   double x_max{3}, y_max{.6}, meter_per_pixel{.01};
+  double lane_width_m{.65}; // Same configured width used to generate the centerline.
   int width{120}, height{300};
 };
 struct SafetyBox {double x0, x1, y0, y1;};
@@ -27,6 +28,8 @@ struct AvoidancePreview
   std_msgs::msg::Header header;
   std::chrono::steady_clock::time_point lane_received_at, depth_captured_at;
   bool control_requested{false};
+  bool inferred_boundaries{false}, truncated{false};
+  double horizon_m{0};
   double x_max{3}, y_max{.6}, meter_per_pixel{.01};
   int width{120}, height{300};
   std::vector<cv::Point2d> original, selected;

@@ -5,29 +5,31 @@
 #include <limits>
 #include <optional>
 #include <stdexcept>
+#include <utility>
 
 namespace auto_control::avoidance
 {
 struct Options
 {
-  bool control{false};
+  bool control{false}, centerline_fallback{true};
   double obstacle_size{.13}, motion_margin{0};
   double half_width{.15}, half_length{.25}, margin{.04}, unknown_extent{.04};
   double step{.025}, max_offset{.40}, offset_step{.05}, transition{.70};
   double max_curvature{2.0}, max_speed{.5}, lateral_acceleration{.4};
-  double deceleration{.5}, clear_sec{1.0};
+  double deceleration{.5}, clear_sec{1.0}, stop_response{.35};
 };
 inline void validate(const Options & o)
 {
   for (double v : {o.half_width,o.half_length,o.margin,o.unknown_extent,o.step,o.max_offset,
       o.offset_step,o.transition,o.max_curvature,o.max_speed,o.lateral_acceleration,
-      o.deceleration,o.clear_sec,o.obstacle_size}) {
+      o.deceleration,o.clear_sec,o.obstacle_size,o.stop_response}) {
     if (!std::isfinite(v) || v<=0) {throw std::invalid_argument("avoidance options must be finite and positive");}
   }
   if (o.half_width>.5 || o.half_length>1 || o.margin>.3 || o.unknown_extent>.5 ||
     o.step<.02 || o.step>.05 || o.max_offset>.6 || o.offset_step<.04 || o.offset_step>o.max_offset ||
     o.transition<.3 || o.transition>2 || o.max_curvature>5 || o.max_speed>1 ||
-    o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5 || o.obstacle_size>1) {
+    o.lateral_acceleration>2 || o.deceleration>2 || o.clear_sec<.3 || o.clear_sec>5 || o.obstacle_size>1 ||
+    o.stop_response<.2 || o.stop_response>2) {
     throw std::invalid_argument("avoidance preview settings exceed bounded planner limits");
   }
 }
@@ -72,8 +74,9 @@ inline double segmentDistance(cv::Point2d a,cv::Point2d b,cv::Point2d c,cv::Poin
   return std::min({pointSegment(a,c,d),pointSegment(b,c,d),pointSegment(c,a,b),pointSegment(d,a,b)});
 }
 struct Corridor {double left,right;};
-// Preview planner deliberately requires a forward, single-valued path and two
-// observed boundaries. It does not invent lane width across unobserved gaps.
+// Use the connected forward prefix of the existing centerline. Missing boundary
+// intersections may use its configured lane width; observations still constrain
+// every candidate and are never treated as evidence of free space.
 class Planner
 {
 public:
@@ -87,39 +90,109 @@ public:
     out.depth_captured_at=obstacles.captured_at;
     out.x_max=lane.x_max; out.y_max=lane.y_max; out.meter_per_pixel=lane.meter_per_pixel;
     out.width=lane.width; out.height=lane.height;
-    if (!lane.valid || lane.center.size()<3) {out.status="WAIT: lane"; clear_since_=0; return out;}
+    if (!lane.valid || lane.center.size()<3 || lane.center.size()>2000) {
+      out.status="WAIT: lane"; clear_since_=0; return out;
+    }
+    if (!std::isfinite(lane.x_max) || lane.x_max<=0 || !std::isfinite(lane.y_max) || lane.y_max<=0 ||
+      !std::isfinite(lane.lane_width_m) || lane.lane_width_m<.1 || lane.lane_width_m>5) {
+      out.status="WAIT: lane geometry"; clear_since_=0; return out;
+    }
+    // Preserve connectivity, rather than sorting X and joining unrelated pieces.
+    // Reverse only a whole path whose far endpoint was provided first.
+    const bool reverse=finite(lane.center.front()) && finite(lane.center.back()) &&
+      lane.center.front().x>lane.center.back().x &&
+      std::hypot(lane.center.front().x,lane.center.front().y)>
+      std::hypot(lane.center.back().x,lane.center.back().y);
+    std::vector<cv::Point2d> center;
+    std::vector<double> arc;
+    std::string cut;
     for (std::size_t i=0;i<lane.center.size();++i) {
-      if (!finite(lane.center[i]) || (i && (lane.center[i].x<=lane.center[i-1].x+1e-5 ||
-        distance(lane.center[i],lane.center[i-1])>.2))) {
-        out.status="WAIT: non-forward lane"; clear_since_=0; return out;
+      const auto & p=lane.center[reverse?lane.center.size()-1-i:i];
+      if (!finite(p)) {cut="nonfinite point"; break;}
+      if (p.x<0 || p.x>lane.x_max || std::abs(p.y)>lane.y_max) {cut="BEV edge"; break;}
+      if (!center.empty()) {
+        const double gap=distance(center.back(),p),dx=p.x-center.back().x;
+        if (gap<=.001) {continue;} // Only coincident/submillimetre samples.
+        if (gap>.2) {cut="point gap"; break;}
+        // Near-horizontal turns cannot be represented as this planner's Y(X).
+        // Keep the near prefix; never skip across a reversal to a farther branch.
+        if (dx<=std::max(1e-5,.05*gap)) {cut="lateral/reversing turn"; break;}
+        arc.push_back(arc.back()+gap);
+      } else {arc.push_back(0);}
+      center.push_back(p);
+    }
+    out.truncated=!cut.empty();
+    if (center.size()<3 || center.front().x>(o_.control?.25:.6) || arc.back()<.5) {
+      out.status="WAIT: short near path"+(cut.empty()?std::string{}:" ("+cut+")");
+      clear_since_=0; return out;
+    }
+    // Prepare bounded observation segments once, not once per candidate pose.
+    std::vector<std::pair<cv::Point2d,cv::Point2d>> edges;
+    std::size_t boundary_points=0;
+    for (const auto & line:lane.boundaries) {
+      if ((boundary_points+=line.size())>2000) {
+        out.status="WAIT: boundary sample limit"; clear_since_=0; return out;
       }
-    }
-    const double start=lane.center.front().x,end=lane.center.back().x;
-    if (start<0 || start>.6 || end-start<.8 || end>lane.x_max || lane.boundaries.empty()) {
-      out.status="WAIT: short lane"; clear_since_=0; return out;
-    }
-    std::size_t segment=1;
-    std::vector<Corridor> corridor;
-    for (double x=start;x<=end && out.original.size()<160;x+=o_.step) {
-      while (segment+1<lane.center.size() && lane.center[segment].x<x) {++segment;}
-      const auto & a=lane.center[segment-1]; const auto & b=lane.center[segment];
-      const double y=a.y+(b.y-a.y)*(x-a.x)/(b.x-a.x);
-      out.original.emplace_back(x,y);
-      double left=std::numeric_limits<double>::infinity(),right=-left;
-      for (const auto & line:lane.boundaries) {
-        for (std::size_t j=1;j<line.size();++j) {
-          const auto & p=line[j-1]; const auto & q=line[j];
-          if (!finite(p)||!finite(q)||distance(p,q)>.2||x<std::min(p.x,q.x)||x>std::max(p.x,q.x)||std::abs(q.x-p.x)<1e-6) {continue;}
-          const double boundary=p.y+(q.y-p.y)*(x-p.x)/(q.x-p.x);
-          if (boundary>y) {left=std::min(left,boundary);}
-          if (boundary<y) {right=std::max(right,boundary);}
+      for (std::size_t j=1;j<line.size();++j) {
+        if (finite(line[j-1]) && finite(line[j]) && distance(line[j-1],line[j])<=.2) {
+          edges.emplace_back(line[j-1],line[j]);
         }
       }
-      if (!std::isfinite(left)||!std::isfinite(right)) {
-        out.status="WAIT: both boundaries"; clear_since_=0; return out;
+    }
+    // Uniform ARC samples bound adjacent distances even near a sideways turn.
+    std::size_t segment=1;
+    std::vector<Corridor> corridor;
+    std::vector<double> reference_arc;
+    for (double s=0;s<=arc.back()+1e-9 && out.original.size()<160;s+=o_.step) {
+      const double sample=std::min(s,arc.back());
+      while (segment+1<center.size() && arc[segment]<sample) {++segment;}
+      const auto & a=center[segment-1]; const auto & b=center[segment];
+      const auto point=a+(b-a)*((sample-arc[segment-1])/(arc[segment]-arc[segment-1]));
+      const double x=point.x,y=point.y;
+      if (out.original.size()>=2) {
+        const auto & p=out.original[out.original.size()-2];
+        const auto & q=out.original.back();
+        const double denominator=distance(p,q)*distance(q,point)*distance(p,point);
+        const double curvature=denominator>1e-9?2*std::abs(cross(q-p,point-q))/denominator:
+          std::numeric_limits<double>::infinity();
+        if (curvature>o_.max_curvature) {
+          // A tight distant bend should shorten the stopping horizon, not
+          // invalidate an otherwise usable approach. Do not include its vertex.
+          out.original.pop_back(); corridor.pop_back(); reference_arc.pop_back();
+          cut="reference curvature"; out.truncated=true; break;
+        }
       }
+      double left=std::numeric_limits<double>::infinity(),right=-left;
+      for (const auto & edge:edges) {
+        const auto & p=edge.first; const auto & q=edge.second;
+        if (x<std::min(p.x,q.x)||x>std::max(p.x,q.x)||std::abs(q.x-p.x)<1e-6) {continue;}
+        const double boundary=p.y+(q.y-p.y)*(x-p.x)/(q.x-p.x);
+        if (boundary>y) {left=std::min(left,boundary);}
+        if (boundary<y) {right=std::max(right,boundary);}
+      }
+      const bool observed_left=std::isfinite(left),observed_right=std::isfinite(right);
+      if (!observed_left || !observed_right) {
+        if (!o_.centerline_fallback) {cut="boundary coverage"; out.truncated=true; break;}
+        // Width is the SAME setting used by the lane generator, not BEV width.
+        // At turns a vertical half-width is conservative vs a normal offset.
+        // If only one side exists, never infer more than one lane width from it.
+        const double half=lane.lane_width_m/2;
+        if (!observed_left) {left=std::min(y+half,observed_right?right+lane.lane_width_m:y+half);}
+        if (!observed_right) {right=std::max(y-half,observed_left?left-lane.lane_width_m:y-half);}
+        out.inferred_boundaries=true;
+      }
+      out.original.push_back(point); reference_arc.push_back(sample);
       corridor.push_back({left,right});
     }
+    if (out.original.size()<8 || reference_arc.back()<.5-1e-6) {
+      out.status="WAIT: short near corridor"+(cut.empty()?std::string{}:" ("+cut+")");
+      clear_since_=0; return out;
+    }
+    if (out.original.size()==160 && reference_arc.back()<arc.back()-o_.step) {
+      cut="sample limit"; out.truncated=true;
+    }
+    const double start=out.original.front().x,end=out.original.back().x;
+    out.horizon_m=reference_arc.back();
     // Capsule along the candidate heading covers the rectangular vehicle.
     // Display boxes describe the envelope for a forward-facing vehicle;
     // the collision check below rotates the capsule for each candidate pose.
@@ -171,10 +244,22 @@ public:
       out.status="BLOCKED: target lost; reset after inspection"; clear_since_=0; return out;
     }
     const auto check=[&](bev_handoff::AvoidanceCandidate & c) {
-      c.valid=false;
+      c.valid=false; c.max_curvature=0;
       if (o_.control && (start>.25 || std::abs(c.path.front().y)>.02)) {
         c.reason="ego connection"; return;
       }
+      double length=0;
+      for (std::size_t i=0;i<c.path.size();++i) {
+        if (!finite(c.path[i])) {c.reason="nonfinite candidate"; return;}
+        if (!i) {continue;}
+        const double gap=distance(c.path[i-1],c.path[i]);
+        if (c.path[i].x<=c.path[i-1].x || gap<1e-5 || gap>.15) {
+          c.reason="candidate spacing"; return;
+        }
+        length+=gap;
+      }
+      // Leave room for float32 transport rounding at the controller's 0.5m gate.
+      if (length<.501) {c.reason="short candidate"; return;}
       for (std::size_t i=0;i<c.path.size();++i) {
         const auto & p=c.path[i];
         const auto & before=c.path[i?i-1:i];
@@ -196,6 +281,17 @@ public:
             const cv::Point2d b(out.original[j].x,side?corridor[j].right:corridor[j].left);
             if (segmentDistance(rear,front,a,b)<lane_radius) {c.reason="lane clearance"; return;}
           }
+        }
+        // Also check the original observations, including lateral segments and
+        // endpoints that have no Y(X) intersection at a sampled center position.
+        // Inferring a missing side must never erase an observed lane edge.
+        for (const auto & edge:edges) {
+          const auto & a=edge.first; const auto & b=edge.second;
+          if (std::max(a.x,b.x)<std::min(rear.x,front.x)-lane_radius ||
+            std::min(a.x,b.x)>std::max(rear.x,front.x)+lane_radius ||
+            std::max(a.y,b.y)<std::min(rear.y,front.y)-lane_radius ||
+            std::min(a.y,b.y)>std::max(rear.y,front.y)+lane_radius) {continue;}
+          if (segmentDistance(rear,front,a,b)<lane_radius) {c.reason="observed lane clearance"; return;}
         }
         for (auto box:collision_boxes) {
           box.x0-=sampling; box.x1+=sampling; box.y0-=sampling; box.y1+=sampling;
@@ -271,8 +367,23 @@ public:
       if (current_target) {target_=current_target;}
     }
     out.recommended_speed=std::min(o_.max_speed,std::sqrt(o_.lateral_acceleration/std::max(.001,out.max_curvature)));
+    // Stop before the usable prefix ends. Conservative forward distance (rather
+    // than full curved arc) reserves room for the body and response latency.
+    // v*T + v^2/(2*a) <= available; a is a configured planning assumption.
+    const double available=std::max(0.0,end-start-o_.half_length-o_.half_width-o_.margin-o_.step);
+    const double at=o_.deceleration*o_.stop_response;
+    const double horizon_speed=std::sqrt(at*at+2*o_.deceleration*available)-at;
+    out.recommended_speed=std::min(out.recommended_speed,horizon_speed);
+    if (out.recommended_speed<=1e-6) {
+      out.selected.clear(); out.status="BLOCKED: stopping horizon"; clear_since_=0; return out;
+    }
     // Advisory speed also allows a stop before the first nominal-path obstacle.
     if (!o_.control && first<1e9) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*std::max(0.0,first-start)));}
+    if (out.inferred_boundaries || out.truncated) {
+      out.status+=": ";
+      if (out.inferred_boundaries) {out.status+="centerline corridor";}
+      if (out.truncated) {out.status+=(out.inferred_boundaries?"; ":"")+std::string("prefix at ")+cut;}
+    }
     return out;
   }
   void unavailable() {clear_since_=0;}
