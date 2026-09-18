@@ -77,23 +77,15 @@ void validate(const Config & c)
   }
 }
 
-DepthSource::DepthSource(const Config & c, const std::string & device_id, bool right_preview, double rgb_fps)
+std::shared_ptr<dai::node::StereoDepth> addStereoDepth(dai::Pipeline & pipeline, const Config & c)
 {
   validate(c);
-  if (!std::isfinite(rgb_fps) || rgb_fps < 0 || rgb_fps > 60) {
-    throw std::invalid_argument("RGB preview FPS must be 0..60");
-  }
-  device_ = device_id.empty() ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
-    std::make_shared<dai::Device>(dai::DeviceInfo(device_id), dai::UsbSpeed::SUPER);
-  pipeline_ = std::make_unique<dai::Pipeline>(device_);
-  pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
-  pipeline_->setXLinkChunkSize(0);
   const auto size = resolutionSize(c.resolution);
-  auto left = pipeline_->create<dai::node::Camera>();
-  auto right = pipeline_->create<dai::node::Camera>();
+  auto left = pipeline.create<dai::node::Camera>();
+  auto right = pipeline.create<dai::node::Camera>();
   left->build(dai::CameraBoardSocket::CAM_B, size, static_cast<float>(c.fps));
   right->build(dai::CameraBoardSocket::CAM_C, size, static_cast<float>(c.fps));
-  auto stereo = pipeline_->create<dai::node::StereoDepth>();
+  auto stereo = pipeline.create<dai::node::StereoDepth>();
   stereo->build(*left->requestOutput(size), *right->requestOutput(size), preset(c.mode));
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
   stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
@@ -114,6 +106,35 @@ DepthSource::DepthSource(const Config & c, const std::string & device_id, bool r
   post.bilateralSigmaValue = 0;
   post.thresholdFilter.minRange = 0;
   post.thresholdFilter.maxRange = 65535;
+  return stereo;
+}
+
+RigidTransform rgbFromFrame(dai::ImgFrame & frame, const dai::CalibrationHandler & calibration)
+{
+  const auto & transformation=frame.getTransformation();
+  if (!transformation.isValid()) {throw std::runtime_error("Missing frame calibration");}
+  const auto extrinsics=transformation.getExtrinsics();
+  const auto reference=extrinsics.toCameraSocket;
+  if (reference==dai::CameraBoardSocket::AUTO) {throw std::runtime_error("Missing reference camera socket");}
+  const auto reference_from_frame=calibratedTransform(
+    extrinsics.getTransformationMatrix(false,dai::LengthUnit::METER),1.0);
+  const auto rgb_from_reference=reference==dai::CameraBoardSocket::CAM_A ? RigidTransform{} :
+    calibratedTransform(calibration.getCameraExtrinsics(reference,dai::CameraBoardSocket::CAM_A,false),0.01);
+  return compose(rgb_from_reference,reference_from_frame);
+}
+
+DepthSource::DepthSource(const Config & c, const std::string & device_id, bool right_preview, double rgb_fps)
+{
+  validate(c);
+  if (!std::isfinite(rgb_fps) || rgb_fps < 0 || rgb_fps > 60) {
+    throw std::invalid_argument("RGB preview FPS must be 0..60");
+  }
+  device_ = device_id.empty() ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
+    std::make_shared<dai::Device>(dai::DeviceInfo(device_id), dai::UsbSpeed::SUPER);
+  pipeline_ = std::make_unique<dai::Pipeline>(device_);
+  pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
+  pipeline_->setXLinkChunkSize(0);
+  auto stereo = addStereoDepth(*pipeline_, c);
   queue_ = stereo->depth.createOutputQueue(1, false);
   if (right_preview) {right_queue_ = stereo->rectifiedRight.createOutputQueue(1, false);}
   dai::Node::Output * rgb_output = nullptr;

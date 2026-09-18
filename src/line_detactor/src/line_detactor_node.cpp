@@ -5,6 +5,7 @@
 #include "line_detactor/msg/lane_result.hpp"
 #include "line_detactor/stop_line_distance.hpp"
 #include "line_detactor/bev_theme.hpp"
+#include "line_detactor/obstacle_overlay.hpp"
 
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
@@ -40,6 +41,7 @@
 #include "opencv2/imgproc.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "rcl_interfaces/msg/set_parameters_result.hpp"
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "sensor_msgs/msg/image.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/header.hpp"
@@ -121,6 +123,13 @@ public:
   {
     read_parameters();
     validate_parameters();
+    if (obstacle_overlay_enabled_ && (!connection_.enabled || !direct_bev_input_enabled_ || bev_theme_enable_.load())) {
+      throw std::invalid_argument("Obstacle overlay requires same-process direct BEV, connection_enabled and bev_theme_enable=false");
+    }
+    if (!std::isfinite(obstacle_sync_sec_) || obstacle_sync_sec_<.001 || obstacle_sync_sec_>.1 ||
+      !std::isfinite(obstacle_age_sec_) || obstacle_age_sec_<.02 || obstacle_age_sec_>.5) {
+      throw std::invalid_argument("Obstacle overlay sync/age invalid");
+    }
 
     if (preview_enabled_ && !graphical_display_available()) {
       throw std::runtime_error(
@@ -176,9 +185,9 @@ public:
             return result;
           }
           requested = parameter.as_bool();
-          if (requested && !connection_.enabled) {
+          if (requested && (!connection_.enabled || obstacle_overlay_enabled_)) {
             result.successful = false;
-            result.reason = "bev_theme_enable requires connection_enabled";
+            result.reason = "bev_theme_enable requires connection_enabled and obstacle overlay disabled";
             return result;
           }
         }
@@ -261,6 +270,7 @@ private:
   struct PreviewFrame
   {
     std::shared_ptr<const InputFrame> input;
+    std_msgs::msg::Header header;
     LaneConnectionResult result;
     cv::Mat raw;
     double average_inference_milliseconds{0.0};
@@ -270,6 +280,11 @@ private:
 
   void read_parameters()
   {
+    rcl_interfaces::msg::ParameterDescriptor obstacle_descriptor;
+    obstacle_descriptor.read_only=true;
+    obstacle_overlay_enabled_=node_.declare_parameter<bool>("obstacles.overlay_enabled",false,obstacle_descriptor);
+    obstacle_sync_sec_=node_.declare_parameter<double>("obstacles.max_sync_sec",0.06,obstacle_descriptor);
+    obstacle_age_sec_=node_.declare_parameter<double>("obstacles.max_age_sec",0.25,obstacle_descriptor);
     bev_theme_enable_.store(node_.declare_parameter<bool>("bev_theme_enable", false));
     bev_theme_preview_fps_ = node_.declare_parameter<double>("bev_theme_preview_fps", 15.0);
     bev_theme_speed_topic_ = node_.declare_parameter<std::string>(
@@ -775,7 +790,12 @@ private:
       (result_image_publisher_->get_subscription_count() > 0U ||
       result_image_publisher_->get_intra_process_subscription_count() > 0U))
     {
-      result_image_publisher_->publish(image_message(result.image, input, "bgr8"));
+      if (obstacle_overlay_enabled_) {
+        auto display=result.image.clone();
+        drawObstacleOverlay(display,input.header,model_input_width_,model_input_height_,connection_.padding_px,
+          obstacle_sync_sec_,obstacle_age_sec_);
+        result_image_publisher_->publish(image_message(display,input,"bgr8"));
+      } else {result_image_publisher_->publish(image_message(result.image,input,"bgr8"));}
     }
   }
 
@@ -804,10 +824,11 @@ private:
     const double average_control_milliseconds,
     const double stop_line_distance_m,
     const double preview_fps,
-    const std::uint8_t traffic_signal) const
+    const std::uint8_t traffic_signal,
+    const std::string & obstacle_status = "") const
   {
     cv::Mat banner = cv::Mat::zeros(
-      kBannerHeight, overlay.cols, CV_8UC3);
+      kBannerHeight+(obstacle_overlay_enabled_ ? 14 : 0), overlay.cols, CV_8UC3);
     const double inference_fps = average_inference_milliseconds > 0.0 ?
       1000.0 / average_inference_milliseconds : 0.0;
     const double postprocess_fps = average_postprocess_milliseconds > 0.0 ?
@@ -837,6 +858,10 @@ private:
         cv::Point(3, 12 + static_cast<int>(index) * 14),
         cv::FONT_HERSHEY_SIMPLEX, 0.28, lines[index].second, 1,
         cv::LINE_AA);
+    }
+    if (obstacle_overlay_enabled_) {
+      cv::putText(banner,obstacle_status,{3,kBannerHeight+10},cv::FONT_HERSHEY_SIMPLEX,.28,
+        cv::Scalar(255,180,70),1,cv::LINE_AA);
     }
     cv::Mat canvas;
     cv::vconcat(overlay, banner, canvas);
@@ -1030,6 +1055,7 @@ private:
 
         if (preview_enabled_) {
           auto snapshot = std::make_shared<PreviewFrame>();
+          snapshot->header=message->header;
           if (connection_.enabled && !preview_result_only_enabled_) {
             snapshot->input = message;
           }
@@ -1116,7 +1142,7 @@ private:
       cv::resizeWindow(
         preview_window_name_,
         static_cast<int>(result_width() * preview_scale_),
-        static_cast<int>((model_input_height_ + kBannerHeight) * preview_scale_));
+        static_cast<int>((model_input_height_ + kBannerHeight + (obstacle_overlay_enabled_ ? 14 : 0)) * preview_scale_));
       auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(1.0 / preview_fps_));
       BevThemeRenderer theme_renderer(model_input_width_, model_input_height_,
@@ -1167,7 +1193,7 @@ private:
         // Switching off may briefly encounter a snapshot without legacy image
         // buffers. Wait for the next worker result rather than blocking it.
         if (frame && (theme || !connection_.enabled || !frame->result.image.empty()) &&
-          (theme || displayed_theme || frame->generation != displayed_generation ||
+          (obstacle_overlay_enabled_ || theme || displayed_theme || frame->generation != displayed_generation ||
           traffic_signal != displayed_signal))
         {
           cv::Mat canvas;
@@ -1197,12 +1223,18 @@ private:
                 connection_.padding_px, connection_.padding_px,
                 cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
             }
+            std::string obstacle_status;
+            if (obstacle_overlay_enabled_) {
+              overlay=overlay.clone();
+              obstacle_status=drawObstacleOverlay(overlay,frame->header,model_input_width_,model_input_height_,
+                connection_.padding_px,obstacle_sync_sec_,obstacle_age_sec_);
+            }
             canvas = preview_canvas(
               overlay,
               frame->average_inference_milliseconds,
               frame->average_postprocess_milliseconds,
               average_control_milliseconds,
-              frame->result.stop_line_distance_m, display_fps, traffic_signal);
+              frame->result.stop_line_distance_m, display_fps, traffic_signal,obstacle_status);
           }
           cv::imshow(preview_window_name_, canvas);
           displayed_theme = theme;
@@ -1293,6 +1325,8 @@ private:
   rclcpp::Publisher<line_detactor::msg::LaneResult>::SharedPtr result_publisher_;
   rclcpp::Publisher<Image>::SharedPtr result_image_publisher_;
   int warmup_iterations_{10};
+  bool obstacle_overlay_enabled_{false};
+  double obstacle_sync_sec_{.06},obstacle_age_sec_{.25};
   bool preview_enabled_{true};
   std::atomic<bool> bev_theme_enable_{false};
   double bev_theme_preview_fps_{15.0};

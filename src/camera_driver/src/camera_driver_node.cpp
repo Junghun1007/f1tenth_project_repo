@@ -2,6 +2,8 @@
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/msg/bev_input.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
+#include "bev_handoff/direct_obstacle_handoff.hpp"
+#include "point_cloud/depth_source.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -33,6 +35,7 @@
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "sensor_msgs/msg/image.hpp"
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/joy.hpp"
@@ -359,6 +362,7 @@ public:
       status_timer_ = node_.create_wall_timer(
         status_period, std::bind(&Impl::report_status, this));
       capture_thread_ = std::thread(&Impl::capture_loop, this);
+      if (depth_enabled_) {depth_thread_=std::thread(&Impl::depth_loop,this);}
       if (imu_stream_enabled_) {
         imu_thread_ = std::thread(&Impl::imu_loop, this);
       }
@@ -1198,10 +1202,43 @@ private:
 
   void start_pipeline()
   {
-    auto device = std::make_shared<dai::Device>(
-      dai::UsbSpeed::SUPER);
+    rcl_interfaces::msg::ParameterDescriptor descriptor;
+    descriptor.read_only=true;
+    descriptor.description="Edit manual_obstacle_view.yaml and restart to change shared depth";
+    depth_enabled_=node_.declare_parameter<bool>("obstacles.depth.enabled",false,descriptor);
+    if (depth_enabled_) {
+      if (camera_socket_!=dai::CameraBoardSocket::CAM_A || !fused_bev_output_enabled_) {
+        throw std::invalid_argument("Obstacle depth requires CAM_A and fused BEV output");
+      }
+      depth_config_.resolution=node_.declare_parameter<std::string>("obstacles.camera.resolution","400p",descriptor);
+      depth_config_.fps=node_.declare_parameter<double>("obstacles.camera.fps",60.0,descriptor);
+      depth_config_.mode=node_.declare_parameter<std::string>("obstacles.depth.mode","high_density",descriptor);
+      depth_config_.dot_intensity=node_.declare_parameter<double>("obstacles.depth.ir_dot_projector_intensity",0.7,descriptor);
+      depth_config_.flood_intensity=node_.declare_parameter<double>("obstacles.depth.ir_flood_light_intensity",0.0,descriptor);
+      depth_config_.confidence=node_.declare_parameter<int>("obstacles.depth.confidence_threshold",200,descriptor);
+      depth_config_.lr_check=node_.declare_parameter<bool>("obstacles.depth.left_right_check",true,descriptor);
+      depth_config_.lr_threshold=node_.declare_parameter<int>("obstacles.depth.left_right_threshold",10,descriptor);
+      depth_config_.subpixel=node_.declare_parameter<bool>("obstacles.depth.subpixel",true,descriptor);
+      depth_config_.subpixel_bits=node_.declare_parameter<int>("obstacles.depth.subpixel_fractional_bits",3,descriptor);
+      depth_config_.median=node_.declare_parameter<std::string>("obstacles.depth.median_filter","off",descriptor);
+      point_cloud::validate(depth_config_);
+    }
+    const auto shared_device_id=depth_enabled_ ? bev_handoff::obstacleDeviceId() : std::string{};
+    if (depth_enabled_ && shared_device_id.empty()) {
+      throw std::runtime_error("Load obstacle-enabled bev_processor before camera_driver in the same container");
+    }
+    auto device=shared_device_id.empty() ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
+      std::make_shared<dai::Device>(dai::DeviceInfo(shared_device_id),dai::UsbSpeed::SUPER);
+    if (depth_enabled_) {depth_calibration_=std::make_shared<dai::CalibrationHandler>(device->getCalibration());}
     pipeline_ = std::make_unique<dai::Pipeline>(device);
     pipeline_->setXLinkChunkSize(0);
+    std::shared_ptr<dai::node::StereoDepth> stereo;
+    if (depth_enabled_) {
+      pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
+      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_);
+      depth_queue_=stereo->depth.createOutputQueue(1,false);
+      bev_handoff::publishDirectDepth(nullptr);
+    }
 
     // CAM_A is the native color/NV12 path. The stereo sensors on CAM_B/C are
     // native monochrome, so keep them GRAY8 on the device and synthesize
@@ -1290,7 +1327,23 @@ private:
     xlink_bridge->xLinkOut->input.setMaxSize(1);
     xlink_bridge->xLinkOut->input.setBlocking(false);
 
+    if (stereo) {
+      const auto bridge=stereo->depth.getXLinkBridge();
+      if (!bridge || !bridge->xLinkOut) {throw std::runtime_error("Missing depth XLink bridge");}
+      bridge->xLinkOut->input.setMaxSize(1);
+      bridge->xLinkOut->input.setBlocking(false);
+    }
     pipeline_->start();
+    if (depth_enabled_) {
+      if (!device->setIrLaserDotProjectorIntensity(static_cast<float>(depth_config_.dot_intensity)) && depth_config_.dot_intensity>0) {
+        throw std::runtime_error("IR dot unavailable: set obstacles.depth.ir_dot_projector_intensity to 0.0");
+      }
+      if (!device->setIrFloodLightIntensity(static_cast<float>(depth_config_.flood_intensity)) && depth_config_.flood_intensity>0) {
+        throw std::runtime_error("IR flood unavailable: set obstacles.depth.ir_flood_light_intensity to 0.0");
+      }
+      RCLCPP_INFO(node_.get_logger(),"Shared RGB/depth device=%s, stereo=%s @ %.1f requested FPS",
+        shared_device_id.c_str(),depth_config_.resolution.c_str(),depth_config_.fps);
+    }
 
     RCLCPP_INFO(
       node_.get_logger(),
@@ -1407,6 +1460,41 @@ private:
     }
 
     return ros_now + rclcpp::Duration::from_nanoseconds(offset_ns);
+  }
+
+  void depth_loop()
+  {
+    auto last=std::chrono::steady_clock::time_point{};
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+      try {
+        if (!pipeline_->isRunning()) {break;}
+        auto packet=depth_queue_->tryGet<dai::ImgFrame>();
+        if (!packet) {std::this_thread::sleep_for(1ms); continue;}
+        const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
+        const double age=std::chrono::duration<double>(std::chrono::steady_clock::now()-captured).count();
+        if (age<0 || age>0.25 || captured<=last) {continue;}
+        last=captured;
+        if (packet->getType()!=dai::ImgFrame::Type::RAW16) {throw std::runtime_error("Expected RAW16 stereo depth");}
+        const auto transform=point_cloud::rgbFromFrame(*packet,*depth_calibration_);
+        const auto k=packet->getTransformation().getIntrinsicMatrix();
+        const auto & bytes=packet->getData();
+        auto frame=std::make_shared<bev_handoff::DirectDepthFrame>();
+        frame->data=bytes.data(); frame->size=bytes.size(); frame->owner=packet;
+        frame->width=packet->getWidth(); frame->height=packet->getHeight();
+        frame->stride=packet->getStride() ? packet->getStride() : packet->getWidth()*2;
+        frame->intrinsics={k[0][0],k[1][1],k[0][2],k[1][2]};
+        frame->rgb_from_depth_rotation=transform.rotation;
+        frame->rgb_from_depth_translation=transform.translation;
+        frame->header.stamp=ros_timestamp_for(captured); frame->header.frame_id=frame_id_;
+        frame->captured_at=captured;
+        bev_handoff::publishDirectDepth(std::move(frame));
+      } catch (const std::exception & e) {
+        bev_handoff::publishDirectDepth(nullptr);
+        RCLCPP_ERROR_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,"Depth input: %s",e.what());
+        std::this_thread::sleep_for(10ms);
+      }
+    }
+    bev_handoff::publishDirectDepth(nullptr);
   }
 
   void capture_loop()
@@ -1856,6 +1944,16 @@ private:
     }
     message.dynamic_correction_applied =
       transform.dynamic_correction_applied;
+    if (depth_enabled_) {
+      const auto k=packet.getTransformation().getIntrinsicMatrix();
+      const auto rgb_from_source=point_cloud::rgbFromFrame(packet,*depth_calibration_);
+      for (int row=0;row<3;++row) {for (int col=0;col<3;++col) {
+        message.source_intrinsics[row*3+col]=k[row][col];
+      }}
+      message.rgb_from_source_rotation=rgb_from_source.rotation;
+      message.rgb_from_source_translation=rgb_from_source.translation;
+      message.depth_geometry_valid=true;
+    }
 
     const std::size_t output_y_bytes =
       static_cast<std::size_t>(frame_width) *
@@ -2791,12 +2889,15 @@ private:
     join_thread(preview_thread_);
     join_thread(imu_thread_);
     join_thread(capture_thread_);
+    join_thread(depth_thread_);
+    if (depth_enabled_) {bev_handoff::publishDirectDepth(nullptr);}
 
     if (status_timer_) {
       status_timer_->cancel();
       status_timer_.reset();
     }
 
+    depth_queue_.reset();
     output_queue_.reset();
     imu_queue_.reset();
     if (pipeline_) {
@@ -2894,6 +2995,11 @@ private:
   dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::CROP};
 
   std::unique_ptr<dai::Pipeline> pipeline_;
+  bool depth_enabled_{false};
+  point_cloud::Config depth_config_;
+  std::shared_ptr<dai::CalibrationHandler> depth_calibration_;
+  std::shared_ptr<dai::MessageQueue> depth_queue_;
+  std::thread depth_thread_;
   std::shared_ptr<dai::MessageQueue> output_queue_;
   std::shared_ptr<dai::MessageQueue> imu_queue_;
   std::unique_ptr<ImuImageStabilizer> imu_stabilizer_;

@@ -14,3 +14,10 @@ uint8[] nv12
 # stabilized, fixed-zoom camera image assumed by the fixed BEV LUT.
 float64[9] source_to_stabilized_homography
 bool dynamic_correction_applied
+
+# Optional calibrated source camera geometry for the in-process obstacle worker.
+# RGB is physical CAM_A. Matrices are row-major, translations are metres.
+bool depth_geometry_valid
+float64[9] source_intrinsics
+float64[9] rgb_from_source_rotation
+float64[3] rgb_from_source_translation

@@ -26,6 +26,7 @@
 #include <opencv2/imgproc.hpp>
 #include <geometry_msgs/msg/vector3_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/image_encodings.hpp>
 #include <sensor_msgs/msg/image.hpp>
@@ -35,6 +36,8 @@
 
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "bev_processor/bev_geometry.hpp"
+#include "bev_processor/obstacle_worker.hpp"
+#include "bev_handoff/direct_obstacle_handoff.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
 #include "camera_driver/msg/bev_input.hpp"
@@ -167,6 +170,8 @@ public:
     }
     const auto measurement =
       measureOakStartupExtrinsics(startup_measurement_config_);
+    const bool obstacles_enabled=get_parameter("obstacles.enabled").as_bool();
+    if (obstacles_enabled) {bev_handoff::setObstacleDeviceId(measurement.device_id);}
     camera_model_.position_vehicle_m[2] = measurement.height_m;
     startup_roll_deg_ = measurement.roll_deg;
     startup_pitch_down_deg_ = measurement.pitch_down_deg;
@@ -226,6 +231,13 @@ public:
       measurement.attitude_source == "depth" ?
       "depth-plane attitude + depth-plane offset height" :
       "IMU attitude + depth-plane offset height");
+
+    if (obstacles_enabled) {
+      auto model=camera_model_;
+      model.rotation_vehicle_from_camera=mountRotationVehicleFromCamera(
+        degToRad(startup_roll_deg_),degToRad(startup_pitch_down_deg_),degToRad(camera_yaw_deg_));
+      obstacle_worker_=std::make_unique<ObstacleWorker>(*this,model,bev_config_,output_frame_id_);
+    }
 
     auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
     reference_qos.reliable().transient_local();
@@ -362,6 +374,7 @@ public:
 
   ~BevProcessorNode() override
   {
+    obstacle_worker_.reset();
     stop_.store(true, std::memory_order_release);
     input_cv_.notify_all();
     output_cv_.notify_all();
@@ -386,6 +399,9 @@ private:
     // A missing or node-name-mismatched YAML must not fall back silently to
     // C++ defaults because the measured pose and BEV bounds are safety-critical.
     declare_parameter<int>("configuration_version", 0);
+    rcl_interfaces::msg::ParameterDescriptor obstacle_descriptor;
+    obstacle_descriptor.read_only=true;
+    declare_parameter<bool>("obstacles.enabled",false,obstacle_descriptor);
     declare_parameter<bool>("performance_measurement_enabled", false);
 
     declare_parameter<std::string>("input_topic", "/camera/bev_input");
@@ -995,6 +1011,8 @@ private:
       stabilization_settle_total_.fetch_add(1U, std::memory_order_relaxed);
       return;
     }
+
+    if (obstacle_worker_) {obstacle_worker_->observe(*message);}
 
     recordPipelineLatency(
       message->header,
@@ -2025,6 +2043,7 @@ private:
   std::shared_ptr<const BevFrame> latest_output_;
 
   std::atomic<bool> stop_{false};
+  std::unique_ptr<ObstacleWorker> obstacle_worker_;
   std::thread processing_thread_;
   std::thread publishing_thread_;
   std::thread preview_thread_;

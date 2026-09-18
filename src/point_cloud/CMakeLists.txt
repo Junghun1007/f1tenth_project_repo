@@ -21,6 +21,7 @@ find_package(depthai 3.6 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(point_cloud_depth_source STATIC src/depth_source.cpp)
+set_target_properties(point_cloud_depth_source PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(point_cloud_depth_source PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)

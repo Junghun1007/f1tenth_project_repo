@@ -216,3 +216,10 @@ manual_camera_height_m: 0.20
 - 카메라 설정: `camera_driver/config/camera_config.yaml`
 
 초기 IMU·바닥 평면 측정 구현은 `oak_startup` 공용 패키지로 분리되어 `depth_lidar`도 같은 알고리즘을 사용합니다. BEV의 기존 측정 파라미터와 처리 순서는 유지합니다. 기존 설치에서도 `oak_startup`과 `bev_processor`를 함께 다시 빌드해야 합니다.
+
+## 수동주행용 Depth 장애물 표시
+
+`vehicle_bringup/manual_obstacle_view.launch.py`에서 `obstacles.enabled=true`로 활성화한다.
+검출은 이 패키지의 별도 작업 스레드에서 실행하며, camera_driver의 같은 OAK RGB/Depth
+파이프라인과 시작 측정값/실제 RGB 보정을 공유한다. 원본 BEV는 유지하고 line_detactor 결과
+프리뷰에 군집을 합성한다. [실행 및 YAML 안내](../vehicle_bringup/MANUAL_OBSTACLE_VIEW.md).

@@ -1,0 +1,56 @@
+# 이 파일을 직접 수정하고 params_file:=/absolute/path/manual_obstacle_view.yaml 로 실행.
+# 저장 후 통합 launch 재시작. 아래 장애물 옵션은 시작 시 적용되며 실시간 변경하지 않음.
+# roi_lidar는 실행하지 않음. 기존 차선 BEV 120cm x 300cm / 모델 120x300 유지.
+camera_driver:
+  ros__parameters:
+    # CAM_A RGB는 camera_config.yaml 설정 유지. 같은 OAK의 CAM_B/C로 depth 생성.
+    obstacles.depth.enabled: true
+    obstacles.camera.resolution: "400p" # 400p / 480p / 720p / 800p
+    obstacles.camera.fps: 60.0          # 요청 FPS. RGB/Depth 동시 실행 실측 FPS는 로그 확인.
+    obstacles.depth.mode: "high_density" # default / high_density / high_accuracy
+    obstacles.depth.ir_dot_projector_intensity: 0.7 # 지원하지 않는 장치는 0.0
+    obstacles.depth.ir_flood_light_intensity: 0.0
+    obstacles.depth.confidence_threshold: 200
+    obstacles.depth.left_right_check: true
+    obstacles.depth.left_right_threshold: 10
+    obstacles.depth.subpixel: true
+    obstacles.depth.subpixel_fractional_bits: 3
+    obstacles.depth.median_filter: "off"
+
+bev_processor:
+  ros__parameters:
+    obstacles.enabled: true
+    # Depth 전체 영상에서의 정규화 ROI. RGB/BEV 픽셀 기준이 아님.
+    obstacles.roi.x: 0.0
+    obstacles.roi.y: 0.0
+    obstacles.roi.width: 1.0
+    obstacles.roi.height: 1.0
+    obstacles.points.pixel_stride: 2 # 1이면 작은 장애물 표본 증가, CPU 비용 증가
+    obstacles.points.min_depth_m: 0.1
+    obstacles.points.max_depth_m: 20.0
+    # BEV가 시작할 때 측정한 평면 및 RGB에 실제 적용한 보정으로 지면 높이 계산.
+    obstacles.ground.enabled: true
+    obstacles.ground.distance_m: 0.05
+    obstacles.ground.distance_per_meter: 0.01
+    obstacles.ground.max_distance_m: 0.12
+    obstacles.height.max_m: 1.0
+    obstacles.range.min_m: 0.1
+    obstacles.range.max_m: 12.0 # 검출 범위. 화면은 기존 전방 3m/좌우 0.6m로 제한.
+    obstacles.scan.angle_min_deg: -70.0
+    obstacles.scan.angle_max_deg: 70.0
+    obstacles.scan.bins: 281
+    obstacles.scan.min_samples: 2
+    obstacles.scan.support_distance_m: 0.15
+    obstacles.cluster.tolerance_m: 0.15
+    obstacles.cluster.min_bins: 2 # 1이면 작은 군집도 표시, 고립 노이즈 증가
+    obstacles.cluster.max_gap_bins: 1
+    obstacles.cluster.min_height_m: 0.10
+    obstacles.max_age_sec: 0.25
+    obstacles.max_sync_sec: 0.04 # Depth와 자세 보정에 쓰는 RGB 촬영 시각 차이 상한
+
+line_detactor:
+  ros__parameters:
+    obstacles.overlay_enabled: true
+    obstacles.max_sync_sec: 0.06 # 차선 결과와 장애물 촬영 시각 차이 상한
+    obstacles.max_age_sec: 0.25  # 만료 장애물은 GUI에서 삭제 (입력 중단 시에도 갱신)
+    preview_fps: 30.0

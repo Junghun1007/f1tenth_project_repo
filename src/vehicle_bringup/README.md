@@ -352,3 +352,9 @@ RB gear changes are edge-triggered and immediate: they are accepted only while
 the commanded duty is already zero. A rejected change is not stored or replayed
 later. `vesc_bridge` communicates through `/dev/ttyTHS1` and does not access the
 Bluetooth controller transport.
+
+## 수동주행 중 차선 BEV + 장애물 확인
+
+[실행·설정 안내](MANUAL_OBSTACLE_VIEW.md)를 참고한다.
+`manual_obstacle_view.launch.py`는 기존 120×300cm 차선 BEV에 Depth 군집을 합성하며,
+수동주행만 실행하고 auto_control 및 roi_lidar 노드는 시작하지 않는다.

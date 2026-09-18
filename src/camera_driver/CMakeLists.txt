@@ -13,7 +13,9 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(bev_handoff REQUIRED)
+find_package(point_cloud REQUIRED)
 find_package(rclcpp REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -75,6 +77,7 @@ target_include_directories(camera_driver_component
 ament_target_dependencies(camera_driver_component
   bev_handoff
   rclcpp
+  rcl_interfaces
   rclcpp_components
   geometry_msgs
   sensor_msgs
@@ -83,6 +86,7 @@ ament_target_dependencies(camera_driver_component
 target_link_libraries(camera_driver_component
   camera_imu_stabilizer
   camera_vehicle_motion
+  point_cloud::point_cloud_depth_source
   depthai::core
   ${OpenCV_LIBS}
   Threads::Threads
@@ -152,8 +156,8 @@ install(
 
 ament_export_targets(export_camera_driver HAS_LIBRARY_TARGET)
 ament_export_dependencies(
-  bev_handoff
-  OpenCV rclcpp rclcpp_components geometry_msgs rosidl_default_runtime
+  bev_handoff point_cloud
+  OpenCV rclcpp rcl_interfaces rclcpp_components geometry_msgs rosidl_default_runtime
   sensor_msgs std_msgs)
 
 ament_package()
