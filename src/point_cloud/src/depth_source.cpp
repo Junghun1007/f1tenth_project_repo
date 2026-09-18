@@ -42,6 +42,7 @@ void validate(const Config & c)
   validateBev(c.bev);
   validateClusters(c.cluster);
   validateTemporal(c.temporal);
+  validateBlobs(c.blob);
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);

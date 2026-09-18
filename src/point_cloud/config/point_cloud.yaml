@@ -68,6 +68,16 @@ point_cloud:
     cluster.min_extent_m: 0.03        # Minimum max(X extent, Y extent) of HIGH core points only.
     cluster.base_radius_m: 0.02       # Attach low base points within 2cm of a high core centroid.
                                     # No recursive growth; 0=show only high core points.
+    # Final BEV blob shape filter: close tiny gaps, remove thin links, split blobs.
+    # Shape is for acceptance only; preview still contains original 3D points.
+    blob.enabled: true
+    blob.cell_size_m: 0.01            # Independent 1cm raster for shape inspection.
+    blob.closing_radius_cells: 1      # 3x3 closing; 0 disables small-gap filling.
+    blob.opening_radius_cells: 1      # 3x3 opening; removes thin lines/bridges; 0 disables.
+    blob.min_area_m2: 0.0009          # At least 9cm^2 of originally occupied surviving cells.
+    blob.min_thickness_m: 0.03        # At least 3cm short side of rotated bounding rectangle.
+    blob.min_fill_ratio: 0.35         # Occupied surviving area / rotated rectangle area.
+    blob.max_aspect_ratio: 6.0        # Long side / short side; reject elongated ribbons.
     publish.depth_image: true        # 16UC1, millimeters. CameraInfo is always published.
     input.max_age_sec: 0.5           # Drop old/replayed frames; do not accumulate clouds.
     metrics.print_interval_sec: 1.0  # Actual FPS, valid points, age, host ms, XYZ MB/s.

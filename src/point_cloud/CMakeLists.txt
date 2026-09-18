@@ -17,6 +17,7 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(oak_startup REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc)
 find_package(depthai 3.6 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -24,10 +25,14 @@ add_library(point_cloud_depth_source STATIC src/depth_source.cpp)
 target_include_directories(point_cloud_depth_source PUBLIC include)
 target_link_libraries(point_cloud_depth_source PUBLIC depthai::core)
 
+add_library(point_cloud_blob_filter STATIC src/blob_filter.cpp)
+target_include_directories(point_cloud_blob_filter PUBLIC include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(point_cloud_blob_filter PUBLIC ${OpenCV_LIBS})
+
 add_executable(point_cloud_node src/point_cloud_node.cpp)
 ament_target_dependencies(point_cloud_node
   rclcpp rcl_interfaces sensor_msgs std_msgs geometry_msgs tf2_ros tf2 visualization_msgs)
-target_link_libraries(point_cloud_node point_cloud_depth_source oak_startup::measurement Threads::Threads)
+target_link_libraries(point_cloud_node point_cloud_depth_source point_cloud_blob_filter oak_startup::measurement Threads::Threads)
 
 install(TARGETS point_cloud_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
@@ -37,6 +42,9 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(point_cloud_blob_test test/blob_filter_test.cpp)
+  target_link_libraries(point_cloud_blob_test point_cloud_blob_filter)
+  add_test(NAME point_cloud_blob_test COMMAND point_cloud_blob_test)
   add_executable(point_cloud_temporal_test test/temporal_filter_test.cpp)
   target_include_directories(point_cloud_temporal_test PRIVATE include)
   add_test(NAME point_cloud_temporal_test COMMAND point_cloud_temporal_test)

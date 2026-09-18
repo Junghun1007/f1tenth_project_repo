@@ -73,6 +73,14 @@ namespace point_cloud
   X("temporal.window_frames", temporal.window_frames, as_int) \
   X("temporal.min_hits", temporal.min_hits, as_int) \
   X("temporal.max_age_sec", temporal.max_age_sec, as_double) \
+  X("blob.enabled", blob.enabled, as_bool) \
+  X("blob.cell_size_m", blob.cell_size_m, as_double) \
+  X("blob.closing_radius_cells", blob.closing_radius_cells, as_int) \
+  X("blob.opening_radius_cells", blob.opening_radius_cells, as_int) \
+  X("blob.min_area_m2", blob.min_area_m2, as_double) \
+  X("blob.min_thickness_m", blob.min_thickness_m, as_double) \
+  X("blob.min_fill_ratio", blob.min_fill_ratio, as_double) \
+  X("blob.max_aspect_ratio", blob.max_aspect_ratio, as_double) \
   X("publish.depth_image", publish_depth, as_bool) \
   X("input.max_age_sec", max_age_sec, as_double) \
   X("metrics.print_interval_sec", metrics_interval, as_double)
@@ -193,7 +201,8 @@ private:
         if (parameter_names_[i].compare(0, 7, "ground.") != 0 &&
           parameter_names_[i].compare(0, 4, "bev.") != 0 &&
           parameter_names_[i].compare(0, 8, "cluster.") != 0 &&
-          parameter_names_[i].compare(0, 9, "temporal.") != 0) {reopen = true;}
+          parameter_names_[i].compare(0, 9, "temporal.") != 0 &&
+          parameter_names_[i].compare(0, 5, "blob.") != 0) {reopen = true;}
       }
     }
     if (!changed) {return;}
@@ -207,7 +216,7 @@ private:
     last_parameters_ = parameters;
     RCLCPP_INFO(get_logger(), "%s", reopen ?
       "Parameters committed; reopening depth pipeline with the new settings" :
-      "Ground/BEV/cluster/temporal settings applied without restarting the camera");
+      "Ground/BEV/cluster/temporal/blob settings applied without restarting the camera");
   }
 
   void status(const std::string & value)
@@ -432,6 +441,7 @@ private:
           BevOptions bev;
           ClusterOptions cluster;
           TemporalOptions temporal;
+          BlobOptions blob;
           std::uint64_t temporal_revision;
           {
             std::lock_guard<std::mutex> lock(config_mutex_);
@@ -439,6 +449,7 @@ private:
             bev = config_.bev;
             cluster = config_.cluster;
             temporal = config_.temporal;
+            blob = config_.blob;
             temporal_revision = temporal_revision_;
           }
           const auto ground_result = removeGround(cloud, ground);
@@ -465,7 +476,13 @@ private:
           const auto temporal_points = temporal_filter_.apply(cloud,
             std::chrono::duration<double>(capture.time_since_epoch()).count(), temporal,
             cluster.min_height_m, cluster.max_height_m);
-          const auto clusters = obstacleClusters(cloud, cluster);
+          const auto candidates = obstacleClusters(cloud, cluster);
+          auto blobs = filterBlobs(candidates, blob, cluster);
+          const auto & clusters = blobs.clusters;
+          if (blobs.grid_limit_rejections > 0) {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 5000,
+              "Blob grid exceeded 1M cells; oversized candidates omitted");
+          }
           clusters_pub_->publish(clusterMessage(clusters, stamp));
           publishImages(*frame, k, stamp, c.publish_depth);
           if (first || stale) {

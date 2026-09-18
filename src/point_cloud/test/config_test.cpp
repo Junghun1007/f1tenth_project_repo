@@ -26,6 +26,7 @@ int main()
   rejects([](Config & c) {c.temporal.min_hits = c.temporal.window_frames + 1;});
   rejects([](Config & c) {c.cluster.support_height_m = c.cluster.min_height_m;});
   rejects([](Config & c) {c.cluster.base_radius_m = -1;});
+  rejects([](Config & c) {c.blob.min_area_m2 = 0;});
   rejects([](Config & c) {c.cluster.min_points = 0;});
   rejects([](Config & c) {c.resolution = "1080p";});
   rejects([](Config & c) {c.dot_intensity = 1.1;});

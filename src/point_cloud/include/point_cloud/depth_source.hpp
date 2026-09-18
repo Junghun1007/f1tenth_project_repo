@@ -5,6 +5,7 @@
 #include "point_cloud/bev_crop.hpp"
 #include "point_cloud/obstacle_clusters.hpp"
 #include "point_cloud/temporal_filter.hpp"
+#include "point_cloud/blob_filter.hpp"
 #include <map>
 
 #include <depthai/depthai.hpp>
@@ -38,6 +39,7 @@ struct Config
   BevOptions bev;
   ClusterOptions cluster;
   TemporalOptions temporal;
+  BlobOptions blob;
   bool publish_depth{true};
   double max_age_sec{0.5};
   double metrics_interval{1.0};
