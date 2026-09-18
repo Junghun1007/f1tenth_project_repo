@@ -111,7 +111,12 @@ inline double segmentDistance(cv::Point2d a,cv::Point2d b,cv::Point2d c,cv::Poin
 class Planner
 {
   struct Target {cv::Point2d center; int side;};
-  struct Region {double begin, end, offset;};
+  struct Region {
+    double begin,end,offset;
+    // Arc positions beside the object(s), distinct from the conservative
+    // longitudinal influence interval used to discover baseline collisions.
+    double anchor_begin,anchor_end;
+  };
 public:
   explicit Planner(Options options):o_(options) {validate(o_);}
   void reset() {targets_.clear(); clear_since_=0;}
@@ -212,6 +217,7 @@ public:
     std::vector<Region> regions;
     std::vector<bool> active(boxes.size(),false);
     std::vector<int> preferred_sides(boxes.size(),0);
+    std::vector<double> obstacle_arcs(boxes.size(),0);
     std::vector<Target> active_targets;
     const double sampling=.5*(length/count)*(1+o_.half_length*o_.max_curvature);
     for (std::size_t j=0;j<boxes.size();++j) {
@@ -226,6 +232,7 @@ public:
         if (gap<nearest) {nearest=gap; at=reference->arc_m[i-1]+t*(reference->arc_m[i]-reference->arc_m[i-1]);}
       }
       const auto middle=reference->point(at);
+      obstacle_arcs[j]=at;
       const double heading=reference->heading(at);
       const cv::Point2d normal(-std::sin(heading),std::cos(heading));
       const double lateral=(centers[j]-cv::Point2d(middle.x,middle.y)).dot(normal);
@@ -253,7 +260,8 @@ public:
           std::abs(offset),o_.max_offset,j+1,centers[j].x,centers[j].y,begin,end);
         return out;
       }
-      regions.push_back({begin,end,offset});
+      const double anchor=std::clamp(at,begin,end);
+      regions.push_back({begin,end,offset,anchor,anchor});
       active_targets.push_back({centers[j],side});
     }
     if (regions.empty()) {
@@ -339,30 +347,45 @@ public:
     // Only three smoothing lengths, independent of the number of obstacles.
     // Each attempt is already a multi-obstacle path, not a global left/right offset.
     for (double scale:{1.0,1.5,2.0}) {
-      std::sort(regions.begin(),regions.end(),[](const Region & a,const Region & b) {return a.begin<b.begin;});
-      std::vector<Region> merged;
+      std::stable_sort(regions.begin(),regions.end(),[](const Region & a,const Region & b) {
+        return a.anchor_begin<b.anchor_begin;
+      });
+      // Keep raw influence intervals intact for subsequent refinements. A
+      // fresh profile can shorten overlapping plateaus without losing objects.
+      std::vector<Region> profile;
       for (const auto & region:regions) {
         if (std::abs(region.offset)>o_.max_offset) {
           out.status=cv::format("BLOCKED: offset %.2fm > %.2fm (s=%.2f..%.2f)",
             std::abs(region.offset),o_.max_offset,region.begin,region.end);
           return out;
         }
-        if (merged.empty() || region.begin>merged.back().end+1e-9) {merged.push_back(region); continue;}
-        auto & previous=merged.back();
-        // A zero-offset zone means a previously clear object now requires a
-        // return to the baseline. Do not overwrite it with a passing plateau.
+        if (profile.empty() || region.begin>profile.back().end+1e-9) {profile.push_back(region); continue;}
+        auto & previous=profile.back();
         if ((previous.offset>0)!=(region.offset>0) || (previous.offset<0)!=(region.offset<0)) {
-          out.status="BLOCKED: opposing obstacle zones overlap"; return out;
+          profile.push_back(region); continue;
         }
+        previous.begin=std::min(previous.begin,region.begin);
         previous.end=std::max(previous.end,region.end);
+        previous.anchor_begin=std::min(previous.anchor_begin,region.anchor_begin);
+        previous.anchor_end=std::max(previous.anchor_end,region.anchor_end);
         previous.offset=region.offset>0?std::max(previous.offset,region.offset):std::min(previous.offset,region.offset);
       }
-      regions=std::move(merged); out.region_count=regions.size();
+      for (std::size_t i=1;i<profile.size();++i) {
+        auto & previous=profile[i-1]; auto & next=profile[i];
+        if (previous.end<next.begin) {continue;}
+        // Overlap of inflated influence ranges is NOT a proof of collision.
+        // Keep the required offsets at the passing anchors and interpolate
+        // between them. The actual rotated-body/path checks below decide if
+        // the resulting S-curve fits; no obstacle envelope is reduced here.
+        previous.end=previous.anchor_end;
+        next.begin=next.anchor_begin;
+      }
+      out.region_count=profile.size();
       const double transition=o_.transition*scale;
-      const double maneuver_end=std::min(length,regions.back().end+transition);
+      const double maneuver_end=std::min(length,profile.back().end+transition);
       bev_handoff::AvoidanceCandidate candidate; candidate.transition_m=transition;
       for (std::size_t i=0;i<arc.size();++i) {
-        const double offset=displacement(arc[i],regions,transition,lead,length);
+        const double offset=displacement(arc[i],profile,transition,lead,length);
         candidate.max_offset_m=std::max(candidate.max_offset_m,std::abs(offset));
         candidate.path.push_back(out.original[i]+normals[i]*offset);
         if (arc[i]>=maneuver_end) {break;}
@@ -404,7 +427,8 @@ public:
           }
         }
         if (!hit) {continue;}
-        regions.push_back({begin,end,offset}); active[j]=true; added=true;
+        const double anchor=std::clamp(obstacle_arcs[j],begin,end);
+        regions.push_back({begin,end,offset,anchor,anchor}); active[j]=true; added=true;
         ++out.obstacle_count; active_targets.push_back({centers[j],side});
       }
       if (added) {
@@ -425,7 +449,7 @@ public:
           if (found==targets_.end()) {targets_.push_back(target);}
         }
         out.recommended_speed=std::min(o_.max_speed,std::sqrt(o_.lateral_acceleration/std::max(.001,out.max_curvature)));
-        if (!o_.control) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*(lead+regions.front().begin)));}
+        if (!o_.control) {out.recommended_speed=std::min(out.recommended_speed,std::sqrt(2*o_.deceleration*(lead+profile.front().begin)));}
         out.candidates.push_back(std::move(candidate));
         return out;
       }
