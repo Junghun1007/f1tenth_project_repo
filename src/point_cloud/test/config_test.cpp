@@ -23,6 +23,7 @@ int main()
       try {validate(c);} catch (const std::invalid_argument &) {return;}
       throw std::runtime_error("Invalid settings unexpectedly accepted");
     };
+  rejects([](Config & c) {c.temporal.min_hits = c.temporal.window_frames + 1;});
   rejects([](Config & c) {c.cluster.min_points = 0;});
   rejects([](Config & c) {c.resolution = "1080p";});
   rejects([](Config & c) {c.dot_intensity = 1.1;});

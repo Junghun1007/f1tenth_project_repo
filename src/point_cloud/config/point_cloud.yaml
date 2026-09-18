@@ -46,6 +46,15 @@ point_cloud:
     ground.max_height_m: 0.50
     ground.max_tilt_deg: 45.0        # Maximum floor normal tilt from optical +Y.
     ground.min_inlier_ratio: 0.35    # Minimum floor fraction in sampled lower-half points.
+    # Repeated 3D observations before clustering; assumes a stationary vehicle.
+    # Current points only: never replay vanished points. OFF restores per-frame detection.
+    temporal.enabled: true
+    temporal.voxel_size_m: 0.04       # 4cm 3D cells aggregate observations, not output points.
+    temporal.match_distance_m: 0.04   # Match current/previous cell centroids within 4cm in XYZ.
+    temporal.window_frames: 5        # Sliding window including current fresh frame.
+    temporal.min_hits: 4             # Require observations in >=4 different frames.
+    temporal.max_age_sec: 0.25        # Discard old evidence even if fewer frames arrived.
+
     # Per-frame obstacle classification in the measured BEV vehicle frame.
     # All cluster.* settings are live; no camera restart or temporal tracking.
     cluster.cell_size_m: 0.02         # XY aggregation cell; original accepted points are displayed.

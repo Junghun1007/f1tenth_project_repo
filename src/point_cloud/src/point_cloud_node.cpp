@@ -66,6 +66,12 @@ namespace point_cloud
   X("cluster.min_support_points", cluster.min_support_points, as_int) \
   X("cluster.min_support_ratio", cluster.min_support_ratio, as_double) \
   X("cluster.min_extent_m", cluster.min_extent_m, as_double) \
+  X("temporal.enabled", temporal.enabled, as_bool) \
+  X("temporal.voxel_size_m", temporal.voxel_size_m, as_double) \
+  X("temporal.match_distance_m", temporal.match_distance_m, as_double) \
+  X("temporal.window_frames", temporal.window_frames, as_int) \
+  X("temporal.min_hits", temporal.min_hits, as_int) \
+  X("temporal.max_age_sec", temporal.max_age_sec, as_double) \
   X("publish.depth_image", publish_depth, as_bool) \
   X("input.max_age_sec", max_age_sec, as_double) \
   X("metrics.print_interval_sec", metrics_interval, as_double)
@@ -185,7 +191,8 @@ private:
         changed = true;
         if (parameter_names_[i].compare(0, 7, "ground.") != 0 &&
           parameter_names_[i].compare(0, 4, "bev.") != 0 &&
-          parameter_names_[i].compare(0, 8, "cluster.") != 0) {reopen = true;}
+          parameter_names_[i].compare(0, 8, "cluster.") != 0 &&
+          parameter_names_[i].compare(0, 9, "temporal.") != 0) {reopen = true;}
       }
     }
     if (!changed) {return;}
@@ -193,12 +200,13 @@ private:
     {
       std::lock_guard<std::mutex> lock(config_mutex_);
       config_ = next;
+      ++temporal_revision_;
       if (reopen) {++revision_;}
     }
     last_parameters_ = parameters;
     RCLCPP_INFO(get_logger(), "%s", reopen ?
       "Parameters committed; reopening depth pipeline with the new settings" :
-      "Ground/BEV/cluster settings applied without restarting the camera");
+      "Ground/BEV/cluster/temporal settings applied without restarting the camera");
   }
 
   void status(const std::string & value)
@@ -264,6 +272,7 @@ private:
 
   void clearCloud()
   {
+    temporal_filter_.clear();
     const auto stamp = now();
     const auto empty = cloudMessage(Cloud{}, stamp);
     cloud_pub_->publish(empty);
@@ -421,11 +430,15 @@ private:
           GroundOptions ground;
           BevOptions bev;
           ClusterOptions cluster;
+          TemporalOptions temporal;
+          std::uint64_t temporal_revision;
           {
             std::lock_guard<std::mutex> lock(config_mutex_);
             ground = config_.ground;
             bev = config_.bev;
             cluster = config_.cluster;
+            temporal = config_.temporal;
+            temporal_revision = temporal_revision_;
           }
           const auto ground_result = removeGround(cloud, ground);
           if (ground.enabled && !ground_result.detected) {
@@ -444,6 +457,13 @@ private:
           auto bev_message = cloudMessage(cloud, stamp);
           bev_message.header.frame_id = bev_frame_id_;
           bev_pub_->publish(bev_message);
+          if (temporal_revision != applied_temporal_revision_) {
+            temporal_filter_.clear();
+            applied_temporal_revision_ = temporal_revision;
+          }
+          const auto temporal_points = temporal_filter_.apply(cloud,
+            std::chrono::duration<double>(capture.time_since_epoch()).count(), temporal,
+            cluster.min_height_m, cluster.max_height_m);
           const auto clusters = obstacleClusters(cloud, cluster);
           clusters_pub_->publish(clusterMessage(clusters, stamp));
           publishImages(*frame, k, stamp, c.publish_depth);
@@ -465,11 +485,11 @@ private:
           if (elapsed >= c.metrics_interval) {
             const std::size_t total = static_cast<std::size_t>(cloud.width) * cloud.height;
             RCLCPP_INFO(get_logger(),
-              "depth=%ux%u cloud=%ux%u FPS=%.1f valid=%zu/%zu (%.1f%%) age=%.1fms host=%.2fms XYZ=%.1fMB/s clusters=%zu/%zu obstacle_points=%zu",
+              "depth=%ux%u cloud=%ux%u FPS=%.1f valid=%zu/%zu (%.1f%%) age=%.1fms host=%.2fms XYZ=%.1fMB/s clusters=%zu/%zu obstacle_points=%zu persistent_points=%zu",
               frame->getWidth(), frame->getHeight(), cloud.width, cloud.height, frames / elapsed,
               raw_valid, total, 100.0 * raw_valid / total, age * 1000,
               processing_ms / frames, cloud.xyz.size() * sizeof(float) * frames / elapsed / 1e6,
-              clusters.accepted, clusters.candidates, clusters.points.valid_points);
+              clusters.accepted, clusters.candidates, clusters.points.valid_points, temporal_points);
             frames = 0;
             processing_ms = 0;
             report_start = host_now;
@@ -489,6 +509,9 @@ private:
   }
 
   Config config_;
+  TemporalFilter temporal_filter_;  // Accessed only by cameraLoop/clearCloud on worker.
+  std::uint64_t temporal_revision_{0};  // Protected by config_mutex_.
+  std::uint64_t applied_temporal_revision_{0};  // Worker only.
   oak_startup::OakStartupMeasurementConfig startup_config_;
   double camera_x_{-0.16}, camera_y_{0.0}, camera_yaw_{0.0};
   std::string bev_frame_id_;
