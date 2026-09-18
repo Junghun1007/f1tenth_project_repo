@@ -148,6 +148,10 @@ ros2 topic echo /auto/avoidance_preview/status
 일대일로 대응시켜 물체별 방향을 유지한다. 하나의 전역 LEFT/RIGHT 방향을 유지하지 않는다.
 
 관측 군집 범위와 기존 차체·물체 여유 설정으로 필요한 이동량과 통과 구간을 계산한다.
+필요 이동량은 차체 선분을 중앙선 법선 방향으로 옮겼을 때 확장 장애물 사각형과
+충돌하는 이동량 구간을 X/Y/선분 법선의 분리축으로 구해 계산한다. 사각형 전체를
+횡방향으로 투영하던 과대 추정을 피하며, 선택된 경로의 실제 방향으로 최종 충돌 검사를
+다시 수행한다. 차량·물체 여유를 줄이거나 `max_offset_m` 상한을 높이지 않는다.
 회피 구간을 중앙선의 호 길이 순서로 정렬하고, 겹치는 같은 방향 구간은 합친다.
 반대 방향으로 이동해야 하는 구간들이 겹치면 임의로 서로 상쇄하지 않고
 `BLOCKED: opposing obstacle zones overlap`으로 표시한다.
@@ -188,6 +192,10 @@ Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못
 `AVOIDANCE rejected`는 연결 길이별 첫 탈락 조건과 검사 중 최대 곡률을 2초마다 표시한다.
 `curvature`, `lane clearance`, `obstacle`의 `s`는 해당 생성 경로 시작부터의 호 길이(m)다.
 `AVOIDANCE geometry`는 속도 보정까지 포함한 차체 여유와 직선 기본 필요 폭을 보여 준다.
+이동 상한 초과는 `BLOCKED: offset <필요 거리>m > <상한>m`으로 표시한다.
+최초 장애물 검사에서는 프레임 내 군집 순번, 앞차축 기준 XY(m), 중앙선의 영향 구간 s(m)도
+같이 기록한다. 군집 순번은 추적 ID가 아니다. `attempts=0`이면 경로 생성 전 단계에서
+중단된 것이므로 차선·곡률 검사에서 탈락한 것으로 해석하지 않는다.
 `ros2 topic echo /auto/avoidance_preview/status --once`로 정지 상태도 확인할 수 있다.
 
 기존 `obstacles_test.yaml`의 `auto_obstacles.ros__parameters`에 필요하면 추가한다.

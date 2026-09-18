@@ -2,9 +2,9 @@
 #include "bev_handoff/avoidance_handoff.hpp"
 #include "auto_control/control_core.hpp"
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <utility>
 
@@ -59,6 +59,36 @@ inline bool intersects(cv::Point2d a,cv::Point2d b,const bev_handoff::SafetyBox 
     lo=std::max(lo,t0); hi=std::min(hi,t1); return lo<=hi;
   };
   return axis(a.x,b.x-a.x,box.x0,box.x1)&&axis(a.y,b.y-a.y,box.y0,box.y1);
+}
+// Exact interval of translations along normal for which a body segment
+// intersects the (already inflated) obstacle AABB. The separating axes of a
+// segment and rectangle are X, Y, and the segment's perpendicular. Intersect
+// their translation intervals instead of projecting the entire rectangle onto
+// normal: far corners outside the longitudinal overlap must not force a detour.
+inline std::optional<std::pair<double,double>> blockedOffsets(
+  const std::pair<cv::Point2d,cv::Point2d> & pose,const cv::Point2d & normal,
+  const bev_handoff::SafetyBox & box,double allowance)
+{
+  const cv::Point2d center((box.x0+box.x1)/2,(box.y0+box.y1)/2);
+  const double hx=(box.x1-box.x0)/2+allowance,hy=(box.y1-box.y0)/2+allowance;
+  const auto segment=pose.second-pose.first;
+  double low=-std::numeric_limits<double>::infinity(),high=-low;
+  for (const auto & axis:{cv::Point2d(1,0),cv::Point2d(0,1),cv::Point2d(-segment.y,segment.x)}) {
+    if (axis.dot(axis)<1e-18) {continue;}
+    const double a=pose.first.dot(axis),b=pose.second.dot(axis);
+    const double extent=hx*std::abs(axis.x)+hy*std::abs(axis.y);
+    const double box_low=center.dot(axis)-extent,box_high=center.dot(axis)+extent;
+    const double shift=normal.dot(axis);
+    if (std::abs(shift)<1e-12) {
+      if (std::max(a,b)<box_low || std::min(a,b)>box_high) {return std::nullopt;}
+      continue;
+    }
+    double enter=(box_low-std::max(a,b))/shift,leave=(box_high-std::min(a,b))/shift;
+    if (enter>leave) {std::swap(enter,leave);}
+    low=std::max(low,enter); high=std::min(high,leave);
+    if (low>high) {return std::nullopt;}
+  }
+  return std::make_pair(low,high);
 }
 inline double pointSegment(cv::Point2d p,cv::Point2d a,cv::Point2d b)
 {
@@ -166,7 +196,7 @@ public:
     targets_=std::move(visible_targets);
     // Geometry is independent of obstacle count; compute it once per frame.
     struct Sample {
-      cv::Point2d point,normal;
+      cv::Point2d normal;
       std::pair<cv::Point2d,cv::Point2d> pose;
       double arc,gap,allowance;
     };
@@ -178,7 +208,7 @@ public:
       const double gap=std::max(i?s-reference->arc_m[i-1]:0,
         i+1<reference->arc_m.size()?reference->arc_m[i+1]-s:0);
       const double allowance=.5*gap*(1+o_.half_length*std::max(o_.max_curvature,std::abs(reference->curvature(s))));
-      baseline.push_back({{p.x,p.y},{-std::sin(heading),std::cos(heading)},
+      baseline.push_back({{-std::sin(heading),std::cos(heading)},
         body({p.x,p.y},heading,i==0),s,gap,allowance});
     }
     std::vector<Region> regions;
@@ -212,14 +242,19 @@ public:
         blocking=true;
         begin=std::min(begin,std::max(0.0,sample.arc-sample.gap));
         end=std::max(end,std::min(length,sample.arc+sample.gap));
-        for (const auto & corner:corners(boxes[j])) {
-          const double required=(corner-sample.point).dot(sample.normal)+side*std::max(sampling,sample.allowance);
+        const auto forbidden=blockedOffsets(sample.pose,sample.normal,boxes[j],std::max(sampling,sample.allowance));
+        if (forbidden) {
+          const double required=(side>0?forbidden->second:forbidden->first)+side*1e-4;
           offset=side>0?std::max(offset,required):std::min(offset,required);
         }
       }
       if (!blocking) {continue;}
       ++out.obstacle_count; active[j]=true;
-      if (std::abs(offset)>o_.max_offset) {out.status="BLOCKED: local offset limit"; return out;}
+      if (std::abs(offset)>o_.max_offset) {
+        out.status=cv::format("BLOCKED: offset %.2fm > %.2fm (cluster=%zu xy=%.2f,%.2f s=%.2f..%.2f)",
+          std::abs(offset),o_.max_offset,j+1,centers[j].x,centers[j].y,begin,end);
+        return out;
+      }
       regions.push_back({begin,end,offset});
       active_targets.push_back({centers[j],side});
     }
@@ -309,7 +344,11 @@ public:
       std::sort(regions.begin(),regions.end(),[](const Region & a,const Region & b) {return a.begin<b.begin;});
       std::vector<Region> merged;
       for (const auto & region:regions) {
-        if (std::abs(region.offset)>o_.max_offset) {out.status="BLOCKED: local offset limit"; return out;}
+        if (std::abs(region.offset)>o_.max_offset) {
+          out.status=cv::format("BLOCKED: offset %.2fm > %.2fm (s=%.2f..%.2f)",
+            std::abs(region.offset),o_.max_offset,region.begin,region.end);
+          return out;
+        }
         if (merged.empty() || region.begin>merged.back().end+1e-9) {merged.push_back(region); continue;}
         auto & previous=merged.back();
         // A zero-offset zone means a previously clear object now requires a
@@ -359,8 +398,10 @@ public:
           hit=true;
           begin=std::min(begin,std::max(0.0,arc[i]-length/count));
           end=std::max(end,std::min(length,arc[i]+length/count));
-          for (const auto & corner:corners(boxes[j])) {
-            const double required=(corner-out.original[i]).dot(normals[i])+side*allowance;
+          const auto forbidden=blockedOffsets(proposed_poses[i],normals[i],boxes[j],allowance);
+          if (forbidden) {
+            const double current_offset=(candidate.path[i]-out.original[i]).dot(normals[i]);
+            const double required=current_offset+(side>0?forbidden->second:forbidden->first)+side*1e-4;
             offset=side>0?std::max(offset,required):std::min(offset,required);
           }
         }
@@ -397,8 +438,6 @@ public:
   }
   void unavailable() {clear_since_=0;}
 private:
-  static std::array<cv::Point2d,4> corners(const bev_handoff::SafetyBox & b)
-  {return {{{b.x0,b.y0},{b.x0,b.y1},{b.x1,b.y0},{b.x1,b.y1}}};}
   static double blend(double a,double b,double s,double begin,double end)
   {return a+(b-a)*smooth((s-begin)/std::max(1e-9,end-begin));}
   static double displacement(double s,const std::vector<Region> & regions,
