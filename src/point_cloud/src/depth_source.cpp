@@ -39,6 +39,7 @@ dai::StereoDepthConfig::MedianFilter median(const std::string & value)
 void validate(const Config & c)
 {
   validateGround(c.ground);
+  validateBev(c.bev);
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);
@@ -134,6 +135,28 @@ std::shared_ptr<dai::ImgFrame> DepthSource::tryGet()
 {
   if (!pipeline_->isRunning()) {throw std::runtime_error("Depth pipeline stopped");}
   return queue_->tryGet<dai::ImgFrame>();
+}
+
+RigidTransform DepthSource::rgbFromFrame(dai::ImgFrame & frame)
+{
+  const auto & transformation = frame.getTransformation();
+  if (!transformation.isValid()) {throw std::runtime_error("Missing depth frame calibration");}
+  // Match ir_camera_driver: metadata already accounts for stereo rectification.
+  const auto extrinsics = transformation.getExtrinsics();
+  const auto reference = extrinsics.toCameraSocket;
+  if (reference == dai::CameraBoardSocket::AUTO) {
+    throw std::runtime_error("Depth frame has no calibration reference socket");
+  }
+  const auto reference_from_frame = calibratedTransform(
+    extrinsics.getTransformationMatrix(false, dai::LengthUnit::METER), 1.0);
+  auto found = rgb_from_reference_.find(reference);
+  if (found == rgb_from_reference_.end()) {
+    const auto t = reference == dai::CameraBoardSocket::CAM_A ? RigidTransform{} :
+      calibratedTransform(device_->getCalibration().getCameraExtrinsics(
+        reference, dai::CameraBoardSocket::CAM_A, false), 0.01);
+    found = rgb_from_reference_.emplace(reference, t).first;
+  }
+  return compose(found->second, reference_from_frame);
 }
 
 std::string DepthSource::deviceId() const {return device_->getDeviceId();}

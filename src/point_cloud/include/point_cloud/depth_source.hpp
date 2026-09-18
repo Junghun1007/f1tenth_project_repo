@@ -2,6 +2,8 @@
 
 #include "point_cloud/depth_projection.hpp"
 #include "point_cloud/ground_filter.hpp"
+#include "point_cloud/bev_crop.hpp"
+#include <map>
 
 #include <depthai/depthai.hpp>
 
@@ -31,6 +33,7 @@ struct Config
   bool adaptive_median{false};
   ProjectionOptions projection;
   GroundOptions ground;
+  BevOptions bev;
   bool publish_depth{true};
   double max_age_sec{0.5};
   double metrics_interval{1.0};
@@ -47,8 +50,10 @@ public:
   ~DepthSource();
   std::shared_ptr<dai::ImgFrame> tryGet();
   std::string deviceId() const;
+  RigidTransform rgbFromFrame(dai::ImgFrame & frame);
 
 private:
+  std::map<dai::CameraBoardSocket, RigidTransform> rgb_from_reference_;
   std::shared_ptr<dai::Device> device_;
   std::unique_ptr<dai::Pipeline> pipeline_;
   std::shared_ptr<dai::MessageQueue> queue_;

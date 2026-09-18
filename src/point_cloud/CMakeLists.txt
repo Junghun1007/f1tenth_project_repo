@@ -14,6 +14,9 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(oak_startup REQUIRED)
 find_package(depthai 3.6 CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -23,11 +26,13 @@ target_link_libraries(point_cloud_depth_source PUBLIC depthai::core)
 
 add_executable(point_cloud_node src/point_cloud_node.cpp)
 ament_target_dependencies(point_cloud_node
-  rclcpp rcl_interfaces sensor_msgs std_msgs geometry_msgs tf2_ros)
-target_link_libraries(point_cloud_node point_cloud_depth_source Threads::Threads)
+  rclcpp rcl_interfaces sensor_msgs std_msgs geometry_msgs tf2_ros tf2 visualization_msgs)
+target_link_libraries(point_cloud_node point_cloud_depth_source oak_startup::measurement Threads::Threads)
 
 install(TARGETS point_cloud_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch rviz DESTINATION share/${PROJECT_NAME})
+install(FILES ../bev_processor/config/bev_config.yaml
+  DESTINATION share/${PROJECT_NAME}/config RENAME bev_reference.yaml)
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
@@ -35,6 +40,15 @@ if(BUILD_TESTING)
   add_executable(point_cloud_projection_test test/projection_test.cpp)
   target_include_directories(point_cloud_projection_test PRIVATE include)
   add_test(NAME point_cloud_projection_test COMMAND point_cloud_projection_test)
+  add_executable(point_cloud_bev_test test/bev_crop_test.cpp)
+  target_include_directories(point_cloud_bev_test PRIVATE include)
+  add_test(NAME point_cloud_bev_test COMMAND point_cloud_bev_test)
+  add_executable(point_cloud_bev_reference_test
+    test/bev_reference_test.cpp ../bev_processor/src/bev_geometry.cpp)
+  target_include_directories(point_cloud_bev_reference_test PRIVATE
+    include ../bev_processor/include ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(point_cloud_bev_reference_test ${OpenCV_LIBS})
+  add_test(NAME point_cloud_bev_reference_test COMMAND point_cloud_bev_reference_test)
   add_executable(point_cloud_ground_test test/ground_filter_test.cpp)
   target_include_directories(point_cloud_ground_test PRIVATE include)
   add_test(NAME point_cloud_ground_test COMMAND point_cloud_ground_test)

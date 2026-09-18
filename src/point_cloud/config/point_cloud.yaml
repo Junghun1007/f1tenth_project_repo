@@ -33,6 +33,10 @@ point_cloud:
     points.pixel_stride: 1           # 1=all pixels; 2=one point per 2x2 block; 1..16.
     points.min_depth_m: 0.0          # Optical-axis Z; 0=no additional minimum.
     points.max_depth_m: 0.0          # 0=no additional maximum; e.g. 4.0 for a close view.
+    # Launch imports metric bounds, CAM_A position/yaw and startup settings from
+    # bev_config_file (the BEV YAML). This file can explicitly override those values.
+    bev.enabled: true               # Crop points_bev to the BEV XY footprint; preserve height.
+
     # Per-frame floor fit in optical coordinates; does not change the view frame.
     # Host-only settings: live changes do not restart the camera.
     ground.enabled: true             # false: points_filtered also shows the original cloud.

@@ -1,4 +1,7 @@
 #include "point_cloud/depth_source.hpp"
+#include "point_cloud/startup_parameters.hpp"
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <visualization_msgs/msg/marker.hpp>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
@@ -42,6 +45,11 @@ namespace point_cloud
   X("points.pixel_stride", projection.pixel_stride, as_int) \
   X("points.min_depth_m", projection.min_depth_m, as_double) \
   X("points.max_depth_m", projection.max_depth_m, as_double) \
+  X("bev.enabled", bev.enabled, as_bool) \
+  X("bev.x_min_m", bev.x_min_m, as_double) \
+  X("bev.x_max_m", bev.x_max_m, as_double) \
+  X("bev.y_min_m", bev.y_min_m, as_double) \
+  X("bev.y_max_m", bev.y_max_m, as_double) \
   X("ground.enabled", ground.enabled, as_bool) \
   X("ground.distance_m", ground.distance_m, as_double) \
   X("ground.max_depth_m", ground.max_depth_m, as_double) \
@@ -96,11 +104,26 @@ public:
     if (frame_id_.empty() || view_frame_id_.empty() || frame_id_ == view_frame_id_) {
       throw std::invalid_argument("frame_id and view_frame_id must be nonempty and different");
     }
+    bev_frame_id_ = declare_parameter<std::string>("bev.frame_id", "front_axle_bev", read_only);
+    if (bev_frame_id_.empty() || bev_frame_id_ == frame_id_ || bev_frame_id_ == view_frame_id_) {
+      throw std::invalid_argument("bev.frame_id must be nonempty and distinct from camera frames");
+    }
+    startup_config_ = startupParameters(*this);
+    startup_config_.device_id = device_id_;
+    camera_x_ = declare_parameter<double>("bev.camera_x_m", -0.16, read_only);
+    camera_y_ = declare_parameter<double>("bev.camera_y_m", 0.0, read_only);
+    camera_yaw_ = declare_parameter<double>("bev.camera_yaw_deg", 0.0, read_only);
+    if (!std::isfinite(camera_x_) || !std::isfinite(camera_y_) || !std::isfinite(camera_yaw_)) {
+      throw std::invalid_argument("BEV camera position/yaw must be finite");
+    }
     last_parameters_ = get_parameters(parameter_names_);
     config_ = fromParameters(last_parameters_);
     const auto qos = rclcpp::SensorDataQoS().keep_last(1);
     cloud_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points", qos);
     filtered_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_filtered", qos);
+    bev_pub_ = create_publisher<sensor_msgs::msg::PointCloud2>("~/points_bev", qos);
+    boundary_pub_ = create_publisher<visualization_msgs::msg::Marker>(
+      "~/bev_bounds", rclcpp::QoS(1).transient_local());
     depth_pub_ = create_publisher<sensor_msgs::msg::Image>("~/depth/image_raw", qos);
     info_pub_ = create_publisher<sensor_msgs::msg::CameraInfo>("~/depth/camera_info", qos);
     status_pub_ = create_publisher<std_msgs::msg::String>("~/status", rclcpp::QoS(1).transient_local());
@@ -150,7 +173,8 @@ private:
     for (std::size_t i = 0; i < parameters.size(); ++i) {
       if (parameters[i].to_parameter_msg() != last_parameters_[i].to_parameter_msg()) {
         changed = true;
-        if (parameter_names_[i].compare(0, 7, "ground.") != 0) {reopen = true;}
+        if (parameter_names_[i].compare(0, 7, "ground.") != 0 &&
+          parameter_names_[i].compare(0, 4, "bev.") != 0) {reopen = true;}
       }
     }
     if (!changed) {return;}
@@ -163,7 +187,7 @@ private:
     last_parameters_ = parameters;
     RCLCPP_INFO(get_logger(), "%s", reopen ?
       "Parameters committed; reopening depth pipeline with the new settings" :
-      "Ground filter settings applied without restarting the camera");
+      "Ground/BEV settings applied without restarting the camera");
   }
 
   void status(const std::string & value)
@@ -202,6 +226,9 @@ private:
     const auto empty = cloudMessage(Cloud{}, now());
     cloud_pub_->publish(empty);
     filtered_pub_->publish(empty);
+    auto bev_empty = empty;
+    bev_empty.header.frame_id = bev_frame_id_;
+    bev_pub_->publish(bev_empty);
   }
 
   void publishImages(
@@ -236,9 +263,51 @@ private:
     depth_pub_->publish(std::move(image));
   }
 
+  void publishBevView(const RigidTransform & vehicle_from_optical,
+    const BevOptions & options, const rclcpp::Time & stamp)
+  {
+    // Keep original optical/view topics connected to the new RViz fixed frame.
+    const RigidTransform optical_from_view{{0,-1,0, 0,0,-1, 1,0,0}, {0,0,0}};
+    const auto vehicle_from_view = compose(vehicle_from_optical, optical_from_view);
+    const auto & r = vehicle_from_view.rotation;
+    geometry_msgs::msg::TransformStamped tf;
+    tf.header.stamp = stamp;
+    tf.header.frame_id = bev_frame_id_;
+    tf.child_frame_id = view_frame_id_;
+    tf.transform.translation.x = vehicle_from_view.translation[0];
+    tf.transform.translation.y = vehicle_from_view.translation[1];
+    tf.transform.translation.z = vehicle_from_view.translation[2];
+    tf2::Quaternion q;
+    tf2::Matrix3x3(r[0],r[1],r[2],r[3],r[4],r[5],r[6],r[7],r[8]).getRotation(q);
+    tf.transform.rotation.x = q.x(); tf.transform.rotation.y = q.y();
+    tf.transform.rotation.z = q.z(); tf.transform.rotation.w = q.w();
+    tf_broadcaster_->sendTransform(tf);
+    visualization_msgs::msg::Marker marker;
+    marker.header = tf.header;
+    marker.ns = "bev_footprint";
+    marker.id = 0;
+    marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+    marker.action = visualization_msgs::msg::Marker::ADD;
+    marker.pose.orientation.w = 1.0;
+    marker.scale.x = 0.01;
+    marker.color.r = 0.1f; marker.color.g = 1.0f; marker.color.b = 0.5f; marker.color.a = 1.0f;
+    for (const auto & xy : std::array<std::array<double, 2>, 5>{{
+      {options.x_min_m, options.y_min_m}, {options.x_max_m, options.y_min_m},
+      {options.x_max_m, options.y_max_m}, {options.x_min_m, options.y_max_m},
+      {options.x_min_m, options.y_min_m}}})
+    {
+      geometry_msgs::msg::Point point;
+      point.x = xy[0]; point.y = xy[1]; point.z = 0;
+      marker.points.push_back(point);
+    }
+    boundary_pub_->publish(marker);
+  }
+
   void cameraLoop()
   {
     std::string selected_id = device_id_;
+    RigidTransform vehicle_from_rgb;
+    bool mount_ready = false;
     while (!stopping()) {
       Config c;
       std::uint64_t revision;
@@ -249,6 +318,20 @@ private:
       }
       try {
         clearCloud();
+        if (!mount_ready) {
+          status("MEASURING BEV MOUNT: keep stationary on flat ground");
+          RCLCPP_INFO(get_logger(), "Measuring BEV mount with oak_startup; keep stationary on flat ground");
+          const auto measurement = oak_startup::measureOakStartupExtrinsics(
+            startup_config_, [this]() {return stopping();});
+          selected_id = measurement.device_id;
+          vehicle_from_rgb = vehicleFromRgb(camera_x_, camera_y_, measurement.height_m,
+            measurement.roll_deg, measurement.pitch_down_deg, camera_yaw_);
+          mount_ready = true;
+          RCLCPP_INFO(get_logger(),
+            "BEV mount: CAM_A height=%.4fm roll=%.3fdeg pitch_down=%.3fdeg; front axle X/Y=%.3f/%.3fm",
+            measurement.height_m, measurement.roll_deg, measurement.pitch_down_deg, camera_x_, camera_y_);
+        }
+        if (stopping()) {break;}
         status("OPENING");
         DepthSource source(c, selected_id);
         selected_id = source.deviceId();
@@ -262,6 +345,7 @@ private:
         std::size_t frames = 0;
         double processing_ms = 0;
         bool stale = false, first = true;
+        auto last_view_publish = std::chrono::steady_clock::time_point::min();
         while (!stopping() && revision_.load() == revision) {
           auto frame = source.tryGet();
           const auto host_now = std::chrono::steady_clock::now();
@@ -292,9 +376,11 @@ private:
           cloud_pub_->publish(cloudMessage(cloud, stamp));
           const auto raw_valid = cloud.valid_points;
           GroundOptions ground;
+          BevOptions bev;
           {
             std::lock_guard<std::mutex> lock(config_mutex_);
             ground = config_.ground;
+            bev = config_.bev;
           }
           const auto ground_result = removeGround(cloud, ground);
           if (ground.enabled && !ground_result.detected) {
@@ -302,6 +388,17 @@ private:
               "Ground plane not found; points_filtered contains the original points");
           }
           filtered_pub_->publish(cloudMessage(cloud, stamp));
+          const auto vehicle_from_optical = compose(vehicle_from_rgb, source.rgbFromFrame(*frame));
+          transformAndCrop(cloud, vehicle_from_optical, bev);
+          if (first || last_view_publish == std::chrono::steady_clock::time_point::min() ||
+            std::chrono::duration<double>(host_now - last_view_publish).count() >= 0.2)
+          {
+            publishBevView(vehicle_from_optical, bev, stamp);
+            last_view_publish = host_now;
+          }
+          auto bev_message = cloudMessage(cloud, stamp);
+          bev_message.header.frame_id = bev_frame_id_;
+          bev_pub_->publish(bev_message);
           publishImages(*frame, k, stamp, c.publish_depth);
           if (first || stale) {
             status("STREAMING");
@@ -344,6 +441,11 @@ private:
   }
 
   Config config_;
+  oak_startup::OakStartupMeasurementConfig startup_config_;
+  double camera_x_{-0.16}, camera_y_{0.0}, camera_yaw_{0.0};
+  std::string bev_frame_id_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr bev_pub_;
+  rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr boundary_pub_;
   std::string device_id_, frame_id_, view_frame_id_;
   std::vector<std::string> parameter_names_;
   std::vector<rclcpp::Parameter> last_parameters_;
