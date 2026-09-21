@@ -2,7 +2,7 @@
 # 사용자 첨부 설정값 유지 + 실제 장애물 회피 제어 활성화.
 # auto_control_params_file:=/absolute/path/auto_control_test.yaml 로 지정.
 # 장애물 검출/중앙선 변형 설정은 별도 obstacle_params_file YAML에서 관리.
-# 일반 최고속도 1.0m/s, 장애물 검출 중 상한 1.2m/s. 상한은 속도를 올리지 않으며 마지막 검출 1초 후 해제.
+# 일반 최고속도 1.4m/s, 장애물 검출 중 상한 1.0m/s. 마지막 검출 1초 후 제한 해제.
 # 기존 avoidance_speed_cap_mps 및 obstacles.avoidance.max_speed_mps는 폐기되어 무시됨.
 # 회피 관련 항목은 시작 시 적용: 수정 후 launch 재시작.
 # manual_test:=true이면 실차 출력 차단. false이면 아래 drive 설정으로 실차 출력.
@@ -14,7 +14,7 @@ auto_control:
 
     # ======================================================================
     # 01. 실행 모드와 기능 선택
-    # 현재: 실차 출력 ON / 실제 회피 제어 ON / 일반 목표 속도 1.0m/s / 신호등 정지 ON.
+    # 현재: 실차 출력 ON / 실제 회피 제어 ON / 일반 목표 속도 1.4m/s / 신호등 정지 ON.
     # longitudinal_pid_enabled=false여도 신호등 정지 중에는 longitudinal 제어를 사용한다.
     # ----------------------------------------------------------------------
     # 준비 조건 충족 시 주행 허용. false 명령은 duty 0; 조향 유지 여부는 아래 설정을 따름.
@@ -29,7 +29,7 @@ auto_control:
     avoidance_deformation_only: true
     # 차선 안 장애물 첫 검출 즉시 감속. 마지막 유효 검출 후 아래 시간 동안 재검출 없으면 해제.
     obstacle_slowdown_enabled: true
-    obstacle_slowdown_speed_mps: 1.2 # 검출 중 최대 허용 속도. 일반/코너/신호등 목표보다 높으면 목표를 올리지 않음
+    obstacle_slowdown_speed_mps: 1.0 # 검출 중 최대 허용 속도. 코너/신호등 목표보다 높으면 목표를 올리지 않음
     obstacle_slowdown_clear_sec: 1.0 # 재검출 시 해제 타이머 갱신. 시작 시 적용
     # 변형 경로 촬영 시각/수신 후 허용 나이(s). 0.05~0.20; 만료 시 기존 중앙선 사용.
     avoidance_max_age_sec: 0.20
@@ -56,19 +56,15 @@ auto_control:
     # ----------------------------------------------------------------------
     # 일반 목표 속도(m/s). 회피도 이 값을 사용하며 1.0m/s 하드코딩 상한 없음.
     # 신호등 정지 및 켜진 경우의 일반 곡률 감속은 별도로 적용.
-    maximum_speed_mps: 1.0
+    maximum_speed_mps: 1.4
     # 구버전 FF 기준 속도. 새 경로별 코너 안전 상한을 강제로 올리지 않음.
     minimum_speed_mps: 0.5
     # 코너 목표 속도 계산에 허용할 횡가속도(m/s²). 작을수록 코너 목표가 낮아짐.
     maximum_lateral_acceleration_mps2: 1.0
-    # 아래 X 구간과 percentile은 진단 곡률 집계에만 사용한다.
-    curvature_lookahead_minimum_x_m: 0.10
-    # 대표 곡률을 집계할 차량 전방 X 구간의 끝(m).
-    curvature_lookahead_maximum_x_m: 2.0
-    # 구간 내 곡률 크기의 백분위수(%). 90이면 극단적인 상위 일부 값의 영향을 줄임.
+    # 전체 선택 경로의 진단 곡률 백분위수(%). 속도 계획은 각 경로 지점의 곡률을 직접 사용.
     curvature_percentile: 90.0
-    # 실제 감속 실측치가 없어 임시 계획값을 사용. 유효 duty 감속 관측이 더 낮으면 계획도 낮춤.
-    corner_planning_deceleration_mps2: 0.35
+    # 정지선과 코너에 공통인 계획 감속도. 유효 duty 감속 관측이 더 낮으면 둘 다 낮춰 계획.
+    longitudinal_planning_deceleration_mps2: 0.35
     # 코너 탈출과 장애물 감속 해제 시 목표 속도 증가 한도(m/s²).
     corner_planning_acceleration_mps2: 0.50
     # 카메라 촬영·제어·구동 지연 동안 이동하는 거리를 감속 계획에 반영(s).
@@ -131,7 +127,7 @@ auto_control:
     brake_entry_speed_error_mps: 0.30
     # [일반 제동] 초과속도가 이 값 이하로 줄면 제동 해제(m/s).
     brake_exit_speed_error_mps: 0.10
-    # [일반 제동] 제동 전류 상한(A). 신호등은 별도 traffic_brake_max_current_amps 사용.
+    # [공통 제동] 코너·장애물·정지선의 전류 제동 상한(A).
     brake_maximum_current_amps: 2.0
 
     # ======================================================================
@@ -146,8 +142,7 @@ auto_control:
     traffic_stop_range_max_m: 0.25
     # 실차 앞차축에서 앞범퍼까지 길이(m). 차축 기준 검출 거리를 범퍼 기준으로 바꿈.
     traffic_front_axle_to_bumper_m: 0.05
-    # 정지 속도 곡선과 예상 정지거리 계산용 계획 감속도(m/s²). 실제 제동 성능 측정값은 아님.
-    traffic_stop_deceleration_mps2: 0.5
+    # 정지선도 02의 공통 longitudinal_planning_deceleration_mps2를 사용.
     # 구동기 응답 여유(s). 단계 제어는 기준 전류까지 상승 지연도 추가하며 영상 나이 보정과 별개.
     traffic_brake_response_time_sec: 0.15
     # 감속 계획에 쓰는 거리 여유(m). 실제 정지 개시는 앞범퍼가 위 허용 범위에 진입할 때 확정.
@@ -166,10 +161,8 @@ auto_control:
     traffic_brake_deceleration_hysteresis_mps2: 0.10
     # 접근 중 실제 속도가 목표보다 이 값 넘게 빠르면 제동 후보(m/s). 절반 이하에서는 해제.
     traffic_brake_speed_hysteresis_mps: 0.05
-    # 부족 감속도 1m/s²당 제동 상한의 비율. longitudinal_brake_speed_gain 항과 합산.
-    traffic_brake_deceleration_gain: 0.50
-    # 신호등 정지용 전류 상한(A). 일반 제동 상한과 독립.
-    traffic_brake_max_current_amps: 2.0
+    # 부족 감속도 1m/s²당 공통 제동 상한의 비율. 정지선과 코너에 함께 적용.
+    longitudinal_brake_deceleration_gain: 0.50
     # 남은 거리/속도상 요청 전류에 도달할 시간이 부족할 때의 추가 상승 한도(A/s).
     # 공통 상승률보다 낮으면 공통값 사용. 제동 전류 자체의 상한은 위 값 그대로.
     traffic_brake_urgent_rise_amps_per_sec: 6.0

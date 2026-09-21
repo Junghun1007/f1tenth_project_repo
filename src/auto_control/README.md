@@ -39,15 +39,15 @@ traffic_terminal_tracking_timeout_sec: 1.50
 traffic_stop_margin_m: 0.15
 traffic_stop_range_max_m: 0.30
 traffic_front_axle_to_bumper_m: 0.10
-traffic_stop_deceleration_mps2: 0.60
+longitudinal_planning_deceleration_mps2: 0.35
 traffic_brake_response_time_sec: 0.15
 traffic_coast_probe_sec: 0.15
 traffic_brake_deceleration_hysteresis_mps2: 0.10
 traffic_brake_speed_hysteresis_mps: 0.05
-traffic_brake_deceleration_gain: 0.50
+longitudinal_brake_deceleration_gain: 0.50
 traffic_pass_if_unstoppable_enabled: true
 traffic_pass_overshoot_m: 0.60
-traffic_brake_max_current_amps: 2.5
+brake_maximum_current_amps: 2.5
 traffic_hold_current_amps: 0.7
 traffic_stop_line_match_tolerance_m: 0.30
 traffic_stop_line_current_weight: 0.35
@@ -75,7 +75,7 @@ traffic_reapproach_speed_mps: 0.20
 
 앞차축 기준 정지선 거리에서 범퍼 길이, 여유 거리, 촬영 이후 이동량을 뺀 거리를 d라 할 때
 `v(d) = min(주행속도, sqrt((a*t)^2 + 2*a*max(0,d-허용오차)) - a*t)`다.
-a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. 단계 제어에서는 t에
+a는 정지선·코너 공통 `longitudinal_planning_deceleration_mps2`, t는 구동기 응답 여유다. 단계 제어에서는 t에
 기준 제동 전류까지 선형 상승하는 시간의 절반을 더한다. 속도 곡선은 0A에서의 고정 지연을
 쓰므로 전류가 증가했다고 목표 속도가 올라가지 않는다. a가 작을수록 일찍 감속한다.
 `traffic_stop_margin_m`와 `traffic_stop_position_tolerance_m`는 범위 진입 전 감속 계획에
@@ -104,8 +104,8 @@ a는 `traffic_stop_deceleration_mps2`, t는 구동기 응답 여유다. 단계 �
 4. **범위 진입 후 정지**: 앞범퍼가 허용 범위에 진입하면 목표 속도 0을 확정하고 양의 duty를 내지 않는다.
    실제 속도 0.05m/s 미만에서 `traffic_hold_current_amps`를 적용한다.
 
-추가 제동 전류는 `traffic_brake_max_current_amps * clamp(longitudinal_brake_speed_gain*초과속도 +
-traffic_brake_deceleration_gain*부족감속, 0, 1)`로 정한다. 실제 전류 명령에는
+추가 제동 전류는 `brake_maximum_current_amps * clamp(longitudinal_brake_speed_gain*초과속도 +
+longitudinal_brake_deceleration_gain*부족감속, 0, 1)`로 정한다. 정지선과 코너에 같은 상한과 계수를 쓴다. 실제 전류 명령에는
 `brake_current_rise_amps_per_sec`/`brake_current_fall_amps_per_sec` 변화율 제한을 적용한다.
 단계 제어의 신호등 제동에서는 `(남은 거리-허용오차)/속도-응답 지연` 안에 요청 전류에
 도달하기 어려우면 상승률을 높인다. 추가 상승 상한은 `traffic_brake_urgent_rise_amps_per_sec`
@@ -122,7 +122,7 @@ traffic_brake_deceleration_gain*부족감속, 0, 1)`로 정한다. 실제 전류
 단계 제어의 `longitudinal_pid_kp/ki/kd`는 구동 duty 보정에만 사용한다.
 `longitudinal_brake_speed_gain`은 별도의 양수 계수(단위 `1/(m/s)`)이며,
 코너 등 일반 주행 제동과 신호등 제동의 속도 오차 항에 공통 적용한다.
-일반 제동에는 `brake_maximum_current_amps` 상한을 쓰고 부족감속 항은 없다.
+일반 제동에도 같은 `brake_maximum_current_amps` 상한을 쓰며, 거리 제약이 없는 일반 감속에는 부족감속 항이 없다.
 목표 0에서는 절대 속도를 속도 오차로 쓰며, 저속 유지 전류는 기존대로 별도 적용한다.
 따라서 PID를 조절해도 같은 속도·거리 입력에 대한 제동 전류 계산 계수는 바뀌지 않는다.
 구동 응답이 바뀌면 실제 접근 속도와 제동 시점은 달라질 수 있다.
@@ -214,7 +214,7 @@ RED 정지 접근은 `longitudinal_staged_control_enabled`에 따라 새 단계 
 
 GREEN(이후 UNKNOWN 포함)에서 RED로 바뀌면, 유효한 거리와 속도를 확보한 시점에
 `예상 정지거리 = v*t + v²/(2*a)`를 계산한다. v는 현재 필터 속도, t는
-`traffic_brake_response_time_sec`, a는 `traffic_stop_deceleration_mps2`다.
+`traffic_brake_response_time_sec`, a는 공통 `longitudinal_planning_deceleration_mps2`다.
 거리 관측은 영상 지연 이동량과 앞차축→범퍼 거리를 보정한다. 정차 여유 거리는
 이 판단에서 다시 더해 **물리적 정지선**을 기준으로 비교한다.
 `예상 초과거리 = 예상 정지거리 - 현재 범퍼부터 정지선까지 거리`가
@@ -309,18 +309,21 @@ these samples for its cumulative `control avg` time and reciprocal FPS.
    at the closest path projection plus `stanley_heading_lookahead_m` along the path.
 5. With corner speed control enabled, sample curvature along the selected path,
    combine its local speed limits with the active in-lane obstacle limit, and
-   propagate deceleration backward and acceleration forward. The old forward-X
-   percentile is retained only for `/auto/path_curvature` diagnostics.
+   propagate deceleration backward and acceleration forward. The diagnostic
+   percentile also uses the entire selected path.
 6. Apply the speed at the current front axle, allowing for response distance.
-   Track a corner through its last observed exit when it leaves the near camera
-   view. ERPM feedback supplies the actual speed and duty-coast deceleration.
+   Follow the spatial exit profile while the corner remains visible. If it leaves
+   the camera early, track the last observed exit and then raise the limit with the
+   same distance-domain acceleration. ERPM feedback supplies the actual speed and
+   duty-coast deceleration.
    Try reduced duty first; add brake current when the observed deceleration
    cannot meet the approaching corner's distance budget. Traffic-stop latching
    and stale-input guard stops keep their separate behavior.
 
-The corner planner's initial `corner_planning_deceleration_mps2` is an unverified
-provisional estimate, not a guaranteed braking capability. A fresh duty-only deceleration observation may lower it,
-never raise it. `corner_planning_response_sec` reserves travel during camera,
+The shared `longitudinal_planning_deceleration_mps2` is an unverified provisional
+estimate for both traffic stops and corners, not a guaranteed braking capability.
+A fresh duty-only deceleration observation may lower it, never raise it.
+`corner_planning_response_sec` reserves travel during camera,
 control and actuator delay. The plan assumes no visible continuation beyond the
 last valid path point. `corner_planning_acceleration_mps2` limits target-speed
 recovery after the corner or after obstacle detection expires. The curvature
@@ -451,8 +454,8 @@ The complete Korean symptom-based tuning guide is installed as
   positive `/auto/steering_angle_rad` defined as a vehicle-left command.
 - `maximum_lateral_acceleration_mps2`: smaller values lower the local curve speed.
 - `curvature_percentile`: diagnostic path-curvature percentile only.
-- `corner_planning_deceleration_mps2`: upper bound for unmeasured braking in the
-  spatial plan; fresh lower duty-coast observations tighten it.
+- `longitudinal_planning_deceleration_mps2`: shared planning deceleration for
+  traffic stops and corners; fresh lower duty-coast observations tighten it.
 - `corner_planning_acceleration_mps2`: maximum target-speed rise after a limit ends.
 - `corner_planning_response_sec`: travel-time allowance before a corner limit.
 - `corner_exit_hold_distance_m`: extra travel after the last observed curve exit.

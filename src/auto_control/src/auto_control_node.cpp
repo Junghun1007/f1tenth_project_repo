@@ -164,7 +164,7 @@ public:
       staged_control_enabled_ ? "on" : "off",
       curvature_speed_control_enabled_ ? "on" : "off", longitudinal_kp_, longitudinal_ki_, longitudinal_kd_);
     RCLCPP_INFO(get_logger(), "Staged brake gains: speed=%.3f, missing deceleration=%.3f",
-      longitudinal_brake_speed_gain_, traffic_brake_decel_gain_);
+      longitudinal_brake_speed_gain_, longitudinal_brake_decel_gain_);
     RCLCPP_INFO(get_logger(),"Avoidance control=%s: plan=/auto/avoidance_plan speed=maximum_speed_mps (%.2fm/s), no avoidance cap; age=%.2fs guard_brake=%.2fA",
       avoidance_control_enabled_?"ON":"OFF",maximum_speed_mps_,avoidance_max_age_,avoidance_brake_current_);
     RCLCPP_INFO(get_logger(),"Avoidance mode=%s",avoidance_deformation_only_?"DEFORM: unavailable plan uses centerline; normal longitudinal control":"CHECKED: unavailable plan brakes");
@@ -176,7 +176,7 @@ public:
       "Traffic stop=%s | bumper offset=%.2fm, margin=%.2fm, accepted range=0..%.2fm, planning decel=%.2fm/s2, "
       "response=%.2fs, brake cap=%.2fA (independent of normal electrical_brake_enabled)",
       traffic_stop_enabled_ ? "ON" : "OFF", traffic_front_offset_, traffic_margin_,
-      traffic_stop_range_max_m_, traffic_deceleration_, traffic_response_time_, traffic_brake_max_);
+      traffic_stop_range_max_m_, planning_deceleration_mps2_, traffic_response_time_, brake_maximum_current_amps_);
     RCLCPP_INFO(get_logger(),
       "Auto control C++ ready: mode=%s, lane=%s, speed=%.2f..%.2fm/s, "
       "duty=%.3f..%.3f, auto_brake=%s/%.1fA, control=on_lane_result, watchdog=%.1fHz",
@@ -233,12 +233,16 @@ private:
     traffic_margin_ = parameter("traffic_stop_margin_m", 0.15);
     traffic_stop_range_max_m_ = parameter("traffic_stop_range_max_m", 0.30);
     traffic_front_offset_ = parameter("traffic_front_axle_to_bumper_m", 0.10);
-    traffic_deceleration_ = parameter("traffic_stop_deceleration_mps2", 0.60);
+    planning_deceleration_mps2_ = parameter("longitudinal_planning_deceleration_mps2", 0.35);
+    // Accepted for older parameter files; the shared planning value is authoritative.
+    parameter("traffic_stop_deceleration_mps2", 0.60);
+    parameter("corner_planning_deceleration_mps2", 0.35);
     traffic_response_time_ = parameter("traffic_brake_response_time_sec", 0.15);
     traffic_pass_enabled_ = parameter("traffic_pass_if_unstoppable_enabled", true);
     traffic_pass_overshoot_m_ = parameter("traffic_pass_overshoot_m", 0.60);
     traffic_brake_gain_ = parameter("traffic_brake_amps_per_mps2", 2.0);
-    traffic_brake_max_ = parameter("traffic_brake_max_current_amps", 2.5);
+    // Accepted for older parameter files; brake_maximum_current_amps is authoritative.
+    parameter("traffic_brake_max_current_amps", 2.5);
     traffic_hold_current_ = parameter("traffic_hold_current_amps", 0.7);
     longitudinal_pid_enabled_ = parameter("longitudinal_pid_enabled", true);
     staged_control_enabled_ = parameter("longitudinal_staged_control_enabled", true);
@@ -253,11 +257,11 @@ private:
     traffic_coast_probe_sec_ = parameter("traffic_coast_probe_sec", 0.15);
     traffic_brake_decel_hysteresis_ = parameter("traffic_brake_deceleration_hysteresis_mps2", 0.10);
     traffic_brake_speed_hysteresis_ = parameter("traffic_brake_speed_hysteresis_mps", 0.05);
-    traffic_brake_decel_gain_ = parameter("traffic_brake_deceleration_gain", 0.50);
+    longitudinal_brake_decel_gain_ = parameter("longitudinal_brake_deceleration_gain", 0.50);
+    parameter("traffic_brake_deceleration_gain", 0.50);
     traffic_terminal_distance_ = parameter("traffic_terminal_tracking_distance_m", 0.10);
     traffic_terminal_timeout_ = parameter("traffic_terminal_tracking_timeout_sec", 1.50);
     curvature_speed_control_enabled_ = parameter("curvature_speed_control_enabled", false);
-    corner_planning_deceleration_mps2_ = parameter("corner_planning_deceleration_mps2", 0.35);
     corner_planning_acceleration_mps2_ = parameter("corner_planning_acceleration_mps2", 0.50);
     corner_planning_response_sec_ = parameter("corner_planning_response_sec", 0.30);
     corner_exit_hold_distance_m_ = parameter("corner_exit_hold_distance_m", 0.33);
@@ -333,8 +337,9 @@ private:
     minimum_speed_mps_ = parameter("minimum_speed_mps", 0.80);
     maximum_speed_mps_ = parameter("maximum_speed_mps", 1.8);
     maximum_lateral_acceleration_mps2_ = parameter("maximum_lateral_acceleration_mps2", 0.6);
-    curvature_lookahead_minimum_x_m_ = parameter("curvature_lookahead_minimum_x_m", 0.50);
-    curvature_lookahead_maximum_x_m_ = parameter("curvature_lookahead_maximum_x_m", 1.60);
+    // Legacy diagnostic window settings no longer limit curvature reporting.
+    parameter("curvature_lookahead_minimum_x_m", 0.50);
+    parameter("curvature_lookahead_maximum_x_m", 1.60);
     curvature_percentile_ = parameter("curvature_percentile", 90.0);
     minimum_duty_ = parameter("minimum_duty", 0.070);
     maximum_duty_ = parameter("maximum_duty", 0.090);
@@ -400,13 +405,13 @@ private:
             return std::isfinite(value);
           });
       };
-    if (!finite_positive({traffic_state_timeout_, traffic_line_timeout_, traffic_deceleration_,
-        traffic_brake_gain_, traffic_brake_max_, traffic_hold_current_, longitudinal_kp_, longitudinal_integral_limit_,
+    if (!finite_positive({traffic_state_timeout_, traffic_line_timeout_, planning_deceleration_mps2_,
+        traffic_brake_gain_, traffic_hold_current_, longitudinal_kp_, longitudinal_integral_limit_,
         traffic_line_gate_, traffic_line_weight_, traffic_reapproach_speed_}) ||
       !finite({traffic_margin_, traffic_front_offset_, traffic_response_time_,
         longitudinal_ki_, longitudinal_kd_, traffic_arrival_tolerance_}) ||
       traffic_margin_ < 0 || traffic_front_offset_ < 0 || traffic_response_time_ < 0 ||
-      traffic_hold_current_ > traffic_brake_max_ || traffic_state_topic_.empty() ||
+      traffic_hold_current_ > brake_maximum_current_amps_ || traffic_state_topic_.empty() ||
       longitudinal_ki_ < 0 || longitudinal_kd_ < 0 || traffic_arrival_tolerance_ < 0 || traffic_line_weight_ > 1 ||
       traffic_line_confirm_frames_ < 1)
     {throw std::invalid_argument("invalid traffic stop parameters");}
@@ -420,7 +425,7 @@ private:
     if (!finite_positive({drive_ff_fade_speed_, recovery_duty_rise_, recovery_start_ramp_sec_,
         traffic_brake_urgent_rise_, deceleration_filter_sec_,
         longitudinal_brake_speed_gain_,
-        traffic_brake_decel_hysteresis_, traffic_brake_speed_hysteresis_, traffic_brake_decel_gain_,
+        traffic_brake_decel_hysteresis_, traffic_brake_speed_hysteresis_, longitudinal_brake_decel_gain_,
         traffic_terminal_distance_, traffic_terminal_timeout_}) ||
       !finite({drive_ff_offset_, drive_ff_slope_, traffic_coast_probe_sec_}) ||
       drive_ff_offset_ < 0 || drive_ff_offset_ > maximum_duty_ || drive_ff_slope_ < 0 ||
@@ -450,8 +455,7 @@ private:
         performance_measurement_startup_timeout_sec_,
         performance_measurement_power_sample_interval_sec_}))
     {throw std::invalid_argument("positive auto-control parameter is not positive");}
-    if (!finite_positive({corner_planning_deceleration_mps2_,
-      corner_planning_acceleration_mps2_, corner_planning_response_sec_}) ||
+    if (!finite_positive({corner_planning_acceleration_mps2_, corner_planning_response_sec_}) ||
       !std::isfinite(corner_exit_hold_distance_m_) || corner_exit_hold_distance_m_ < 0.0)
     {throw std::invalid_argument("invalid corner speed planning parameters");}
     if (path_minimum_points_ < 3 || path_minimum_x_m_ >= path_maximum_x_m_) {
@@ -848,7 +852,7 @@ private:
     if (!stop_line_fresh(now_ns) || *stop_remaining_ + traffic_margin_ <= 0.0) {return;}
     const double speed = std::max(0.0, current_speed_mps_);
     traffic_predicted_stop_distance_m_ = speed * traffic_response_time_ +
-      speed * speed / (2.0 * traffic_deceleration_);
+      speed * speed / (2.0 * effective_planning_deceleration(now_ns));
     // stop_remaining_ is to the buffered target; add the margin back to
     // compare predicted BUMPER position with the physical stop line.
     traffic_predicted_overshoot_m_ = traffic_predicted_stop_distance_m_ -
@@ -915,6 +919,17 @@ private:
     // UNKNOWN/stale messages cannot cancel a red stop. A new valid green can.
   }
 
+  double effective_planning_deceleration(std::int64_t now_ns) const
+  {
+    if (coast_deceleration_seen_ns_ && now_ns >= *coast_deceleration_seen_ns_ &&
+      seconds(now_ns - *coast_deceleration_seen_ns_) <= 1.0)
+    {
+      return std::min(planning_deceleration_mps2_,
+        std::max(0.10, coast_deceleration_mps2_));
+    }
+    return planning_deceleration_mps2_;
+  }
+
   double traffic_brake_delay(double current) const
   {
     if (!staged_control_enabled_) {return traffic_response_time_;}
@@ -922,8 +937,9 @@ private:
     // identified current-to-deceleration model. Half the linear ramp accounts
     // for partial braking while current builds. Do not assume the urgent ramp
     // is available when planning the normal approach.
-    const double reference = std::max(traffic_hold_current_, traffic_brake_max_ *
-      clamp(traffic_brake_decel_gain_ * traffic_deceleration_, 0.0, 1.0));
+    const double reference = std::max(traffic_hold_current_, brake_maximum_current_amps_ *
+      clamp(longitudinal_brake_decel_gain_ *
+      effective_planning_deceleration(now().nanoseconds()), 0.0, 1.0));
     return traffic_response_time_ +
       0.5 * std::max(0.0, reference - current) / brake_current_rise_amps_per_sec_;
   }
@@ -931,8 +947,9 @@ private:
   double traffic_distance_speed_limit(double remaining) const
   {
     // Fixed planning delay: current buildup must not raise the speed target.
-    const double at = traffic_deceleration_ * traffic_brake_delay(0.0);
-    return std::sqrt(at * at + 2.0 * traffic_deceleration_ *
+    const double deceleration = effective_planning_deceleration(now().nanoseconds());
+    const double at = deceleration * traffic_brake_delay(0.0);
+    return std::sqrt(at * at + 2.0 * deceleration *
       std::max(0.0, remaining - traffic_arrival_tolerance_)) - at;
   }
 
@@ -990,7 +1007,7 @@ private:
     longitudinal_zero_target_ = zero_target;
     const bool braking_allowed = traffic_stop || electrical_brake_enabled_ ||
       obstacle_slowdown_active_ || corner_braking_allowed_;
-    const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
+    const double brake_cap = brake_maximum_current_amps_;
     required_deceleration_mps2_ = kUnavailable;
     const bool approaching = traffic_stop && !zero_target && stop_remaining_;
     const bool approaching_corner = !traffic_stop && corner_braking_allowed_ &&
@@ -1017,7 +1034,8 @@ private:
       coast_probe_elapsed_ = 0.0;
       traction_recovery_ = false;
     } else if (approaching) {
-      const bool urgent = required_deceleration_mps2_ >= 2.0 * traffic_deceleration_;
+      const bool urgent = required_deceleration_mps2_ >=
+        2.0 * effective_planning_deceleration(now_ns);
       // Braking continues while current ramps down and the actuator responds.
       // Release ahead of a predicted undershoot when distance still permits it.
       const double release_time =
@@ -1039,7 +1057,7 @@ private:
     } else if (approaching_corner) {
       const bool urgent = corner_start_distance_m_ <=
         speed * corner_planning_response_sec_ + 0.05 ||
-        required_deceleration_mps2_ >= 2.0 * corner_planning_deceleration_mps2_;
+        required_deceleration_mps2_ >= 2.0 * effective_planning_deceleration(now_ns);
       if (service_brake_requested_) {
         if (overspeed <= 0.5 * traffic_brake_speed_hysteresis_ ||
           (!urgent && required_deceleration_mps2_ <=
@@ -1070,7 +1088,7 @@ private:
         std::max(0.0, required_deceleration_mps2_ - coast_decel) : 0.0;
       requested_brake_current_ = staged_brake_current(
         zero_target ? std::abs(current_speed_mps_) : std::max(0.0, overspeed),
-        missing_decel, longitudinal_brake_speed_gain_, traffic_brake_decel_gain_, brake_cap);
+        missing_decel, longitudinal_brake_speed_gain_, longitudinal_brake_decel_gain_, brake_cap);
       if (traffic_stop && zero_target && std::abs(current_speed_mps_) < 0.05) {
         requested_brake_current_ = std::max(requested_brake_current_, traffic_hold_current_);
       } else if (traffic_stop && zero_target) {
@@ -1153,7 +1171,8 @@ private:
     const double time_to_recover = std::max(0.0, recovery_duty - command_duty_) / rise;
     const bool recovery_distance_ok = !approaching ||
       *stop_remaining_ - traffic_arrival_tolerance_ >
-      speed * latest_brake_delay_sec_ + speed * speed / (2.0 * traffic_deceleration_);
+      speed * latest_brake_delay_sec_ + speed * speed /
+      (2.0 * effective_planning_deceleration(now_ns));
     const bool recover_motion = !start_drive && (traction_recovery_ || departure_pending_) &&
       recovery_duty > command_duty_ && target > 0.05 &&
       overspeed < -0.5 * traffic_brake_speed_hysteresis_ && recovery_distance_ok &&
@@ -1198,7 +1217,7 @@ private:
     latest_desired_duty_ = target > 0 ? std::max(0.0, effort) * maximum_duty_ : 0.0;
     const bool braking_allowed = traffic_stop || electrical_brake_enabled_ ||
       obstacle_slowdown_active_ || corner_braking_allowed_;
-    const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
+    const double brake_cap = brake_maximum_current_amps_;
     double brake = braking_allowed ? std::max(0.0, -effort) * brake_cap : 0.0;
     if (traffic_stop && target <= 0 && std::abs(current_speed_mps_) < 0.05) {
       brake = std::max(brake, traffic_hold_current_);
@@ -1244,7 +1263,7 @@ private:
       traffic_phase_ = "temporary_stop_control_input";
       stop_line_seen_ns_.reset();
       stop_candidate_count_ = 0;
-      command_brake_current_ = avoidance_braking ? std::max(traffic_brake_max_,avoidance_brake_current_) : traffic_brake_max_;
+      command_brake_current_ = avoidance_braking ? std::max(brake_maximum_current_amps_,avoidance_brake_current_) : brake_maximum_current_amps_;
       requested_brake_current_ = command_brake_current_;
       brake_mode_active_ = true;
       publish_commands(0.0, command_brake_current_, latest_servo_position_, "brake");
@@ -1300,7 +1319,7 @@ private:
     latest_pid_effort_ = latest_desired_duty_ = kUnavailable;
     latest_feedforward_duty_ = required_deceleration_mps2_ = kUnavailable;
     latest_brake_delay_sec_ = latest_brake_rise_ = kUnavailable;
-    latest_corner_planning_deceleration_mps2_ = kUnavailable;
+    latest_planning_deceleration_mps2_ = kUnavailable;
     requested_brake_current_ = 0.0;
     if (const auto reason = stop_reason(now_ns)) {
       if (avoidance_control_enabled_ && *reason!="avoidance_confirming") {avoidance_confirmations_=0;}
@@ -1321,9 +1340,10 @@ private:
       avoidance_status_="CENTERLINE: no current deformation";
     }
     const auto & selected_path=following_avoidance?*avoidance_path_:*path_;
+    latest_planning_deceleration_mps2_ = effective_planning_deceleration(now_ns);
     const double curvature = representative_curvature(
-      selected_path, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
-      curvature_percentile_);
+      selected_path, -std::numeric_limits<double>::infinity(),
+      std::numeric_limits<double>::infinity(), curvature_percentile_);
     refresh_obstacle_slowdown();
     const double obstacle_limit = obstacle_slowdown_active_ ?
       std::min(maximum_speed_mps_, obstacle_slowdown_speed_mps_) : maximum_speed_mps_;
@@ -1332,21 +1352,11 @@ private:
     corner_start_distance_m_ = 0.0;
     corner_speed_limit_mps_ = maximum_speed_mps_;
     if (curvature_speed_control_enabled_) {
-      double planning_deceleration = corner_planning_deceleration_mps2_;
-      if (coast_deceleration_seen_ns_ && now_ns >= *coast_deceleration_seen_ns_ &&
-        seconds(now_ns - *coast_deceleration_seen_ns_) <= 1.0)
-      {
-        // The ERPM-based duty-coast observation can tighten, never inflate,
-        // the unverified starting estimate used for the spatial speed plan.
-        planning_deceleration = std::min(planning_deceleration,
-          std::max(0.10, coast_deceleration_mps2_));
-      }
-      latest_corner_planning_deceleration_mps2_ = planning_deceleration;
       PathSpeedPlan plan;
       try {
         plan = plan_path_speeds(
           selected_path, maximum_speed_mps_, maximum_lateral_acceleration_mps2_,
-          planning_deceleration, corner_planning_acceleration_mps2_, obstacle_limit,
+          latest_planning_deceleration_mps2_, corner_planning_acceleration_mps2_, obstacle_limit,
           std::max(0.0, current_speed_mps_) * corner_planning_response_sec_);
       } catch (const std::exception & exception) {
         RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
@@ -1367,13 +1377,23 @@ private:
             std::min(corner_hold_speed_mps_, plan.corner_speed_mps) : plan.corner_speed_mps;
         }
       }
-      if (corner_hold_remaining_m_ > 0.0) {
+      // Follow the spatial exit profile while the current corner is visible.
+      // Hold the last observed limit only when that corner leaves the camera.
+      const bool current_corner_visible = plan.corner_start_m >= 0.0 &&
+        plan.corner_start_m <= 0.20;
+      if (corner_hold_remaining_m_ > 0.0 && !current_corner_visible) {
         corner_braking_allowed_ = true;
-        // The axle is already in a remembered corner. Use the in-corner
-        // overspeed rule instead of another approaching-corner distance.
+        // If the curve disappears before its predicted exit, retain its speed.
+        // After the exit, raise the limit by the same distance-domain
+        // acceleration used by the visible spatial profile.
+        const double exit_progress_m = std::max(0.0,
+          corner_exit_hold_distance_m_ - corner_hold_remaining_m_);
+        const double held_exit_speed_mps = std::min(maximum_speed_mps_, std::sqrt(
+          corner_hold_speed_mps_ * corner_hold_speed_mps_ +
+          2.0 * corner_planning_acceleration_mps2_ * exit_progress_m));
         corner_start_distance_m_ = 0.0;
-        corner_speed_limit_mps_ = std::min(corner_speed_limit_mps_, corner_hold_speed_mps_);
-        target_speed = std::min(target_speed, corner_hold_speed_mps_);
+        corner_speed_limit_mps_ = std::min(corner_speed_limit_mps_, held_exit_speed_mps);
+        target_speed = std::min(target_speed, held_exit_speed_mps);
       }
       // A stopped vehicle still needs the existing one-time departure duty.
       // Limit recovery only while it is already moving.
@@ -1744,7 +1764,7 @@ private:
         "measured_deceleration_mps2,coast_deceleration_mps2,coast_age_s,coast_probe_elapsed_s,"
         "traction_recovery,terminal_tracking,brake_delay_s,brake_rise_limit_a_per_s,obstacle_slowdown_active,"
         "corner_braking_allowed,corner_start_m,corner_exit_remaining_m,corner_speed_limit_mps,"
-        "corner_planning_deceleration_mps2,can_duty,can_motor_current_a,centerline_xy_m",
+        "planning_deceleration_mps2,can_duty,can_motor_current_a,centerline_xy_m",
         parameters);
       driving_log_started_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
@@ -1811,7 +1831,7 @@ private:
       age(coast_deceleration_seen_ns_), coast_probe_elapsed_, double(traction_recovery_),
       double(terminal_tracking_active_), latest_brake_delay_sec_, latest_brake_rise_, double(obstacle_slowdown_active_),
       double(corner_braking_allowed_), corner_start_distance_m_, corner_hold_remaining_m_,
-      corner_speed_limit_mps_, latest_corner_planning_deceleration_mps2_,
+      corner_speed_limit_mps_, latest_planning_deceleration_mps2_,
       dynamics_duty_seen_ns_ && ns >= *dynamics_duty_seen_ns_ &&
       seconds(ns - *dynamics_duty_seen_ns_) <= 0.20 ? dynamics_duty_ : kUnavailable,
       dynamics_motor_current_seen_ns_ && ns >= *dynamics_motor_current_seen_ns_ &&
@@ -1885,15 +1905,15 @@ private:
   bool traffic_signal_seen_{false};
   std::string traffic_state_topic_;
   double traffic_state_timeout_, traffic_line_timeout_, traffic_margin_, traffic_front_offset_;
-  double traffic_deceleration_, traffic_response_time_, traffic_brake_gain_;
-  double traffic_brake_max_, traffic_hold_current_;
+  double planning_deceleration_mps2_, traffic_response_time_, traffic_brake_gain_;
+  double traffic_hold_current_;
   bool longitudinal_pid_enabled_{true}, curvature_speed_control_enabled_{false};
   bool corner_braking_allowed_{false};
-  double corner_planning_deceleration_mps2_{0.35}, corner_planning_acceleration_mps2_{0.50};
+  double corner_planning_acceleration_mps2_{0.50};
   double corner_planning_response_sec_{0.30}, corner_exit_hold_distance_m_{0.33};
   double corner_hold_remaining_m_{0.0}, corner_hold_speed_mps_{0.0};
   double corner_start_distance_m_{0.0}, corner_speed_limit_mps_{0.0};
-  double latest_corner_planning_deceleration_mps2_{kUnavailable};
+  double latest_planning_deceleration_mps2_{kUnavailable};
   bool staged_control_enabled_{true}, service_brake_requested_{false}, traction_recovery_{false};
   bool departure_pending_{true};
   double longitudinal_start_duty_;
@@ -1903,7 +1923,7 @@ private:
   double recovery_start_ramp_sec_, traffic_brake_urgent_rise_;
   double latest_brake_delay_sec_{kUnavailable}, latest_brake_rise_{kUnavailable};
   double deceleration_filter_sec_, traffic_coast_probe_sec_, traffic_brake_decel_hysteresis_;
-  double traffic_brake_speed_hysteresis_, traffic_brake_decel_gain_;
+  double traffic_brake_speed_hysteresis_, longitudinal_brake_decel_gain_;
   double longitudinal_brake_speed_gain_;
   double traffic_terminal_distance_, traffic_terminal_timeout_;
   double coast_probe_elapsed_{0.0}, measured_deceleration_mps2_{kUnavailable};
@@ -1946,8 +1966,7 @@ private:
   double stanley_corner_heading_threshold_rad_, stanley_corner_opposing_correction_ratio_;
   double maximum_steering_angle_rad_, steering_current_weight_, steering_rate_limit_rad_per_sec_;
   double servo_left_, servo_center_, servo_right_, minimum_speed_mps_, maximum_speed_mps_;
-  double maximum_lateral_acceleration_mps2_, curvature_lookahead_minimum_x_m_;
-  double curvature_lookahead_maximum_x_m_, curvature_percentile_, minimum_duty_, maximum_duty_;
+  double maximum_lateral_acceleration_mps2_, curvature_percentile_, minimum_duty_, maximum_duty_;
   double duty_rise_rate_per_sec_, duty_fall_rate_per_sec_, speed_pid_kp_, speed_pid_ki_;
   double speed_pid_kd_, speed_pid_integral_limit_, speed_filter_time_constant_sec_;
   double brake_entry_speed_error_mps_, brake_exit_speed_error_mps_;

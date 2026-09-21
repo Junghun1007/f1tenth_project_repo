@@ -41,20 +41,20 @@ auto_control:
     traffic_stop_margin_m: 0.15           # 범위 진입 전 감속 계획의 명목 여유 거리
     traffic_stop_range_max_m: 0.30       # 앞범퍼 기준 정지선 전방 0~30cm를 허용 정차 범위로 사용
     traffic_front_axle_to_bumper_m: 0.10  # 앞차축→앞범퍼 실제 길이로 설정
-    traffic_stop_deceleration_mps2: 0.60  # 계획 감속도: 클수록 늦게/강하게 감속하는 속도 곡선
+    longitudinal_planning_deceleration_mps2: 0.35 # 정지선·코너 공통 계획 감속도
     traffic_brake_response_time_sec: 0.15 # 구동기 응답 여유. 단계 제어는 전류 상승 지연도 별도 추정해 더함
     traffic_brake_urgent_rise_amps_per_sec: 6.0 # 남은 시간 부족 시 전류 상승 한도. 공통 상승률보다 낮으면 공통값 적용
     traffic_coast_probe_sec: 0.15         # 초과속도 발생 후 duty 감속 관찰 시간. 급한 경우 생략
     traffic_brake_deceleration_hysteresis_mps2: 0.10 # 필요 감속 - duty 감속이 이 값 초과면 추가 제동
     traffic_brake_speed_hysteresis_mps: 0.05 # 목표보다 이만큼 빨라야 제동, 절반 이하에서 해제
-    traffic_brake_deceleration_gain: 0.50 # 부족 감속도 1m/s²당 제동 상한의 비율. 클수록 강한 제동
+    longitudinal_brake_deceleration_gain: 0.50 # 정지선·코너 공통 부족 감속도 제동 계수
     # GREEN→RED 전환 시 예상 범퍼 정지 위치가 정지선을 아래 값 이상 넘으면 정상 목표 속도로 통과.
     # 정지 접근/통과 결정은 같은 정지선에 대해 유지하며, GREEN 확인 시 해제한다.
     traffic_pass_if_unstoppable_enabled: true
     traffic_pass_overshoot_m: 0.60
-    # 신호등 정지는 아래 전류를 사용. 일반 electrical_brake_enabled=false여도 작동.
+    # 신호등 정지는 일반 electrical_brake_enabled=false여도 공통 제동 상한을 사용해 작동.
     traffic_brake_amps_per_mps2: 2.0      # 구버전 호환용. 현재 제어에서는 사용하지 않음
-    traffic_brake_max_current_amps: 2.5   # VESC bridge 전류 상한 이하로 설정
+    # brake_maximum_current_amps를 정지선과 코너에 공통 적용
     traffic_hold_current_amps: 0.7       # 목표 0 + 저속에서만 유지 전류. 접근 제동에는 하한 없음.
     traffic_stop_line_match_tolerance_m: 0.30 # 이동량 보정 거리와 관측값의 일치 허용 오차
     traffic_stop_line_current_weight: 0.35   # 정상 관측으로 거리 증가/감소 양방향 보정
@@ -149,14 +149,11 @@ auto_control:
     steering_servo_inverted: true
 
     # 코너 감속 ON: 선택된 주행 경로의 거리별 곡률 상한과 장애물 상한을 합친 뒤
-    # 감속 역산/탈출 가속 계획을 수행한다. 90 percentile은 진단 곡률에만 사용.
+    # 감속 역산/탈출 가속 계획을 수행한다. 전체 경로의 90 percentile은 진단 곡률에만 사용.
     minimum_speed_mps: 0.80
     maximum_speed_mps: 5.0
     maximum_lateral_acceleration_mps2: 1.2
-    curvature_lookahead_minimum_x_m: 0.50
-    curvature_lookahead_maximum_x_m: 1.60
     curvature_percentile: 90.0
-    corner_planning_deceleration_mps2: 0.35 # 실측 전 임시 계획값. 유효 duty 감속 관측이 낮으면 더 낮춰 계획
     corner_planning_acceleration_mps2: 0.50 # 코너 탈출 후 목표 속도 증가 상한
     corner_planning_response_sec: 0.30 # 영상·제어·구동 지연을 포함한 계획 여유
     corner_exit_hold_distance_m: 0.33 # 마지막 관측 코너 끝을 지난 뒤에도 유지할 거리
@@ -173,8 +170,7 @@ auto_control:
     speed_pid_integral_limit: 1.0
     speed_filter_time_constant_sec: 0.05
 
-    # 일반 주행/장애물 감속 전기 제동 설정. 장애물 감속 중에는 아래 enable=false여도 허용.
-    # 신호등 접근의 진입/해제는 traffic_brake_* 기준 사용.
+    # 정지선/코너/장애물 감속 전기 제동 설정. 이 감속들은 아래 enable=false여도 허용.
     # 실제 속도가 목표 속도보다 0.10m/s 이상 높으면 duty를 즉시 버리고
     # COMM_SET_CURRENT_BRAKE로 전환한다. 오차가 0.03m/s 이하가 될 때까지
     # 제동을 유지해 경계에서 duty/브레이크가 반복 전환되는 것을 막는다.

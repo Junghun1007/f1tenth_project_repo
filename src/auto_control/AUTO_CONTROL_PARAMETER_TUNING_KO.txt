@@ -147,13 +147,14 @@ longitudinal_brake_speed_gain (기본 1.0, 양수, 단위 1/(m/s))
   그 값을 새 키에 복사한다. 키를 생략하면 구동 Kp와 무관하게 1.0을 쓴다.
   longitudinal_staged_control_enabled=false인 signed PID 호환 모드에는 적용되지 않는다.
 
-traffic_brake_deceleration_gain (기본 0.50)
-  역할: 신호등 접근에서 남은 거리상 부족한 감속도에 추가 제동을 요청한다.
-  높이면 같은 부족감속에 더 강하게 제동한다. 구동 PI나 일반 코너 제동에는 적용되지 않는다.
+longitudinal_brake_deceleration_gain (기본 0.50)
+  역할: 정지선·코너 접근에서 남은 거리상 부족한 감속도에 추가 제동을 요청한다.
+  높이면 같은 부족감속에 더 강하게 제동한다. 구동 PI에는 적용되지 않는다.
 
-traffic_stop_deceleration_mps2 (기본 0.60)
-  역할: 정지선 거리로 목표 속도를 계산하는 계획 감속도다.
+longitudinal_planning_deceleration_mps2 (기본 0.35)
+  역할: 정지선과 전체 선택 경로의 코너에 공통 적용하는 계획 감속도다.
   낮추면 같은 거리에서 목표 속도가 낮아져 일찍 감속한다. 높이면 더 늦게/강하게 감속한다.
+  유효 duty 감속 관측이 더 낮으면 둘 다 관측값으로 낮춰 계획한다.
   제동 전류 이득과 다르며, 실측 감속 능력과 관측 가능 거리에 맞춰 정한다.
 
 longitudinal_recovery_duty_rise_per_sec (기본 0.15)
@@ -212,8 +213,7 @@ brake_minimum_vehicle_speed_mps (예시 0.20m/s)
   역할: 저속에서 제동을 해제해 모터 정지 근방의 턱타를 막는다.
 
 brake_minimum_current_amps / brake_maximum_current_amps (예시 0.5A / 2.5A)
-  적용: 단계 제어는 minimum을 쓰지 않고 일반 제동의 maximum만 사용한다.
-        신호등은 traffic_brake_max_current_amps(기본 2.5A)를 별도로 사용한다.
+  적용: 단계 제어는 minimum을 쓰지 않고 maximum을 정지선·코너·장애물에 공통 사용한다.
   역할: 자동 제동 중 사용할 최소/최대 전류다.
   제동이 강함: 최대를 0.5~1.0A씩 낮춘다.
   제동이 약함: 바퀴를 띄운 상태에서 확인 후 최대를 소폭 높인다.
