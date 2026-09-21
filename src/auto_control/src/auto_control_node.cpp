@@ -1369,6 +1369,9 @@ private:
       }
       if (corner_hold_remaining_m_ > 0.0) {
         corner_braking_allowed_ = true;
+        // The axle is already in a remembered corner. Use the in-corner
+        // overspeed rule instead of another approaching-corner distance.
+        corner_start_distance_m_ = 0.0;
         corner_speed_limit_mps_ = std::min(corner_speed_limit_mps_, corner_hold_speed_mps_);
         target_speed = std::min(target_speed, corner_hold_speed_mps_);
       }
