@@ -28,8 +28,12 @@ struct OrderedPath
 struct PathSpeedPlan
 {
   std::vector<double> arc_m;
-  std::vector<double> speed_mps;
-  double target_speed_mps{0.0};
+  std::vector<double> lower_speed_mps;
+  std::vector<double> nominal_speed_mps;
+  std::vector<double> upper_speed_mps;
+  double target_lower_speed_mps{0.0};
+  double target_nominal_speed_mps{0.0};
+  double target_upper_speed_mps{0.0};
   double corner_start_m{-1.0};
   double corner_exit_m{-1.0};
   double corner_speed_mps{0.0};
@@ -39,7 +43,8 @@ PathSpeedPlan plan_path_speeds(
   const OrderedPath & path, double maximum_speed_mps,
   double maximum_lateral_acceleration_mps2, double planning_deceleration_mps2,
   double planning_acceleration_mps2, double obstacle_speed_limit_mps,
-  double response_distance_m, double sample_spacing_m = 0.05);
+  double response_distance_m, double corner_speed_band_width_mps,
+  double sample_spacing_m = 0.05);
 
 std::optional<OrderedPath> build_ordered_path(
   const std::vector<Point> & input, int minimum_points,

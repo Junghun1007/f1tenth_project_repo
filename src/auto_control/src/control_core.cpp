@@ -188,20 +188,23 @@ PathSpeedPlan plan_path_speeds(
   const OrderedPath & path, double maximum_speed_mps,
   double maximum_lateral_acceleration_mps2, double planning_deceleration_mps2,
   double planning_acceleration_mps2, double obstacle_speed_limit_mps,
-  double response_distance_m, double sample_spacing_m)
+  double response_distance_m, double corner_speed_band_width_mps,
+  double sample_spacing_m)
 {
   if (path.arc_m.empty() || !std::isfinite(path.arc_m.back()) ||
     path.arc_m.back() <= 0.0 || path.arc_m.back() > 25.0 ||
     maximum_speed_mps <= 0.0 || maximum_lateral_acceleration_mps2 <= 0.0 ||
     planning_deceleration_mps2 <= 0.0 || planning_acceleration_mps2 <= 0.0 ||
-    sample_spacing_m <= 0.0)
+    corner_speed_band_width_mps < 0.0 || sample_spacing_m <= 0.0)
   {throw std::invalid_argument("invalid path speed planning input");}
   PathSpeedPlan plan;
   const double length = path.arc_m.back();
   const auto segments = std::min<std::size_t>(512U,
     std::max<std::size_t>(1U, static_cast<std::size_t>(std::ceil(length / sample_spacing_m))));
   plan.arc_m.reserve(segments + 1U);
-  plan.speed_mps.reserve(segments + 1U);
+  plan.lower_speed_mps.reserve(segments + 1U);
+  plan.nominal_speed_mps.reserve(segments + 1U);
+  plan.upper_speed_mps.reserve(segments + 1U);
   std::vector<double> curve_limits;
   curve_limits.reserve(segments + 1U);
   for (std::size_t index = 0; index <= segments; ++index) {
@@ -221,7 +224,7 @@ PathSpeedPlan plan_path_speeds(
     double limit = curve_limits[index];
     if (index > 0U) {limit = std::min(limit, curve_limits[index - 1U]);}
     if (index + 1U < curve_limits.size()) {limit = std::min(limit, curve_limits[index + 1U]);}
-    plan.speed_mps.push_back(std::min(limit, obstacle_speed_limit_mps));
+    plan.upper_speed_mps.push_back(std::min(limit, obstacle_speed_limit_mps));
     if (plan.corner_exit_m >= 0.0 &&
       plan.arc_m[index] - plan.corner_exit_m > 0.15)
     {first_corner_finished = true;}
@@ -232,28 +235,52 @@ PathSpeedPlan plan_path_speeds(
         std::min(plan.corner_speed_mps, limit) : limit;
     }
   }
-  // Do not assume an unseen continuation beyond the last valid path point.
-  // On a normal long path this terminal constraint lies beyond the braking
-  // horizon; on a short path it prevents acceleration into unknown geometry.
-  plan.speed_mps.back() = 0.0;
+  // Treat the first continuous curve as one speed zone. Its most restrictive
+  // filtered curvature defines the upper edge of the band throughout the
+  // corner body; entry and exit transitions are built around that stable zone.
+  if (plan.corner_start_m >= 0.0) {
+    for (std::size_t index = 0; index < plan.arc_m.size(); ++index) {
+      if (plan.arc_m[index] >= plan.corner_start_m &&
+        plan.arc_m[index] <= plan.corner_exit_m)
+      {
+        plan.upper_speed_mps[index] = std::min(
+          plan.upper_speed_mps[index], plan.corner_speed_mps);
+      }
+    }
+  }
   // Future restrictions propagate backward to a feasible entry speed.
-  for (std::size_t index = plan.speed_mps.size() - 1U; index > 0U; --index) {
+  // The camera horizon is not a stop point; stale/missing path watchdogs own
+  // that safety action. Only real curve and obstacle limits are propagated.
+  for (std::size_t index = plan.upper_speed_mps.size() - 1U; index > 0U; --index) {
     const double ds = plan.arc_m[index] - plan.arc_m[index - 1U];
-    plan.speed_mps[index - 1U] = std::min(plan.speed_mps[index - 1U],
-      std::sqrt(plan.speed_mps[index] * plan.speed_mps[index] +
+    plan.upper_speed_mps[index - 1U] = std::min(plan.upper_speed_mps[index - 1U],
+      std::sqrt(plan.upper_speed_mps[index] * plan.upper_speed_mps[index] +
       2.0 * planning_deceleration_mps2 * ds));
   }
   // The exit profile must respect acceleration as well as the local limits.
-  for (std::size_t index = 1U; index < plan.speed_mps.size(); ++index) {
+  for (std::size_t index = 1U; index < plan.upper_speed_mps.size(); ++index) {
     const double ds = plan.arc_m[index] - plan.arc_m[index - 1U];
-    plan.speed_mps[index] = std::min(plan.speed_mps[index],
-      std::sqrt(plan.speed_mps[index - 1U] * plan.speed_mps[index - 1U] +
+    plan.upper_speed_mps[index] = std::min(plan.upper_speed_mps[index],
+      std::sqrt(plan.upper_speed_mps[index - 1U] * plan.upper_speed_mps[index - 1U] +
       2.0 * planning_acceleration_mps2 * ds));
+  }
+  const double unrestricted = std::min(maximum_speed_mps, obstacle_speed_limit_mps);
+  for (const double upper_speed : plan.upper_speed_mps) {
+    const bool curve_profile = upper_speed < unrestricted - 0.03;
+    const double lower_speed = curve_profile ?
+      std::max(0.0, upper_speed - corner_speed_band_width_mps) : upper_speed;
+    plan.lower_speed_mps.push_back(lower_speed);
+    plan.nominal_speed_mps.push_back(0.5 * (lower_speed + upper_speed));
   }
   const double probe = clamp(response_distance_m, 0.0, length);
   const auto upper = std::lower_bound(plan.arc_m.begin(), plan.arc_m.end(), probe);
   const auto index = static_cast<std::size_t>(upper - plan.arc_m.begin());
-  plan.target_speed_mps = std::min(plan.speed_mps.front(), plan.speed_mps[index]);
+  plan.target_lower_speed_mps = std::min(
+    plan.lower_speed_mps.front(), plan.lower_speed_mps[index]);
+  plan.target_nominal_speed_mps = std::min(
+    plan.nominal_speed_mps.front(), plan.nominal_speed_mps[index]);
+  plan.target_upper_speed_mps = std::min(
+    plan.upper_speed_mps.front(), plan.upper_speed_mps[index]);
   return plan;
 }
 

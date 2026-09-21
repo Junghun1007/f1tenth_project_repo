@@ -63,14 +63,27 @@ auto_control:
     maximum_lateral_acceleration_mps2: 1.0
     # 전체 선택 경로의 진단 곡률 백분위수(%). 속도 계획은 각 경로 지점의 곡률을 직접 사용.
     curvature_percentile: 90.0
-    # 정지선과 코너에 공통인 계획 감속도. 유효 duty 감속 관측이 더 낮으면 둘 다 낮춰 계획.
-    longitudinal_planning_deceleration_mps2: 0.35
+    # 정지선과 코너에 공통인 계획 감속도. 기존 정지선 계획값과 같은 0.5m/s².
+    longitudinal_planning_deceleration_mps2: 0.50
     # 코너 탈출과 장애물 감속 해제 시 목표 속도 증가 한도(m/s²).
-    corner_planning_acceleration_mps2: 0.50
+    corner_planning_acceleration_mps2: 0.70
     # 카메라 촬영·제어·구동 지연 동안 이동하는 거리를 감속 계획에 반영(s).
-    corner_planning_response_sec: 0.30
-    # 코너가 근거리 시야에서 사라져도 마지막 관측 끝을 이 거리만큼 지나기 전까지 감속 유지(m).
-    corner_exit_hold_distance_m: 0.33
+    corner_planning_response_sec: 0.20
+    # 곡률로 계산한 상한 아래에 만드는 코너 속도 허용 구간 폭(m/s).
+    corner_speed_band_width_mps: 0.15
+    # 상한에 접근했을 때 전류 제동 전 duty를 먼저 줄이는 여유(m/s).
+    corner_coast_entry_margin_mps: 0.03
+    # 코너 상한을 이만큼 초과해야 전류 제동 후보가 됨(m/s).
+    corner_brake_entry_margin_mps: 0.10
+    # 상한보다 이만큼 낮아지면 코너 전류 제동 해제(m/s). 진입값보다 작아야 함.
+    corner_brake_exit_margin_mps: 0.05
+    # 필요한 감속도가 duty 감속 관측보다 이만큼 커야 전류 제동 후보(m/s²).
+    corner_brake_deceleration_margin_mps2: 0.10
+    # 코너 속도 초과 후 duty 감속 효과를 관찰하는 시간(s). 긴급하면 생략.
+    corner_coast_probe_sec: 0.20
+    # 일반 코너 프로파일 활성화/해제에 필요한 연속 프레임 수. 긴급 코너는 즉시 활성화.
+    corner_confirm_frames: 2
+    corner_release_frames: 3
 
     # ======================================================================
     # 03. 구동력: 기본 duty와 속도 PID
@@ -110,12 +123,12 @@ auto_control:
     # ======================================================================
     # 04. 추가 제동: 공통 설정과 일반 주행
     # PID 구동력을 줄여도 충분히 느려지지 않을 때 쓰는 전류 제동.
-    # electrical_brake_enabled=false는 일반 주행 설정. 장애물 감속/신호등 제동은 별도 허용.
+    # electrical_brake_enabled=false는 일반 주행 설정. 코너/장애물/신호등 제동은 별도 조건으로 허용.
     # 공통 전류 변화율은 정상 단계 제동에 적용하며, 신호등 정지 중 입력 유실 보호에서는 상한 전류를 직접 요청할 수 있음.
     # ----------------------------------------------------------------------
     # 일반 주행 전류 제동 허용. 장애물 감속 중에도 아래 일반 제동 임계값/상한 사용.
     electrical_brake_enabled: false
-    # [단계 제어 공통] 초과속도(m/s)를 제동 상한의 비율로 변환. 신호등과 일반 제동에 공통.
+    # [단계 제어 공통] 초과속도(m/s)를 제동 상한의 비율로 변환. 코너·신호등·일반 제동에 공통.
     longitudinal_brake_speed_gain: 1.0
     # [단계 제어] 속도 변화로 추정하는 감속도의 필터 시간 상수(s).
     longitudinal_deceleration_filter_sec: 0.20

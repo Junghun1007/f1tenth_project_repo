@@ -39,7 +39,7 @@ traffic_terminal_tracking_timeout_sec: 1.50
 traffic_stop_margin_m: 0.15
 traffic_stop_range_max_m: 0.30
 traffic_front_axle_to_bumper_m: 0.10
-longitudinal_planning_deceleration_mps2: 0.35
+longitudinal_planning_deceleration_mps2: 0.50
 traffic_brake_response_time_sec: 0.15
 traffic_coast_probe_sec: 0.15
 traffic_brake_deceleration_hysteresis_mps2: 0.10
@@ -308,25 +308,28 @@ these samples for its cumulative `control avg` time and reciprocal FPS.
 4. Calculate Stanley cross-track error from the front-axle origin and heading
    at the closest path projection plus `stanley_heading_lookahead_m` along the path.
 5. With corner speed control enabled, sample curvature along the selected path,
-   combine its local speed limits with the active in-lane obstacle limit, and
-   propagate deceleration backward and acceleration forward. The diagnostic
-   percentile also uses the entire selected path.
-6. Apply the speed at the current front axle, allowing for response distance.
-   Follow the spatial exit profile while the corner remains visible. If it leaves
-   the camera early, track the last observed exit and then raise the limit with the
-   same distance-domain acceleration. ERPM feedback supplies the actual speed and
-   duty-coast deceleration.
-   Try reduced duty first; add brake current when the observed deceleration
-   cannot meet the approaching corner's distance budget. Traffic-stop latching
-   and stale-input guard stops keep their separate behavior.
+   form the first continuous curve into one stable speed zone, and combine it
+   with the active in-lane obstacle limit. Propagate deceleration backward and
+   acceleration forward over every sampled path point. The camera-horizon point
+   is not treated as a zero-speed stop; stale or missing paths use the watchdog.
+6. Build lower, nominal and upper speeds around every curve-constrained profile
+   point. Inside this band the propulsion PID error is cleared and feed-forward
+   maintains the present speed. Below it duty targets the nominal speed. Near or
+   above the upper edge duty is reduced first.
+7. For every future point, calculate the deceleration required to remain below
+   its upper speed. Add brake current only after the duty-coast observation time
+   when this requirement exceeds measured coast deceleration and the vehicle is
+   above the corner brake-entry margin. Urgent infeasible approaches may bypass
+   the observation time. Traffic-stop latching remains separate.
 
-The shared `longitudinal_planning_deceleration_mps2` is an unverified provisional
-estimate for both traffic stops and corners, not a guaranteed braking capability.
-A fresh duty-only deceleration observation may lower it, never raise it.
-`corner_planning_response_sec` reserves travel during camera,
-control and actuator delay. The plan assumes no visible continuation beyond the
-last valid path point. `corner_planning_acceleration_mps2` limits target-speed
-recovery after the corner or after obstacle detection expires. The curvature
+The shared `longitudinal_planning_deceleration_mps2` is the feasible service
+deceleration profile for both traffic stops and corners. Duty-only coast
+deceleration is measured separately and determines whether current braking is
+needed to meet that profile.
+`corner_planning_response_sec` reserves travel during camera, control and actuator
+delay. `corner_planning_acceleration_mps2` limits the spatial exit profile and
+frame-to-frame target recovery. `corner_confirm_frames` rejects a one-frame curve;
+`corner_release_frames` prevents a one-frame miss from releasing the band. The curvature
 limit is allowed below `minimum_speed_mps`; that legacy parameter is not a safety
 floor for the new profile.
 
@@ -455,10 +458,18 @@ The complete Korean symptom-based tuning guide is installed as
 - `maximum_lateral_acceleration_mps2`: smaller values lower the local curve speed.
 - `curvature_percentile`: diagnostic path-curvature percentile only.
 - `longitudinal_planning_deceleration_mps2`: shared planning deceleration for
-  traffic stops and corners; fresh lower duty-coast observations tighten it.
+  traffic stops and corners.
 - `corner_planning_acceleration_mps2`: maximum target-speed rise after a limit ends.
 - `corner_planning_response_sec`: travel-time allowance before a corner limit.
-- `corner_exit_hold_distance_m`: extra travel after the last observed curve exit.
+- `corner_speed_band_width_mps`: distance between the curve profile's lower and
+  upper speed. The midpoint is used only when acceleration or coasting is needed.
+- `corner_coast_entry_margin_mps`: starts duty reduction before the upper edge.
+- `corner_brake_entry_margin_mps`, `corner_brake_exit_margin_mps`: separate
+  corner-current hysteresis around the upper edge.
+- `corner_brake_deceleration_margin_mps2`: required deceleration shortfall that
+  duty coasting may not satisfy before current braking is allowed.
+- `corner_coast_probe_sec`: duration to observe duty-only deceleration.
+- `corner_confirm_frames`, `corner_release_frames`: curve-profile frame hysteresis.
 - `speed_pid_kp`, `speed_pid_ki`, `speed_pid_kd`: measured-speed PID gains.
 - `brake_entry_speed_error_mps`: overspeed required to enter electrical
   braking; increase it if braking triggers too often.
@@ -511,7 +522,7 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   (-1..1), duty 변화율 제한 전 목표, 최종 duty 및 제동 전류 명령이다.
   단계 제어에서 제동 중에는 PID를 사용하지 않아 앞의 두 값은 빈 칸이다.
   실제 전류 측정값은 아니며 `control_mode`/`motor_mode`/연결 상태와 함께 해석한다.
-- 스키마 4의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
+- 스키마 7의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
   `release_brake`/`recover_drive`/`recover_motion`/`stop_brake` 등 실제 구동 제어 단계를 기록한다.
   `traffic_phase`의 `range_braking`은 허용 정차 범위 진입 후 정지 확정, `position_hold`는 저속 유지 상태다.
   `start_drive`는 시작 duty를 1회 적용한 주기이며, 다음 주기부터 일반 PID 제어로 이어진다.
@@ -523,6 +534,10 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   `recover_motion`은 시작 duty까지 정체 방지 보조 상승을 적용한 주기다.
   `brake_delay_s`는 현재 전류를 반영한 제동 지연 추정,
   `brake_rise_limit_a_per_s`는 해당 주기에 계산한 전류 상승 한도다. 실측 전류/지연이 아니다.
+  `corner_lower_speed_mps`/`corner_nominal_speed_mps`/`corner_upper_speed_mps`는 현재
+  코너 속도 구간이며, `corner_speed_in_band`가 1이면 정확한 한 속도를 추종하지 않는다.
+  `corner_constraint_m`과 `corner_required_deceleration_mps2`는 전방 포인트 전체에서
+  가장 큰 감속 요구를 만든 거리와 그 감속도다.
 - `centerline_xy_m`: 제어에 사용한 경로 전체를 `x:y;x:y;...` 형식으로 저장한다.
   차량 기준 x 전방, y 좌측, 미터 단위이며 세계 좌표 궤적은 아니다.
   경로 유효 여부와 원본 순서는 `path_valid`, `path_point_count`, `lane_sequence`에 있다.

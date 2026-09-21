@@ -41,7 +41,7 @@ auto_control:
     traffic_stop_margin_m: 0.15           # 범위 진입 전 감속 계획의 명목 여유 거리
     traffic_stop_range_max_m: 0.30       # 앞범퍼 기준 정지선 전방 0~30cm를 허용 정차 범위로 사용
     traffic_front_axle_to_bumper_m: 0.10  # 앞차축→앞범퍼 실제 길이로 설정
-    longitudinal_planning_deceleration_mps2: 0.35 # 정지선·코너 공통 계획 감속도
+    longitudinal_planning_deceleration_mps2: 0.50 # 정지선·코너 공통 계획 감속도
     traffic_brake_response_time_sec: 0.15 # 구동기 응답 여유. 단계 제어는 전류 상승 지연도 별도 추정해 더함
     traffic_brake_urgent_rise_amps_per_sec: 6.0 # 남은 시간 부족 시 전류 상승 한도. 공통 상승률보다 낮으면 공통값 적용
     traffic_coast_probe_sec: 0.15         # 초과속도 발생 후 duty 감속 관찰 시간. 급한 경우 생략
@@ -154,9 +154,16 @@ auto_control:
     maximum_speed_mps: 5.0
     maximum_lateral_acceleration_mps2: 1.2
     curvature_percentile: 90.0
-    corner_planning_acceleration_mps2: 0.50 # 코너 탈출 후 목표 속도 증가 상한
-    corner_planning_response_sec: 0.30 # 영상·제어·구동 지연을 포함한 계획 여유
-    corner_exit_hold_distance_m: 0.33 # 마지막 관측 코너 끝을 지난 뒤에도 유지할 거리
+    corner_planning_acceleration_mps2: 0.70 # 코너 탈출 후 목표 속도 증가 상한
+    corner_planning_response_sec: 0.20 # 영상·제어·구동 지연을 포함한 계획 여유
+    corner_speed_band_width_mps: 0.15 # 코너 상한 아래 허용 속도 구간 폭
+    corner_coast_entry_margin_mps: 0.03 # 상한 접근 시 duty 우선 감속 여유
+    corner_brake_entry_margin_mps: 0.10 # 상한 초과 전류 제동 진입 여유
+    corner_brake_exit_margin_mps: 0.05 # 상한 아래 전류 제동 해제 여유
+    corner_brake_deceleration_margin_mps2: 0.10 # duty 감속 대비 부족 감속도 문턱
+    corner_coast_probe_sec: 0.20 # 전류 제동 전 duty 감속 관찰 시간
+    corner_confirm_frames: 2 # 일반 코너 활성화 연속 프레임
+    corner_release_frames: 3 # 코너 해제 연속 누락 프레임
 
     # 단계 제어: 유효 입력+정지 상태에서 longitudinal_start_duty를 1회 적용한 뒤
     # PID+feed-forward 목표까지 rate limit으로 이동한다. 경로 유실은 즉시 0이다.
@@ -170,7 +177,7 @@ auto_control:
     speed_pid_integral_limit: 1.0
     speed_filter_time_constant_sec: 0.05
 
-    # 정지선/코너/장애물 감속 전기 제동 설정. 이 감속들은 아래 enable=false여도 허용.
+    # 정지선/코너/장애물 감속 전기 제동 설정. 이 감속들은 아래 enable=false여도 별도 조건으로 허용.
     # 실제 속도가 목표 속도보다 0.10m/s 이상 높으면 duty를 즉시 버리고
     # COMM_SET_CURRENT_BRAKE로 전환한다. 오차가 0.03m/s 이하가 될 때까지
     # 제동을 유지해 경계에서 duty/브레이크가 반복 전환되는 것을 막는다.
