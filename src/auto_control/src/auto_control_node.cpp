@@ -99,6 +99,22 @@ public:
     erpm_sub_ = create_subscription<std_msgs::msg::Int32>(
       measured_erpm_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_measured_erpm, this, std::placeholders::_1));
+    if (curvature_speed_control_enabled_) {
+      dynamics_duty_sub_ = create_subscription<std_msgs::msg::Float32>(
+        dynamics_duty_topic_, sensor_qos,
+        [this](const std_msgs::msg::Float32::ConstSharedPtr message) {
+          if (!std::isfinite(message->data)) {return;}
+          dynamics_duty_ = message->data;
+          dynamics_duty_seen_ns_ = now().nanoseconds();
+        });
+      dynamics_motor_current_sub_ = create_subscription<std_msgs::msg::Float32>(
+        dynamics_motor_current_topic_, sensor_qos,
+        [this](const std_msgs::msg::Float32::ConstSharedPtr message) {
+          if (!std::isfinite(message->data)) {return;}
+          dynamics_motor_current_ = message->data;
+          dynamics_motor_current_seen_ns_ = now().nanoseconds();
+        });
+    }
     connection_sub_ = create_subscription<std_msgs::msg::Bool>(
       connection_status_topic_, connection_qos,
       std::bind(&AutoControlNode::on_connection_status, this, std::placeholders::_1));
@@ -197,7 +213,7 @@ private:
     avoidance_control_enabled_=declare_parameter<bool>("avoidance_control_enabled",false,avoidance_descriptor);
     avoidance_deformation_only_=declare_parameter<bool>("avoidance_deformation_only",true,avoidance_descriptor);
     obstacle_slowdown_enabled_=declare_parameter<bool>("obstacle_slowdown_enabled",true,avoidance_descriptor);
-    obstacle_slowdown_speed_mps_=declare_parameter<double>("obstacle_slowdown_speed_mps",1.0,avoidance_descriptor);
+    obstacle_slowdown_speed_mps_=declare_parameter<double>("obstacle_slowdown_speed_mps",1.2,avoidance_descriptor);
     obstacle_slowdown_clear_sec_=declare_parameter<double>("obstacle_slowdown_clear_sec",1.0,avoidance_descriptor);
     avoidance_max_age_=declare_parameter<double>("avoidance_max_age_sec",.20,avoidance_descriptor);
     // Compatibility with external YAMLs; never affects speed or validation.
@@ -241,6 +257,10 @@ private:
     traffic_terminal_distance_ = parameter("traffic_terminal_tracking_distance_m", 0.10);
     traffic_terminal_timeout_ = parameter("traffic_terminal_tracking_timeout_sec", 1.50);
     curvature_speed_control_enabled_ = parameter("curvature_speed_control_enabled", false);
+    corner_planning_deceleration_mps2_ = parameter("corner_planning_deceleration_mps2", 0.35);
+    corner_planning_acceleration_mps2_ = parameter("corner_planning_acceleration_mps2", 0.50);
+    corner_planning_response_sec_ = parameter("corner_planning_response_sec", 0.30);
+    corner_exit_hold_distance_m_ = parameter("corner_exit_hold_distance_m", 0.33);
     longitudinal_brake_speed_gain_ = parameter("longitudinal_brake_speed_gain", 1.0);
     longitudinal_kp_ = parameter("longitudinal_pid_kp", 1.0);
     longitudinal_ki_ = parameter("longitudinal_pid_ki", 0.5);
@@ -258,6 +278,10 @@ private:
     lane_result_frame_id_ = parameter<std::string>("lane_result_frame_id", "front_axle_bev");
     path_maximum_gap_m_ = parameter("path_maximum_gap_m", 0.15);
     measured_erpm_topic_ = parameter<std::string>("measured_erpm_topic", "/vesc/measured_erpm");
+    dynamics_duty_topic_ = parameter<std::string>(
+      "dynamics_duty_topic", "/vehicle/dynamics/duty_cycle");
+    dynamics_motor_current_topic_ = parameter<std::string>(
+      "dynamics_motor_current_topic", "/vehicle/dynamics/motor_current_a");
     connection_status_topic_ = parameter<std::string>("connection_status_topic", "/vesc/connected");
     duty_topic_ = parameter<std::string>("duty_topic", "/vesc/duty");
     brake_current_topic_ = parameter<std::string>("brake_current_topic", "/vesc/brake_current");
@@ -426,6 +450,10 @@ private:
         performance_measurement_startup_timeout_sec_,
         performance_measurement_power_sample_interval_sec_}))
     {throw std::invalid_argument("positive auto-control parameter is not positive");}
+    if (!finite_positive({corner_planning_deceleration_mps2_,
+      corner_planning_acceleration_mps2_, corner_planning_response_sec_}) ||
+      !std::isfinite(corner_exit_hold_distance_m_) || corner_exit_hold_distance_m_ < 0.0)
+    {throw std::invalid_argument("invalid corner speed planning parameters");}
     if (path_minimum_points_ < 3 || path_minimum_x_m_ >= path_maximum_x_m_) {
       throw std::invalid_argument("invalid path acceptance parameters");
     }
@@ -960,16 +988,25 @@ private:
     const bool zero_target = target <= 0.0;
     if (zero_target != longitudinal_zero_target_) {longitudinal_pid_->reset();}
     longitudinal_zero_target_ = zero_target;
-    const bool braking_allowed = traffic_stop || electrical_brake_enabled_ || obstacle_slowdown_active_;
+    const bool braking_allowed = traffic_stop || electrical_brake_enabled_ ||
+      obstacle_slowdown_active_ || corner_braking_allowed_;
     const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
     required_deceleration_mps2_ = kUnavailable;
     const bool approaching = traffic_stop && !zero_target && stop_remaining_;
-    latest_brake_delay_sec_ = traffic_stop ? traffic_brake_delay(command_brake_current_) : 0.0;
+    const bool approaching_corner = !traffic_stop && corner_braking_allowed_ &&
+      corner_start_distance_m_ > 0.0 && corner_speed_limit_mps_ < speed;
+    latest_brake_delay_sec_ = traffic_stop ? traffic_brake_delay(command_brake_current_) :
+      approaching_corner ? corner_planning_response_sec_ : 0.0;
     const double observed_decel = std::isfinite(measured_deceleration_mps2_) ?
       std::max(0.0, measured_deceleration_mps2_) : 0.0;
     if (approaching) {
       const double usable = *stop_remaining_ - traffic_arrival_tolerance_ - speed * latest_brake_delay_sec_;
       required_deceleration_mps2_ = speed * speed / (2.0 * std::max(0.01, usable));
+    } else if (approaching_corner) {
+      const double usable = corner_start_distance_m_ - speed * corner_planning_response_sec_;
+      required_deceleration_mps2_ = std::max(0.0,
+        speed * speed - corner_speed_limit_mps_ * corner_speed_limit_mps_) /
+        (2.0 * std::max(0.01, usable));
     }
     const double coast_decel = coast_deceleration_seen_ns_ && now_ns >= *coast_deceleration_seen_ns_ &&
       seconds(now_ns - *coast_deceleration_seen_ns_) <= 1.0 ? coast_deceleration_mps2_ : 0.0;
@@ -999,16 +1036,37 @@ private:
           (coast_probe_elapsed_ >= traffic_coast_probe_sec_ &&
           required_deceleration_mps2_ > coast_decel + traffic_brake_decel_hysteresis_);
       } else {coast_probe_elapsed_ = 0.0;}
+    } else if (approaching_corner) {
+      const bool urgent = corner_start_distance_m_ <=
+        speed * corner_planning_response_sec_ + 0.05 ||
+        required_deceleration_mps2_ >= 2.0 * corner_planning_deceleration_mps2_;
+      if (service_brake_requested_) {
+        if (overspeed <= 0.5 * traffic_brake_speed_hysteresis_ ||
+          (!urgent && required_deceleration_mps2_ <=
+          coast_decel + 0.5 * traffic_brake_decel_hysteresis_))
+        {service_brake_requested_ = false;}
+      } else if (overspeed > traffic_brake_speed_hysteresis_ && (!brake_mode_active_ || urgent)) {
+        coast_probe_elapsed_ += dt;
+        service_brake_requested_ = urgent ||
+          (coast_probe_elapsed_ >= traffic_coast_probe_sec_ &&
+          required_deceleration_mps2_ > coast_decel + traffic_brake_decel_hysteresis_);
+      } else {coast_probe_elapsed_ = 0.0;}
     } else {
       // Detection slowdown also permits the existing speed-error brake; ordinary cruise respects its enable switch.
+      const double entry_error = corner_braking_allowed_ && corner_hold_remaining_m_ > 0.0 ?
+        std::min(brake_entry_speed_error_mps_, traffic_brake_speed_hysteresis_) :
+        brake_entry_speed_error_mps_;
+      const double exit_error = corner_braking_allowed_ && corner_hold_remaining_m_ > 0.0 ?
+        std::min(brake_exit_speed_error_mps_, 0.5 * entry_error) :
+        brake_exit_speed_error_mps_;
       service_brake_requested_ = braking_allowed && overspeed >
-        (service_brake_requested_ ? brake_exit_speed_error_mps_ : brake_entry_speed_error_mps_);
+        (service_brake_requested_ ? exit_error : entry_error);
       coast_probe_elapsed_ = 0.0;
     }
     if (!braking_allowed) {service_brake_requested_ = false;}
     requested_brake_current_ = 0.0;
     if (service_brake_requested_) {
-      const double missing_decel = approaching ?
+      const double missing_decel = (approaching || approaching_corner) ?
         std::max(0.0, required_deceleration_mps2_ - coast_decel) : 0.0;
       requested_brake_current_ = staged_brake_current(
         zero_target ? std::abs(current_speed_mps_) : std::max(0.0, overspeed),
@@ -1032,13 +1090,16 @@ private:
       longitudinal_pid_->reset();
       command_duty_ = 0.0;
       latest_brake_rise_ = brake_current_rise_amps_per_sec_;
-      if (traffic_stop && stop_remaining_ && speed > 0.05 &&
+      if (((traffic_stop && stop_remaining_) || corner_braking_allowed_) && speed > 0.05 &&
         requested_brake_current_ > command_brake_current_)
       {
-        // Deliver the requested current within the remaining time budget,
-        // bounded by a separate urgent slew limit. Never increase the amp cap.
+        // A corner already under the axle has no remaining coast-probe time.
+        const double remaining = traffic_stop && stop_remaining_ ? *stop_remaining_ :
+          corner_start_distance_m_;
+        const double response = traffic_stop ? traffic_response_time_ :
+          corner_planning_response_sec_;
         const double available_time = std::max(dt,
-          (*stop_remaining_ - traffic_arrival_tolerance_) / speed - traffic_response_time_);
+          (remaining - (traffic_stop ? traffic_arrival_tolerance_ : 0.0)) / speed - response);
         latest_brake_rise_ = clamp(
           (requested_brake_current_ - command_brake_current_) / available_time,
           brake_current_rise_amps_per_sec_,
@@ -1135,7 +1196,8 @@ private:
     const double effort = longitudinal_pid_->update(target, feedback_speed, 0.0, dt);
     latest_pid_effort_ = effort;
     latest_desired_duty_ = target > 0 ? std::max(0.0, effort) * maximum_duty_ : 0.0;
-    const bool braking_allowed = traffic_stop || electrical_brake_enabled_ || obstacle_slowdown_active_;
+    const bool braking_allowed = traffic_stop || electrical_brake_enabled_ ||
+      obstacle_slowdown_active_ || corner_braking_allowed_;
     const double brake_cap = traffic_stop ? traffic_brake_max_ : brake_maximum_current_amps_;
     double brake = braking_allowed ? std::max(0.0, -effort) * brake_cap : 0.0;
     if (traffic_stop && target <= 0 && std::abs(current_speed_mps_) < 0.05) {
@@ -1232,9 +1294,13 @@ private:
     const double dt = clamp(seconds(now_ns - last_control_ns_), 1.0e-6,
       std::min({path_timeout_sec_, path_capture_maximum_age_sec_, erpm_timeout_sec_}));
     last_control_ns_ = now_ns;
+    corner_hold_remaining_m_ = std::max(0.0,
+      corner_hold_remaining_m_ - std::max(0.0, current_speed_mps_) * dt);
+    if (corner_hold_remaining_m_ <= 0.0) {corner_hold_speed_mps_ = 0.0;}
     latest_pid_effort_ = latest_desired_duty_ = kUnavailable;
     latest_feedforward_duty_ = required_deceleration_mps2_ = kUnavailable;
     latest_brake_delay_sec_ = latest_brake_rise_ = kUnavailable;
+    latest_corner_planning_deceleration_mps2_ = kUnavailable;
     requested_brake_current_ = 0.0;
     if (const auto reason = stop_reason(now_ns)) {
       if (avoidance_control_enabled_ && *reason!="avoidance_confirming") {avoidance_confirmations_=0;}
@@ -1258,11 +1324,61 @@ private:
     const double curvature = representative_curvature(
       selected_path, curvature_lookahead_minimum_x_m_, curvature_lookahead_maximum_x_m_,
       curvature_percentile_);
-    double target_speed = curvature_speed_control_enabled_ ? curvature_target_speed(
-      curvature, maximum_lateral_acceleration_mps2_, minimum_speed_mps_, maximum_speed_mps_) :
-      maximum_speed_mps_;
     refresh_obstacle_slowdown();
-    if (obstacle_slowdown_active_) {target_speed=std::min(target_speed,obstacle_slowdown_speed_mps_);}
+    const double obstacle_limit = obstacle_slowdown_active_ ?
+      std::min(maximum_speed_mps_, obstacle_slowdown_speed_mps_) : maximum_speed_mps_;
+    double target_speed = obstacle_limit;
+    corner_braking_allowed_ = false;
+    corner_start_distance_m_ = 0.0;
+    corner_speed_limit_mps_ = maximum_speed_mps_;
+    if (curvature_speed_control_enabled_) {
+      double planning_deceleration = corner_planning_deceleration_mps2_;
+      if (coast_deceleration_seen_ns_ && now_ns >= *coast_deceleration_seen_ns_ &&
+        seconds(now_ns - *coast_deceleration_seen_ns_) <= 1.0)
+      {
+        // The ERPM-based duty-coast observation can tighten, never inflate,
+        // the unverified starting estimate used for the spatial speed plan.
+        planning_deceleration = std::min(planning_deceleration,
+          std::max(0.10, coast_deceleration_mps2_));
+      }
+      latest_corner_planning_deceleration_mps2_ = planning_deceleration;
+      PathSpeedPlan plan;
+      try {
+        plan = plan_path_speeds(
+          selected_path, maximum_speed_mps_, maximum_lateral_acceleration_mps2_,
+          planning_deceleration, corner_planning_acceleration_mps2_, obstacle_limit,
+          std::max(0.0, current_speed_mps_) * corner_planning_response_sec_);
+      } catch (const std::exception & exception) {
+        RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+          "Rejected speed plan: %s", exception.what());
+        publish_guard_stop("speed_plan_invalid");
+        decision_finished_ros_ns = now().nanoseconds();
+        return false;
+      }
+      target_speed = plan.target_speed_mps;
+      if (plan.corner_start_m >= 0.0) {
+        corner_braking_allowed_ = true;
+        corner_start_distance_m_ = plan.corner_start_m;
+        corner_speed_limit_mps_ = plan.corner_speed_mps;
+        if (plan.corner_start_m <= 0.20) {
+          corner_hold_remaining_m_ = std::max(corner_hold_remaining_m_,
+            plan.corner_exit_m + corner_exit_hold_distance_m_);
+          corner_hold_speed_mps_ = corner_hold_speed_mps_ > 0.0 ?
+            std::min(corner_hold_speed_mps_, plan.corner_speed_mps) : plan.corner_speed_mps;
+        }
+      }
+      if (corner_hold_remaining_m_ > 0.0) {
+        corner_braking_allowed_ = true;
+        corner_speed_limit_mps_ = std::min(corner_speed_limit_mps_, corner_hold_speed_mps_);
+        target_speed = std::min(target_speed, corner_hold_speed_mps_);
+      }
+      // A stopped vehicle still needs the existing one-time departure duty.
+      // Limit recovery only while it is already moving.
+      if (current_speed_mps_ >= 0.05 && latest_target_speed_mps_ > 0.0) {
+        target_speed = std::min(target_speed,
+          latest_target_speed_mps_ + corner_planning_acceleration_mps2_ * dt);
+      }
+    }
     // Traffic/curvature may request a lower target; release never overrides them.
     const bool traffic_stop = traffic_stop_requested();
     if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
@@ -1307,7 +1423,8 @@ private:
       longitudinal_phase_ = "suppressed";
       service_brake_requested_ = traction_recovery_ = false;
       coast_probe_elapsed_ = 0.0;
-    } else if (longitudinal_pid_enabled_ || traffic_stop || obstacle_slowdown_active_) {
+    } else if (longitudinal_pid_enabled_ || traffic_stop || obstacle_slowdown_active_ ||
+      corner_braking_allowed_) {
       motor_mode = longitudinal_motor(target_speed, dt, traffic_stop);
     } else {
       longitudinal_phase_ = "legacy_speed_pid";
@@ -1471,8 +1588,19 @@ private:
         const bool brake_settled = !last_brake_command_ns_ ||
           (now_ns >= *last_brake_command_ns_ && seconds(now_ns - *last_brake_command_ns_) >=
           traffic_response_time_ + 3.0 * (speed_filter_time_constant_sec_ + deceleration_filter_sec_));
+        // Fresh CAN status may veto a coast estimate while the motor is still
+        // applying more duty than requested or reports braking current. UART
+        // ERPM remains usable when the optional CAN monitor is unavailable.
+        const bool duty_matches = !dynamics_duty_seen_ns_ ||
+          now_ns < *dynamics_duty_seen_ns_ ||
+          seconds(now_ns - *dynamics_duty_seen_ns_) > 0.20 ||
+          dynamics_duty_ <= command_duty_ + 0.02;
+        const bool no_uncommanded_brake = !dynamics_motor_current_seen_ns_ ||
+          now_ns < *dynamics_motor_current_seen_ns_ ||
+          seconds(now_ns - *dynamics_motor_current_seen_ns_) > 0.20 ||
+          dynamics_motor_current_ >= -0.10;
         if (brake_settled && longitudinal_phase_ == "reduce_duty" && last_motor_mode_ == "duty" &&
-          command_brake_current_ == 0.0)
+          command_brake_current_ == 0.0 && duty_matches && no_uncommanded_brake)
         {
           coast_deceleration_mps2_ = std::max(0.0, measured_deceleration_mps2_);
           coast_deceleration_seen_ns_ = now_ns;
@@ -1611,7 +1739,9 @@ private:
         "predicted_stop_distance_m,predicted_overshoot_m,red_age_s,path_held,"
         "feedforward_duty,requested_brake_current_a,required_deceleration_mps2,"
         "measured_deceleration_mps2,coast_deceleration_mps2,coast_age_s,coast_probe_elapsed_s,"
-        "traction_recovery,terminal_tracking,brake_delay_s,brake_rise_limit_a_per_s,obstacle_slowdown_active,centerline_xy_m",
+        "traction_recovery,terminal_tracking,brake_delay_s,brake_rise_limit_a_per_s,obstacle_slowdown_active,"
+        "corner_braking_allowed,corner_start_m,corner_exit_remaining_m,corner_speed_limit_mps,"
+        "corner_planning_deceleration_mps2,can_duty,can_motor_current_a,centerline_xy_m",
         parameters);
       driving_log_started_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
@@ -1676,7 +1806,13 @@ private:
       required_deceleration_mps2_, measured_deceleration_mps2_,
       coast_deceleration_seen_ns_ ? coast_deceleration_mps2_ : kUnavailable,
       age(coast_deceleration_seen_ns_), coast_probe_elapsed_, double(traction_recovery_),
-      double(terminal_tracking_active_), latest_brake_delay_sec_, latest_brake_rise_, double(obstacle_slowdown_active_)};
+      double(terminal_tracking_active_), latest_brake_delay_sec_, latest_brake_rise_, double(obstacle_slowdown_active_),
+      double(corner_braking_allowed_), corner_start_distance_m_, corner_hold_remaining_m_,
+      corner_speed_limit_mps_, latest_corner_planning_deceleration_mps2_,
+      dynamics_duty_seen_ns_ && ns >= *dynamics_duty_seen_ns_ &&
+      seconds(ns - *dynamics_duty_seen_ns_) <= 0.20 ? dynamics_duty_ : kUnavailable,
+      dynamics_motor_current_seen_ns_ && ns >= *dynamics_motor_current_seen_ns_ &&
+      seconds(ns - *dynamics_motor_current_seen_ns_) <= 0.20 ? dynamics_motor_current_ : kUnavailable};
     if (path_) {frame.path = path_->points;}
     driving_log_->enqueue(std::move(frame));
   }
@@ -1749,6 +1885,12 @@ private:
   double traffic_deceleration_, traffic_response_time_, traffic_brake_gain_;
   double traffic_brake_max_, traffic_hold_current_;
   bool longitudinal_pid_enabled_{true}, curvature_speed_control_enabled_{false};
+  bool corner_braking_allowed_{false};
+  double corner_planning_deceleration_mps2_{0.35}, corner_planning_acceleration_mps2_{0.50};
+  double corner_planning_response_sec_{0.30}, corner_exit_hold_distance_m_{0.33};
+  double corner_hold_remaining_m_{0.0}, corner_hold_speed_mps_{0.0};
+  double corner_start_distance_m_{0.0}, corner_speed_limit_mps_{0.0};
+  double latest_corner_planning_deceleration_mps2_{kUnavailable};
   bool staged_control_enabled_{true}, service_brake_requested_{false}, traction_recovery_{false};
   bool departure_pending_{true};
   double longitudinal_start_duty_;
@@ -1785,6 +1927,7 @@ private:
   bool performance_measurement_enabled_{false};
   std::string control_mode_, enable_topic_, lane_result_topic_, lane_result_frame_id_;
   std::string measured_erpm_topic_, connection_status_topic_, duty_topic_;
+  std::string dynamics_duty_topic_, dynamics_motor_current_topic_;
   std::string brake_current_topic_, servo_position_topic_, command_duty_topic_;
   std::string command_brake_current_topic_, target_speed_topic_, current_speed_topic_;
   std::string curvature_topic_, steering_angle_topic_, cross_track_error_topic_;
@@ -1831,6 +1974,8 @@ private:
   rclcpp::Subscription<auto_control::msg::AvoidancePlan>::SharedPtr avoidance_sub_;
   std::optional<OrderedPath> path_;
   std::optional<std::int64_t> last_path_received_ns_, path_capture_ns_, last_erpm_ns_;
+  std::optional<std::int64_t> dynamics_duty_seen_ns_, dynamics_motor_current_seen_ns_;
+  double dynamics_duty_{0.0}, dynamics_motor_current_{0.0};
   std::optional<std::int64_t> last_valid_path_received_ns_, last_lane_capture_ns_;
   std::optional<double> lane_capture_age_sec_;
   std::int64_t last_control_ns_{0};
@@ -1856,6 +2001,8 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr input_to_control_decision_pub_;
   rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_duty_sub_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_motor_current_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_, enable_sub_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_, status_timer_, performance_timer_;
 };

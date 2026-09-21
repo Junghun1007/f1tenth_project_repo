@@ -25,6 +25,22 @@ struct OrderedPath
   double curvature(double arc) const;
 };
 
+struct PathSpeedPlan
+{
+  std::vector<double> arc_m;
+  std::vector<double> speed_mps;
+  double target_speed_mps{0.0};
+  double corner_start_m{-1.0};
+  double corner_exit_m{-1.0};
+  double corner_speed_mps{0.0};
+};
+
+PathSpeedPlan plan_path_speeds(
+  const OrderedPath & path, double maximum_speed_mps,
+  double maximum_lateral_acceleration_mps2, double planning_deceleration_mps2,
+  double planning_acceleration_mps2, double obstacle_speed_limit_mps,
+  double response_distance_m, double sample_spacing_m = 0.05);
+
 std::optional<OrderedPath> build_ordered_path(
   const std::vector<Point> & input, int minimum_points,
   double minimum_span_m, double minimum_x_m, double maximum_x_m,

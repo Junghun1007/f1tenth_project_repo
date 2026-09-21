@@ -184,6 +184,79 @@ double curvature_target_speed(
   return clamp(safe, minimum_speed_mps, maximum_speed_mps);
 }
 
+PathSpeedPlan plan_path_speeds(
+  const OrderedPath & path, double maximum_speed_mps,
+  double maximum_lateral_acceleration_mps2, double planning_deceleration_mps2,
+  double planning_acceleration_mps2, double obstacle_speed_limit_mps,
+  double response_distance_m, double sample_spacing_m)
+{
+  if (path.arc_m.empty() || !std::isfinite(path.arc_m.back()) ||
+    path.arc_m.back() <= 0.0 || path.arc_m.back() > 25.0 ||
+    maximum_speed_mps <= 0.0 || maximum_lateral_acceleration_mps2 <= 0.0 ||
+    planning_deceleration_mps2 <= 0.0 || planning_acceleration_mps2 <= 0.0 ||
+    sample_spacing_m <= 0.0)
+  {throw std::invalid_argument("invalid path speed planning input");}
+  PathSpeedPlan plan;
+  const double length = path.arc_m.back();
+  const auto segments = std::min<std::size_t>(512U,
+    std::max<std::size_t>(1U, static_cast<std::size_t>(std::ceil(length / sample_spacing_m))));
+  plan.arc_m.reserve(segments + 1U);
+  plan.speed_mps.reserve(segments + 1U);
+  std::vector<double> curve_limits;
+  curve_limits.reserve(segments + 1U);
+  for (std::size_t index = 0; index <= segments; ++index) {
+    const double arc = length * static_cast<double>(index) / static_cast<double>(segments);
+    const double curvature = std::abs(path.curvature(arc));
+    if (!std::isfinite(curvature)) {throw std::invalid_argument("nonfinite path curvature");}
+    const double curve_limit = curvature > 1.0e-9 ?
+      std::min(maximum_speed_mps,
+      std::sqrt(maximum_lateral_acceleration_mps2 / curvature)) : maximum_speed_mps;
+    plan.arc_m.push_back(arc);
+    curve_limits.push_back(curve_limit);
+  }
+  // Dilate a local curvature limit by one sample so a narrow corner is not
+  // missed between the fixed spatial samples.
+  bool first_corner_finished = false;
+  for (std::size_t index = 0; index < curve_limits.size(); ++index) {
+    double limit = curve_limits[index];
+    if (index > 0U) {limit = std::min(limit, curve_limits[index - 1U]);}
+    if (index + 1U < curve_limits.size()) {limit = std::min(limit, curve_limits[index + 1U]);}
+    plan.speed_mps.push_back(std::min(limit, obstacle_speed_limit_mps));
+    if (plan.corner_exit_m >= 0.0 &&
+      plan.arc_m[index] - plan.corner_exit_m > 0.15)
+    {first_corner_finished = true;}
+    if (!first_corner_finished && limit < maximum_speed_mps - 0.03) {
+      if (plan.corner_start_m < 0.0) {plan.corner_start_m = plan.arc_m[index];}
+      plan.corner_exit_m = plan.arc_m[index];
+      plan.corner_speed_mps = plan.corner_speed_mps > 0.0 ?
+        std::min(plan.corner_speed_mps, limit) : limit;
+    }
+  }
+  // Do not assume an unseen continuation beyond the last valid path point.
+  // On a normal long path this terminal constraint lies beyond the braking
+  // horizon; on a short path it prevents acceleration into unknown geometry.
+  plan.speed_mps.back() = 0.0;
+  // Future restrictions propagate backward to a feasible entry speed.
+  for (std::size_t index = plan.speed_mps.size() - 1U; index > 0U; --index) {
+    const double ds = plan.arc_m[index] - plan.arc_m[index - 1U];
+    plan.speed_mps[index - 1U] = std::min(plan.speed_mps[index - 1U],
+      std::sqrt(plan.speed_mps[index] * plan.speed_mps[index] +
+      2.0 * planning_deceleration_mps2 * ds));
+  }
+  // The exit profile must respect acceleration as well as the local limits.
+  for (std::size_t index = 1U; index < plan.speed_mps.size(); ++index) {
+    const double ds = plan.arc_m[index] - plan.arc_m[index - 1U];
+    plan.speed_mps[index] = std::min(plan.speed_mps[index],
+      std::sqrt(plan.speed_mps[index - 1U] * plan.speed_mps[index - 1U] +
+      2.0 * planning_acceleration_mps2 * ds));
+  }
+  const double probe = clamp(response_distance_m, 0.0, length);
+  const auto upper = std::lower_bound(plan.arc_m.begin(), plan.arc_m.end(), probe);
+  const auto index = static_cast<std::size_t>(upper - plan.arc_m.begin());
+  plan.target_speed_mps = std::min(plan.speed_mps.front(), plan.speed_mps[index]);
+  return plan;
+}
+
 double erpm_to_speed_mps(
   int measured_erpm, double wheel_diameter_m, int motor_pole_pairs,
   int motor_pinion_teeth, int spur_gear_teeth, int differential_pinion_teeth,

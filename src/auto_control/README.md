@@ -307,10 +307,33 @@ these samples for its cumulative `control avg` time and reciprocal FPS.
    Spatial smoothing and outer-boundary weighting happen in `line_detactor`.
 4. Calculate Stanley cross-track error from the front-axle origin and heading
    at the closest path projection plus `stanley_heading_lookahead_m` along the path.
-5. Estimate curvature using three points spaced along the path and take the
-   configured percentile in the forward-X lookahead region (available path if empty).
-6. Apply curvature-based target speed, ERPM feedback, PID and duty limits from YAML.
-   Optional electrical braking replaces positive duty during overspeed.
+5. With corner speed control enabled, sample curvature along the selected path,
+   combine its local speed limits with the active in-lane obstacle limit, and
+   propagate deceleration backward and acceleration forward. The old forward-X
+   percentile is retained only for `/auto/path_curvature` diagnostics.
+6. Apply the speed at the current front axle, allowing for response distance.
+   Track a corner through its last observed exit when it leaves the near camera
+   view. ERPM feedback supplies the actual speed and duty-coast deceleration.
+   Try reduced duty first; add brake current when the observed deceleration
+   cannot meet the approaching corner's distance budget. Traffic-stop latching
+   and stale-input guard stops keep their separate behavior.
+
+The corner planner's initial `corner_planning_deceleration_mps2` is an unverified
+provisional estimate, not a guaranteed braking capability. A fresh duty-only deceleration observation may lower it,
+never raise it. `corner_planning_response_sec` reserves travel during camera,
+control and actuator delay. The plan assumes no visible continuation beyond the
+last valid path point. `corner_planning_acceleration_mps2` limits target-speed
+recovery after the corner or after obstacle detection expires. The curvature
+limit is allowed below `minimum_speed_mps`; that legacy parameter is not a safety
+floor for the new profile.
+
+The optional `/vehicle/dynamics/duty_cycle` and `/vehicle/dynamics/motor_current_a`
+topics veto contaminated duty-coast samples when fresh. The dynamics monitor
+publishes them from VESC CAN status in `slcan` or `socketcan` mode; its default
+`ros_topic` mode has only bridge ERPM. The controller retains ERPM-only feedback
+when CAN telemetry is absent. Neither motor current nor ERPM alone establishes
+tire-road braking capability, so the plan starts conservatively and uses closed
+loop braking when the observed deceleration falls short.
 
 Missing/short geometric paths beyond the bounded hold interval invalidate control.
 Stale ERPM, VESC disconnect, disable and shutdown also stop drive commands. Steering
@@ -426,9 +449,13 @@ The complete Korean symptom-based tuning guide is installed as
 - `steering_current_weight`: smaller values smooth steering more but add lag.
 - `steering_servo_inverted`: reverses only the final servo output while keeping
   positive `/auto/steering_angle_rad` defined as a vehicle-left command.
-- `maximum_lateral_acceleration_mps2`: smaller values reach the minimum-speed corner
-  limit on gentler curves.
-- `curvature_percentile`: smaller values ignore more isolated curvature spikes.
+- `maximum_lateral_acceleration_mps2`: smaller values lower the local curve speed.
+- `curvature_percentile`: diagnostic path-curvature percentile only.
+- `corner_planning_deceleration_mps2`: upper bound for unmeasured braking in the
+  spatial plan; fresh lower duty-coast observations tighten it.
+- `corner_planning_acceleration_mps2`: maximum target-speed rise after a limit ends.
+- `corner_planning_response_sec`: travel-time allowance before a corner limit.
+- `corner_exit_hold_distance_m`: extra travel after the last observed curve exit.
 - `speed_pid_kp`, `speed_pid_ki`, `speed_pid_kd`: measured-speed PID gains.
 - `brake_entry_speed_error_mps`: overspeed required to enter electrical
   braking; increase it if braking triggers too often.
@@ -537,7 +564,7 @@ BEV에 표시한다. 기본 OFF이며 `/auto_obstacles`의 `obstacles.avoidance.
 기존 충돌/곡률 검사와 실패 시 제동은 `avoidance_deformation_only: false`에서만 적용한다.
 주행 속도는 `maximum_speed_mps`로 설정한다. `avoidance_speed_cap_mps`와
 `obstacles.avoidance.max_speed_mps`는 폐기되어 기존 YAML에 남아 있어도 무시한다.
-차선 안 장애물 최초 검출 시 `obstacle_slowdown_speed_mps`(기본 1.0m/s)로 일시 감속하고,
+차선 안 장애물 최초 검출 시 `obstacle_slowdown_speed_mps`(기본 1.2m/s)를 상한으로 적용하고,
 마지막 검출 후 `obstacle_slowdown_clear_sec`(기본 1초)가 지나면 일반 속도로 복귀한다.
 `obstacle_slowdown_enabled: false`로 이 감속을 끌 수 있다.
 기본 OFF이며 `manual_test:=true`에서는 여전히 액추에이터 출력이 없다.

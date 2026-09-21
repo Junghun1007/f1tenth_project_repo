@@ -73,7 +73,7 @@ auto_control:
     # 일반 주행은 maximum_speed_mps. 장애물이 있을 때만 아래 일시 감속 적용.
     # 차선 안 장애물 첫 검출 즉시 감속. 마지막 유효 검출 후 아래 시간 동안 재검출 없으면 해제.
     obstacle_slowdown_enabled: true
-    obstacle_slowdown_speed_mps: 1.0 # 일반/신호등 목표보다 높으면 목표를 올리지 않음
+    obstacle_slowdown_speed_mps: 1.2 # 검출 중 상한. 일반/코너/신호등 목표보다 높으면 목표를 올리지 않음
     obstacle_slowdown_clear_sec: 1.0 # 재검출 시 해제 타이머 갱신. 시작 시 적용
     avoidance_brake_current_amps: 2.5 # deformation_only=false인 검사 모드에서 사용
     avoidance_wheelbase_m: 0.33 # 실측 축간거리. 곡률 한계=tan(최대 조향각)/축간거리
@@ -148,13 +148,18 @@ auto_control:
     # /auto/steering_angle_rad의 +는 계속 차량 좌회전 의미를 유지한다.
     steering_servo_inverted: true
 
-    # 곡률의 90 percentile로 순간 한 점의 spike를 무시하면서 코너를 감속한다.
+    # 코너 감속 ON: 선택된 주행 경로의 거리별 곡률 상한과 장애물 상한을 합친 뒤
+    # 감속 역산/탈출 가속 계획을 수행한다. 90 percentile은 진단 곡률에만 사용.
     minimum_speed_mps: 0.80
     maximum_speed_mps: 5.0
     maximum_lateral_acceleration_mps2: 1.2
     curvature_lookahead_minimum_x_m: 0.50
     curvature_lookahead_maximum_x_m: 1.60
     curvature_percentile: 90.0
+    corner_planning_deceleration_mps2: 0.35 # 실측 전 임시 계획값. 유효 duty 감속 관측이 낮으면 더 낮춰 계획
+    corner_planning_acceleration_mps2: 0.50 # 코너 탈출 후 목표 속도 증가 상한
+    corner_planning_response_sec: 0.30 # 영상·제어·구동 지연을 포함한 계획 여유
+    corner_exit_hold_distance_m: 0.33 # 마지막 관측 코너 끝을 지난 뒤에도 유지할 거리
 
     # 단계 제어: 유효 입력+정지 상태에서 longitudinal_start_duty를 1회 적용한 뒤
     # PID+feed-forward 목표까지 rate limit으로 이동한다. 경로 유실은 즉시 0이다.

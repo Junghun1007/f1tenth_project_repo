@@ -176,13 +176,15 @@ ros2 topic echo /auto/avoidance_preview/status
 
 ```yaml
     obstacle_slowdown_enabled: true
-    obstacle_slowdown_speed_mps: 1.0
+    obstacle_slowdown_speed_mps: 1.2
     obstacle_slowdown_clear_sec: 1.0
 ```
 
 최신 차선과 매칭된 Depth에서 차선 안 장애물을 처음 한 번 검출하면 목표 속도를
-`min(일반 목표, obstacle_slowdown_speed_mps)`로 즉시 낮춘다. 실제 속도는 기존 PID/제동으로
-따라간다. 기존 BEV 범위 안 대표점으로 판단하고, 차선이 일부 누락되면 중앙선과 기존
+`obstacle_slowdown_speed_mps`를 경로 전체의 속도 상한으로 적용한다. 코너 감속을
+켜면 각 경로 지점의 곡률 상한과 합친 뒤 감속·가속 계획을 계산한다. 장애물 상한이
+일반 목표보다 높으면 목표를 올리지 않는다. 실제 속도는 기존 PID/제동으로 따른다.
+기존 BEV 범위 안 대표점으로 판단하고, 차선이 일부 누락되면 중앙선과 기존
 차선 폭으로 누락 경계를 추정한다. 경로를 휘게 할 필요가 없는 차선 가장자리 장애물도 포함한다.
 차선 밖 장애물, 오래된 프레임, 같은 Depth의 반복 수신은 감속 타이머를 갱신하지 않는다.
 회피 경로 유효성이나 연속 관측 확인과 독립적인 검출 신호다.
@@ -324,7 +326,8 @@ Depth 입력 유실/만료나 장애물이 있는데 회피 후보를 찾지 못
 `obstacles.avoidance.max_speed_mps`는 호환을 위해 선언만 하며 값은 무시한다.
 기존 파일에 남아 있어도 주행 속도를 제한하거나 값의 범위 때문에 실행을 막지 않는다.
 지속적인 회피 속도 상한은 없으며, 차선 안 장애물 검출 시에만 아래의 일시 감속을 적용한다.
-`curvature_speed_control_enabled: true`인 일반 곡률 감속과 신호등 정지는 별개로 유지된다.
+`curvature_speed_control_enabled: true`이면 실제 선택된 회피 경로의 곡률과 장애물
+상한을 같은 속도 계획에 넣는다. 신호등 정지의 거리·정지 상태 추적은 별도로 유지된다.
 
 launch는 최종 `maximum_speed_mps`(명시적 launch 인자 우선)를 planner의
 `obstacles.avoidance.reference_speed_mps`에 전달한다. 이 값은 표시 및 검사 모드의
