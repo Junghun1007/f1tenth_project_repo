@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "extract_frames = tunnel_data_collection.extract_frames:main",
+            "recording_controller = tunnel_data_collection.recording_controller:main",
         ],
     },
 )

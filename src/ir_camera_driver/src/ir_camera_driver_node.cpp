@@ -32,6 +32,7 @@
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "sensor_msgs/msg/image.hpp"
 
 namespace ir_camera_driver
 {
@@ -128,6 +129,11 @@ public:
               "IR preview requires DISPLAY or WAYLAND_DISPLAY");
     }
 
+    rgb_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+      rgb_topic_, rclcpp::SensorDataQoS());
+    bev_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+      bev_topic_, rclcpp::SensorDataQoS());
+
     try {
       measureBevMount();
       startOak();
@@ -140,6 +146,7 @@ public:
         imu_thread_ = std::thread(&IrCameraDriverNode::imuLoop, this);
       }
       capture_thread_ = std::thread(&IrCameraDriverNode::captureLoop, this);
+      rgb_thread_ = std::thread(&IrCameraDriverNode::rgbLoop, this);
       preview_thread_ = std::thread(&IrCameraDriverNode::previewLoop, this);
     } catch (...) {
       stop();
@@ -213,6 +220,12 @@ private:
     std::int64_t sequence;
   };
 
+  struct RgbSnapshot
+  {
+    std::shared_ptr<dai::ImgFrame> frame;
+    std::uint64_t generation;
+  };
+
   static SelectedCamera parseSelectedCamera(const std::string & value)
   {
     const auto normalized = uppercase(value);
@@ -262,6 +275,22 @@ private:
       declare_parameter<bool>("undistort_single_camera", true);
     sync_threshold_ms_ =
       declare_parameter<double>("sync_threshold_ms", 2.0);
+
+    rgb_width_ = declare_parameter<int>("rgb_width", 1280);
+    rgb_height_ = declare_parameter<int>("rgb_height", 800);
+    rgb_fps_ = declare_parameter<double>("rgb_fps", 30.0);
+    rgb_undistort_enabled_ =
+      declare_parameter<bool>("rgb_undistort_enabled", true);
+    rgb_topic_ = declare_parameter<std::string>(
+      "rgb_topic", "/camera/image_rect");
+    bev_topic_ = declare_parameter<std::string>(
+      "bev_topic", "/camera/image_bev_ir");
+    rgb_frame_id_ = declare_parameter<std::string>(
+      "rgb_frame_id", "camera_optical_frame");
+    bev_frame_id_ = declare_parameter<std::string>(
+      "bev_frame_id", "front_axle_bev");
+    rgb_preview_window_name_ = declare_parameter<std::string>(
+      "rgb_preview_window_name", "OAK RGB original preview");
 
     ir_enabled_at_start_ = declare_parameter<bool>("ir_enabled", true);
     ir_dot_projector_intensity_ = declare_parameter<double>(
@@ -321,6 +350,12 @@ private:
       virtual_camera_position_ratio_ < 0.0 ||
       virtual_camera_position_ratio_ > 1.0 ||
       !std::isfinite(sync_threshold_ms_) || sync_threshold_ms_ <= 0.0 ||
+      rgb_width_ <= 0 || rgb_height_ <= 0 ||
+      (rgb_width_ % 2) != 0 || (rgb_height_ % 2) != 0 ||
+      !std::isfinite(rgb_fps_) || rgb_fps_ <= 0.0 || rgb_fps_ > 60.0 ||
+      rgb_topic_.empty() || bev_topic_.empty() ||
+      rgb_frame_id_.empty() || bev_frame_id_.empty() ||
+      rgb_preview_window_name_.empty() ||
       !std::isfinite(ir_dot_projector_intensity_) ||
       ir_dot_projector_intensity_ < 0.0 ||
       ir_dot_projector_intensity_ > 1.0 ||
@@ -568,6 +603,21 @@ private:
     pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
     pipeline_->setXLinkChunkSize(0);
 
+    auto rgb_camera = pipeline_->create<dai::node::Camera>()->build(
+      dai::CameraBoardSocket::CAM_A,
+      std::make_pair(
+        static_cast<std::uint32_t>(rgb_width_),
+        static_cast<std::uint32_t>(rgb_height_)),
+      static_cast<float>(rgb_fps_));
+    auto * rgb_output = rgb_camera->requestOutput(
+      std::make_pair(
+        static_cast<std::uint32_t>(rgb_width_),
+        static_cast<std::uint32_t>(rgb_height_)),
+      dai::ImgFrame::Type::NV12,
+      dai::ImgResizeMode::CROP,
+      static_cast<float>(rgb_fps_),
+      rgb_undistort_enabled_);
+
     dai::Node::Output * host_output = nullptr;
     if (reprojection_enabled_) {
       auto left_camera = pipeline_->create<dai::node::Camera>()->build(
@@ -682,6 +732,7 @@ private:
         imu_stabilizer_config_.maximum_correction_deg);
     }
     output_queue_ = host_output->createOutputQueue(1U, false);
+    rgb_queue_ = rgb_output->createOutputQueue(1U, false);
     pipeline_->build();
     const auto xlink_bridge = host_output->getXLinkBridge();
     if (!xlink_bridge || !xlink_bridge->xLinkOut) {
@@ -690,6 +741,12 @@ private:
     }
     xlink_bridge->xLinkOut->input.setMaxSize(1);
     xlink_bridge->xLinkOut->input.setBlocking(false);
+    const auto rgb_bridge = rgb_output->getXLinkBridge();
+    if (!rgb_bridge || !rgb_bridge->xLinkOut) {
+      throw std::runtime_error("DepthAI did not create the RGB XLink bridge");
+    }
+    rgb_bridge->xLinkOut->input.setMaxSize(1);
+    rgb_bridge->xLinkOut->input.setBlocking(false);
 
     pipeline_->start();
     setIrState(ir_enabled_at_start_, true);
@@ -703,6 +760,11 @@ private:
       width_, height_, requestedFps(), usbSpeedName(device_->getUsbSpeed()),
       manual_exposure_enabled_ ? "manual" : "auto",
       preview_max_fps_);
+    RCLCPP_INFO(
+      get_logger(),
+      "Clean outputs: RGB %s (%dx%d NV12 @ %.1f FPS), "
+      "stereo-IR BEV %s (mono8).",
+      rgb_topic_.c_str(), rgb_width_, rgb_height_, rgb_fps_, bev_topic_.c_str());
     if (reprojection_enabled_) {
       RCLCPP_INFO(
         get_logger(),
@@ -1320,6 +1382,89 @@ private:
     preview_window_sized_ = true;
   }
 
+  void rgbLoop()
+  {
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+      try {
+        if (!pipeline_ || !pipeline_->isRunning()) {
+          break;
+        }
+        auto frame = rgb_queue_->tryGet<dai::ImgFrame>();
+        if (!frame) {
+          std::this_thread::sleep_for(100us);
+          continue;
+        }
+        if (
+          static_cast<int>(frame->getWidth()) != rgb_width_ ||
+          static_cast<int>(frame->getHeight()) != rgb_height_ ||
+          frame->getType() != dai::ImgFrame::Type::NV12)
+        {
+          invalid_frames_total_.fetch_add(1U, std::memory_order_relaxed);
+          continue;
+        }
+
+        const auto & source = frame->getData();
+        const std::size_t stride = frame->getStride() > 0U ?
+          frame->getStride() : frame->getWidth();
+        const std::size_t rows = static_cast<std::size_t>(rgb_height_) * 3U / 2U;
+        if (source.size() < stride * rows) {
+          throw std::runtime_error("DepthAI returned an undersized RGB NV12 frame");
+        }
+        auto message = std::make_unique<sensor_msgs::msg::Image>();
+        message->header.stamp = get_clock()->now();
+        message->header.frame_id = rgb_frame_id_;
+        message->height = static_cast<std::uint32_t>(rgb_height_);
+        message->width = static_cast<std::uint32_t>(rgb_width_);
+        message->encoding = "nv12";
+        message->is_bigendian = false;
+        message->step = static_cast<std::uint32_t>(rgb_width_);
+        message->data.resize(static_cast<std::size_t>(rgb_width_) * rows);
+        for (std::size_t row = 0; row < rows; ++row) {
+          std::copy_n(
+            source.data() + row * stride,
+            static_cast<std::size_t>(rgb_width_),
+            message->data.data() + row * static_cast<std::size_t>(rgb_width_));
+        }
+        rgb_publisher_->publish(std::move(message));
+        const auto generation =
+          rgb_captured_total_.fetch_add(1U, std::memory_order_relaxed) + 1U;
+        std::shared_ptr<const RgbSnapshot> snapshot =
+          std::make_shared<RgbSnapshot>(RgbSnapshot{std::move(frame), generation});
+        std::atomic_store_explicit(
+          &latest_rgb_, std::move(snapshot), std::memory_order_release);
+        frame_available_.notify_one();
+      } catch (const std::exception & exception) {
+        capture_errors_total_.fetch_add(1U, std::memory_order_relaxed);
+        RCLCPP_ERROR_THROTTLE(
+          get_logger(), *get_clock(), 1000,
+          "RGB camera capture error: %s", exception.what());
+        std::this_thread::sleep_for(1ms);
+      }
+    }
+  }
+
+  void publishBev(const cv::Mat & bev)
+  {
+    if (bev.empty() || bev.type() != CV_8UC1) {
+      return;
+    }
+    auto message = std::make_unique<sensor_msgs::msg::Image>();
+    message->header.stamp = get_clock()->now();
+    message->header.frame_id = bev_frame_id_;
+    message->height = static_cast<std::uint32_t>(bev.rows);
+    message->width = static_cast<std::uint32_t>(bev.cols);
+    message->encoding = "mono8";
+    message->is_bigendian = false;
+    message->step = static_cast<std::uint32_t>(bev.cols);
+    message->data.resize(static_cast<std::size_t>(bev.rows * bev.cols));
+    for (int row = 0; row < bev.rows; ++row) {
+      std::copy_n(
+        bev.ptr<std::uint8_t>(row), bev.cols,
+        message->data.data() + static_cast<std::size_t>(row * bev.cols));
+    }
+    bev_publisher_->publish(std::move(message));
+  }
+
   void saveFrames(const cv::Mat & original, const cv::Mat & bev)
   {
     if (original.empty() || bev.empty()) {
@@ -1364,6 +1509,7 @@ private:
   {
     try {
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
+      cv::namedWindow(rgb_preview_window_name_, cv::WINDOW_NORMAL);
       cv::namedWindow(bev_preview_window_name_, cv::WINDOW_NORMAL);
       cv::namedWindow(controls_window_name_, cv::WINDOW_AUTOSIZE);
       cv::setMouseCallback(controls_window_name_, controlMouseCallback, this);
@@ -1385,6 +1531,8 @@ private:
     std::uint64_t previewed_generation = 0U;
     cv::Mat current_frame;
     cv::Mat current_bev;
+    cv::Mat current_rgb;
+    std::uint64_t rgb_previewed_generation = 0U;
     std::shared_ptr<const StereoSnapshot> displayed_stereo;
     std::shared_ptr<const SingleSnapshot> displayed_single;
     bool window_was_visible = false;
@@ -1466,12 +1614,23 @@ private:
               cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255), 1, cv::LINE_AA);
             cv::imshow(bev_preview_window_name_, waiting);
           } else {
+            publishBev(current_bev);
             cv::imshow(bev_preview_window_name_, current_bev);
             bev_preview_interval_.fetch_add(1U, std::memory_order_relaxed);
           }
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
           original_preview_interval_.fetch_add(1U, std::memory_order_relaxed);
           control_panel_dirty_.store(true, std::memory_order_relaxed);
+        }
+
+        auto rgb_snapshot = std::atomic_load_explicit(
+          &latest_rgb_, std::memory_order_acquire);
+        if (rgb_snapshot && rgb_snapshot->generation != rgb_previewed_generation) {
+          current_rgb = rgb_snapshot->frame->getCvFrame();
+          if (!current_rgb.empty()) {
+            cv::imshow(rgb_preview_window_name_, current_rgb);
+          }
+          rgb_previewed_generation = rgb_snapshot->generation;
         }
 
         if (control_panel_dirty_.load(std::memory_order_relaxed)) {
@@ -1501,14 +1660,20 @@ private:
           preview_window_name_, cv::WND_PROP_VISIBLE);
         const double bev_visible = cv::getWindowProperty(
           bev_preview_window_name_, cv::WND_PROP_VISIBLE);
+        const double rgb_visible = cv::getWindowProperty(
+          rgb_preview_window_name_, cv::WND_PROP_VISIBLE);
         const double controls_visible = cv::getWindowProperty(
           controls_window_name_, cv::WND_PROP_VISIBLE);
-        if (original_visible >= 1.0 && bev_visible >= 1.0 && controls_visible >= 1.0) {
+        if (
+          original_visible >= 1.0 && bev_visible >= 1.0 &&
+          rgb_visible >= 1.0 && controls_visible >= 1.0)
+        {
           window_was_visible = true;
         }
         if (
           window_was_visible &&
-          (original_visible < 1.0 || bev_visible < 1.0 || controls_visible < 1.0))
+          (original_visible < 1.0 || bev_visible < 1.0 ||
+          rgb_visible < 1.0 || controls_visible < 1.0))
         {
           RCLCPP_INFO(get_logger(), "IR preview closed.");
           stop_requested_.store(true, std::memory_order_relaxed);
@@ -1526,6 +1691,7 @@ private:
 
     try {
       cv::destroyWindow(preview_window_name_);
+      cv::destroyWindow(rgb_preview_window_name_);
       cv::destroyWindow(bev_preview_window_name_);
       cv::destroyWindow(controls_window_name_);
     } catch (...) {
@@ -1591,6 +1757,9 @@ private:
     if (capture_thread_.joinable()) {
       capture_thread_.join();
     }
+    if (rgb_thread_.joinable()) {
+      rgb_thread_.join();
+    }
     if (
       preview_thread_.joinable() &&
       preview_thread_.get_id() != std::this_thread::get_id())
@@ -1612,6 +1781,7 @@ private:
     }
     imu_queue_.reset();
     output_queue_.reset();
+    rgb_queue_.reset();
     camera_control_queues_.clear();
     if (pipeline_) {
       try {
@@ -1654,6 +1824,14 @@ private:
   double single_camera_fps_{30.0};
   bool undistort_single_camera_{true};
   double sync_threshold_ms_{2.0};
+  int rgb_width_{1280};
+  int rgb_height_{800};
+  double rgb_fps_{30.0};
+  bool rgb_undistort_enabled_{true};
+  std::string rgb_topic_{"/camera/image_rect"};
+  std::string bev_topic_{"/camera/image_bev_ir"};
+  std::string rgb_frame_id_{"camera_optical_frame"};
+  std::string bev_frame_id_{"front_axle_bev"};
 
   bool ir_enabled_at_start_{true};
   double ir_dot_projector_intensity_{1.0};
@@ -1664,6 +1842,7 @@ private:
   int maximum_manual_exposure_us_{0};
 
   std::string preview_window_name_{"OAK IR center preview"};
+  std::string rgb_preview_window_name_{"OAK RGB original preview"};
   std::string bev_preview_window_name_{"OAK IR BEV preview"};
   std::string controls_window_name_{"OAK IR live controls"};
   double preview_max_fps_{30.0};
@@ -1686,15 +1865,18 @@ private:
   std::shared_ptr<dai::Device> device_;
   std::unique_ptr<dai::Pipeline> pipeline_;
   std::shared_ptr<dai::MessageQueue> output_queue_;
+  std::shared_ptr<dai::MessageQueue> rgb_queue_;
   std::vector<std::shared_ptr<dai::InputQueue>> camera_control_queues_;
   std::unique_ptr<CudaCenterReprojector> center_reprojector_;
   std::unique_ptr<IrBevProjector> bev_projector_;
 
   std::shared_ptr<const StereoSnapshot> latest_stereo_;
   std::shared_ptr<const SingleSnapshot> latest_single_;
+  std::shared_ptr<const RgbSnapshot> latest_rgb_;
   std::mutex wait_mutex_;
   std::condition_variable frame_available_;
   std::thread capture_thread_;
+  std::thread rgb_thread_;
   std::thread preview_thread_;
   rclcpp::TimerBase::SharedPtr status_timer_;
 
@@ -1704,6 +1886,7 @@ private:
   std::atomic<bool> manual_exposure_active_{false};
   std::atomic<bool> control_panel_dirty_{true};
   std::atomic<std::uint64_t> captured_total_{0U};
+  std::atomic<std::uint64_t> rgb_captured_total_{0U};
   std::atomic<std::uint64_t> capture_interval_{0U};
   std::atomic<std::uint64_t> previewed_total_{0U};
   std::atomic<std::uint64_t> original_preview_interval_{0U};
@@ -1719,6 +1902,8 @@ private:
   std::optional<std::int64_t> last_sequence_;
   std::chrono::steady_clock::time_point started_at_{};
   std::chrono::steady_clock::time_point last_status_at_{};
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr rgb_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr bev_publisher_;
 };
 
 }  // namespace ir_camera_driver

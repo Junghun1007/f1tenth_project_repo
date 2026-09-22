@@ -12,12 +12,12 @@ from .image_utils import FrameRecord, decode_image, pair_frames
 
 def parse_arguments(arguments=None):
     parser = argparse.ArgumentParser(
-        description="Extract /camera/image_rect and /camera/image_bev as PNG frames."
+        description="Extract RGB and stereo-IR BEV topics as PNG frames."
     )
     parser.add_argument("bag", type=Path, help="rosbag2 session directory")
     parser.add_argument("--output", type=Path, help="new output dataset directory")
     parser.add_argument("--rgb-topic", default="/camera/image_rect")
-    parser.add_argument("--bev-topic", default="/camera/image_bev")
+    parser.add_argument("--bev-topic", default="/camera/image_bev_ir")
     parser.add_argument(
         "--every-nth", type=int, default=1, help="keep every Nth message per topic"
     )

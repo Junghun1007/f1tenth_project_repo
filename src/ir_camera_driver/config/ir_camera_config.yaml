@@ -19,6 +19,17 @@ ir_camera_driver:
     undistort_single_camera: true
     sync_threshold_ms: 2.0
 
+    # Clean CAM_A RGB stream. It shares this DepthAI pipeline with CAM_B/C so
+    # only one process owns the OAK device during tunnel collection.
+    rgb_width: 1280
+    rgb_height: 800
+    rgb_fps: 30.0
+    rgb_undistort_enabled: true
+    rgb_topic: "/camera/image_rect"
+    bev_topic: "/camera/image_bev_ir"
+    rgb_frame_id: "camera_optical_frame"
+    bev_frame_id: "front_axle_bev"
+
     # OAK-D Pro W emitters. The dot projector supports stereo matching; the
     # flood light uniformly illuminates a dark scene and is optional here.
     ir_enabled: true
@@ -33,6 +44,7 @@ ir_camera_driver:
 
     # Both original and BEV previews are updated together at no more than 30 FPS.
     preview_window_name: "OAK IR center preview"
+    rgb_preview_window_name: "OAK RGB original preview"
     bev_preview_window_name: "OAK IR BEV preview"
     controls_window_name: "OAK IR live controls"
     preview_max_fps: 30.0
