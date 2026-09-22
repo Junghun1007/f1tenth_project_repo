@@ -124,6 +124,11 @@ ros2 run tunnel_data_collection extract_frames BAG_DIRECTORY \
 
 ## 현재 한계
 
+DepthAI는 빌드 시 선택한 라이브러리 경로를 `ir_camera_driver` 설치 폴더에 기록하고,
+launch가 카메라 프로세스의 `LD_LIBRARY_PATH` 앞에 추가한다. `/usr/local`의 DepthAI로
+빌드했는데 `/opt/ros/humble`의 다른 버전이 로딩되는 충돌을 방지한다.
+이 설정은 launch로 실행한 카메라 프로세스에 적용된다. 설치 경로를 바꾸면 재빌드한다.
+
 - GUI 실행에는 Ubuntu 데스크톱의 `DISPLAY` 또는 Wayland 접근이 필요하다.
 - RGB와 BEV는 같은 장치에서 각각 30 Hz로 생성하지만 하드웨어 트리거로 같은 노출 시각에
   묶인 프레임은 아니다. 추출기의 timestamp pairing으로 가까운 프레임을 연결한다.

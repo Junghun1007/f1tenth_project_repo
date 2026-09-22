@@ -39,6 +39,13 @@ find_package(bev_processor REQUIRED)
 find_package(camera_driver REQUIRED)
 find_package(oak_startup REQUIRED)
 
+# Record the library selected at build time so the launch process can prefer
+# that same installation over an incompatible ROS-provided DepthAI library.
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
+  CONTENT "$<TARGET_FILE_DIR:depthai::core>\n")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
+  DESTINATION share/${PROJECT_NAME})
+
 add_library(ir_center_reprojector STATIC
   src/cuda_center_reprojector.cu
 )

@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
@@ -7,6 +10,13 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _launch_node(context):
+    library_dir = LaunchConfiguration("depthai_library_dir").perform(context).strip()
+    runtime_environment = {}
+    if library_dir:
+        previous = context.environment.get("LD_LIBRARY_PATH", "")
+        runtime_environment["LD_LIBRARY_PATH"] = os.pathsep.join(
+            item for item in (library_dir, previous) if item
+        )
     # Empty optional arguments preserve values supplied by params_file.
     optional_overrides = {}
     for name, value_type in (
@@ -29,6 +39,7 @@ def _launch_node(context):
             executable="ir_camera_driver_node",
             name="ir_camera_driver",
             output="screen",
+            additional_env=runtime_environment,
             parameters=[
                 LaunchConfiguration("params_file"),
                 {
@@ -72,9 +83,16 @@ def _launch_node(context):
 def generate_launch_description():
     package_share = get_package_share_directory("ir_camera_driver")
     default_params = f"{package_share}/config/ir_camera_config.yaml"
+    runtime_file = Path(package_share) / "depthai_runtime_dir.txt"
+    default_library_dir = runtime_file.read_text(encoding="utf-8").strip()
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "depthai_library_dir",
+                default_value=default_library_dir,
+                description="Prefer the DepthAI library selected during build for this camera process.",
+            ),
             DeclareLaunchArgument(
                 "params_file",
                 default_value=default_params,
