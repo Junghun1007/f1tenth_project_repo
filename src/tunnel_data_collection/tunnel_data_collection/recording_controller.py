@@ -1,4 +1,4 @@
-"""Joystick and ROS service controlled rosbag recorder for tunnel runs."""
+"""ROS service controlled rosbag recorder for tunnel runs."""
 
 import os
 from pathlib import Path
@@ -8,8 +8,6 @@ import subprocess
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import Joy
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
@@ -25,14 +23,6 @@ class RecordingController(Node):
         self._max_bag_size = int(
             self.declare_parameter("max_bag_size", 4294967296).value
         )
-        self._joy_topic = str(
-            self.declare_parameter("joy_topic", "/autopilot03/joy").value
-        )
-        self._toggle_button = int(
-            self.declare_parameter("toggle_button", 6).value
-        )
-        if self._toggle_button < 0:
-            raise ValueError("toggle_button must be nonnegative")
         rosbag_command(self._output_root / "validation", self._max_bag_size)
         self._output_root.mkdir(parents=True, exist_ok=True)
 
@@ -45,9 +35,6 @@ class RecordingController(Node):
         self._session_publisher = self.create_publisher(
             String, "~/session_path", status_qos
         )
-        self.create_subscription(
-            Joy, self._joy_topic, self._on_joy, qos_profile_sensor_data
-        )
         self.create_service(Trigger, "~/start", self._on_start)
         self.create_service(Trigger, "~/stop", self._on_stop)
         self.create_service(Trigger, "~/toggle", self._on_toggle)
@@ -55,11 +42,10 @@ class RecordingController(Node):
 
         self._process = None
         self._session_path = ""
-        self._button_was_pressed = False
         self._publish_state()
         self.get_logger().info(
-            f"Recorder ready but idle. Press joystick button {self._toggle_button} "
-            "or call ~/start. Only RGB and stereo-IR BEV will be recorded."
+            "Recorder ready but idle. Call ~/start to record only RGB and "
+            "stereo-IR BEV."
         )
 
     def _publish_state(self):
@@ -103,18 +89,6 @@ class RecordingController(Node):
         self._publish_state()
         self.get_logger().info(f"RECORDING STOPPED: {self._session_path}")
         return True, f"recording stopped: {self._session_path}"
-
-    def _on_joy(self, message):
-        pressed = (
-            len(message.buttons) > self._toggle_button
-            and bool(message.buttons[self._toggle_button])
-        )
-        if pressed and not self._button_was_pressed:
-            if self._process is not None and self._process.poll() is None:
-                self._stop()
-            else:
-                self._start()
-        self._button_was_pressed = pressed
 
     def _on_start(self, _request, response):
         response.success, response.message = self._start()

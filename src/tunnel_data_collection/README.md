@@ -1,7 +1,7 @@
 # 터널 RGB / 스테레오 IR BEV 데이터 수집
 
-이 패키지는 기존 `manual_drive.launch.py`를 그대로 사용해 조이스틱으로 차량을
-운전하면서 다음 두 영상만 rosbag2에 저장한다.
+이 패키지는 주행 제어와 분리되어 있으며 다음 두 영상만 rosbag2에 저장한다.
+조이스틱과 수동 주행은 사용자가 별도 터미널에서 기존 방식으로 실행한다.
 
 - `/camera/image_rect`: OAK CAM_A의 깨끗한 원본 RGB 영상, 1280x800 NV12, 30 Hz
 - `/camera/image_bev_ir`: CAM_B/C 스테레오 흑백 영상을 각 렌즈 보정값으로 지면에
@@ -14,14 +14,12 @@ RGB, 스테레오 중앙 흑백 영상, 스테레오 IR BEV와 IR 제어 창이 
 ## Ubuntu에서 빌드
 
 ```bash
-cd ~/f1tenth_0906ML
+cd ~/Desktop/hsj/f1tenth_0906ML
 git pull origin 0906ML
 source /opt/ros/humble/setup.bash
 rosdep install --from-paths src --ignore-src -r -y
-colcon build --packages-select \
-  camera_driver bev_handoff oak_startup bev_processor ir_camera_driver \
-  joy_initializer manual_control vesc_bridge vehicle_bringup \
-  tunnel_data_collection \
+colcon build --base-paths src --packages-up-to tunnel_data_collection \
+  --symlink-install \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
@@ -36,24 +34,15 @@ ros2 launch tunnel_data_collection tunnel_record.launch.py \
   output_root:=/data/tunnel_recordings
 ```
 
-launch 직후에는 카메라 화면과 수동 주행만 시작되고 **녹화는 대기 상태**다. 기본
-SDL 매핑에서 8BitDo의 Start 버튼은 `sensor_msgs/Joy.buttons[6]`이며, 한 번 누르면
-녹화를 시작하고 다시 누르면 안전하게 종료한다. 버튼 인덱스가 다르면 다음처럼 바꾼다.
-
-```bash
-ros2 topic echo /autopilot03/joy
-ros2 launch tunnel_data_collection tunnel_record.launch.py \
-  output_root:=/data/tunnel_recordings record_button:=7
-```
-
-키보드 터미널에서도 제어할 수 있다.
+launch 직후에는 카메라 화면만 시작되고 **녹화는 대기 상태**다. 이 패키지는 조이스틱을
+구독하거나 차량 제어 노드를 실행하지 않는다. 녹화는 ROS2 서비스로 시작하고 종료한다.
 
 ```bash
 # 녹화 시작
-ros2 service call /tunnel_recorder/start std_srvs/srv/Trigger {}
+ros2 service call /tunnel_recorder/start std_srvs/srv/Trigger "{}"
 
 # 녹화 종료
-ros2 service call /tunnel_recorder/stop std_srvs/srv/Trigger {}
+ros2 service call /tunnel_recorder/stop std_srvs/srv/Trigger "{}"
 
 # 현재 상태 확인
 ros2 topic echo /tunnel_recorder/recording --once
@@ -61,8 +50,11 @@ ros2 topic echo /tunnel_recorder/session_path --once
 ```
 
 매번 시작할 때 `/data/tunnel_recordings/tunnel_날짜_시간/` 형식의 새 bag 세션을 만든다.
-터널을 여러 번 통과할 때 Start로 시작하고 통과 후 Start로 종료하면 주행별 bag이 나뉜다.
-launch 전체를 끝낼 때는 녹화를 먼저 종료한 뒤 차량을 정지하고 `Ctrl+C`를 누른다.
+터널을 여러 번 통과할 때 서비스로 시작하고 통과 후 종료하면 주행별 bag이 나뉜다.
+launch 전체를 끝낼 때는 녹화를 먼저 종료한 뒤 `Ctrl+C`를 누른다.
+
+수동 주행은 별도 터미널에서 기존 명령으로 실행한다. 수동 주행 프로세스를 시작하거나
+종료해도 카메라와 녹화 프로세스에는 영향을 주지 않는다.
 
 기본 4 GiB마다 같은 세션 안에서 sqlite3 파일만 분할한다. 값은 byte 단위다.
 
@@ -108,7 +100,6 @@ ros2 run tunnel_data_collection extract_frames BAG_DIRECTORY \
 
 ## 주요 파라미터
 
-- `record_button`: 녹화 토글에 사용할 Joy 버튼 인덱스, 기본 6
 - `output_root`: 주행별 bag을 저장할 상위 경로
 - `max_bag_size`: sqlite3 파일 하나의 최대 byte 수
 - `ir_dot_projector_intensity`: 스테레오 특징점용 IR dot 세기, 0.0~1.0

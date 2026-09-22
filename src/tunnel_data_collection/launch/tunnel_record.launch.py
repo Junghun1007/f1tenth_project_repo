@@ -16,22 +16,6 @@ def _prepare_output_root(context):
 
 
 def generate_launch_description():
-    vehicle_namespace = LaunchConfiguration("vehicle_namespace")
-    manual_drive = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            PathJoinSubstitution(
-                [FindPackageShare("vehicle_bringup"), "launch", "manual_drive.launch.py"]
-            )
-        ),
-        launch_arguments={
-            "vehicle_namespace": vehicle_namespace,
-            "vesc_port": LaunchConfiguration("vesc_port"),
-            "controller_name_contains": LaunchConfiguration(
-                "controller_name_contains"
-            ),
-        }.items(),
-    )
-
     # This is the sole OAK owner. CAM_A supplies clean RGB while synchronized
     # CAM_B/C frames supply the monochrome metric BEV.
     camera = IncludeLaunchDescription(
@@ -64,12 +48,6 @@ def generate_launch_description():
                 "max_bag_size": ParameterValue(
                     LaunchConfiguration("max_bag_size"), value_type=int
                 ),
-                "joy_topic": ParameterValue(
-                    ["/", vehicle_namespace, "/joy"], value_type=str
-                ),
-                "toggle_button": ParameterValue(
-                    LaunchConfiguration("record_button"), value_type=int
-                ),
             }
         ],
     )
@@ -77,23 +55,9 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument(
-                "vehicle_namespace",
-                default_value="autopilot03",
-                description="Namespace used by the existing manual drive stack.",
-            ),
-            DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
-            DeclareLaunchArgument(
-                "controller_name_contains", default_value="8BitDo"
-            ),
-            DeclareLaunchArgument(
                 "output_root",
                 default_value=str(Path.cwd() / "tunnel_recordings"),
                 description="Parent directory for timestamped rosbag sessions.",
-            ),
-            DeclareLaunchArgument(
-                "record_button",
-                default_value="6",
-                description="sensor_msgs/Joy button index used to toggle recording.",
             ),
             DeclareLaunchArgument(
                 "max_bag_size",
@@ -108,7 +72,6 @@ def generate_launch_description():
                 "ir_flood_light_intensity", default_value="0.0"
             ),
             OpaqueFunction(function=_prepare_output_root),
-            manual_drive,
             camera,
             recorder,
         ]
