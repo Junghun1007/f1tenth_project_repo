@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <iomanip>
 #include <limits>
 #include <memory>
@@ -33,6 +34,8 @@
 #include "opencv2/imgproc.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
+#include "std_msgs/msg/bool.hpp"
+#include "std_srvs/srv/trigger.hpp"
 
 namespace ir_camera_driver
 {
@@ -133,6 +136,14 @@ public:
       rgb_topic_, rclcpp::SensorDataQoS());
     bev_publisher_ = create_publisher<sensor_msgs::msg::Image>(
       bev_topic_, rclcpp::SensorDataQoS());
+    record_start_ = create_client<std_srvs::srv::Trigger>("/tunnel_recorder/start");
+    record_stop_ = create_client<std_srvs::srv::Trigger>("/tunnel_recorder/stop");
+    recording_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      "/tunnel_recorder/recording", rclcpp::QoS(1).reliable().transient_local(),
+      [this](std_msgs::msg::Bool::ConstSharedPtr message) {
+        recording_.store(message->data);
+        control_panel_dirty_.store(true);
+      });
 
     try {
       measureBevMount();
@@ -175,7 +186,7 @@ private:
   };
 
   static constexpr int kControlPanelWidth = 700;
-  static constexpr int kControlPanelHeight = 275;
+  static constexpr int kControlPanelHeight = 420;
 
   static const std::array<cv::Rect, 3> & inputRects()
   {
@@ -617,6 +628,7 @@ private:
       dai::ImgResizeMode::CROP,
       static_cast<float>(rgb_fps_),
       rgb_undistort_enabled_);
+    rgb_control_queue_ = rgb_camera->inputControl.createInputQueue();
 
     dai::Node::Output * host_output = nullptr;
     if (reprojection_enabled_) {
@@ -853,6 +865,12 @@ private:
 
   void sendManualExposure(const int exposure_us, const int sensitivity_iso)
   {
+    if (tune_rgb_) {
+      auto control = std::make_shared<dai::CameraControl>();
+      control->setManualExposure(exposure_us, sensitivity_iso);
+      rgb_control_queue_->send(control);
+      return;
+    }
     for (const auto & queue : camera_control_queues_) {
       if (!queue) {
         continue;
@@ -868,6 +886,15 @@ private:
 
   void sendAutoExposure()
   {
+    if (tune_rgb_) {
+      auto control = std::make_shared<dai::CameraControl>();
+      control->setAutoExposureEnable();
+      rgb_control_queue_->send(control);
+      panel_message_ = "RGB auto exposure enabled";
+      panel_message_is_error_ = false;
+      control_panel_dirty_.store(true);
+      return;
+    }
     for (const auto & queue : camera_control_queues_) {
       if (!queue) {
         continue;
@@ -904,10 +931,12 @@ private:
       if (apply_exposure) {
         exposure_us = parseInteger(exposure_input_);
         sensitivity_iso = parseInteger(iso_input_);
-        if (exposure_us < 10 || exposure_us > maximum_manual_exposure_us_) {
+        const int maximum = tune_rgb_ ? static_cast<int>(1.0e6 / rgb_fps_) :
+          maximum_manual_exposure_us_;
+        if (exposure_us < 10 || exposure_us > maximum) {
           throw std::invalid_argument(
                   "Exposure must be in 10.." +
-                  std::to_string(maximum_manual_exposure_us_) + " us");
+                  std::to_string(maximum) + " us");
         }
         if (sensitivity_iso < 100 || sensitivity_iso > 1600) {
           throw std::invalid_argument("ISO must be in 100..1600");
@@ -920,18 +949,23 @@ private:
         setIrState(true, false);
       }
       if (apply_exposure) {
-        manual_exposure_us_ = exposure_us;
-        manual_sensitivity_iso_ = sensitivity_iso;
+        if (tune_rgb_) {
+          rgb_tuning_exposure_ = exposure_us;
+          rgb_tuning_iso_ = sensitivity_iso;
+        } else {
+          manual_exposure_us_ = exposure_us;
+          manual_sensitivity_iso_ = sensitivity_iso;
+        }
         exposure_input_ = std::to_string(exposure_us);
         iso_input_ = std::to_string(sensitivity_iso);
         sendManualExposure(exposure_us, sensitivity_iso);
       }
 
-      panel_message_ = "Applied to OAK camera";
+      panel_message_ = tune_rgb_ ? "Applied to RGB camera" : "Applied to stereo IR / BEV";
       panel_message_is_error_ = false;
       RCLCPP_INFO(
-        get_logger(), "IR tuning applied: flood=%.2f exposure=%dus ISO=%d",
-        ir_flood_light_intensity_, manual_exposure_us_, manual_sensitivity_iso_);
+        get_logger(), "%s tuning applied: IR flood=%.2f exposure=%dus ISO=%d",
+        tune_rgb_ ? "RGB" : "IR", ir_flood_light_intensity_, exposure_us, sensitivity_iso);
     } catch (const std::exception & exception) {
       panel_message_ = exception.what();
       panel_message_is_error_ = true;
@@ -954,12 +988,13 @@ private:
   {
     cv::Mat panel(kControlPanelHeight, kControlPanelWidth, CV_8UC3, cv::Scalar(28, 30, 34));
     cv::putText(
-      panel, "IR live tuning - click a field, type, press Enter",
+      panel, tune_rgb_ ? "RGB tuning - edit ISO / exposure, press Enter" :
+      "IR / BEV tuning - edit a field, press Enter",
       cv::Point(20, 28), cv::FONT_HERSHEY_SIMPLEX, 0.62,
       cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
 
     const std::array<std::string, 3> labels{
-      "Flood intensity [0..1]", "Exposure [us]", "ISO [100..1600]"};
+      "IR flood [0..1]", "Brightness: exp [us]", "ISO [100..1600]"};
     const std::array<std::string, 3> values{
       flood_input_, exposure_input_, iso_input_};
     for (std::size_t index = 0U; index < inputRects().size(); ++index) {
@@ -986,7 +1021,7 @@ private:
       cv::Scalar(190, 150, 235));
 
     std::ostringstream actual;
-    actual << "Actual: " << last_exposure_us_.load(std::memory_order_relaxed) << " us, ISO " <<
+    actual << "IR actual: " << last_exposure_us_.load(std::memory_order_relaxed) << " us, ISO " <<
       last_sensitivity_iso_.load(std::memory_order_relaxed) << " | mode=" <<
       (manual_exposure_active_.load(std::memory_order_relaxed) ? "manual" : "auto") <<
       " | preview <= " << std::fixed << std::setprecision(1) << preview_max_fps_ << " FPS";
@@ -998,6 +1033,19 @@ private:
       panel_message_, cv::Point(20, 256), cv::FONT_HERSHEY_SIMPLEX, 0.48,
       panel_message_is_error_ ? cv::Scalar(80, 100, 255) : cv::Scalar(150, 225, 160),
       1, cv::LINE_AA);
+    drawButton(panel, cv::Rect(20, 280, 300, 38),
+      tune_rgb_ ? "TARGET: RGB (switch)" : "TARGET: IR/BEV (switch)",
+      cv::Scalar(210, 190, 130));
+    drawButton(panel, cv::Rect(20, 335, 200, 38), "START RECORDING",
+      cv::Scalar(85, 205, 120));
+    drawButton(panel, cv::Rect(240, 335, 200, 38), "STOP RECORDING",
+      cv::Scalar(90, 100, 235));
+    cv::putText(panel, recording_.load() ? "RECORDING" : "IDLE",
+      cv::Point(465, 361), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+      recording_.load() ? cv::Scalar(80, 100, 255) : cv::Scalar(180, 180, 180), 2);
+    cv::putText(panel, "Flood affects IR only. Recording contains clean RGB + IR BEV.",
+      cv::Point(20, 400), cv::FONT_HERSHEY_SIMPLEX, 0.48,
+      cv::Scalar(200, 200, 200), 1);
     cv::imshow(controls_window_name_, panel);
     control_panel_dirty_.store(false, std::memory_order_relaxed);
   }
@@ -1022,6 +1070,36 @@ private:
   void onControlMouse(const int x, const int y)
   {
     const cv::Point point(x, y);
+    if (cv::Rect(20, 335, 200, 38).contains(point) ||
+      cv::Rect(240, 335, 200, 38).contains(point))
+    {
+      const auto client = x < 240 ? record_start_ : record_stop_;
+      if (!client->service_is_ready()) {
+        panel_message_ = "Recorder unavailable: launch tunnel_record.launch.py";
+        panel_message_is_error_ = true;
+      } else if (!record_pending_) {
+        auto request = client->async_send_request(
+          std::make_shared<std_srvs::srv::Trigger::Request>());
+        record_request_id_ = request.request_id;
+        record_client_ = client;
+        record_future_ = request.share();
+        record_requested_at_ = std::chrono::steady_clock::now();
+        record_pending_ = true;
+        panel_message_ = "Recording request pending...";
+        panel_message_is_error_ = false;
+      }
+      control_panel_dirty_.store(true);
+      return;
+    }
+    if (cv::Rect(20, 280, 300, 38).contains(point)) {
+      tune_rgb_ = !tune_rgb_;
+      exposure_input_ = std::to_string(tune_rgb_ ? rgb_tuning_exposure_ : manual_exposure_us_);
+      iso_input_ = std::to_string(tune_rgb_ ? rgb_tuning_iso_ : manual_sensitivity_iso_);
+      editable_field_ = EditableField::NONE;
+      panel_message_ = tune_rgb_ ? "RGB selected" : "IR / BEV selected";
+      control_panel_dirty_.store(true);
+      return;
+    }
     for (std::size_t index = 0U; index < inputRects().size(); ++index) {
       if (inputRects()[index].contains(point)) {
         selectField(static_cast<EditableField>(index));
@@ -1633,6 +1711,21 @@ private:
           rgb_previewed_generation = rgb_snapshot->generation;
         }
 
+        if (record_pending_ && record_future_.wait_for(0ms) == std::future_status::ready) {
+          const auto response = record_future_.get();
+          RCLCPP_INFO(get_logger(), "Recorder: %s", response->message.c_str());
+          panel_message_ = response->message.substr(0, 75);
+          panel_message_is_error_ = !response->success;
+          record_pending_ = false;
+          control_panel_dirty_.store(true);
+        }
+        if (record_pending_ && std::chrono::steady_clock::now() - record_requested_at_ > 30s) {
+          record_client_->remove_pending_request(record_request_id_);
+          record_pending_ = false;
+          panel_message_ = "Recorder response timeout; check recorder terminal";
+          panel_message_is_error_ = true;
+          control_panel_dirty_.store(true);
+        }
         if (control_panel_dirty_.load(std::memory_order_relaxed)) {
           drawControlPanel();
         }
@@ -1783,6 +1876,7 @@ private:
     output_queue_.reset();
     rgb_queue_.reset();
     camera_control_queues_.clear();
+    rgb_control_queue_.reset();
     if (pipeline_) {
       try {
         if (pipeline_->isRunning()) {
@@ -1867,6 +1961,18 @@ private:
   std::shared_ptr<dai::MessageQueue> output_queue_;
   std::shared_ptr<dai::MessageQueue> rgb_queue_;
   std::vector<std::shared_ptr<dai::InputQueue>> camera_control_queues_;
+  std::shared_ptr<dai::InputQueue> rgb_control_queue_;
+  bool tune_rgb_{false};
+  int rgb_tuning_exposure_{5000};
+  int rgb_tuning_iso_{800};
+  std::atomic<bool> recording_{false};
+  bool record_pending_{false};
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr record_start_, record_stop_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr record_client_;
+  int64_t record_request_id_{0};
+  std::chrono::steady_clock::time_point record_requested_at_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedFuture record_future_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr recording_subscription_;
   std::unique_ptr<CudaCenterReprojector> center_reprojector_;
   std::unique_ptr<IrBevProjector> bev_projector_;
 

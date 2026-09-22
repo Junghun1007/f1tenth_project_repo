@@ -29,13 +29,25 @@ OAK를 여는 다른 launch(`camera_driver`, `bev_processor`, `depth_lidar`, 자
 
 ## 실행과 녹화 시작/종료
 
+별도 `OAK IR live controls` 창에서 영상에 직접 적용할 값을 입력한다.
+`TARGET` 버튼으로 IR/BEV 또는 RGB를 선택하고 ISO와 밝기(Exposure, 마이크로초)를
+입력한 뒤 Enter 또는 APPLY를 누르면 실제 카메라 설정이 바뀐다.
+FLOOD는 선택 대상과 관계없이 IR 조명에 적용된다. AUTO EXPOSURE는 선택한
+카메라의 자동 노출을 켠다. 노출 시간을 늘리면 밝아지지만 움직임 번짐도 증가할 수 있다.
+
+`START RECORDING`으로 녹화를 시작하고 `STOP RECORDING`으로 종료한다.
+녹화 상태는 같은 창의 IDLE/RECORDING으로 확인한다. 제어 창은 저장 영상에 포함되지
+않으며, 입력한 값은 프로그램 재시작 시 YAML 기본값으로 돌아간다.
+이 창은 실제 카메라 제어 화면이며 가상 영상을 만드는 시뮬레이터가 아니다.
+
 ```bash
 ros2 launch tunnel_data_collection tunnel_record.launch.py \
   output_root:=/data/tunnel_recordings
 ```
 
 launch 직후에는 카메라 화면만 시작되고 **녹화는 대기 상태**다. 이 패키지는 조이스틱을
-구독하거나 차량 제어 노드를 실행하지 않는다. 녹화는 ROS2 서비스로 시작하고 종료한다.
+구독하거나 차량 제어 노드를 실행하지 않는다. 녹화는 제어 창 버튼 또는 아래 ROS2
+서비스로 시작하고 종료한다.
 
 ```bash
 # 녹화 시작

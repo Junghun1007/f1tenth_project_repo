@@ -26,6 +26,8 @@ find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(depthai 3.6 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR
@@ -75,6 +77,8 @@ target_include_directories(ir_camera_driver_node
 ament_target_dependencies(ir_camera_driver_node
   rclcpp
   sensor_msgs
+  std_msgs
+  std_srvs
 )
 target_link_libraries(ir_camera_driver_node
   ir_center_reprojector
