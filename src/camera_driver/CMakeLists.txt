@@ -13,7 +13,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(bev_handoff REQUIRED)
-find_package(point_cloud REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp_components REQUIRED)
@@ -22,10 +21,12 @@ find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
-find_package(depthai 3 CONFIG QUIET)
+# Load the complete DepthAI export set in this directory before ament loads
+# dependencies that may expose only depthai::core from a nested scope.
+find_package(depthai 3.6 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR
-    "DepthAI C++ 3.x was not found. The Python 'depthai' wheel is not "
+    "DepthAI C++ 3.6+ was not found. The Python 'depthai' wheel is not "
     "sufficient because this package links against depthai::core. Install "
     "depthai-core as a shared C++ library, then pass "
     "-Ddepthai_DIR=<prefix>/lib/cmake/depthai or add <prefix> to "
@@ -33,6 +34,7 @@ if(NOT depthai_FOUND)
   )
 endif()
 find_package(Threads REQUIRED)
+find_package(point_cloud REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BevInput.msg"

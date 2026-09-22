@@ -19,15 +19,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
-find_package(bev_processor REQUIRED)
-find_package(camera_driver REQUIRED)
-find_package(oak_startup REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+# Import all DepthAI targets before the ament dependency exports.
 find_package(depthai 3.6 CONFIG QUIET)
 if(NOT depthai_FOUND)
   message(FATAL_ERROR
@@ -37,6 +35,9 @@ if(NOT depthai_FOUND)
   )
 endif()
 find_package(Threads REQUIRED)
+find_package(bev_processor REQUIRED)
+find_package(camera_driver REQUIRED)
+find_package(oak_startup REQUIRED)
 
 add_library(ir_center_reprojector STATIC
   src/cuda_center_reprojector.cu

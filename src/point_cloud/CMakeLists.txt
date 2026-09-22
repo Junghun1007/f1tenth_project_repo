@@ -16,8 +16,9 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(visualization_msgs REQUIRED)
-find_package(oak_startup REQUIRED)
+# Keep DepthAI's complete export set visible before loading oak_startup.
 find_package(depthai 3.6 CONFIG REQUIRED)
+find_package(oak_startup REQUIRED)
 find_package(Threads REQUIRED)
 
 add_library(point_cloud_depth_source STATIC src/depth_source.cpp)
