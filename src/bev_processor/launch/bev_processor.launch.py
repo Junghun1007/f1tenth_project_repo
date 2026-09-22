@@ -114,6 +114,9 @@ def generate_launch_description():
         "bev_input_bottom_fraction"
     )
     preview_enabled = LaunchConfiguration("preview_enabled")
+    camera_preview_enabled = LaunchConfiguration("camera_preview_enabled")
+    camera_publish_enabled = LaunchConfiguration("camera_publish_enabled")
+    camera_publish_fps = LaunchConfiguration("camera_publish_fps")
     bev_interpolation = LaunchConfiguration("bev_interpolation")
     performance_measurement_parameter = ParameterValue(
         performance_measurement_enabled,
@@ -309,6 +312,21 @@ def generate_launch_description():
                 description="Show or completely disable the BEV GUI preview.",
             ),
             DeclareLaunchArgument(
+                "camera_preview_enabled",
+                default_value="false",
+                description="Show the stabilized rectified RGB camera preview.",
+            ),
+            DeclareLaunchArgument(
+                "camera_publish_enabled",
+                default_value="false",
+                description="Publish the rectified RGB image topic.",
+            ),
+            DeclareLaunchArgument(
+                "camera_publish_fps",
+                default_value="30.0",
+                description="Maximum rectified RGB publication rate.",
+            ),
+            DeclareLaunchArgument(
                 "bev_interpolation",
                 default_value=_PARAMETER_FILE_DEFAULT,
                 description="Interpolation used by the CUDA NV12-to-BEV warp.",
@@ -375,8 +393,18 @@ def generate_launch_description():
                                 "obstacles.depth.enabled": ParameterValue(LaunchConfiguration("obstacles_enabled"), value_type=bool),
                                 "imu_stabilization_measured_erpm_topic": LaunchConfiguration("measured_erpm_topic"),
                                 "imu_stabilization_can_acceleration_topic": LaunchConfiguration("vehicle_acceleration_topic"),
-                                "preview_enabled": False,
-                                "publish_enabled": False,
+                                "preview_enabled": ParameterValue(
+                                    camera_preview_enabled,
+                                    value_type=bool,
+                                ),
+                                "publish_enabled": ParameterValue(
+                                    camera_publish_enabled,
+                                    value_type=bool,
+                                ),
+                                "publish_fps": ParameterValue(
+                                    camera_publish_fps,
+                                    value_type=float,
+                                ),
                                 "fused_bev_output_enabled": True,
                                 "bev_input_bottom_fraction": ParameterValue(
                                     bev_input_bottom_fraction,
