@@ -36,6 +36,16 @@ class ImageUtilsTest(unittest.TestCase):
         )
         np.testing.assert_array_equal(actual, expected)
 
+    def test_decode_mono8_expands_to_three_equal_channels(self):
+        gray = np.arange(12, dtype=np.uint8).reshape(3, 4)
+        decoded = decode_image(
+            data=gray.tobytes(), width=4, height=3, step=4, encoding="mono8"
+        )
+        self.assertEqual(decoded.shape, (3, 4, 3))
+        np.testing.assert_array_equal(decoded[:, :, 0], gray)
+        np.testing.assert_array_equal(decoded[:, :, 1], gray)
+        np.testing.assert_array_equal(decoded[:, :, 2], gray)
+
     def test_rejects_unsupported_or_short_images(self):
         with self.assertRaises(ValueError):
             decode_image(data=b"", width=2, height=2, step=2, encoding="nv12")

@@ -63,7 +63,11 @@ def generate_launch_description():
                 "recording_fps": ParameterValue(
                     LaunchConfiguration("recording_fps"), value_type=float
                 ),
-                "avi_codec": LaunchConfiguration("avi_codec"),
+                "h264_crf": ParameterValue(
+                    LaunchConfiguration("h264_crf"), value_type=int
+                ),
+                "h264_preset": LaunchConfiguration("h264_preset"),
+                "ffmpeg_binary": LaunchConfiguration("ffmpeg_binary"),
             }
         ],
     )
@@ -73,18 +77,20 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "output_root",
                 default_value=str(Path.cwd() / "tunnel_recordings"),
-                description="Parent directory for timestamped AVI sessions.",
+                description="Parent directory for timestamped MP4 sessions.",
             ),
             DeclareLaunchArgument(
                 "recording_fps",
                 default_value="30.0",
-                description="FPS written into each AVI and maximum saved frame rate.",
+                description="FPS written into each MP4 and maximum saved frame rate.",
             ),
             DeclareLaunchArgument(
-                "avi_codec",
-                default_value="MJPG",
-                description="Four-character OpenCV AVI codec.",
+                "h264_crf",
+                default_value="18",
+                description="H.264 quality: 0 is lossless, 18 is high quality, 51 is lowest.",
             ),
+            DeclareLaunchArgument("h264_preset", default_value="ultrafast"),
+            DeclareLaunchArgument("ffmpeg_binary", default_value="ffmpeg"),
             DeclareLaunchArgument("camera_fps", default_value="30.0"),
             DeclareLaunchArgument("rgb_width", default_value="1280"),
             DeclareLaunchArgument("rgb_height", default_value="800"),

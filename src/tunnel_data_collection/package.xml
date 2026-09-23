@@ -4,16 +4,18 @@
 <package format="3">
   <name>tunnel_data_collection</name>
   <version>0.1.0</version>
-  <description>Controlled three-stream AVI recording for tunnel RGB and stereo IR data.</description>
+  <description>Controlled three-stream H.264 MP4 recording for tunnel RGB and stereo IR data.</description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>ffmpeg</exec_depend>
   <exec_depend>ir_camera_driver</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-opencv</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>rclpy</exec_depend>

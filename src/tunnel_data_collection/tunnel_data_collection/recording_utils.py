@@ -1,4 +1,4 @@
-"""ROS-independent helpers for three-stream AVI recording."""
+"""ROS-independent helpers for three-stream H.264 MP4 recording."""
 
 from dataclasses import dataclass
 from datetime import datetime
@@ -6,10 +6,19 @@ from pathlib import Path
 
 
 VIDEO_STREAMS = {
-    "/camera/image_rect": "rgb.avi",
-    "/camera/image_stereo_ir": "stereo_ir.avi",
-    "/camera/image_bev_ir": "bev_ir.avi",
+    "/camera/image_rect": "rgb.mp4",
+    "/camera/image_stereo_ir": "stereo_ir.mp4",
+    "/camera/image_bev_ir": "bev_ir.mp4",
 }
+
+H264_PRESETS = (
+    "ultrafast",
+    "superfast",
+    "veryfast",
+    "faster",
+    "fast",
+    "medium",
+)
 
 
 def new_session_path(output_root, now=None):
@@ -20,14 +29,56 @@ def new_session_path(output_root, now=None):
     return Path(output_root).expanduser() / timestamp
 
 
-def validate_recording_settings(fps, codec):
+def validate_recording_settings(fps, crf, preset):
     value = float(fps)
-    normalized_codec = str(codec).strip().upper()
+    crf_value = int(crf)
+    normalized_preset = str(preset).strip().lower()
     if not 0.1 <= value <= 120.0:
         raise ValueError("recording_fps must be in [0.1, 120.0]")
-    if len(normalized_codec) != 4 or not normalized_codec.isascii():
-        raise ValueError("avi_codec must contain exactly four ASCII characters")
-    return value, normalized_codec
+    if not 0 <= crf_value <= 51:
+        raise ValueError("h264_crf must be in [0, 51]")
+    if normalized_preset not in H264_PRESETS:
+        supported = ", ".join(H264_PRESETS)
+        raise ValueError(f"h264_preset must be one of: {supported}")
+    return value, crf_value, normalized_preset
+
+
+def ffmpeg_mp4_command(
+    ffmpeg_binary, output_path, width, height, fps, crf, preset
+):
+    """Build a deterministic raw-BGR-to-H.264-MP4 FFmpeg command."""
+    width = int(width)
+    height = int(height)
+    fps, crf, preset = validate_recording_settings(fps, crf, preset)
+    if width <= 0 or height <= 0 or width % 2 or height % 2:
+        raise ValueError("MP4 width and height must be positive even integers")
+    return [
+        str(ffmpeg_binary),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pixel_format",
+        "bgr24",
+        "-video_size",
+        f"{width}x{height}",
+        "-framerate",
+        f"{fps:.6f}",
+        "-i",
+        "pipe:0",
+        "-an",
+        "-c:v",
+        "libx264",
+        "-preset",
+        preset,
+        "-crf",
+        str(crf),
+        "-pix_fmt",
+        "yuv420p",
+        str(output_path),
+    ]
 
 
 @dataclass

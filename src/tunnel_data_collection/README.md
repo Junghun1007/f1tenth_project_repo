@@ -1,13 +1,14 @@
-# 터널 RGB / 스테레오 IR / BEV AVI 수집
+# 터널 RGB / 스테레오 IR / BEV MP4 수집
 
 주행 제어와 분리된 카메라·녹화 패키지다. 한 번의 녹화 세션마다 깨끗한 영상 세 개를
-서로 다른 AVI 파일로 저장한다.
+서로 다른 H.264 MP4 파일로 저장한다. FFmpeg 입력을 `bgr24`로 고정해 RGB 및 스테레오
+영상이 초록색으로 저장되는 OpenCV VideoWriter 문제를 피한다.
 
-- `rgb.avi`: CAM_A 원본 RGB (`/camera/image_rect`)
-- `stereo_ir.avi`: CAM_B/C 스테레오 중앙 흑백 영상 (`/camera/image_stereo_ir`)
-- `bev_ir.avi`: CAM_B/C를 지면에 투영한 흑백 BEV (`/camera/image_bev_ir`)
+- `rgb.mp4`: CAM_A 원본 RGB (`/camera/image_rect`)
+- `stereo_ir.mp4`: CAM_B/C 스테레오 중앙 흑백 영상 (`/camera/image_stereo_ir`)
+- `bev_ir.mp4`: CAM_B/C를 지면에 투영한 흑백 BEV (`/camera/image_bev_ir`)
 
-프리뷰와 카메라 제어 창은 AVI에 포함되지 않는다. RGB 기반 BEV도 사용하지 않는다.
+프리뷰와 카메라 제어 창은 MP4에 포함되지 않는다. RGB 기반 BEV도 사용하지 않는다.
 
 ## 빌드
 
@@ -24,6 +25,19 @@ source install/setup.bash
 
 OAK를 여는 다른 카메라 launch는 먼저 종료한다.
 
+FFmpeg와 H.264 인코더가 준비됐는지 확인한다.
+
+```bash
+ffmpeg -hide_banner -encoders | grep libx264
+```
+
+명령이 없거나 `libx264`가 표시되지 않으면 다음 명령으로 Ubuntu 패키지를 설치한다.
+
+```bash
+sudo apt update
+sudo apt install -y ffmpeg
+```
+
 ## 기본 실행
 
 ```bash
@@ -31,7 +45,7 @@ ros2 launch tunnel_data_collection tunnel_record.launch.py \
   output_root:=$HOME/Desktop/hsj/tunnel_recordings
 ```
 
-기본 설정은 카메라 30 FPS, AVI 30 FPS, RGB와 스테레오 1280x800이며 RGB·스테레오·BEV·
+기본 설정은 카메라 30 FPS, MP4 30 FPS, RGB와 스테레오 1280x800이며 RGB·스테레오·BEV·
 제어 창을 모두 표시한다. 실행 직후 녹화 상태는 IDLE이다. 제어 창의 `START RECORDING`과
 `STOP RECORDING` 버튼 또는 다음 서비스를 사용한다.
 
@@ -44,17 +58,19 @@ ros2 service call /tunnel_recorder/stop std_srvs/srv/Trigger "{}"
 
 ```text
 tunnel_recordings/tunnel_YYYYMMDD_HHMMSS_microseconds+timezone/
-├── rgb.avi
-├── stereo_ir.avi
-├── bev_ir.avi
+├── rgb.mp4
+├── stereo_ir.mp4
+├── bev_ir.mp4
 └── recording_metadata.json
 ```
 
-`recording_metadata.json`에는 코덱, 설정 FPS, 해상도와 실제 저장 프레임 수가 기록된다.
+`recording_metadata.json`에는 코덱, 설정 FPS, 해상도, 실제 저장 프레임 수, 파일 크기와
+스트림별 인코딩 오류가 기록된다. 세 토픽 중 하나라도 프레임이 없으면 정지 서비스가 실패
+상태를 반환하므로 빈 녹화를 바로 확인할 수 있다.
 
 ## 녹화 FPS 설정
 
-카메라는 30 FPS로 두고 AVI만 10 FPS로 저장하는 예시다. 입력이 설정보다 빠르면 recorder가
+카메라는 30 FPS로 두고 MP4만 10 FPS로 저장하는 예시다. 입력이 설정보다 빠르면 recorder가
 timestamp 기준으로 프레임을 건너뛴다. `recording_fps`를 카메라 FPS보다 크게 설정해도 없는
 프레임을 복제하지는 않는다.
 
@@ -64,12 +80,13 @@ ros2 launch tunnel_data_collection tunnel_record.launch.py \
   camera_fps:=30.0 recording_fps:=10.0
 ```
 
-기본 AVI 코덱은 `MJPG`다. 다른 OpenCV 코덱이 시스템에 설치되어 있으면 네 글자 코드를
-지정할 수 있다.
+기본 인코더는 FFmpeg의 `libx264`다. `h264_crf`가 작을수록 화질과 파일 크기가 커지며,
+기본값 18은 프레임 데이터 추출에 적합한 고화질 설정이다. `h264_preset`은 인코딩 속도와
+압축 효율을 정하며 기본값 `ultrafast`는 실시간 프레임 누락을 줄이는 설정이다.
 
 ```bash
 ros2 launch tunnel_data_collection tunnel_record.launch.py \
-  avi_codec:=XVID recording_fps:=30.0
+  recording_fps:=30.0 h264_crf:=18 h264_preset:=ultrafast
 ```
 
 ## 프리뷰 창 선택
@@ -117,20 +134,20 @@ ros2 launch tunnel_data_collection tunnel_record.launch.py \
 Exposure(마이크로초)를 입력하고 Enter 또는 APPLY를 누르면 실제 영상에 바로 적용된다.
 FLOOD는 IR 조명에만 적용된다. AUTO EXPOSURE는 선택한 카메라에 적용된다.
 
-## AVI에서 사진 추출
+## MP4에서 사진 추출
 
-예를 들어 RGB AVI의 모든 프레임을 PNG로 추출한다.
+예를 들어 RGB MP4의 모든 프레임을 PNG로 추출한다.
 
 ```bash
 mkdir -p rgb_frames
-ffmpeg -i rgb.avi rgb_frames/%08d.png
+ffmpeg -i rgb.mp4 rgb_frames/%08d.png
 ```
 
-30 FPS AVI에서 세 프레임마다 한 장을 추출해 약 10장/초로 만들려면:
+30 FPS MP4에서 세 프레임마다 한 장을 추출해 약 10장/초로 만들려면:
 
 ```bash
 mkdir -p rgb_10fps
-ffmpeg -i rgb.avi -vf "select='not(mod(n,3))'" -vsync vfr rgb_10fps/%08d.png
+ffmpeg -i rgb.mp4 -vf "select='not(mod(n,3))'" -fps_mode vfr rgb_10fps/%08d.png
 ```
 
 ## 확인 및 제한
@@ -142,9 +159,10 @@ ros2 topic hz /camera/image_bev_ir
 ros2 topic echo /tunnel_recorder/recording --once
 ```
 
-- AVI는 설정 FPS로 재생되며 프레임별 원본 timestamp는 저장하지 않는다. 실제 프레임 수는
+- MP4는 설정 FPS로 재생되며 프레임별 원본 timestamp는 저장하지 않는다. 실제 프레임 수는
   metadata JSON에서 확인한다.
-- MJPG는 편집과 프레임 추출이 쉽지만 압축 영상이므로 PNG 원본과 완전히 동일하지 않다.
+- H.264는 손실 압축이므로 추출한 PNG가 센서 원본 픽셀과 완전히 동일하지는 않다. 더 높은
+  화질이 필요하면 `h264_crf:=12`, 파일 크기를 줄이려면 `h264_crf:=23` 정도로 조정한다.
 - 세 영상을 동시에 1280x800 30 FPS로 저장하려면 빠른 SSD가 필요하다.
 - DepthAI는 빌드 시 선택한 라이브러리를 launch에서도 우선 사용한다. 설치 위치가 바뀌면
   다시 빌드한다.
