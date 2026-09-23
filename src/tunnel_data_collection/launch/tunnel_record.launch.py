@@ -33,6 +33,21 @@ def generate_launch_description():
             "ir_flood_light_intensity": LaunchConfiguration(
                 "ir_flood_light_intensity"
             ),
+            "rgb_width": LaunchConfiguration("rgb_width"),
+            "rgb_height": LaunchConfiguration("rgb_height"),
+            "rgb_fps": LaunchConfiguration("camera_fps"),
+            "stereo_width": LaunchConfiguration("stereo_width"),
+            "stereo_height": LaunchConfiguration("stereo_height"),
+            "stereo_fps": LaunchConfiguration("camera_fps"),
+            "processing_fps": LaunchConfiguration("camera_fps"),
+            "rgb_preview_enabled": LaunchConfiguration("rgb_preview_enabled"),
+            "stereo_preview_enabled": LaunchConfiguration(
+                "stereo_preview_enabled"
+            ),
+            "bev_preview_enabled": LaunchConfiguration("bev_preview_enabled"),
+            "controls_preview_enabled": LaunchConfiguration(
+                "controls_preview_enabled"
+            ),
         }.items(),
     )
 
@@ -45,9 +60,10 @@ def generate_launch_description():
         parameters=[
             {
                 "output_root": LaunchConfiguration("output_root"),
-                "max_bag_size": ParameterValue(
-                    LaunchConfiguration("max_bag_size"), value_type=int
+                "recording_fps": ParameterValue(
+                    LaunchConfiguration("recording_fps"), value_type=float
                 ),
+                "avi_codec": LaunchConfiguration("avi_codec"),
             }
         ],
     )
@@ -57,13 +73,27 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "output_root",
                 default_value=str(Path.cwd() / "tunnel_recordings"),
-                description="Parent directory for timestamped rosbag sessions.",
+                description="Parent directory for timestamped AVI sessions.",
             ),
             DeclareLaunchArgument(
-                "max_bag_size",
-                default_value="4294967296",
-                description="Maximum bytes per sqlite3 file before bag splitting.",
+                "recording_fps",
+                default_value="30.0",
+                description="FPS written into each AVI and maximum saved frame rate.",
             ),
+            DeclareLaunchArgument(
+                "avi_codec",
+                default_value="MJPG",
+                description="Four-character OpenCV AVI codec.",
+            ),
+            DeclareLaunchArgument("camera_fps", default_value="30.0"),
+            DeclareLaunchArgument("rgb_width", default_value="1280"),
+            DeclareLaunchArgument("rgb_height", default_value="800"),
+            DeclareLaunchArgument("stereo_width", default_value="1280"),
+            DeclareLaunchArgument("stereo_height", default_value="800"),
+            DeclareLaunchArgument("rgb_preview_enabled", default_value="true"),
+            DeclareLaunchArgument("stereo_preview_enabled", default_value="true"),
+            DeclareLaunchArgument("bev_preview_enabled", default_value="true"),
+            DeclareLaunchArgument("controls_preview_enabled", default_value="true"),
             DeclareLaunchArgument("ir_enabled", default_value="true"),
             DeclareLaunchArgument(
                 "ir_dot_projector_intensity", default_value="1.0"

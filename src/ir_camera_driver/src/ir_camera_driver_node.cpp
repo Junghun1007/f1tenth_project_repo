@@ -127,13 +127,15 @@ public:
   : Node("ir_camera_driver")
   {
     readParameters();
-    if (!graphicalDisplayAvailable()) {
+    if (anyPreviewEnabled() && !graphicalDisplayAvailable()) {
       throw std::runtime_error(
               "IR preview requires DISPLAY or WAYLAND_DISPLAY");
     }
 
     rgb_publisher_ = create_publisher<sensor_msgs::msg::Image>(
       rgb_topic_, rclcpp::SensorDataQoS());
+    stereo_publisher_ = create_publisher<sensor_msgs::msg::Image>(
+      stereo_topic_, rclcpp::SensorDataQoS());
     bev_publisher_ = create_publisher<sensor_msgs::msg::Image>(
       bev_topic_, rclcpp::SensorDataQoS());
     record_start_ = create_client<std_srvs::srv::Trigger>("/tunnel_recorder/start");
@@ -267,6 +269,12 @@ private:
     return reprojection_enabled_ ? reprojection_fps_ : single_camera_fps_;
   }
 
+  bool anyPreviewEnabled() const
+  {
+    return rgb_preview_enabled_ || stereo_preview_enabled_ ||
+           bev_preview_enabled_ || controls_preview_enabled_;
+  }
+
   void readParameters()
   {
     reprojection_enabled_ =
@@ -294,10 +302,14 @@ private:
       declare_parameter<bool>("rgb_undistort_enabled", true);
     rgb_topic_ = declare_parameter<std::string>(
       "rgb_topic", "/camera/image_rect");
+    stereo_topic_ = declare_parameter<std::string>(
+      "stereo_topic", "/camera/image_stereo_ir");
     bev_topic_ = declare_parameter<std::string>(
       "bev_topic", "/camera/image_bev_ir");
     rgb_frame_id_ = declare_parameter<std::string>(
       "rgb_frame_id", "camera_optical_frame");
+    stereo_frame_id_ = declare_parameter<std::string>(
+      "stereo_frame_id", "stereo_center_optical_frame");
     bev_frame_id_ = declare_parameter<std::string>(
       "bev_frame_id", "front_axle_bev");
     rgb_preview_window_name_ = declare_parameter<std::string>(
@@ -322,6 +334,10 @@ private:
       "bev_preview_window_name", "OAK IR BEV preview");
     controls_window_name_ = declare_parameter<std::string>(
       "controls_window_name", "OAK IR live controls");
+    rgb_preview_enabled_ = declare_parameter<bool>("rgb_preview_enabled", true);
+    stereo_preview_enabled_ = declare_parameter<bool>("stereo_preview_enabled", true);
+    bev_preview_enabled_ = declare_parameter<bool>("bev_preview_enabled", true);
+    controls_preview_enabled_ = declare_parameter<bool>("controls_preview_enabled", true);
     preview_max_fps_ = declare_parameter<double>("preview_max_fps", 30.0);
     preview_max_width_ =
       declare_parameter<int>("preview_max_width", 1280);
@@ -351,8 +367,10 @@ private:
     selected_camera_ = parseSelectedCamera(selected_camera_name_);
     maximum_manual_exposure_us_ = static_cast<int>(std::floor(1.0e6 / requestedFps()));
     if (
-      width_ != static_cast<int>(kOv9282FullWidth) ||
-      height_ != static_cast<int>(kOv9282FullHeight) ||
+      width_ <= 0 || height_ <= 0 ||
+      width_ > static_cast<int>(kOv9282FullWidth) ||
+      height_ > static_cast<int>(kOv9282FullHeight) ||
+      (width_ % 2) != 0 || (height_ % 2) != 0 ||
       !std::isfinite(reprojection_fps_) || reprojection_fps_ <= 0.0 ||
       reprojection_fps_ > kRvc2MaximumFastStereoFullResolutionFps ||
       !std::isfinite(single_camera_fps_) || single_camera_fps_ <= 0.0 ||
@@ -362,11 +380,13 @@ private:
       virtual_camera_position_ratio_ > 1.0 ||
       !std::isfinite(sync_threshold_ms_) || sync_threshold_ms_ <= 0.0 ||
       rgb_width_ <= 0 || rgb_height_ <= 0 ||
+      rgb_width_ > static_cast<int>(kOv9282FullWidth) ||
+      rgb_height_ > static_cast<int>(kOv9282FullHeight) ||
       (rgb_width_ % 2) != 0 || (rgb_height_ % 2) != 0 ||
       !std::isfinite(rgb_fps_) || rgb_fps_ <= 0.0 || rgb_fps_ > 60.0 ||
-      rgb_topic_.empty() || bev_topic_.empty() ||
-      rgb_frame_id_.empty() || bev_frame_id_.empty() ||
-      rgb_preview_window_name_.empty() ||
+      rgb_topic_.empty() || stereo_topic_.empty() || bev_topic_.empty() ||
+      rgb_frame_id_.empty() || stereo_frame_id_.empty() || bev_frame_id_.empty() ||
+      (rgb_preview_enabled_ && rgb_preview_window_name_.empty()) ||
       !std::isfinite(ir_dot_projector_intensity_) ||
       ir_dot_projector_intensity_ < 0.0 ||
       ir_dot_projector_intensity_ > 1.0 ||
@@ -377,10 +397,11 @@ private:
       (manual_exposure_us_ < 10 ||
       manual_exposure_us_ > maximum_manual_exposure_us_ ||
       manual_sensitivity_iso_ < 100 || manual_sensitivity_iso_ > 1600)) ||
-      preview_window_name_.empty() || bev_preview_window_name_.empty() ||
-      controls_window_name_.empty() ||
+      (stereo_preview_enabled_ && preview_window_name_.empty()) ||
+      (bev_preview_enabled_ && bev_preview_window_name_.empty()) ||
+      (controls_preview_enabled_ && controls_window_name_.empty()) ||
       !std::isfinite(preview_max_fps_) || preview_max_fps_ <= 0.0 ||
-      preview_max_fps_ > 30.0 ||
+      preview_max_fps_ > kRvc2MaximumFastStereoFullResolutionFps ||
       preview_max_width_ < 0 || preview_max_height_ < 0 ||
       !std::isfinite(bev_preview_scale_) || bev_preview_scale_ <= 0.0 ||
       bev_preview_scale_ > 10.0 ||
@@ -616,9 +637,7 @@ private:
 
     auto rgb_camera = pipeline_->create<dai::node::Camera>()->build(
       dai::CameraBoardSocket::CAM_A,
-      std::make_pair(
-        static_cast<std::uint32_t>(rgb_width_),
-        static_cast<std::uint32_t>(rgb_height_)),
+      std::make_pair(kOv9282FullWidth, kOv9282FullHeight),
       static_cast<float>(rgb_fps_));
     auto * rgb_output = rgb_camera->requestOutput(
       std::make_pair(
@@ -1043,7 +1062,7 @@ private:
     cv::putText(panel, recording_.load() ? "RECORDING" : "IDLE",
       cv::Point(465, 361), cv::FONT_HERSHEY_SIMPLEX, 0.7,
       recording_.load() ? cv::Scalar(80, 100, 255) : cv::Scalar(180, 180, 180), 2);
-    cv::putText(panel, "Flood affects IR only. Recording contains clean RGB + IR BEV.",
+    cv::putText(panel, "Records clean RGB + stereo IR + stereo IR BEV.",
       cv::Point(20, 400), cv::FONT_HERSHEY_SIMPLEX, 0.48,
       cv::Scalar(200, 200, 200), 1);
     cv::imshow(controls_window_name_, panel);
@@ -1437,7 +1456,7 @@ private:
 
   void resizePreviewWindow(const cv::Mat & frame)
   {
-    if (preview_window_sized_) {
+    if (!stereo_preview_enabled_ || preview_window_sized_) {
       return;
     }
     double scale = 1.0;
@@ -1521,26 +1540,29 @@ private:
     }
   }
 
-  void publishBev(const cv::Mat & bev)
+  void publishMono8(
+    const cv::Mat & image,
+    const rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr & publisher,
+    const std::string & frame_id)
   {
-    if (bev.empty() || bev.type() != CV_8UC1) {
+    if (image.empty() || image.type() != CV_8UC1) {
       return;
     }
     auto message = std::make_unique<sensor_msgs::msg::Image>();
     message->header.stamp = get_clock()->now();
-    message->header.frame_id = bev_frame_id_;
-    message->height = static_cast<std::uint32_t>(bev.rows);
-    message->width = static_cast<std::uint32_t>(bev.cols);
+    message->header.frame_id = frame_id;
+    message->height = static_cast<std::uint32_t>(image.rows);
+    message->width = static_cast<std::uint32_t>(image.cols);
     message->encoding = "mono8";
     message->is_bigendian = false;
-    message->step = static_cast<std::uint32_t>(bev.cols);
-    message->data.resize(static_cast<std::size_t>(bev.rows * bev.cols));
-    for (int row = 0; row < bev.rows; ++row) {
+    message->step = static_cast<std::uint32_t>(image.cols);
+    message->data.resize(static_cast<std::size_t>(image.rows * image.cols));
+    for (int row = 0; row < image.rows; ++row) {
       std::copy_n(
-        bev.ptr<std::uint8_t>(row), bev.cols,
-        message->data.data() + static_cast<std::size_t>(row * bev.cols));
+        image.ptr<std::uint8_t>(row), image.cols,
+        message->data.data() + static_cast<std::size_t>(row * image.cols));
     }
-    bev_publisher_->publish(std::move(message));
+    publisher->publish(std::move(message));
   }
 
   void saveFrames(const cv::Mat & original, const cv::Mat & bev)
@@ -1586,18 +1608,26 @@ private:
   void previewLoop()
   {
     try {
-      cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
-      cv::namedWindow(rgb_preview_window_name_, cv::WINDOW_NORMAL);
-      cv::namedWindow(bev_preview_window_name_, cv::WINDOW_NORMAL);
-      cv::namedWindow(controls_window_name_, cv::WINDOW_AUTOSIZE);
-      cv::setMouseCallback(controls_window_name_, controlMouseCallback, this);
-      cv::resizeWindow(
-        bev_preview_window_name_,
-        std::max(1, static_cast<int>(std::lround(
-            static_cast<double>(bev_config_.output_width) * bev_preview_scale_))),
-        std::max(1, static_cast<int>(std::lround(
-            static_cast<double>(bev_config_.output_height) * bev_preview_scale_))));
-      drawControlPanel();
+      if (stereo_preview_enabled_) {
+        cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
+      }
+      if (rgb_preview_enabled_) {
+        cv::namedWindow(rgb_preview_window_name_, cv::WINDOW_NORMAL);
+      }
+      if (bev_preview_enabled_) {
+        cv::namedWindow(bev_preview_window_name_, cv::WINDOW_NORMAL);
+        cv::resizeWindow(
+          bev_preview_window_name_,
+          std::max(1, static_cast<int>(std::lround(
+              static_cast<double>(bev_config_.output_width) * bev_preview_scale_))),
+          std::max(1, static_cast<int>(std::lround(
+              static_cast<double>(bev_config_.output_height) * bev_preview_scale_))));
+      }
+      if (controls_preview_enabled_) {
+        cv::namedWindow(controls_window_name_, cv::WINDOW_AUTOSIZE);
+        cv::setMouseCallback(controls_window_name_, controlMouseCallback, this);
+        drawControlPanel();
+      }
     } catch (const std::exception & exception) {
       RCLCPP_FATAL(
         get_logger(), "Could not create IR preview windows: %s",
@@ -1670,6 +1700,7 @@ private:
         }
 
         if (frame_updated && !current_frame.empty()) {
+          publishMono8(current_frame, stereo_publisher_, stereo_frame_id_);
           const auto bev_started_at = std::chrono::steady_clock::now();
           current_bev.release();
           try {
@@ -1685,15 +1716,21 @@ private:
               std::chrono::steady_clock::now() - bev_started_at).count(),
             std::memory_order_relaxed);
           resizePreviewWindow(current_frame);
-          cv::imshow(preview_window_name_, current_frame);
+          if (stereo_preview_enabled_) {
+            cv::imshow(preview_window_name_, current_frame);
+          }
           if (current_bev.empty()) {
-            cv::Mat waiting(300, 500, CV_8UC1, cv::Scalar(0));
-            cv::putText(waiting, "BEV unavailable: check calibration / IMU", cv::Point(10, 145),
-              cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255), 1, cv::LINE_AA);
-            cv::imshow(bev_preview_window_name_, waiting);
+            if (bev_preview_enabled_) {
+              cv::Mat waiting(300, 500, CV_8UC1, cv::Scalar(0));
+              cv::putText(waiting, "BEV unavailable: check calibration / IMU", cv::Point(10, 145),
+                cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(255), 1, cv::LINE_AA);
+              cv::imshow(bev_preview_window_name_, waiting);
+            }
           } else {
-            publishBev(current_bev);
-            cv::imshow(bev_preview_window_name_, current_bev);
+            publishMono8(current_bev, bev_publisher_, bev_frame_id_);
+            if (bev_preview_enabled_) {
+              cv::imshow(bev_preview_window_name_, current_bev);
+            }
             bev_preview_interval_.fetch_add(1U, std::memory_order_relaxed);
           }
           previewed_total_.fetch_add(1U, std::memory_order_relaxed);
@@ -1703,7 +1740,10 @@ private:
 
         auto rgb_snapshot = std::atomic_load_explicit(
           &latest_rgb_, std::memory_order_acquire);
-        if (rgb_snapshot && rgb_snapshot->generation != rgb_previewed_generation) {
+        if (
+          rgb_preview_enabled_ && rgb_snapshot &&
+          rgb_snapshot->generation != rgb_previewed_generation)
+        {
           current_rgb = rgb_snapshot->frame->getCvFrame();
           if (!current_rgb.empty()) {
             cv::imshow(rgb_preview_window_name_, current_rgb);
@@ -1726,11 +1766,14 @@ private:
           panel_message_is_error_ = true;
           control_panel_dirty_.store(true);
         }
-        if (control_panel_dirty_.load(std::memory_order_relaxed)) {
+        if (
+          controls_preview_enabled_ &&
+          control_panel_dirty_.load(std::memory_order_relaxed))
+        {
           drawControlPanel();
         }
 
-        const int raw_key = cv::waitKeyEx(1);
+        const int raw_key = anyPreviewEnabled() ? cv::waitKeyEx(1) : -1;
         const int key = raw_key < 0 ? -1 : raw_key & 0xff;
         if (key == 27 || key == 'q' || key == 'Q') {
           RCLCPP_INFO(get_logger(), "IR preview closed.");
@@ -1749,16 +1792,16 @@ private:
           saveFrames(current_frame, current_bev);
         }
 
-        const double original_visible = cv::getWindowProperty(
-          preview_window_name_, cv::WND_PROP_VISIBLE);
-        const double bev_visible = cv::getWindowProperty(
-          bev_preview_window_name_, cv::WND_PROP_VISIBLE);
-        const double rgb_visible = cv::getWindowProperty(
-          rgb_preview_window_name_, cv::WND_PROP_VISIBLE);
-        const double controls_visible = cv::getWindowProperty(
-          controls_window_name_, cv::WND_PROP_VISIBLE);
+        const double original_visible = stereo_preview_enabled_ ?
+          cv::getWindowProperty(preview_window_name_, cv::WND_PROP_VISIBLE) : 1.0;
+        const double bev_visible = bev_preview_enabled_ ?
+          cv::getWindowProperty(bev_preview_window_name_, cv::WND_PROP_VISIBLE) : 1.0;
+        const double rgb_visible = rgb_preview_enabled_ ?
+          cv::getWindowProperty(rgb_preview_window_name_, cv::WND_PROP_VISIBLE) : 1.0;
+        const double controls_visible = controls_preview_enabled_ ?
+          cv::getWindowProperty(controls_window_name_, cv::WND_PROP_VISIBLE) : 1.0;
         if (
-          original_visible >= 1.0 && bev_visible >= 1.0 &&
+          anyPreviewEnabled() && original_visible >= 1.0 && bev_visible >= 1.0 &&
           rgb_visible >= 1.0 && controls_visible >= 1.0)
         {
           window_was_visible = true;
@@ -1783,10 +1826,10 @@ private:
     }
 
     try {
-      cv::destroyWindow(preview_window_name_);
-      cv::destroyWindow(rgb_preview_window_name_);
-      cv::destroyWindow(bev_preview_window_name_);
-      cv::destroyWindow(controls_window_name_);
+      if (stereo_preview_enabled_) {cv::destroyWindow(preview_window_name_);}
+      if (rgb_preview_enabled_) {cv::destroyWindow(rgb_preview_window_name_);}
+      if (bev_preview_enabled_) {cv::destroyWindow(bev_preview_window_name_);}
+      if (controls_preview_enabled_) {cv::destroyWindow(controls_window_name_);}
     } catch (...) {
     }
   }
@@ -1923,8 +1966,10 @@ private:
   double rgb_fps_{30.0};
   bool rgb_undistort_enabled_{true};
   std::string rgb_topic_{"/camera/image_rect"};
+  std::string stereo_topic_{"/camera/image_stereo_ir"};
   std::string bev_topic_{"/camera/image_bev_ir"};
   std::string rgb_frame_id_{"camera_optical_frame"};
+  std::string stereo_frame_id_{"stereo_center_optical_frame"};
   std::string bev_frame_id_{"front_axle_bev"};
 
   bool ir_enabled_at_start_{true};
@@ -1939,6 +1984,10 @@ private:
   std::string rgb_preview_window_name_{"OAK RGB original preview"};
   std::string bev_preview_window_name_{"OAK IR BEV preview"};
   std::string controls_window_name_{"OAK IR live controls"};
+  bool rgb_preview_enabled_{true};
+  bool stereo_preview_enabled_{true};
+  bool bev_preview_enabled_{true};
+  bool controls_preview_enabled_{true};
   double preview_max_fps_{30.0};
   int preview_max_width_{1280};
   int preview_max_height_{800};
@@ -2009,6 +2058,7 @@ private:
   std::chrono::steady_clock::time_point started_at_{};
   std::chrono::steady_clock::time_point last_status_at_{};
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr rgb_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr stereo_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr bev_publisher_;
 };
 

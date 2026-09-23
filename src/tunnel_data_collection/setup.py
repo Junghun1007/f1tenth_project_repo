@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer="ohslo",
     maintainer_email="ohslo@example.com",
-    description="Tunnel RGB/BEV data capture and extraction.",
+    description="Three-stream tunnel RGB, stereo IR, and IR BEV AVI recording.",
     license="Apache-2.0",
     entry_points={
         "console_scripts": [

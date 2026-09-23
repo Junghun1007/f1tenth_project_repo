@@ -4,7 +4,7 @@
 <package format="3">
   <name>tunnel_data_collection</name>
   <version>0.1.0</version>
-  <description>Controlled rosbag capture of tunnel RGB and stereo-IR BEV images.</description>
+  <description>Controlled three-stream AVI recording for tunnel RGB and stereo IR data.</description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>Apache-2.0</license>
 

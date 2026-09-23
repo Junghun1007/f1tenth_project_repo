@@ -56,6 +56,42 @@ def _launch_node(context):
                         ),
                         value_type=float,
                     ),
+                    "width": ParameterValue(
+                        LaunchConfiguration("stereo_width"), value_type=int
+                    ),
+                    "height": ParameterValue(
+                        LaunchConfiguration("stereo_height"), value_type=int
+                    ),
+                    "reprojection_fps": ParameterValue(
+                        LaunchConfiguration("stereo_fps"), value_type=float
+                    ),
+                    "single_camera_fps": ParameterValue(
+                        LaunchConfiguration("stereo_fps"), value_type=float
+                    ),
+                    "rgb_width": ParameterValue(
+                        LaunchConfiguration("rgb_width"), value_type=int
+                    ),
+                    "rgb_height": ParameterValue(
+                        LaunchConfiguration("rgb_height"), value_type=int
+                    ),
+                    "rgb_fps": ParameterValue(
+                        LaunchConfiguration("rgb_fps"), value_type=float
+                    ),
+                    "preview_max_fps": ParameterValue(
+                        LaunchConfiguration("processing_fps"), value_type=float
+                    ),
+                    "rgb_preview_enabled": ParameterValue(
+                        LaunchConfiguration("rgb_preview_enabled"), value_type=bool
+                    ),
+                    "stereo_preview_enabled": ParameterValue(
+                        LaunchConfiguration("stereo_preview_enabled"), value_type=bool
+                    ),
+                    "bev_preview_enabled": ParameterValue(
+                        LaunchConfiguration("bev_preview_enabled"), value_type=bool
+                    ),
+                    "controls_preview_enabled": ParameterValue(
+                        LaunchConfiguration("controls_preview_enabled"), value_type=bool
+                    ),
                     "ir_enabled": ParameterValue(
                         LaunchConfiguration("ir_enabled"),
                         value_type=bool,
@@ -122,6 +158,21 @@ def generate_launch_description():
                     "(1.0)."
                 ),
             ),
+            DeclareLaunchArgument("rgb_width", default_value="1280"),
+            DeclareLaunchArgument("rgb_height", default_value="800"),
+            DeclareLaunchArgument("rgb_fps", default_value="30.0"),
+            DeclareLaunchArgument("stereo_width", default_value="1280"),
+            DeclareLaunchArgument("stereo_height", default_value="800"),
+            DeclareLaunchArgument("stereo_fps", default_value="30.0"),
+            DeclareLaunchArgument(
+                "processing_fps",
+                default_value="30.0",
+                description="Maximum stereo-center/BEV processing and publish rate.",
+            ),
+            DeclareLaunchArgument("rgb_preview_enabled", default_value="true"),
+            DeclareLaunchArgument("stereo_preview_enabled", default_value="true"),
+            DeclareLaunchArgument("bev_preview_enabled", default_value="true"),
+            DeclareLaunchArgument("controls_preview_enabled", default_value="true"),
             DeclareLaunchArgument(
                 "ir_enabled",
                 default_value="true",

@@ -26,8 +26,10 @@ ir_camera_driver:
     rgb_fps: 30.0
     rgb_undistort_enabled: true
     rgb_topic: "/camera/image_rect"
+    stereo_topic: "/camera/image_stereo_ir"
     bev_topic: "/camera/image_bev_ir"
     rgb_frame_id: "camera_optical_frame"
+    stereo_frame_id: "stereo_center_optical_frame"
     bev_frame_id: "front_axle_bev"
 
     # OAK-D Pro W emitters. The dot projector supports stereo matching; the
@@ -47,6 +49,10 @@ ir_camera_driver:
     rgb_preview_window_name: "OAK RGB original preview"
     bev_preview_window_name: "OAK IR BEV preview"
     controls_window_name: "OAK IR live controls"
+    rgb_preview_enabled: true
+    stereo_preview_enabled: true
+    bev_preview_enabled: true
+    controls_preview_enabled: true
     preview_max_fps: 30.0
     preview_max_width: 1280
     preview_max_height: 800
