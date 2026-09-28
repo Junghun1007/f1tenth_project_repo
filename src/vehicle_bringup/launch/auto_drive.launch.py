@@ -69,6 +69,63 @@ def _merged_parameters(base_path, selected_path, node_name):
     return parameters
 
 
+def _configure_handover(context, controller_defaults, namespace):
+    """Route AUTO through the manual controller's one-way handover gate."""
+    config = context.launch_configurations
+    channels = ("duty", "brake_current", "servo_position")
+    for name in (*[f"{channel}_topic" for channel in channels],
+                 "measured_erpm_topic", "connection_status_topic"):
+        config["bridge_" + name] = config["effective_" + name]
+    config["dynamics_commanded_duty_topic"] = str(
+        controller_defaults.get("command_duty_topic", "/auto/current_duty"))
+    enabled = LaunchConfiguration("manual_handover_enabled").perform(context).lower()
+    if enabled not in ("true", "false"):
+        raise RuntimeError("manual_handover_enabled must be true or false")
+    if (enabled != "true" or config["manual_test"].lower() == "true"
+            or config["performance_measurement_enabled"].lower() == "true"
+            or config["auto_control_mode"] != "drive"):
+        return []
+    prefix = f"/{namespace}" if namespace else ""
+    # AUTO and the bridge run at the root. Preserve their relative topic
+    # resolution when the handover node itself is in the vehicle namespace.
+    def root_topic(value):
+        return "/" + str(value).lstrip("/")
+
+    parameters = {
+        "joy_topic": prefix + "/joy",
+        "auto_enable_topic": root_topic(controller_defaults.get("enable_topic", "/auto/enabled")),
+        "measured_erpm_topic": root_topic(config["bridge_measured_erpm_topic"]),
+        "connection_status_topic": root_topic(config["bridge_connection_status_topic"]),
+        "current_duty_topic": prefix + "/drive/current_duty",
+        "current_brake_current_topic": prefix + "/drive/current_brake_current",
+        "gear_state_topic": prefix + "/manual/gear",
+        "drive_mode_topic": prefix + "/drive/mode",
+    }
+    for channel in channels:
+        input_topic = prefix + f"/handover/auto/{channel}"
+        parameters[f"auto_{channel}_topic"] = input_topic
+        parameters[f"{channel}_topic"] = root_topic(config[f"bridge_{channel}_topic"])
+        config[f"effective_{channel}_topic"] = input_topic
+    config["dynamics_commanded_duty_topic"] = parameters["current_duty_topic"]
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(
+                get_package_share_directory("joy_initializer"), "launch", "joy.launch.py")),
+            launch_arguments={
+                "vehicle_namespace": namespace,
+                "device_name_contains": LaunchConfiguration("controller_name_contains").perform(context),
+                "reconnect_interval_sec": "0.2",
+            }.items(),
+        ),
+        Node(
+            package="manual_control", executable="auto_handover_node",
+            name="auto_handover", namespace=namespace, output="screen",
+            parameters=[os.path.join(get_package_share_directory("vehicle_bringup"),
+                                     "config", "manual_vesc_config.yaml"), parameters],
+        ),
+    ]
+
+
 def _apply_parameter_file_defaults(
     context,
     *,
@@ -338,7 +395,7 @@ def _apply_parameter_file_defaults(
             parameters=[obstacle_file, planner_overrides],
             extra_arguments=[{"use_intra_process_comms": True}],
         ))
-    manual_actions = []
+    manual_actions = _configure_handover(context, controller_defaults, ns)
     if manual_test == "true":
         for flag in ("manual_enabled", "dynamics_enabled"):
             if LaunchConfiguration(flag).perform(context).lower() not in ("true", "false"):
@@ -698,7 +755,11 @@ def generate_launch_description():
         name="vesc_bridge_node",
         condition=UnlessCondition(LaunchConfiguration("manual_test")),
         output="screen",
-        parameters=[vesc_config, {"port": vesc_port}],
+        parameters=[vesc_config, {"port": vesc_port, **{
+            name: LaunchConfiguration("bridge_" + name) for name in (
+                "duty_topic", "brake_current_topic", "servo_position_topic",
+                "measured_erpm_topic", "connection_status_topic")
+        }}],
     )
 
     dynamics_node = Node(
@@ -711,7 +772,9 @@ def generate_launch_description():
             "slcan_channel": LaunchConfiguration("slcan_channel"),
             "slcan_bitrate": ParameterValue(LaunchConfiguration("slcan_bitrate"), value_type=int),
             "can_controller_id": ParameterValue(LaunchConfiguration("can_controller_id"), value_type=int),
-            "commanded_duty_topic": "/auto/current_duty",
+            "commanded_duty_topic": LaunchConfiguration("dynamics_commanded_duty_topic"),
+            **{name: LaunchConfiguration("bridge_" + name) for name in (
+                "measured_erpm_topic", "connection_status_topic", "servo_position_topic")},
         }],
     )
     return LaunchDescription(
@@ -721,6 +784,8 @@ def generate_launch_description():
                                   description="Keep all perception and auto_control diagnostics; force monitor_only and use manual driving"),
             DeclareLaunchArgument("manual_enabled", default_value="true",
                                   description="In manual_test, start joystick/VESC; false when manual_drive already runs"),
+            DeclareLaunchArgument("manual_handover_enabled", default_value="true",
+                                  description="In drive mode, X brakes then switches to manual without closing perception/preview"),
             DeclareLaunchArgument("dynamics_enabled", default_value="true"),
             DeclareLaunchArgument("vehicle_namespace", default_value="autopilot03"),
             DeclareLaunchArgument("controller_name_contains", default_value="8BitDo"),

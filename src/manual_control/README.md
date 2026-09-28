@@ -3,6 +3,16 @@
 Reads SDL-standard Bluetooth controller input from `/joy` and sends manual
 actuator commands.
 
+`auto_handover_node` reuses this manual controller in `auto_drive.launch.py`.
+It initially forwards private automatic actuator topics and ignores manual driving
+inputs. X (SDL button 2) permanently blocks automatic commands for this run and
+starts electrical braking. Fresh stationary ERPM for 0.5 seconds plus released
+X/RT/LT/RB and centered steering allow manual control. Only joystick frames received
+after handover can drive the vehicle. Missing telemetry or joystick input keeps
+the node braking; there is no timed fallback into manual mode. Perception and BEV
+preview continue throughout. The normal `actuator_commander_node` remains a
+standalone manual controller without this automatic startup mode.
+
 Published topics:
 
 ```text

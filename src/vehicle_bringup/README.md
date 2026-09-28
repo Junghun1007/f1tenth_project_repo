@@ -93,6 +93,36 @@ owns the joystick node defaults.
 
 ## Autonomous driving
 
+### X 버튼으로 실험 종료 후 수동 복귀
+
+일반 `auto_drive.launch.py`의 `drive` 모드는 컨트롤러도 함께 실행한다.
+기존 자동주행 실행 명령과 설정 파일을 그대로 사용할 수 있다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py preview_enabled:=true
+```
+
+1. 자동주행 중 컨트롤러 **X**(SDL button 2)를 누르면 자동 구동 명령을 차단한다.
+2. 마지막 조향을 유지하며 기존 수동 브레이크 설정으로 제동한다
+   (기본 최대 8 A, 증가율 16 A/s). 제동 중에는 duty 명령을 보내지 않는다.
+3. X·RT·LT·RB를 놓고 왼쪽 스틱을 중앙에 둔다. 새 ERPM 측정값의 절댓값이
+   100 이하로 0.5초간 유지되면 브레이크를 해제하고 `MANUAL`로 전환한다.
+4. 이후 RT 가속, LT 제동, 왼쪽 스틱 조향, RB 전후진 전환으로 출발점에 복귀한다.
+
+전환 시 카메라·BEV·차선인식·프리뷰는 종료하거나 재시작하지 않는다.
+자동주행 재개는 launch를 종료한 뒤 다시 실행한다. 수동 상태에서 X를 다시 눌러도
+자동으로 돌아가지 않는다. 별도로 `manual_drive.launch.py`를 중복 실행하지 않는다.
+
+상태는 터미널과 `/<vehicle_namespace>/drive/mode`의 `AUTO`, `STOPPING`,
+`MANUAL`로 확인할 수 있다(기본 namespace: `autopilot03`). ERPM 또는 컨트롤러
+입력이 끊기면 정지/중립을 확인할 수 없으므로 `STOPPING`에서 제동을 유지한다.
+설정은 `config/manual_vesc_config.yaml`의 `handover_*`와 수동 제동값을 사용한다.
+ERPM 판정은 모터 회전 기반이므로 실제 정지 거리·미끄러짐은 차량에서 확인해야 한다.
+
+`manual_test:=true`, `monitor_only`, `steering_only`, 성능 측정 모드는 기존 동작을
+유지한다. 컨트롤러 전환 기능을 제외하려면 `manual_handover_enabled:=false`를 사용한다.
+이 변경을 차량에 적용할 때는 `manual_control`과 `vehicle_bringup`을 다시 빌드한다.
+
 Optional lightweight white BEV preview (default off):
 
 ```bash

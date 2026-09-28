@@ -7,6 +7,11 @@
     joy_accelerator_axis: 5
     joy_brake_axis: 4
     joy_gear_button: 10
+    # auto_drive의 auto_handover_node 전용. 일반 수동주행에는 적용하지 않는다.
+    handover_button: 2                 # SDL X: 자동주행 종료 -> 제동 -> 수동
+    handover_stopped_erpm: 100.0       # |ERPM|이 이 값 이하인 상태를 확인
+    handover_stop_hold_sec: 0.5
+    handover_telemetry_timeout_sec: 0.3 # 수신이 끊기면 수동 전환을 보류하고 제동 유지
     joy_trigger_released: 0.0
     joy_trigger_pressed: 1.0
     current_duty_topic: "/manual/current_duty"     # 현재 duty 명령
