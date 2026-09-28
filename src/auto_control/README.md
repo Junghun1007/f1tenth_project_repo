@@ -330,9 +330,16 @@ needed to meet that profile.
 `corner_planning_response_sec` reserves travel during camera, control and actuator
 delay. `corner_planning_acceleration_mps2` limits the spatial exit profile and
 frame-to-frame target recovery. `corner_confirm_frames` rejects a one-frame curve;
-`corner_release_frames` prevents a one-frame miss from releasing the band. The curvature
-limit is allowed below `minimum_speed_mps`; that legacy parameter is not a safety
-floor for the new profile.
+`corner_release_frames` prevents a one-frame miss from releasing the band.
+`minimum_speed_mps` is also the floor for local curve speeds and the lower edge
+of the corner band, including the held band during a turn. It does not raise an
+obstacle cap, traffic-stop target or guard-stop command. Recovery from those lower
+targets still respects the existing acceleration ramp and may temporarily remain
+below the floor. This is a target-speed preference, not a guarantee of actual speed:
+when the floor exceeds the curvature-derived limit it can require more than
+`maximum_lateral_acceleration_mps2`. Tune the floor for the vehicle and track.
+The legacy speed-to-duty mapping continues to use the same parameter; no separate
+corner-minimum parameter is needed. Build and tests were not run for this change.
 
 ### 장애물 점진 감속과 코너 회전 중 목표 회복 보류
 

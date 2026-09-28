@@ -1464,7 +1464,7 @@ private:
         std::max(0.0, current_speed_mps_) * corner_planning_response_sec_;
       try {
         plan = plan_path_speeds(
-          selected_path, maximum_speed_mps_, maximum_lateral_acceleration_mps2_,
+          selected_path, minimum_speed_mps_, maximum_speed_mps_, maximum_lateral_acceleration_mps2_,
           latest_planning_deceleration_mps2_, corner_planning_acceleration_mps2_, maximum_speed_mps_,
           response_distance_m, corner_speed_band_width_mps_);
       } catch (const std::exception & exception) {
@@ -1533,7 +1533,8 @@ private:
         }
         if (had_corner_profile && turn_recovery_hold_) {
           corner_upper_speed_mps_ = std::min(corner_upper_speed_mps_, previous_corner_upper);
-          corner_lower_speed_mps_ = std::max(0.0, corner_upper_speed_mps_ - corner_speed_band_width_mps_);
+          corner_lower_speed_mps_ = std::max(minimum_speed_mps_,
+            corner_upper_speed_mps_ - corner_speed_band_width_mps_);
           corner_nominal_speed_mps_ = 0.5 * (corner_lower_speed_mps_ + corner_upper_speed_mps_);
         }
         const double speed = std::max(0.0, current_speed_mps_);

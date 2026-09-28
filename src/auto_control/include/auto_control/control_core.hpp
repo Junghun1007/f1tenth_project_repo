@@ -40,7 +40,7 @@ struct PathSpeedPlan
 };
 
 PathSpeedPlan plan_path_speeds(
-  const OrderedPath & path, double maximum_speed_mps,
+  const OrderedPath & path, double minimum_speed_mps, double maximum_speed_mps,
   double maximum_lateral_acceleration_mps2, double planning_deceleration_mps2,
   double planning_acceleration_mps2, double obstacle_speed_limit_mps,
   double response_distance_m, double corner_speed_band_width_mps,

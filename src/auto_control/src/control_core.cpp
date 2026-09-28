@@ -185,7 +185,7 @@ double curvature_target_speed(
 }
 
 PathSpeedPlan plan_path_speeds(
-  const OrderedPath & path, double maximum_speed_mps,
+  const OrderedPath & path, double minimum_speed_mps, double maximum_speed_mps,
   double maximum_lateral_acceleration_mps2, double planning_deceleration_mps2,
   double planning_acceleration_mps2, double obstacle_speed_limit_mps,
   double response_distance_m, double corner_speed_band_width_mps,
@@ -193,6 +193,8 @@ PathSpeedPlan plan_path_speeds(
 {
   if (path.arc_m.empty() || !std::isfinite(path.arc_m.back()) ||
     path.arc_m.back() <= 0.0 || path.arc_m.back() > 25.0 ||
+    !std::isfinite(minimum_speed_mps) || minimum_speed_mps < 0.0 ||
+    minimum_speed_mps > maximum_speed_mps ||
     maximum_speed_mps <= 0.0 || maximum_lateral_acceleration_mps2 <= 0.0 ||
     planning_deceleration_mps2 <= 0.0 || planning_acceleration_mps2 <= 0.0 ||
     corner_speed_band_width_mps < 0.0 || sample_spacing_m <= 0.0)
@@ -212,8 +214,8 @@ PathSpeedPlan plan_path_speeds(
     const double curvature = std::abs(path.curvature(arc));
     if (!std::isfinite(curvature)) {throw std::invalid_argument("nonfinite path curvature");}
     const double curve_limit = curvature > 1.0e-9 ?
-      std::min(maximum_speed_mps,
-      std::sqrt(maximum_lateral_acceleration_mps2 / curvature)) : maximum_speed_mps;
+      clamp(std::sqrt(maximum_lateral_acceleration_mps2 / curvature),
+      minimum_speed_mps, maximum_speed_mps) : maximum_speed_mps;
     plan.arc_m.push_back(arc);
     curve_limits.push_back(curve_limit);
   }
@@ -257,8 +259,11 @@ PathSpeedPlan plan_path_speeds(
   const double unrestricted = std::min(maximum_speed_mps, obstacle_speed_limit_mps);
   for (const double upper_speed : plan.upper_speed_mps) {
     const bool curve_profile = upper_speed < unrestricted - 0.03;
+    // Floor the entire corner band, not just its upper edge. A lower
+    // obstacle limit still takes precedence over the configured cruise floor.
     const double lower_speed = curve_profile ?
-      std::max(0.0, upper_speed - corner_speed_band_width_mps) : upper_speed;
+      std::max(std::min(minimum_speed_mps, upper_speed),
+      upper_speed - corner_speed_band_width_mps) : upper_speed;
     plan.lower_speed_mps.push_back(lower_speed);
     plan.nominal_speed_mps.push_back(0.5 * (lower_speed + upper_speed));
   }
