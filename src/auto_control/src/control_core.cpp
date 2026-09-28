@@ -235,19 +235,9 @@ PathSpeedPlan plan_path_speeds(
         std::min(plan.corner_speed_mps, limit) : limit;
     }
   }
-  // Treat the first continuous curve as one speed zone. Its most restrictive
-  // filtered curvature defines the upper edge of the band throughout the
-  // corner body; entry and exit transitions are built around that stable zone.
-  if (plan.corner_start_m >= 0.0) {
-    for (std::size_t index = 0; index < plan.arc_m.size(); ++index) {
-      if (plan.arc_m[index] >= plan.corner_start_m &&
-        plan.arc_m[index] <= plan.corner_exit_m)
-      {
-        plan.upper_speed_mps[index] = std::min(
-          plan.upper_speed_mps[index], plan.corner_speed_mps);
-      }
-    }
-  }
+  // Keep each point's local limit: the tightest part of a corner must not
+  // impose its speed on the entire entry. The backward pass below still
+  // reserves enough distance to reach every future curvature restriction.
   // Future restrictions propagate backward to a feasible entry speed.
   // The camera horizon is not a stop point; stale/missing path watchdogs own
   // that safety action. Only real curve and obstacle limits are propagated.

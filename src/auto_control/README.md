@@ -307,11 +307,12 @@ these samples for its cumulative `control avg` time and reciprocal FPS.
    Spatial smoothing and outer-boundary weighting happen in `line_detactor`.
 4. Calculate Stanley cross-track error from the front-axle origin and heading
    at the closest path projection plus `stanley_heading_lookahead_m` along the path.
-5. With corner speed control enabled, sample curvature along the selected path,
-   form the first continuous curve into one stable speed zone, and combine it
-   with the active in-lane obstacle limit. Propagate deceleration backward and
+5. With corner speed control enabled, sample curvature along the selected path
+   and preserve each point's local speed limit, including the corner entry.
+   Propagate deceleration backward and
    acceleration forward over every sampled path point. The camera-horizon point
    is not treated as a zero-speed stop; stale or missing paths use the watchdog.
+   Combine this curve plan with the independently ramped obstacle speed cap.
 6. Build lower, nominal and upper speeds around every curve-constrained profile
    point. Inside this band the propulsion PID error is cleared and feed-forward
    maintains the present speed. Below it duty targets the nominal speed. Near or
@@ -332,6 +333,38 @@ frame-to-frame target recovery. `corner_confirm_frames` rejects a one-frame curv
 `corner_release_frames` prevents a one-frame miss from releasing the band. The curvature
 limit is allowed below `minimum_speed_mps`; that legacy parameter is not a safety
 floor for the new profile.
+
+### 장애물 점진 감속과 코너 회전 중 목표 회복 보류
+
+장애물 검출 시 `obstacle_slowdown_speed_mps`는 즉시 적용하는 상한이 아니라 감속 후
+도달할 속도다. 목표는 `obstacle_planning_deceleration_mps2`(기본 0.35)로 감소하고,
+검출 해제 후에는 `obstacle_planning_acceleration_mps2`(기본 0.35)로 증가한다.
+1.4→1.0m/s의 목표 전환은 기본값에서 약 1.14초다. 이는 목표 변화 시간이며 실제 속도
+추종 시간은 아니다. 코너 감속 OFF에서도 이 장애물 계획은 적용된다.
+
+단계 제어에서는 `obstacle_coast_probe_sec`(0.20초) 동안 duty 감속을 관찰한다.
+현재 계획 속도 초과량이 `obstacle_brake_entry_margin_mps`(0.10)를 넘고,
+필요 감속도가 관측 coast 감속도보다 `obstacle_brake_deceleration_margin_mps2`(0.10)
+이상 부족할 때 전류 제동을 추가한다. 해제 여유는 `obstacle_brake_exit_margin_mps`(0.03)다.
+최종 도달 속도와의 차이로 검출 순간 전류 제동을 걸지 않는다.
+
+코너의 구간 전체에 최저속도를 적용하지 않고, 각 지점의 곡률 상한까지 감속을 역산한다.
+회전 중에는 활성 코너 속도 상한과 장애물 계획 속도의 상승을 보류한다.
+근거리 곡률이 `corner_exit_curvature_per_m`(0.25) 이하이고, 경로 방향과 이전 조향각이
+모두 `corner_exit_angle_deg`(8도) 이내인 상태를 `corner_exit_confirm_sec`(0.20초)
+확인하면 회복을 허용한다. 경로 노이즈가 지속되면 회복이 늦어질 수 있다.
+낮은 속도에서의 출발·속도 부족 보정은 계속 허용하므로 실제 속도의 단조 감소를 보장하지 않는다.
+
+제동 해제 예측에는 전류 감소 시간, `longitudinal_brake_release_response_sec`(0.15초),
+속도 필터 시간 및 시작 duty 회복 시간을 반영한다. 예상 속도가 계획보다 낮아지면 코너·장애물
+제동을 미리 해제한다. 긴급 코너 감속, 기존 회피 검사 보호 정지, 입력 유실 및 신호등 정지는
+이 장애물 목표 램프로 지연시키지 않는다. 장애물 검출 감속에는 거리 기반 충돌 판단을 새로
+추가하지 않았으며, 중앙선 변형 모드의 검출 감속은 충돌 방지 보장이 아니다.
+
+새 파라미터는 YAML의 `auto_control.ros__parameters`에 지정하고 재시작한다.
+기존 외부 YAML에도 코드 기본값이 적용된다. `curvature_speed_control_enabled: false`인
+외부 YAML에서는 곡률별 코너 감속이 계속 꺼져 있으므로 이를 사용하려면 true로 설정한다.
+이번 변경은 빌드·테스트·실차 주행을 수행하지 않았다.
 
 The optional `/vehicle/dynamics/duty_cycle` and `/vehicle/dynamics/motor_current_a`
 topics veto contaminated duty-coast samples when fresh. The dynamics monitor
@@ -522,7 +555,7 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   (-1..1), duty 변화율 제한 전 목표, 최종 duty 및 제동 전류 명령이다.
   단계 제어에서 제동 중에는 PID를 사용하지 않아 앞의 두 값은 빈 칸이다.
   실제 전류 측정값은 아니며 `control_mode`/`motor_mode`/연결 상태와 함께 해석한다.
-- 스키마 7의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
+- 스키마 8의 `longitudinal_phase`는 `start_drive`/`track_speed`/`reduce_duty`/`additional_brake`/
   `release_brake`/`recover_drive`/`recover_motion`/`stop_brake` 등 실제 구동 제어 단계를 기록한다.
   `traffic_phase`의 `range_braking`은 허용 정차 범위 진입 후 정지 확정, `position_hold`는 저속 유지 상태다.
   `start_drive`는 시작 duty를 1회 적용한 주기이며, 다음 주기부터 일반 PID 제어로 이어진다.
@@ -538,6 +571,12 @@ flush를 수행한다. 기록 스레드가 밀리면 제어를 기다리게 하�
   코너 속도 구간이며, `corner_speed_in_band`가 1이면 정확한 한 속도를 추종하지 않는다.
   `corner_constraint_m`과 `corner_required_deceleration_mps2`는 전방 포인트 전체에서
   가장 큰 감속 요구를 만든 거리와 그 감속도다.
+- `obstacle_requested_speed_mps`는 장애물 검출 상태에 따른 최종 도달 속도,
+  `obstacle_planned_speed_mps`는 변화율을 적용한 현재 계획 상한이다.
+  `obstacle_profile_active`는 검출 해제 후의 회복 구간까지 포함하며,
+  `obstacle_plan_deceleration_mps2`는 현재 계획 상한의 감소율이다.
+  `turn_recovery_hold`는 회전 종료 확인 전 목표 상한 상승 보류,
+  `predicted_release_speed_mps`는 제동 해제 후 예상 속도다. 실제 측정값이 아니다.
 - `centerline_xy_m`: 제어에 사용한 경로 전체를 `x:y;x:y;...` 형식으로 저장한다.
   차량 기준 x 전방, y 좌측, 미터 단위이며 세계 좌표 궤적은 아니다.
   경로 유효 여부와 원본 순서는 `path_valid`, `path_point_count`, `lane_sequence`에 있다.
@@ -582,8 +621,8 @@ BEV에 표시한다. 기본 OFF이며 `/auto_obstacles`의 `obstacles.avoidance.
 기존 충돌/곡률 검사와 실패 시 제동은 `avoidance_deformation_only: false`에서만 적용한다.
 주행 속도는 `maximum_speed_mps`로 설정한다. `avoidance_speed_cap_mps`와
 `obstacles.avoidance.max_speed_mps`는 폐기되어 기존 YAML에 남아 있어도 무시한다.
-차선 안 장애물 최초 검출 시 `obstacle_slowdown_speed_mps`(기본 1.2m/s)를 상한으로 적용하고,
-마지막 검출 후 `obstacle_slowdown_clear_sec`(기본 1초)가 지나면 일반 속도로 복귀한다.
+차선 안 장애물 최초 검출 시 `obstacle_slowdown_speed_mps`(기본 1.2m/s)까지 목표를 점진적으로 낮추고,
+마지막 검출 후 `obstacle_slowdown_clear_sec`(기본 1초)가 지나면 회전 종료 확인 후 서서히 회복한다.
 `obstacle_slowdown_enabled: false`로 이 감속을 끌 수 있다.
 기본 OFF이며 `manual_test:=true`에서는 여전히 액추에이터 출력이 없다.
 [실제 적용 실행과 제한](AUTO_CONTROL_OBSTACLES.md)을 확인한다.

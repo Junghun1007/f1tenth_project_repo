@@ -180,6 +180,31 @@ corner_coast_probe_sec (기본 0.20)
 corner_confirm_frames / corner_release_frames (기본 2 / 3)
   역할: 한 프레임 곡률 돌출로 감속하거나 한 프레임 누락으로 가속하는 것을 막는다.
 
+corner_exit_curvature_per_m / corner_exit_angle_deg / corner_exit_confirm_sec (0.25 / 8.0 / 0.20)
+  역할: 근거리 곡률, 경로 방향, 이전 조향각이 모두 기준 안인 상태를 일정 시간 확인한 뒤
+        목표 속도 상승을 허용한다. 회전 중에는 코너 상한을 올리지 않는다.
+  장애물 감속 후 회복에도 적용되며 curvature_speed_control_enabled=false에서도 동작한다.
+  곡률/각도 문턱을 너무 낮추면 경로 노이즈나 잔여 조향 때문에 회복이 오래 보류될 수 있다.
+
+obstacle_planning_deceleration_mps2 / obstacle_planning_acceleration_mps2 (각각 기본 0.35)
+  역할: 장애물 검출 시 목표 감소율과 검출 해제 후 목표 회복률이다.
+  obstacle_slowdown_speed_mps는 최종 도달 속도이며 전환 중 계획 속도는 더 높을 수 있다.
+  감소율을 낮추면 더 긴 시간/거리 동안 감속한다. 1.4→1.0m/s는 기본 약 1.14초다.
+  거리 기반 긴급 충돌 제동 설정이 아니며 회피 검사 보호 정지와 신호등 정지는 별도다.
+
+obstacle_coast_probe_sec / obstacle_brake_deceleration_margin_mps2 (기본 0.20 / 0.10)
+  역할: 단계 제어에서 duty 감속 관찰 시간 및 부족 감속도 문턱이다.
+  관찰 후에도 감속이 부족하고 현재 계획 속도를 초과한 경우에만 추가 전류 제동한다.
+
+obstacle_brake_entry_margin_mps / obstacle_brake_exit_margin_mps (기본 0.10 / 0.03)
+  역할: 장애물의 현재 계획 속도 기준 제동 진입/해제 여유. 해제값은 진입값보다 작아야 한다.
+  구버전 signed PID 모드(longitudinal_staged_control_enabled=false)에는 적용하지 않는다.
+
+longitudinal_brake_release_response_sec (기본 0.15)
+  역할: 코너/장애물 단계 제동 해제 후 예상 속도 계산의 응답 여유다.
+  전류 하강 시간, 속도 필터 시간, 시작 duty 회복 시간도 더한다. 실측 지연이 아니다.
+  예상 속도가 계획 아래로 떨어지면 미리 제동을 해제한다. 긴급 코너는 이 예외보다 우선한다.
+
 longitudinal_recovery_duty_rise_per_sec (기본 0.15)
   역할: 제동 해제 후 duty 회복률. 높이면 빨리 회복하고 낮추면 부드럽게 회복한다.
 
