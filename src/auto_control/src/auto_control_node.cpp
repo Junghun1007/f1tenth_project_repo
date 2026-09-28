@@ -24,6 +24,7 @@
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/int32.hpp"
+#include "std_msgs/msg/u_int8.hpp"
 
 namespace auto_control
 {
@@ -75,6 +76,7 @@ public:
     command_brake_pub_ = create_publisher<std_msgs::msg::Float32>(command_brake_current_topic_, command_qos);
     target_speed_pub_ = create_publisher<std_msgs::msg::Float32>(target_speed_topic_, command_qos);
     current_speed_pub_ = create_publisher<std_msgs::msg::Float32>(current_speed_topic_, command_qos);
+    corner_state_pub_ = create_publisher<std_msgs::msg::UInt8>(corner_state_topic_, command_qos);
     curvature_pub_ = create_publisher<std_msgs::msg::Float32>(curvature_topic_, command_qos);
     steering_pub_ = create_publisher<std_msgs::msg::Float32>(steering_angle_topic_, command_qos);
     cross_track_pub_ = create_publisher<std_msgs::msg::Float32>(cross_track_error_topic_, command_qos);
@@ -324,6 +326,7 @@ private:
       "command_brake_current_topic", "/auto/current_brake_current");
     target_speed_topic_ = parameter<std::string>("target_speed_topic", "/auto/target_speed");
     current_speed_topic_ = parameter<std::string>("current_speed_topic", "/auto/current_speed");
+    corner_state_topic_ = parameter<std::string>("corner_state_topic", "/auto/corner_state");
     curvature_topic_ = parameter<std::string>("curvature_topic", "/auto/path_curvature");
     steering_angle_topic_ = parameter<std::string>("steering_angle_topic", "/auto/steering_angle_rad");
     cross_track_error_topic_ = parameter<std::string>("cross_track_error_topic", "/auto/cross_track_error_m");
@@ -1737,6 +1740,18 @@ private:
     publish_diagnostic(command_brake_pub_, brake_current);
     publish_diagnostic(target_speed_pub_, latest_target_speed_mps_);
     publish_diagnostic(current_speed_pub_, current_speed_mps_);
+    if (corner_state_pub_->get_subscription_count() > 0U ||
+      corner_state_pub_->get_intra_process_subscription_count() > 0U)
+    {
+      // Controller estimate: 0=straight, 1=approach, 2=turning, 3=stopped/inhibited.
+      // A speed profile alone may describe a future corner; turning uses the
+      // near-path/steering exit latch, including its confirmation interval.
+      std_msgs::msg::UInt8 state;
+      state.data = longitudinal_phase_ == "guard_stop" || latest_target_speed_mps_ <= 0.0 ||
+        std::abs(current_speed_mps_) < 0.05 ? 3U :
+        turn_recovery_hold_ ? 2U : corner_profile_active_ ? 1U : 0U;
+      corner_state_pub_->publish(state);
+    }
     publish_diagnostic(curvature_pub_, latest_curvature_per_m_);
     publish_diagnostic(steering_pub_, steering_angle_rad_);
     publish_diagnostic(cross_track_pub_, latest_cross_track_error_m_);
@@ -2140,6 +2155,7 @@ private:
   std::string dynamics_duty_topic_, dynamics_motor_current_topic_;
   std::string brake_current_topic_, servo_position_topic_, command_duty_topic_;
   std::string command_brake_current_topic_, target_speed_topic_, current_speed_topic_;
+  std::string corner_state_topic_;
   std::string curvature_topic_, steering_angle_topic_, cross_track_error_topic_;
   std::string heading_error_topic_, raw_steering_angle_topic_, command_servo_position_topic_;
   std::string input_to_control_decision_topic_;
@@ -2211,6 +2227,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_, brake_pub_, servo_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr command_duty_pub_, command_brake_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr target_speed_pub_, current_speed_pub_;
+  rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr corner_state_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr curvature_pub_, steering_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr cross_track_pub_, heading_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr raw_steering_pub_, command_servo_pub_;

@@ -98,6 +98,7 @@ auto_control:
     command_brake_current_topic: "/auto/current_brake_current"
     target_speed_topic: "/auto/target_speed"
     current_speed_topic: "/auto/current_speed"
+    corner_state_topic: "/auto/corner_state" # UInt8: 0=직선, 1=접근, 2=회전/탈출 확인 중, 3=정지/제어 중지
     curvature_topic: "/auto/path_curvature"
     steering_angle_topic: "/auto/steering_angle_rad"
     cross_track_error_topic: "/auto/cross_track_error_m"

@@ -72,6 +72,8 @@ OVERRIDES = {
     "bev_theme_enable": bool,
     "bev_theme_preview_fps": float,
     "bev_theme_speed_topic": str,
+    "preview_target_speed_topic": str,
+    "preview_corner_state_topic": str,
     "preview_result_only_enabled": bool,
     "preview_fps": float,
     "connection_enabled": bool,

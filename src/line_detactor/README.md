@@ -172,6 +172,19 @@ ros2 param set /line_detactor bev_theme_enable false
 
 `connection_enabled=true`가 필요하며, `preview_enabled=false`이면 화면은 열지 않는다.
 테마를 끄면 기존 `preview_result_only_enabled` 설정의 프리뷰로 복귀한다.
+테마를 끈 일반 프리뷰 하단에도 `Target: 목표 속도`, `Speed: 현재 속도`(m/s),
+`Corner: 상태`를 표시한다. 원본 영상 포함/결과만 표시 모드 모두 적용한다.
+목표 속도는 `preview_target_speed_topic`(기본 `/auto/target_speed`), 코너 상태는
+`preview_corner_state_topic`(기본 `/auto/corner_state`, UInt8)을 구독한다.
+`NO`(0)는 회전/접근 판정 없음, `APPROACH`(1)는 코너 속도 계획 활성,
+`TURNING`(2)은 근거리 경로·조향 기준 회전 및 탈출 확인 중,
+`STOP`(3)은 정지 목표·저속 정지 또는 제어 중지를 뜻한다.
+이는 제어기 추정이며 트랙의 실제 코너 경계를 검출한 결과는 아니다.
+특히 연속 코너에서는 `TURNING`이 유지될 수 있고, 코너 감속 OFF에서는 `APPROACH`가 나오지 않는다.
+각 데이터가 0.5초 이상 끊기거나 아직 수신되지 않았으면 해당 항목은 `--`로 표시한다.
+통합 launch는 외부 auto_control YAML의 목표 속도·코너 상태 토픽과도 자동으로 맞춘다.
+주행/튜닝 파라미터 추가 없이 새 노드를 빌드해 실행하면 표시된다. 이번 변경은 빌드·테스트 미진행.
+
 속도는 `bev_theme_speed_topic`에서 읽으며 0.5초 이상 새 값이 없으면 `--`로 표시한다.
 자동주행 launch는 이 토픽을 auto_control의 `current_speed_topic`과 맞춘다.
 신호등 FPS는 같은 프로세스의 traffic detector가 최근 약 1초 동안 실제 완료한 모델

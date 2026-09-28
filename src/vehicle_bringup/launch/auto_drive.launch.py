@@ -314,6 +314,12 @@ def _apply_parameter_file_defaults(
     detector["bev_theme_speed_topic"] = str(
         controller_defaults.get("current_speed_topic", "/auto/current_speed")
     )
+    detector["preview_target_speed_topic"] = str(
+        controller_defaults.get("target_speed_topic", "/auto/target_speed")
+    )
+    detector["preview_corner_state_topic"] = str(
+        controller_defaults.get("corner_state_topic", "/auto/corner_state")
+    )
     theme = LaunchConfiguration("bev_theme_enable").perform(context)
     if theme != _PARAMETER_FILE_DEFAULT:
         if theme.lower() not in ("true", "false"):
