@@ -1,0 +1,18 @@
+{
+  "local_core_tests": 11,
+  "camera_cpp_handler_test": 1,
+  "node_callback_tests": 4,
+  "tests_passed": 16,
+  "reference_replay_videos": 5,
+  "reference_replay_frames": 3282,
+  "max_probability_error": 0.0,
+  "all_event_frames_equal": true,
+  "training_feature_parity_max_abs_error": 2.384185791015625e-07,
+  "python_syntax_checked": true,
+  "package_xml_checked": true,
+  "preview_rendered_and_inspected": true,
+  "ros_transport_executed": false,
+  "full_camera_cpp_built": false,
+  "cuda_tensorrt_executed": false,
+  "scope": "Local ONNX replay, node callback doubles, C++ keyboard handler harness. Not a Jetson hardware test."
+}

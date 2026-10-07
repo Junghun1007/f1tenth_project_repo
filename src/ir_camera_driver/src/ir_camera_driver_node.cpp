@@ -35,6 +35,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/image.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 
 namespace ir_camera_driver
@@ -138,6 +139,8 @@ public:
       stereo_topic_, rclcpp::SensorDataQoS());
     bev_publisher_ = create_publisher<sensor_msgs::msg::Image>(
       bev_topic_, rclcpp::SensorDataQoS());
+    settings_publisher_ = create_publisher<std_msgs::msg::String>(
+      "/camera/ir_settings", rclcpp::QoS(1).reliable().transient_local());
     record_start_ = create_client<std_srvs::srv::Trigger>("/tunnel_recorder/start");
     record_stop_ = create_client<std_srvs::srv::Trigger>("/tunnel_recorder/stop");
     recording_subscription_ = create_subscription<std_msgs::msg::Bool>(
@@ -159,7 +162,9 @@ public:
         imu_thread_ = std::thread(&IrCameraDriverNode::imuLoop, this);
       }
       capture_thread_ = std::thread(&IrCameraDriverNode::captureLoop, this);
-      rgb_thread_ = std::thread(&IrCameraDriverNode::rgbLoop, this);
+      if (rgb_enabled_) {
+        rgb_thread_ = std::thread(&IrCameraDriverNode::rgbLoop, this);
+      }
       preview_thread_ = std::thread(&IrCameraDriverNode::previewLoop, this);
     } catch (...) {
       stop();
@@ -184,18 +189,20 @@ private:
     NONE = -1,
     FLOOD = 0,
     EXPOSURE = 1,
-    ISO = 2
+    ISO = 2,
+    PROJECTOR = 3
   };
 
   static constexpr int kControlPanelWidth = 700;
-  static constexpr int kControlPanelHeight = 420;
+  static constexpr int kControlPanelHeight = 475;
 
-  static const std::array<cv::Rect, 3> & inputRects()
+  static const std::array<cv::Rect, 4> & inputRects()
   {
-    static const std::array<cv::Rect, 3> rectangles{
+    static const std::array<cv::Rect, 4> rectangles{
       cv::Rect(235, 48, 220, 38),
       cv::Rect(235, 103, 220, 38),
-      cv::Rect(235, 158, 220, 38)};
+      cv::Rect(235, 158, 220, 38),
+      cv::Rect(235, 213, 220, 38)};
     return rectangles;
   }
 
@@ -277,6 +284,9 @@ private:
 
   void readParameters()
   {
+    rgb_enabled_ = declare_parameter<bool>("rgb_enabled", true);
+    bev_processing_enabled_ = declare_parameter<bool>("bev_processing_enabled", true);
+    use_sensor_timestamps_ = declare_parameter<bool>("use_sensor_timestamps", false);
     reprojection_enabled_ =
       declare_parameter<bool>("reprojection_enabled", true);
     selected_camera_name_ =
@@ -424,6 +434,7 @@ private:
 
     readMeasurementParameters();
     flood_input_ = formatFlood(ir_flood_light_intensity_);
+    projector_input_ = formatFlood(ir_dot_projector_intensity_);
     exposure_input_ = std::to_string(manual_exposure_us_);
     iso_input_ = std::to_string(manual_sensitivity_iso_);
     manual_exposure_active_.store(manual_exposure_enabled_, std::memory_order_relaxed);
@@ -436,6 +447,12 @@ private:
       "bev.startup_measurement_enabled", true);
     imu_stabilization_enabled_ = declare_parameter<bool>(
       "imu_stabilization_enabled", true);
+    if (!bev_processing_enabled_) {
+      startup_measurement_enabled_ = false;
+      imu_stabilization_enabled_ = false;
+      bev_preview_enabled_ = false;
+    }
+    if (!rgb_enabled_) {rgb_preview_enabled_ = false;}
     imu_calibration_timeout_sec_ = declare_parameter<double>(
       "imu_calibration_timeout_sec", 30.0);
     auto & measurement = startup_measurement_config_;
@@ -572,6 +589,7 @@ private:
 
   void measureBevMount()
   {
+    if (!bev_processing_enabled_) {return;}
     if (startup_measurement_enabled_) {
       RCLCPP_INFO(
         get_logger(),
@@ -635,19 +653,22 @@ private:
     pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
     pipeline_->setXLinkChunkSize(0);
 
-    auto rgb_camera = pipeline_->create<dai::node::Camera>()->build(
-      dai::CameraBoardSocket::CAM_A,
-      std::make_pair(kOv9282FullWidth, kOv9282FullHeight),
-      static_cast<float>(rgb_fps_));
-    auto * rgb_output = rgb_camera->requestOutput(
-      std::make_pair(
-        static_cast<std::uint32_t>(rgb_width_),
-        static_cast<std::uint32_t>(rgb_height_)),
-      dai::ImgFrame::Type::NV12,
-      dai::ImgResizeMode::CROP,
-      static_cast<float>(rgb_fps_),
-      rgb_undistort_enabled_);
-    rgb_control_queue_ = rgb_camera->inputControl.createInputQueue();
+    dai::Node::Output * rgb_output = nullptr;
+    if (rgb_enabled_) {
+      auto rgb_camera = pipeline_->create<dai::node::Camera>()->build(
+        dai::CameraBoardSocket::CAM_A,
+        std::make_pair(kOv9282FullWidth, kOv9282FullHeight),
+        static_cast<float>(rgb_fps_));
+      rgb_output = rgb_camera->requestOutput(
+        std::make_pair(
+          static_cast<std::uint32_t>(rgb_width_),
+          static_cast<std::uint32_t>(rgb_height_)),
+        dai::ImgFrame::Type::NV12,
+        dai::ImgResizeMode::CROP,
+        static_cast<float>(rgb_fps_),
+        rgb_undistort_enabled_);
+      rgb_control_queue_ = rgb_camera->inputControl.createInputQueue();
+    }
 
     dai::Node::Output * host_output = nullptr;
     if (reprojection_enabled_) {
@@ -763,7 +784,7 @@ private:
         imu_stabilizer_config_.maximum_correction_deg);
     }
     output_queue_ = host_output->createOutputQueue(1U, false);
-    rgb_queue_ = rgb_output->createOutputQueue(1U, false);
+    if (rgb_output) {rgb_queue_ = rgb_output->createOutputQueue(1U, false);}
     pipeline_->build();
     const auto xlink_bridge = host_output->getXLinkBridge();
     if (!xlink_bridge || !xlink_bridge->xLinkOut) {
@@ -772,12 +793,14 @@ private:
     }
     xlink_bridge->xLinkOut->input.setMaxSize(1);
     xlink_bridge->xLinkOut->input.setBlocking(false);
-    const auto rgb_bridge = rgb_output->getXLinkBridge();
-    if (!rgb_bridge || !rgb_bridge->xLinkOut) {
-      throw std::runtime_error("DepthAI did not create the RGB XLink bridge");
+    if (rgb_output) {
+      const auto rgb_bridge = rgb_output->getXLinkBridge();
+      if (!rgb_bridge || !rgb_bridge->xLinkOut) {
+        throw std::runtime_error("DepthAI did not create the RGB XLink bridge");
+      }
+      rgb_bridge->xLinkOut->input.setMaxSize(1);
+      rgb_bridge->xLinkOut->input.setBlocking(false);
     }
-    rgb_bridge->xLinkOut->input.setMaxSize(1);
-    rgb_bridge->xLinkOut->input.setBlocking(false);
 
     pipeline_->start();
     setIrState(ir_enabled_at_start_, true);
@@ -793,9 +816,9 @@ private:
       preview_max_fps_);
     RCLCPP_INFO(
       get_logger(),
-      "Clean outputs: RGB %s (%dx%d NV12 @ %.1f FPS), "
-      "stereo-IR BEV %s (mono8).",
-      rgb_topic_.c_str(), rgb_width_, rgb_height_, rgb_fps_, bev_topic_.c_str());
+      "Outputs: stereo=%s, RGB=%s, BEV=%s",
+      stereo_topic_.c_str(), rgb_enabled_ ? "enabled" : "disabled",
+      bev_processing_enabled_ ? "enabled" : "disabled");
     if (reprojection_enabled_) {
       RCLCPP_INFO(
         get_logger(),
@@ -808,10 +831,25 @@ private:
       "Keys: I=toggle configured IR emitters, B=save PNG, Q/Esc=quit.");
   }
 
-  void setIrState(const bool enabled, const bool fail_hard)
+  void publishSettings()
+  {
+    std_msgs::msg::String message;
+    std::ostringstream json;
+    const bool active = ir_active_.load(std::memory_order_relaxed);
+    json << "{\"revision\":" << ++settings_revision_
+         << ",\"exposure_us\":" << manual_exposure_us_
+         << ",\"iso\":" << manual_sensitivity_iso_
+         << ",\"projector\":" << (active ? ir_dot_projector_intensity_ : 0.0)
+         << ",\"flood\":" << (active ? ir_flood_light_intensity_ : 0.0)
+         << ",\"manual\":" << (manual_exposure_active_.load() ? "true" : "false") << "}";
+    message.data = json.str();
+    settings_publisher_->publish(message);
+  }
+
+  bool setIrState(const bool enabled, const bool fail_hard)
   {
     if (!device_) {
-      return;
+      return false;
     }
 
     const float dot_intensity = enabled ?
@@ -839,7 +877,11 @@ private:
         throw std::runtime_error(message);
       }
       RCLCPP_ERROR(get_logger(), "%s", message.c_str());
-      return;
+      panel_message_ = "IR setting failed; emitters disabled";
+      panel_message_is_error_ = true;
+      control_panel_dirty_.store(true);
+      publishSettings();
+      return false;
     }
 
     const bool actually_active = enabled && (dot_required || flood_required);
@@ -850,7 +892,9 @@ private:
       actually_active ? "ON" : "OFF",
       dot_intensity,
       flood_intensity);
+    publishSettings();
     control_panel_dirty_.store(true, std::memory_order_relaxed);
+    return true;
   }
 
   static std::string formatFlood(const double value)
@@ -901,6 +945,7 @@ private:
       queue->send(control);
     }
     manual_exposure_active_.store(true, std::memory_order_relaxed);
+    publishSettings();
   }
 
   void sendAutoExposure()
@@ -923,6 +968,7 @@ private:
       queue->send(control);
     }
     manual_exposure_active_.store(false, std::memory_order_relaxed);
+    publishSettings();
     panel_message_ = "Auto exposure enabled";
     panel_message_is_error_ = false;
     control_panel_dirty_.store(true, std::memory_order_relaxed);
@@ -934,9 +980,12 @@ private:
     try {
       const bool apply_flood = requested_field == EditableField::NONE ||
         requested_field == EditableField::FLOOD;
+      const bool apply_projector = requested_field == EditableField::NONE ||
+        requested_field == EditableField::PROJECTOR;
       const bool apply_exposure = requested_field == EditableField::NONE ||
         requested_field == EditableField::EXPOSURE || requested_field == EditableField::ISO;
       double flood = ir_flood_light_intensity_;
+      double projector = ir_dot_projector_intensity_;
       int exposure_us = manual_exposure_us_;
       int sensitivity_iso = manual_sensitivity_iso_;
 
@@ -947,6 +996,12 @@ private:
         }
       }
 
+      if (apply_projector) {
+        projector = parseDouble(projector_input_);
+        if (projector < 0.0 || projector > 1.0) {
+          throw std::invalid_argument("Projector must be in 0.0..1.0");
+        }
+      }
       if (apply_exposure) {
         exposure_us = parseInteger(exposure_input_);
         sensitivity_iso = parseInteger(iso_input_);
@@ -962,10 +1017,14 @@ private:
         }
       }
 
-      if (apply_flood) {
+      if (apply_flood || apply_projector) {
         ir_flood_light_intensity_ = flood;
+        ir_dot_projector_intensity_ = projector;
         flood_input_ = formatFlood(flood);
-        setIrState(true, false);
+        projector_input_ = formatFlood(projector);
+        if (!setIrState(true, false)) {
+          throw std::runtime_error("IR setting failed; emitters disabled");
+        }
       }
       if (apply_exposure) {
         if (tune_rgb_) {
@@ -1012,10 +1071,10 @@ private:
       cv::Point(20, 28), cv::FONT_HERSHEY_SIMPLEX, 0.62,
       cv::Scalar(235, 235, 235), 1, cv::LINE_AA);
 
-    const std::array<std::string, 3> labels{
-      "IR flood [0..1]", "Brightness: exp [us]", "ISO [100..1600]"};
-    const std::array<std::string, 3> values{
-      flood_input_, exposure_input_, iso_input_};
+    const std::array<std::string, 4> labels{
+      "IR flood [0..1]", "Brightness: exp [us]", "ISO [100..1600]", "IR projector [0..1]"};
+    const std::array<std::string, 4> values{
+      flood_input_, exposure_input_, iso_input_, projector_input_};
     for (std::size_t index = 0U; index < inputRects().size(); ++index) {
       const auto field = static_cast<EditableField>(index);
       const auto & rectangle = inputRects()[index];
@@ -1045,26 +1104,31 @@ private:
       (manual_exposure_active_.load(std::memory_order_relaxed) ? "manual" : "auto") <<
       " | preview <= " << std::fixed << std::setprecision(1) << preview_max_fps_ << " FPS";
     cv::putText(
-      panel, actual.str(), cv::Point(20, 226), cv::FONT_HERSHEY_SIMPLEX, 0.50,
+      panel, actual.str(), cv::Point(20, 281), cv::FONT_HERSHEY_SIMPLEX, 0.50,
       cv::Scalar(190, 205, 220), 1, cv::LINE_AA);
     cv::putText(
-      panel, panel_message_.empty() ? "Tab: next field | B: save original+BEV | Q/Esc: quit" :
-      panel_message_, cv::Point(20, 256), cv::FONT_HERSHEY_SIMPLEX, 0.48,
+      panel, panel_message_.empty() ? "Tab: next field | Enter: apply | Q/Esc: quit" :
+      panel_message_, cv::Point(20, 311), cv::FONT_HERSHEY_SIMPLEX, 0.48,
       panel_message_is_error_ ? cv::Scalar(80, 100, 255) : cv::Scalar(150, 225, 160),
       1, cv::LINE_AA);
-    drawButton(panel, cv::Rect(20, 280, 300, 38),
-      tune_rgb_ ? "TARGET: RGB (switch)" : "TARGET: IR/BEV (switch)",
-      cv::Scalar(210, 190, 130));
-    drawButton(panel, cv::Rect(20, 335, 200, 38), "START RECORDING",
-      cv::Scalar(85, 205, 120));
-    drawButton(panel, cv::Rect(240, 335, 200, 38), "STOP RECORDING",
-      cv::Scalar(90, 100, 235));
-    cv::putText(panel, recording_.load() ? "RECORDING" : "IDLE",
-      cv::Point(465, 361), cv::FONT_HERSHEY_SIMPLEX, 0.7,
-      recording_.load() ? cv::Scalar(80, 100, 255) : cv::Scalar(180, 180, 180), 2);
-    cv::putText(panel, "Records clean RGB + stereo IR + stereo IR BEV.",
-      cv::Point(20, 400), cv::FONT_HERSHEY_SIMPLEX, 0.48,
-      cv::Scalar(200, 200, 200), 1);
+    if (rgb_enabled_ && bev_processing_enabled_) {
+      drawButton(panel, cv::Rect(20, 335, 300, 38),
+        tune_rgb_ ? "TARGET: RGB (switch)" : "TARGET: IR/BEV (switch)",
+        cv::Scalar(210, 190, 130));
+      drawButton(panel, cv::Rect(20, 390, 200, 38), "START RECORDING",
+        cv::Scalar(85, 205, 120));
+      drawButton(panel, cv::Rect(240, 390, 200, 38), "STOP RECORDING",
+        cv::Scalar(90, 100, 235));
+      cv::putText(panel, recording_.load() ? "RECORDING" : "IDLE",
+        cv::Point(465, 416), cv::FONT_HERSHEY_SIMPLEX, 0.7,
+        recording_.load() ? cv::Scalar(80, 100, 255) : cv::Scalar(180, 180, 180), 2);
+      cv::putText(panel, "Records clean RGB + stereo IR + stereo IR BEV.",
+        cv::Point(20, 455), cv::FONT_HERSHEY_SIMPLEX, 0.48,
+        cv::Scalar(200, 200, 200), 1);
+    } else {
+      cv::putText(panel, "Stereo TCN test | Enter: apply | Tab: next | I: IR on/off",
+        cv::Point(20, 365), cv::FONT_HERSHEY_SIMPLEX, 0.52, cv::Scalar(200, 200, 200), 1);
+    }
     cv::imshow(controls_window_name_, panel);
     control_panel_dirty_.store(false, std::memory_order_relaxed);
   }
@@ -1089,8 +1153,9 @@ private:
   void onControlMouse(const int x, const int y)
   {
     const cv::Point point(x, y);
-    if (cv::Rect(20, 335, 200, 38).contains(point) ||
-      cv::Rect(240, 335, 200, 38).contains(point))
+    if (rgb_enabled_ && bev_processing_enabled_ &&
+      (cv::Rect(20, 390, 200, 38).contains(point) ||
+      cv::Rect(240, 390, 200, 38).contains(point)))
     {
       const auto client = x < 240 ? record_start_ : record_stop_;
       if (!client->service_is_ready()) {
@@ -1110,7 +1175,7 @@ private:
       control_panel_dirty_.store(true);
       return;
     }
-    if (cv::Rect(20, 280, 300, 38).contains(point)) {
+    if (rgb_enabled_ && bev_processing_enabled_ && cv::Rect(20, 335, 300, 38).contains(point)) {
       tune_rgb_ = !tune_rgb_;
       exposure_input_ = std::to_string(tune_rgb_ ? rgb_tuning_exposure_ : manual_exposure_us_);
       iso_input_ = std::to_string(tune_rgb_ ? rgb_tuning_iso_ : manual_sensitivity_iso_);
@@ -1146,6 +1211,8 @@ private:
         return &exposure_input_;
       case EditableField::ISO:
         return &iso_input_;
+      case EditableField::PROJECTOR:
+        return &projector_input_;
       case EditableField::NONE:
       default:
         return nullptr;
@@ -1156,7 +1223,7 @@ private:
   {
     if (key == 9) {
       const int next = editable_field_ == EditableField::NONE ? 0 :
-        (static_cast<int>(editable_field_) + 1) % 3;
+        (static_cast<int>(editable_field_) + 1) % 4;
       selectField(static_cast<EditableField>(next));
       return true;
     }
@@ -1182,8 +1249,9 @@ private:
       return true;
     }
     const bool digit = key >= '0' && key <= '9';
-    const bool decimal = key == '.' && editable_field_ == EditableField::FLOOD &&
-      input->find('.') == std::string::npos;
+    const bool decimal = key == '.' &&
+      (editable_field_ == EditableField::FLOOD || editable_field_ == EditableField::PROJECTOR) &&
+      (replace_field_on_next_key_ || input->find('.') == std::string::npos);
     if (digit || decimal) {
       if (replace_field_on_next_key_) {
         input->clear();
@@ -1543,13 +1611,20 @@ private:
   void publishMono8(
     const cv::Mat & image,
     const rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr & publisher,
-    const std::string & frame_id)
+    const std::string & frame_id,
+    const std::shared_ptr<dai::ImgFrame> & source_frame = nullptr)
   {
     if (image.empty() || image.type() != CV_8UC1) {
       return;
     }
     auto message = std::make_unique<sensor_msgs::msg::Image>();
     message->header.stamp = get_clock()->now();
+    if (use_sensor_timestamps_ && source_frame) {
+      const auto age = std::chrono::steady_clock::now() -
+        source_frame->getTimestamp(dai::CameraExposureOffset::MIDDLE);
+      message->header.stamp = get_clock()->now() - rclcpp::Duration::from_nanoseconds(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(age).count());
+    }
     message->header.frame_id = frame_id;
     message->height = static_cast<std::uint32_t>(image.rows);
     message->width = static_cast<std::uint32_t>(image.cols);
@@ -1661,7 +1736,8 @@ private:
         bool frame_updated = false;
         const auto now = std::chrono::steady_clock::now();
         if (now >= next_preview_at) {
-          next_preview_at = now + preview_period;
+          next_preview_at += preview_period;
+          if (next_preview_at < now) {next_preview_at = now + preview_period;}
           if (reprojection_enabled_) {
             auto snapshot = std::atomic_load_explicit(
               &latest_stereo_, std::memory_order_acquire);
@@ -1700,12 +1776,15 @@ private:
         }
 
         if (frame_updated && !current_frame.empty()) {
-          publishMono8(current_frame, stereo_publisher_, stereo_frame_id_);
+          const auto source_frame = displayed_stereo ? displayed_stereo->left : displayed_single->frame;
+          publishMono8(current_frame, stereo_publisher_, stereo_frame_id_, source_frame);
           const auto bev_started_at = std::chrono::steady_clock::now();
           current_bev.release();
           try {
-            current_bev = displayed_stereo ? projectStereoBev(*displayed_stereo) :
-              projectSingleBev(*displayed_single->frame);
+            if (bev_processing_enabled_) {
+              current_bev = displayed_stereo ? projectStereoBev(*displayed_stereo) :
+                projectSingleBev(*displayed_single->frame);
+            }
           } catch (const std::exception & exception) {
             preview_errors_total_.fetch_add(1U, std::memory_order_relaxed);
             RCLCPP_ERROR_THROTTLE(
@@ -1727,7 +1806,7 @@ private:
               cv::imshow(bev_preview_window_name_, waiting);
             }
           } else {
-            publishMono8(current_bev, bev_publisher_, bev_frame_id_);
+            publishMono8(current_bev, bev_publisher_, bev_frame_id_, source_frame);
             if (bev_preview_enabled_) {
               cv::imshow(bev_preview_window_name_, current_bev);
             }
@@ -1952,6 +2031,9 @@ private:
   std::unique_ptr<IrBevProjector> right_bev_projector_;
 
   bool reprojection_enabled_{true};
+  bool rgb_enabled_{true};
+  bool bev_processing_enabled_{true};
+  bool use_sensor_timestamps_{false};
   std::string selected_camera_name_{"LEFT"};
   SelectedCamera selected_camera_{SelectedCamera::LEFT};
   double virtual_camera_position_ratio_{0.5};
@@ -2000,12 +2082,15 @@ private:
   EditableField editable_field_{EditableField::NONE};
   bool replace_field_on_next_key_{false};
   std::string flood_input_{"0.00"};
+  std::string projector_input_{"1.00"};
   std::string exposure_input_{"5000"};
   std::string iso_input_{"800"};
   std::string panel_message_;
   bool panel_message_is_error_{false};
 
   std::shared_ptr<dai::Device> device_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr settings_publisher_;
+  std::uint64_t settings_revision_{0U};
   std::unique_ptr<dai::Pipeline> pipeline_;
   std::shared_ptr<dai::MessageQueue> output_queue_;
   std::shared_ptr<dai::MessageQueue> rgb_queue_;

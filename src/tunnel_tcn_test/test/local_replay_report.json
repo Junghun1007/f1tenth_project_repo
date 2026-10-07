@@ -1,0 +1,340 @@
+{
+  "backend": "onnx",
+  "passed": true,
+  "items": [
+    {
+      "id": "20260923_120556__stereo_ir",
+      "split": "validation",
+      "frames": 763,
+      "max_probability_error": 0.0,
+      "event_frames_equal": true,
+      "actual_events": [
+        [
+          119,
+          "entry"
+        ],
+        [
+          162,
+          "exit"
+        ],
+        [
+          252,
+          "entry"
+        ],
+        [
+          293,
+          "exit"
+        ],
+        [
+          385,
+          "entry"
+        ],
+        [
+          423,
+          "exit"
+        ],
+        [
+          511,
+          "entry"
+        ],
+        [
+          558,
+          "exit"
+        ]
+      ],
+      "expected_events": [
+        [
+          119,
+          "entry"
+        ],
+        [
+          162,
+          "exit"
+        ],
+        [
+          252,
+          "entry"
+        ],
+        [
+          293,
+          "exit"
+        ],
+        [
+          385,
+          "entry"
+        ],
+        [
+          423,
+          "exit"
+        ],
+        [
+          511,
+          "entry"
+        ],
+        [
+          558,
+          "exit"
+        ]
+      ],
+      "inference_plus_softmax_p50_ms": 0.06037500000011242
+    },
+    {
+      "id": "tunnel_20261006_153703_338564+0900__stereo_ir",
+      "split": "validation",
+      "frames": 345,
+      "max_probability_error": 0.0,
+      "event_frames_equal": true,
+      "actual_events": [
+        [
+          19,
+          "entry"
+        ]
+      ],
+      "expected_events": [
+        [
+          19,
+          "entry"
+        ]
+      ],
+      "inference_plus_softmax_p50_ms": 0.06012500000007748
+    },
+    {
+      "id": "tunnel_20261006_153819_987523+0900__stereo_ir",
+      "split": "validation",
+      "frames": 254,
+      "max_probability_error": 0.0,
+      "event_frames_equal": true,
+      "actual_events": [
+        [
+          31,
+          "exit"
+        ]
+      ],
+      "expected_events": [
+        [
+          31,
+          "exit"
+        ]
+      ],
+      "inference_plus_softmax_p50_ms": 0.05970799999999166
+    },
+    {
+      "id": "tunnel_20261006_154131_497368+0900__stereo_ir",
+      "split": "test",
+      "frames": 695,
+      "max_probability_error": 0.0,
+      "event_frames_equal": true,
+      "actual_events": [
+        [
+          22,
+          "entry"
+        ],
+        [
+          50,
+          "exit"
+        ],
+        [
+          126,
+          "entry"
+        ],
+        [
+          160,
+          "exit"
+        ],
+        [
+          220,
+          "entry"
+        ],
+        [
+          250,
+          "exit"
+        ],
+        [
+          355,
+          "entry"
+        ],
+        [
+          390,
+          "exit"
+        ],
+        [
+          453,
+          "entry"
+        ],
+        [
+          494,
+          "exit"
+        ],
+        [
+          558,
+          "entry"
+        ],
+        [
+          590,
+          "exit"
+        ],
+        [
+          655,
+          "entry"
+        ],
+        [
+          684,
+          "exit"
+        ]
+      ],
+      "expected_events": [
+        [
+          22,
+          "entry"
+        ],
+        [
+          50,
+          "exit"
+        ],
+        [
+          126,
+          "entry"
+        ],
+        [
+          160,
+          "exit"
+        ],
+        [
+          220,
+          "entry"
+        ],
+        [
+          250,
+          "exit"
+        ],
+        [
+          355,
+          "entry"
+        ],
+        [
+          390,
+          "exit"
+        ],
+        [
+          453,
+          "entry"
+        ],
+        [
+          494,
+          "exit"
+        ],
+        [
+          558,
+          "entry"
+        ],
+        [
+          590,
+          "exit"
+        ],
+        [
+          655,
+          "entry"
+        ],
+        [
+          684,
+          "exit"
+        ]
+      ],
+      "inference_plus_softmax_p50_ms": 0.06008299999993305
+    },
+    {
+      "id": "tunnel_20261007_105642_269732+0900__stereo_ir",
+      "split": "test",
+      "frames": 1225,
+      "max_probability_error": 0.0,
+      "event_frames_equal": true,
+      "actual_events": [
+        [
+          162,
+          "entry"
+        ],
+        [
+          239,
+          "exit"
+        ],
+        [
+          398,
+          "entry"
+        ],
+        [
+          506,
+          "exit"
+        ],
+        [
+          666,
+          "entry"
+        ],
+        [
+          754,
+          "exit"
+        ],
+        [
+          924,
+          "entry"
+        ],
+        [
+          964,
+          "exit"
+        ],
+        [
+          1130,
+          "entry"
+        ],
+        [
+          1197,
+          "exit"
+        ]
+      ],
+      "expected_events": [
+        [
+          162,
+          "entry"
+        ],
+        [
+          239,
+          "exit"
+        ],
+        [
+          398,
+          "entry"
+        ],
+        [
+          506,
+          "exit"
+        ],
+        [
+          666,
+          "entry"
+        ],
+        [
+          754,
+          "exit"
+        ],
+        [
+          924,
+          "entry"
+        ],
+        [
+          964,
+          "exit"
+        ],
+        [
+          1130,
+          "entry"
+        ],
+        [
+          1197,
+          "exit"
+        ]
+      ],
+      "inference_plus_softmax_p50_ms": 0.05983299999989811
+    }
+  ],
+  "scope": "Frozen static features -> timestamp context -> model -> decoder, including startup padding. Live runtime has a separate 2.5 s warmup.",
+  "jetson_verified": false
+}
