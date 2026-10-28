@@ -36,9 +36,11 @@ class NodeTests(unittest.TestCase):
         n.fps, n.max_age = 30., .25
         n.stream, n.decoder = FeatureStream(), EventDecoder()
         n.origin_ns = n.last_stamp = n.last_received = None
-        n.settings_revision = n.last_event = None
+        n.next_inference = 0.
+        n.model_id = "20261023_140042_191723_aug"
+        n.last_event = None
         n.times, n.dropped = deque(maxlen=60), 0
-        n.probabilities, n.status = np.zeros(3), 'WAITING'
+        n.probabilities, n.status = np.zeros(2), 'WAITING'
         n.get_logger = lambda: SimpleNamespace(info=lambda _: None, warning=lambda _: None)
         self.clock_ns = 0
         n.get_clock = lambda: SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=self.clock_ns))
@@ -47,7 +49,7 @@ class NodeTests(unittest.TestCase):
         self.calls = []
         def infer(x):
             self.calls.append(x)
-            return np.array([[0., 10., 0.]], np.float32)
+            return np.array([[10., -10.]], np.float32)
         n.backend = SimpleNamespace(infer=infer)
 
     def frame(self, frame, age=0.):
@@ -64,20 +66,16 @@ class NodeTests(unittest.TestCase):
             self.frame(frame)
         events = [(i, r['event']) for i, r in enumerate(self.outputs) if r['event']]
         self.assertEqual(len(events), 1)
-        self.assertEqual(events[0][0], 75)
+        self.assertEqual(events[0][0], 25)
         self.assertEqual(events[0][1]['type'], 'entry')
         self.assertEqual(self.node.decoder.state, 'inside')
-        self.assertEqual(self.calls[-1].shape, (1, 21, 31))
+        self.assertEqual(self.calls[-1].shape, (1, 17, 32))
 
-    def test_control_change_clears_history_but_preserves_state(self):
+    def test_history_reset_preserves_state_unless_new_drive(self):
         n = self.node
         for frame in range(80):
             self.frame(frame)
-        def settings(revision, iso):
-            n.on_settings(SimpleNamespace(data=json.dumps(dict(revision=revision, exposure_us=30000,
-                iso=iso, projector=.5, flood=0., manual=True))))
-        settings(1, 800)
-        settings(2, 400)
+        n.clear_history()
         self.assertEqual(n.decoder.state, 'inside')
         self.assertIsNone(n.stream.started)
         self.frame(80)
@@ -94,7 +92,7 @@ class NodeTests(unittest.TestCase):
         self.frame(1, age=.3)
         self.assertEqual(len(self.calls), 1)
         self.assertIn('STALE', self.node.status)
-        self.frame(2)
+        self.frame(3)
         self.assertEqual(len(self.calls), 2)
         self.assertFalse(self.node.stream.ready)
 

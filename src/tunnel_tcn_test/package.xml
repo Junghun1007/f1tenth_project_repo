@@ -2,7 +2,7 @@
 <package format="3">
   <name>tunnel_tcn_test</name>
   <version>0.1.0</version>
-  <description>Partial INT8 stereo IR tunnel-event preview and camera controls.</description>
+  <description>RGB point-event FP32 tunnel-event preview.</description>
   <maintainer email="ohslo@example.com">ohslo</maintainer>
   <license>Apache-2.0</license>
   <buildtool_depend>ament_python</buildtool_depend>

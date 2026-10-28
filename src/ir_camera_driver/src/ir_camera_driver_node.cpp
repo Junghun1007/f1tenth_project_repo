@@ -1577,6 +1577,12 @@ private:
         }
         auto message = std::make_unique<sensor_msgs::msg::Image>();
         message->header.stamp = get_clock()->now();
+        if (use_sensor_timestamps_) {
+          const auto age = std::chrono::steady_clock::now() -
+            frame->getTimestamp(dai::CameraExposureOffset::MIDDLE);
+          message->header.stamp = get_clock()->now() - rclcpp::Duration::from_nanoseconds(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(age).count());
+        }
         message->header.frame_id = rgb_frame_id_;
         message->height = static_cast<std::uint32_t>(rgb_height_);
         message->width = static_cast<std::uint32_t>(rgb_width_);

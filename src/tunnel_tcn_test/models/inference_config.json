@@ -1,67 +1,152 @@
 {
-  "architecture": "BrightnessTCN31_2s_v1",
-  "width": 640,
-  "height": 400,
-  "grayscale": "OpenCV BGR2GRAY",
-  "resize": "INTER_AREA",
+  "model_id": "20261023_140042_191723_aug",
+  "model_format": "rgb_point_events_v1",
+  "input_shape": [
+    1,
+    17,
+    32
+  ],
+  "output_shape": [
+    1,
+    2
+  ],
   "feature_names": [
     "mean",
     "std",
+    "center_mean",
+    "surround_mean",
     "p10",
-    "p50",
     "p90",
-    "top_left",
-    "top",
-    "top_right",
-    "left",
-    "center",
-    "right",
-    "bottom_left",
-    "bottom",
-    "bottom_right",
-    "surround",
-    "contrast",
-    "dark32_fraction",
-    "dark64_fraction",
-    "bright192_fraction",
-    "bright224_fraction",
-    "radial_0_mean",
-    "radial_1_mean",
-    "radial_2_mean",
-    "radial_3_mean",
-    "radial_4_mean",
-    "radial_5_mean",
-    "radial_6_mean",
-    "radial_7_mean",
-    "mean_smooth_0p5s",
-    "mean_rate_per_s",
-    "smooth_rate_per_s"
+    "surround_center_contrast",
+    "center_relative_dark_fraction",
+    "spatial_gap_over_std",
+    "mean_log_ratio_0p5s",
+    "center_log_ratio_0p5s",
+    "contrast_rate_0p5s",
+    "dark_area_rate_0p5s",
+    "mean_prior_robust_z",
+    "center_prior_robust_z",
+    "dark_area_prior_delta"
   ],
-  "feature_normalization": "brightness / 255; fractions 0..1; contrast -1..1; rates in normalized brightness/second",
-  "context_frames": 21,
-  "context_seconds": 2.0,
-  "temporal_dilations": [
-    1,
-    3,
-    6
+  "history_mask_channel": 16,
+  "mean": [
+    0.3653945326805115,
+    0.24624833464622498,
+    0.3511771261692047,
+    0.3791031241416931,
+    0.10345609486103058,
+    0.7159632444381714,
+    0.029797669500112534,
+    0.21217866241931915,
+    0.08413201570510864,
+    0.005430053453892469,
+    -0.0016210967442020774,
+    0.005437432788312435,
+    0.007085420191287994,
+    -0.09940174967050552,
+    0.34744882583618164,
+    0.020571785047650337
   ],
-  "receptive_field_steps": 21,
-  "smoothing_seconds": 0.5,
-  "smoothing_frames": "round(0.5 * native fps), including current; available frames at startup",
-  "rate_definition": "native successive-frame difference * fps; first frame zero",
-  "effective_history_note": "2 second TCN context plus up to 0.5 seconds preceding temporal-feature history; causal",
-  "causal": true,
-  "threshold": 0.8,
-  "cooldown_seconds": 0.1,
-  "class_order": [
-    "none",
+  "std": [
+    0.21191595494747162,
+    0.07034216821193695,
+    0.23407694697380066,
+    0.22343167662620544,
+    0.15419110655784607,
+    0.28238409757614136,
+    0.29602956771850586,
+    0.2479054033756256,
+    0.6408759355545044,
+    0.9018810391426086,
+    1.054185152053833,
+    0.6742693781852722,
+    0.5281320810317993,
+    3.4495837688446045,
+    3.4029436111450195,
+    0.2372257113456726
+  ],
+  "threshold": 0.5,
+  "cooldown_seconds": 1.0,
+  "initial_state": "unknown",
+  "enforce_alternation": true,
+  "score_labels": [
     "entry",
     "exit"
   ],
-  "event_order_constraint": true,
-  "training_snapshot": "training_v2/runs/brightness31_2s_expanded_20261007_alternating/snapshot.json",
-  "decoder": "event_decoder.AlternatingEventDecoder",
-  "initial_state": "unknown",
-  "reset_policy": "Explicit reset on a new independent stream or confirmed cut; no timeout reset.",
-  "event_rule": "entry -> wait for exit; exit -> wait for entry; none/low confidence preserves state"
+  "score_transform": "independent_sigmoid",
+  "training_config": {
+    "schema_version": 1,
+    "feature_version": 1,
+    "complete_recordings": [
+      "20260923_120556",
+      "20260923_121152",
+      "20261001_164525",
+      "20261001_164810",
+      "20261001_165051",
+      "20261001_165328",
+      "20261001_165750"
+    ],
+    "width": 640,
+    "height": 400,
+    "hz": 10,
+    "window": 32,
+    "negative_guard_s": 0.5,
+    "baseline_s": 1.0,
+    "change_s": 0.5,
+    "seed": 20261023,
+    "hidden": 16,
+    "dilations": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "kernel_size": 3,
+    "dropout": 0.1,
+    "epochs": 80,
+    "patience": 12,
+    "batch_size": 64,
+    "learning_rate": 0.001,
+    "weight_decay": 0.001,
+    "threshold": 0.5,
+    "refractory_s": 1.0,
+    "event_tolerance_s": 0.3,
+    "augmentation": {
+      "enabled": true,
+      "variants": 2,
+      "gain": [
+        0.6,
+        1.4
+      ],
+      "offset": [
+        -15,
+        15
+      ],
+      "gamma": [
+        0.8,
+        1.2
+      ],
+      "noise_std": 0.0,
+      "max_mean_introduced_clip_fraction": 0.25
+    },
+    "stress_scenarios": {
+      "dark": {
+        "gain": 0.7,
+        "offset": 0,
+        "gamma": 1.0
+      },
+      "bright": {
+        "gain": 1.3,
+        "offset": 0,
+        "gamma": 1.0
+      },
+      "gamma": {
+        "gain": 1.0,
+        "offset": 0,
+        "gamma": 1.2
+      }
+    },
+    "external_test_item": "20260923_115757__rgb",
+    "validation_recording": "20260923_120556"
+  }
 }

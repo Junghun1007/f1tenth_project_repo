@@ -1,340 +1,281 @@
 {
   "backend": "onnx",
+  "model_id": "20261023_140042_191723_aug",
   "passed": true,
   "items": [
     {
-      "id": "20260923_120556__stereo_ir",
-      "split": "validation",
-      "frames": 763,
-      "max_probability_error": 0.0,
-      "event_frames_equal": true,
+      "id": "20260923_115757__rgb",
+      "source_frames": 762,
+      "samples": 762,
+      "max_score_error": 4.470348358154297e-07,
+      "event_times_equal": true,
       "actual_events": [
         [
-          119,
-          "entry"
+          "entry",
+          2.7
         ],
         [
-          162,
-          "exit"
+          "exit",
+          9.3
         ],
         [
-          252,
-          "entry"
+          "entry",
+          19.7
         ],
         [
-          293,
-          "exit"
+          "exit",
+          30.6
         ],
         [
-          385,
-          "entry"
+          "entry",
+          41.0
         ],
         [
-          423,
-          "exit"
-        ],
-        [
-          511,
-          "entry"
-        ],
-        [
-          558,
-          "exit"
+          "exit",
+          60.9
         ]
       ],
       "expected_events": [
         [
-          119,
-          "entry"
+          "entry",
+          2.7
         ],
         [
-          162,
-          "exit"
+          "exit",
+          9.3
         ],
         [
-          252,
-          "entry"
+          "entry",
+          19.7
         ],
         [
-          293,
-          "exit"
+          "exit",
+          30.6
         ],
         [
-          385,
-          "entry"
+          "entry",
+          41.0
         ],
         [
-          423,
-          "exit"
-        ],
-        [
-          511,
-          "entry"
-        ],
-        [
-          558,
-          "exit"
+          "exit",
+          60.9
         ]
       ],
-      "inference_plus_softmax_p50_ms": 0.06037500000011242
+      "inference_plus_sigmoid_p50_ms": 0.028082984499633312
     },
     {
-      "id": "tunnel_20261006_153703_338564+0900__stereo_ir",
-      "split": "validation",
-      "frames": 345,
-      "max_probability_error": 0.0,
-      "event_frames_equal": true,
+      "id": "20260923_120556__rgb",
+      "source_frames": 652,
+      "samples": 652,
+      "max_score_error": 1.043081283569336e-06,
+      "event_times_equal": true,
       "actual_events": [
         [
-          19,
-          "entry"
+          "entry",
+          10.3
+        ],
+        [
+          "exit",
+          13.9
+        ],
+        [
+          "entry",
+          21.0
+        ],
+        [
+          "exit",
+          25.1
+        ],
+        [
+          "entry",
+          33.5
+        ],
+        [
+          "exit",
+          36.6
+        ],
+        [
+          "entry",
+          44.1
+        ],
+        [
+          "exit",
+          48.4
+        ],
+        [
+          "entry",
+          58.3
+        ],
+        [
+          "exit",
+          61.5
         ]
       ],
       "expected_events": [
         [
-          19,
-          "entry"
+          "entry",
+          10.3
+        ],
+        [
+          "exit",
+          13.9
+        ],
+        [
+          "entry",
+          21.0
+        ],
+        [
+          "exit",
+          25.1
+        ],
+        [
+          "entry",
+          33.5
+        ],
+        [
+          "exit",
+          36.6
+        ],
+        [
+          "entry",
+          44.1
+        ],
+        [
+          "exit",
+          48.4
+        ],
+        [
+          "entry",
+          58.3
+        ],
+        [
+          "exit",
+          61.5
         ]
       ],
-      "inference_plus_softmax_p50_ms": 0.06012500000007748
+      "inference_plus_sigmoid_p50_ms": 0.02858349762391299
     },
     {
-      "id": "tunnel_20261006_153819_987523+0900__stereo_ir",
-      "split": "validation",
-      "frames": 254,
-      "max_probability_error": 0.0,
-      "event_frames_equal": true,
+      "id": "20260923_113130__rgb",
+      "source_frames": 375,
+      "samples": 375,
+      "max_score_error": 3.8743019104003906e-07,
+      "event_times_equal": true,
       "actual_events": [
         [
-          31,
-          "exit"
+          "entry",
+          0.0
+        ],
+        [
+          "exit",
+          5.5
+        ],
+        [
+          "entry",
+          15.0
+        ],
+        [
+          "exit",
+          20.3
+        ],
+        [
+          "entry",
+          28.2
+        ],
+        [
+          "exit",
+          32.7
         ]
       ],
       "expected_events": [
         [
-          31,
-          "exit"
+          "entry",
+          0.0
+        ],
+        [
+          "exit",
+          5.5
+        ],
+        [
+          "entry",
+          15.0
+        ],
+        [
+          "exit",
+          20.3
+        ],
+        [
+          "entry",
+          28.2
+        ],
+        [
+          "exit",
+          32.7
         ]
       ],
-      "inference_plus_softmax_p50_ms": 0.05970799999999166
+      "inference_plus_sigmoid_p50_ms": 0.028291018679738045
     },
     {
-      "id": "tunnel_20261006_154131_497368+0900__stereo_ir",
-      "split": "test",
-      "frames": 695,
-      "max_probability_error": 0.0,
-      "event_frames_equal": true,
+      "id": "20260923_120108__rgb",
+      "source_frames": 572,
+      "samples": 572,
+      "max_score_error": 4.76837158203125e-07,
+      "event_times_equal": true,
       "actual_events": [
         [
-          22,
-          "entry"
+          "entry",
+          2.1
         ],
         [
-          50,
-          "exit"
+          "exit",
+          17.9
         ],
         [
-          126,
-          "entry"
+          "entry",
+          28.2
         ],
         [
-          160,
-          "exit"
+          "exit",
+          40.3
         ],
         [
-          220,
-          "entry"
+          "entry",
+          49.1
         ],
         [
-          250,
-          "exit"
-        ],
-        [
-          355,
-          "entry"
-        ],
-        [
-          390,
-          "exit"
-        ],
-        [
-          453,
-          "entry"
-        ],
-        [
-          494,
-          "exit"
-        ],
-        [
-          558,
-          "entry"
-        ],
-        [
-          590,
-          "exit"
-        ],
-        [
-          655,
-          "entry"
-        ],
-        [
-          684,
-          "exit"
+          "exit",
+          54.6
         ]
       ],
       "expected_events": [
         [
-          22,
-          "entry"
+          "entry",
+          2.1
         ],
         [
-          50,
-          "exit"
+          "exit",
+          17.9
         ],
         [
-          126,
-          "entry"
+          "entry",
+          28.2
         ],
         [
-          160,
-          "exit"
+          "exit",
+          40.3
         ],
         [
-          220,
-          "entry"
+          "entry",
+          49.1
         ],
         [
-          250,
-          "exit"
-        ],
-        [
-          355,
-          "entry"
-        ],
-        [
-          390,
-          "exit"
-        ],
-        [
-          453,
-          "entry"
-        ],
-        [
-          494,
-          "exit"
-        ],
-        [
-          558,
-          "entry"
-        ],
-        [
-          590,
-          "exit"
-        ],
-        [
-          655,
-          "entry"
-        ],
-        [
-          684,
-          "exit"
+          "exit",
+          54.6
         ]
       ],
-      "inference_plus_softmax_p50_ms": 0.06008299999993305
-    },
-    {
-      "id": "tunnel_20261007_105642_269732+0900__stereo_ir",
-      "split": "test",
-      "frames": 1225,
-      "max_probability_error": 0.0,
-      "event_frames_equal": true,
-      "actual_events": [
-        [
-          162,
-          "entry"
-        ],
-        [
-          239,
-          "exit"
-        ],
-        [
-          398,
-          "entry"
-        ],
-        [
-          506,
-          "exit"
-        ],
-        [
-          666,
-          "entry"
-        ],
-        [
-          754,
-          "exit"
-        ],
-        [
-          924,
-          "entry"
-        ],
-        [
-          964,
-          "exit"
-        ],
-        [
-          1130,
-          "entry"
-        ],
-        [
-          1197,
-          "exit"
-        ]
-      ],
-      "expected_events": [
-        [
-          162,
-          "entry"
-        ],
-        [
-          239,
-          "exit"
-        ],
-        [
-          398,
-          "entry"
-        ],
-        [
-          506,
-          "exit"
-        ],
-        [
-          666,
-          "entry"
-        ],
-        [
-          754,
-          "exit"
-        ],
-        [
-          924,
-          "entry"
-        ],
-        [
-          964,
-          "exit"
-        ],
-        [
-          1130,
-          "entry"
-        ],
-        [
-          1197,
-          "exit"
-        ]
-      ],
-      "inference_plus_softmax_p50_ms": 0.05983299999989811
+      "inference_plus_sigmoid_p50_ms": 0.02704199869185686
     }
   ],
-  "scope": "Frozen static features -> timestamp context -> model -> decoder, including startup padding. Live runtime has a separate 2.5 s warmup.",
+  "scope": "Frozen original features -> checkpoint scaler -> history mask/window -> logits -> sigmoid -> alternating crossings. Warmup disabled for reference parity.",
   "jetson_verified": false
 }

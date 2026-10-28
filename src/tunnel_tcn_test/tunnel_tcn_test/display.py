@@ -4,23 +4,38 @@ import numpy as np
 
 
 def mono_image(message):
-    if message.encoding != 'mono8' or message.width <= 0 or message.height <= 0:
-        raise ValueError('Expected mono8 stereo image')
-    if message.step < message.width or len(message.data) < message.step * message.height:
+    """Decode CAM_A images to RGB; preserve mono8 for replay/external sources."""
+    h, w, step = message.height, message.width, message.step
+    if h <= 0 or w <= 0:
+        raise ValueError('Invalid image dimensions')
+    encoding = message.encoding.lower()
+    channels = 3 if encoding in ('rgb8', 'bgr8') else 1
+    rows = h * 3 // 2 if encoding == 'nv12' else h
+    if encoding not in ('nv12', 'rgb8', 'bgr8', 'mono8'):
+        raise ValueError('Expected nv12, rgb8, bgr8 or mono8')
+    if encoding == 'nv12' and (h % 2 or w % 2):
+        raise ValueError('NV12 needs even dimensions')
+    if step < w*channels or len(message.data) < step*rows:
         raise ValueError('Invalid image stride/buffer length')
-    return np.frombuffer(message.data, np.uint8, count=message.step * message.height).reshape(
-        message.height, message.step)[:, :message.width].copy()
+    raw = np.frombuffer(message.data, np.uint8, count=step*rows).reshape(rows, step)[:, :w*channels].copy()
+    if encoding == 'nv12':
+        return cv2.cvtColor(raw, cv2.COLOR_YUV2RGB_NV12)
+    if channels == 3:
+        image = raw.reshape(h, w, 3)
+        return image[:, :, ::-1].copy() if encoding == 'bgr8' else image
+    return raw
 
 
 def footer(gray, probabilities, state, last_event, status, fps, infer_ms, total_ms, dropped, settings):
-    picture = cv2.cvtColor(cv2.resize(gray, (960, 600), interpolation=cv2.INTER_AREA), cv2.COLOR_GRAY2BGR)
+    resized = cv2.resize(gray, (960, 600), interpolation=cv2.INTER_AREA)
+    picture = cv2.cvtColor(resized, cv2.COLOR_GRAY2BGR if resized.ndim == 2 else cv2.COLOR_RGB2BGR)
     canvas = cv2.copyMakeBorder(picture, 0, 160, 0, 0, cv2.BORDER_CONSTANT, value=(22, 24, 28))
     lines = [
-        f'PARTIAL INT8 | {status} | state: {state.upper()}',
-        'NONE %.3f   ENTRY %.3f   EXIT %.3f' % tuple(probabilities),
+        f'RGB FP32 | {status} | state: {state.upper()}',
+        'ENTRY score %.3f   EXIT score %.3f' % tuple(probabilities),
         f'Last event: {last_event} | source FPS {fps:.1f} | missed frames ~{dropped}',
         f'TRT+transfer {infer_ms:.2f} ms | frame processing {total_ms:.2f} ms | R: new drive/reset  Q: quit',
-        f'Camera: {settings}  (edit in OAK IR live controls)',
+        f'Camera: {settings}',
     ]
     for j, line in enumerate(lines):
         color = (100, 230, 120) if j == 0 and status == 'LIVE' else (225, 225, 225)

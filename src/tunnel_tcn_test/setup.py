@@ -14,6 +14,6 @@ setup(
     ],
     install_requires=['setuptools'], zip_safe=False,
     maintainer='ohslo', maintainer_email='ohslo@example.com', license='Apache-2.0',
-    description='Live stereo IR partial-INT8 tunnel crossing preview for Jetson.',
+    description='Live RGB point-event FP32 tunnel crossing preview for Jetson.',
     entry_points={'console_scripts': ['tunnel_tcn_node = tunnel_tcn_test.node:main', 'verify_model = tunnel_tcn_test.verify:main']},
 )

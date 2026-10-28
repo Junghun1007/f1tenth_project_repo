@@ -72,7 +72,7 @@ class TensorRTBackend:
         if expected_sha256 is not None and digest != expected_sha256:
             raise RuntimeError('Packaged ONNX hash mismatch')
         identity = {'onnx_sha256': digest, 'tensorrt': trt.__version__,
-                    'cuda_device_runtime_driver': self.cuda.signature(), 'builder': 'partial-qdq-v1-no-fp16-no-tf32'}
+                    'cuda_device_runtime_driver': self.cuda.signature(), 'builder': 'rgb-point-fp32-v1-no-fp16-no-tf32'}
         identity_hash = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
         directory = Path(cache_dir).expanduser()
         directory.mkdir(parents=True, exist_ok=True)
@@ -89,12 +89,8 @@ class TensorRTBackend:
             parser = trt.OnnxParser(network, self.logger)
             if not parser.parse(data):
                 raise RuntimeError('\n'.join(str(parser.get_error(i)) for i in range(parser.num_errors)))
-            types = [network.get_layer(i).type for i in range(network.num_layers)]
-            if trt.LayerType.QUANTIZE not in types or trt.LayerType.DEQUANTIZE not in types:
-                raise RuntimeError('Partial INT8 requires the bundled explicit Q/DQ ONNX')
             config = builder.create_builder_config()
             config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 256 * 1024 * 1024)
-            config.set_flag(trt.BuilderFlag.INT8)
             config.clear_flag(trt.BuilderFlag.FP16)
             config.clear_flag(trt.BuilderFlag.TF32)
             config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
@@ -110,16 +106,16 @@ class TensorRTBackend:
         self.context = self.engine.create_execution_context()
         if self.context is None or self.engine.num_io_tensors != 2:
             raise RuntimeError('Invalid TensorRT engine I/O')
-        for name, shape, mode in [('features', (1, 21, 31), trt.TensorIOMode.INPUT),
-                                  ('logits', (1, 3), trt.TensorIOMode.OUTPUT)]:
+        for name, shape, mode in [('features', (1, 17, 32), trt.TensorIOMode.INPUT),
+                                  ('logits', (1, 2), trt.TensorIOMode.OUTPUT)]:
             if (tuple(self.engine.get_tensor_shape(name)) != shape or
                     self.engine.get_tensor_dtype(name) != trt.float32 or
                     self.engine.get_tensor_mode(name) != mode):
                 raise RuntimeError(f'Invalid {name} contract')
-        self.output = np.empty((1, 3), dtype=np.float32)
+        self.output = np.empty((1, 2), dtype=np.float32)
         try:
             self.cuda.call('cudaStreamCreate', ct.byref(self.stream))
-            self.cuda.call('cudaMalloc', ct.byref(self.input_device), 1 * 21 * 31 * 4)
+            self.cuda.call('cudaMalloc', ct.byref(self.input_device), 1 * 17 * 32 * 4)
             self.cuda.call('cudaMalloc', ct.byref(self.output_device), self.output.nbytes)
             if not self.context.set_tensor_address('features', self.input_device.value):
                 raise RuntimeError('Could not bind features')
@@ -130,15 +126,15 @@ class TensorRTBackend:
             self.engine_path.with_suffix('.layers.json').write_text(inspector.get_engine_information(trt.LayerInformationFormat.JSON))
             self.engine_path.with_suffix('.metadata.json').write_text(json.dumps(identity, indent=2))
             for _ in range(20):
-                self.infer(np.zeros((1, 21, 31), dtype=np.float32))
+                self.infer(np.zeros((1, 17, 32), dtype=np.float32))
         except Exception:
             self.close()
             raise
 
     def infer(self, features):
         x = np.ascontiguousarray(features, dtype=np.float32)
-        if x.shape != (1, 21, 31) or not np.isfinite(x).all():
-            raise ValueError('Expected finite float32[1,21,31]')
+        if x.shape != (1, 17, 32) or not np.isfinite(x).all():
+            raise ValueError('Expected finite float32[1,17,32]')
         self.cuda.call('cudaMemcpyAsync', self.input_device, x.ctypes.data, x.nbytes, 1, self.stream)
         if not self.context.execute_async_v3(stream_handle=self.stream.value):
             raise RuntimeError('TensorRT execution failed')
