@@ -1,4 +1,7 @@
 #include "auto_control/control_core.hpp"
+#include "auto_control/runtime_speed_limit.hpp"
+#include "line_detactor/msg/speed_limit_state.hpp"
+#include "std_msgs/msg/float64.hpp"
 #include "auto_control/msg/avoidance_plan.hpp"
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "auto_control/driving_log.hpp"
@@ -55,6 +58,7 @@ public:
   {
     declare_and_read_parameters();
     validate_parameters();
+    runtime_speed_limit_ = std::make_unique<RuntimeSpeedLimit>(minimum_speed_mps_, maximum_speed_mps_);
     speed_pid_ = std::make_unique<SpeedPid>(
       speed_pid_kp_, speed_pid_ki_, speed_pid_kd_, speed_pid_integral_limit_,
       minimum_duty_, maximum_duty_);
@@ -123,6 +127,39 @@ public:
     enable_sub_ = create_subscription<std_msgs::msg::Bool>(
       enable_topic_, command_qos,
       std::bind(&AutoControlNode::on_enable, this, std::placeholders::_1));
+
+    // Reliable volatile requests cannot be replayed by a newly started controller.
+    speed_limit_state_pub_ = create_publisher<line_detactor::msg::SpeedLimitState>(
+      "/auto/maximum_speed_state", rclcpp::QoS(1).reliable());
+    speed_limit_request_sub_ = create_subscription<std_msgs::msg::Float64>(
+      "/auto/maximum_speed_request", rclcpp::QoS(1).reliable(),
+      [this](const std_msgs::msg::Float64::ConstSharedPtr message) {
+        if (!runtime_speed_limit_->request(message->data)) {
+          RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 1000,
+            "Rejected maximum speed %.3f (allowed %.3f..%.3f m/s)", message->data,
+            runtime_speed_limit_->minimum(), runtime_speed_limit_->ceiling());
+          publish_speed_limit_state();
+          return;
+        }
+        const double previous = maximum_speed_mps_;
+        maximum_speed_mps_ = runtime_speed_limit_->applied();
+        if (previous != maximum_speed_mps_) {
+          // Retained curve/obstacle profiles must also respect a lowered ceiling.
+          if (obstacle_planned_speed_) {
+            *obstacle_planned_speed_ = std::min(*obstacle_planned_speed_, maximum_speed_mps_);
+          }
+          corner_lower_speed_mps_ = std::min(corner_lower_speed_mps_, maximum_speed_mps_);
+          corner_nominal_speed_mps_ = std::min(corner_nominal_speed_mps_, maximum_speed_mps_);
+          corner_upper_speed_mps_ = std::min(corner_upper_speed_mps_, maximum_speed_mps_);
+          speed_pid_->reset();
+          longitudinal_pid_->reset();
+          RCLCPP_INFO(get_logger(), "BEV maximum speed applied: %.2f m/s", maximum_speed_mps_);
+        }
+        publish_speed_limit_state();
+      });
+    speed_limit_state_timer_ = create_wall_timer(std::chrono::milliseconds(200),
+      std::bind(&AutoControlNode::publish_speed_limit_state, this));
+    publish_speed_limit_state();
 
     latest_servo_position_ = servo_center_;
     last_control_ns_ = now().nanoseconds();
@@ -210,6 +247,16 @@ public:
   }
 
 private:
+  void publish_speed_limit_state()
+  {
+    line_detactor::msg::SpeedLimitState state;
+    state.minimum_speed_mps = runtime_speed_limit_->minimum();
+    state.ceiling_speed_mps = runtime_speed_limit_->ceiling();
+    state.applied_speed_mps = runtime_speed_limit_->applied();
+    state.revision = runtime_speed_limit_->revision();
+    speed_limit_state_pub_->publish(state);
+  }
+
   template<typename T>
   T parameter(const std::string & name, const T & default_value)
   {
@@ -1568,6 +1615,11 @@ private:
     // Traffic/curvature may request a lower target; release never overrides them.
     const bool traffic_stop = traffic_stop_requested();
     if (traffic_stop) {target_speed = std::min(target_speed, traffic_speed_limit(now_ns));}
+    // A live UI ceiling applies immediately to the target, even while an old
+    // curve/obstacle recovery profile is retained. Physical deceleration still
+    // uses the existing duty/brake controller and its configured limits.
+    if (target_speed > maximum_speed_mps_) {corner_speed_in_band_ = false;}
+    target_speed = std::min(target_speed, maximum_speed_mps_);
     const auto stanley = stanley_control(
       selected_path, current_speed_mps_, stanley_gain_, stanley_softening_speed_mps_,
       stanley_heading_lookahead_m_, maximum_steering_angle_rad_,
@@ -1630,7 +1682,7 @@ private:
         brake_mode_active_ = false;
       } else {
         const double feedforward = speed_feedforward_duty(
-          target_speed, minimum_speed_mps_, maximum_speed_mps_, minimum_duty_, maximum_duty_);
+          target_speed, minimum_speed_mps_, runtime_speed_limit_->ceiling(), minimum_duty_, maximum_duty_);
         const double desired = speed_pid_->update(target_speed, current_speed_mps_, feedforward, dt);
         latest_desired_duty_ = desired;
         if (command_duty_ < minimum_duty_) {
@@ -1951,7 +2003,7 @@ private:
         "corner_upper_speed_mps,corner_required_deceleration_mps2,planning_deceleration_mps2,"
         "can_duty,can_motor_current_a,obstacle_requested_speed_mps,obstacle_planned_speed_mps,"
         "obstacle_profile_active,obstacle_plan_deceleration_mps2,turn_recovery_hold,predicted_release_speed_mps,"
-        "centerline_xy_m",
+        "runtime_maximum_speed_mps,centerline_xy_m",
         parameters);
       driving_log_started_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
@@ -2027,7 +2079,7 @@ private:
       seconds(ns - *dynamics_motor_current_seen_ns_) <= 0.20 ? dynamics_motor_current_ : kUnavailable,
       obstacle_requested_speed_, obstacle_planned_speed_.value_or(kUnavailable),
       double(obstacle_profile_active_), obstacle_plan_deceleration_, double(turn_recovery_hold_),
-      predicted_release_speed_};
+      predicted_release_speed_, maximum_speed_mps_};
     if (path_) {frame.path = path_->points;}
     driving_log_->enqueue(std::move(frame));
   }
@@ -2220,6 +2272,10 @@ private:
   double latest_cross_track_error_m_{0.0}, latest_heading_error_rad_{0.0};
   double latest_raw_steering_angle_rad_{0.0}, latest_servo_position_{0.0};
   std::string last_motor_mode_{"stop"}, last_stop_reason_{"startup"};
+  std::unique_ptr<RuntimeSpeedLimit> runtime_speed_limit_;
+  rclcpp::Publisher<line_detactor::msg::SpeedLimitState>::SharedPtr speed_limit_state_pub_;
+  rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr speed_limit_request_sub_;
+  rclcpp::TimerBase::SharedPtr speed_limit_state_timer_;
   std::unique_ptr<SpeedPid> speed_pid_;
   std::unique_ptr<AutomaticBrakeProfile> brake_profile_;
   std::unique_ptr<PerformanceMeasurement> measurement_;

@@ -32,6 +32,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/LaneResult.msg"
+  "msg/SpeedLimitState.msg"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
 )
 rosidl_get_typesupport_target(lane_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
@@ -105,6 +106,7 @@ target_link_libraries(line_tensorrt_backend
 add_library(line_detactor_component SHARED
   src/line_detactor_node.cpp
   src/bev_theme.cpp
+  src/speed_limit_panel.cpp
   src/lane_connector.cpp
   src/centerline.cpp
   src/stop_line_distance.cpp
@@ -158,6 +160,11 @@ rclcpp_components_register_nodes(
 
 if(BUILD_TESTING)
   enable_testing()
+  find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc imgcodecs)
+  add_executable(speed_limit_panel_test test/speed_limit_panel_test.cpp src/speed_limit_panel.cpp)
+  target_include_directories(speed_limit_panel_test PRIVATE include ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(speed_limit_panel_test ${OpenCV_LIBS})
+  add_test(NAME speed_limit_panel_test COMMAND speed_limit_panel_test)
   add_executable(stop_line_distance_test
     test/stop_line_distance_test.cpp
     src/stop_line_distance.cpp

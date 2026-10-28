@@ -633,3 +633,65 @@ BEV에 표시한다. 기본 OFF이며 `/auto_obstacles`의 `obstacles.avoidance.
 `obstacle_slowdown_enabled: false`로 이 감속을 끌 수 있다.
 기본 OFF이며 `manual_test:=true`에서는 여전히 액추에이터 출력이 없다.
 [실제 적용 실행과 제한](AUTO_CONTROL_OBSTACLES.md)을 확인한다.
+
+
+## BEV 오른쪽 최대 속력 슬라이더
+
+BEV 창 오른쪽에 최대 속력 세로 슬라이더가 표시됩니다. 흰색 테마와 기본 검정 화면
+모두 같은 기능을 사용합니다. 화면을 그리는 `line_detactor`와 제어하는 `auto_control`을
+함께 빌드해야 합니다.
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install --packages-up-to vehicle_bringup \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+ros2 launch vehicle_bringup auto_drive.launch.py
+```
+
+기존 워크스페이스의 `depthai_DIR` 등 추가 빌드 인자는 동일하게 사용합니다.
+테마를 켤 때는 기존 제한에 따라 장애물 오버레이를 꺼야 합니다. 회피 제어를
+별도로 켜 둔 YAML이라면 그것도 꺼야 기존 launch 검사를 통과합니다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  bev_theme_enable:=true obstacles_enabled:=false avoidance_control_enabled:=false
+```
+
+- **TARGET MAX SPEED**: 드래그 중 선택한 최대 속력과 단위 `m/s`.
+- **Applied**: 제어 노드가 확인한 실제 적용 상한.
+- **APPLYING... / LIVE**: 적용 확인 대기 / 확인 완료.
+- **CONTROLLER OFFLINE**: 0.75초간 상태 수신 없음. 드래그가 비활성화됩니다.
+- 적용 확인 없이 1.5초가 지나면 실제 적용값으로 되돌리고 잠시 `NOT APPLIED`를 표시합니다.
+
+눈금과 범위는 제어 노드 시작 시 최종 적용된 `minimum_speed_mps`와
+`maximum_speed_mps`를 사용합니다. 중간 값은 0.05 m/s 단위이고 양 끝점은
+설정값 그대로 선택할 수 있습니다. 기본 설정 파일 기준 범위는 0.80–5.00 m/s지만,
+다른 YAML/launch 인자를 사용하면 그 범위로 표시됩니다. 0은 정지 명령으로
+사용하지 않습니다. 정지와 주행 활성화는 기존 제어를 사용합니다.
+
+드래그 중 요청은 최대 10Hz이고 마우스를 놓으면 마지막 변경값을 바로 보냅니다.
+실제 목표 속도는 다음 제어 계산부터 이 상한 이하로 제한됩니다. 실제 차량 속도가
+즉시 바뀌는 것은 아니며 기존 PID·duty·제동 설정에 따라 감속합니다. 코너·장애물·신호등의
+더 낮은 속도 제한과 정지 요청은 유지합니다. 기존 speed-to-duty 보정의 기준 상한은
+시작 설정값으로 유지합니다.
+
+변경값은 현재 실행에만 적용하고 YAML에 저장하지 않습니다. 재시작 시
+`maximum_speed_mps` 설정값으로 돌아갑니다. `ros2 param get /auto_control maximum_speed_mps`는
+슬라이더의 설정 상한을 반환하고, 현재 적용값은 아래 상태 토픽에서 확인합니다.
+주행 CSV를 켜면 `runtime_maximum_speed_mps` 열에도 현재 적용값이 기록됩니다.
+
+```bash
+ros2 topic echo /auto/maximum_speed_state
+```
+
+통신 인터페이스: 요청 `/auto/maximum_speed_request` (`std_msgs/msg/Float64`),
+상태 `/auto/maximum_speed_state` (`line_detactor/msg/SpeedLimitState`). 상태는 5Hz와
+요청 처리 직후에 발행합니다. 시작 범위 밖 값과 NaN/Inf 요청은 거절합니다.
+두 토픽은 reliable/volatile, depth 1입니다. 저장된 GUI 요청을 제어 노드 재시작 시
+재발행하지 않습니다. 다른 ROS namespace 구성이 필요하면 두 노드에서 같은 토픽으로 remap합니다.
+GUI 입력은 [OpenCV HighGUI mouse callback](https://docs.opencv.org/4.13.0/d7/dfc/group__highgui.html)을 사용합니다.
+
+검증: ROS와 무관한 C++ 범위·UI 조작/확인/단절 테스트, 기존 C++ staged brake 테스트,
+기존 Python 제어/제동 테스트 20개를 로컬에서 실행했습니다. ROS 2/CUDA가 없는 Mac에서는
+전체 colcon 빌드와 실차 ROS 통신·마우스 동작을 확인하지 못했습니다.

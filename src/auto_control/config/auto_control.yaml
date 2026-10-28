@@ -159,6 +159,7 @@ auto_control:
     # 코너 감속 ON: 거리별 곡률 상한으로 감속을 역산한다. 코너 전체에 최저속도를 강제하지 않음.
     # 별도로 계획한 장애물 속도와 더 낮은 값을 사용. 전체 경로의 90 percentile은 진단용.
     minimum_speed_mps: 0.80 # 코너 곡률 목표/허용 구간의 하한. 장애물·신호등·보호 정지는 우선 적용
+    # BEV 오른쪽 슬라이더의 초기값·상한. 실행 중 조절값은 재시작하면 이 값으로 복원.
     maximum_speed_mps: 5.0
     maximum_lateral_acceleration_mps2: 1.2
     curvature_percentile: 90.0

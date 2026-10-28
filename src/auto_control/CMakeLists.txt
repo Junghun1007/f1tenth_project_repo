@@ -82,6 +82,9 @@ install(FILES
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(runtime_speed_limit_test test/runtime_speed_limit_test.cpp)
+  target_include_directories(runtime_speed_limit_test PRIVATE include)
+  add_test(NAME runtime_speed_limit_test COMMAND runtime_speed_limit_test)
   add_executable(staged_brake_test test/staged_brake_test.cpp src/control_core.cpp)
   target_include_directories(staged_brake_test PRIVATE include)
   add_test(NAME staged_brake_test COMMAND staged_brake_test)
