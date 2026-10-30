@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
 import json
@@ -81,7 +82,33 @@ class DisplayTests(unittest.TestCase):
 
     def test_nv12_full_range_conversion(self):
         m = SimpleNamespace(encoding='nv12', width=2, height=2, step=2, data=bytes([235]*4+[128]*2))
-        np.testing.assert_array_equal(mono_image(m), np.full((2,2,3),255,np.uint8))
+        np.testing.assert_array_equal(mono_image(m), np.full((400,640),255,np.uint8))
+
+    def test_nv12_luma_ignores_chroma_and_padding_without_color_conversion(self):
+        # Two constant luma halves, padded rows, deliberately extreme chroma.
+        y = bytes([16, 16, 235, 235, 99, 99]) * 2
+        m = SimpleNamespace(encoding='nv12', width=4, height=2, step=6,
+                            data=y + bytes([0, 255, 0, 255, 99, 99]))
+        with patch('tunnel_tcn_test.display.cv2.cvtColor', side_effect=AssertionError('RGB conversion')):
+            gray = mono_image(m)
+        np.testing.assert_array_equal(gray[:, :320], np.zeros((400,320), np.uint8))
+        np.testing.assert_array_equal(gray[:, 320:], np.full((400,320),255,np.uint8))
+        m.data = y + bytes([128] * 6)
+        np.testing.assert_array_equal(mono_image(m), gray)
+        m.data = m.data[:-1]
+        with self.assertRaises(ValueError): mono_image(m)
+
+    def test_nv12_neutral_luma_matches_previous_rgb_features(self):
+        import cv2
+        y = np.repeat(np.arange(16, 236, dtype=np.uint8)[None, :], 40, axis=0)
+        uv = np.full((20, 220), 128, np.uint8)
+        raw = np.concatenate((y, uv))
+        m = SimpleNamespace(encoding='nv12', width=220, height=40, step=220, data=raw.tobytes())
+        previous = preprocess(cv2.cvtColor(raw, cv2.COLOR_YUV2RGB_NV12))
+        actual = preprocess(mono_image(m))
+        self.assertLessEqual(int(np.abs(actual.astype(int) - previous.astype(int)).max()), 1)
+        old_stream, new_stream = FeatureStream(), FeatureStream()
+        np.testing.assert_allclose(new_stream.push(actual, 0), old_stream.push(previous, 0), atol=.02)
 
     def test_footer_preserves_camera_pixels(self):
         frame = np.full((600,960),83,np.uint8)
