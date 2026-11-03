@@ -121,6 +121,9 @@ if(BUILD_TESTING)
     imu_image_stabilizer_test camera_imu_stabilizer ${OpenCV_LIBS})
   add_test(
     NAME imu_image_stabilizer_test COMMAND imu_image_stabilizer_test)
+  add_executable(ir_imu_synchronizer_test test/ir_imu_synchronizer_test.cpp)
+  target_link_libraries(ir_imu_synchronizer_test camera_imu_stabilizer ${OpenCV_LIBS})
+  add_test(NAME ir_imu_synchronizer_test COMMAND ir_imu_synchronizer_test)
   add_executable(
     vehicle_motion_estimator_test test/vehicle_motion_estimator_test.cpp)
   target_link_libraries(

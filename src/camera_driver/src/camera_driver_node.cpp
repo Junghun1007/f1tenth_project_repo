@@ -1,6 +1,7 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/tunnel_ir_input_policy.hpp"
+#include "camera_driver/ir_imu_synchronizer.hpp"
 #include "camera_driver/msg/bev_input.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
 #include "bev_handoff/direct_obstacle_handoff.hpp"
@@ -1228,6 +1229,14 @@ private:
     }
     tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
     tunnel_validation_mode_=node_.declare_parameter<bool>("tunnel.validation_mode",false);
+    tunnel_ir_imu_enabled_=node_.declare_parameter<bool>("tunnel.ir_imu_enabled",true);
+    tunnel_ir_imu_max_age_sec_=node_.declare_parameter<double>("tunnel.ir_imu_max_age_sec",0.05);
+    tunnel_ir_imu_wait_sec_=node_.declare_parameter<double>("tunnel.ir_imu_wait_sec",0.10);
+    if (!std::isfinite(tunnel_ir_imu_max_age_sec_) || tunnel_ir_imu_max_age_sec_<=0 ||
+      tunnel_ir_imu_max_age_sec_>0.1 || !std::isfinite(tunnel_ir_imu_wait_sec_) ||
+      tunnel_ir_imu_wait_sec_<=0 || tunnel_ir_imu_wait_sec_>0.2) {
+      throw std::invalid_argument("Tunnel IR IMU max age must be (0,0.1]s and wait (0,0.2]s");
+    }
     if (tunnel_enabled_) {
       if (camera_socket_!=dai::CameraBoardSocket::CAM_A || !imu_stabilization_enabled_) {
         throw std::runtime_error("Tunnel integration requires CAM_A and IMU stabilization");
@@ -1525,8 +1534,13 @@ private:
     auto retry_at=last;
     RCLCPP_INFO(node_.get_logger(),"Tunnel IR input mode=%s",
       tunnel_validation_mode_ ? "standalone validation (no settle/age/exposure gate)" : "guarded");
+    RCLCPP_INFO(node_.get_logger(),"Tunnel IR IMU=%s; max bracket sample age=%.0fms, pending wait=%.0fms",
+      tunnel_ir_imu_enabled_ ? "ON (capture-time synchronized)" : "OFF (fixed startup ground pose)",
+      tunnel_ir_imu_max_age_sec_*1000.,tunnel_ir_imu_wait_sec_*1000.);
+    IrImuSynchronizer<std::shared_ptr<dai::ImgFrame>,ImageStabilizationCorrection> pending(tunnel_ir_imu_wait_sec_);
+    std::uint64_t previous_expired=0,previous_overflow=0,previous_superseded=0;
     auto report_started=std::chrono::steady_clock::now();
-    std::uint64_t received=0,published=0,time_rejected=0,exposure_rejected=0,imu_rejected=0;
+    std::uint64_t received=0,published=0,time_rejected=0,exposure_rejected=0,imu_tilt_rejected=0;
     long last_exposure_us=0; int last_iso=0;
     while (!stop_requested_.load()) {
       try {
@@ -1536,12 +1550,18 @@ private:
           if (requested) {
             const double elapsed=std::chrono::duration<double>(now-report_started).count();
             RCLCPP_INFO(node_.get_logger(),
-              "[IR CAMERA] received=%.1fHz published=%.1fHz rejected(time/exposure/imu)=%llu/%llu/%llu actual=%ldus ISO%d",
+              "[IR CAMERA] received=%.1fHz published=%.1fHz rejected(time/exposure/imu_tilt)=%llu/%llu/%llu "
+              "imu_wait_expired=%llu imu_queue_overflow=%llu superseded=%llu pending=%zu imu_initialized=%s actual=%ldus ISO%d",
               received/elapsed,published/elapsed,static_cast<unsigned long long>(time_rejected),
-              static_cast<unsigned long long>(exposure_rejected),static_cast<unsigned long long>(imu_rejected),
-              last_exposure_us,last_iso);
+              static_cast<unsigned long long>(exposure_rejected),static_cast<unsigned long long>(imu_tilt_rejected),
+              static_cast<unsigned long long>(pending.expired()-previous_expired),
+              static_cast<unsigned long long>(pending.overflow()-previous_overflow),
+              static_cast<unsigned long long>(pending.superseded()-previous_superseded),pending.size(),
+              imu_stabilizer_->initialized() ? "yes" : "no",last_exposure_us,last_iso);
           }
-          received=published=time_rejected=exposure_rejected=imu_rejected=0; report_started=now;
+          received=published=time_rejected=exposure_rejected=imu_tilt_rejected=0; report_started=now;
+          previous_expired=pending.expired(); previous_overflow=pending.overflow();
+          previous_superseded=pending.superseded();
         }
         if ((dirty || requested!=applied) && now>=retry_at) {
           dirty=true;
@@ -1563,6 +1583,7 @@ private:
           dirty=false;
           tunnel_profile_applied_.store(applied);
           changed_at=now;
+          pending.clear();
           depth_resume_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
             (now+150ms).time_since_epoch()).count());
           tunnel_profile_ready_.store(true);
@@ -1572,20 +1593,34 @@ private:
           RCLCPP_INFO(node_.get_logger(),"Camera profile=%s",applied ? "IR 30ms ISO800 dot0 flood0.5" : "OUTSIDE auto exposure/depth lights restored");
         }
         auto packet=ir_queue_->tryGet<dai::ImgFrame>();
-        if (!packet) {std::this_thread::sleep_for(1ms); continue;}
-        ++received;
-        last_exposure_us=packet->getExposureTime().count(); last_iso=packet->getSensitivity();
-        if (dirty) {continue;}
+        if (packet) {
+          ++received;
+          last_exposure_us=packet->getExposureTime().count(); last_iso=packet->getSensitivity();
+          if (dirty) {continue;}
+          const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
+          const auto rejection=tunnelIrRejection(tunnel_validation_mode_,applied,
+            captured,last,now,changed_at,last_exposure_us,last_iso);
+          if (rejection==TunnelIrRejection::time) {++time_rejected; continue;}
+          if (rejection==TunnelIrRejection::exposure) {++exposure_rejected; continue;}
+          last=captured;
+          if (packet->getType()!=dai::ImgFrame::Type::GRAY8) {throw std::runtime_error("Expected LEFT GRAY8");}
+          if (tunnel_ir_imu_enabled_) {pending.push(packet,captured,now);}
+        }
+        cv::Matx33d tilt=cv::Matx33d::eye();
+        if (tunnel_ir_imu_enabled_) {
+          // Keep captures briefly while sensor streams arrive independently.
+          // Poll without blocking the IMU thread; latest matched capture wins.
+          const auto match=pending.takeReady(std::chrono::steady_clock::now(),[this](auto captured) {
+            return imu_stabilizer_->correctionAt(
+              std::chrono::duration<double>(captured.time_since_epoch()).count(),
+              tunnel_ir_imu_max_age_sec_,0.0);
+          });
+          if (!match) {std::this_thread::sleep_for(1ms); continue;}
+          if (!match->correction.within_correction_limit) {++imu_tilt_rejected; continue;}
+          packet=match->entry.frame;
+          tilt=match->correction.camera_to_reference_tilt;
+        } else if (!packet || dirty) {std::this_thread::sleep_for(1ms); continue;}
         const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
-        const auto rejection=tunnelIrRejection(tunnel_validation_mode_,applied,
-          captured,last,now,changed_at,last_exposure_us,last_iso);
-        if (rejection==TunnelIrRejection::time) {++time_rejected; continue;}
-        if (rejection==TunnelIrRejection::exposure) {++exposure_rejected; continue;}
-        last=captured;
-        const auto correction=imu_stabilizer_->correctionAt(
-          std::chrono::duration<double>(captured.time_since_epoch()).count());
-        if (!correction || !correction->within_correction_limit) {++imu_rejected; continue;}
-        if (packet->getType()!=dai::ImgFrame::Type::GRAY8) {throw std::runtime_error("Expected LEFT GRAY8");}
         const auto transform=point_cloud::rgbFromFrame(*packet,*depth_calibration_);
         const auto k=packet->getTransformation().getIntrinsicMatrix();
         auto frame=std::make_shared<bev_handoff::DirectIrFrame>();
@@ -1595,13 +1630,14 @@ private:
           frame->view_center_rgb_m[r]=transform.translation[r];
           for (int c=0;c<3;++c) {frame->rgb_from_view(r,c)=transform.rotation[r*3+c];}
         }
-        frame->current_rgb_to_reference=correction->camera_to_reference_tilt;
+        frame->current_rgb_to_reference=tilt;
         frame->captured_at=captured; frame->header.stamp=ros_timestamp_for(captured);
         frame->header.frame_id="front_axle_bev"; frame->tunnel_profile=applied;
         bev_handoff::publishDirectIr(std::move(frame));
         ++published;
       } catch (const std::exception & e) {
         bev_handoff::publishDirectIr(nullptr);
+        pending.clear();
         // Repeated profile failures must not hammer device control or expose
         // frames as if the requested profile had been applied.
         retry_at=std::chrono::steady_clock::now()+1s;
@@ -3169,7 +3205,8 @@ private:
   dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::CROP};
 
   std::unique_ptr<dai::Pipeline> pipeline_;
-  bool tunnel_enabled_{false},tunnel_validation_mode_{false};
+  bool tunnel_enabled_{false},tunnel_validation_mode_{false},tunnel_ir_imu_enabled_{true};
+  double tunnel_ir_imu_max_age_sec_{0.05},tunnel_ir_imu_wait_sec_{0.10};
   std::atomic<bool> tunnel_requested_{false};
   std::atomic<bool> tunnel_profile_applied_{false};
   std::atomic<bool> tunnel_profile_ready_{false};

@@ -75,6 +75,29 @@ class LaunchTests(unittest.TestCase):
             ParameterValue=lambda value, value_type: value_type(value),
             LaunchConfiguration=lambda key: {'tunnel_validation_mode': True}[key])), True)
 
+    def test_tunnel_ir_imu_switch_reaches_camera_and_preserves_rgb_setting(self):
+        bev = ast.parse((SOURCE/'bev_processor/launch/bev_processor.launch.py').read_text())
+        bringup = ast.parse((SOURCE/'vehicle_bringup/launch/auto_drive.launch.py').read_text())
+        for tree in (bev, bringup):
+            declaration = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == 'DeclareLaunchArgument'
+                and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == 'tunnel_ir_imu_enabled')
+            self.assertEqual(ast.literal_eval(next(k.value for k in declaration.keywords
+                                                  if k.arg == 'default_value')), 'true')
+        config = next(n for n in ast.walk(bev) if isinstance(n, ast.Dict)
+                      and any(isinstance(k, ast.Constant) and k.value == 'tunnel.ir_imu_enabled' for k in n.keys))
+        value = next(v for k, v in zip(config.keys, config.values)
+                     if isinstance(k, ast.Constant) and k.value == 'tunnel.ir_imu_enabled')
+        for enabled in (True, False):
+            self.assertIs(eval(compile(ast.Expression(value), '<IR IMU parameter>', 'eval'), dict(
+                ParameterValue=lambda value, value_type: value_type(value),
+                LaunchConfiguration=lambda key: {'tunnel_ir_imu_enabled': enabled}[key])), enabled)
+        forwarded = next(n for n in ast.walk(bringup) if isinstance(n, ast.Dict)
+                         and any(isinstance(k, ast.Constant) and k.value == 'tunnel_ir_imu_enabled' for k in n.keys))
+        expression = next(v for k, v in zip(forwarded.keys, forwarded.values)
+                          if isinstance(k, ast.Constant) and k.value == 'tunnel_ir_imu_enabled')
+        self.assertEqual(ast.literal_eval(expression.args[0]), 'tunnel_ir_imu_enabled')
+
     def test_one_window_and_same_result_only_selection_for_rgb_and_ir(self):
         for result_only in (True, False):
             with self.subTest(result_only=result_only):

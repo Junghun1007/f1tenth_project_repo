@@ -685,6 +685,18 @@ public:
   std::optional<ImageStabilizationCorrection> correctionAt(
     const double timestamp_sec) const
   {
+    return correctionAt(timestamp_sec,config_.maximum_frame_imu_age_sec,
+      config_.maximum_frame_imu_wait_sec);
+  }
+
+  std::optional<ImageStabilizationCorrection> correctionAt(
+    const double timestamp_sec, const double maximum_frame_imu_age_sec,
+    const double maximum_wait_sec) const
+  {
+    if (!std::isfinite(maximum_frame_imu_age_sec) || maximum_frame_imu_age_sec<=0 ||
+      !std::isfinite(maximum_wait_sec) || maximum_wait_sec<0) {
+      throw std::invalid_argument("invalid per-consumer IMU lookup bounds");
+    }
     if (!std::isfinite(timestamp_sec)) {
       return std::nullopt;
     }
@@ -705,7 +717,7 @@ public:
     if (!target_is_bracketed()) {
       history_condition_.wait_for(
         lock,
-        std::chrono::duration<double>(config_.maximum_frame_imu_wait_sec),
+        std::chrono::duration<double>(maximum_wait_sec),
         target_is_bracketed);
     }
 
@@ -734,8 +746,8 @@ public:
       const double next_age_sec = next->timestamp_sec - timestamp_sec;
       if (
         previous_age_sec < 0.0 || next_age_sec < 0.0 ||
-        previous_age_sec > config_.maximum_frame_imu_age_sec ||
-        next_age_sec > config_.maximum_frame_imu_age_sec)
+        previous_age_sec > maximum_frame_imu_age_sec ||
+        next_age_sec > maximum_frame_imu_age_sec)
       {
         return std::nullopt;
       }
@@ -1194,6 +1206,14 @@ std::optional<ImageStabilizationCorrection>
 ImuImageStabilizer::correctionAt(const double timestamp_sec) const
 {
   return impl_->correctionAt(timestamp_sec);
+}
+
+std::optional<ImageStabilizationCorrection>
+ImuImageStabilizer::correctionAt(
+  const double timestamp_sec, const double maximum_frame_imu_age_sec,
+  const double maximum_wait_sec) const
+{
+  return impl_->correctionAt(timestamp_sec,maximum_frame_imu_age_sec,maximum_wait_sec);
 }
 
 bool ImuImageStabilizer::initialized() const

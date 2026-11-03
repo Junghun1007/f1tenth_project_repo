@@ -465,6 +465,7 @@ def _apply_parameter_file_defaults(
         " | obstacles=" + obstacles_enabled + " | obstacle_yaml=" + obstacle_file +
         " | avoidance_preview=" + str(avoidance) + " | avoidance_control=" + str(apply_avoidance) +
         " | deformation_only=" + str(deformation_only) +
+        " | tunnel_ir_imu=" + LaunchConfiguration("tunnel_ir_imu_enabled").perform(context) +
         " | tunnel_validation=" + LaunchConfiguration("tunnel_validation_mode").perform(context) +
         " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
     )), startup_check, *manual_actions, *tunnel_actions, bev_launch, LoadComposableNodes(
@@ -719,6 +720,7 @@ def generate_launch_description():
             "obstacles_enabled": LaunchConfiguration("obstacles_enabled"),
             "tunnel_enabled": LaunchConfiguration("tunnel_enabled"),
             "tunnel_validation_mode": LaunchConfiguration("tunnel_validation_mode"),
+            "tunnel_ir_imu_enabled": LaunchConfiguration("tunnel_ir_imu_enabled"),
             "perception_params_file": LaunchConfiguration("effective_perception_params_file"),
             "measured_erpm_topic": LaunchConfiguration("perception_erpm_topic"),
             "vehicle_acceleration_topic": LaunchConfiguration("perception_acceleration_topic"),
@@ -827,6 +829,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument("tunnel_enabled", default_value="false"),
+            DeclareLaunchArgument("tunnel_ir_imu_enabled", default_value="true",
+                                  description="Apply capture-time IMU tilt to tunnel IR BEV; false uses fixed measured ground pose."),
             DeclareLaunchArgument("tunnel_validation_mode", default_value="true",
                                   description="Use standalone IR publication timing and bypass integration-only input gates."),
             DeclareLaunchArgument("depthai_library_dir", default_value="",

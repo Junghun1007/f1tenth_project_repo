@@ -108,6 +108,11 @@ public:
   std::optional<ImageStabilizationCorrection> correctionAt(
     double timestamp_sec) const;
 
+  // Per-consumer lookup bounds; leaves the RGB estimator configuration intact.
+  // max_age bounds BOTH bracketing sample distances; wait may be zero for polling.
+  std::optional<ImageStabilizationCorrection> correctionAt(
+    double timestamp_sec, double maximum_frame_imu_age_sec, double maximum_wait_sec) const;
+
   bool initialized() const;
   ImageStabilizerCalibrationProgress calibrationProgress() const;
   cv::Vec3d gyroscopeBiasRadps() const;
