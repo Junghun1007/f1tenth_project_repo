@@ -27,6 +27,7 @@
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/int32.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_msgs/msg/u_int8.hpp"
 
 namespace auto_control
@@ -92,6 +93,34 @@ public:
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
+    if (declare_parameter<bool>("tunnel.enabled",false)) {
+      outside_avoidance_=avoidance_control_enabled_;
+      outside_slowdown_=obstacle_slowdown_enabled_;
+      outside_traffic_=traffic_stop_enabled_;
+      tunnel_state_sub_=create_subscription<std_msgs::msg::String>(
+        "/tunnel/state",rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          if (message->data!="OUTSIDE" && message->data!="ENTERING" &&
+            message->data!="INSIDE" && message->data!="EXITING") {return;}
+          const bool inside=message->data!="OUTSIDE";
+          if (inside==tunnel_active_) {return;}
+          tunnel_active_=inside;
+          avoidance_control_enabled_=!inside && outside_avoidance_;
+          obstacle_slowdown_enabled_=!inside && outside_slowdown_;
+          traffic_stop_enabled_=!inside && outside_traffic_;
+          // No outside detection/plan or red-light stop may survive entry.
+          avoidance_path_.reset(); avoidance_lane_ns_.reset(); avoidance_depth_ns_.reset();
+          avoidance_follow_centerline_=false; avoidance_confirmations_=0;
+          obstacle_slowdown_active_=false; obstacle_last_seen_at_.reset();
+          obstacle_last_depth_ns_.reset(); obstacle_planned_speed_.reset();
+          obstacle_profile_active_=false;
+          traffic_stop_active_=false; traffic_holding_=false;
+          traffic_pass_committed_=false; traffic_red_=false;
+          clear_stop_line_track();
+          RCLCPP_INFO(get_logger(),"Tunnel mode=%s; outside obstacle/traffic control=%s",
+            message->data.c_str(),inside ? "suspended" : "restored with fresh inputs");
+        });
+    }
     if (avoidance_control_enabled_ || obstacle_slowdown_enabled_) {
       avoidance_sub_=create_subscription<auto_control::msg::AvoidancePlan>(
         "/auto/avoidance_plan",sensor_qos,
@@ -2138,6 +2167,8 @@ private:
   double latest_signal_score_{kUnavailable}, latest_stop_line_raw_m_{kUnavailable};
   double latest_stop_line_corrected_m_{kUnavailable}, latest_raw_speed_mps_{kUnavailable};
   double latest_pid_effort_{kUnavailable}, latest_desired_duty_{kUnavailable};
+  bool tunnel_active_{false},outside_avoidance_{false},outside_slowdown_{false},outside_traffic_{false};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_state_sub_;
   bool traffic_stop_enabled_{false}, traffic_red_{false}, traffic_holding_{false};
   bool traffic_range_stop_committed_{false};
   double traffic_stop_range_max_m_;

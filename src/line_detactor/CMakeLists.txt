@@ -160,6 +160,9 @@ rclcpp_components_register_nodes(
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(frame_rate_gate_test test/frame_rate_gate_test.cpp)
+  target_include_directories(frame_rate_gate_test PRIVATE include)
+  add_test(NAME frame_rate_gate_test COMMAND frame_rate_gate_test)
   find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc imgcodecs)
   add_executable(speed_limit_panel_test test/speed_limit_panel_test.cpp src/speed_limit_panel.cpp)
   target_include_directories(speed_limit_panel_test PRIVATE include ${OpenCV_INCLUDE_DIRS})

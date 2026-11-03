@@ -8,6 +8,7 @@ namespace bev_handoff
 namespace
 {
 std::shared_ptr<const DirectDepthFrame> depth;
+std::shared_ptr<const DirectIrFrame> ir;
 std::mutex mutex;
 std::shared_ptr<const ObstacleReference> reference;
 std::deque<std::shared_ptr<const ObstacleFrame>> history;
@@ -22,6 +23,10 @@ std::string obstacleDeviceId()
 {std::lock_guard<std::mutex> lock(mutex); return reference ? reference->device_id : std::string{};}
 void publishDirectDepth(std::shared_ptr<const DirectDepthFrame> frame)
 {std::atomic_store(&depth,std::move(frame));}
+void publishDirectIr(std::shared_ptr<const DirectIrFrame> frame)
+{std::atomic_store(&ir,std::move(frame));}
+std::shared_ptr<const DirectIrFrame> latestDirectIr()
+{return std::atomic_load(&ir);}
 std::shared_ptr<const DirectDepthFrame> latestDirectDepth()
 {return std::atomic_load(&depth);}
 void clearObstacles()

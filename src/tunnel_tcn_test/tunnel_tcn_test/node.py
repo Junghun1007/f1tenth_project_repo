@@ -150,18 +150,23 @@ class TunnelNode(Node):
 
 
 def main(args=None):
-    if not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
-        raise RuntimeError('A Jetson desktop display is required for the RGB preview')
     rclpy.init(args=args)
     node = None
+    preview = False
     try:
         node = TunnelNode()
-        cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
-        cv2.resizeWindow(WINDOW, 960, 760)
+        preview = node.declare_parameter('preview_enabled', True).value
+        if preview and not (os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')):
+            raise RuntimeError('A Jetson desktop display is required for the RGB preview')
+        if preview:
+            cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
+            cv2.resizeWindow(WINDOW, 960, 760)
         last_draw = 0.
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=.001)
             node.process()
+            if not preview:
+                continue
             if time.monotonic() - last_draw >= 1 / 30.:
                 cv2.imshow(WINDOW, node.image())
                 last_draw = time.monotonic()
@@ -176,6 +181,7 @@ def main(args=None):
         if node is not None:
             node.backend.close()
             node.destroy_node()
-        cv2.destroyAllWindows()
+        if preview:
+            cv2.destroyAllWindows()
         if rclpy.ok():
             rclpy.shutdown()

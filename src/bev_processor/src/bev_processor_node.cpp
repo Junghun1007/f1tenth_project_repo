@@ -33,6 +33,7 @@
 #include <sensor_msgs/msg/joy.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/header.hpp>
+#include <std_msgs/msg/string.hpp>
 
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "bev_processor/bev_geometry.hpp"
@@ -261,6 +262,16 @@ public:
     publishStartupGroundReference(measurement.attitude_source);
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
+    if (declare_parameter<bool>("tunnel.enabled",false)) {
+      rclcpp::SubscriptionOptions tunnel_options;
+      tunnel_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
+      tunnel_compute_sub_=create_subscription<std_msgs::msg::String>(
+        "/tunnel/compute_source",rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          if (message->data=="IR") {tunnel_rgb_standby_=true;}
+          else if (message->data=="RGB" || message->data=="BOTH") {tunnel_rgb_standby_=false;}
+        },tunnel_options);
+    }
     input_subscription_ = create_subscription<camera_driver::msg::BevInput>(
       input_topic_,
       image_qos,
@@ -961,6 +972,9 @@ private:
 
   void onBevInput(camera_driver::msg::BevInput::ConstSharedPtr message)
   {
+    const auto now=SteadyClock::now();
+    if (tunnel_rgb_standby_ && now-last_tunnel_rgb_input_<std::chrono::milliseconds(200)) {return;}
+    last_tunnel_rgb_input_=now;
     received_total_.fetch_add(1U, std::memory_order_relaxed);
     received_interval_.fetch_add(1U, std::memory_order_relaxed);
 
@@ -2036,6 +2050,9 @@ private:
   rclcpp::TimerBase::SharedPtr status_timer_;
 
   std::mutex input_mutex_;
+  bool tunnel_rgb_standby_{false};
+  SteadyClock::time_point last_tunnel_rgb_input_{};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_compute_sub_;
   std::condition_variable input_cv_;
   camera_driver::msg::BevInput::ConstSharedPtr latest_input_;
   SteadyClock::time_point latest_input_received_at_;

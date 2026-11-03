@@ -10,6 +10,22 @@
 
 namespace bev_handoff
 {
+// Raw LEFT IR input from the SAME OAK session as RGB/depth. Tilt is in CAM_A
+// coordinates and evaluated at this frame's exposure midpoint.
+struct DirectIrFrame
+{
+  cv::Mat mono;
+  std::shared_ptr<const void> owner;
+  std_msgs::msg::Header header;
+  std::chrono::steady_clock::time_point captured_at;
+  std::array<double, 4> intrinsics{};
+  cv::Matx33d rgb_from_view{cv::Matx33d::eye()};
+  cv::Vec3d view_center_rgb_m{0, 0, 0};
+  cv::Matx33d current_rgb_to_reference{cv::Matx33d::eye()};
+  bool tunnel_profile{false};
+};
+void publishDirectIr(std::shared_ptr<const DirectIrFrame> frame);
+std::shared_ptr<const DirectIrFrame> latestDirectIr();
 // Process-local, immutable depth buffer. owner keeps DepthAI storage alive.
 // Millimetres, optical-axis Z, calibrated rectified camera coordinates.
 struct DirectDepthFrame

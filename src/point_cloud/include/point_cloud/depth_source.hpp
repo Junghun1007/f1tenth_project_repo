@@ -43,7 +43,12 @@ std::pair<std::uint32_t, std::uint32_t> resolutionSize(const std::string & resol
 void validate(const Config & config);
 
 // Build stereo on an existing device pipeline (does not open/start a device).
-std::shared_ptr<dai::node::StereoDepth> addStereoDepth(dai::Pipeline & pipeline, const Config & config);
+struct StereoCameras
+{
+  std::shared_ptr<dai::node::Camera> left, right;
+};
+std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
+  dai::Pipeline & pipeline, const Config & config, StereoCameras * cameras = nullptr);
 RigidTransform rgbFromFrame(dai::ImgFrame & frame, const dai::CalibrationHandler & calibration);
 
 // Owns one device session. Closing/reopening also reapplies both IR intensities.

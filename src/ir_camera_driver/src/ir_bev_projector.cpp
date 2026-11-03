@@ -118,6 +118,19 @@ bool IrBevProjector::ready() const noexcept
   return !lut_.map_x.empty() && !lut_.map_y.empty();
 }
 
+void IrBevProjector::setMountPose(
+  const cv::Matx33d & rotation_vehicle_from_rgb, const cv::Vec3d & position)
+{
+  if (!ready() || !cv::checkRange(cv::Mat(rotation_vehicle_from_rgb)) ||
+    !cv::checkRange(cv::Mat(position)) || position[2]<=0.0) {
+    throw std::invalid_argument("invalid shared BEV mounting pose");
+  }
+  rotation_vehicle_from_rgb_=rotation_vehicle_from_rgb;
+  config_.camera_x_m=position[0]; config_.camera_y_m=position[1];
+  config_.camera_height_m=position[2];
+  updateMaps(cv::Matx33d::eye());
+}
+
 double IrBevProjector::validPixelRatio() const noexcept
 {
   if (lut_.valid_mask.empty()) {

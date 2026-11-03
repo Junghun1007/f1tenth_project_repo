@@ -30,6 +30,28 @@ def load_node():
 
 
 class NodeTests(unittest.TestCase):
+    def test_headless_main_runs_inference_loop_without_gui_calls(self):
+        module = load_node()
+        running = [True]
+        calls = []
+        fake_node = SimpleNamespace(
+            declare_parameter=lambda *_: SimpleNamespace(value=False),
+            process=lambda: calls.append('process'),
+            backend=SimpleNamespace(close=lambda: calls.append('close')),
+            destroy_node=lambda: calls.append('destroy'))
+        def spin_once(*_, **__):
+            running[0] = False
+        def unexpected_gui(*_, **__):
+            self.fail('Headless TCN must not access a GUI')
+        with patch.object(module, 'TunnelNode', return_value=fake_node), \
+             patch.object(module, 'rclpy', SimpleNamespace(init=lambda **_: None,
+                          ok=lambda: running[0], spin_once=spin_once)), \
+             patch.object(module, 'cv2', SimpleNamespace(namedWindow=unexpected_gui,
+                          imshow=unexpected_gui, waitKey=unexpected_gui,
+                          destroyAllWindows=unexpected_gui)):
+            module.main()
+        self.assertEqual(calls, ['process', 'close', 'destroy'])
+
     def setUp(self):
         module = load_node()
         self.node = n = module.TunnelNode.__new__(module.TunnelNode)

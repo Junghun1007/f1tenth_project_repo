@@ -40,6 +40,9 @@ public:
     const cv::Mat & rectified_image,
     const cv::Matx33d & current_rgb_to_reference);
   bool ready() const noexcept;
+  // Reuse the measured RGB mount pose from the integrated BEV reference.
+  void setMountPose(const cv::Matx33d & rotation_vehicle_from_rgb,
+    const cv::Vec3d & rgb_center_vehicle_m);
   double validPixelRatio() const noexcept;
   const cv::Mat & validMask() const noexcept;
 

@@ -1,13 +1,44 @@
 # vehicle_bringup
 
-`auto_drive.launch.py`는 신호등 **상태 관측만** 기본 활성화한다.
+터널 RGB↔IR 자동 전환은 [tunnel_drive](../tunnel_drive/README.md)의 통합 launch를 사용한다.
+외부 RGB 80 FPS, 터널 IR 30 FPS, 외부 IR 대기 5 FPS이며 기존 단독 실행은 유지한다.
+공유 카메라 변경이 있으므로 `colcon build --packages-up-to tunnel_drive`로 함께 빌드한다.
+
+## 기본 주행 설정과 외부 YAML
+
+패키지 기본 YAML은 제공된 `auto_control_test.yaml`, `bev_config_test.yaml`,
+`line_detactor_test.yaml`, `obstacles_test.yaml`, `traffic_light_test.yaml`의 파라미터 값을
+반영한다. 외부 기본 속도 범위는 1.0~1.8m/s, maximum duty는 0.12이며 코너 감속,
+신호등 정지, 장애물 회피와 주행 로그를 활성화한다. 신호등 추론은 최대 30Hz,
+일반 외부 stereo/depth는 40FPS다. 터널 통합에서는 앞서 정한 IR 노출을 위해
+stereo/depth 30FPS와 터널 내부 장애물·신호등 제어 제외를 적용한다.
+
+RGB 차선 모델은 같은 INT8 Q/DQ ONNX를 사용하며, 특정 차량 폴더 대신 설치된
+`line_detactor/models`에서 파일명으로 찾는다. 외부 YAML의 절대 모델 경로는 그대로 사용한다.
+새 코드에 필요한 항목 중 제공된 YAML에 없는 키는 기존 패키지 기본값을 유지한다.
+
+파일을 지정하지 않으면 설치된 기본 설정을 읽는다. 기존 파일 경로 인자는 유지하며,
+명시적 launch 인자가 YAML 값보다 우선한다. 다음은 경로만 교체해 쓰는 예시다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  auto_control_params_file:=/path/to/auto_control_test.yaml \
+  bev_params_file:=/path/to/bev_config_test.yaml \
+  line_detactor_params_file:=/path/to/line_detactor_test.yaml \
+  obstacle_params_file:=/path/to/obstacles_test.yaml \
+  traffic_light_params_file:=/path/to/traffic_light_test.yaml
+```
+
+같은 다섯 인자를 `ros2 launch tunnel_drive tunnel_drive.launch.py`에도 전달할 수 있다.
+
+`auto_drive.launch.py`는 신호등 관측과 정지선 제동을 기본 활성화한다.
 `traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx`를 별도 작업 스레드에서
-20Hz로 실행하고, 카메라의 BEV 변환 전 컬러 영상을 공유한다.
+30Hz로 실행하고, 카메라의 BEV 변환 전 컬러 영상을 공유한다.
 기존 BEV 프리뷰 하단에 `Traffic: RED / GREEN / UNKNOWN`을 표시한다.
-별도 신호등 창은 없으며 기본적으로 관측만 수행한다.
+별도 신호등 창은 없다.
 개발용 정지선 제동은 `traffic_stop_enabled:=true`로 켜고 `false`로 끈다.
 속도 제어는 기본 `longitudinal_pid_enabled:=true`, 코너 감속은
-`curvature_speed_control_enabled:=false`다. 정지선 거리로 목표 속도를 갱신하고
+`curvature_speed_control_enabled:=true`다. 정지선 거리로 목표 속도를 갱신하고
 PID가 가속/제동을 제어한다.
 설정은 [auto_control 문서](../auto_control/README.md)의 신호등 정지 항목을 참고한다.
 `/traffic_light/state`의 `state`는

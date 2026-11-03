@@ -382,6 +382,26 @@ def _apply_parameter_file_defaults(
         name="line_detactor", parameters=[detector],
         extra_arguments=[{"use_intra_process_comms": True}],
     )]
+    tunnel_actions = []
+    tunnel = LaunchConfiguration("tunnel_enabled").perform(context).lower()
+    if tunnel not in ("true", "false"):
+        raise RuntimeError("tunnel_enabled must be true or false")
+    if tunnel == "true":
+        if measurement == "true":
+            raise RuntimeError("Tunnel switching is not supported in performance measurement mode")
+        if not (width == 120 and height == 300 and math.isclose(x_max, 3.0) and
+                math.isclose(y_max, .6) and math.isclose(mpp, .01) and
+                bev_defaults["output_frame_id"] == "front_axle_bev"):
+            raise RuntimeError("Tunnel IR model requires 120x300 front-axle BEV at 1cm/pixel")
+        from tunnel_drive.launch_support import integrated_nodes
+        components, tunnel_actions = integrated_nodes(detector, controller_defaults, context)
+        # Recreate RGB description: ComposableNode normalizes/copies parameters.
+        nodes[0] = ComposableNode(
+            package="line_detactor", plugin="line_detactor::LineDetactorNode",
+            name="line_detactor", parameters=[detector],
+            extra_arguments=[{"use_intra_process_comms": True}])
+        nodes.extend(components)
+        context.launch_configurations["ml_lane_result_topic"] = "/tunnel/lane_result"
     traffic_enabled = LaunchConfiguration("traffic_light_enabled").perform(context).lower()
     if traffic_enabled not in ("true", "false"):
         raise RuntimeError("traffic_light_enabled must be true or false")
@@ -432,7 +452,7 @@ def _apply_parameter_file_defaults(
         " | avoidance_preview=" + str(avoidance) + " | avoidance_control=" + str(apply_avoidance) +
         " | deformation_only=" + str(deformation_only) +
         " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
-    )), *manual_actions, bev_launch, LoadComposableNodes(
+    )), *manual_actions, *tunnel_actions, bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
         composable_node_descriptions=nodes,
     )]
@@ -681,6 +701,7 @@ def generate_launch_description():
             "bev_params_file": bev_params_file,
             "camera_params_file": LaunchConfiguration("camera_params_file"),
             "obstacles_enabled": LaunchConfiguration("obstacles_enabled"),
+            "tunnel_enabled": LaunchConfiguration("tunnel_enabled"),
             "perception_params_file": LaunchConfiguration("effective_perception_params_file"),
             "measured_erpm_topic": LaunchConfiguration("perception_erpm_topic"),
             "vehicle_acceleration_topic": LaunchConfiguration("perception_acceleration_topic"),
@@ -696,6 +717,7 @@ def generate_launch_description():
     )
 
     controller_overrides.update({
+        "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
         "avoidance_control_enabled": ParameterValue(LaunchConfiguration("effective_avoidance_control_enabled"), value_type=bool),
         "avoidance_deformation_only": ParameterValue(LaunchConfiguration("effective_avoidance_deformation_only"), value_type=bool),
         **{name: LaunchConfiguration("effective_" + name) for name in (
@@ -786,6 +808,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
+            DeclareLaunchArgument("tunnel_enabled", default_value="false"),
             DeclareLaunchArgument("manual_test", default_value="false",
                                   description="Keep all perception and auto_control diagnostics; force monitor_only and use manual driving"),
             DeclareLaunchArgument("manual_enabled", default_value="true",

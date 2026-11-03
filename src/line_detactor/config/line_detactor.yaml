@@ -4,11 +4,11 @@ line_detactor:
     # auto_drive.launch.py에서는 true로 덮어써 같은 프로세스의 CUDA BEV
     # 버퍼를 직접 받고, 독립 실행에서는 기존 ROS 영상 토픽을 사용한다.
     direct_bev_input_enabled: false
-    # model_path defaults to fast_scnn_stop_line_120x300_batch_1.onnx (3 channels).
+    # Packaged defaults use the INT8 Q/DQ model selected by model_path below.
     # Run tools/export_stop_line_onnx.py after training before copying/building this package.
     engine_cache_path: ""
     # fp32/fp16 use the ordinary FP32 ONNX; int8 requires the explicit Q/DQ ONNX.
-    engine_precision: "fp32"
+    engine_precision: "int8"
     tensorrt_workspace_size_mb: 1024
     model_input_width: 120
     model_input_height: 300
@@ -39,7 +39,7 @@ line_detactor:
     connection_min_component_area_px: 8   # Sole noise-removal rule; 1 disables removal.
     # 1..4; 2 thins each component at about half width/height, then restores coordinates.
     # Original labels stay intact; coarse skeletons may change endpoints/corner shape.
-    connection_skeleton_downsample_factor: 1
+    connection_skeleton_downsample_factor: 2
     connection_border_endpoint_distance_px: 6.0 # Skeleton tip -> actual edge contact limit.
     connection_min_fragment_length_px: 8.0 # Minimum support for interpolation ONLY.
     connection_max_fragments: 24          # Cap border candidates only; never deletes masks.
@@ -59,13 +59,13 @@ line_detactor:
     control_latency_topic: "/auto/detector_input_to_control_decision_ms"
 
     preview_enabled: true
-    bev_theme_enable: false              # Live toggle: white BEV, gray borders, blue path, HUD/ruler.
-    bev_theme_preview_fps: 15.0          # Theme-only cap, also bounded by preview_fps. Startup setting.
+    bev_theme_enable: true              # Live toggle: white BEV, gray borders, blue path, HUD/ruler.
+    bev_theme_preview_fps: 30.0          # Theme-only cap, also bounded by preview_fps. Startup setting.
     bev_theme_speed_topic: "/auto/current_speed" # Theme + normal preview speed. Stale >0.5s displays --.
     preview_target_speed_topic: "/auto/target_speed"
     preview_corner_state_topic: "/auto/corner_state"
     # Black background with lanes/stop line/yellow path; skip source-image blending.
-    preview_result_only_enabled: true
+    preview_result_only_enabled: false
     # GUI refresh only. Inference/result publication run whenever a new BEV arrives.
     preview_fps: 30.0
     preview_scale: 2.0
@@ -79,17 +79,17 @@ line_detactor:
     centerline_lane_width_m: 0.65
     centerline_bev_width_m: 1.2
     centerline_bev_height_m: 3.0
-    centerline_sample_spacing_m: 0.015
-    centerline_output_spacing_m: 0.01    # 0.005..0.10m; final path spacing before smoothing.
+    centerline_sample_spacing_m: 0.035
+    centerline_output_spacing_m: 0.02    # 0.005..0.10m; final path spacing before smoothing.
     # 0.001..0.05m, independent of candidate/output spacing. Half this step is added
     # to the clearance guard; larger steps reduce checks but can reject tighter paths.
-    centerline_clearance_check_spacing_m: 0.005
+    centerline_clearance_check_spacing_m: 0.025
     centerline_min_fragment_length_m: 0.08
     centerline_tangent_window_m: 0.06
     centerline_width_tolerance_m: 0.12
     centerline_pair_along_tolerance_m: 0.055
     centerline_pair_heading_tolerance_deg: 40.0
-    centerline_max_gap_m: 0.12
+    centerline_max_gap_m: 0.09
     centerline_max_start_distance_m: 0.65
     centerline_min_clearance_m: 0.16
     centerline_outside_margin_m: 0.12
@@ -97,17 +97,17 @@ line_detactor:
     centerline_line_width_px: 2
     # Prefer the observed OUTER boundary shape in corners; fade with local support/turn.
     centerline_corner_outer_enabled: true
-    centerline_corner_outer_weight: 0.85
+    centerline_corner_outer_weight: 1.0
     # Additional outward path shift for observed corners and their straight entry.
     # 0 disables the shift; shape weighting above remains active. Clearance still applies.
-    centerline_corner_outward_offset_m: 0.05
+    centerline_corner_outward_offset_m: 0.08
     # Extend local corner evidence this far back along the observed boundary,
     # with a smooth ramp. 0 keeps only the local corner shift; valid range 0..5m.
-    centerline_corner_entry_distance_m: 0.40
+    centerline_corner_entry_distance_m: 2.2
     # Within this boundary-arc distance of corner evidence, keep full observed confidence.
     # 0 keeps the old ramp; a positive value must be smaller than entry_distance_m.
     # Earlier positioning example: entry_distance_m=1.2, full_offset_distance_m=0.6.
-    centerline_corner_entry_full_offset_distance_m: 0.0
+    centerline_corner_entry_full_offset_distance_m: 0.6
     centerline_corner_outer_window_m: 0.60
     centerline_corner_outer_tangent_window_m: 0.15
     centerline_corner_outer_min_length_m: 0.30
@@ -118,7 +118,7 @@ line_detactor:
     centerline_smoothing_sigma_m: 0.04
     centerline_smoothing_window_m: 0.65
     centerline_smoothing_max_shift_m: 0.03
-    centerline_smoothing_strength: 1.0
+    centerline_smoothing_strength: 0.8
     centerline_straight_turn_deg: 12.0
     centerline_corner_turn_deg: 35.0
     centerline_turn_window_m: 0.30
@@ -126,3 +126,5 @@ line_detactor:
     # Per-frame CPU/GPU timing and effective parameters in one CSV. No GUI/algorithm changes.
     profiling_enabled: false
     profiling_directory: "/tmp/line_detactor_profiles"
+    # Bare model filenames resolve inside the installed package models directory.
+    model_path: "fast_scnn_stop_line_120x300_batch_1.int8.qdq.onnx"

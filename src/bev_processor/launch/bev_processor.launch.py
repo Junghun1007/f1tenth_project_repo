@@ -5,6 +5,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
+from launch.substitutions import PythonExpression
 from launch_ros.actions import ComposableNodeContainer
 from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
@@ -215,6 +216,7 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("obstacles_enabled", default_value="false"),
+            DeclareLaunchArgument("tunnel_enabled", default_value="false"),
             DeclareLaunchArgument("measured_erpm_topic", default_value=_PARAMETER_FILE_DEFAULT),
             DeclareLaunchArgument("vehicle_acceleration_topic", default_value=_PARAMETER_FILE_DEFAULT),
             DeclareLaunchArgument("perception_params_file", default_value=LaunchConfiguration("bev_params_file"),
@@ -357,7 +359,10 @@ def generate_launch_description():
                             LaunchConfiguration("bev_params_file"),
                             LaunchConfiguration("perception_params_file"),
                             {
-                                "obstacles.share_reference": ParameterValue(LaunchConfiguration("obstacles_enabled"), value_type=bool),
+                                "obstacles.share_reference": ParameterValue(PythonExpression([
+                                    "'", LaunchConfiguration("obstacles_enabled"), "' == 'true' or '",
+                                    LaunchConfiguration("tunnel_enabled"), "' == 'true'"]), value_type=bool),
+                                "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
                                 "performance_measurement_enabled": (
                                     performance_measurement_parameter
                                 ),
@@ -391,6 +396,7 @@ def generate_launch_description():
                             LaunchConfiguration("perception_params_file"),
                             {
                                 "obstacles.depth.enabled": ParameterValue(LaunchConfiguration("obstacles_enabled"), value_type=bool),
+                                "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
                                 "imu_stabilization_measured_erpm_topic": LaunchConfiguration("measured_erpm_topic"),
                                 "imu_stabilization_can_acceleration_topic": LaunchConfiguration("vehicle_acceleration_topic"),
                                 "preview_enabled": ParameterValue(

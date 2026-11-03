@@ -8,9 +8,11 @@
 #include "line_detactor/speed_limit_panel.hpp"
 #include "line_detactor/msg/speed_limit_state.hpp"
 #include "std_msgs/msg/float64.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "line_detactor/obstacle_overlay.hpp"
 
 #include "bev_handoff/direct_bev_handoff.hpp"
+#include "line_detactor/frame_rate_gate.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
 
 #include <algorithm>
@@ -202,6 +204,21 @@ public:
           preview_corner_state_received_at_ = SteadyClock::now();
         });
     }
+    tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
+    inference_max_fps_=node_.declare_parameter<double>("inference_max_fps",0.0);
+    if (!std::isfinite(inference_max_fps_) || inference_max_fps_<0) {
+      throw std::invalid_argument("inference_max_fps must be finite and nonnegative");
+    }
+    if (tunnel_enabled_) {
+      rclcpp::SubscriptionOptions tunnel_options;
+      tunnel_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
+      tunnel_compute_sub_=node_.create_subscription<std_msgs::msg::String>(
+        "/tunnel/compute_source",rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          if (message->data=="IR") {inference_max_fps_.store(5.0);}
+          else if (message->data=="RGB" || message->data=="BOTH") {inference_max_fps_.store(80.0);}
+        },tunnel_options);
+    }
     theme_parameter_callback_ = node_.add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter> & parameters) {
         rcl_interfaces::msg::SetParametersResult result;
@@ -329,6 +346,11 @@ private:
       "direct_bev_input_enabled", false);
     model_path_ = node_.declare_parameter<std::string>(
       "model_path", default_model_path());
+    // Packaged defaults may select a model by filename without embedding a
+    // particular vehicle's install path. Absolute/custom paths stay untouched.
+    if (!model_path_.empty() && !std::filesystem::path(model_path_).has_parent_path()) {
+      model_path_ = (std::filesystem::path(default_model_path()).parent_path() / model_path_).string();
+    }
     engine_cache_path_ = node_.declare_parameter<std::string>(
       "engine_cache_path", "");
     engine_precision_ = node_.declare_parameter<std::string>(
@@ -689,6 +711,8 @@ private:
       static_cast<builtin_interfaces::msg::Time>(node_.get_clock()->now());
     {
       std::lock_guard<std::mutex> lock(frame_mutex_);
+      if (!rate_gate_.accept(std::chrono::duration<double>(received_at.time_since_epoch()).count(),
+          inference_max_fps_.load())) {return;}
       latest_message_ = std::move(frame);
       latest_input_received_at_ = received_at;
       latest_input_received_stamp_ = received_stamp;
@@ -1483,6 +1507,10 @@ private:
   SpeedLimitSnapshot speed_limit_snapshot_;
   SteadyClock::time_point speed_limit_received_at_{};
   std::mutex frame_mutex_;
+  FrameRateGate rate_gate_;
+  bool tunnel_enabled_{false};
+  std::atomic<double> inference_max_fps_{0.0};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_compute_sub_;
   std::condition_variable frame_condition_;
   std::shared_ptr<const InputFrame> latest_message_;
   SteadyClock::time_point latest_input_received_at_{};

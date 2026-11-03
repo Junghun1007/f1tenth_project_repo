@@ -40,6 +40,7 @@
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/joy.hpp"
 #include "std_msgs/msg/int32.hpp"
+#include "std_msgs/msg/string.hpp"
 
 namespace camera_driver
 {
@@ -363,6 +364,7 @@ public:
         status_period, std::bind(&Impl::report_status, this));
       capture_thread_ = std::thread(&Impl::capture_loop, this);
       if (depth_enabled_) {depth_thread_=std::thread(&Impl::depth_loop,this);}
+      if (tunnel_enabled_) {ir_thread_=std::thread(&Impl::ir_loop,this);}
       if (imu_stream_enabled_) {
         imu_thread_ = std::thread(&Impl::imu_loop, this);
       }
@@ -1223,21 +1225,60 @@ private:
       depth_config_.median=node_.declare_parameter<std::string>("obstacles.depth.median_filter","off",descriptor);
       point_cloud::validate(depth_config_);
     }
-    const auto shared_device_id=depth_enabled_ ? bev_handoff::obstacleDeviceId() : std::string{};
-    if (depth_enabled_ && shared_device_id.empty()) {
+    tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
+    if (tunnel_enabled_) {
+      if (camera_socket_!=dai::CameraBoardSocket::CAM_A || !imu_stabilization_enabled_) {
+        throw std::runtime_error("Tunnel integration requires CAM_A and IMU stabilization");
+      }
+      tcn_publisher_=node_.create_publisher<sensor_msgs::msg::Image>(
+        "/tunnel/rgb_raw",rclcpp::SensorDataQoS().keep_last(1));
+      rclcpp::SubscriptionOptions tunnel_options;
+      tunnel_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
+      tunnel_mode_sub_=node_.create_subscription<std_msgs::msg::String>(
+        "/tunnel/target_source",rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          if (message->data=="IR" || message->data=="RGB") {
+            tunnel_requested_.store(message->data=="IR");
+          }
+        },tunnel_options);
+      // RGB remains 80 FPS. Stereo/IR use 30 FPS so the verified 30ms
+      // tunnel exposure fits within a sensor frame without rebuilding OAK.
+      depth_config_.fps=30.0;
+      sensor_fps_=80.0;
+      publish_fps_=80.0;
+    }
+    const auto shared_device_id=(depth_enabled_ || tunnel_enabled_) ? bev_handoff::obstacleDeviceId() : std::string{};
+    if ((depth_enabled_ || tunnel_enabled_) && shared_device_id.empty()) {
       throw std::runtime_error("Load bev_processor with obstacles.share_reference before camera_driver in the same container");
     }
     auto device=shared_device_id.empty() ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
       std::make_shared<dai::Device>(dai::DeviceInfo(shared_device_id),dai::UsbSpeed::SUPER);
-    if (depth_enabled_) {depth_calibration_=std::make_shared<dai::CalibrationHandler>(device->getCalibration());}
+    if (depth_enabled_ || tunnel_enabled_) {depth_calibration_=std::make_shared<dai::CalibrationHandler>(device->getCalibration());}
+    tunnel_device_=device;
     pipeline_ = std::make_unique<dai::Pipeline>(device);
+    if (tunnel_enabled_) {pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);}
     pipeline_->setXLinkChunkSize(0);
     std::shared_ptr<dai::node::StereoDepth> stereo;
     if (depth_enabled_) {
       pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
-      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_);
+      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr);
       depth_queue_=stereo->depth.createOutputQueue(1,false);
       bev_handoff::publishDirectDepth(nullptr);
+    }
+
+    dai::Node::Output * ir_output=nullptr;
+    if (tunnel_enabled_) {
+      if (!tunnel_cameras_.left) {
+        tunnel_cameras_.left=pipeline_->create<dai::node::Camera>()->build(
+          dai::CameraBoardSocket::CAM_B,std::make_pair(1280,800),30.0F);
+      }
+      ir_output=tunnel_cameras_.left->requestOutput(
+        std::make_pair(1280,800),dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,true);
+      ir_queue_=ir_output->createOutputQueue(1,false);
+      ir_controls_.push_back(tunnel_cameras_.left->inputControl.createInputQueue());
+      if (tunnel_cameras_.right) {
+        ir_controls_.push_back(tunnel_cameras_.right->inputControl.createInputQueue());
+      }
     }
 
     // CAM_A is the native color/NV12 path. The stereo sensors on CAM_B/C are
@@ -1316,6 +1357,10 @@ private:
       }
     }
 
+    if (tunnel_enabled_ && (!imu_stream_enabled_ || !imu_stabilizer_)) {
+      throw std::runtime_error("Tunnel IR requires a working calibrated IMU; refusing unstabilized fallback");
+    }
+
     // The host output queue above is already latest-only, but DepthAI creates
     // a separate implicit XLinkOut input queue on the device. Build first so
     // that bridge exists, then make its queue latest-only as well.
@@ -1326,6 +1371,13 @@ private:
     }
     xlink_bridge->xLinkOut->input.setMaxSize(1);
     xlink_bridge->xLinkOut->input.setBlocking(false);
+
+    if (ir_output) {
+      const auto bridge=ir_output->getXLinkBridge();
+      if (!bridge || !bridge->xLinkOut) {throw std::runtime_error("Missing IR XLink bridge");}
+      bridge->xLinkOut->input.setMaxSize(1);
+      bridge->xLinkOut->input.setBlocking(false);
+    }
 
     if (stereo) {
       const auto bridge=stereo->depth.getXLinkBridge();
@@ -1462,6 +1514,83 @@ private:
     return ros_now + rclcpp::Duration::from_nanoseconds(offset_ns);
   }
 
+  void ir_loop()
+  {
+    bool applied=false;
+    bool dirty=true;
+    auto changed_at=std::chrono::steady_clock::time_point{};
+    auto last=std::chrono::steady_clock::time_point{};
+    auto retry_at=last;
+    while (!stop_requested_.load()) {
+      try {
+        const bool requested=tunnel_requested_.load();
+        const auto now=std::chrono::steady_clock::now();
+        if ((dirty || requested!=applied) && now>=retry_at) {
+          dirty=true;
+          tunnel_profile_ready_.store(false);
+          // One owner changes BOTH stereo exposures and the shared IR lights.
+          for (const auto & queue:ir_controls_) {
+            auto control=std::make_shared<dai::CameraControl>();
+            if (requested) {control->setManualExposure(30000,800);}
+            else {control->setAutoExposureEnable();}
+            queue->send(control);
+          }
+          const double dot=requested ? 0.0 : (depth_enabled_ ? depth_config_.dot_intensity : 0.0);
+          const double flood=requested ? 0.5 : (depth_enabled_ ? depth_config_.flood_intensity : 0.0);
+          if (!tunnel_device_->setIrLaserDotProjectorIntensity(static_cast<float>(dot)) ||
+            !tunnel_device_->setIrFloodLightIntensity(static_cast<float>(flood))) {
+            throw std::runtime_error("Tunnel IR lighting command failed");
+          }
+          applied=requested;
+          dirty=false;
+          tunnel_profile_applied_.store(applied);
+          changed_at=now;
+          depth_resume_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            (now+150ms).time_since_epoch()).count());
+          tunnel_profile_ready_.store(true);
+          bev_handoff::publishDirectIr(nullptr);
+          bev_handoff::publishDirectDepth(nullptr);
+          bev_handoff::clearObstacles();
+          RCLCPP_INFO(node_.get_logger(),"Camera profile=%s",applied ? "IR 30ms ISO800 dot0 flood0.5" : "OUTSIDE auto exposure/depth lights restored");
+        }
+        auto packet=ir_queue_->tryGet<dai::ImgFrame>();
+        if (!packet) {std::this_thread::sleep_for(1ms); continue;}
+        if (dirty) {continue;}
+        const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
+        if (captured<=last || captured>now+50ms || std::chrono::duration<double>(now-captured).count()>.25 ||
+          captured<changed_at+150ms) {continue;}
+        last=captured;
+        if (applied && (std::abs(packet->getExposureTime().count()-30000)>500 ||
+          packet->getSensitivity()!=800)) {continue;}
+        const auto correction=imu_stabilizer_->correctionAt(
+          std::chrono::duration<double>(captured.time_since_epoch()).count());
+        if (!correction || !correction->within_correction_limit) {continue;}
+        if (packet->getType()!=dai::ImgFrame::Type::GRAY8) {throw std::runtime_error("Expected LEFT GRAY8");}
+        const auto transform=point_cloud::rgbFromFrame(*packet,*depth_calibration_);
+        const auto k=packet->getTransformation().getIntrinsicMatrix();
+        auto frame=std::make_shared<bev_handoff::DirectIrFrame>();
+        frame->mono=packet->getFrame(false); frame->owner=packet;
+        frame->intrinsics={k[0][0],k[1][1],k[0][2],k[1][2]};
+        for (int r=0;r<3;++r) {
+          frame->view_center_rgb_m[r]=transform.translation[r];
+          for (int c=0;c<3;++c) {frame->rgb_from_view(r,c)=transform.rotation[r*3+c];}
+        }
+        frame->current_rgb_to_reference=correction->camera_to_reference_tilt;
+        frame->captured_at=captured; frame->header.stamp=ros_timestamp_for(captured);
+        frame->header.frame_id="front_axle_bev"; frame->tunnel_profile=applied;
+        bev_handoff::publishDirectIr(std::move(frame));
+      } catch (const std::exception & e) {
+        bev_handoff::publishDirectIr(nullptr);
+        // Repeated profile failures must not hammer device control or expose
+        // frames as if the requested profile had been applied.
+        retry_at=std::chrono::steady_clock::now()+1s;
+        RCLCPP_ERROR_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,"Tunnel IR input: %s",e.what());
+        std::this_thread::sleep_for(10ms);
+      }
+    }
+    bev_handoff::publishDirectIr(nullptr);
+  }
+
   void depth_loop()
   {
     auto last=std::chrono::steady_clock::time_point{};
@@ -1470,6 +1599,12 @@ private:
         if (!pipeline_->isRunning()) {break;}
         auto packet=depth_queue_->tryGet<dai::ImgFrame>();
         if (!packet) {std::this_thread::sleep_for(1ms); continue;}
+        if (tunnel_enabled_ && (!tunnel_profile_ready_.load() || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+            packet->getTimestamp(dai::CameraExposureOffset::MIDDLE).time_since_epoch()).count()<depth_resume_ns_.load())) {
+          bev_handoff::publishDirectDepth(nullptr);
+          continue;
+        }
         const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
         const double age=std::chrono::duration<double>(std::chrono::steady_clock::now()-captured).count();
         if (age<0 || age>0.25 || captured<=last) {continue;}
@@ -1516,6 +1651,21 @@ private:
         // host arrival time or the beginning/end of exposure.
         const auto sensor_timestamp = packet->getTimestamp(
           dai::CameraExposureOffset::MIDDLE);
+        if (tunnel_enabled_ && packet->getType()==dai::ImgFrame::Type::NV12 &&
+          (last_tcn_frame_==std::chrono::steady_clock::time_point{} || sensor_timestamp>=last_tcn_frame_+33333333ns)) {
+          // Publish raw, unstabilized luminance at approximately 30Hz for the
+          // existing TCN feature history. Keep source capture stamps and padding.
+          auto message=std::make_unique<sensor_msgs::msg::Image>();
+          message->header.stamp=ros_timestamp_for(sensor_timestamp);
+          message->header.frame_id=frame_id_; message->encoding="nv12";
+          message->width=packet->getWidth(); message->height=packet->getHeight();
+          message->step=packet->getStride() ? packet->getStride() : packet->getWidth();
+          message->data=packet->getData();
+          tcn_publisher_->publish(std::move(message));
+          // Advance a source-time grid rather than quantizing 80Hz to 26.7Hz.
+          if (last_tcn_frame_==std::chrono::steady_clock::time_point{}) {last_tcn_frame_=sensor_timestamp;}
+          else {last_tcn_frame_+=33333333ns; if (sensor_timestamp-last_tcn_frame_>33333333ns) {last_tcn_frame_=sensor_timestamp;}}
+        }
         if (performance_measurement_enabled_) {
           record_steady_latency(
             received_at - sensor_timestamp,
@@ -2890,6 +3040,8 @@ private:
     join_thread(imu_thread_);
     join_thread(capture_thread_);
     join_thread(depth_thread_);
+    join_thread(ir_thread_);
+    if (tunnel_enabled_) {bev_handoff::publishDirectIr(nullptr);}
     if (depth_enabled_) {bev_handoff::publishDirectDepth(nullptr);}
 
     if (status_timer_) {
@@ -2995,6 +3147,19 @@ private:
   dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::CROP};
 
   std::unique_ptr<dai::Pipeline> pipeline_;
+  bool tunnel_enabled_{false};
+  std::atomic<bool> tunnel_requested_{false};
+  std::atomic<bool> tunnel_profile_applied_{false};
+  std::atomic<bool> tunnel_profile_ready_{false};
+  std::atomic<std::int64_t> depth_resume_ns_{0};
+  point_cloud::StereoCameras tunnel_cameras_;
+  std::shared_ptr<dai::Device> tunnel_device_;
+  std::shared_ptr<dai::MessageQueue> ir_queue_;
+  std::vector<std::shared_ptr<dai::InputQueue>> ir_controls_;
+  std::thread ir_thread_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_mode_sub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr tcn_publisher_;
+  std::chrono::steady_clock::time_point last_tcn_frame_{};
   bool depth_enabled_{false};
   point_cloud::Config depth_config_;
   std::shared_ptr<dai::CalibrationHandler> depth_calibration_;

@@ -22,6 +22,8 @@ find_package(ament_cmake REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
+find_package(bev_handoff REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -102,6 +104,13 @@ install(
   DIRECTORY include/
   DESTINATION include
 )
+
+add_library(shared_ir_bev_component SHARED src/shared_ir_bev_node.cpp)
+ament_target_dependencies(shared_ir_bev_component rclcpp rclcpp_components
+  sensor_msgs std_msgs bev_handoff)
+target_link_libraries(shared_ir_bev_component ir_bev_projector ${OpenCV_LIBS})
+rclcpp_components_register_nodes(shared_ir_bev_component "ir_camera_driver::SharedIrBevNode")
+install(TARGETS shared_ir_bev_component LIBRARY DESTINATION lib)
 install(
   DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}

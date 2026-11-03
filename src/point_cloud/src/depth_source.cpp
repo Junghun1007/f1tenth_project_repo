@@ -77,14 +77,18 @@ void validate(const Config & c)
   }
 }
 
-std::shared_ptr<dai::node::StereoDepth> addStereoDepth(dai::Pipeline & pipeline, const Config & c)
+std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
+  dai::Pipeline & pipeline, const Config & c, StereoCameras * cameras)
 {
   validate(c);
   const auto size = resolutionSize(c.resolution);
   auto left = pipeline.create<dai::node::Camera>();
   auto right = pipeline.create<dai::node::Camera>();
-  left->build(dai::CameraBoardSocket::CAM_B, size, static_cast<float>(c.fps));
-  right->build(dai::CameraBoardSocket::CAM_C, size, static_cast<float>(c.fps));
+  // An additional undistorted 800p LEFT output is used by tunnel lane inference.
+  const auto sensor_size = cameras ? std::make_pair(1280U, 800U) : size;
+  left->build(dai::CameraBoardSocket::CAM_B, sensor_size, static_cast<float>(c.fps));
+  right->build(dai::CameraBoardSocket::CAM_C, sensor_size, static_cast<float>(c.fps));
+  if (cameras) {*cameras = {left, right};}
   auto stereo = pipeline.create<dai::node::StereoDepth>();
   stereo->build(*left->requestOutput(size), *right->requestOutput(size), preset(c.mode));
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);

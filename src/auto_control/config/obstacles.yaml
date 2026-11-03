@@ -7,16 +7,16 @@ camera_driver:
     # CAM_A RGB는 camera_config.yaml 설정 유지. 같은 OAK의 CAM_B/C로 depth 생성.
     obstacles.depth.enabled: true
     obstacles.camera.resolution: "400p" # 400p / 480p / 720p / 800p
-    obstacles.camera.fps: 60.0          # 요청 FPS. RGB/Depth 동시 실행 실측 FPS는 로그 확인.
+    obstacles.camera.fps: 40.0          # 요청 FPS. RGB/Depth 동시 실행 실측 FPS는 로그 확인.
     obstacles.depth.mode: "high_density" # default / high_density / high_accuracy
     obstacles.depth.ir_dot_projector_intensity: 0.7 # 지원하지 않는 장치는 0.0
     obstacles.depth.ir_flood_light_intensity: 0.0
     obstacles.depth.confidence_threshold: 200
     obstacles.depth.left_right_check: true
     obstacles.depth.left_right_threshold: 10
-    obstacles.depth.subpixel: true
+    obstacles.depth.subpixel: false
     obstacles.depth.subpixel_fractional_bits: 3
-    obstacles.depth.median_filter: "off"
+    obstacles.depth.median_filter: "3x3"
 
 bev_processor:
   ros__parameters:
@@ -37,9 +37,9 @@ auto_obstacles:
     obstacles.ground.distance_m: 0.05
     obstacles.ground.distance_per_meter: 0.01
     obstacles.ground.max_distance_m: 0.12
-    obstacles.height.max_m: 1.0
+    obstacles.height.max_m: 0.5
     obstacles.range.min_m: 0.1
-    obstacles.range.max_m: 12.0 # 검출 범위. 화면은 기존 전방 3m/좌우 0.6m로 제한.
+    obstacles.range.max_m: 2.0 # 검출 범위. 화면은 기존 전방 3m/좌우 0.6m로 제한.
     obstacles.scan.angle_min_deg: -70.0
     obstacles.scan.angle_max_deg: 70.0
     obstacles.scan.bins: 281
@@ -54,12 +54,12 @@ auto_obstacles:
 
     # 회피 경로 테스트. 기본 화면 전용, avoidance_control_enabled:=true이면 실제 제어 연결.
     # enabled만 ros2 param set으로 즉시 변경 가능. 나머지는 재실행 필요.
-    obstacles.avoidance.enabled: false
+    obstacles.avoidance.enabled: true
     # auto_drive에서는 auto_control YAML의 avoidance_deformation_only가 아래 값을 덮어씀.
     obstacles.avoidance.deformation_only: true # 차선 안 장애물의 반대쪽으로 중앙선 변형; 출발 차단 없음
     # true일 때 unknown_extent, half_length, max_curvature, lateral_acceleration,
     # deceleration, clear_confirm은 변형 계산에 미사용. safety_margin은 변형량에만 적용(0 허용).
-    obstacles.avoidance.max_fps: 10.0 # 차선과 독립 스레드. 최대 계획 빈도
+    obstacles.avoidance.max_fps: 20.0 # 차선과 독립 스레드. 최대 계획 빈도
     obstacles.avoidance.max_age_sec: 0.25
     obstacles.avoidance.max_sync_sec: 0.06
     obstacles.avoidance.centerline_fallback_enabled: true # 회피 후보의 누락 경계 추정. 기본 중앙선 주행은 양쪽 경계를 요구하지 않음.
@@ -67,11 +67,11 @@ auto_obstacles:
     obstacles.avoidance.vehicle_half_length_m: 0.25 # 앞차축 기준 가장 먼 차체 끝까지 거리로 설정
     obstacles.avoidance.obstacle_size_m: 0.13 # 검출 대표점을 중심으로 가정하는 정사각형 한 변. 포인트 퍼짐으로 크기를 추정하지 않음.
     obstacles.avoidance.safety_margin_m: 0.04
-    obstacles.avoidance.unknown_extent_m: 0.04 # 가정한 물체 외곽에 추가하는 위치/관측 오차 여유. 설정값 그대로 적용.
-    obstacles.avoidance.sample_step_m: 0.025
-    obstacles.avoidance.max_offset_m: 0.40
+    obstacles.avoidance.unknown_extent_m: 0.01 # 가정한 물체 외곽에 추가하는 위치/관측 오차 여유. 설정값 그대로 적용.
+    obstacles.avoidance.sample_step_m: 0.02
+    obstacles.avoidance.max_offset_m: 0.55
     # offset_step_m은 폐기. 기존 외부 YAML 값은 호환용으로 읽지만 계산에 사용하지 않음.
-    obstacles.avoidance.transition_m: 0.70 # 장애물별 진입/복귀 연결 길이. 가까운 반대쪽 장애물은 S자로 연결.
+    obstacles.avoidance.transition_m: 0.45 # 장애물별 진입/복귀 연결 길이. 가까운 반대쪽 장애물은 S자로 연결.
     obstacles.avoidance.max_curvature_per_m: 2.0 # 최소 회전반경 0.5m. 차량 한계 이하로 설정
     # max_speed_mps는 폐기(기존 YAML 값 무시). auto_control.maximum_speed_mps로 속도 설정.
     obstacles.avoidance.lateral_acceleration_mps2: 0.4 # 구버전 호환용; 회피 감속에는 미사용
@@ -79,6 +79,8 @@ auto_obstacles:
     # 기존 stop_response_sec는 호환용으로만 수용. 중앙선 길이로 출발을 제한하지 않음.
     obstacles.avoidance.clear_confirm_sec: 1.0 # 새 Depth에서 연속으로 중앙 경로가 비어야 복귀 표시
 
+    obstacles.avoidance.offset_step_m: 0.05
+    obstacles.avoidance.max_speed_mps: 1.0
 line_detactor:
   ros__parameters:
     obstacles.overlay_enabled: true
