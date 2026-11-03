@@ -1,5 +1,6 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
+#include "camera_driver/tunnel_ir_input_policy.hpp"
 #include "camera_driver/msg/bev_input.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
 #include "bev_handoff/direct_obstacle_handoff.hpp"
@@ -1226,6 +1227,7 @@ private:
       point_cloud::validate(depth_config_);
     }
     tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
+    tunnel_validation_mode_=node_.declare_parameter<bool>("tunnel.validation_mode",false);
     if (tunnel_enabled_) {
       if (camera_socket_!=dai::CameraBoardSocket::CAM_A || !imu_stabilization_enabled_) {
         throw std::runtime_error("Tunnel integration requires CAM_A and IMU stabilization");
@@ -1521,6 +1523,8 @@ private:
     auto changed_at=std::chrono::steady_clock::time_point{};
     auto last=std::chrono::steady_clock::time_point{};
     auto retry_at=last;
+    RCLCPP_INFO(node_.get_logger(),"Tunnel IR input mode=%s",
+      tunnel_validation_mode_ ? "standalone validation (no settle/age/exposure gate)" : "guarded");
     auto report_started=std::chrono::steady_clock::now();
     std::uint64_t received=0,published=0,time_rejected=0,exposure_rejected=0,imu_rejected=0;
     long last_exposure_us=0; int last_iso=0;
@@ -1573,11 +1577,11 @@ private:
         last_exposure_us=packet->getExposureTime().count(); last_iso=packet->getSensitivity();
         if (dirty) {continue;}
         const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
-        if (captured<=last || captured>now+50ms || std::chrono::duration<double>(now-captured).count()>.25 ||
-          captured<changed_at+150ms) {++time_rejected; continue;}
+        const auto rejection=tunnelIrRejection(tunnel_validation_mode_,applied,
+          captured,last,now,changed_at,last_exposure_us,last_iso);
+        if (rejection==TunnelIrRejection::time) {++time_rejected; continue;}
+        if (rejection==TunnelIrRejection::exposure) {++exposure_rejected; continue;}
         last=captured;
-        if (applied && (std::abs(packet->getExposureTime().count()-30000)>500 ||
-          packet->getSensitivity()!=800)) {++exposure_rejected; continue;}
         const auto correction=imu_stabilizer_->correctionAt(
           std::chrono::duration<double>(captured.time_since_epoch()).count());
         if (!correction || !correction->within_correction_limit) {++imu_rejected; continue;}
@@ -3165,7 +3169,7 @@ private:
   dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::CROP};
 
   std::unique_ptr<dai::Pipeline> pipeline_;
-  bool tunnel_enabled_{false};
+  bool tunnel_enabled_{false},tunnel_validation_mode_{false};
   std::atomic<bool> tunnel_requested_{false};
   std::atomic<bool> tunnel_profile_applied_{false};
   std::atomic<bool> tunnel_profile_ready_{false};

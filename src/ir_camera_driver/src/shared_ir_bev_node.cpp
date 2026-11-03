@@ -22,6 +22,9 @@ public:
   explicit SharedIrBevNode(const rclcpp::NodeOptions & options)
   : Node("shared_ir_bev", options)
   {
+    validation_=declare_parameter<bool>("validation_mode",false);
+    RCLCPP_INFO(get_logger(),"IR BEV mode=%s",
+      validation_ ? "standalone validation; stamp=BEV publication" : "guarded; stamp=camera capture");
     standby_=declare_parameter<double>("standby_fps",0.0);
     active_=declare_parameter<double>("active_fps",30.0);
     if (!std::isfinite(standby_) || !std::isfinite(active_) ||
@@ -67,8 +70,8 @@ private:
     const auto reference=bev_handoff::obstacleReference();
     if (!frame) {wait_reason_="waiting_camera_frame"; return;}
     if (!reference) {wait_reason_="waiting_bev_reference"; return;}
-    if (now-frame->captured_at>std::chrono::milliseconds(250)) {wait_reason_="camera_frame_stale"; return;}
-    if (inside_ && !frame->tunnel_profile) {wait_reason_="waiting_tunnel_exposure"; return;}
+    if (!validation_ && now-frame->captured_at>std::chrono::milliseconds(250)) {wait_reason_="camera_frame_stale"; return;}
+    if (!validation_ && inside_ && !frame->tunnel_profile) {wait_reason_="waiting_tunnel_exposure"; return;}
     if (frame->captured_at<=last_) {return;}
     try {
       if (!projector_) {
@@ -89,7 +92,12 @@ private:
           inside_ ? active_ : standby_)) {return;}
       const auto image=projector_->project(frame->mono,frame->current_rgb_to_reference);
       auto message=std::make_unique<sensor_msgs::msg::Image>();
-      message->header=frame->header; message->encoding="mono8";
+      // The working standalone driver defaults use_sensor_timestamps=false.
+      // Set one BEV publication stamp for both mono and model input; retain
+      // capture time in DirectIrFrame and diagnostics for measuring latency.
+      auto header=frame->header;
+      if (validation_) {header.stamp=get_clock()->now();}
+      message->header=header; message->encoding="mono8";
       message->width=image.cols; message->height=image.rows; message->step=image.cols;
       message->data.assign(image.datastart,image.dataend);
       publisher_->publish(std::move(message));
@@ -98,7 +106,7 @@ private:
       cv::Mat bgr;
       cv::cvtColor(image,bgr,cv::COLOR_GRAY2BGR);
       auto model_input=std::make_unique<sensor_msgs::msg::Image>();
-      model_input->header=frame->header; model_input->encoding="bgr8";
+      model_input->header=header; model_input->encoding="bgr8";
       model_input->width=bgr.cols; model_input->height=bgr.rows; model_input->step=bgr.cols*3;
       model_input->data.assign(bgr.datastart,bgr.dataend);
       bgr_publisher_->publish(std::move(model_input));
@@ -112,7 +120,7 @@ private:
     }
   }
   double standby_,active_;
-  bool inside_{false};
+  bool inside_{false},validation_{false};
   Clock::time_point last_{},retry_at_{},diagnostic_started_{};
   IrFrameRateGate rate_gate_;
   std::uint64_t output_count_{0};

@@ -54,6 +54,16 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.selector.state, 'OUTSIDE')
         self.assertFalse(self.lane('IR', 2.04))
 
+    def test_validation_uses_standalone_ir_timing_and_does_not_cross_compare_camera_clocks(self):
+        self.selector = LaneSelector(validation_mode=True)
+        self.assertTrue(self.lane('RGB', 10.))
+        self.assertTrue(self.selector.event('entry', ns(1.), ns(10.)))
+        self.assertTrue(self.lane('IR', 9.5, delay=.6))
+        self.assertFalse(self.lane('IR', 9.5, delay=.6))
+        self.assertTrue(self.selector.event('exit', ns(2.), ns(10.)))
+        self.assertTrue(self.lane('RGB', 10.1))
+        self.assertFalse(self.lane('RGB', 10.2, delay=.6)) # Outside keeps capture-age checks.
+
     def test_replayed_and_stale_events_do_not_change_mode(self):
         self.assertFalse(self.selector.event('entry', ns(1), ns(2)))
         self.assertFalse(self.selector.event('entry', ns(3), ns(2)))

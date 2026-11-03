@@ -13,7 +13,7 @@ class TunnelLaneSelector(Node):
     def __init__(self):
         super().__init__('tunnel_lane_selector')
         param = lambda key, default: self.declare_parameter(key, default).value
-        self.policy = LaneSelector(param('max_age_sec', .2))
+        self.policy = LaneSelector(param('max_age_sec', .2), param('validation_mode', False))
         sensor = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         status = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -52,7 +52,8 @@ class TunnelLaneSelector(Node):
         try:
             report = json.loads(message.data)
             stamp = report['source_stamp_ns']
-            if type(stamp) is not int or not 0 <= (self.get_clock().now().nanoseconds - stamp) / 1e9 <= .25:
+            if type(stamp) is not int or (not self.policy.validation_mode and
+                    not 0 <= (self.get_clock().now().nanoseconds - stamp) / 1e9 <= .25):
                 return
             self.preview.update(report, time.monotonic())
             self.last_tcn_received = time.monotonic()
@@ -76,9 +77,10 @@ class TunnelLaneSelector(Node):
             self.get_logger().warning('Ignoring malformed TCN result')
 
     def on_lane(self, source, message):
-        # Without a live boundary detector there is no reliable way to choose
-        # the next source. Withhold results so existing controller guards stop.
-        if not self.tcn_live or self.last_tcn_received is None or time.monotonic() - self.last_tcn_received > .5:
+        # Validation follows the last selected source independently of TCN
+        # health, like running that detector/controller alone. TCN only switches.
+        if not self.policy.validation_mode and (not self.tcn_live or self.last_tcn_received is None or
+                time.monotonic() - self.last_tcn_received > .5):
             return
         stamp = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
         accepted = self.policy.lane(source, stamp, self.get_clock().now().nanoseconds)

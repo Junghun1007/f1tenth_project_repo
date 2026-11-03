@@ -24,6 +24,7 @@ class NativeGateTests(unittest.TestCase):
 #include <stdexcept>
 #include <string>
 #include "auto_control/model_startup_gate.hpp"
+#include "camera_driver/tunnel_ir_input_policy.hpp"
 #include "ir_camera_driver/ir_frame_rate_gate.hpp"
 using namespace std::chrono_literals;
 using auto_control::ModelStartupGate;
@@ -62,6 +63,17 @@ int main() {
   require(controller.stop_reason(1000000000)=="waiting_for_models");
   controller.model_startup_check_required_=false;
   require(!controller.stop_reason(1000000000));
+  using camera_driver::TunnelIrRejection;
+  using camera_driver::tunnelIrRejection;
+  // Standalone-like validation consumes a new capture even during exposure
+  // transition or with old camera timestamps; guarded mode still rejects it.
+  require(tunnelIrRejection(true,true,start,start-1s,start+1s,start,5000,400)==TunnelIrRejection::none);
+  require(tunnelIrRejection(false,true,start,start-1s,start+1s,start,5000,400)==TunnelIrRejection::time);
+  require(tunnelIrRejection(true,true,start+100ms,start,start+100ms,start,5000,400)==TunnelIrRejection::none);
+  require(tunnelIrRejection(false,true,start+100ms,start,start+100ms,start,30000,800)==TunnelIrRejection::time);
+  require(tunnelIrRejection(false,true,start+200ms,start,start+210ms,start,5000,400)==TunnelIrRejection::exposure);
+  require(tunnelIrRejection(false,true,start+200ms,start,start+210ms,start,30000,800)==TunnelIrRejection::none);
+  require(tunnelIrRejection(true,true,start,start,start+1s,start,30000,800)==TunnelIrRejection::time);
   ir_camera_driver::IrFrameRateGate ir;
   int count=0;
   for (int i=0;i<300;++i) {
@@ -84,7 +96,8 @@ int main() {
             file.write_text(code)
             result = subprocess.run([compiler, '-std=c++17', '-O2', '-DNDEBUG', '-Wall', '-Wextra',
                                      '-Werror', '-I'+str(SOURCE/'auto_control/include'),
-                                     '-I'+str(SOURCE/'ir_camera_driver/include'), str(file), '-o', str(binary)],
+                                     '-I'+str(SOURCE/'ir_camera_driver/include'),
+                                     '-I'+str(SOURCE/'camera_driver/include'), str(file), '-o', str(binary)],
                                     text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             subprocess.run([str(binary)], check=True)

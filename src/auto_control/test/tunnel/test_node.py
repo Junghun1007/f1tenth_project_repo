@@ -61,6 +61,22 @@ class CallbackTests(unittest.TestCase):
             self.node.on_lane('RGB', self.message)
         self.assertEqual(self.outputs, [])
 
+    def test_validation_routes_rgb_during_tcn_warmup_then_keeps_ir_during_tcn_loss(self):
+        self.node.policy = LaneSelector(validation_mode=True)
+        self.node.on_lane('RGB', self.message)
+        self.assertEqual(self.outputs, [self.message])
+        self.report(status='WARMUP 2.5s')
+        # An accepted LIVE entry switches even when its source timestamp is old.
+        self.report(state='inside', source_stamp_ns=9_000_000_000)
+        self.assertEqual(self.node.policy.selected, 'IR')
+        self.node.tcn_live = False
+        with patch.object(self.module.time, 'monotonic', return_value=100000.):
+            self.node.on_lane('IR', self.message)
+        self.assertEqual(self.outputs, [self.message, self.message])
+        # Does not fabricate a new result or repeat one already delivered.
+        self.node.on_lane('IR', self.message)
+        self.assertEqual(len(self.outputs), 2)
+
     def test_real_tcn_event_schema_requests_entry(self):
         self.report(state='inside', event=dict(type='entry', score=.9, time_s=3.))
         self.assertEqual(self.node.policy.state, 'INSIDE')

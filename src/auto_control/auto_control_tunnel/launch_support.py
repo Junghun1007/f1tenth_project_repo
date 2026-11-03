@@ -9,6 +9,10 @@ from launch_ros.descriptions import ComposableNode
 
 
 def integrated_nodes(rgb_detector, controller, context):
+    validation_text = str(context.launch_configurations.get('tunnel_validation_mode', 'true')).lower()
+    if validation_text not in ('true', 'false'):
+        raise ValueError('tunnel_validation_mode must be true or false')
+    validation = validation_text == 'true'
     shares = {p: Path(get_package_share_directory(p)) for p in (
         'ir_camera_driver', 'line_detactor', 'auto_control', 'tunnel_tcn_test')}
     # Perception assets are shared by production and standalone tests. The
@@ -30,11 +34,11 @@ def integrated_nodes(rgb_detector, controller, context):
     rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 80.0})
     age = controller.get('path_capture_maximum_age_sec', .2)
     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)
-    selector_parameters = dict(max_age_sec=min(.25, float(rule_age)),
+    selector_parameters = dict(validation_mode=validation, max_age_sec=min(.25, float(rule_age)),
                                rgb_result_topic=rgb_detector['result_topic'])
     components = [
         ComposableNode(package='ir_camera_driver', plugin='ir_camera_driver::SharedIrBevNode',
-                       name='shared_ir_bev', parameters=[{'standby_fps': 0.0, 'active_fps': 30.0,
+                       name='shared_ir_bev', parameters=[{'validation_mode': validation, 'standby_fps': 0.0, 'active_fps': 30.0,
                                                           'model_input_topic': ir['input_topic']}]),
         ComposableNode(package='line_detactor', plugin='line_detactor::LineDetactorNode',
                        name='ir_line_detactor', parameters=[ir],

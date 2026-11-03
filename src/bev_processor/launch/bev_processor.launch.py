@@ -247,6 +247,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("obstacles_enabled", default_value="false"),
             DeclareLaunchArgument("tunnel_enabled", default_value="false"),
+            DeclareLaunchArgument("tunnel_validation_mode", default_value="true"),
             DeclareLaunchArgument("measured_erpm_topic", default_value=_PARAMETER_FILE_DEFAULT),
             DeclareLaunchArgument("vehicle_acceleration_topic", default_value=_PARAMETER_FILE_DEFAULT),
             DeclareLaunchArgument("perception_params_file", default_value=LaunchConfiguration("bev_params_file"),
@@ -428,6 +429,7 @@ def generate_launch_description():
                             {
                                 "obstacles.depth.enabled": ParameterValue(LaunchConfiguration("obstacles_enabled"), value_type=bool),
                                 "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
+                                "tunnel.validation_mode": ParameterValue(LaunchConfiguration("tunnel_validation_mode"), value_type=bool),
                                 "imu_stabilization_measured_erpm_topic": LaunchConfiguration("measured_erpm_topic"),
                                 "imu_stabilization_can_acceleration_topic": LaunchConfiguration("vehicle_acceleration_topic"),
                                 "preview_enabled": ParameterValue(

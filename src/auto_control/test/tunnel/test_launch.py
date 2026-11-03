@@ -33,7 +33,7 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual([c['plugin'] for c in components],
                          ['ir_camera_driver::SharedIrBevNode', 'line_detactor::LineDetactorNode'])
         self.assertEqual(components[0]['parameters'][0], dict(
-            standby_fps=0., active_fps=30., model_input_topic='/ir_bev_line_detection/image_bgr'))
+            validation_mode=True, standby_fps=0., active_fps=30., model_input_topic='/ir_bev_line_detection/image_bgr'))
         ir = components[1]['parameters'][0]
         self.assertFalse(ir['direct_bev_input_enabled'])
         self.assertEqual(ir['inference_max_fps'], 0.)
@@ -46,6 +46,34 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(processes[-1]['parameters'][0]['rgb_result_topic'], '/custom/rgb_result')
         self.assertEqual(processes[0]['parameters'][-1]['initial_state'], 'outside')
         self.assertFalse(processes[0]['parameters'][-1]['preview_enabled'])
+
+    def test_validation_mode_is_default_and_guarded_mode_is_selectable(self):
+        for flag, expected in ((None, True), ('true', True), ('false', False)):
+            config = {} if flag is None else dict(tunnel_validation_mode=flag)
+            components, processes = self.helper().integrated_nodes(
+                dict(preview_enabled=False, result_topic='/line_detactor/result'), {}, NS(launch_configurations=config))
+            self.assertIs(components[0]['parameters'][0]['validation_mode'], expected)
+            self.assertIs(processes[-1]['parameters'][0]['validation_mode'], expected)
+        with self.assertRaises(ValueError):
+            self.helper().integrated_nodes({}, {}, NS(launch_configurations=dict(tunnel_validation_mode='invalid')))
+
+    def test_validation_flag_reaches_camera_included_launch(self):
+        bringup = ast.parse((SOURCE/'vehicle_bringup/launch/auto_drive.launch.py').read_text())
+        bev = ast.parse((SOURCE/'bev_processor/launch/bev_processor.launch.py').read_text())
+        # Exercise the actual launch declarations/parameter expressions with doubles.
+        for tree in (bringup, bev):
+            declaration = next(n for n in ast.walk(tree) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Name) and n.func.id == 'DeclareLaunchArgument'
+                and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == 'tunnel_validation_mode')
+            self.assertEqual(ast.literal_eval(next(k.value for k in declaration.keywords
+                                                  if k.arg == 'default_value')), 'true')
+        config = next(n for n in ast.walk(bev) if isinstance(n, ast.Dict)
+                      and any(isinstance(k, ast.Constant) and k.value == 'tunnel.validation_mode' for k in n.keys))
+        value = next(v for k, v in zip(config.keys, config.values)
+                     if isinstance(k, ast.Constant) and k.value == 'tunnel.validation_mode')
+        self.assertEqual(eval(compile(ast.Expression(value), '<launch parameter>', 'eval'), dict(
+            ParameterValue=lambda value, value_type: value_type(value),
+            LaunchConfiguration=lambda key: {'tunnel_validation_mode': True}[key])), True)
 
     def test_one_window_and_same_result_only_selection_for_rgb_and_ir(self):
         for result_only in (True, False):
