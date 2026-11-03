@@ -46,7 +46,7 @@ class PreviewNativeTests(unittest.TestCase):
 #include <opencv2/imgcodecs.hpp>
 #include "bev_handoff/direct_bev_handoff.hpp"
 namespace bev_handoff {bool avoidanceControlRequested() {return false;}}
-constexpr int kBannerHeight=130;
+constexpr int kBannerHeight=144;
 struct Harness {
   bool obstacle_overlay_enabled_{true},tunnel_enabled_{true};
   struct {bool enabled{true};} connection_;
@@ -76,16 +76,22 @@ int main() {
   cv::line(image,{90,299},{90,0},{0,255,255},2);
   Harness preview;
   const std::array<std::string,3> hud{
-    "Tunnel: ENTERING","TCN avg 1234.5FPS | run 10.0Hz","TCN LIVE E:0.75 X:0.05"};
-  const auto canvas=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,"","",hud);
-  require(canvas.cols==180 && canvas.rows==300+130+28+14);
+    "Tunnel: ENTERING","TCN avg 1234.5FPS","TCN LIVE E:0.75 X:0.05"};
+  const auto canvas=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,.075,"","",hud);
+  require(canvas.cols==180 && canvas.rows==300+144+28+14);
   require(cv::countNonZero(canvas(cv::Rect(0,300+14*5,180,14)).reshape(1))>0);
   cv::Mat enlarged;
   cv::resize(canvas,enlarged,{},3.,3.,cv::INTER_NEAREST);
   cv::imwrite("/tmp/f1tenth_tunnel_preview_hud.png",enlarged);
   preview.tunnel_enabled_=false;
-  const auto legacy=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0);
-  require(legacy.rows==300+130+14);
+  const auto legacy=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,.075);
+  require(legacy.rows==300+144+14);
+  const auto unknown=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,
+    std::numeric_limits<double>::quiet_NaN());
+  const cv::Rect duty_row(0,300+14*8,180,14);
+  require(cv::norm(legacy(duty_row),unknown(duty_row),cv::NORM_L1)>0);
+  require(cv::norm(legacy(cv::Rect(0,300,180,14*8)),
+    unknown(cv::Rect(0,300,180,14*8)),cv::NORM_L1)==0);
 }
 '''.replace('RENDERER', renderer)
         with tempfile.TemporaryDirectory() as directory:

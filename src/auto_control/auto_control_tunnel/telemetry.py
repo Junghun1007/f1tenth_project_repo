@@ -10,8 +10,6 @@ class TunnelPreviewTelemetry:
         self.entry = self.exit = None
         self.infer_sum_ms = 0.0
         self.infer_count = 0
-        self.first_completion = None
-        self.completion_count = 0
 
     @staticmethod
     def number(value):
@@ -26,8 +24,7 @@ class TunnelPreviewTelemetry:
             status.startswith('LIVE') and not self.status.startswith('LIVE'))
         if reset:
             self.infer_sum_ms = 0.0
-            self.infer_count = self.completion_count = 0
-            self.first_completion = None
+            self.infer_count = 0
         duplicate = stamp == self.last_stamp
         self.last_stamp, self.received_at, self.status = stamp, now, status
         scores = report.get('scores', {})
@@ -36,9 +33,6 @@ class TunnelPreviewTelemetry:
             self.exit = self.number(scores.get('exit'))
         if not status.startswith('LIVE') or duplicate:
             return
-        if self.first_completion is None:
-            self.first_completion = now
-        self.completion_count += 1
         milliseconds = self.number(report.get('inference_wall_ms'))
         if milliseconds is not None and milliseconds > 0:
             self.infer_sum_ms += milliseconds
@@ -48,14 +42,10 @@ class TunnelPreviewTelemetry:
         fresh = self.received_at is not None and 0 <= now - self.received_at <= .5
         status = self.status.split()[0] if fresh else ('WAITING' if self.received_at is None else 'STALE')
         fps = '--'
-        rate = '--'
         if fresh and self.status.startswith('LIVE'):
             if self.infer_count:
                 fps = f'{1000.0 * self.infer_count / self.infer_sum_ms:.1f}'
-            elapsed = now - self.first_completion if self.first_completion is not None else 0
-            if elapsed > 0 and self.completion_count >= 2:
-                rate = f'{(self.completion_count - 1) / elapsed:.1f}'
         entry = f'{self.entry:.2f}' if fresh and self.entry is not None else '--'
         exit_score = f'{self.exit:.2f}' if fresh and self.exit is not None else '--'
-        return (f'Tunnel: {state}', f'TCN avg {fps}FPS | run {rate}Hz',
+        return (f'Tunnel: {state}', f'TCN avg {fps}FPS',
                 f'TCN {status} E:{entry} X:{exit_score}')

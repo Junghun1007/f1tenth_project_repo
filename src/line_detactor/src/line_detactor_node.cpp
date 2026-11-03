@@ -61,7 +61,7 @@ namespace
 
 constexpr int kDefaultInputWidth = 120;
 constexpr int kDefaultInputHeight = 300;
-constexpr int kBannerHeight = 130;
+constexpr int kBannerHeight = 144;
 constexpr char kModelFilename[] =
   "fast_scnn_stop_line_120x300_batch_1.onnx";
 
@@ -197,6 +197,13 @@ public:
           std::lock_guard<std::mutex> lock(preview_mutex_);
           preview_target_speed_mps_ = message->data;
           preview_target_speed_received_at_ = SteadyClock::now();
+        });
+      duty_subscription_ = node_.create_subscription<std_msgs::msg::Float32>(
+        preview_duty_topic_, image_qos,
+        [this](const std_msgs::msg::Float32::ConstSharedPtr message) {
+          std::lock_guard<std::mutex> lock(preview_mutex_);
+          preview_duty_ = message->data;
+          preview_duty_received_at_ = SteadyClock::now();
         });
       corner_state_subscription_ = node_.create_subscription<std_msgs::msg::UInt8>(
         preview_corner_state_topic_, image_qos,
@@ -358,6 +365,8 @@ private:
       "bev_theme_speed_topic", "/auto/current_speed");
     preview_target_speed_topic_ = node_.declare_parameter<std::string>(
       "preview_target_speed_topic", "/auto/target_speed");
+    preview_duty_topic_ = node_.declare_parameter<std::string>(
+      "preview_duty_topic", "/auto/current_duty");
     preview_corner_state_topic_ = node_.declare_parameter<std::string>(
       "preview_corner_state_topic", "/auto/corner_state");
     input_topic_ = node_.declare_parameter<std::string>(
@@ -642,7 +651,7 @@ private:
     }
     if (!std::isfinite(bev_theme_preview_fps_) || bev_theme_preview_fps_ <= 0.0 ||
       bev_theme_speed_topic_.empty() || preview_target_speed_topic_.empty() ||
-      preview_corner_state_topic_.empty() || (bev_theme_enable_.load() && !connection_.enabled))
+      preview_duty_topic_.empty() || preview_corner_state_topic_.empty() || (bev_theme_enable_.load() && !connection_.enabled))
     {
       throw std::invalid_argument(
               "BEV theme requires positive preview FPS, a speed topic, and connection_enabled");
@@ -943,6 +952,7 @@ private:
     const double current_speed,
     const double target_speed,
     const int corner_state,
+    const double duty,
     const std::string & obstacle_status = "",
     const std::string & avoidance_status = "",
     const std::array<std::string,3> & tunnel_hud = {}) const
@@ -977,6 +987,8 @@ private:
         "Target: -- m/s", cv::Scalar(0, 255, 255)},
       {std::isfinite(current_speed) ? cv::format("Speed: %.2f m/s", current_speed) :
         "Speed: -- m/s", cv::Scalar(255, 255, 255)},
+      {std::isfinite(duty) ? cv::format("Duty: %.4f", duty) :
+        "Duty: --", cv::Scalar(255, 255, 255)},
       {corner_state == 2 ? "Corner: TURNING" : corner_state == 1 ? "Corner: APPROACH" :
         corner_state == 0 ? "Corner: NO" : corner_state == 3 ? "Corner: STOP" : "Corner: --",
         corner_state == 2 ? cv::Scalar(0, 165, 255) : cv::Scalar(180, 220, 180)}};
@@ -1323,6 +1335,7 @@ private:
         double average_control_milliseconds = std::numeric_limits<double>::quiet_NaN();
         double theme_speed = std::numeric_limits<double>::quiet_NaN();
         double target_speed = std::numeric_limits<double>::quiet_NaN();
+        double duty = std::numeric_limits<double>::quiet_NaN();
         int corner_state = -1;
         SpeedLimitSnapshot speed_limit;
         bool speed_limit_fresh = false;
@@ -1337,7 +1350,7 @@ private:
           tunnel_hud=tunnel_hud_;
           if (tunnel_hud_received_at_!=SteadyClock::time_point{} &&
             SteadyClock::now()-tunnel_hud_received_at_>std::chrono::seconds(1)) {
-            tunnel_hud={"Tunnel: STATUS STALE","TCN avg --FPS | run --Hz","TCN: selector unavailable"};
+            tunnel_hud={"Tunnel: STATUS STALE","TCN avg --FPS","TCN: selector unavailable"};
           }
           speed_limit = speed_limit_snapshot_;
           const auto limit_age = SteadyClock::now()-speed_limit_received_at_;
@@ -1353,6 +1366,10 @@ private:
           if (target_age >= SteadyClock::duration::zero() &&
             target_age <= std::chrono::milliseconds(500) && std::isfinite(preview_target_speed_mps_))
           {target_speed = preview_target_speed_mps_;}
+          const auto duty_age = SteadyClock::now() - preview_duty_received_at_;
+          if (duty_age >= SteadyClock::duration::zero() &&
+            duty_age <= std::chrono::milliseconds(500) && std::isfinite(preview_duty_))
+          {duty = preview_duty_;}
           const auto corner_age = SteadyClock::now() - preview_corner_state_received_at_;
           if (corner_age >= SteadyClock::duration::zero() &&
             corner_age <= std::chrono::milliseconds(500) && preview_corner_state_ <= 3)
@@ -1374,7 +1391,7 @@ private:
         const auto traffic_signal = bev_handoff::latestTrafficSignalState();
         const bool show_ir=tunnel_enabled_ && tunnel_selected_ir_.load();
         const bool theme = bev_theme_enable_.load() && !show_ir;
-        const std::string hud = cv::format("%.2f/%.2f/%d", theme_speed, target_speed, corner_state) +
+        const std::string hud = cv::format("%.2f/%.2f/%d/%.4f", theme_speed, target_speed, corner_state, duty) +
           speed_panel.display_key()+tunnel_hud[0]+tunnel_hud[1]+tunnel_hud[2];
         const auto motion_now = SteadyClock::now();
         const double motion_dt = std::clamp(
@@ -1400,7 +1417,7 @@ private:
           canvas=preview_canvas(overlay,fresh ? ir->inference_ms : 0.0,
             fresh ? ir->postprocess_ms : 0.0,average_control_milliseconds,
             fresh ? ir->stop_distance_m : std::numeric_limits<double>::quiet_NaN(),
-            display_fps,traffic_signal,theme_speed,target_speed,corner_state,"","",tunnel_hud);
+            display_fps,traffic_signal,theme_speed,target_speed,corner_state,duty,"","",tunnel_hud);
           displayed_generation=fresh ? ir->generation : 0;
           draw=true;
         } else if (frame && (theme || !connection_.enabled || !frame->result.image.empty()) &&
@@ -1448,7 +1465,7 @@ private:
               frame->average_postprocess_milliseconds,
               average_control_milliseconds,
               frame->result.stop_line_distance_m, display_fps, traffic_signal,
-              theme_speed, target_speed, corner_state, obstacle_status, avoidance_status,tunnel_hud);
+              theme_speed, target_speed, corner_state, duty, obstacle_status, avoidance_status,tunnel_hud);
           }
           displayed_generation = frame->generation;
           draw=true;
@@ -1458,7 +1475,7 @@ private:
             cv::FONT_HERSHEY_SIMPLEX,.3,cv::Scalar(255,255,255),1,cv::LINE_AA);
           canvas=preview_canvas(waiting,0.0,0.0,average_control_milliseconds,
             std::numeric_limits<double>::quiet_NaN(),display_fps,traffic_signal,
-            theme_speed,target_speed,corner_state,"","",tunnel_hud);
+            theme_speed,target_speed,corner_state,duty,"","",tunnel_hud);
           draw=true;
         }
         if (draw) {
@@ -1569,7 +1586,7 @@ private:
   std::atomic<bool> bev_theme_enable_{false};
   double bev_theme_preview_fps_{15.0};
   std::string bev_theme_speed_topic_;
-  std::string preview_target_speed_topic_, preview_corner_state_topic_;
+  std::string preview_target_speed_topic_, preview_corner_state_topic_, preview_duty_topic_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr theme_parameter_callback_;
   bool preview_result_only_enabled_{true};
   double preview_fps_{30.0};
@@ -1585,7 +1602,7 @@ private:
   rclcpp::Subscription<Image>::SharedPtr subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr control_latency_subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_subscription_;
-  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr target_speed_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr target_speed_subscription_, duty_subscription_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr corner_state_subscription_;
   rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr speed_limit_request_pub_;
   rclcpp::Subscription<line_detactor::msg::SpeedLimitState>::SharedPtr speed_limit_state_sub_;
@@ -1599,7 +1616,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_selected_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_preview_sub_;
   std::array<std::string,3> tunnel_hud_{
-    "Tunnel: WAITING","TCN avg --FPS | run --Hz","TCN: waiting"};
+    "Tunnel: WAITING","TCN avg --FPS","TCN: waiting"};
   SteadyClock::time_point tunnel_hud_received_at_{};
   std::atomic<double> inference_max_fps_{0.0};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_compute_sub_;
@@ -1619,6 +1636,8 @@ private:
   double theme_speed_mps_{std::numeric_limits<double>::quiet_NaN()};
   SteadyClock::time_point theme_speed_received_at_{};
   double preview_target_speed_mps_{std::numeric_limits<double>::quiet_NaN()};
+  double preview_duty_{std::numeric_limits<double>::quiet_NaN()};
+  SteadyClock::time_point preview_duty_received_at_{};
   int preview_corner_state_{-1};
   SteadyClock::time_point preview_target_speed_received_at_{}, preview_corner_state_received_at_{};
   std::condition_variable preview_condition_;

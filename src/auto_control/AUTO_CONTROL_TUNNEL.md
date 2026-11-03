@@ -89,10 +89,14 @@ preview_result_only_enabled: true
 `measurement_roi_preview_enabled: false`로 끌 수 있다.
 
 신호등 상태 옆에 `Tunnel: OUTSIDE / ENTERING / INSIDE / EXITING`을 표시한다.
-바로 아래에는 TCN `avg … FPS`, 실제 결과 수신 `run … Hz`, LIVE/WARMUP/STALE 상태와
+바로 아래에는 TCN `avg … FPS`, LIVE/WARMUP/STALE 상태와
 ENTRY/EXIT 점수를 표시한다. 평균 FPS는 LIVE 보고의 TensorRT+전송 wall time을 평균한 뒤
-`1000 / 평균 ms`로 계산한다. 주행 루프나 실제 실행 주기가 아니며, 10Hz 실행 제한과
-구분하기 위해 실제 수신 빈도를 함께 표시한다. 워밍업·입력 유실 때는 FPS를 `--`로 표시한다.
+`1000 / 평균 ms`로 계산한다. 주행 루프나 실제 실행 주기를 의미하지 않는다.
+워밍업·입력 유실 때는 FPS를 `--`로 표시한다.
+일반 RGB/IR 프리뷰의 `Duty`는 `/auto/current_duty`의 제어 명령값을 소수점 4자리로 표시한다
+(예: `0.0750` = 7.5%). 0.5초 이상 수신되지 않거나 유효하지 않으면 `--`로 표시한다.
+`line_detactor.preview_duty_topic`으로 구독 토픽을 변경할 수 있으며, 기존 YAML에는 추가하지 않아도 된다.
+`monitor_only`에서는 계산된 명령값이며 실제 모터 출력 피드백을 뜻하지 않는다.
 
 ## 차량에서 빌드·실행
 
