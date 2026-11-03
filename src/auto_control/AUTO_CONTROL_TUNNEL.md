@@ -110,6 +110,17 @@ TCN은 고정 입력 크기와 유한한 출력값까지 확인한다.
 콜드 TensorRT 엔진 빌드는 수 분 걸릴 수 있다. 이 검사는 진단용이며 자동주행 허가를
 추가로 차단하지 않는다. 모델 준비는 카메라 로드·영상 입력·실제 검출 정확도 검증과 별개다.
 
+## DepthAI 실행 라이브러리 경로
+
+공용 BEV/카메라 컨테이너는 빌드 때 선택된 `depthai::core` 라이브러리 디렉터리를
+`bev_processor/depthai_runtime_dir.txt`에 기록하고, 실행 시 컨테이너의
+`LD_LIBRARY_PATH` 맨 앞에 자동 적용한다. 다른 프로세스의 환경은 바꾸지 않는다.
+필요하면 `auto_drive.launch.py depthai_library_dir:=/absolute/sdk/lib`로 덮어쓸 수 있다.
+파일이 없거나 디렉터리가 사라졌다면 launch가 원인을 표시한다.
+`undefined symbol: _ZTIN3dai10DeviceNodeE`가 계속되면 DepthAI를 사용하는 패키지들을
+동일한 `-Ddepthai_DIR=.../lib/cmake/depthai`로 캐시를 지우고 다시 빌드해야 한다.
+모델의 `ALL READY`는 카메라 컴포넌트 로드 성공을 의미하지 않는다.
+
 ## 차량에서 빌드·실행
 
 ROS 2 Humble / CUDA·TensorRT / DepthAI C++ 3.6+가 준비된 Jetson의 워크스페이스

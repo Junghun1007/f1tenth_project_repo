@@ -712,6 +712,7 @@ def generate_launch_description():
     bev_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(bev_launch_path),
         launch_arguments={
+            "depthai_library_dir": LaunchConfiguration("depthai_library_dir"),
             "bev_params_file": bev_params_file,
             "camera_params_file": LaunchConfiguration("camera_params_file"),
             "obstacles_enabled": LaunchConfiguration("obstacles_enabled"),
@@ -823,6 +824,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument("tunnel_enabled", default_value="false"),
+            DeclareLaunchArgument("depthai_library_dir", default_value="",
+                                  description="Optional DepthAI runtime library directory; default uses build SDK."),
             DeclareLaunchArgument("speed_mps", default_value="inherit",
                                   description="Positive target m/s; inherit keeps selected controller YAML speed settings"),
             DeclareLaunchArgument("manual_test", default_value="false",

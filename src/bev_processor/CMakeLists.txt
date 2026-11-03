@@ -37,6 +37,12 @@ if(NOT depthai_FOUND)
     "links directly against depthai::core."
   )
 endif()
+# The shared container must load the same SDK that was selected for linking.
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
+  CONTENT "$<TARGET_FILE_DIR:depthai::core>\n")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
+  DESTINATION share/${PROJECT_NAME})
+
 find_package(Threads REQUIRED)
 find_package(oak_startup REQUIRED)
 find_package(camera_driver REQUIRED)
@@ -97,6 +103,9 @@ rclcpp_components_register_nodes(
 
 if(BUILD_TESTING)
   enable_testing()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME depthai_runtime_launch_test
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test/test_depthai_runtime_launch.py)
   add_executable(bev_geometry_test test/bev_geometry_test.cpp)
   target_link_libraries(bev_geometry_test bev_geometry ${OpenCV_LIBS})
   add_test(NAME bev_geometry_test COMMAND bev_geometry_test)

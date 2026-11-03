@@ -1,9 +1,10 @@
 import os
+from pathlib import Path
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction, SetLaunchConfiguration
 from launch.substitutions import LaunchConfiguration
 from launch.substitutions import PythonExpression
 from launch_ros.actions import ComposableNodeContainer
@@ -71,6 +72,30 @@ def _apply_parameter_file_defaults(
         if context.launch_configurations[argument] == _PARAMETER_FILE_DEFAULT:
             context.launch_configurations[argument] = str(camera.get(parameter, fallback))
     return []
+
+
+def _configure_depthai_runtime(context, package_share):
+    library_dir = LaunchConfiguration("depthai_library_dir").perform(context).strip()
+    if not library_dir:
+        runtime_file = Path(package_share) / "depthai_runtime_dir.txt"
+        try:
+            library_dir = runtime_file.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise RuntimeError(
+                f"Cannot read {runtime_file}; rebuild bev_processor to record its DepthAI SDK, "
+                "or set depthai_library_dir to the matching SDK library directory."
+            ) from error
+    if not library_dir:
+        raise RuntimeError("The recorded DepthAI runtime library directory is empty")
+    library_dir = os.path.abspath(os.path.expanduser(library_dir))
+    if not os.path.isdir(library_dir):
+        raise RuntimeError(f"DepthAI runtime library directory does not exist: {library_dir}")
+    previous = context.environment.get("LD_LIBRARY_PATH", "")
+    runtime_path = os.pathsep.join(item for item in (library_dir, previous) if item)
+    return [
+        SetLaunchConfiguration("depthai_runtime_library_path", runtime_path),
+        LogInfo(msg=f"[DepthAI runtime] shared BEV/camera container library dir={library_dir}"),
+    ]
 
 
 def generate_launch_description():
@@ -203,6 +228,11 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument(
+                "depthai_library_dir", default_value="",
+                description="DepthAI shared library directory; empty uses the SDK selected at build time.",
+            ),
+            OpaqueFunction(function=_configure_depthai_runtime, kwargs={"package_share": bev_share}),
             DeclareLaunchArgument(
                 "camera_params_file",
                 default_value=camera_params,
@@ -342,6 +372,7 @@ def generate_launch_description():
                 },
             ),
             ComposableNodeContainer(
+                additional_env={"LD_LIBRARY_PATH": LaunchConfiguration("depthai_runtime_library_path")},
                 name="bev_processor_container",
                 namespace="",
                 package="rclcpp_components",
