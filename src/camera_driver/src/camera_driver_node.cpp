@@ -1660,7 +1660,8 @@ private:
           message->header.frame_id=frame_id_; message->encoding="nv12";
           message->width=packet->getWidth(); message->height=packet->getHeight();
           message->step=packet->getStride() ? packet->getStride() : packet->getWidth();
-          message->data=packet->getData();
+          const auto & frame_bytes=packet->getData();
+          message->data.assign(frame_bytes.begin(),frame_bytes.end());
           tcn_publisher_->publish(std::move(message));
           // Advance a source-time grid rather than quantizing 80Hz to 26.7Hz.
           if (last_tcn_frame_==std::chrono::steady_clock::time_point{}) {last_tcn_frame_=sensor_timestamp;}
