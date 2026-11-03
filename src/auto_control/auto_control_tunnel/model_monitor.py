@@ -3,7 +3,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
-from std_msgs.msg import String
+from std_msgs.msg import Bool, String
 from .model_check import ModelChecks
 
 
@@ -21,6 +21,8 @@ class ModelStartupMonitor(Node):
         self.all_ready_reported = False
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        self.ready_pub = self.create_publisher(Bool, '/perception/models_ready', qos)
+        self.ready_pub.publish(Bool(data=False))
         self.subscriptions_owned = [self.create_subscription(
             String, f'/{name}/model_status', lambda message, name=name: self.on_status(name, message), qos)
             for name in expected]
@@ -37,11 +39,13 @@ class ModelStartupMonitor(Node):
         self.report_complete()
 
     def report_complete(self):
+        self.ready_pub.publish(Bool(data=self.checks.ready))
         if self.checks.ready and not self.all_ready_reported:
             self.get_logger().info(f'[MODEL CHECK] ALL READY ({len(self.checks.status)} models)')
         self.all_ready_reported = self.checks.ready
 
     def tick(self):
+        self.ready_pub.publish(Bool(data=self.checks.ready))
         if self.checks.ready:
             return
         now = time.monotonic()
@@ -49,7 +53,7 @@ class ModelStartupMonitor(Node):
         if now - self.started >= self.timeout and not self.timed_out:
             self.get_logger().error(
                 f'[MODEL CHECK] NOT READY after {self.timeout:.0f}s: {pending}; '
-                'check model/engine errors or failed component loading. Monitoring continues.')
+                'check model/engine errors or failed component loading. Automatic driving remains blocked; monitoring continues.')
             self.timed_out = True
         if now - self.last_wait_log >= 10.:
             self.get_logger().info(f'[MODEL CHECK] Waiting: {pending}')

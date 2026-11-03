@@ -47,6 +47,7 @@ class PreviewNativeTests(unittest.TestCase):
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include "bev_handoff/direct_bev_handoff.hpp"
+#include "line_detactor/ir_preview.hpp"
 namespace bev_handoff {bool avoidanceControlRequested() {return false;}}
 constexpr int kBannerHeight=144;
 struct Harness {
@@ -84,6 +85,21 @@ int main() {
   bool failed=false;
   try {check.warm_up();} catch (const std::runtime_error &) {failed=true;}
   require(failed); // Do not turn a failed engine execution into a PASS report.
+  cv::Mat live(300,180,CV_8UC3,cv::Scalar(10,20,30));
+  const auto fresh=line_detactor::ir_preview_image(live,.05,300,180);
+  const auto delayed=line_detactor::ir_preview_image(live,.26,300,180);
+  const auto very_old=line_detactor::ir_preview_image(live,5.,300,180);
+  const cv::Rect below_label(0,20,180,280);
+  require(cv::norm(fresh(below_label),delayed(below_label),cv::NORM_L1)==0);
+  require(cv::norm(fresh(below_label),very_old(below_label),cv::NORM_L1)==0);
+  require(cv::norm(fresh,delayed,cv::NORM_L1)>0);
+  cv::Mat display_comparison;
+  cv::hconcat(fresh,delayed,display_comparison);
+  cv::imwrite("/tmp/f1tenth_ir_preview_retention.png",display_comparison);
+  require(!line_detactor::ir_preview_fresh(true,.26));
+  require(line_detactor::ir_preview_fresh(true,.05));
+  const auto waiting=line_detactor::ir_preview_image({},.05,300,180);
+  require(cv::countNonZero(waiting(below_label).reshape(1))==0);
   require(!bev_handoff::latestIrLanePreview());
   {
     auto frame=std::make_shared<bev_handoff::IrLanePreview>();
@@ -131,6 +147,7 @@ int main() {
             file.write_text(code)
             compiled = subprocess.run([compiler, '-std=c++17', '-O2', '-DNDEBUG', '-Wall', '-Wextra',
                             '-Werror', '-I'+str(root), '-I'+str(SOURCE/'bev_handoff/include'),
+                            '-I'+str(SOURCE/'line_detactor/include'),
                             str(file), str(SOURCE/'bev_handoff/src/direct_bev_handoff.cpp'),
                             *shlex.split(config.stdout), '-o', str(binary)],
                            capture_output=True, text=True)

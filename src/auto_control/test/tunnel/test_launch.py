@@ -36,7 +36,7 @@ class LaunchTests(unittest.TestCase):
             standby_fps=0., active_fps=30., model_input_topic='/ir_bev_line_detection/image_bgr'))
         ir = components[1]['parameters'][0]
         self.assertFalse(ir['direct_bev_input_enabled'])
-        self.assertEqual(ir['inference_max_fps'], 30.)
+        self.assertEqual(ir['inference_max_fps'], 0.)
         self.assertIn('ir_stereo_bev_120x300.onnx', ir['model_path'])
         self.assertFalse(ir['preview_enabled'])
         self.assertFalse(ir['shared_ir_preview_output_enabled'])
@@ -71,6 +71,33 @@ class LaunchTests(unittest.TestCase):
                 node = helper.model_check_node(tunnel, traffic)
                 self.assertEqual(node['parameters'][0]['expected_nodes'], expected)
                 self.assertEqual(node['executable'], 'model_startup_check')
+
+    def test_ir_model_input_contract_matches_working_standalone_test(self):
+        path = SOURCE/'ir_bev_line_detection/ir_bev_line_detection/settings.py'
+        spec = importlib.util.spec_from_file_location('_ir_standalone_settings', path)
+        standalone = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(standalone)
+        shares = {name: SOURCE/name for name in ('ir_camera_driver', 'line_detactor', 'auto_control')}
+        settings = standalone.build_parameters(shares,
+            SOURCE/'ir_bev_line_detection/config/ir_bev_test.yaml', '.3')
+        components, _ = self.helper().integrated_nodes(
+            dict(preview_enabled=True, result_topic='/line_detactor/result'), {}, NS(launch_configurations={}))
+        integrated = components[1]['parameters'][0]
+        for key in ('engine_precision', 'model_input_width', 'model_input_height', 'mask_threshold',
+                    'connection_enabled', 'centerline_enabled', 'result_publish_enabled',
+                    'centerline_bev_width_m', 'centerline_bev_height_m', 'stop_line_mask_threshold',
+                    'stop_line_distance_enabled'):
+            self.assertEqual(integrated[key], settings['line_detactor'][key], key)
+
+    def test_auto_drive_requires_model_gate(self):
+        path = SOURCE / 'vehicle_bringup/launch/auto_drive.launch.py'
+        tree = ast.parse(path.read_text())
+        override = next(n for n in ast.walk(tree) if isinstance(n, ast.Dict)
+                        and any(isinstance(k, ast.Constant) and k.value == 'model_startup_check_required'
+                                for k in n.keys))
+        value = next(v for k, v in zip(override.keys, override.values)
+                     if isinstance(k, ast.Constant) and k.value == 'model_startup_check_required')
+        self.assertIs(ast.literal_eval(value), True)
 
     def speed_override(self, speed):
         path = SOURCE / 'vehicle_bringup/launch/auto_drive.launch.py'

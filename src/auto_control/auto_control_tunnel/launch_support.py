@@ -21,7 +21,9 @@ def integrated_nodes(rgb_detector, controller, context):
     report = json.loads(model.with_suffix('.json').read_text())
     if hashlib.sha256(model.read_bytes()).hexdigest() != report['onnx_sha256']:
         raise ValueError('Bundled IR model checksum mismatch')
-    ir.update(model_path=str(model), inference_max_fps=30.0,
+    # SharedIrBev is the sole 30Hz gate. A second host-arrival gate loses
+    # valid frames when camera/ROS delivery jitters around a 30Hz boundary.
+    ir.update(model_path=str(model), inference_max_fps=0.0,
               preview_enabled=False, bev_theme_enable=False,
               shared_ir_preview_output_enabled=rgb_detector['preview_enabled'],
               preview_result_only_enabled=rgb_detector.get('preview_result_only_enabled', True))

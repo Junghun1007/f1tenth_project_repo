@@ -1,6 +1,7 @@
 // Projects IR frames from camera_driver's existing OAK session. Opens no device.
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -11,6 +12,7 @@
 #include <opencv2/imgproc.hpp>
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include "ir_camera_driver/ir_bev_projector.hpp"
+#include "ir_camera_driver/ir_frame_rate_gate.hpp"
 
 namespace ir_camera_driver
 {
@@ -36,8 +38,18 @@ public:
       [this](std_msgs::msg::String::ConstSharedPtr message) {
         if (message->data!="IR" && message->data!="RGB" && message->data!="BOTH") {return;}
         inside_=message->data!="RGB";
-        next_=Clock::time_point{};
+        retry_at_=Clock::time_point{};
       });
+    diagnostic_started_=Clock::now();
+    diagnostic_timer_=create_wall_timer(std::chrono::seconds(2),[this]() {
+      if (!inside_) {diagnostic_started_=Clock::now(); output_count_=0; return;}
+      const auto now=Clock::now();
+      const auto frame=bev_handoff::latestDirectIr();
+      const double age=frame ? std::chrono::duration<double,std::milli>(now-frame->captured_at).count() : -1.;
+      RCLCPP_INFO(get_logger(),"[IR BEV] output=%.1fHz source_age=%.0fms status=%s",
+        output_count_/std::chrono::duration<double>(now-diagnostic_started_).count(),age,wait_reason_.c_str());
+      output_count_=0; diagnostic_started_=now;
+    });
     timer_=create_wall_timer(std::chrono::milliseconds(1),[this]() {process();});
   }
 private:
@@ -50,12 +62,14 @@ private:
     // Only the expensive image projection/model input waits for entry.
     if (!inside_ && standby_==0.0 && projector_) {return;}
     const auto now=Clock::now();
-    if (now<next_) {return;}
+    if (now<retry_at_) {return;}
     const auto frame=bev_handoff::latestDirectIr();
     const auto reference=bev_handoff::obstacleReference();
-    if (!frame || !reference || frame->captured_at<=last_ ||
-      now-frame->captured_at>std::chrono::milliseconds(250) ||
-      (inside_ && !frame->tunnel_profile)) {return;}
+    if (!frame) {wait_reason_="waiting_camera_frame"; return;}
+    if (!reference) {wait_reason_="waiting_bev_reference"; return;}
+    if (now-frame->captured_at>std::chrono::milliseconds(250)) {wait_reason_="camera_frame_stale"; return;}
+    if (inside_ && !frame->tunnel_profile) {wait_reason_="waiting_tunnel_exposure"; return;}
+    if (frame->captured_at<=last_) {return;}
     try {
       if (!projector_) {
         if (reference->width!=120 || reference->height!=300 ||
@@ -71,6 +85,8 @@ private:
         projector_->setMountPose(reference->rotation_vehicle_from_camera,reference->position_vehicle_m);
       }
       if (!inside_ && standby_==0.0) {return;}
+      if (!rate_gate_.accept(std::chrono::duration<double>(frame->captured_at.time_since_epoch()).count(),
+          inside_ ? active_ : standby_)) {return;}
       const auto image=projector_->project(frame->mono,frame->current_rgb_to_reference);
       auto message=std::make_unique<sensor_msgs::msg::Image>();
       message->header=frame->header; message->encoding="mono8";
@@ -87,24 +103,25 @@ private:
       model_input->data.assign(bgr.datastart,bgr.dataend);
       bgr_publisher_->publish(std::move(model_input));
       last_=frame->captured_at;
-      const auto period=std::chrono::duration_cast<Clock::duration>(
-        std::chrono::duration<double>(1.0/(inside_ ? active_ : standby_)));
-      next_=next_==Clock::time_point{} ? now+period : next_+period;
-      if (next_<now) {next_=now+period;}
+      ++output_count_; wait_reason_="streaming";
     } catch (const std::exception & e) {
       projector_.reset();
-      next_=now+std::chrono::seconds(1);
+      retry_at_=now+std::chrono::seconds(1);
+      wait_reason_="projection_error";
       RCLCPP_ERROR_THROTTLE(get_logger(),*get_clock(),1000,"Shared IR BEV: %s",e.what());
     }
   }
   double standby_,active_;
   bool inside_{false};
-  Clock::time_point last_{},next_{};
+  Clock::time_point last_{},retry_at_{},diagnostic_started_{};
+  IrFrameRateGate rate_gate_;
+  std::uint64_t output_count_{0};
+  std::string wait_reason_{"waiting_camera_frame"};
   std::unique_ptr<IrBevProjector> projector_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr bgr_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_;
-  rclcpp::TimerBase::SharedPtr timer_;
+  rclcpp::TimerBase::SharedPtr timer_,diagnostic_timer_;
 };
 }
 RCLCPP_COMPONENTS_REGISTER_NODE(ir_camera_driver::SharedIrBevNode)

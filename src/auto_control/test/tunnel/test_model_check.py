@@ -13,6 +13,7 @@ def load_monitor():
     for name in ('QoSProfile', 'ReliabilityPolicy', 'DurabilityPolicy'):
         setattr(modules['rclpy.qos'], name, object)
     modules['std_msgs.msg'].String = NS
+    modules['std_msgs.msg'].Bool = NS
     path = Path(__file__).resolve().parents[2] / 'auto_control_tunnel/model_monitor.py'
     spec = importlib.util.spec_from_file_location('auto_control_tunnel._monitor_test', path)
     module = importlib.util.module_from_spec(spec)
@@ -50,7 +51,8 @@ class ModelCheckTests(unittest.TestCase):
         monitor.checks = ModelChecks(['rgb', 'tcn'])
         monitor.timeout, monitor.started, monitor.last_wait_log = 300., 0., 0.
         monitor.timed_out = monitor.all_ready_reported = False
-        infos, errors = [], []
+        infos, errors, ready = [], [], []
+        monitor.ready_pub = NS(publish=lambda message: ready.append(message.data))
         monitor.get_logger = lambda: NS(info=infos.append, error=errors.append)
         monitor.on_status('rgb', NS(data='READY | trial inference=PASS'))
         with patch.object(module.time, 'monotonic', return_value=301.):
@@ -65,6 +67,12 @@ class ModelCheckTests(unittest.TestCase):
         monitor.on_status('tcn', NS(data='READY | trial inference=PASS'))
         monitor.on_status('tcn', NS(data='READY | trial inference=PASS'))
         self.assertEqual(sum('ALL READY' in item for item in infos), 1)
+        self.assertEqual(ready, [False, False, False, False, True])
+        monitor.on_status('rgb', NS(data='LOADING | restarted'))
+        self.assertFalse(ready[-1])
+        with patch.object(module.time, 'monotonic', return_value=302.):
+            monitor.tick()
+        self.assertFalse(ready[-1])
 
 
 if __name__ == '__main__':

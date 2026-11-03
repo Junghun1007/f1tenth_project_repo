@@ -1,4 +1,4 @@
-"""Startup model-report bookkeeping; diagnostics only, never a drive gate."""
+"""Startup model-report bookkeeping; used by the automatic-drive readiness gate."""
 
 
 class ModelChecks:

@@ -1521,10 +1521,24 @@ private:
     auto changed_at=std::chrono::steady_clock::time_point{};
     auto last=std::chrono::steady_clock::time_point{};
     auto retry_at=last;
+    auto report_started=std::chrono::steady_clock::now();
+    std::uint64_t received=0,published=0,time_rejected=0,exposure_rejected=0,imu_rejected=0;
+    long last_exposure_us=0; int last_iso=0;
     while (!stop_requested_.load()) {
       try {
         const bool requested=tunnel_requested_.load();
         const auto now=std::chrono::steady_clock::now();
+        if (now-report_started>=2s) {
+          if (requested) {
+            const double elapsed=std::chrono::duration<double>(now-report_started).count();
+            RCLCPP_INFO(node_.get_logger(),
+              "[IR CAMERA] received=%.1fHz published=%.1fHz rejected(time/exposure/imu)=%llu/%llu/%llu actual=%ldus ISO%d",
+              received/elapsed,published/elapsed,static_cast<unsigned long long>(time_rejected),
+              static_cast<unsigned long long>(exposure_rejected),static_cast<unsigned long long>(imu_rejected),
+              last_exposure_us,last_iso);
+          }
+          received=published=time_rejected=exposure_rejected=imu_rejected=0; report_started=now;
+        }
         if ((dirty || requested!=applied) && now>=retry_at) {
           dirty=true;
           tunnel_profile_ready_.store(false);
@@ -1555,16 +1569,18 @@ private:
         }
         auto packet=ir_queue_->tryGet<dai::ImgFrame>();
         if (!packet) {std::this_thread::sleep_for(1ms); continue;}
+        ++received;
+        last_exposure_us=packet->getExposureTime().count(); last_iso=packet->getSensitivity();
         if (dirty) {continue;}
         const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
         if (captured<=last || captured>now+50ms || std::chrono::duration<double>(now-captured).count()>.25 ||
-          captured<changed_at+150ms) {continue;}
+          captured<changed_at+150ms) {++time_rejected; continue;}
         last=captured;
         if (applied && (std::abs(packet->getExposureTime().count()-30000)>500 ||
-          packet->getSensitivity()!=800)) {continue;}
+          packet->getSensitivity()!=800)) {++exposure_rejected; continue;}
         const auto correction=imu_stabilizer_->correctionAt(
           std::chrono::duration<double>(captured.time_since_epoch()).count());
-        if (!correction || !correction->within_correction_limit) {continue;}
+        if (!correction || !correction->within_correction_limit) {++imu_rejected; continue;}
         if (packet->getType()!=dai::ImgFrame::Type::GRAY8) {throw std::runtime_error("Expected LEFT GRAY8");}
         const auto transform=point_cloud::rgbFromFrame(*packet,*depth_calibration_);
         const auto k=packet->getTransformation().getIntrinsicMatrix();
@@ -1579,6 +1595,7 @@ private:
         frame->captured_at=captured; frame->header.stamp=ros_timestamp_for(captured);
         frame->header.frame_id="front_axle_bev"; frame->tunnel_profile=applied;
         bev_handoff::publishDirectIr(std::move(frame));
+        ++published;
       } catch (const std::exception & e) {
         bev_handoff::publishDirectIr(nullptr);
         // Repeated profile failures must not hammer device control or expose

@@ -732,6 +732,7 @@ def generate_launch_description():
     )
 
     controller_overrides.update({
+        "model_startup_check_required": True,
         "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
         "avoidance_control_enabled": ParameterValue(LaunchConfiguration("effective_avoidance_control_enabled"), value_type=bool),
         "avoidance_deformation_only": ParameterValue(LaunchConfiguration("effective_avoidance_deformation_only"), value_type=bool),

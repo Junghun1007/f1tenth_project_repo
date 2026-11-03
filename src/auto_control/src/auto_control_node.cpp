@@ -1,4 +1,5 @@
 #include "auto_control/control_core.hpp"
+#include "auto_control/model_startup_gate.hpp"
 #include "auto_control/runtime_speed_limit.hpp"
 #include "line_detactor/msg/speed_limit_state.hpp"
 #include "std_msgs/msg/float64.hpp"
@@ -90,6 +91,14 @@ public:
     command_servo_pub_ = create_publisher<std_msgs::msg::Float32>(command_servo_position_topic_, command_qos);
     input_to_control_decision_pub_ = create_publisher<std_msgs::msg::Float32>(
       input_to_control_decision_topic_, command_qos);
+    model_startup_check_required_ = declare_parameter<bool>("model_startup_check_required", false);
+    if (model_startup_check_required_) {
+      model_ready_sub_ = create_subscription<std_msgs::msg::Bool>(
+        "/perception/models_ready", rclcpp::QoS(1).reliable().transient_local(),
+        [this](std_msgs::msg::Bool::ConstSharedPtr message) {
+          model_startup_gate_.observe(message->data, std::chrono::steady_clock::now());
+        });
+    }
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
@@ -218,8 +227,8 @@ public:
     if (driving_log_enabled_) {start_driving_log();}
     if (enabled_ && control_mode_ == "drive") {
       RCLCPP_WARN(get_logger(),
-        "Automatic control is armed at launch. The vehicle will move when VESC telemetry "
-        "and a valid ML centerline are both available.");
+        "Automatic control is armed at launch. The vehicle will move when VESC telemetry, "
+        "a valid ML centerline and all required models are ready.");
     } else if (enabled_) {
       RCLCPP_WARN(get_logger(),
         "Automatic control starts in %s mode; suppressed actuator topics will not be published.",
@@ -1431,6 +1440,9 @@ private:
   std::optional<std::string> stop_reason(std::int64_t now_ns) const
   {
     if (!enabled_) {return "disabled";}
+    if (model_startup_check_required_ &&
+      !model_startup_gate_.ready(std::chrono::steady_clock::now()))
+    {return "waiting_for_models";}
     if (control_mode_ != "monitor_only") {
       if (!vesc_connected_) {return "vesc_disconnected";}
       if (!last_erpm_ns_) {return "waiting_for_erpm";}
@@ -2324,6 +2336,9 @@ private:
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_duty_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_motor_current_sub_;
+  bool model_startup_check_required_{false};
+  ModelStartupGate model_startup_gate_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr model_ready_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_, enable_sub_;
   rclcpp::TimerBase::SharedPtr watchdog_timer_, status_timer_, performance_timer_;
 };

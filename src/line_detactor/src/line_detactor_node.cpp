@@ -13,6 +13,7 @@
 
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "line_detactor/frame_rate_gate.hpp"
+#include "line_detactor/ir_preview.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
 
 #include <algorithm>
@@ -243,7 +244,10 @@ public:
           "/tunnel/selected_source",rclcpp::QoS(1).reliable().transient_local(),
           [this](std_msgs::msg::String::ConstSharedPtr message) {
             if (message->data=="IR" || message->data=="RGB") {
-              tunnel_selected_ir_.store(message->data=="IR");
+              const bool selected_ir=message->data=="IR";
+              if (selected_ir && !tunnel_selected_ir_.exchange(true)) {
+                bev_handoff::publishIrLanePreview(nullptr); // Discard the previous tunnel visit.
+              } else if (!selected_ir) {tunnel_selected_ir_.store(false);}
             }
           },tunnel_options);
         tunnel_preview_sub_=node_.create_subscription<std_msgs::msg::String>(
@@ -1424,12 +1428,10 @@ private:
           const auto ir=bev_handoff::latestIrLanePreview();
           const auto stamp=ir ? rclcpp::Time(ir->header.stamp).nanoseconds() : 0;
           const double age=static_cast<double>(node_.get_clock()->now().nanoseconds()-stamp)*1e-9;
-          const bool fresh=ir && !ir->image.empty() && age>=-.05 && age<=.25;
-          cv::Mat overlay;
-          if (fresh) {overlay=ir->image.clone();}
-          else {overlay=cv::Mat::zeros(model_input_height_,result_width(),CV_8UC3);}
-          cv::putText(overlay,fresh ? "IR" : "IR: waiting for fresh result",cv::Point(4,14),
-            cv::FONT_HERSHEY_SIMPLEX,.3,cv::Scalar(255,255,255),1,cv::LINE_AA);
+          const bool available=ir && !ir->image.empty();
+          const bool fresh=ir_preview_fresh(available,age);
+          const cv::Mat overlay=ir_preview_image(available ? ir->image : cv::Mat(),age,
+            model_input_height_,result_width());
           canvas=preview_canvas(overlay,fresh ? ir->inference_ms : 0.0,
             fresh ? ir->postprocess_ms : 0.0,average_control_milliseconds,
             fresh ? ir->stop_distance_m : std::numeric_limits<double>::quiet_NaN(),
