@@ -9,7 +9,6 @@ setup(
         ('share/' + NAME, ['package.xml', 'README.md']),
         ('share/' + NAME + '/launch', glob('launch/*.launch.py')),
         ('share/' + NAME + '/config', glob('config/*.yaml')),
-        ('share/' + NAME + '/models', glob('models/*.onnx') + glob('models/*.json')),
         ('share/' + NAME + '/tools', glob('tools/*.py')),
     ],
     install_requires=['setuptools'], zip_safe=True,

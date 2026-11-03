@@ -12,6 +12,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_cmake_python REQUIRED)
+# Keep the helper module distinct from auto_control's generated ROS messages.
+ament_python_install_package(auto_control_tunnel)
 find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -71,12 +74,14 @@ target_link_libraries(auto_control_node
 install(TARGETS auto_control_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
+install(PROGRAMS scripts/tunnel_lane_selector DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(FILES
   README.md
   AUTO_CONTROL_PARAMETER_TUNING_KO.txt
   AUTO_CONTROL_OBSTACLES.md
+  AUTO_CONTROL_TUNNEL.md
   DESTINATION share/${PROJECT_NAME}
 )
 

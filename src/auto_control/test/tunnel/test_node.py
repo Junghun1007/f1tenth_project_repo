@@ -5,7 +5,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
-from tunnel_drive.selection import LaneSelector
+from auto_control_tunnel.selection import LaneSelector
 import test_selection
 
 
@@ -18,8 +18,8 @@ def load_node():
         setattr(modules['rclpy.qos'], name, object)
     modules['std_msgs.msg'].String = NS
     modules['line_detactor.msg'].LaneResult = object
-    path = Path(__file__).resolve().parents[1] / 'tunnel_drive/node.py'
-    spec = importlib.util.spec_from_file_location('tunnel_drive._node_test', path)
+    path = Path(__file__).resolve().parents[2] / 'auto_control_tunnel/node.py'
+    spec = importlib.util.spec_from_file_location('auto_control_tunnel._node_test', path)
     module = importlib.util.module_from_spec(spec)
     with patch.dict('sys.modules', modules):
         spec.loader.exec_module(module)

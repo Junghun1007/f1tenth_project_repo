@@ -31,12 +31,12 @@ ir_camera_driver: LEFT/CAM_B → 보정·IMU 안정화·IR BEV (mono8, 120×300)
 ## 모델
 
 `stereo_bev/runs/stereo_only_v1/best.pt`의 **epoch 9** 가중치를 배포용 FP32 ONNX로
-변환한 `models/ir_stereo_bev_120x300.onnx`를 포함합니다. RGB 모델로 대체하지 않습니다.
+변환한 `line_detactor/models/ir_stereo_bev_120x300.onnx`를 공용으로 사용합니다. RGB 모델로 대체하지 않습니다.
 입력은 RGB float32 `[1,3,300,120]`, 값 범위 [0,1], 출력은 left/right/stop_line logits입니다.
 IR 학습의 stop_line 채널은 감독되지 않았으므로 정지선 거리 추정과 신호등 정지는 사용하지 않습니다.
 정지선 표시 임계값은 1.0으로 설정합니다.
 
-`models/ir_stereo_bev_120x300.json`에 체크포인트/ONNX SHA256과 CPU 변환 검증 결과가 있습니다.
+`line_detactor/models/ir_stereo_bev_120x300.json`에 체크포인트/ONNX SHA256과 CPU 변환 검증 결과가 있습니다.
 검증은 합성 입력 2개와 IR validation 이미지 8개를 사용했습니다. 최종 test 세션은 사용하지 않았습니다.
 Jetson에서는 기존 line_detactor가 TensorRT 엔진을 생성합니다. 첫 실행에는 엔진 생성 시간이 필요합니다.
 

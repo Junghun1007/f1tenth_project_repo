@@ -2,19 +2,22 @@
 import hashlib
 import json
 from pathlib import Path
+import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
 from launch_ros.descriptions import ComposableNode
-from ir_bev_line_detection.settings import build_parameters
 
 
 def integrated_nodes(rgb_detector, controller, context):
     shares = {p: Path(get_package_share_directory(p)) for p in (
-        'ir_bev_line_detection', 'ir_camera_driver', 'line_detactor', 'auto_control', 'tunnel_tcn_test')}
-    test = shares['ir_bev_line_detection']
-    # Reuse the verified standalone IR lane/centerline settings and exact model.
-    ir = build_parameters(shares, test / 'config/ir_bev_test.yaml', 1.0)['line_detactor']
-    model = test / 'models/ir_stereo_bev_120x300.onnx'
+        'ir_camera_driver', 'line_detactor', 'auto_control', 'tunnel_tcn_test')}
+    # Perception assets are shared by production and standalone tests. The
+    # controller must not depend on a test package that depends on bringup.
+    def parameters(path):
+        return yaml.safe_load(path.read_text())['line_detactor']['ros__parameters']
+    ir = parameters(shares['line_detactor'] / 'config/line_detactor.yaml')
+    ir.update(parameters(shares['auto_control'] / 'config/tunnel_ir.yaml'))
+    model = shares['line_detactor'] / 'models/ir_stereo_bev_120x300.onnx'
     report = json.loads(model.with_suffix('.json').read_text())
     if hashlib.sha256(model.read_bytes()).hexdigest() != report['onnx_sha256']:
         raise ValueError('Bundled IR model checksum mismatch')
@@ -31,18 +34,16 @@ def integrated_nodes(rgb_detector, controller, context):
     rules.update(max_age_sec=min(.25, float(rule_age)), rgb_result_topic=rgb_detector['result_topic'])
     components = [
         ComposableNode(package='ir_camera_driver', plugin='ir_camera_driver::SharedIrBevNode',
-                       name='shared_ir_bev', parameters=[{'standby_fps': 5.0, 'active_fps': 30.0}]),
+                       name='shared_ir_bev', parameters=[{'standby_fps': 5.0, 'active_fps': 30.0,
+                                                          'model_input_topic': ir['input_topic']}]),
         ComposableNode(package='line_detactor', plugin='line_detactor::LineDetactorNode',
                        name='ir_line_detactor', parameters=[ir],
                        extra_arguments=[{'use_intra_process_comms': True}])]
     processes = [
-        Node(package='ir_bev_line_detection', executable='mono_bev_adapter', name='ir_bev_adapter',
-             output='screen', parameters=[{'input_topic': '/camera/image_bev_ir',
-                                          'output_topic': ir['input_topic']}]),
         Node(package='tunnel_tcn_test', executable='tunnel_tcn_node', name='tunnel_tcn_test',
              output='screen', parameters=[str(shares['tunnel_tcn_test'] / 'config/tunnel_tcn.yaml'),
                                           {'image_topic': '/tunnel/rgb_raw', 'initial_state': 'outside',
                                            'preview_enabled': False}]),
-        Node(package='tunnel_drive', executable='tunnel_lane_selector', name='tunnel_lane_selector',
+        Node(package='auto_control', executable='tunnel_lane_selector', name='tunnel_lane_selector',
              output='screen', parameters=[rules])]
     return components, processes

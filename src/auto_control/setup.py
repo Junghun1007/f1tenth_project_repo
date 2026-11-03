@@ -14,7 +14,7 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (
             f"share/{package_name}",
-            ["package.xml", "AUTO_CONTROL_PARAMETER_TUNING_KO.txt"],
+            ["package.xml", "AUTO_CONTROL_PARAMETER_TUNING_KO.txt", "AUTO_CONTROL_TUNNEL.md"],
         ),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
     ],
@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "auto_control_node = auto_control.auto_control_node:main",
+            "tunnel_lane_selector = auto_control_tunnel.node:main",
         ],
     },
 )

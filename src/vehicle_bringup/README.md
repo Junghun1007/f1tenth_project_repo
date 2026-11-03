@@ -1,8 +1,9 @@
 # vehicle_bringup
 
-터널 RGB↔IR 자동 전환은 [tunnel_drive](../tunnel_drive/README.md)의 통합 launch를 사용한다.
+터널 RGB↔IR 자동 전환은 [auto_control의 터널 기능](../auto_control/AUTO_CONTROL_TUNNEL.md)으로
+통합되어 있다. 기존 `auto_drive.launch.py`에 `tunnel_enabled:=true`를 추가해 사용한다.
 외부 RGB 80 FPS, 터널 IR 30 FPS, 외부 IR 대기 5 FPS이며 기존 단독 실행은 유지한다.
-공유 카메라 변경이 있으므로 `colcon build --packages-up-to tunnel_drive`로 함께 빌드한다.
+공유 카메라 변경이 있으므로 `colcon build --packages-up-to vehicle_bringup`로 함께 빌드한다.
 
 ## 기본 주행 설정과 외부 YAML
 
@@ -29,7 +30,7 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
   traffic_light_params_file:=/path/to/traffic_light_test.yaml
 ```
 
-같은 다섯 인자를 `ros2 launch tunnel_drive tunnel_drive.launch.py`에도 전달할 수 있다.
+터널 기능을 켤 때도 같은 다섯 인자를 유지하고 `tunnel_enabled:=true`만 추가한다.
 
 `auto_drive.launch.py`는 신호등 관측과 정지선 제동을 기본 활성화한다.
 `traffic_light_yolox_s_640x160_batch_1.int8.qdq.onnx`를 별도 작업 스레드에서

@@ -1,7 +1,7 @@
 from copy import deepcopy
 from types import SimpleNamespace as NS
 import unittest
-from tunnel_drive.selection import LaneSelector, lane_ready
+from auto_control_tunnel.selection import LaneSelector, lane_ready
 
 
 def ns(seconds):

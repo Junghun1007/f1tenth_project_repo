@@ -86,7 +86,7 @@ class ConfigurationTests(unittest.TestCase):
 
 class ModelTests(unittest.TestCase):
     def test_bundled_model_matches_verified_ir_export(self):
-        path = PACKAGE / 'models/ir_stereo_bev_120x300.onnx'
+        path = SOURCE / 'line_detactor/models/ir_stereo_bev_120x300.onnx'
         report = json.loads(path.with_suffix('.json').read_text(encoding='utf-8'))
         self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), report['onnx_sha256'])
         self.assertIn('stereo_only_v1', report['checkpoint'])

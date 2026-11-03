@@ -32,7 +32,7 @@ def _nodes(context):
     model = Path(LaunchConfiguration('model_path').perform(context))
     if not model.is_file():
         raise ValueError(f'IR ONNX model not found: {model}')
-    bundled_model = shares['ir_bev_line_detection'] / 'models/ir_stereo_bev_120x300.onnx'
+    bundled_model = shares['line_detactor'] / 'models/ir_stereo_bev_120x300.onnx'
     if model.resolve() == bundled_model.resolve():
         report = json.loads(model.with_suffix('.json').read_text(encoding='utf-8'))
         if hashlib.sha256(model.read_bytes()).hexdigest() != report['onnx_sha256']:
@@ -116,7 +116,7 @@ def generate_launch_description():
     share = Path(get_package_share_directory('ir_bev_line_detection'))
     defaults = {
         'params_file': str(share / 'config/ir_bev_test.yaml'),
-        'model_path': str(share / 'models/ir_stereo_bev_120x300.onnx'),
+        'model_path': str(Path(get_package_share_directory('line_detactor')) / 'models/ir_stereo_bev_120x300.onnx'),
         'speed_mps': '0.3', 'auto_enabled': 'true', 'control_mode': 'drive',
         'preview_enabled': 'true', 'vesc_port': '/dev/ttyTHS1',
         'vehicle_namespace': 'autopilot03', 'controller_name_contains': '8BitDo',

@@ -20,7 +20,7 @@ def main():
         raise ValueError('Supply the stereo-only checkpoint explicitly with --checkpoint')
     arguments = sys.argv[1:]
     if not any(arg == '--output' or arg.startswith('--output=') for arg in arguments):
-        arguments += ['--output', str(package / 'models/ir_stereo_bev_120x300.onnx')]
+        arguments += ['--output', str(package.parent / 'line_detactor/models/ir_stereo_bev_120x300.onnx')]
     sys.argv = [str(exporter), *arguments]
     runpy.run_path(str(exporter), run_name='__main__')
 

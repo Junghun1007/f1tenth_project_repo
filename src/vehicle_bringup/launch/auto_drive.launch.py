@@ -69,6 +69,17 @@ def _merged_parameters(base_path, selected_path, node_name):
     return parameters
 
 
+def _apply_speed_override(context, speed):
+    """Keep the integrated target-speed shorthand on the normal auto launch."""
+    if speed == "inherit":
+        return
+    value = float(speed)
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError("speed_mps must be a finite positive number")
+    for name in ("minimum_speed_mps", "maximum_speed_mps"):
+        context.launch_configurations[name] = str(value)
+
+
 def _configure_handover(context, controller_defaults, namespace):
     """Route AUTO through the manual controller's one-way handover gate."""
     config = context.launch_configurations
@@ -151,6 +162,7 @@ def _apply_parameter_file_defaults(
         LaunchConfiguration("line_detactor_params_file").perform(context),
         "line_detactor",
     )
+    _apply_speed_override(context, LaunchConfiguration("speed_mps").perform(context))
     manual_test = LaunchConfiguration("manual_test").perform(context).lower()
     obstacles_enabled = LaunchConfiguration("obstacles_enabled").perform(context).lower()
     if manual_test not in ("true", "false") or obstacles_enabled not in ("true", "false"):
@@ -393,7 +405,7 @@ def _apply_parameter_file_defaults(
                 math.isclose(y_max, .6) and math.isclose(mpp, .01) and
                 bev_defaults["output_frame_id"] == "front_axle_bev"):
             raise RuntimeError("Tunnel IR model requires 120x300 front-axle BEV at 1cm/pixel")
-        from tunnel_drive.launch_support import integrated_nodes
+        from auto_control_tunnel.launch_support import integrated_nodes
         components, tunnel_actions = integrated_nodes(detector, controller_defaults, context)
         # Recreate RGB description: ComposableNode normalizes/copies parameters.
         nodes[0] = ComposableNode(
@@ -809,6 +821,8 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument("tunnel_enabled", default_value="false"),
+            DeclareLaunchArgument("speed_mps", default_value="inherit",
+                                  description="Positive target m/s; inherit keeps selected controller YAML speed settings"),
             DeclareLaunchArgument("manual_test", default_value="false",
                                   description="Keep all perception and auto_control diagnostics; force monitor_only and use manual driving"),
             DeclareLaunchArgument("manual_enabled", default_value="true",

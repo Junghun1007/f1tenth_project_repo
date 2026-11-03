@@ -3,13 +3,24 @@
 `auto_control_node` follows the yellow centerline published by `line_detactor`
 as `line_detactor/msg/LaneResult`. It writes to the VESC duty, brake-current,
 and servo topics used by manual driving. Do not run manual and auto driving together.
-The installed runtime is C++/`rclcpp`; Python and NumPy are not on the per-frame
-control path. The package's older Python files remain only as implementation
+Stanley/PID and actuator calculations run in C++/`rclcpp`. Optional tunnel
+lane selection is performed by this package's Python `tunnel_lane_selector`;
+its implementation module is installed as `auto_control_tunnel`.
+The package's older Python files remain only as implementation
 reference and are not installed by the `ament_cmake` build.
+
+RGB/IR 터널 전환도 이 패키지가 소유한다. 별도 ROS 패키지나 전용 주행 launch 없이
+기존 실행에 `tunnel_enabled:=true`를 추가한다.
+자세한 빌드·전환·유실 처리는 [터널 주행 문서](AUTO_CONTROL_TUNNEL.md)를 참고한다.
+
+```bash
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  tunnel_enabled:=true auto_enabled:=false speed_mps:=1.0
+```
 
 ## 속도 계획과 PID, 개발 중인 신호등 정지
 
-기본값은 **속도 PID 및 단계 제어 ON, 코너 곡률 감속 OFF, 신호등 정지 OFF**다.
+기본값은 **속도 PID 및 단계 제어 ON, 코너 곡률 감속 ON, 신호등 정지 ON**이다.
 `auto_control_test.yaml`의 `auto_control.ros__parameters`에서 조절하고 재실행한다.
 검출 확신도/FPS는 별도의 `traffic_light_test.yaml` 설정이다.
 

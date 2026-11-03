@@ -1,7 +1,9 @@
-# tunnel_drive
+# auto_control 터널 주행 통합
 
 터널 밖 RGB 차선 주행 → TCN ENTRY → 터널 IR 차선 주행 → TCN EXIT → RGB 복귀를
-하나의 카메라 세션·자동제어기·VESC 경로로 연결한다. 항상 터널 밖에서 시작한다.
+`auto_control`이 관리한다. 상태·경로 선택기는 이 패키지의 `tunnel_lane_selector`이며,
+별도 ROS 패키지나 전용 launch 없이 기존 `vehicle_bringup auto_drive.launch.py`에서
+`tunnel_enabled:=true`로 활성화한다. 하나의 카메라 세션·자동제어기·VESC 경로를 사용한다. 항상 터널 밖에서 시작한다.
 기존 `tunnel_tcn_test`, `ir_bev_line_detection`의 독립 launch는 그대로 사용할 수 있다.
 통합 launch와 기존 카메라/자동/수동 launch를 동시에 실행하지 않는다.
 
@@ -25,7 +27,8 @@ TCN의 기존 밝기 특징과 10 Hz 추론·2.5초 시작 워밍업을 유지�
 IR CAM_B는 양쪽 모드에서 1280×800 / 30 FPS로 촬영한다. 저빈도 대기는 센서 FPS를
 바꾸는 대신 IR BEV 변환과 모델 입력 빈도를 제한한다. RGB의 시작 지면 측정·IMU
 기준 자세를 IR 투영에도 공유하며 실제 CAM_B 출력의 내부·외부 파라미터를 사용한다.
-IR 영상은 기존 mono8 → BGR 복제 어댑터와 기존 IR 모델·차선 후처리를 거친다.
+IR BEV 컴포넌트가 밝기를 유지한 BGR 3채널도 직접 발행하며 기존 IR 모델·차선 후처리를 거친다.
+통합 실행은 독립 테스트의 Python 어댑터를 시작하지 않는다.
 
 ENTRY 요청 시 IR 노출 30000μs / ISO800 / dot OFF / flood0.5를 적용한다.
 설정 명령 후 최소 150ms를 제외하고 실제 노출·ISO 메타데이터가 일치하는 프레임만
@@ -66,23 +69,26 @@ ROS 2 Humble / CUDA·TensorRT / DepthAI C++ 3.6+가 준비된 Jetson의 워크�
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-up-to tunnel_drive --executor sequential \
+colcon build --packages-up-to vehicle_bringup --executor sequential \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 
 # 먼저 연산·인식·전환만 확인. 기존 외부 주행 YAML 인자를 그대로 추가할 수 있다.
-ros2 launch tunnel_drive tunnel_drive.launch.py \
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  tunnel_enabled:=true \
   auto_control_mode:=monitor_only preview_enabled:=true speed_mps:=1.0
 
 # 위 실행 종료 후 주행 준비. 기본적으로 출발은 보류한다.
-ros2 launch tunnel_drive tunnel_drive.launch.py \
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  tunnel_enabled:=true \
   auto_enabled:=false preview_enabled:=true speed_mps:=1.0
 ```
 
 `speed_mps`는 0보다 큰 유한한 목표 속도(m/s)이며 0.3 상한은 없다.
 생략하면 기존 외부 제어 YAML/launch의 최소·최대 속도를 상속한다.
 IR 전용 launch와 마찬가지로 실제 속도는 기존 ERPM 피드백으로 제어한다.
-`auto_enabled`의 통합 기본값은 false다. 보정을 끝내고 TCN LIVE·차선을 확인한 뒤
+`auto_enabled`는 기존 auto_drive 및 선택한 제어 YAML 값을 따른다. 위 주행 준비 명령은
+명시적으로 false를 지정한다. 보정을 끝내고 TCN LIVE·차선을 확인한 뒤
 다른 source된 터미널에서 활성화한다.
 
 ```bash
@@ -97,13 +103,14 @@ ros2 topic hz /tunnel/lane_result
 IR 학습과 일치하도록 통합 BEV는 앞차축 기준 120×300, 전방 0~3m, 좌우 ±0.6m,
 1cm/pixel을 요구한다. 기본 회피 제어가 활성화된 설정에서 외부 장애물도 제외하려면
 `obstacles_enabled:=false avoidance_control_enabled:=false`를 함께 지정한다.
-일반 `vehicle_bringup auto_drive.launch.py`는 기본적으로 이 통합을 켜지 않는다.
+기존 RGB 전용 동작을 유지하도록 `tunnel_enabled` 기본값은 false다.
+공용 IR 모델과 검증 보고서는 `line_detactor/models`에 있으며, 단독 IR 테스트와 함께 사용한다.
 
 ## 로컬 검증
 
 ```bash
-PYTHONPATH=src/tunnel_drive:src/ir_bev_line_detection python3 -m unittest discover \
-  -s src/tunnel_drive/test -v
+PYTHONPATH=src/auto_control python3 -m unittest discover \
+  -s src/auto_control/test/tunnel -v
 c++ -std=c++17 -Isrc/line_detactor/include \
   src/line_detactor/test/frame_rate_gate_test.cpp -o /tmp/frame_rate_gate_test
 /tmp/frame_rate_gate_test
