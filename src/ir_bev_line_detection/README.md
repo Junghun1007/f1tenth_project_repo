@@ -19,8 +19,9 @@ ir_camera_driver: LEFT/CAM_B → 보정·IMU 안정화·IR BEV (mono8, 120×300)
 기존 차선·중앙선 미리보기 위에 IR BEV를 표시합니다.
 
 주행 설정: **30 FPS, 노출 30000 μs, ISO 800, LEFT 한쪽, dot OFF, flood 0.5,
-목표 속도 0.3 m/s**. 런타임 RGB는 사용하지 않습니다. 장애물 회피와 신호등 정지는 제외합니다.
-실제 속도는 기존 ERPM 피드백 PID가 제어하며, 0.3 m/s는 물리적인 속도 보장이 아닙니다.
+기본 목표 속도 0.3 m/s**. `speed_mps`로 목표 속도를 지정하며 0.3 m/s 상한은 없습니다.
+0보다 큰 유한한 값을 사용합니다. 런타임 RGB는 사용하지 않습니다. 장애물 회피와 신호등 정지는 제외합니다.
+실제 속도는 기존 ERPM 피드백 PID가 제어하며, 지정한 목표 속도는 물리적인 속도 보장이 아닙니다.
 
 기존 IR 드라이버의 정지 상태 시작 보정과 IMU 안정화는 유지합니다. 시작 보정은 일시적으로
 양쪽 카메라와 dot projector를 사용해 바닥 평면·높이를 측정하고, 이후 LEFT/dot OFF 설정으로
@@ -76,8 +77,8 @@ ros2 topic pub --once /auto/enabled std_msgs/msg/Bool "data: true"
 ```bash
 # 차선 추론·미리보기만 확인: VESC/조이스틱/수동 전환 노드를 시작하지 않음
 ros2 launch ir_bev_line_detection ir_bev_line_detection.launch.py control_mode:=monitor_only
-# 더 낮은 목표 속도. 이 테스트의 허용 범위: 0 < speed_mps <= 0.3
-ros2 launch ir_bev_line_detection ir_bev_line_detection.launch.py speed_mps:=0.2
+# 사용자 지정 목표 속도(m/s). 0보다 큰 유한한 값, 기본값 0.3
+ros2 launch ir_bev_line_detection ir_bev_line_detection.launch.py speed_mps:=1.0
 ```
 
 추가 launch 인자: `vesc_port`(기본 `/dev/ttyTHS1`), `vehicle_namespace`(기본 `autopilot03`),

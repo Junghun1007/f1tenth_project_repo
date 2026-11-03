@@ -11,8 +11,8 @@ def parameters(path, node):
 
 def build_parameters(shares, config_path, speed):
     speed = float(speed)
-    if not math.isfinite(speed) or not 0 < speed <= .3:
-        raise ValueError('This low-speed test requires 0 < speed_mps <= 0.3')
+    if not math.isfinite(speed) or speed <= 0:
+        raise ValueError('speed_mps must be a finite positive number')
     specs = {
         'ir_camera_driver': ('ir_camera_driver', 'ir_camera_config.yaml'),
         'line_detactor': ('line_detactor', 'line_detactor.yaml'),

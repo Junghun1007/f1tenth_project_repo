@@ -61,8 +61,16 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(camera['ir_dot_projector_intensity'], 0.)
         self.assertFalse(camera['rgb_enabled'])
 
-    def test_rejects_speed_outside_test_range(self):
-        for speed in (0, -.1, .31, float('nan'), float('inf')):
+    def test_applies_requested_speed_without_point_three_limit(self):
+        for speed in (.2, .3, .31, 1.0, 2.0):
+            with self.subTest(speed=speed):
+                controller = build_parameters(
+                    SHARES, PACKAGE / 'config/ir_bev_test.yaml', str(speed))['auto_control']
+                self.assertEqual(controller['minimum_speed_mps'], speed)
+                self.assertEqual(controller['maximum_speed_mps'], speed)
+
+    def test_rejects_nonpositive_or_nonfinite_speed(self):
+        for speed in (0, -.1, float('nan'), float('inf'), float('-inf')):
             with self.assertRaises(ValueError):
                 build_parameters(SHARES, PACKAGE / 'config/ir_bev_test.yaml', speed)
 
