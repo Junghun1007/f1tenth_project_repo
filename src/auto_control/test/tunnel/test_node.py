@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 from auto_control_tunnel.selection import LaneSelector
+from lane_fixture import lane, ns
 
 
 def load_node():
@@ -31,11 +32,11 @@ class CallbackTests(unittest.TestCase):
         self.node = self.module.TunnelLaneSelector.__new__(self.module.TunnelLaneSelector)
         n = self.node
         n.preview = self.module.TunnelPreviewTelemetry()
-        self.message = NS(header=NS(stamp=NS(sec=10, nanosec=0)), centerline_valid=False)
+        self.message = lane(10, valid=False)
         n.policy = LaneSelector()
         n.last_tcn_received, n.tcn_live = None, False
         n.get_clock = lambda: NS(now=lambda: NS(nanoseconds=10_010_000_000))
-        n.get_logger = lambda: NS(warning=lambda _: None)
+        n.get_logger = lambda: NS(warning=lambda _: None, info=lambda _: None)
         n.publish_status = lambda: None
         self.outputs = []
         n.output = NS(publish=self.outputs.append)
@@ -66,25 +67,39 @@ class CallbackTests(unittest.TestCase):
         self.node.on_lane('RGB', self.message)
         self.assertEqual(self.outputs, [self.message])
         self.report(status='WARMUP 2.5s')
-        # An accepted LIVE entry switches even when its source timestamp is old.
+        # Validation accepts an old LIVE event, then prepares a new target path.
         self.report(state='inside', source_stamp_ns=9_000_000_000)
-        self.assertEqual(self.node.policy.selected, 'IR')
+        self.assertEqual(self.node.policy.state, 'ENTERING')
         self.node.tcn_live = False
         with patch.object(self.module.time, 'monotonic', return_value=100000.):
             self.node.on_lane('IR', self.message)
-        self.assertEqual(self.outputs, [self.message, self.message])
+        self.assertEqual(self.outputs, [self.message])
+        valid_ir = lane(10.02)
+        self.node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=ns(10.025)))
+        self.node.on_lane('IR', valid_ir)
+        self.assertEqual(self.node.policy.selected, 'IR')
+        self.assertEqual(self.outputs, [self.message, valid_ir])
         # Does not fabricate a new result or repeat one already delivered.
-        self.node.on_lane('IR', self.message)
+        self.node.on_lane('IR', valid_ir)
         self.assertEqual(len(self.outputs), 2)
 
     def test_real_tcn_event_schema_requests_entry(self):
         self.report(state='inside', event=dict(type='entry', score=.9, time_s=3.))
-        self.assertEqual(self.node.policy.state, 'INSIDE')
-        self.assertEqual(self.node.policy.selected, 'IR')
+        self.assertEqual(self.node.policy.state, 'ENTERING')
+        self.assertEqual(self.node.policy.selected, 'RGB')
+        self.assertEqual(self.node.policy.compute, 'BOTH')
+
+    def test_deadline_timer_changes_compute_without_publishing_saved_path(self):
+        self.report(state='inside')
+        self.node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=ns(10.8)))
+        self.node.on_transition_tick()
+        self.assertEqual(self.node.policy.compute, 'IR')
+        self.assertEqual(self.node.policy.reason, 'target_wait_timeout')
+        self.assertEqual(self.outputs, [])
 
     def test_retained_tcn_state_recovers_lost_event_without_repeating_switch(self):
         self.report(state='inside')
-        self.assertEqual(self.node.policy.state, 'INSIDE')
+        self.assertEqual(self.node.policy.state, 'ENTERING')
         event_stamp = self.node.policy.last_event_ns
         self.report(state='inside', source_stamp_ns=10_005_000_000)
         self.assertEqual(self.node.policy.last_event_ns, event_stamp)

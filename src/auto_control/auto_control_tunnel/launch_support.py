@@ -36,6 +36,17 @@ def integrated_nodes(rgb_detector, controller, context):
     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)
     selector_parameters = dict(validation_mode=validation, max_age_sec=min(.25, float(rule_age)),
                                rgb_result_topic=rgb_detector['result_topic'])
+    # Match the actual controller YAML and resolved CLI geometry overrides.
+    for name, fallback, cast in (
+        ('path_minimum_points', 8, int), ('path_minimum_span_m', .12, float),
+        ('path_minimum_x_m', .05, float), ('path_maximum_x_m', 2.20, float),
+        ('path_maximum_gap_m', .15, float)):
+        selector_parameters[name] = cast(context.launch_configurations.get(name, controller.get(name, fallback)))
+    selector_parameters.update(
+        lane_result_frame_id=context.launch_configurations.get('ml_lane_frame_id', 'front_axle_bev'),
+        bev_x_max_m=float(context.launch_configurations.get('ml_bev_x_max_m', 3.)),
+        bev_y_max_m=float(context.launch_configurations.get('ml_bev_y_max_m', .6)),
+        bev_meter_per_pixel=float(context.launch_configurations.get('ml_bev_meter_per_pixel', .01)))
     components = [
         ComposableNode(package='ir_camera_driver', plugin='ir_camera_driver::SharedIrBevNode',
                        name='shared_ir_bev', parameters=[{'validation_mode': validation, 'standby_fps': 0.0, 'active_fps': 30.0,
@@ -49,7 +60,7 @@ def integrated_nodes(rgb_detector, controller, context):
                                           {'image_topic': '/tunnel/rgb_raw', 'initial_state': 'outside',
                                            'preview_enabled': False}]),
         Node(package='auto_control', executable='tunnel_lane_selector', name='tunnel_lane_selector',
-             output='screen', parameters=[selector_parameters])]
+             output='screen', parameters=[str(shares['auto_control'] / 'config/tunnel_handover.yaml'), selector_parameters])]
     return components, processes
 
 

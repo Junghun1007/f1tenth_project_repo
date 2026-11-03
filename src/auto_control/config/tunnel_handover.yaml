@@ -1,0 +1,8 @@
+tunnel_lane_selector:
+  ros__parameters:
+    blend_duration_sec: 0.15
+    transition_timeout_sec: 0.75
+    contributor_max_age_sec: 0.12
+    pair_max_skew_sec: 0.10
+    maximum_blend_offset_m: 0.20
+    maximum_blend_heading_deg: 20.0
