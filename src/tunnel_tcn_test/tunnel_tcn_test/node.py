@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
@@ -42,7 +42,22 @@ class TunnelNode(Node):
         if self.fps != 30 or not 0 <= self.decoder.threshold <= 1 or self.decoder.cooldown < 0:
             raise ValueError('This launch uses 30 FPS; invalid detector settings')
         self.get_logger().info('Loading RGB FP32 TensorRT model; first engine build can take several minutes.')
-        self.backend = TensorRTBackend(model_path, cache_dir, provenance['onnx_sha256'])
+        self.model_status = self.create_publisher(String, '~/model_status', QoSProfile(
+            depth=1, reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.model_status.publish(String(data=f'LOADING | model={model_path}'))
+        try:
+            self.backend = TensorRTBackend(model_path, cache_dir, provenance['onnx_sha256'])
+            # Includes engine load/build, buffer allocation and finite output check.
+            logits = self.backend.infer(np.zeros((1, 17, 32), dtype=np.float32))
+            if logits.shape != (1, 2) or not np.isfinite(logits).all():
+                raise RuntimeError('Invalid TCN trial inference output')
+        except Exception as error:
+            self.model_status.publish(String(data=f'FAILED | {error}'))
+            self.get_logger().error(f'[MODEL CHECK] FAIL TCN: {error}')
+            raise
+        self.model_status.publish(String(data=f'READY | model={model_path} | trial inference=PASS'))
+        self.get_logger().info(f'[MODEL CHECK] PASS TCN | model={model_path}')
         self.get_logger().info(f'TensorRT ready: {self.backend.engine_path}')
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.subscription = self.create_subscription(Image, parameter('image_topic', '/camera/image_rect'), self.on_image, qos)

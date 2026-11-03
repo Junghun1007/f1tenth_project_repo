@@ -1,4 +1,5 @@
 """Exercise real node callbacks with transport/clock/GPU doubles, without ROS."""
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -30,6 +31,47 @@ def load_node():
 
 
 class NodeTests(unittest.TestCase):
+    def test_startup_trial_reports_failure_instead_of_ready(self):
+        # Execute the real constructor's model-check block with a GPU double.
+        path = Path(__file__).resolve().parents[1] / 'tunnel_tcn_test/node.py'
+        tree = ast.parse(path.read_text())
+        node_class = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'TunnelNode')
+        constructor = next(n for n in node_class.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
+        start = next(i for i, n in enumerate(constructor.body)
+                     if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Attribute)
+                     and n.targets[0].attr == 'model_status')
+        end = next(i for i, n in enumerate(constructor.body[start:], start)
+                   if isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
+                   and n.targets[0].id == 'qos')
+        code = compile(ast.Module(body=constructor.body[start:end], type_ignores=[]), str(path), 'exec')
+        for output, error in ((np.zeros((1, 2), np.float32), None),
+                              (np.full((1, 2), np.nan), RuntimeError),
+                              (np.zeros((2,), np.float32), RuntimeError),
+                              (None, RuntimeError)):
+            reports, errors = [], []
+            def infer(features):
+                self.assertEqual(features.shape, (1, 17, 32))
+                if output is None:
+                    raise RuntimeError('engine load/inference failure')
+                return output
+            node = SimpleNamespace(
+                create_publisher=lambda *a: SimpleNamespace(publish=lambda m: reports.append(m.data)),
+                get_logger=lambda: SimpleNamespace(info=lambda m: None, error=errors.append))
+            namespace = dict(self=node, model_path='/model.onnx', cache_dir='/cache',
+                provenance={'onnx_sha256': 'test'}, np=np, String=SimpleNamespace,
+                QoSProfile=lambda **kw: kw,
+                ReliabilityPolicy=SimpleNamespace(RELIABLE='reliable'),
+                DurabilityPolicy=SimpleNamespace(TRANSIENT_LOCAL='latched'),
+                TensorRTBackend=lambda *a: SimpleNamespace(infer=infer, engine_path='/engine'))
+            if error:
+                with self.assertRaises(error):
+                    exec(code, namespace)
+                self.assertTrue(reports[-1].startswith('FAILED | '))
+                self.assertFalse(any(item.startswith('READY | ') for item in reports))
+            else:
+                exec(code, namespace)
+                self.assertTrue(reports[-1].startswith('READY | '))
+
     def test_headless_main_runs_inference_loop_without_gui_calls(self):
         module = load_node()
         running = [True]

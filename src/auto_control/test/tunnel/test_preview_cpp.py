@@ -33,11 +33,13 @@ class PreviewNativeTests(unittest.TestCase):
             self.skipTest('OpenCV development files unavailable')
         source = (SOURCE / 'line_detactor/src/line_detactor_node.cpp').read_text()
         renderer = function(source, '  cv::Mat preview_canvas(')
+        warmup = function(source, '  void warm_up()')
         code = r'''
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -55,7 +57,33 @@ RENDERER
 void require(bool condition) {
   if (!condition) {throw std::runtime_error("Preview handoff/HUD regression");}
 }
+struct TrialBackend {
+  int calls{0};
+  bool fail{false};
+  void infer_bgr(const std::uint8_t * data, std::size_t bytes, std::size_t stride) {
+    require(data && bytes==120*300*3 && stride==120*3);
+    require(std::all_of(data,data+bytes,[](std::uint8_t x) {return x==0;}));
+    if (fail) {throw std::runtime_error("trial inference failed");}
+    ++calls;
+  }
+};
+#define RCLCPP_INFO(...) ((void)0)
+struct WarmupHarness {
+  int model_input_width_{120},model_input_height_{300},warmup_iterations_{0};
+  std::unique_ptr<TrialBackend> backend_{std::make_unique<TrialBackend>()};
+WARMUP
+};
 int main() {
+  WarmupHarness check;
+  check.warm_up();
+  require(check.backend_->calls==1); // warmup=0 still verifies the model once.
+  check.warmup_iterations_=3;
+  check.warm_up();
+  require(check.backend_->calls==4);
+  check.backend_->fail=true;
+  bool failed=false;
+  try {check.warm_up();} catch (const std::runtime_error &) {failed=true;}
+  require(failed); // Do not turn a failed engine execution into a PASS report.
   require(!bev_handoff::latestIrLanePreview());
   {
     auto frame=std::make_shared<bev_handoff::IrLanePreview>();
@@ -76,7 +104,7 @@ int main() {
   cv::line(image,{90,299},{90,0},{0,255,255},2);
   Harness preview;
   const std::array<std::string,3> hud{
-    "Tunnel: ENTERING","TCN avg 1234.5FPS","TCN LIVE E:0.75 X:0.05"};
+    "Tunnel: INSIDE","TCN avg 1234.5FPS","TCN LIVE E:0.75 X:0.05"};
   const auto canvas=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,.075,"","",hud);
   require(canvas.cols==180 && canvas.rows==300+144+28+14);
   require(cv::countNonZero(canvas(cv::Rect(0,300+14*5,180,14)).reshape(1))>0);
@@ -93,7 +121,7 @@ int main() {
   require(cv::norm(legacy(cv::Rect(0,300,180,14*8)),
     unknown(cv::Rect(0,300,180,14*8)),cv::NORM_L1)==0);
 }
-'''.replace('RENDERER', renderer)
+'''.replace('RENDERER', renderer).replace('WARMUP', warmup)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             header = root / 'std_msgs/msg/header.hpp'

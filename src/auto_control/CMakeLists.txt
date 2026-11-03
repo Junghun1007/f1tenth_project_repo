@@ -74,7 +74,7 @@ target_link_libraries(auto_control_node
 install(TARGETS auto_control_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
-install(PROGRAMS scripts/tunnel_lane_selector DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(FILES

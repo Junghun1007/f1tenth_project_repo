@@ -143,16 +143,27 @@ public:
       throw std::runtime_error(
               "Preview is enabled but DISPLAY/WAYLAND_DISPLAY is unavailable");
     }
-    if (!std::filesystem::is_regular_file(model_path_)) {
-      throw std::runtime_error("Three-channel ONNX model not found: " + model_path_ +
-        ". Export the trained checkpoint with tools/export_stop_line_onnx.py first.");
+    rclcpp::PublisherOptions model_status_options;
+    model_status_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    model_status_pub_ = node_.create_publisher<std_msgs::msg::String>(
+      "~/model_status", rclcpp::QoS(1).reliable().transient_local(), model_status_options);
+    publish_model_status("LOADING | model=" + model_path_);
+    try {
+      if (!std::filesystem::is_regular_file(model_path_)) {
+        throw std::runtime_error("Three-channel ONNX model not found: " + model_path_);
+      }
+      backend_ = std::make_unique<TensorRtLaneBackend>(
+        model_path_, engine_cache_path_, engine_precision_, model_input_width_, model_input_height_,
+        static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
+        mask_threshold_, overlay_alpha_, connection_.enabled, stop_line_mask_threshold_);
+      warm_up();
+      publish_model_status("READY | model=" + model_path_ + " | engine=" +
+        backend_->engine_cache_path() + " | trial inference=PASS");
+    } catch (const std::exception & e) {
+      publish_model_status(std::string("FAILED | ") + e.what());
+      RCLCPP_ERROR(node_.get_logger(), "[MODEL CHECK] FAIL: %s", e.what());
+      throw;
     }
-
-    backend_ = std::make_unique<TensorRtLaneBackend>(
-      model_path_, engine_cache_path_, engine_precision_, model_input_width_, model_input_height_,
-      static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
-      mask_threshold_, overlay_alpha_, connection_.enabled, stop_line_mask_threshold_);
-    warm_up();
     start_profiling();
 
     const auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1))
@@ -670,22 +681,27 @@ private:
     }
   }
 
+  void publish_model_status(const std::string & status)
+  {
+    std_msgs::msg::String message;
+    message.data = status;
+    model_status_pub_->publish(message);
+    RCLCPP_INFO(node_.get_logger(), "[MODEL CHECK] %s", status.c_str());
+  }
+
   void warm_up()
   {
-    if (warmup_iterations_ == 0) {
-      return;
-    }
     const auto bytes =
       static_cast<std::size_t>(model_input_width_) *
       static_cast<std::size_t>(model_input_height_) * 3U;
     std::vector<std::uint8_t> black(bytes, 0U);
     const auto stride = static_cast<std::size_t>(model_input_width_) * 3U;
-    for (int iteration = 0; iteration < warmup_iterations_; ++iteration) {
+    for (int iteration = 0; iteration < std::max(1, warmup_iterations_); ++iteration) {
       static_cast<void>(backend_->infer_bgr(black.data(), bytes, stride));
     }
     RCLCPP_INFO(
       node_.get_logger(), "TensorRT warmup completed: %d iterations",
-      warmup_iterations_);
+      std::max(1, warmup_iterations_));
   }
 
   void on_image(const Image::ConstSharedPtr message)
@@ -1599,6 +1615,7 @@ private:
   SteadyClock::time_point profile_started_at_{};
   std::unique_ptr<ProcessingProfileWriter> profile_writer_;
   std::unique_ptr<TensorRtLaneBackend> backend_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr model_status_pub_;
   rclcpp::Subscription<Image>::SharedPtr subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr control_latency_subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_subscription_;

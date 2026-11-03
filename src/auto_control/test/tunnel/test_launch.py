@@ -43,7 +43,6 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual([p['executable'] for p in processes],
                          ['tunnel_tcn_node', 'tunnel_lane_selector'])
         self.assertEqual(processes[-1]['package'], 'auto_control')
-        self.assertEqual(processes[-1]['parameters'][0]['minimum_points'], 12)
         self.assertEqual(processes[-1]['parameters'][0]['rgb_result_topic'], '/custom/rgb_result')
         self.assertEqual(processes[0]['parameters'][-1]['initial_state'], 'outside')
         self.assertFalse(processes[0]['parameters'][-1]['preview_enabled'])
@@ -59,6 +58,19 @@ class LaunchTests(unittest.TestCase):
                 self.assertFalse(ir['bev_theme_enable'])
                 self.assertTrue(ir['shared_ir_preview_output_enabled'])
                 self.assertEqual(ir['preview_result_only_enabled'], result_only)
+
+    def test_model_check_tracks_only_enabled_inference_nodes(self):
+        helper = self.helper()
+        for tunnel in (False, True):
+            for traffic in (False, True):
+                expected = ['line_detactor']
+                if tunnel:
+                    expected += ['ir_line_detactor', 'tunnel_tcn_test']
+                if traffic:
+                    expected += ['traffic_light_detector']
+                node = helper.model_check_node(tunnel, traffic)
+                self.assertEqual(node['parameters'][0]['expected_nodes'], expected)
+                self.assertEqual(node['executable'], 'model_startup_check')
 
     def speed_override(self, speed):
         path = SOURCE / 'vehicle_bringup/launch/auto_drive.launch.py'

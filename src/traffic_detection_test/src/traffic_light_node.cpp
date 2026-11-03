@@ -3,6 +3,7 @@
 #include "traffic_detection_test/msg/traffic_light_state.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
@@ -66,6 +67,11 @@ public:
     period_ = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
     publisher_ = create_publisher<State>(
       declare_parameter<std::string>("state_topic", "/traffic_light/state"), rclcpp::QoS(1));
+    rclcpp::PublisherOptions status_options;
+    status_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    model_status_pub_ = create_publisher<std_msgs::msg::String>(
+      "~/model_status", rclcpp::QoS(1).reliable().transient_local(), status_options);
+    publish_model_status("LOADING | model=" + model_);
     consumer_ = bev_handoff::registerDirectCameraConsumer(
       [this](std::shared_ptr<const Frame> frame) {
         std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
@@ -83,6 +89,8 @@ public:
           // A publication/shutdown failure must not terminate the shared
           // camera/BEV/lane process through an uncaught worker exception.
           if (rclcpp::ok(get_node_base_interface()->get_context())) {
+            try {publish_model_status(std::string("FAILED | worker stopped: ") + e.what());}
+            catch (const std::exception &) {}  // Context may be shutting down.
             RCLCPP_ERROR(get_logger(), "Traffic worker stopped: %s", e.what());
           }
         }
@@ -172,6 +180,14 @@ private:
     return confirmation_count_ >= confirmation_frames_ ? value : State::UNKNOWN;
   }
 
+  void publish_model_status(const std::string & status)
+  {
+    std_msgs::msg::String message;
+    message.data = status;
+    model_status_pub_->publish(message);
+    RCLCPP_INFO(get_logger(), "[MODEL CHECK] %s", status.c_str());
+  }
+
   void run()
   {
     bev_handoff::publishTrafficInferenceFps(0.0, Clock::time_point{});
@@ -185,8 +201,16 @@ private:
     try {
       detector = std::make_unique<YoloxDetector>(
         model_, "TENSORRT", cache_, "int8", 640, 160, score_, nms_, workspace_);
+      // Exercise the production NV12 -> CUDA -> TensorRT -> output path.
+      cv::Mat black_nv12(240, 640, CV_8UC1, cv::Scalar(16));
+      black_nv12.rowRange(160, 240).setTo(128);
+      static_cast<void>(detector->detect_nv12(black_nv12.data, black_nv12.total(),
+        black_nv12.step[0], 640, 160, cv::Rect(0, 0, 640, 160)));
+      publish_model_status("READY | model=" + model_ + " | trial NV12 inference=PASS");
       RCLCPP_INFO(get_logger(), "Traffic TensorRT engine ready; awaiting shared color frames.");
     } catch (const std::exception & e) {
+      detector.reset();
+      publish_model_status(std::string("FAILED | ") + e.what());
       RCLCPP_ERROR(get_logger(), "Traffic initialization failed: %s", e.what());
       // Stay alive publishing UNKNOWN; do not disturb the lane pipeline.
     }
@@ -307,6 +331,7 @@ private:
   Clock::duration period_;
   std::uint64_t consumer_{0};
   rclcpp::Publisher<State>::SharedPtr publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr model_status_pub_;
   std::mutex mutex_;
   std::condition_variable condition_;
   bool stopping_{false};

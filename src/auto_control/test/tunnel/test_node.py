@@ -6,7 +6,6 @@ from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 from auto_control_tunnel.selection import LaneSelector
-import test_selection
 
 
 def load_node():
@@ -32,11 +31,8 @@ class CallbackTests(unittest.TestCase):
         self.node = self.module.TunnelLaneSelector.__new__(self.module.TunnelLaneSelector)
         n = self.node
         n.preview = self.module.TunnelPreviewTelemetry()
-        geometry = test_selection.CandidateGeometryTests()
-        geometry.setUp()
-        self.message = geometry.message
-        self.message.header.stamp = NS(sec=10, nanosec=0)
-        n.rules, n.policy = geometry.rules, LaneSelector()
+        self.message = NS(header=NS(stamp=NS(sec=10, nanosec=0)), centerline_valid=False)
+        n.policy = LaneSelector()
         n.last_tcn_received, n.tcn_live = None, False
         n.get_clock = lambda: NS(now=lambda: NS(nanoseconds=10_010_000_000))
         n.get_logger = lambda: NS(warning=lambda _: None)
@@ -53,6 +49,7 @@ class CallbackTests(unittest.TestCase):
         self.report()
         self.node.on_lane('RGB', self.message)
         self.assertEqual(self.outputs, [self.message])
+        self.assertFalse(self.outputs[0].centerline_valid)
         self.assertEqual(self.outputs[0].header.stamp.sec, 10)
 
     def test_warmup_and_tcn_silence_withhold_lane_results(self):
@@ -66,15 +63,15 @@ class CallbackTests(unittest.TestCase):
 
     def test_real_tcn_event_schema_requests_entry(self):
         self.report(state='inside', event=dict(type='entry', score=.9, time_s=3.))
-        self.assertEqual(self.node.policy.state, 'ENTERING')
-        self.assertEqual(self.node.policy.transition_ns, 10_010_000_000)
+        self.assertEqual(self.node.policy.state, 'INSIDE')
+        self.assertEqual(self.node.policy.selected, 'IR')
 
-    def test_retained_tcn_state_recovers_lost_event_without_resetting_confirmation(self):
+    def test_retained_tcn_state_recovers_lost_event_without_repeating_switch(self):
         self.report(state='inside')
-        self.assertEqual(self.node.policy.state, 'ENTERING')
-        self.node.policy.count = 2
+        self.assertEqual(self.node.policy.state, 'INSIDE')
+        event_stamp = self.node.policy.last_event_ns
         self.report(state='inside', source_stamp_ns=10_005_000_000)
-        self.assertEqual(self.node.policy.count, 2)
+        self.assertEqual(self.node.policy.last_event_ns, event_stamp)
 
     def test_stale_or_malformed_tcn_does_not_start_motion_or_transition(self):
         for data in ('[]', '{', '{"source_stamp_ns": true}',

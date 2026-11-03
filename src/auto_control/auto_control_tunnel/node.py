@@ -5,7 +5,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from std_msgs.msg import String
 from line_detactor.msg import LaneResult
-from .selection import LaneSelector, lane_ready
+from .selection import LaneSelector
 from .telemetry import TunnelPreviewTelemetry
 
 
@@ -13,10 +13,7 @@ class TunnelLaneSelector(Node):
     def __init__(self):
         super().__init__('tunnel_lane_selector')
         param = lambda key, default: self.declare_parameter(key, default).value
-        self.policy = LaneSelector(param('max_age_sec', .2), param('confirmations', 3))
-        self.rules = {key: param(key, default) for key, default in dict(
-            minimum_x=.01, maximum_x=2.98, minimum_points=8,
-            maximum_gap=.15, minimum_span=.12).items()}
+        self.policy = LaneSelector(param('max_age_sec', .2))
         sensor = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         status = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -67,7 +64,7 @@ class TunnelLaneSelector(Node):
             requested = 'IR' if state == 'inside' else 'RGB'
             # Event packets may be lost with sensor QoS. The TCN retains its
             # accepted state in subsequent reports, so reconcile that state too.
-            # Matching reports must not restart a pending three-frame handoff.
+            # Matching reports do not repeat the same source change.
             if requested == self.policy.requested:
                 return
             kind = 'entry' if requested == 'IR' else 'exit'
@@ -84,8 +81,7 @@ class TunnelLaneSelector(Node):
         if not self.tcn_live or self.last_tcn_received is None or time.monotonic() - self.last_tcn_received > .5:
             return
         stamp = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
-        accepted = self.policy.lane(source, stamp, self.get_clock().now().nanoseconds,
-                                    lane_ready(message, self.rules))
+        accepted = self.policy.lane(source, stamp, self.get_clock().now().nanoseconds)
         self.publish_status()
         if accepted:
             self.output.publish(message)

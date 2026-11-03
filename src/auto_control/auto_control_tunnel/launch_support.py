@@ -26,14 +26,10 @@ def integrated_nodes(rgb_detector, controller, context):
               shared_ir_preview_output_enabled=rgb_detector['preview_enabled'],
               preview_result_only_enabled=rgb_detector.get('preview_result_only_enabled', True))
     rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 80.0})
-    rules = {target: type(default)(context.launch_configurations.get(source, controller.get(source, default)))
-             for target, source, default in (
-        ('minimum_x', 'path_minimum_x_m', .01), ('maximum_x', 'path_maximum_x_m', 2.98),
-        ('minimum_points', 'path_minimum_points', 8), ('maximum_gap', 'path_maximum_gap_m', .15),
-        ('minimum_span', 'path_minimum_span_m', .12))}
     age = controller.get('path_capture_maximum_age_sec', .2)
     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)
-    rules.update(max_age_sec=min(.25, float(rule_age)), rgb_result_topic=rgb_detector['result_topic'])
+    selector_parameters = dict(max_age_sec=min(.25, float(rule_age)),
+                               rgb_result_topic=rgb_detector['result_topic'])
     components = [
         ComposableNode(package='ir_camera_driver', plugin='ir_camera_driver::SharedIrBevNode',
                        name='shared_ir_bev', parameters=[{'standby_fps': 0.0, 'active_fps': 30.0,
@@ -47,5 +43,16 @@ def integrated_nodes(rgb_detector, controller, context):
                                           {'image_topic': '/tunnel/rgb_raw', 'initial_state': 'outside',
                                            'preview_enabled': False}]),
         Node(package='auto_control', executable='tunnel_lane_selector', name='tunnel_lane_selector',
-             output='screen', parameters=[rules])]
+             output='screen', parameters=[selector_parameters])]
     return components, processes
+
+
+def model_check_node(tunnel_enabled, traffic_enabled):
+    expected = ['line_detactor']
+    if tunnel_enabled:
+        expected += ['ir_line_detactor', 'tunnel_tcn_test']
+    if traffic_enabled:
+        expected += ['traffic_light_detector']
+    return Node(package='auto_control', executable='model_startup_check',
+                name='model_startup_check', output='screen',
+                parameters=[{'expected_nodes': expected}])

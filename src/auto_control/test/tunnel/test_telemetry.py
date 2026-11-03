@@ -11,8 +11,8 @@ class TelemetryTests(unittest.TestCase):
         telemetry = TunnelPreviewTelemetry()
         telemetry.update(self.report(1, 2.), 10.)
         telemetry.update(self.report(2, 4.), 10.1)
-        lines = telemetry.lines('ENTERING', 10.1)
-        self.assertEqual(lines[0], 'Tunnel: ENTERING')
+        lines = telemetry.lines('INSIDE', 10.1)
+        self.assertEqual(lines[0], 'Tunnel: INSIDE')
         self.assertEqual(lines[1], 'TCN avg 333.3FPS')
         self.assertEqual(lines[2], 'TCN LIVE E:0.75 X:0.05')
 

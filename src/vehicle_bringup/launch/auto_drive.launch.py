@@ -449,6 +449,8 @@ def _apply_parameter_file_defaults(
                 PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("vehicle_dynamics_monitor"), "launch", "vehicle_dynamics_monitor.launch.py")),
                 launch_arguments={"vehicle_namespace": ns, **{name: LaunchConfiguration(name).perform(context)
                     for name in ("input_mode", "can_interface", "slcan_channel", "slcan_bitrate", "can_controller_id")}}.items()))
+    from auto_control_tunnel.launch_support import model_check_node
+    startup_check = model_check_node(tunnel == "true", traffic_enabled == "true")
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -464,7 +466,7 @@ def _apply_parameter_file_defaults(
         " | avoidance_preview=" + str(avoidance) + " | avoidance_control=" + str(apply_avoidance) +
         " | deformation_only=" + str(deformation_only) +
         " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
-    )), *manual_actions, *tunnel_actions, bev_launch, LoadComposableNodes(
+    )), startup_check, *manual_actions, *tunnel_actions, bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
         composable_node_descriptions=nodes,
     )]
