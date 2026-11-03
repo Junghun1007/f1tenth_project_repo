@@ -39,6 +39,18 @@ std::uint64_t registerDirectBevConsumer(DirectBevFrameCallback callback);
 void unregisterDirectBevConsumer(std::uint64_t consumer_id);
 bool deliverDirectBevFrame(std::shared_ptr<const DirectBevFrame> frame);
 
+// The IR worker produces an owning rendered image; the RGB detector's one
+// GUI thread displays it after selection. No second HighGUI window/thread.
+struct IrLanePreview
+{
+  std_msgs::msg::Header header;
+  cv::Mat image;
+  double inference_ms{0.0}, postprocess_ms{0.0}, stop_distance_m{0.0};
+  std::uint64_t generation{0U};
+};
+void publishIrLanePreview(std::shared_ptr<const IrLanePreview> frame);
+std::shared_ptr<const IrLanePreview> latestIrLanePreview();
+
 }  // namespace bev_handoff
 
 #endif  // BEV_HANDOFF__DIRECT_BEV_HANDOFF_HPP_

@@ -2,7 +2,7 @@
 
 터널 RGB↔IR 자동 전환은 [auto_control의 터널 기능](../auto_control/AUTO_CONTROL_TUNNEL.md)으로
 통합되어 있다. 기존 `auto_drive.launch.py`에 `tunnel_enabled:=true`를 추가해 사용한다.
-외부 RGB 80 FPS, 터널 IR 30 FPS, 외부 IR 대기 5 FPS이며 기존 단독 실행은 유지한다.
+외부 RGB 80 FPS, 터널 IR 30 FPS, 외부 IR 추론 대기 0 FPS이며 기존 단독 실행은 유지한다.
 공유 카메라 변경이 있으므로 `colcon build --packages-up-to vehicle_bringup`로 함께 빌드한다.
 
 ## 기본 주행 설정과 외부 YAML

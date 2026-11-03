@@ -20,11 +20,11 @@ public:
   explicit SharedIrBevNode(const rclcpp::NodeOptions & options)
   : Node("shared_ir_bev", options)
   {
-    standby_=declare_parameter<double>("standby_fps",5.0);
+    standby_=declare_parameter<double>("standby_fps",0.0);
     active_=declare_parameter<double>("active_fps",30.0);
     if (!std::isfinite(standby_) || !std::isfinite(active_) ||
-      standby_<=0 || active_<=0 || standby_>active_ || active_>30) {
-      throw std::invalid_argument("IR rates require 0 < standby <= active <= 30");
+      standby_<0 || active_<=0 || standby_>active_ || active_>30) {
+      throw std::invalid_argument("IR rates require 0 <= standby <= active <= 30");
     }
     publisher_=create_publisher<sensor_msgs::msg::Image>(
       "/camera/image_bev_ir",rclcpp::SensorDataQoS().keep_last(1));
@@ -44,6 +44,11 @@ private:
   using Clock=std::chrono::steady_clock;
   void process()
   {
+    // Keep the camera session/model resident, but do not project/infer images
+    // captured with the outside obstacle-detection exposure and dot settings.
+    // Prepare the exposure-independent calibration/LUT once while outside.
+    // Only the expensive image projection/model input waits for entry.
+    if (!inside_ && standby_==0.0 && projector_) {return;}
     const auto now=Clock::now();
     if (now<next_) {return;}
     const auto frame=bev_handoff::latestDirectIr();
@@ -65,6 +70,7 @@ private:
           frame->rgb_from_view,frame->view_center_rgb_m);
         projector_->setMountPose(reference->rotation_vehicle_from_camera,reference->position_vehicle_m);
       }
+      if (!inside_ && standby_==0.0) {return;}
       const auto image=projector_->project(frame->mono,frame->current_rgb_to_reference);
       auto message=std::make_unique<sensor_msgs::msg::Image>();
       message->header=frame->header; message->encoding="mono8";

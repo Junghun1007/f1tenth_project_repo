@@ -1,6 +1,7 @@
 #include "bev_handoff/direct_bev_handoff.hpp"
 
 #include <mutex>
+#include <atomic>
 #include <stdexcept>
 #include <utility>
 
@@ -8,6 +9,7 @@ namespace bev_handoff
 {
 namespace
 {
+std::shared_ptr<const IrLanePreview> ir_preview;
 
 struct HandoffState
 {
@@ -24,6 +26,16 @@ HandoffState & state()
 }
 
 }  // namespace
+
+void publishIrLanePreview(std::shared_ptr<const IrLanePreview> frame)
+{
+  std::atomic_store(&ir_preview,std::move(frame));
+}
+
+std::shared_ptr<const IrLanePreview> latestIrLanePreview()
+{
+  return std::atomic_load(&ir_preview);
+}
 
 std::uint64_t registerDirectBevConsumer(DirectBevFrameCallback callback)
 {

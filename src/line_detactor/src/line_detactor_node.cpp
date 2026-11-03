@@ -16,6 +16,7 @@
 #include "bev_handoff/direct_camera_handoff.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -27,6 +28,7 @@
 #include <filesystem>
 #include <functional>
 #include <fstream>
+#include <sstream>
 #include <sys/utsname.h>
 #if defined(__linux__)
 #include <sys/resource.h>
@@ -218,6 +220,24 @@ public:
           if (message->data=="IR") {inference_max_fps_.store(5.0);}
           else if (message->data=="RGB" || message->data=="BOTH") {inference_max_fps_.store(80.0);}
         },tunnel_options);
+      if (preview_enabled_) {
+        tunnel_selected_sub_=node_.create_subscription<std_msgs::msg::String>(
+          "/tunnel/selected_source",rclcpp::QoS(1).reliable().transient_local(),
+          [this](std_msgs::msg::String::ConstSharedPtr message) {
+            if (message->data=="IR" || message->data=="RGB") {
+              tunnel_selected_ir_.store(message->data=="IR");
+            }
+          },tunnel_options);
+        tunnel_preview_sub_=node_.create_subscription<std_msgs::msg::String>(
+          "/tunnel/preview_status",rclcpp::QoS(1).reliable().transient_local(),
+          [this](std_msgs::msg::String::ConstSharedPtr message) {
+            std::array<std::string,3> lines;
+            std::istringstream stream(message->data);
+            for (auto & line:lines) {std::getline(stream,line); if (line.size()>160) {line.resize(160);}}
+            std::lock_guard<std::mutex> lock(preview_mutex_);
+            tunnel_hud_=std::move(lines); tunnel_hud_received_at_=SteadyClock::now();
+          },tunnel_options);
+      }
     }
     theme_parameter_callback_ = node_.add_on_set_parameters_callback(
       [this](const std::vector<rclcpp::Parameter> & parameters) {
@@ -489,6 +509,9 @@ private:
       "warmup_iterations", 10);
     preview_enabled_ = node_.declare_parameter<bool>(
       "preview_enabled", true);
+    shared_ir_preview_output_enabled_=node_.declare_parameter<bool>(
+      "shared_ir_preview_output_enabled",false);
+    if (shared_ir_preview_output_enabled_) {bev_handoff::publishIrLanePreview(nullptr);}
     preview_result_only_enabled_ = node_.declare_parameter<bool>(
       "preview_result_only_enabled", true);
     preview_fps_ = node_.declare_parameter<double>(
@@ -757,7 +780,7 @@ private:
       throw std::invalid_argument("CPU BEV image buffer is invalid");
     }
     if (
-      preview_enabled_ && !preview_result_only_enabled_ &&
+      (preview_enabled_ || shared_ir_preview_output_enabled_) && !preview_result_only_enabled_ &&
       message.bgr.empty())
     {
       throw std::invalid_argument(
@@ -845,7 +868,8 @@ private:
     message.detector_result_ready_stamp =
       static_cast<builtin_interfaces::msg::Time>(node_.get_clock()->now());
     result_publisher_->publish(std::move(message));
-    if (bev_handoff::avoidancePreviewEnabled()) {
+    // Only the direct RGB BEV path supplies the outside obstacle planner.
+    if (direct_bev_input_enabled_ && bev_handoff::avoidancePreviewEnabled()) {
       auto lane=std::make_shared<bev_handoff::PlanningLane>();
       lane->header=input.header; lane->received_at=input_received_at;
       lane->width=input.width; lane->height=input.height;
@@ -920,17 +944,19 @@ private:
     const double target_speed,
     const int corner_state,
     const std::string & obstacle_status = "",
-    const std::string & avoidance_status = "") const
+    const std::string & avoidance_status = "",
+    const std::array<std::string,3> & tunnel_hud = {}) const
   {
+    const int banner_base_height=kBannerHeight+(tunnel_enabled_ ? 28 : 0);
     cv::Mat banner = cv::Mat::zeros(
-      kBannerHeight+(obstacle_overlay_enabled_ ? 14 : 0)+(avoidance_status.empty()?0:28), overlay.cols, CV_8UC3);
+      banner_base_height+(obstacle_overlay_enabled_ ? 14 : 0)+(avoidance_status.empty()?0:28), overlay.cols, CV_8UC3);
     const double inference_fps = average_inference_milliseconds > 0.0 ?
       1000.0 / average_inference_milliseconds : 0.0;
     const double postprocess_fps = average_postprocess_milliseconds > 0.0 ?
       1000.0 / average_postprocess_milliseconds : 0.0;
     const double control_fps = average_control_milliseconds > 0.0 ?
       1000.0 / average_control_milliseconds : 0.0;
-    const std::vector<std::pair<std::string, cv::Scalar>> lines{
+    std::vector<std::pair<std::string, cv::Scalar>> lines{
       {cv::format("infer avg %.2fms %.1fFPS", average_inference_milliseconds, inference_fps),
         cv::Scalar(0, 255, 255)},
       {connection_.enabled ?
@@ -954,19 +980,28 @@ private:
       {corner_state == 2 ? "Corner: TURNING" : corner_state == 1 ? "Corner: APPROACH" :
         corner_state == 0 ? "Corner: NO" : corner_state == 3 ? "Corner: STOP" : "Corner: --",
         corner_state == 2 ? cv::Scalar(0, 165, 255) : cv::Scalar(180, 220, 180)}};
+    if (tunnel_enabled_) {
+      lines.insert(lines.begin()+6,std::make_pair(tunnel_hud[1],cv::Scalar(255,220,120)));
+      lines.insert(lines.begin()+7,std::make_pair(tunnel_hud[2],cv::Scalar(180,220,180)));
+    }
     for (std::size_t index = 0; index < lines.size(); ++index) {
+      const std::string text=lines[index].first+(
+        tunnel_enabled_ && index==5 ? " | "+tunnel_hud[0] : "");
+      int baseline=0;
+      const auto extent=cv::getTextSize(text,cv::FONT_HERSHEY_SIMPLEX,.28,1,&baseline);
+      const double font=std::min(.28,.28*static_cast<double>(banner.cols-6)/std::max(1,extent.width));
       cv::putText(
-        banner, lines[index].first,
+        banner, text,
         cv::Point(3, 12 + static_cast<int>(index) * 14),
-        cv::FONT_HERSHEY_SIMPLEX, 0.28, lines[index].second, 1,
+        cv::FONT_HERSHEY_SIMPLEX, font, lines[index].second, 1,
         cv::LINE_AA);
     }
     if (obstacle_overlay_enabled_) {
-      cv::putText(banner,obstacle_status,{3,kBannerHeight+10},cv::FONT_HERSHEY_SIMPLEX,.28,
+      cv::putText(banner,obstacle_status,{3,banner_base_height+10},cv::FONT_HERSHEY_SIMPLEX,.28,
         cv::Scalar(255,180,70),1,cv::LINE_AA);
     }
     if (!avoidance_status.empty()) {
-      const int top=kBannerHeight+(obstacle_overlay_enabled_?14:0);
+      const int top=banner_base_height+(obstacle_overlay_enabled_?14:0);
       cv::putText(banner,avoidance_status,{3,top+10},cv::FONT_HERSHEY_SIMPLEX,.21,cv::Scalar(255,255,0),1,cv::LINE_AA);
       cv::putText(banner,bev_handoff::avoidanceControlRequested()?"CONTROL PATH REQUESTED":"PREVIEW ONLY - no control",
         {3,top+24},cv::FONT_HERSHEY_SIMPLEX,.25,cv::Scalar(255,255,0),1,cv::LINE_AA);
@@ -1087,9 +1122,9 @@ private:
               result_image_publisher_->get_intra_process_subscription_count() > 0U);
             // Keep the existing bridge/label policy independent of theme state.
             // Only skip display buffers; control geometry remains identical.
-            const bool render_result = preview_enabled_ || image_subscribers;
+            const bool render_result = preview_enabled_ || shared_ir_preview_output_enabled_ || image_subscribers;
             const bool render_legacy_image =
-              (preview_enabled_ && !bev_theme_enable_.load()) || image_subscribers;
+              (preview_enabled_ && !bev_theme_enable_.load()) || shared_ir_preview_output_enabled_ || image_subscribers;
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
             profile_frame.render_result = render_legacy_image;
@@ -1160,6 +1195,17 @@ private:
         postprocessing.record(timing.postprocessing_nanoseconds);
         preview_execution.record(timing.execution_nanoseconds);
         preview_postprocess.record(timing.correction_nanoseconds);
+
+        if (shared_ir_preview_output_enabled_ && !result.image.empty()) {
+          auto shared=std::make_shared<bev_handoff::IrLanePreview>();
+          shared->header=message->header;
+          shared->image=preview_result_only_enabled_ ? result.image : result_overlay(result,*message);
+          shared->inference_ms=preview_execution.average_milliseconds();
+          shared->postprocess_ms=preview_postprocess.average_milliseconds();
+          shared->stop_distance_m=result.stop_line_distance_m;
+          shared->generation=generation;
+          bev_handoff::publishIrLanePreview(std::move(shared));
+        }
 
         if (preview_enabled_) {
           auto snapshot = std::make_shared<PreviewFrame>();
@@ -1261,6 +1307,7 @@ private:
       std::uint64_t theme_generation = 0U;
       bool theme_geometry_ready = false;
       bool displayed_theme = false;
+      bool displayed_ir = false;
       auto last_motion_at = SteadyClock::now();
       double motion_distance_m = 0.0;
       auto next_preview_at = std::chrono::steady_clock::now();
@@ -1279,6 +1326,7 @@ private:
         int corner_state = -1;
         SpeedLimitSnapshot speed_limit;
         bool speed_limit_fresh = false;
+        std::array<std::string,3> tunnel_hud;
         {
           std::unique_lock<std::mutex> lock(preview_mutex_);
           preview_condition_.wait_until(lock, next_preview_at, [this]() {
@@ -1286,6 +1334,11 @@ private:
           });
           if (stop_requested_.load(std::memory_order_acquire)) {break;}
           frame = latest_preview_;
+          tunnel_hud=tunnel_hud_;
+          if (tunnel_hud_received_at_!=SteadyClock::time_point{} &&
+            SteadyClock::now()-tunnel_hud_received_at_>std::chrono::seconds(1)) {
+            tunnel_hud={"Tunnel: STATUS STALE","TCN avg --FPS | run --Hz","TCN: selector unavailable"};
+          }
           speed_limit = speed_limit_snapshot_;
           const auto limit_age = SteadyClock::now()-speed_limit_received_at_;
           speed_limit_fresh = limit_age >= SteadyClock::duration::zero() &&
@@ -1319,8 +1372,10 @@ private:
           speed_limit_request_pub_->publish(message);
         }
         const auto traffic_signal = bev_handoff::latestTrafficSignalState();
-        const bool theme = bev_theme_enable_.load();
-        const std::string hud = cv::format("%.2f/%.2f/%d", theme_speed, target_speed, corner_state) + speed_panel.display_key();
+        const bool show_ir=tunnel_enabled_ && tunnel_selected_ir_.load();
+        const bool theme = bev_theme_enable_.load() && !show_ir;
+        const std::string hud = cv::format("%.2f/%.2f/%d", theme_speed, target_speed, corner_state) +
+          speed_panel.display_key()+tunnel_hud[0]+tunnel_hud[1]+tunnel_hud[2];
         const auto motion_now = SteadyClock::now();
         const double motion_dt = std::clamp(
           std::chrono::duration<double>(motion_now - last_motion_at).count(), 0.0, 0.25);
@@ -1330,11 +1385,28 @@ private:
         }
         // Switching off may briefly encounter a snapshot without legacy image
         // buffers. Wait for the next worker result rather than blocking it.
-        if (frame && (theme || !connection_.enabled || !frame->result.image.empty()) &&
-          (obstacle_overlay_enabled_ || theme || displayed_theme || frame->generation != displayed_generation ||
+        cv::Mat canvas;
+        bool draw=false;
+        if (show_ir) {
+          const auto ir=bev_handoff::latestIrLanePreview();
+          const auto stamp=ir ? rclcpp::Time(ir->header.stamp).nanoseconds() : 0;
+          const double age=static_cast<double>(node_.get_clock()->now().nanoseconds()-stamp)*1e-9;
+          const bool fresh=ir && !ir->image.empty() && age>=-.05 && age<=.25;
+          cv::Mat overlay;
+          if (fresh) {overlay=ir->image.clone();}
+          else {overlay=cv::Mat::zeros(model_input_height_,result_width(),CV_8UC3);}
+          cv::putText(overlay,fresh ? "IR" : "IR: waiting for fresh result",cv::Point(4,14),
+            cv::FONT_HERSHEY_SIMPLEX,.3,cv::Scalar(255,255,255),1,cv::LINE_AA);
+          canvas=preview_canvas(overlay,fresh ? ir->inference_ms : 0.0,
+            fresh ? ir->postprocess_ms : 0.0,average_control_milliseconds,
+            fresh ? ir->stop_distance_m : std::numeric_limits<double>::quiet_NaN(),
+            display_fps,traffic_signal,theme_speed,target_speed,corner_state,"","",tunnel_hud);
+          displayed_generation=fresh ? ir->generation : 0;
+          draw=true;
+        } else if (frame && (theme || !connection_.enabled || !frame->result.image.empty()) &&
+          (obstacle_overlay_enabled_ || theme || displayed_theme || displayed_ir || frame->generation != displayed_generation ||
           traffic_signal != displayed_signal || hud != displayed_hud))
         {
-          cv::Mat canvas;
           if (theme) {
             if (!theme_geometry_ready || theme_generation != frame->generation) {
               theme_renderer.update(frame->result);
@@ -1376,8 +1448,20 @@ private:
               frame->average_postprocess_milliseconds,
               average_control_milliseconds,
               frame->result.stop_line_distance_m, display_fps, traffic_signal,
-              theme_speed, target_speed, corner_state, obstacle_status, avoidance_status);
+              theme_speed, target_speed, corner_state, obstacle_status, avoidance_status,tunnel_hud);
           }
+          displayed_generation = frame->generation;
+          draw=true;
+        } else if (!frame) {
+          cv::Mat waiting=cv::Mat::zeros(model_input_height_,result_width(),CV_8UC3);
+          cv::putText(waiting,"RGB: waiting for first result",cv::Point(4,14),
+            cv::FONT_HERSHEY_SIMPLEX,.3,cv::Scalar(255,255,255),1,cv::LINE_AA);
+          canvas=preview_canvas(waiting,0.0,0.0,average_control_milliseconds,
+            std::numeric_limits<double>::quiet_NaN(),display_fps,traffic_signal,
+            theme_speed,target_speed,corner_state,"","",tunnel_hud);
+          draw=true;
+        }
+        if (draw) {
           canvas = speed_panel.append(canvas, theme);
           if (canvas.size() != displayed_canvas_size || theme != displayed_theme) {
             // The theme renders at 2x source resolution; preserve the BEV's
@@ -1389,7 +1473,7 @@ private:
           }
           cv::imshow(preview_window_name_, canvas);
           displayed_theme = theme;
-          displayed_generation = frame->generation;
+          displayed_ir = show_ir;
           displayed_signal = traffic_signal;
           displayed_hud = hud;
           ++displayed_count;
@@ -1406,7 +1490,7 @@ private:
           displayed_count = 0U;
           report_started_at = now;
         }
-        const double effective_fps = bev_theme_enable_.load() ?
+        const double effective_fps = theme ?
           std::min(preview_fps_, bev_theme_preview_fps_) : preview_fps_;
         period = std::chrono::duration_cast<SteadyClock::duration>(
           std::chrono::duration<double>(1.0 / effective_fps));
@@ -1441,6 +1525,7 @@ private:
     if (preview_worker_.joinable() && preview_worker_.get_id() != std::this_thread::get_id()) {
       preview_worker_.join();
     }
+    if (shared_ir_preview_output_enabled_) {bev_handoff::publishIrLanePreview(nullptr);}
     if (profile_writer_) {
       profile_writer_->close();
       if (profile_writer_->failed()) {
@@ -1509,6 +1594,13 @@ private:
   std::mutex frame_mutex_;
   FrameRateGate rate_gate_;
   bool tunnel_enabled_{false};
+  bool shared_ir_preview_output_enabled_{false};
+  std::atomic<bool> tunnel_selected_ir_{false};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_selected_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_preview_sub_;
+  std::array<std::string,3> tunnel_hud_{
+    "Tunnel: WAITING","TCN avg --FPS | run --Hz","TCN: waiting"};
+  SteadyClock::time_point tunnel_hud_received_at_{};
   std::atomic<double> inference_max_fps_{0.0};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_compute_sub_;
   std::condition_variable frame_condition_;

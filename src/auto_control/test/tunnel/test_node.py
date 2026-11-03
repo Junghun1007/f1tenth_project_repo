@@ -31,6 +31,7 @@ class CallbackTests(unittest.TestCase):
         self.module = load_node()
         self.node = self.module.TunnelLaneSelector.__new__(self.module.TunnelLaneSelector)
         n = self.node
+        n.preview = self.module.TunnelPreviewTelemetry()
         geometry = test_selection.CandidateGeometryTests()
         geometry.setUp()
         self.message = geometry.message

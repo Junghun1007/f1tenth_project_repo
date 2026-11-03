@@ -33,11 +33,13 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual([c['plugin'] for c in components],
                          ['ir_camera_driver::SharedIrBevNode', 'line_detactor::LineDetactorNode'])
         self.assertEqual(components[0]['parameters'][0], dict(
-            standby_fps=5., active_fps=30., model_input_topic='/ir_bev_line_detection/image_bgr'))
+            standby_fps=0., active_fps=30., model_input_topic='/ir_bev_line_detection/image_bgr'))
         ir = components[1]['parameters'][0]
         self.assertFalse(ir['direct_bev_input_enabled'])
         self.assertEqual(ir['inference_max_fps'], 30.)
         self.assertIn('ir_stereo_bev_120x300.onnx', ir['model_path'])
+        self.assertFalse(ir['preview_enabled'])
+        self.assertFalse(ir['shared_ir_preview_output_enabled'])
         self.assertEqual([p['executable'] for p in processes],
                          ['tunnel_tcn_node', 'tunnel_lane_selector'])
         self.assertEqual(processes[-1]['package'], 'auto_control')
@@ -45,6 +47,18 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(processes[-1]['parameters'][0]['rgb_result_topic'], '/custom/rgb_result')
         self.assertEqual(processes[0]['parameters'][-1]['initial_state'], 'outside')
         self.assertFalse(processes[0]['parameters'][-1]['preview_enabled'])
+
+    def test_one_window_and_same_result_only_selection_for_rgb_and_ir(self):
+        for result_only in (True, False):
+            with self.subTest(result_only=result_only):
+                rgb = dict(preview_enabled=True, preview_result_only_enabled=result_only,
+                           bev_theme_enable=False, result_topic='/line_detactor/result')
+                components, _ = self.helper().integrated_nodes(rgb, {}, NS(launch_configurations={}))
+                ir = components[1]['parameters'][0]
+                self.assertEqual(sum(p['preview_enabled'] for p in (rgb, ir)), 1)
+                self.assertFalse(ir['bev_theme_enable'])
+                self.assertTrue(ir['shared_ir_preview_output_enabled'])
+                self.assertEqual(ir['preview_result_only_enabled'], result_only)
 
     def speed_override(self, speed):
         path = SOURCE / 'vehicle_bringup/launch/auto_drive.launch.py'

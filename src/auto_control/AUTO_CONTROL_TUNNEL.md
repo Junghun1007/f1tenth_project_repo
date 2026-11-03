@@ -11,7 +11,7 @@
 
 | 상태 | RGB 차선 | IR BEV·차선 | 제어 경로 |
 |---|---:|---:|---|
-| OUTSIDE | 최대 80 FPS | 최대 5 FPS | RGB |
+| OUTSIDE | 최대 80 FPS | 대기 0 FPS | RGB |
 | ENTERING | 최대 80 FPS | 최대 30 FPS | 새 IR 경로 확인 전까지 RGB |
 | INSIDE | 최대 5 FPS | 최대 30 FPS | IR |
 | EXITING | 최대 80 FPS | 최대 30 FPS | 새 RGB 경로 확인 전까지 IR |
@@ -24,8 +24,10 @@ RGB CAM_A는 80 FPS로 유지하며, 원본 NV12를 촬영 시각 기준 약 30 
 TCN의 기존 밝기 특징과 10 Hz 추론·2.5초 시작 워밍업을 유지한다. TCN은 터널 안에서도
 실행해야 출구를 감지할 수 있다. 통합 TCN 프리뷰는 끈다.
 
-IR CAM_B는 양쪽 모드에서 1280×800 / 30 FPS로 촬영한다. 저빈도 대기는 센서 FPS를
-바꾸는 대신 IR BEV 변환과 모델 입력 빈도를 제한한다. RGB의 시작 지면 측정·IMU
+IR CAM_B는 양쪽 모드에서 1280×800 / 30 FPS로 촬영한다. 외부에서는 밝기가 다른
+장애물용 영상에 차선 추론을 하지 않는다. 카메라 연결·보정과 모델 로딩·워밍업은 유지하고,
+노출과 무관한 투영 LUT만 미리 준비한다. 외부 IR BEV 변환·모델 입력은 0 FPS이며,
+ENTERING에서 30 FPS로 활성화한다. RGB의 시작 지면 측정·IMU
 기준 자세를 IR 투영에도 공유하며 실제 CAM_B 출력의 내부·외부 파라미터를 사용한다.
 IR BEV 컴포넌트가 밝기를 유지한 BGR 3채널도 직접 발행하며 기존 IR 모델·차선 후처리를 거친다.
 통합 실행은 독립 테스트의 Python 어댑터를 시작하지 않는다.
@@ -34,8 +36,11 @@ ENTRY 요청 시 IR 노출 30000μs / ISO800 / dot OFF / flood0.5를 적용한�
 설정 명령 후 최소 150ms를 제외하고 실제 노출·ISO 메타데이터가 일치하는 프레임만
 터널 IR 입력으로 인정한다. EXIT 후에는 RGB 경로 선택이 끝날 때까지 IR 설정을 유지하고,
 그 뒤 IR 자동 노출과 기존 외부 장애물 dot/flood 설정을 복원한다.
-따라서 **외부 IR 대기 영상의 노출은 외부 장애물 설정을 따르며**, 그 결과를 입구에서
-그대로 제어 입력으로 선택하지 않는다.
+외부 IR 노출은 외부 장애물 설정을 따르므로 해당 조건의 차선 결과는 생성하지 않는다.
+진입 후에도 최소 150ms 설정 전환 구간과 3회 유효 경로 확인 시간이 남는다.
+30 FPS에서는 TCN 요청 이후 약 0.2~0.3초에 추론·전송 지연이 추가될 수 있다는 계산이며,
+실측 전환 시간이나 상한 보장이 아니다. 기존 RGB 경로가 유효한 동안 사용하고,
+유실 시 기존 제어기의 guard 처리를 적용한다.
 
 외부 장애물 기능을 켠 경우 같은 CAM_B/C를 공유한다. 통합 모드의 스테레오 센서와
 depth 요청도 **30 FPS**로 설정해 터널의 30ms 노출을 지원한다. 외부 RGB 80 FPS와는
@@ -61,6 +66,33 @@ TCN의 이벤트 시각과 실제 터널 경계가 일치하는지는 차량에�
 
 X 버튼의 AUTO → STOPPING → MANUAL 전환은 기존 방식 그대로다.
 터널 이벤트는 자동주행 활성화나 수동 전환 해제를 요청하지 않는다.
+
+## 단일 프리뷰와 터널 HUD
+
+RGB 검출기만 GUI 창을 소유하며, IR 검출기는 별도 창을 열지 않는다. 선택된 경로가
+IR이면 같은 창에 최신 IR 결과를 표시한다. 오래된 IR 이미지는 대기 화면으로 바꾼다.
+IR 결과는 외부 장애물 플래너의 RGB 차선 입력을 덮어쓰지 않는다.
+
+기존 `line_detactor_test.yaml`의 `line_detactor.ros__parameters`에서 다음을 설정한다.
+
+```yaml
+preview_enabled: true
+bev_theme_enable: false
+preview_result_only_enabled: true
+```
+
+`preview_result_only_enabled: true`는 검은 배경에 차선·정지선·중앙 경로를 표시한다.
+`false`는 실제 BEV 영상 위에 결과를 겹친다. 선택은 RGB와 IR에 동일하게 적용한다.
+기존 실행 명령에 `preview_result_only_enabled:=false`가 있으면 YAML보다 우선하므로
+제거하거나 `true`로 바꾼다. 이 설정은 재실행해서 적용한다.
+초기 지면 보정 ROI 창은 별개이며 `bev_config_test.yaml`의
+`measurement_roi_preview_enabled: false`로 끌 수 있다.
+
+신호등 상태 옆에 `Tunnel: OUTSIDE / ENTERING / INSIDE / EXITING`을 표시한다.
+바로 아래에는 TCN `avg … FPS`, 실제 결과 수신 `run … Hz`, LIVE/WARMUP/STALE 상태와
+ENTRY/EXIT 점수를 표시한다. 평균 FPS는 LIVE 보고의 TensorRT+전송 wall time을 평균한 뒤
+`1000 / 평균 ms`로 계산한다. 주행 루프나 실제 실행 주기가 아니며, 10Hz 실행 제한과
+구분하기 위해 실제 수신 빈도를 함께 표시한다. 워밍업·입력 유실 때는 FPS를 `--`로 표시한다.
 
 ## 차량에서 빌드·실행
 

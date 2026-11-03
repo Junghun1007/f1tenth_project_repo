@@ -22,7 +22,9 @@ def integrated_nodes(rgb_detector, controller, context):
     if hashlib.sha256(model.read_bytes()).hexdigest() != report['onnx_sha256']:
         raise ValueError('Bundled IR model checksum mismatch')
     ir.update(model_path=str(model), inference_max_fps=30.0,
-              preview_enabled=rgb_detector['preview_enabled'])
+              preview_enabled=False, bev_theme_enable=False,
+              shared_ir_preview_output_enabled=rgb_detector['preview_enabled'],
+              preview_result_only_enabled=rgb_detector.get('preview_result_only_enabled', True))
     rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 80.0})
     rules = {target: type(default)(context.launch_configurations.get(source, controller.get(source, default)))
              for target, source, default in (
@@ -34,7 +36,7 @@ def integrated_nodes(rgb_detector, controller, context):
     rules.update(max_age_sec=min(.25, float(rule_age)), rgb_result_topic=rgb_detector['result_topic'])
     components = [
         ComposableNode(package='ir_camera_driver', plugin='ir_camera_driver::SharedIrBevNode',
-                       name='shared_ir_bev', parameters=[{'standby_fps': 5.0, 'active_fps': 30.0,
+                       name='shared_ir_bev', parameters=[{'standby_fps': 0.0, 'active_fps': 30.0,
                                                           'model_input_topic': ir['input_topic']}]),
         ComposableNode(package='line_detactor', plugin='line_detactor::LineDetactorNode',
                        name='ir_line_detactor', parameters=[ir],

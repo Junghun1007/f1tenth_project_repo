@@ -4,7 +4,9 @@ line_detactor:
     input_topic: /ir_bev_line_detection/image_bgr
     direct_bev_input_enabled: false
     engine_precision: fp32
-    preview_enabled: true
+    # One preview window is owned by the RGB detector, including selected IR.
+    preview_enabled: false
+    bev_theme_enable: false
     preview_window_name: IR BEV lane following
     preview_result_only_enabled: false
     result_topic: /ir_bev_line_detection/result
