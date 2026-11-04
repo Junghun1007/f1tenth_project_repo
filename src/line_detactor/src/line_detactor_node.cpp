@@ -14,6 +14,7 @@
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "line_detactor/frame_rate_gate.hpp"
 #include "line_detactor/ir_preview.hpp"
+#include "line_detactor/camera_exposure_hud.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
 
 #include <algorithm>
@@ -975,9 +976,10 @@ private:
     const double duty,
     const std::string & obstacle_status = "",
     const std::string & avoidance_status = "",
-    const std::array<std::string,3> & tunnel_hud = {}) const
+    const std::array<std::string,3> & tunnel_hud = {},
+    const std::array<std::string,2> & exposure_hud = std::array<std::string,2>()) const
   {
-    const int banner_base_height=kBannerHeight+(tunnel_enabled_ ? 28 : 0);
+    const int banner_base_height=kBannerHeight+(tunnel_enabled_ ? 56 : 0);
     cv::Mat banner = cv::Mat::zeros(
       banner_base_height+(obstacle_overlay_enabled_ ? 14 : 0)+(avoidance_status.empty()?0:28), overlay.cols, CV_8UC3);
     const double inference_fps = average_inference_milliseconds > 0.0 ?
@@ -1015,6 +1017,8 @@ private:
     if (tunnel_enabled_) {
       lines.insert(lines.begin()+6,std::make_pair(tunnel_hud[1],cv::Scalar(255,220,120)));
       lines.insert(lines.begin()+7,std::make_pair(tunnel_hud[2],cv::Scalar(180,220,180)));
+      lines.insert(lines.begin()+8,std::make_pair(exposure_hud[0],cv::Scalar(255,220,180)));
+      lines.insert(lines.begin()+9,std::make_pair(exposure_hud[1],cv::Scalar(200,200,255)));
     }
     for (std::size_t index = 0; index < lines.size(); ++index) {
       const std::string text=lines[index].first+(
@@ -1409,10 +1413,12 @@ private:
           speed_limit_request_pub_->publish(message);
         }
         const auto traffic_signal = bev_handoff::latestTrafficSignalState();
+        const auto exposure_hud=camera_exposure_hud(bev_handoff::latestCameraExposure(false),
+          bev_handoff::latestCameraExposure(true),bev_handoff::latestRgbExposureControl(),SteadyClock::now());
         const bool show_ir=tunnel_enabled_ && tunnel_selected_ir_.load();
         const bool theme = bev_theme_enable_.load() && !show_ir;
         const std::string hud = cv::format("%.2f/%.2f/%d/%.4f", theme_speed, target_speed, corner_state, duty) +
-          speed_panel.display_key()+tunnel_hud[0]+tunnel_hud[1]+tunnel_hud[2];
+          speed_panel.display_key()+tunnel_hud[0]+tunnel_hud[1]+tunnel_hud[2]+exposure_hud[0]+exposure_hud[1];
         const auto motion_now = SteadyClock::now();
         const double motion_dt = std::clamp(
           std::chrono::duration<double>(motion_now - last_motion_at).count(), 0.0, 0.25);
@@ -1435,7 +1441,7 @@ private:
           canvas=preview_canvas(overlay,fresh ? ir->inference_ms : 0.0,
             fresh ? ir->postprocess_ms : 0.0,average_control_milliseconds,
             fresh ? ir->stop_distance_m : std::numeric_limits<double>::quiet_NaN(),
-            display_fps,traffic_signal,theme_speed,target_speed,corner_state,duty,"","",tunnel_hud);
+            display_fps,traffic_signal,theme_speed,target_speed,corner_state,duty,"","",tunnel_hud,exposure_hud);
           displayed_generation=fresh ? ir->generation : 0;
           draw=true;
         } else if (frame && (theme || !connection_.enabled || !frame->result.image.empty()) &&
@@ -1458,6 +1464,7 @@ private:
             telemetry.preview_fps = display_fps;
             telemetry.signal = traffic_signal;
             canvas = theme_renderer.render(telemetry);
+            if (tunnel_enabled_) {append_camera_exposure_hud(canvas,exposure_hud);}
           } else {
             cv::Mat overlay;
             if (connection_.enabled) {
@@ -1483,7 +1490,7 @@ private:
               frame->average_postprocess_milliseconds,
               average_control_milliseconds,
               frame->result.stop_line_distance_m, display_fps, traffic_signal,
-              theme_speed, target_speed, corner_state, duty, obstacle_status, avoidance_status,tunnel_hud);
+              theme_speed, target_speed, corner_state, duty, obstacle_status, avoidance_status,tunnel_hud,exposure_hud);
           }
           displayed_generation = frame->generation;
           draw=true;
@@ -1493,7 +1500,7 @@ private:
             cv::FONT_HERSHEY_SIMPLEX,.3,cv::Scalar(255,255,255),1,cv::LINE_AA);
           canvas=preview_canvas(waiting,0.0,0.0,average_control_milliseconds,
             std::numeric_limits<double>::quiet_NaN(),display_fps,traffic_signal,
-            theme_speed,target_speed,corner_state,duty,"","",tunnel_hud);
+            theme_speed,target_speed,corner_state,duty,"","",tunnel_hud,exposure_hud);
           draw=true;
         }
         if (draw) {

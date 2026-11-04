@@ -124,6 +124,9 @@ if(BUILD_TESTING)
   add_executable(ir_imu_synchronizer_test test/ir_imu_synchronizer_test.cpp)
   target_link_libraries(ir_imu_synchronizer_test camera_imu_stabilizer ${OpenCV_LIBS})
   add_test(NAME ir_imu_synchronizer_test COMMAND ir_imu_synchronizer_test)
+  add_executable(rgb_exposure_recovery_test test/rgb_exposure_recovery_test.cpp)
+  target_include_directories(rgb_exposure_recovery_test PRIVATE include)
+  add_test(NAME rgb_exposure_recovery_test COMMAND rgb_exposure_recovery_test)
   add_executable(
     vehicle_motion_estimator_test test/vehicle_motion_estimator_test.cpp)
   target_link_libraries(

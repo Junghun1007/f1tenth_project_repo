@@ -10,6 +10,19 @@
 
 namespace bev_handoff
 {
+struct CameraExposureObservation
+{
+  long exposure_us{0};
+  int iso{0};
+  std::chrono::steady_clock::time_point captured_at;
+};
+// Actual sensor metadata, published before IMU/BEV validity filtering.
+void publishCameraExposure(bool infrared, std::shared_ptr<const CameraExposureObservation> observation);
+std::shared_ptr<const CameraExposureObservation> latestCameraExposure(bool infrared);
+enum class RgbExposureControl {automatic, restoring, auto_pending};
+// Requested control mode; sensor metadata above independently shows actual values.
+void publishRgbExposureControl(RgbExposureControl mode);
+RgbExposureControl latestRgbExposureControl();
 // Rectified color camera frame BEFORE ground-plane projection/stabilization.
 // owner keeps the immutable host NV12 buffer alive. No image copy in delivery.
 struct DirectCameraFrame

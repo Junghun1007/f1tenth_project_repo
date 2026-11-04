@@ -48,6 +48,7 @@ class PreviewNativeTests(unittest.TestCase):
 #include <opencv2/imgcodecs.hpp>
 #include "bev_handoff/direct_bev_handoff.hpp"
 #include "line_detactor/ir_preview.hpp"
+#include "line_detactor/camera_exposure_hud.hpp"
 namespace bev_handoff {bool avoidanceControlRequested() {return false;}}
 constexpr int kBannerHeight=144;
 struct Harness {
@@ -121,9 +122,37 @@ int main() {
   Harness preview;
   const std::array<std::string,3> hud{
     "Tunnel: INSIDE","TCN avg 1234.5FPS","TCN LIVE E:0.75 X:0.05"};
-  const auto canvas=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,.075,"","",hud);
-  require(canvas.cols==180 && canvas.rows==300+144+28+14);
+  using Exposure=bev_handoff::CameraExposureObservation;
+  using Mode=bev_handoff::RgbExposureControl;
+  const auto now=std::chrono::steady_clock::now();
+  require(!bev_handoff::latestCameraExposure(false));
+  bev_handoff::publishCameraExposure(false,std::make_shared<Exposure>(Exposure{2000,200,now}));
+  bev_handoff::publishCameraExposure(true,std::make_shared<Exposure>(Exposure{30000,800,now}));
+  bev_handoff::publishRgbExposureControl(Mode::automatic);
+  auto exposure_hud=line_detactor::camera_exposure_hud(bev_handoff::latestCameraExposure(false),
+    bev_handoff::latestCameraExposure(true),bev_handoff::latestRgbExposureControl(),now);
+  require(exposure_hud[0]=="RGB 2.00ms ISO200 AE");
+  require(exposure_hud[1]=="IR 30.00ms ISO800");
+  const auto stale_hud=line_detactor::camera_exposure_hud(bev_handoff::latestCameraExposure(false),
+    bev_handoff::latestCameraExposure(true),Mode::restoring,now+std::chrono::seconds(1));
+  require(stale_hud[0].find("STALE RESTORE")!=std::string::npos);
+  require(stale_hud[1].find("STALE")!=std::string::npos);
+  bev_handoff::publishRgbExposureControl(Mode::auto_pending);
+  require(bev_handoff::latestRgbExposureControl()==Mode::auto_pending);
+  const auto missing_hud=line_detactor::camera_exposure_hud({}, {},Mode::auto_pending,now);
+  require(missing_hud[0]=="RGB --ms ISO-- AE PENDING");
+  require(missing_hud[1]=="IR --ms ISO--");
+  cv::Mat themed=cv::Mat::zeros(300,180,CV_8UC3);
+  line_detactor::append_camera_exposure_hud(themed,exposure_hud);
+  require(themed.rows==328 && themed.cols==180);
+  require(cv::countNonZero(themed(cv::Rect(0,300,180,28)).reshape(1))>0);
+  require(cv::countNonZero(themed(cv::Rect(0,0,180,300)).reshape(1))==0);
+  const auto canvas=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,.075,"","",hud,exposure_hud);
+  require(canvas.cols==180 && canvas.rows==300+144+56+14);
   require(cv::countNonZero(canvas(cv::Rect(0,300+14*5,180,14)).reshape(1))>0);
+  const auto missing_canvas=preview.preview_canvas(image,2.,3.,8.,.8,30.,1,1.,1.8,0,.075,"","",hud,missing_hud);
+  require(cv::norm(canvas(cv::Rect(0,300+14*8,180,28)),missing_canvas(cv::Rect(0,300+14*8,180,28)),cv::NORM_L1)>0);
+  require(cv::norm(canvas(cv::Rect(0,300,180,14*8)),missing_canvas(cv::Rect(0,300,180,14*8)),cv::NORM_L1)==0);
   cv::Mat enlarged;
   cv::resize(canvas,enlarged,{},3.,3.,cv::INTER_NEAREST);
   cv::imwrite("/tmp/f1tenth_tunnel_preview_hud.png",enlarged);
@@ -149,6 +178,7 @@ int main() {
                             '-Werror', '-I'+str(root), '-I'+str(SOURCE/'bev_handoff/include'),
                             '-I'+str(SOURCE/'line_detactor/include'),
                             str(file), str(SOURCE/'bev_handoff/src/direct_bev_handoff.cpp'),
+                            str(SOURCE/'bev_handoff/src/direct_camera_handoff.cpp'),
                             *shlex.split(config.stdout), '-o', str(binary)],
                            capture_output=True, text=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)

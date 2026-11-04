@@ -117,6 +117,9 @@ camera_driver:
     # Enable/disable through auto_drive tunnel_ir_imu_enabled:=true/false.
     tunnel.ir_imu_max_age_sec: 0.05  # Each bracketing sample <=50ms from IR capture.
     tunnel.ir_imu_wait_sec: 0.10     # Hold new IR captures <=100ms for delayed IMU arrival.
+    # EXITING only: temporarily lower RGB exposure/gain, then return to AE.
+    tunnel.rgb_exit_exposure_recovery_enabled: true
+    tunnel.rgb_exit_exposure_max_hold_sec: 0.20
     imu_stabilization_maximum_prediction_sec: 0.015
     # 짧은 camera/IMU 매칭 실패는 zoom-only로 튀지 않고 직전 정상
     # homography를 두 프레임까지 유지한다.

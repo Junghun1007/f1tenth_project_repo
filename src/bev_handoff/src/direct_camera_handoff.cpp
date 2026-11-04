@@ -10,6 +10,8 @@ namespace bev_handoff
 {
 namespace
 {
+std::shared_ptr<const CameraExposureObservation> rgb_exposure, ir_exposure;
+std::atomic<RgbExposureControl> rgb_exposure_control{RgbExposureControl::automatic};
 struct State
 {
   std::mutex mutex;
@@ -33,6 +35,12 @@ struct InferenceFps
 };
 InferenceFps & inference_fps() {static InferenceFps value; return value;}
 }
+void publishCameraExposure(bool infrared, std::shared_ptr<const CameraExposureObservation> value)
+{std::atomic_store(infrared ? &ir_exposure : &rgb_exposure, std::move(value));}
+std::shared_ptr<const CameraExposureObservation> latestCameraExposure(bool infrared)
+{return std::atomic_load(infrared ? &ir_exposure : &rgb_exposure);}
+void publishRgbExposureControl(RgbExposureControl mode) {rgb_exposure_control.store(mode);}
+RgbExposureControl latestRgbExposureControl() {return rgb_exposure_control.load();}
 void publishTrafficInferenceFps(
   double average_fps, std::chrono::steady_clock::time_point valid_until)
 {
