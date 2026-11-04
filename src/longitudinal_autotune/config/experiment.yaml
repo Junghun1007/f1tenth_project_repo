@@ -1,0 +1,78 @@
+# Outer dimensions are context, not assumed lane radii or a 16m centerline lap.
+experiment:
+  outer_width_m: 4.0
+  outer_height_m: 4.0
+  stop_lines_per_lap: 2
+  required_directions: [cw, ccw]
+  laps_per_direction: 2
+  # Fixed route, perception, geometry and speed limits during a campaign.
+  minimum_speed_mps: 0.25
+  maximum_speed_mps: 0.8
+  hold_sec: 2.0
+  stopped_speed_mps: 0.03
+  stopped_confirm_sec: 0.30
+  stop_target_m: 0.12
+  stop_range_min_m: 0.0
+  stop_range_max_m: 0.25
+  maximum_hold_creep_m: 0.015
+  maximum_hold_speed_mps: 0.06
+  maximum_stop_jerk_rms: 6.0
+  maximum_deceleration_mps2: 2.0
+  maximum_cte_m: 0.20
+  maximum_lateral_acceleration_mps2: 0.5 # Fixed corner speed policy; sqrt(a_lat/abs(center-path curvature)).
+  maximum_segment_sec: 45.0
+  maximum_approach_sec: 15.0
+  maximum_stopped_before_line_sec: 2.0
+  lane_timeout_sec: 0.15
+  telemetry_timeout_sec: 0.15
+  command_timeout_sec: 0.15
+  stop_observation_timeout_sec: 0.25
+  terminal_observation_timeout_sec: 1.5
+  terminal_observation_distance_m: 0.35
+  stop_match_tolerance_m: 0.30
+  stop_confirm_frames: 3
+  release_min_travel_m: 0.70
+  release_clear_sec: 0.35
+  minimum_stop_spacing_m: 1.5
+  expected_half_lap_turn_rad: 3.141592653589793
+  half_lap_turn_tolerance_rad: 0.9
+  maximum_direction_error_rad: 0.40
+  emergency_brake_current_a: 2.0
+  hold_current_a: 0.7
+  voltage_max_pair_delta_v: 0.6
+  require_voltage: false # true requires CAN voltage telemetry; UART ERPM alone does not provide it.
+  score_weights:
+    stop_position: 3.0
+    jerk: 1.0
+    creep: 3.0
+    switching: 1.0
+    speed_tracking: 1.0
+    segment_time: 0.5
+    corner_overspeed: 2.0
+search:
+  max_candidates: 20
+  minimum_relative_improvement: 0.02
+  initial_step_fraction: 0.15
+  minimum_step_fraction: 0.025
+  # Only comfort/service response parameters. No geometry, watchdog, brake cap,
+  # perception thresholds, speed ceiling, stop tolerance or motor direction tuning.
+  bounds:
+    longitudinal_planning_deceleration_mps2: [0.30, 0.70]
+    duty_rise_rate_per_sec: [0.02, 0.06]
+    duty_fall_rate_per_sec: [0.02, 0.06]
+    brake_current_rise_amps_per_sec: [0.8, 3.0]
+    brake_current_fall_amps_per_sec: [3.0, 8.0]
+    corner_planning_acceleration_mps2: [0.3, 1.0]
+# Optional overrides, merged onto installed production defaults. Route and lateral
+# controller are fixed for the entire campaign. Use a copied test YAML for local geometry.
+camera_driver: {ros__parameters: {}}
+bev_processor:
+  ros__parameters:
+    measurement_roi_preview_enabled: false
+line_detactor:
+  ros__parameters:
+    preview_enabled: true
+    preview_result_only_enabled: true
+    bev_theme_enable: false
+auto_control: {ros__parameters: {}}
+vehicle_dynamics_monitor: {ros__parameters: {}}
