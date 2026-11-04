@@ -50,13 +50,16 @@ def nodes(context):
     shares = {p: Path(get_package_share_directory(p)) for p in (
         'camera_driver', 'bev_processor', 'line_detactor', 'auto_control',
         'vehicle_bringup', 'vehicle_dynamics_monitor', 'joy_initializer')}
-    params = build(shares, document)
+    parameter_files = {package: LaunchConfiguration(argument).perform(context).strip() for package, argument in (
+        ('auto_control', 'auto_control_params_file'), ('camera_driver', 'camera_params_file'),
+        ('bev_processor', 'bev_params_file'), ('line_detactor', 'line_detactor_params_file'))}
+    params = build(shares, document, parameter_files)
     session_dir = Path(LaunchConfiguration('campaign_dir').perform(context)).expanduser().resolve()
     session_dir.mkdir(parents=True, exist_ok=True)
     # Generated immutable launch inputs; never overwrite a production YAML.
     fd, config_copy = tempfile.mkstemp(prefix='autotune_inputs_', suffix='.yaml', dir=session_dir)
     with os.fdopen(fd, 'w') as stream:
-        stream.write(ros_yaml_dump(dict(document=document, controller=params['auto_control'],
+        stream.write(ros_yaml_dump(dict(document=document, controller=params['auto_control'], baseline_files=parameter_files,
                             perception={k:v for k,v in params.items() if k != 'auto_control'})))
     # Pass generated YAML files directly: launch_ros reparses dictionary strings,
     # and its temporary YAML can leave an axis such as y unquoted for rcl.
@@ -122,6 +125,7 @@ def generate_launch_description():
     share = Path(get_package_share_directory('longitudinal_autotune'))
     defaults = dict(params_file=str(share/'config/experiment.yaml'), direction='cw',
                     campaign_dir=str(Path.home()/'.ros/longitudinal_autotune/campaign'),
-                    vesc_port='/dev/ttyTHS1', depthai_library_dir='')
+                    vesc_port='/dev/ttyTHS1', depthai_library_dir='',
+                    auto_control_params_file='', camera_params_file='', bev_params_file='', line_detactor_params_file='')
     return LaunchDescription([*[DeclareLaunchArgument(k, default_value=v) for k,v in defaults.items()],
                               OpaqueFunction(function=nodes)])

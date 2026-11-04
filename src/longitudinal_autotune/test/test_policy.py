@@ -89,3 +89,25 @@ def test_interruption_never_finishes_block(document):
     t.fail('operator_stop')
     assert t.update(Sample(1.02,0.,0.)) is None
     assert not t.results and not t.running
+
+
+@pytest.mark.parametrize('speed,cte,reason,value,limit',[
+    (.46923425793647766,-.2118956446647644,'cross_track_error_limit',-.2118956446647644,.20),
+    (.46923425793647766,.2118956446647644,'cross_track_error_limit',.2118956446647644,.20),
+    (1.11,0.,'overspeed_limit',1.11,1.1),
+    (-.04,0.,'reverse_speed_limit',-.04,-.03),
+])
+def test_distinct_limit_faults_keep_measured_values(document,speed,cte,reason,value,limit):
+    t=Experiment(document['experiment'],'cw');t.arm(1.)
+    t.update(Sample(1.,speed,.6265654968593563,cte=cte,target_speed=.43777015805244446))
+    assert t.phase=='FAULT' and t.reason==reason
+    assert t.fault_details['value']==value
+    assert t.fault_details['limit']==limit
+    t.fail('operator_stop')
+    assert t.reason==reason and t.fault_details['value']==value
+
+
+def test_limit_boundary_is_accepted_without_weakening_guard(document):
+    t=Experiment(document['experiment'],'cw');t.arm(1.)
+    t.update(Sample(1.,.469,.626,cte=-.20))
+    assert t.running

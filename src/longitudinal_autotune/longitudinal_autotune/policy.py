@@ -93,6 +93,7 @@ class Experiment:
             raise ValueError('direction must be cw or ccw')
         self.e, self.direction = settings, direction
         self.phase, self.reason = 'IDLE', 'not_armed'
+        self.fault_details = {}
         self.previous = None
         self.remaining = None
         self.last_line_t = None
@@ -118,8 +119,11 @@ class Experiment:
             raise ValueError('A block can only be armed once; create a new block after a stop/fault')
         self.phase, self.reason, self.started = 'DRIVE', 'finding_anchor', now
 
-    def fail(self, reason):
+    def fail(self, reason, details=None):
+        if self.phase == 'FAULT':
+            return  # Preserve the first cause even after stop diagnostics reset.
         self.phase, self.reason = 'FAULT', reason
+        self.fault_details = dict(details or {})
 
     def update(self, s):
         if not self.running:
@@ -130,8 +134,12 @@ class Experiment:
             self.fail('nonfinite_observation'); return None
         if not s.lane_ok or not s.telemetry_ok or not s.command_ok:
             self.fail('stale_or_invalid_lane_telemetry_or_command'); return None
-        if s.speed < -.03 or abs(s.cte) > e['maximum_cte_m'] or s.speed > e['maximum_speed_mps'] + .3:
-            self.fail('speed_or_path_limit'); return None
+        if s.speed < -.03:
+            self.fail('reverse_speed_limit', dict(value=s.speed, limit=-.03, unit='m/s')); return None
+        if s.speed > e['maximum_speed_mps'] + .3:
+            self.fail('overspeed_limit', dict(value=s.speed, limit=e['maximum_speed_mps']+.3, unit='m/s')); return None
+        if abs(s.cte) > e['maximum_cte_m']:
+            self.fail('cross_track_error_limit', dict(value=s.cte, limit=e['maximum_cte_m'], unit='m')); return None
         if e['require_voltage'] and not math.isfinite(s.voltage):
             self.fail('voltage_unavailable'); return None
         dt = 0. if self.previous is None else s.t - self.previous.t

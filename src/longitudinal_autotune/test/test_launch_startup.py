@@ -74,7 +74,8 @@ def test_launch_passes_parameter_files_without_reinterpreting_strings(monkeypatc
     spec = importlib.util.spec_from_file_location('autotune_launch_startup_test', ROOT/'launch/longitudinal_autotune.launch.py')
     launch = importlib.util.module_from_spec(spec); spec.loader.exec_module(launch)
     context = N(config=dict(params_file=str(ROOT/'config/experiment.yaml'), direction='cw',
-                  campaign_dir=str(tmp_path/'campaign'), depthai_library_dir=str(tmp_path), vesc_port='/dev/ttyTHS1'),environment={})
+                  campaign_dir=str(tmp_path/'campaign'), depthai_library_dir=str(tmp_path), vesc_port='/dev/ttyTHS1',
+                  auto_control_params_file='', camera_params_file='', bev_params_file='', line_detactor_params_file=''),environment={})
     try:
         actions = launch.nodes(context)
         processes = [a for a in actions if 'parameters' in a.kwargs]

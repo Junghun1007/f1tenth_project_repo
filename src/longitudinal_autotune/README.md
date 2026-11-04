@@ -106,6 +106,43 @@ ros2 launch longitudinal_autotune longitudinal_autotune.launch.py \
 
 UART ERPM만 읽는 기본 구성에는 배터리 전압·실제 모터 전류가 없습니다. 모르는 값을 0으로 만들지 않고 `null`로 기록합니다. 동일 배터리 상태·타이어·노면에서 비교하세요. 전압 확인을 필수로 하려면 기존 dynamics 모듈의 CAN 입력을 설정하고 `require_voltage: true`로 설정합니다. 전압이 있는 양방향 블록은 중앙값 차이가 0.6 V를 넘으면 승격하지 않습니다. 전압을 기록하지 못한 결과는 배터리 차이에 의한 오판 가능성이 남습니다.
 
+## 기존에 잘 주행하던 설정을 기준으로 시험하기
+
+평소 `auto_drive`에서 별도 YAML을 사용했다면 동일한 파일을 다음 인자로 지정합니다.
+
+- `auto_control_params_file`: 기존 조향/경로/구동 제어 설정
+- `camera_params_file`: 기존 카메라·IMU 설정
+- `bev_params_file`: 기존 BEV 설정
+- `line_detactor_params_file`: 기존 모델·중앙 경로 인식 설정
+
+비워 두면 설치된 기본 파일을 사용합니다. 적용 순서는 설치 기본값 → 지정한 기존 YAML → `experiment.yaml`의 해당 노드 override → 시험 전용 토픽·기능·고정 속도 정책입니다. 따라서 선택한 파일의 조향 설정을 유지하면서 장애물·터널·신호등 추론은 사용하지 않고, 시험 속도와 제동 한도는 계속 적용합니다. 여섯 탐색 항목의 기준값도 선택한 제어 YAML에서 가져오며 탐색 범위를 벗어나면 시작을 거부합니다.
+
+```bash
+ros2 launch longitudinal_autotune longitudinal_autotune.launch.py \
+  direction:=cw \
+  auto_control_params_file:=/absolute/test_yaml/auto_control_test.yaml \
+  camera_params_file:=/absolute/test_yaml/camera_config_test.yaml \
+  bev_params_file:=/absolute/test_yaml/bev_config_test.yaml \
+  line_detactor_params_file:=/absolute/test_yaml/line_detactor_test.yaml \
+  campaign_dir:=$HOME/.ros/longitudinal_autotune/track4m_working_baseline_001
+```
+
+파일 경로는 Jetson에 실제로 존재하는 경로로 지정합니다. 파일 안의 `model_path`도 존재해야 합니다. 기존 캠페인과 실효 설정이 달라지면 새 `campaign_dir`를 사용합니다. `inputs.yaml`에 선택한 파일 경로와 실효 설정이 함께 기록됩니다.
+
+### 출발 직후 횡오차로 정지하는 경우
+
+기존의 `speed_or_path_limit`를 다음 세 원인으로 나눠 표시합니다. 정지 순간의 수치는 이후 제어기가 정지 값을 발행해도 유지합니다.
+
+- `cross_track_error_limit`: 중앙 경로에 대한 횡오차 절댓값이 `maximum_cte_m` 초과
+- `overspeed_limit`: 속도가 고정 시험 최고 속도 + 0.3 m/s 초과
+- `reverse_speed_limit`: 역방향 속도가 -0.03 m/s 미만
+
+```bash
+ros2 topic echo /longitudinal_autotune/fault
+```
+
+예: `cross_track_error_limit value=-0.2119m limit=0.2000m`. 상태 토픽과 trace에도 같은 최초 원인·수치를 기록합니다. 차량이 실제로 차선 밖으로 나갔다면 횡오차 한도를 높여 통과시키지 말고, 먼저 기존에 잘 주행하던 조향·인식 설정과 일치하는지 확인합니다. 이 패키지의 자동 탐색은 종방향 여섯 항목에 한정되며 조향 실패를 스스로 튜닝하지 않습니다.
+
 ## 저장 결과
 
 `campaign_dir` 아래:

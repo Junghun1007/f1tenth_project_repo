@@ -44,3 +44,23 @@ def test_gate_freshness_mode_exclusion_and_restart():
     assert motor_output(math.nan,math.nan,math.nan,'duty',False,2.,.7,True)==('brake_current',.7)
     for v in (math.nan,-.1,.11):
         with pytest.raises(ValueError): motor_output(v,0.,.5,'duty',True,2.,.7,False)
+
+
+def test_selected_working_baseline_is_merged_before_experiment_policy(document,tmp_path):
+    shares={k:REPO/'src'/k for k in ('camera_driver','bev_processor','line_detactor','auto_control','vehicle_dynamics_monitor')}
+    control=tmp_path/'working_control.yaml'
+    control.write_text(yaml.safe_dump({'auto_control':{'ros__parameters':dict(stanley_heading_lookahead_m=.08,
+        steering_servo_inverted=False, maximum_speed_mps=1.4, longitudinal_planning_deceleration_mps2=.6)}}))
+    camera=tmp_path/'working_camera.yaml'
+    camera.write_text(yaml.safe_dump({'camera_driver':{'ros__parameters':{'imu_stabilization_vehicle_motion_compensation_enabled':False}}}))
+    p=build(shares,document,{'auto_control':str(control),'camera_driver':str(camera)})
+    assert p['auto_control']['stanley_heading_lookahead_m']==.08
+    assert p['auto_control']['steering_servo_inverted'] is False
+    assert p['auto_control']['longitudinal_planning_deceleration_mps2']==.6
+    assert p['auto_control']['maximum_speed_mps']==.8
+    assert not p['auto_control']['enabled']
+    assert p['camera_driver']['imu_stabilization_vehicle_motion_compensation_enabled'] is False
+    assert p['camera_driver']['imu_stabilization_measured_erpm_topic']==P+'/vesc/measured_erpm'
+    with pytest.raises(ValueError): build(shares,document,{'auto_control':str(tmp_path/'missing.yaml')})
+    control.write_text('wrong_node: {ros__parameters: {stanley_gain: 1.3}}')
+    with pytest.raises(ValueError): build(shares,document,{'auto_control':str(control)})

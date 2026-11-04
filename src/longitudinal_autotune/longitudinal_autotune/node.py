@@ -91,6 +91,7 @@ class Session(Node):
         self.enable = self.create_publisher(Bool, P+'/controller_enabled', best_effort)
         self.stop = self.create_publisher(TrafficLightState, P+'/stop_request', 1)
         self.status = self.create_publisher(String, P+'/status', state)
+        self.fault_status = self.create_publisher(String, P+'/fault', state)
         self._autotune_subscriptions = []
         def sub(kind, topic, callback, qos=best_effort):
             self._autotune_subscriptions.append(self.create_subscription(kind, topic, callback, qos))
@@ -328,13 +329,19 @@ class Session(Node):
                 self.campaign.submit(self.direction, self.experiment.results, failure=self.experiment.reason)
                 self.submitted = True
         if self.experiment.phase != self.last_phase:
-            self.record('phase', phase=self.experiment.phase, reason=self.experiment.reason)
-            self.get_logger().info(f'Candidate {self.campaign.current["id"]} {self.direction}: {self.experiment.phase} ({self.experiment.reason})')
+            details = self.experiment.fault_details
+            self.record('phase', phase=self.experiment.phase, reason=self.experiment.reason, details=details)
+            text = self.experiment.reason
+            if details:
+                text += f" value={details['value']:+.4f}{details['unit']} limit={details['limit']:.4f}{details['unit']}"
+            self.get_logger().info(f'Candidate {self.campaign.current["id"]} {self.direction}: {self.experiment.phase} ({text})')
+            if self.experiment.phase == 'FAULT':
+                self.fault_status.publish(String(data=text))
             self.last_phase = self.experiment.phase
         if now-self.last_status >= .5:
             self.last_status = now
             self.status.publish(String(data=json.dumps(dict(phase=self.experiment.phase, reason=self.experiment.reason,
-                candidate=self.campaign.current['id'], direction=self.direction, needed=self.campaign.needed(),
+                fault=self.experiment.fault_details, candidate=self.campaign.current['id'], direction=self.direction, needed=self.campaign.needed(),
                 complete=self.campaign.state['complete'], best_id=(self.campaign.state['best'] or {}).get('id'),
                 ready=self.ready(now), trace=str(self.trace.path), trace_dropped=self.trace.dropped))))
 

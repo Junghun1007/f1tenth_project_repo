@@ -4,13 +4,23 @@ import math
 from .config import PREFIX as P, control_parameters, ros_parameters
 
 
-def build(shares, document):
+def build(shares, document, parameter_files=None):
     files = {'camera_driver': 'camera_config.yaml', 'bev_processor': 'bev_config.yaml',
              'line_detactor': 'line_detactor.yaml', 'auto_control': 'auto_control.yaml',
              'vehicle_dynamics_monitor': 'vehicle_dynamics.yaml'}
     values = {}
+    parameter_files = parameter_files or {}
     for name, file in files.items():
         p = ros_parameters(Path(shares[name])/'config'/file, name)
+        selected = parameter_files.get(name, '')
+        if selected:
+            selected = Path(selected).expanduser().resolve()
+            if not selected.is_file():
+                raise ValueError('Baseline parameter file not found: '+str(selected))
+            overrides = ros_parameters(selected, name)
+            if not overrides:
+                raise ValueError(f'{selected} has no {name}.ros__parameters section')
+            p.update(overrides)
         p.update(document.get(name, {}).get('ros__parameters', {}))
         values[name] = p
     camera, bev, detector, dynamics = (values[k] for k in (
