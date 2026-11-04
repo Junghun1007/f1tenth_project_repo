@@ -1,6 +1,4 @@
-"""Metric lane validation and short RGB/IR handover blending, without ROS."""
-from bisect import bisect_left
-from copy import deepcopy
+"""Controller-compatible lane readiness checks, without ROS."""
 from dataclasses import dataclass
 import math
 
@@ -71,59 +69,3 @@ def metric_path(message, rules):
         return points if len(points) >= rules.minimum_points and span >= rules.minimum_span else None
     except (AttributeError, TypeError, ValueError, ZeroDivisionError, OverflowError):
         return None
-
-
-def mix_paths(old, new, old_path, new_path, weight, rules, max_offset, max_heading):
-    """Resample at common forward distances; never extrapolate either curve.
-
-    Timestamps remain conservative: the output carries the older contributor's
-    stamp, so caching cannot make an old observation look freshly captured.
-    """
-    if any(b[0] - a[0] <= 1e-6 for path in (old_path, new_path)
-           for a, b in zip(path, path[1:])):
-        return None, 'nonmonotonic_forward_path'
-    lower, upper = max(old_path[0][0], new_path[0][0]), min(old_path[-1][0], new_path[-1][0])
-    if upper - lower < rules.minimum_span:
-        return None, 'insufficient_overlap'
-    count = max(rules.minimum_points, math.ceil((upper - lower) / rules.mpp) + 1)
-    xs = [lower + (upper - lower) * i / (count - 1) for i in range(count)]
-
-    def sample(path):
-        abscissae = [p[0] for p in path]
-        values = []
-        for x in xs:
-            i = min(len(path) - 1, max(1, bisect_left(abscissae, x)))
-            a, b = path[i-1], path[i]
-            t = (x - a[0]) / (b[0] - a[0])
-            values.append((a[1] + t * (b[1] - a[1]), a[2] if t < .5 else b[2]))
-        return values
-
-    a, b = sample(old_path), sample(new_path)
-    if max(abs(p[0] - q[0]) for p, q in zip(a, b)) > max_offset:
-        return None, 'lateral_disagreement'
-    window = max(1, round(.15 / ((upper - lower) / (count - 1))))
-    for i in range(count - 1):
-        j = min(count - 1, i + window)
-        ha = math.atan2(a[j][0] - a[i][0], xs[j] - xs[i])
-        hb = math.atan2(b[j][0] - b[i][0], xs[j] - xs[i])
-        if abs(math.atan2(math.sin(ha - hb), math.cos(ha - hb))) > max_heading:
-            return None, 'heading_disagreement'
-    result = deepcopy(new)
-    result.header.stamp = deepcopy(min((old, new), key=stamp_ns).header.stamp)
-    result.centerline_points = []
-    result.centerline_support = []
-    prototype = new.centerline_points[0]
-    for x, pa, pb in zip(xs, a, b):
-        lateral = (1 - weight) * pa[0] + weight * pb[0]
-        p = deepcopy(prototype)
-        p.x = (rules.y_max - lateral) / rules.mpp + result.padding_left - .5
-        p.y = (rules.x_max - x) / rules.mpp - .5
-        p.z = 0.
-        result.centerline_points.append(p)
-        result.centerline_support.append(pa[1] if weight < .5 else pb[1])
-    # A mixed centerline does not provide an independently observed stop line.
-    result.stop_line_present = False
-    result.stop_line_distance_m = float('nan')
-    if metric_path(result, rules) is None:
-        return None, 'mixed_geometry_invalid'
-    return result, 'blending'

@@ -60,7 +60,7 @@ def integrated_nodes(rgb_detector, controller, context):
                                           {'image_topic': '/tunnel/rgb_raw', 'initial_state': 'outside',
                                            'preview_enabled': False}]),
         Node(package='auto_control', executable='tunnel_lane_selector', name='tunnel_lane_selector',
-             output='screen', parameters=[str(shares['auto_control'] / 'config/tunnel_handover.yaml'), selector_parameters])]
+             output='screen', parameters=[selector_parameters])]
     return components, processes
 
 

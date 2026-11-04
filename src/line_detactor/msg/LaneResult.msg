@@ -1,5 +1,9 @@
 # Same timestamp and source frame_id as the input BEV. Pixel mapping is explicit below.
 std_msgs/Header header
+# Optional camera identity assigned by the tunnel selector (RGB or IR).
+# Header capture times remain original and may overlap across cameras.
+# Empty for ordinary/standalone detector output.
+string lane_source
 # Per-frame performance metadata. detector_input_received_stamp is when the
 # line detector received the BEV image; detector_result_ready_stamp is taken
 # immediately before publishing this result. All durations exclude GUI work.

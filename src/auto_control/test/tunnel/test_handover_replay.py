@@ -6,14 +6,14 @@ import subprocess
 import tempfile
 import unittest
 from auto_control_tunnel.selection import LaneSelector
-from auto_control_tunnel.blending import metric_path, stamp_ns
+from auto_control_tunnel.path_validation import stamp_ns
 from lane_fixture import lane, ns
 
 
 class HandoverReplayTests(unittest.TestCase):
     def test_delayed_entry_and_exit_keep_real_path_updates_and_native_control(self):
         selector = LaneSelector(validation_mode=True)
-        outputs, received, mixed = [], [], []
+        outputs, received = [], []
         schedule = []
         # 80Hz RGB with 80ms sensor-to-result latency. IR becomes valid 220ms
         # after ENTRY, well beyond the controller's 150ms receive timeout.
@@ -37,12 +37,16 @@ class HandoverReplayTests(unittest.TestCase):
             if result is not None:
                 outputs.append(result)
                 received.append(now)
-                if selector.reason == 'blending':
-                    mixed.append(result)
-        self.assertGreater(len(mixed), 5)
+                self.assertIs(result, message)
+                self.assertEqual(result.lane_source, kind)
         self.assertEqual(selector.state, 'OUTSIDE')
         self.assertLess(max(b - a for a, b in zip(received, received[1:])), .10)
-        self.assertTrue(all(b > a for a, b in zip(map(stamp_ns, outputs), list(map(stamp_ns, outputs))[1:])))
+        for source in ('RGB', 'IR'):
+            stamps = [stamp_ns(m) for m in outputs if m.lane_source == source]
+            self.assertTrue(all(b > a for a, b in zip(stamps, stamps[1:])))
+        # Exit takes the very first RGB even though its capture predates the
+        # previous IR result. The controller has camera-specific ordering.
+        self.assertTrue(any(stamp_ns(b) < stamp_ns(a) for a, b in zip(outputs, outputs[1:])))
         self.assertTrue(all(0 <= t - stamp_ns(m) / 1e9 < .15 for t, m in zip(received, outputs)))
 
         # Exercise real controller geometry/Stanley after float32 ROS point
@@ -53,12 +57,16 @@ class HandoverReplayTests(unittest.TestCase):
         package = Path(__file__).resolve().parents[2]
         source = r'''
 #include "auto_control/control_core.hpp"
+#include "auto_control/lane_capture_order.hpp"
 #include <cmath>
 #include <iostream>
 #include <vector>
 int main() {
   int count, accepted=0;
-  while (std::cin >> count) {
+  std::int64_t stamp; std::string camera;
+  auto_control::LaneCaptureOrder order;
+  while (std::cin >> count >> stamp >> camera) {
+    if (!order.accept(stamp, camera)) {return 4;}
     std::vector<auto_control::Point> points(count);
     for (auto &p: points) {std::cin >> p.x >> p.y;}
     auto path=auto_control::build_ordered_path(points,8,.12,.05,2.20,.15,.14);
@@ -76,7 +84,7 @@ int main() {
             points = [(3. - (f32(p.y) + .5) * .01,
                        .6 - (f32(p.x) - message.padding_left + .5) * .01)
                       for p in message.centerline_points]
-            data.append(str(len(points)))
+            data.append(f'{len(points)} {stamp_ns(message)} {message.lane_source}')
             data.extend(f'{x:.12f} {y:.12f}' for x, y in points)
         with tempfile.TemporaryDirectory() as directory:
             cpp, binary = Path(directory) / 'handover.cpp', Path(directory) / 'handover'

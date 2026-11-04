@@ -1,4 +1,5 @@
 #include "auto_control/control_core.hpp"
+#include "auto_control/lane_capture_order.hpp"
 #include "auto_control/model_startup_gate.hpp"
 #include "auto_control/runtime_speed_limit.hpp"
 #include "line_detactor/msg/speed_limit_state.hpp"
@@ -102,7 +103,8 @@ public:
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
       lane_result_topic_, sensor_qos,
       std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
-    if (declare_parameter<bool>("tunnel.enabled",false)) {
+    tunnel_enabled_=declare_parameter<bool>("tunnel.enabled",false);
+    if (tunnel_enabled_) {
       outside_avoidance_=avoidance_control_enabled_;
       outside_slowdown_=obstacle_slowdown_enabled_;
       outside_traffic_=traffic_stop_enabled_;
@@ -649,10 +651,12 @@ private:
       if (age < -0.05 || age > path_capture_maximum_age_sec_) {
         throw std::invalid_argument("source capture timestamp is stale or in the future");
       }
-      if (last_lane_capture_ns_ && *capture_ns <= *last_lane_capture_ns_) {
+      if (tunnel_enabled_ && message->lane_source!="RGB" && message->lane_source!="IR") {
+        throw std::invalid_argument("missing or invalid tunnel lane source");
+      }
+      if (!lane_capture_order_.accept(*capture_ns, tunnel_enabled_ ? message->lane_source : "")) {
         throw std::invalid_argument("duplicate or out-of-order lane result");
       }
-      last_lane_capture_ns_ = capture_ns;
       if (traffic_stop_enabled_ && message->header.frame_id == lane_result_frame_id_) {
         advance_stop_distance(received_ros.nanoseconds());
         if (message->stop_line_present && std::isfinite(message->stop_line_distance_m) &&
@@ -2179,7 +2183,7 @@ private:
   double latest_signal_score_{kUnavailable}, latest_stop_line_raw_m_{kUnavailable};
   double latest_stop_line_corrected_m_{kUnavailable}, latest_raw_speed_mps_{kUnavailable};
   double latest_pid_effort_{kUnavailable}, latest_desired_duty_{kUnavailable};
-  bool tunnel_active_{false},outside_avoidance_{false},outside_slowdown_{false},outside_traffic_{false};
+  bool tunnel_enabled_{false},tunnel_active_{false},outside_avoidance_{false},outside_slowdown_{false},outside_traffic_{false};
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_state_sub_;
   bool traffic_stop_enabled_{false}, traffic_red_{false}, traffic_holding_{false};
   bool traffic_range_stop_committed_{false};
@@ -2304,7 +2308,8 @@ private:
   std::optional<std::int64_t> last_path_received_ns_, path_capture_ns_, last_erpm_ns_;
   std::optional<std::int64_t> dynamics_duty_seen_ns_, dynamics_motor_current_seen_ns_;
   double dynamics_duty_{0.0}, dynamics_motor_current_{0.0};
-  std::optional<std::int64_t> last_valid_path_received_ns_, last_lane_capture_ns_;
+  std::optional<std::int64_t> last_valid_path_received_ns_;
+  LaneCaptureOrder lane_capture_order_;
   std::optional<double> lane_capture_age_sec_;
   std::int64_t last_control_ns_{0};
   std::size_t lane_result_count_{0U}, lane_result_points_{0U};

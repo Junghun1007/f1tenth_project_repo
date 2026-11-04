@@ -89,13 +89,22 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(self.node.policy.selected, 'RGB')
         self.assertEqual(self.node.policy.compute, 'BOTH')
 
-    def test_deadline_timer_changes_compute_without_publishing_saved_path(self):
+    def test_callbacks_keep_rgb_until_first_valid_ir_and_publish_original_immediately(self):
+        self.node.policy = LaneSelector(validation_mode=True)
+        rgb = lane(10.)
+        self.node.on_lane('RGB', rgb)
         self.report(state='inside')
-        self.node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=ns(10.8)))
-        self.node.on_transition_tick()
+        self.node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=ns(10.04)))
+        self.node.on_lane('IR', lane(10.02, valid=False))
+        rgb_next = lane(10.03)
+        self.node.on_lane('RGB', rgb_next)
+        self.assertEqual(self.outputs, [rgb, rgb_next])
+        target = lane(10.035, lateral=.1)
+        self.node.on_lane('IR', target)
+        self.assertIs(self.outputs[-1], target)
+        self.assertEqual(target.lane_source, 'IR')
+        self.assertEqual(self.node.policy.state, 'INSIDE')
         self.assertEqual(self.node.policy.compute, 'IR')
-        self.assertEqual(self.node.policy.reason, 'target_wait_timeout')
-        self.assertEqual(self.outputs, [])
 
     def test_retained_tcn_state_recovers_lost_event_without_repeating_switch(self):
         self.report(state='inside')

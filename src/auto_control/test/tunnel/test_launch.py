@@ -43,7 +43,6 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual([p['executable'] for p in processes],
                          ['tunnel_tcn_node', 'tunnel_lane_selector'])
         self.assertEqual(processes[-1]['package'], 'auto_control')
-        self.assertTrue(processes[-1]['parameters'][0].endswith('config/tunnel_handover.yaml'))
         self.assertEqual(processes[-1]['parameters'][-1]['path_minimum_points'], 12)
         self.assertEqual(processes[-1]['parameters'][-1]['rgb_result_topic'], '/custom/rgb_result')
         self.assertEqual(processes[0]['parameters'][-1]['initial_state'], 'outside')
@@ -59,10 +58,7 @@ class LaunchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.helper().integrated_nodes({}, {}, NS(launch_configurations=dict(tunnel_validation_mode='invalid')))
 
-    def test_selector_inherits_effective_controller_geometry_and_handover_defaults(self):
-        import math
-        import yaml
-        from auto_control_tunnel.selection import LaneSelector
+    def test_selector_inherits_effective_controller_geometry(self):
         controller = dict(path_minimum_points=12, path_minimum_span_m=.2, path_maximum_x_m=1.8)
         context = NS(launch_configurations=dict(path_minimum_points='16', path_maximum_gap_m='.1'))
         _, processes = self.helper().integrated_nodes(
@@ -72,14 +68,6 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(parameters['path_minimum_span_m'], .2)
         self.assertEqual(parameters['path_maximum_x_m'], 1.8)
         self.assertEqual(parameters['path_maximum_gap_m'], .1)
-        defaults = yaml.safe_load(Path(processes[-1]['parameters'][0]).read_text())['tunnel_lane_selector']['ros__parameters']
-        policy = LaneSelector(blend_sec=defaults['blend_duration_sec'],
-            transition_timeout_sec=defaults['transition_timeout_sec'],
-            contributor_max_age_sec=defaults['contributor_max_age_sec'],
-            pair_max_skew_sec=defaults['pair_max_skew_sec'],
-            maximum_offset_m=defaults['maximum_blend_offset_m'],
-            maximum_heading_rad=math.radians(defaults['maximum_blend_heading_deg']))
-        self.assertEqual(policy.blend_sec, .15)
 
     def test_validation_flag_reaches_camera_included_launch(self):
         bringup = ast.parse((SOURCE/'vehicle_bringup/launch/auto_drive.launch.py').read_text())
