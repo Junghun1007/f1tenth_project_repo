@@ -149,3 +149,25 @@ python3 -m pytest src/longitudinal_autotune/test -q
 ```
 
 ROS/CUDA/카메라/VESC를 사용한 빌드·실차 검증은 Jetson에서 별도로 필요합니다. 소프트웨어 시험 통과는 실차 최적값을 이미 얻었다는 뜻이 아닙니다.
+
+## 시작 직후 status 토픽이 나오지 않는 경우
+
+`ros2 topic echo /longitudinal_autotune/status`가 기다리기만 한다면 먼저 launch 터미널의 traceback을 확인합니다. 세션 노드가 시작 중 종료되면 status가 발행되지 않습니다.
+
+- `imu_yaw_axis`가 `True / BOOL`이라고 나오면 문자열 타입이 전달 중 바뀐 것입니다. 수정 버전은 문자열을 명시적으로 따옴표 처리한 전용 ROS 파라미터 파일을 생성하고, launch에 파일 경로를 직접 전달합니다. 실효 숫자·BOOL 값은 그대로 유지합니다.
+- `can't set attribute 'subscriptions'`는 `rclpy.Node`의 읽기 전용 속성과 이름이 충돌한 문제입니다. 세션의 별도 구독 목록 이름으로 수정했습니다.
+- 여러 핵심 프로세스가 연이어 종료될 때 launch 종료 요청은 한 번만 보냅니다. 초기 오류 뒤의 SIGINT/종료 traceback은 최초 시작 오류와 구분해서 확인합니다.
+
+수정본을 받은 뒤 이 패키지만 다시 빌드하고 source합니다. 이 두 시작 오류 때문에 캠페인 기록을 삭제할 필요는 없습니다.
+
+```bash
+git pull --ff-only origin 1030ML
+colcon build --symlink-install --packages-select longitudinal_autotune
+source install/setup.bash
+```
+
+Jetson의 sourced ROS 환경에서는 실제 rcl YAML 파서의 문자열 타입 보존을 장치 없이 확인할 수 있습니다.
+
+```bash
+python3 -m pytest src/longitudinal_autotune/test/test_ros_parameter_runtime.py -q
+```

@@ -3,11 +3,9 @@ import os
 from pathlib import Path
 import tempfile
 import fcntl
-import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, LogInfo, RegisterEventHandler, EmitEvent
-from launch.events import Shutdown
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction, LogInfo, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -15,6 +13,8 @@ from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
 from longitudinal_autotune.config import PREFIX as P, load, ros_parameters
 from longitudinal_autotune.assembly import build
+from longitudinal_autotune.storage import atomic_write, ros_yaml_dump
+from longitudinal_autotune.launch_support import ShutdownOnce
 
 _LOCK = None
 
@@ -56,8 +56,16 @@ def nodes(context):
     # Generated immutable launch inputs; never overwrite a production YAML.
     fd, config_copy = tempfile.mkstemp(prefix='autotune_inputs_', suffix='.yaml', dir=session_dir)
     with os.fdopen(fd, 'w') as stream:
-        yaml.safe_dump(dict(document=document, controller=params['auto_control'],
-                            perception={k:v for k,v in params.items() if k != 'auto_control'}), stream)
+        stream.write(ros_yaml_dump(dict(document=document, controller=params['auto_control'],
+                            perception={k:v for k,v in params.items() if k != 'auto_control'})))
+    # Pass generated YAML files directly: launch_ros reparses dictionary strings,
+    # and its temporary YAML can leave an axis such as y unquoted for rcl.
+    parameter_root = Path(config_copy).with_suffix('')
+    parameter_root.mkdir()
+    def parameter_file(name, values):
+        path = parameter_root/(name+'.yaml')
+        atomic_write(path, {'/**': {'ros__parameters': values}}, yaml_file=True)
+        return str(path)
     library = LaunchConfiguration('depthai_library_dir').perform(context).strip()
     if not library:
         library = (shares['bev_processor']/'depthai_runtime_dir.txt').read_text().strip()
@@ -70,11 +78,11 @@ def nodes(context):
         package='rclcpp_components', executable='component_container_mt', output='screen', additional_env=env,
         composable_node_descriptions=[
             ComposableNode(package='bev_processor', plugin='bev_processor::BevProcessorNode',
-                           name='autotune_bev', namespace=P, parameters=[params['bev_processor']], extra_arguments=[{'use_intra_process_comms': True}]),
+                           name='autotune_bev', namespace=P, parameters=[parameter_file('bev', params['bev_processor'])], extra_arguments=[{'use_intra_process_comms': True}]),
             ComposableNode(package='camera_driver', plugin='camera_driver::CameraDriverNode',
-                           name='autotune_camera', namespace=P, parameters=[params['camera_driver']], extra_arguments=[{'use_intra_process_comms': True}]),
+                           name='autotune_camera', namespace=P, parameters=[parameter_file('camera', params['camera_driver'])], extra_arguments=[{'use_intra_process_comms': True}]),
             ComposableNode(package='line_detactor', plugin='line_detactor::LineDetactorNode',
-                           name='autotune_lane', namespace=P, parameters=[params['line_detactor']],
+                           name='autotune_lane', namespace=P, parameters=[parameter_file('lane', params['line_detactor'])],
                            remappings=[('/auto/maximum_speed_request', P+'/preview_speed_request_unused'),
                                        ('/auto/maximum_speed_state', P+'/controller/maximum_speed_state')], extra_arguments=[{'use_intra_process_comms': True}])])
     bridge = ros_parameters(shares['vehicle_bringup']/'config/vesc_config.yaml', '/**')
@@ -95,18 +103,18 @@ def nodes(context):
         IncludeLaunchDescription(PythonLaunchDescriptionSource(str(shares['joy_initializer']/'launch/joy.launch.py')),
                                  launch_arguments={'vehicle_namespace': P.strip('/'), 'device_name_contains': '8BitDo'}.items()),
         Node(package='manual_control', executable='auto_handover_node', name='autotune_handover', namespace=P,
-             parameters=[manual], output='screen'),
+             parameters=[parameter_file('handover', manual)], output='screen'),
         Node(package='vesc_bridge', executable='vesc_bridge_node', name='autotune_bridge', namespace=P,
-             parameters=[bridge], output='screen'),
+             parameters=[parameter_file('bridge', bridge)], output='screen'),
         Node(package='vehicle_dynamics_monitor', executable='vehicle_dynamics_node', name='autotune_dynamics',
-             namespace=P, parameters=[params['vehicle_dynamics_monitor']], output='screen'),
+             namespace=P, parameters=[parameter_file('dynamics', params['vehicle_dynamics_monitor'])], output='screen'),
         Node(package='longitudinal_autotune', executable='autotune_session', name='autotune_session', namespace=P,
-             parameters=[dict(inputs_file=config_copy, campaign_dir=str(session_dir), direction=direction,
-                              model_path=params['line_detactor']['model_path'])], output='screen')]
+             parameters=[parameter_file('session', dict(inputs_file=config_copy, campaign_dir=str(session_dir), direction=direction,
+                              model_path=params['line_detactor']['model_path']))], output='screen')]
     # A failed coordinator/perception/bridge must terminate the hardware launch.
     critical = [container, actions[3], actions[4], actions[5], actions[-1]]
-    handlers = [RegisterEventHandler(OnProcessExit(target_action=a, on_exit=[
-        EmitEvent(event=Shutdown(reason='Autotune critical process exited'))])) for a in critical]
+    shutdown_once = ShutdownOnce()
+    handlers = [RegisterEventHandler(OnProcessExit(target_action=a, on_exit=shutdown_once)) for a in critical]
     return handlers+actions
 
 

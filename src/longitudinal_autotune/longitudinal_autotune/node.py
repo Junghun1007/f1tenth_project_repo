@@ -91,9 +91,9 @@ class Session(Node):
         self.enable = self.create_publisher(Bool, P+'/controller_enabled', best_effort)
         self.stop = self.create_publisher(TrafficLightState, P+'/stop_request', 1)
         self.status = self.create_publisher(String, P+'/status', state)
-        self.subscriptions = []
+        self._autotune_subscriptions = []
         def sub(kind, topic, callback, qos=best_effort):
-            self.subscriptions.append(self.create_subscription(kind, topic, callback, qos))
+            self._autotune_subscriptions.append(self.create_subscription(kind, topic, callback, qos))
         sub(Int32, P+'/vesc/measured_erpm', lambda m: self.inputs.set('raw_speed', m.data*self.erpm_scale, time.monotonic()))
         sub(Bool, P+'/vesc/connected', lambda m: setattr(self, 'connected', m.data), state)
         sub(String, P+'/drive/mode', self.on_mode, state)

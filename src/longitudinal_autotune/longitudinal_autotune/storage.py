@@ -19,6 +19,22 @@ def clean(value):
     return value
 
 
+class _QuotedStringDumper(yaml.SafeDumper):
+    """rcl's YAML 1.1 parser also treats bare y/n as booleans; PyYAML does not."""
+
+
+def _quoted_string(dumper, value):
+    return dumper.represent_scalar('tag:yaml.org,2002:str', value, style='"')
+
+
+_QuotedStringDumper.add_representer(str, _quoted_string)
+
+
+def ros_yaml_dump(value):
+    """Preserve string scalars through both launch_ros and rcl parameter parsing."""
+    return yaml.dump(value, Dumper=_QuotedStringDumper, sort_keys=True, allow_unicode=True)
+
+
 def atomic_write(path, value, yaml_file=False):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -26,7 +42,7 @@ def atomic_write(path, value, yaml_file=False):
     try:
         with os.fdopen(fd, 'w') as stream:
             data = clean(value)
-            stream.write(yaml.safe_dump(data, sort_keys=True) if yaml_file else json.dumps(data, indent=2, allow_nan=False))
+            stream.write(ros_yaml_dump(data) if yaml_file else json.dumps(data, indent=2, allow_nan=False))
             stream.flush(); os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:

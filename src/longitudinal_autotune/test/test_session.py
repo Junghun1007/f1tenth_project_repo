@@ -27,6 +27,10 @@ def session(monkeypatch,tmp_path,document,baseline):
         def publish(self,msg):self.messages.append(msg)
     class FakeNode:
         def __init__(self,name):self.pubs={};self.subs={}
+        @property
+        def subscriptions(self):
+            # rclpy.Node owns this read-only property in ROS 2 Humble.
+            return tuple(self.subs.values())
         def declare_parameter(self,k,v):parameters.setdefault(k,v)
         def get_parameter(self,k):return N(value=parameters[k])
         def create_publisher(self,kind,topic,qos):
