@@ -65,7 +65,12 @@ search:
     corner_planning_acceleration_mps2: [0.3, 1.0]
 # Optional overrides, merged onto installed production defaults. Route and lateral
 # controller are fixed for the entire campaign. Use a copied test YAML for local geometry.
-camera_driver: {ros__parameters: {}}
+camera_driver:
+  ros__parameters:
+    # Match the supplied working camera_config_test.yaml. IMU tilt
+    # stabilization remains enabled; only CAN-derived vehicle acceleration
+    # compensation is disabled so perception does not change during tuning.
+    imu_stabilization_vehicle_motion_compensation_enabled: false
 bev_processor:
   ros__parameters:
     measurement_roi_preview_enabled: false

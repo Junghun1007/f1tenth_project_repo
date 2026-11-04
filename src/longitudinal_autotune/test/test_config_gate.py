@@ -64,3 +64,16 @@ def test_selected_working_baseline_is_merged_before_experiment_policy(document,t
     with pytest.raises(ValueError): build(shares,document,{'auto_control':str(tmp_path/'missing.yaml')})
     control.write_text('wrong_node: {ros__parameters: {stanley_gain: 1.3}}')
     with pytest.raises(ValueError): build(shares,document,{'auto_control':str(control)})
+
+
+def test_working_camera_baseline_keeps_imu_and_lateral_guard(document):
+    shares={k:REPO/'src'/k for k in ('camera_driver','bev_processor','line_detactor','auto_control','vehicle_dynamics_monitor')}
+    p=build(shares,document)
+    assert p['camera_driver']['imu_stabilization_vehicle_motion_compensation_enabled'] is False
+    assert p['camera_driver']['imu_stabilization_enabled'] is True
+    assert p['camera_driver']['imu_bridge_enabled'] is True
+    assert p['camera_driver']['imu_stabilization_external_reference_required'] is True
+    assert p['auto_control']['stanley_gain']==1.3
+    assert p['auto_control']['stanley_heading_lookahead_m']==.05
+    assert p['auto_control']['steering_servo_inverted'] is True
+    assert document['experiment']['maximum_cte_m']==.20

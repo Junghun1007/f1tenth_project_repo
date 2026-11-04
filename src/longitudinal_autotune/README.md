@@ -129,6 +129,19 @@ ros2 launch longitudinal_autotune longitudinal_autotune.launch.py \
 
 파일 경로는 Jetson에 실제로 존재하는 경로로 지정합니다. 파일 안의 `model_path`도 존재해야 합니다. 기존 캠페인과 실효 설정이 달라지면 새 `campaign_dir`를 사용합니다. `inputs.yaml`에 선택한 파일 경로와 실효 설정이 함께 기록됩니다.
 
+### 첨부한 정상 주행 YAML과의 비교 결과
+
+확인한 첨부본(`auto_control_test.yaml`, `camera_config_test.yaml`, `bev_config_test.yaml`, `line_detactor_test.yaml`) 기준입니다. 다른 경로의 오래된 로컬 사본과 구분합니다.
+
+- 조향 설정은 설치 기본값과 같습니다: Stanley gain 1.3, softening 0.30 m/s, heading lookahead 0.05 m, servo inversion true. 경로 ROI·기하와 BEV 설정도 같습니다.
+- `camera_config_test.yaml`은 `imu_stabilization_vehicle_motion_compensation_enabled: false`입니다. 기존 시험 기본값은 true였으므로, `experiment.yaml`에 false를 명시해 첨부본과 맞췄습니다. IMU 기울기 안정화 자체를 끄는 설정은 아닙니다.
+- 첨부 `line_detactor_test.yaml`과의 차이는 결과 전용 프리뷰와 테마 설정이며, 시험 YAML이 이미 같은 값을 사용합니다.
+- 시험의 최고 속도 0.8 m/s, 코너 횡가속도 기준 0.5 m/s², duty 상한 0.10, 정지 기준점 0.12 m는 종방향 시험을 위해 정한 고정 조건입니다. 첨부 일반 주행 설정의 1.8 m/s, 1.6 m/s², duty 0.12, 정지 여유 0.10 m와 의도적으로 다릅니다. 낮은 속도에서도 같은 조향기가 같은 추종 성능을 낸다고 보장하지는 않습니다.
+
+카메라 설정 차이가 실제 이탈의 원인이라고 확정한 것은 아닙니다. 한 조건을 맞춘 뒤 새 기준 주행으로 확인합니다. 실제 차량 이탈이 확인됐으므로 `maximum_cte_m: 0.20`은 유지합니다. 기존 실패 기록은 남기고, 변경한 카메라 설정의 시험은 새 캠페인 디렉터리를 사용합니다.
+
+`traffic_light_test.yaml`, 장애물·LiDAR 설정은 이 시험에서 로드하지 않습니다. `centerline_preview_test.yaml`도 별도 프리뷰 설정이므로 `line_detactor_test.yaml` 위에 자동으로 덧씌우지 않습니다. 기존 실행에서 그 파일을 인식 설정으로 사용했다면 `line_detactor_params_file`에 실제 사용한 파일을 지정해야 합니다.
+
 ### 출발 직후 횡오차로 정지하는 경우
 
 기존의 `speed_or_path_limit`를 다음 세 원인으로 나눠 표시합니다. 정지 순간의 수치는 이후 제어기가 정지 값을 발행해도 유지합니다.
