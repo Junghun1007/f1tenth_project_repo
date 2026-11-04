@@ -21,7 +21,7 @@ from auto_control_tunnel.path_validation import PathRules, metric_path, stamp_ns
 from .config import PREFIX as P, fingerprint
 from .controller import Controller
 from .gate import Inputs, motor_output
-from .policy import Experiment, Sample
+from .policy import Experiment, Sample, POLICY_VERSION
 from .search import Campaign
 from .storage import Trace, atomic_write
 
@@ -37,6 +37,7 @@ def file_hash(path):
 class Session(Node):
     def __init__(self):
         super().__init__('autotune_session')
+        self._autotune_closed = False
         for k, v in dict(inputs_file='', campaign_dir='', direction='cw', model_path='').items():
             self.declare_parameter(k, v)
         data = yaml.safe_load(Path(self.get_parameter('inputs_file').value).read_text())
@@ -50,7 +51,7 @@ class Session(Node):
         executable = Path(get_package_prefix('auto_control'))/'lib/auto_control/auto_control_node'
         identity = dict(controller_sha256=file_hash(executable),
                         model_sha256=file_hash(self.get_parameter('model_path').value),
-                        baseline_sha256=fingerprint(self.base), perception_sha256=fingerprint(data['perception']), format_version=1)
+                        baseline_sha256=fingerprint(self.base), perception_sha256=fingerprint(data['perception']), format_version=2, experiment_policy_version=POLICY_VERSION)
         self.campaign = Campaign(root, self.document, self.base, identity)
         # Resume at the next candidate only after a fully recorded paired trial.
         if not self.campaign.state['complete'] and (not self.campaign.needed() or self.campaign.current.get('feasible') is False):
@@ -71,6 +72,7 @@ class Session(Node):
         self.submitted = self.auto_arm = False
         self.barrier = None
         self.last_phase, self.last_status = '', 0.
+        self.tracking_warning = False
         self.last_enable, self.last_enable_at = None, -math.inf
         self.publisher_conflict = False
         self.graph_checked = -math.inf
@@ -91,6 +93,7 @@ class Session(Node):
         self.enable = self.create_publisher(Bool, P+'/controller_enabled', best_effort)
         self.stop = self.create_publisher(TrafficLightState, P+'/stop_request', 1)
         self.status = self.create_publisher(String, P+'/status', state)
+        self.tracking_status = self.create_publisher(String, P+'/tracking', state)
         self.fault_status = self.create_publisher(String, P+'/fault', state)
         self._autotune_subscriptions = []
         def sub(kind, topic, callback, qos=best_effort):
@@ -115,6 +118,7 @@ class Session(Node):
         self.create_service(Trigger, P+'/finish', self.finish)
         self.configure()
         self.create_timer(.02, self.tick)
+        self.get_logger().info(f'Autotune policy_version={POLICY_VERSION} | session_code={Path(__file__).resolve()}')
         self.get_logger().info('Disarmed. Candidate '+str(self.campaign.current['id'])+
             ', directions still needed: '+str(self.campaign.needed())+'. Arm service starts motion; X hands over to manual.')
 
@@ -316,6 +320,7 @@ class Session(Node):
                     self.submitted = True
                     if not self.campaign.needed() and self.campaign.advance():
                         self.experiment = Experiment(self.e, self.direction)
+                        self.tracking_warning = False
                         self.submitted, self.barrier, self.auto_arm = False, None, True
                         self.configure()  # Vehicle has completed its two-second stopped hold.
         # Only measured comfort failures reject a candidate. Perception, logger,
@@ -328,6 +333,13 @@ class Session(Node):
             elif self.barrier.is_set() and self.stopped(now) and not self.trace.failed and not self.trace.dropped:
                 self.campaign.submit(self.direction, self.experiment.results, failure=self.experiment.reason)
                 self.submitted = True
+        tracking = self.experiment.tracking.metrics()
+        if tracking['cte_warning'] != self.tracking_warning:
+            self.tracking_warning = tracking['cte_warning']
+            self.record('tracking_warning', active=self.tracking_warning, data=tracking)
+            state = 'exceeded; continuing evaluation' if self.tracking_warning else 'recovered'
+            self.get_logger().info(f'Tracking target {state}: cte={tracking["current_cte_m"]:+.4f}m '
+                                   f'soft={self.e["maximum_cte_m"]:.3f}m hard={self.e["hard_cte_limit_m"]:.3f}m')
         if self.experiment.phase != self.last_phase:
             details = self.experiment.fault_details
             self.record('phase', phase=self.experiment.phase, reason=self.experiment.reason, details=details)
@@ -340,19 +352,34 @@ class Session(Node):
             self.last_phase = self.experiment.phase
         if now-self.last_status >= .5:
             self.last_status = now
+            self.tracking_status.publish(String(data=json.dumps(tracking)))
             self.status.publish(String(data=json.dumps(dict(phase=self.experiment.phase, reason=self.experiment.reason,
-                fault=self.experiment.fault_details, candidate=self.campaign.current['id'], direction=self.direction, needed=self.campaign.needed(),
+                fault=self.experiment.fault_details, policy_version=POLICY_VERSION, tracking=tracking, candidate=self.campaign.current['id'], direction=self.direction, needed=self.campaign.needed(),
                 complete=self.campaign.state['complete'], best_id=(self.campaign.state['best'] or {}).get('id'),
                 ready=self.ready(now), trace=str(self.trace.path), trace_dropped=self.trace.dropped))))
 
     def close(self):
+        if self._autotune_closed:
+            return
+        self._autotune_closed = True
         self.auto_arm = False
-        self.enable.publish(Bool(data=False))
-        self.gate['brake_current'].publish(Float32(data=float(self.e['emergency_brake_current_a'])))
-        self.record('session_closed', phase=self.experiment.phase, incomplete=not self.submitted)
-        self.controller.close()
-        self.trace.close()
-        self.lock.close()
+        try:
+            # SIGINT may already have invalidated the ROS context. Publishing
+            # failure must never skip termination of the owned controller.
+            try:
+                self.enable.publish(Bool(data=False))
+                self.gate['brake_current'].publish(Float32(data=float(self.e['emergency_brake_current_a'])))
+            except Exception as error:
+                self.record('shutdown_publish_error', error=str(error))
+            self.record('session_closed', phase=self.experiment.phase, incomplete=not self.submitted)
+        finally:
+            try:
+                self.controller.close()
+            finally:
+                try:
+                    self.trace.close()
+                finally:
+                    self.lock.close()
 
 
 def main(args=None):
@@ -364,9 +391,9 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
-        if node is not None:
-            if rclpy.ok(): node.close()
-            else:
-                node.controller.close(); node.trace.close(); node.lock.close()
-            node.destroy_node()
-        if rclpy.ok(): rclpy.shutdown()
+        try:
+            if node is not None:
+                try: node.close()
+                finally: node.destroy_node()
+        finally:
+            if rclpy.ok(): rclpy.shutdown()

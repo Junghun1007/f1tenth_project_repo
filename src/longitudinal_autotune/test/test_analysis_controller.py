@@ -39,10 +39,13 @@ def test_controller_restart_never_overlaps_children(tmp_path,monkeypatch):
             children.append(self)
         def poll(self):return self.code
         def wait(self,timeout):self.code=0
+    monkeypatch.setattr(mod,'controller_executable',lambda:'/mock/auto_control_node')
     monkeypatch.setattr(mod.subprocess,'Popen',Child)
     monkeypatch.setattr(mod.os,'killpg',lambda pid,sig:signals.append((pid,sig)))
     c=Controller(tmp_path);c.request({'enabled':False});assert c.tick()
     assert c.alive() and len(children)==1
+    assert children[0].command[0]=='/mock/auto_control_node'
+    assert 'ros2' not in children[0].command
     assert any('/controller/maximum_speed_request' in s for s in children[0].command)
     c.request({'enabled':False,'duty_rise_rate_per_sec':.03})
     assert not c.alive() and not c.tick() and len(children)==1
@@ -50,3 +53,57 @@ def test_controller_restart_never_overlaps_children(tmp_path,monkeypatch):
     assert c.tick() and len(children)==2
     c.close()
     assert signals
+
+
+def test_cleanup_signals_group_even_if_wrapper_already_exited(tmp_path,monkeypatch):
+    import io
+    import signal
+    from types import SimpleNamespace
+    from longitudinal_autotune import controller as mod
+    signals=[]
+    monkeypatch.setattr(mod.os,'killpg',lambda pid,sig:signals.append((pid,sig)))
+    c=Controller(tmp_path)
+    c.child=SimpleNamespace(pid=123456,poll=lambda:0)
+    stream=c.log=io.StringIO()
+    c.close()
+    assert signals==[(123456,signal.SIGINT),(123456,signal.SIGKILL)]
+    assert c.child is None and c.log is None and stream.closed
+
+
+def test_cleanup_tolerates_a_process_group_which_already_disappeared(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from longitudinal_autotune import controller as mod
+    def gone(pid,sig):raise ProcessLookupError()
+    monkeypatch.setattr(mod.os,'killpg',gone)
+    c=Controller(tmp_path);c.child=SimpleNamespace(pid=123456,poll=lambda:0)
+    c.close()
+    assert c.child is None
+
+
+def test_actual_owned_process_exits_without_leaving_process_group(tmp_path,monkeypatch):
+    import os
+    import sys
+    import time
+    from longitudinal_autotune import controller as mod
+    if os.name != 'posix':pytest.skip('Process-group lifecycle is POSIX-specific')
+    binary=tmp_path/'fake_controller'
+    ready=tmp_path/'controller.ready'
+    binary.write_text('#!'+sys.executable+'\nimport signal,sys,time\nfrom pathlib import Path\n'
+        'signal.signal(signal.SIGINT,lambda *args:sys.exit(0))\n'
+        'Path('+repr(str(ready))+').write_text("ready")\n'
+        'while True: time.sleep(.05)\n')
+    binary.chmod(0o700)
+    monkeypatch.setattr(mod,'controller_executable',lambda:str(binary))
+    c=Controller(tmp_path)
+    try:
+        c.request({'enabled':False});assert c.tick()
+        child=c.child
+        until=time.monotonic()+3.
+        while not ready.exists() and time.monotonic()<until:time.sleep(.01)
+        assert ready.exists()
+        assert os.getpgid(child.pid)==child.pid
+        c.close()
+        assert child.poll() is not None
+        with pytest.raises(ProcessLookupError):os.killpg(child.pid,0)
+    finally:
+        c.close()

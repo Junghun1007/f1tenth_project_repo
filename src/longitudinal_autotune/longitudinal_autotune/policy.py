@@ -3,6 +3,8 @@ from dataclasses import asdict, dataclass
 import math
 import numpy as np
 
+POLICY_VERSION = 2
+
 
 @dataclass
 class Sample:
@@ -27,9 +29,46 @@ class Sample:
     applied_brake: float = math.nan
 
 
+class TrackingStats:
+    """Time-weighted tracking quality, independent of the emergency abort bound."""
+    def __init__(self, threshold):
+        self.threshold = threshold
+        self.current = self.peak = self.seconds = self.squared = 0.
+        self.exceeded = self.excess_area = self.episode = self.longest = 0.
+        self.recoveries = 0
+        self.was_over = False
+
+    def add(self, cte, dt):
+        self.current = cte
+        value = abs(cte)
+        self.peak = max(self.peak, value)
+        self.seconds += dt
+        self.squared += value*value*dt
+        over = value > self.threshold
+        self.exceeded += dt if over else 0.
+        self.excess_area += max(0., value-self.threshold)*dt
+        if over:
+            self.episode += dt
+            self.longest = max(self.longest, self.episode)
+        else:
+            if self.was_over: self.recoveries += 1
+            self.episode = 0.
+        self.was_over = over
+
+    def metrics(self):
+        return dict(current_cte_m=self.current, maximum_cte_m=self.peak,
+            rms_cte_m=math.sqrt(self.squared/self.seconds) if self.seconds else abs(self.current),
+            cte_exceedance_sec=self.exceeded, cte_excess_area_m_sec=self.excess_area,
+            cte_exceedance_fraction=self.exceeded/self.seconds if self.seconds else 0.,
+            longest_cte_exceedance_sec=self.longest, cte_recovery_count=self.recoveries,
+            cte_warning=self.was_over)
+
+
 def evaluate(rows, final_distance, hold_creep, direction, turn, expected_line, e):
     moving = [r for r in rows if r['phase'] != 'HOLD']
     failures = []
+    if any(abs(r['cte']) > e['hard_cte_limit_m'] for r in rows):
+        failures.append('hard_cross_track_error_limit')
     if not e['stop_range_min_m'] <= final_distance <= e['stop_range_max_m']:
         failures.append('stop_outside_range')
     if hold_creep > e['maximum_hold_creep_m']:
@@ -70,18 +109,33 @@ def evaluate(rows, final_distance, hold_creep, direction, turn, expected_line, e
     error = math.sqrt(float(np.mean([(r['speed'] - r['target_speed'])**2 for r in moving]))) if moving else math.inf
     voltages = [r['voltage'] for r in rows if math.isfinite(r['voltage'])]
     duration = rows[-1]['t'] - rows[0]['t']
+    tracking = TrackingStats(e['maximum_cte_m'])
+    previous_t = None
+    for row in moving:
+        dt = 0. if previous_t is None else max(0., min(.1, row['t']-previous_t))
+        tracking.add(row['cte'], dt)
+        previous_t = row['t']
+    quality = tracking.metrics()
+    # Peak, RMS, time outside the soft target and excess distance all matter.
+    # Soft excursions remain comparable completed trials, rather than faults.
+    tracking_cost = (quality['rms_cte_m']/e['maximum_cte_m'] +
+        quality['maximum_cte_m']/e['maximum_cte_m'] +
+        quality['cte_excess_area_m_sec']/e['maximum_cte_m'] +
+        quality['cte_exceedance_fraction'])
     metrics = dict(line_id=expected_line, direction=direction, estimated_stop_distance_m=final_distance,
                    position_error_m=abs(final_distance - e['stop_target_m']), hold_creep_m=hold_creep,
                    jerk_rms_mps3=jerk_rms, peak_deceleration_mps2=peak_decel,
                    drive_brake_switches=switches, speed_rmse_mps=error,
                    corner_overspeed_mps=max(overspeed, default=0.), segment_sec=duration,
                    signed_turn_rad=turn, voltage_v=float(np.median(voltages)) if voltages else None,
-                   maximum_cte_m=max(abs(r['cte']) for r in rows), failures=sorted(set(failures)))
+                   **quality, tracking_target_met=quality['maximum_cte_m'] <= e['maximum_cte_m'],
+                   path_tracking_cost=tracking_cost, failures=sorted(set(failures)))
     w = e['score_weights']
     metrics['score'] = (w['stop_position'] * metrics['position_error_m'] / .1 +
         w['jerk'] * jerk_rms / 3. + w['creep'] * hold_creep / .015 +
         w['switching'] * max(0, switches - 2) + w['speed_tracking'] * error / .2 +
-        w['segment_time'] * duration / 15. + w['corner_overspeed'] * metrics['corner_overspeed_mps'] / .1)
+        w['segment_time'] * duration / 15. + w['corner_overspeed'] * metrics['corner_overspeed_mps'] / .1 +
+        w['path_tracking'] * tracking_cost)
     metrics['feasible'] = not metrics['failures'] and math.isfinite(metrics['score'])
     return metrics
 
@@ -94,6 +148,7 @@ class Experiment:
         self.e, self.direction = settings, direction
         self.phase, self.reason = 'IDLE', 'not_armed'
         self.fault_details = {}
+        self.tracking = TrackingStats(settings['maximum_cte_m'])
         self.previous = None
         self.remaining = None
         self.last_line_t = None
@@ -138,13 +193,14 @@ class Experiment:
             self.fail('reverse_speed_limit', dict(value=s.speed, limit=-.03, unit='m/s')); return None
         if s.speed > e['maximum_speed_mps'] + .3:
             self.fail('overspeed_limit', dict(value=s.speed, limit=e['maximum_speed_mps']+.3, unit='m/s')); return None
-        if abs(s.cte) > e['maximum_cte_m']:
-            self.fail('cross_track_error_limit', dict(value=s.cte, limit=e['maximum_cte_m'], unit='m')); return None
-        if e['require_voltage'] and not math.isfinite(s.voltage):
-            self.fail('voltage_unavailable'); return None
-        dt = 0. if self.previous is None else s.t - self.previous.t
+        dt = 0. if self.previous is None else s.t-self.previous.t
         if dt < 0 or dt > .15:
             self.fail('clock_or_sample_gap'); return None
+        self.tracking.add(s.cte, dt)
+        if abs(s.cte) > e['hard_cte_limit_m']:
+            self.fail('hard_cross_track_error_limit', dict(value=s.cte, limit=e['hard_cte_limit_m'], unit='m')); return None
+        if e['require_voltage'] and not math.isfinite(s.voltage):
+            self.fail('voltage_unavailable'); return None
         self.previous = s
         travel = max(0., s.raw_speed) * dt
         self.segment_travel += travel

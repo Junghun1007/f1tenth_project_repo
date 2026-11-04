@@ -77,3 +77,10 @@ def test_working_camera_baseline_keeps_imu_and_lateral_guard(document):
     assert p['auto_control']['stanley_heading_lookahead_m']==.05
     assert p['auto_control']['steering_servo_inverted'] is True
     assert document['experiment']['maximum_cte_m']==.20
+
+
+@pytest.mark.parametrize('hard',[.1,.2,.61])
+def test_soft_tracking_target_and_hard_abort_are_separate(document,tmp_path,hard):
+    d=copy.deepcopy(document);d['experiment']['hard_cte_limit_m']=hard
+    path=tmp_path/'invalid_tracking.yaml';path.write_text(yaml.safe_dump(d))
+    with pytest.raises(ValueError,match='hard_cte_limit_m'):load(path)

@@ -147,20 +147,54 @@ def test_candidate_restarts_only_after_pair_and_standstill(session):
     assert not n.experiment.running  # New generation must receive its own fresh commands.
 
 
-def test_lateral_limit_reports_frozen_value_and_blocks_drive(session):
+def test_hard_lateral_limit_reports_frozen_value_and_blocks_drive(session):
     import json
     n,clock,ready,mod,Message=session
     ready();n.arm(Message(data=True),N())
     n.inputs.set('speed',.46923425793647766,clock[0])
     n.inputs.set('raw_speed',.6265654968593563,clock[0])
-    n.inputs.set('cte',-.2118956446647644,clock[0])
+    n.inputs.set('cte',-.4118956446647644,clock[0])
     n.inputs.set('duty',.05893386900424957,clock[0]);n.raw_mode='duty'
     clock[0]+=.02;n.tick()
-    assert n.experiment.reason=='cross_track_error_limit'
+    assert n.experiment.reason=='hard_cross_track_error_limit'
     assert not n.pubs[P+'/gate/duty'].messages
     assert n.pubs[P+'/gate/brake_current'].messages[-1].data==2.
-    assert 'value=-0.2119m' in n.pubs[P+'/fault'].messages[-1].data
+    assert 'value=-0.4119m' in n.pubs[P+'/fault'].messages[-1].data
     n.inputs.set('cte',0.,clock[0]);clock[0]+=.5;n.tick()
     status=json.loads(n.pubs[P+'/status'].messages[-1].data)
-    assert status['fault']['value']==-.2118956446647644
+    assert status['fault']['value']==-.4118956446647644
     assert n.campaign.current['reports']=={}
+
+
+def test_soft_lateral_excursion_keeps_forwarding_and_exposes_quality(session):
+    import json
+    n,clock,ready,mod,Message=session
+    ready();n.arm(Message(data=True),N())
+    for i in range(30):
+        for key,(value,_) in list(n.inputs.values.items()):n.inputs.set(key,value,clock[0])
+        n.lane_at_rx=clock[0]
+        n.inputs.set('cte',-.2118956446647644,clock[0])
+        n.inputs.set('speed',.469,clock[0]);n.inputs.set('raw_speed',.626,clock[0])
+        n.inputs.set('duty',.0589,clock[0]);n.raw_mode='duty'
+        clock[0]+=.02;n.tick()
+    assert n.experiment.running
+    assert n.pubs[P+'/gate/duty'].messages[-1].data==.0589
+    assert not n.pubs[P+'/fault'].messages
+    quality=json.loads(n.pubs[P+'/tracking'].messages[-1].data)
+    assert quality['maximum_cte_m']==.2118956446647644
+    assert quality['cte_exceedance_sec'] > .4
+    assert quality['cte_warning']
+    status=json.loads(n.pubs[P+'/status'].messages[-1].data)
+    assert status['policy_version']==2
+
+
+def test_shutdown_publisher_error_cannot_leave_controller_alive(session):
+    n,clock,ready,mod,Message=session
+    def invalid_context(msg):raise RuntimeError('publisher context invalid after SIGINT')
+    n.enable.publish=invalid_context
+    assert n.controller.active
+    n.close()
+    assert not n.controller.active
+    assert not n.trace.thread.is_alive()
+    assert n.lock.closed
+    n.close()  # Safe when a second shutdown/finally path calls cleanup again.

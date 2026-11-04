@@ -62,3 +62,18 @@ def test_trace_barrier_is_durable_and_finite(tmp_path):
     assert json.loads(trace.path.read_text())=={'t':1.,'v':None}
     trace.close()
     assert not trace.failed and not trace.dropped
+
+
+def test_soft_tracking_failures_are_ranked_and_explicitly_labeled(tmp_path,document,baseline):
+    c=Campaign(tmp_path,document,baseline,{})
+    degraded=[dict(r,tracking_target_met=False) for r in results(12.)]
+    c.submit('cw',degraded);c.submit('ccw',degraded)
+    assert c.state['best']['id']==0
+    report=json.loads((tmp_path/'best_evaluation.json').read_text())
+    assert not report['tracking_targets_met']
+    assert report['status']=='best_observed_with_tracking_deviations'
+    assert c.advance()
+    improved=[dict(r,tracking_target_met=True) for r in results(8.)]
+    c.submit('cw',improved);c.submit('ccw',improved)
+    report=json.loads((tmp_path/'best_evaluation.json').read_text())
+    assert report['tracking_targets_met'] and report['best']['id']==1

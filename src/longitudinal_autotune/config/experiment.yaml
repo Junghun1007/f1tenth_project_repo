@@ -18,7 +18,8 @@ experiment:
   maximum_hold_speed_mps: 0.06
   maximum_stop_jerk_rms: 6.0
   maximum_deceleration_mps2: 2.0
-  maximum_cte_m: 0.20
+  maximum_cte_m: 0.20 # Soft tracking target: score and record excursions; keep driving.
+  hard_cte_limit_m: 0.40 # Separate experiment abort bound; not a lane-clearance estimate.
   maximum_lateral_acceleration_mps2: 0.5 # Fixed corner speed policy; sqrt(a_lat/abs(center-path curvature)).
   maximum_segment_sec: 45.0
   maximum_approach_sec: 15.0
@@ -49,6 +50,7 @@ experiment:
     speed_tracking: 1.0
     segment_time: 0.5
     corner_overspeed: 2.0
+    path_tracking: 2.0
 search:
   max_candidates: 20
   minimum_relative_improvement: 0.02

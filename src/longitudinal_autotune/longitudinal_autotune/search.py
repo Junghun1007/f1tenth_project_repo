@@ -40,7 +40,9 @@ class Campaign:
         if best is not None:
             atomic_write(self.root/'best_parameters.yaml', {'auto_control': {'ros__parameters': best['values']}}, True)
             atomic_write(self.root/'best_evaluation.json', dict(best=best, identity=self.identity,
-                         status='best_validated_in_tested_domain', signature=self.state['signature']))
+                         status=('best_validated_in_tested_domain' if best.get('tracking_targets_met', True)
+                                 else 'best_observed_with_tracking_deviations'),
+                         tracking_targets_met=best.get('tracking_targets_met', True), signature=self.state['signature']))
 
     def submit(self, direction, results, failure=None):
         if self.state['complete'] or direction not in self.needed():
@@ -64,7 +66,8 @@ class Campaign:
             else:
                 scores = [r['score'] for report in reports.values() for r in report['results']]
                 score = statistics.mean(scores) + .3 * statistics.pstdev(scores)
-                self.current.update(feasible=True, score=score)
+                self.current.update(feasible=True, score=score, tracking_targets_met=all(
+                    r.get('tracking_target_met', True) for report in reports.values() for r in report['results']))
                 best = self.state['best']
                 if best is None or score < best['score'] * (1-self.settings['search']['minimum_relative_improvement']):
                     import copy

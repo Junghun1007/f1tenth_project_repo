@@ -32,6 +32,11 @@ def load(path):
             experiment['stop_confirm_frames'] < 2 or int(experiment['stop_confirm_frames']) != experiment['stop_confirm_frames'] or
             experiment['hold_sec'] < experiment['stopped_confirm_sec']):
         raise ValueError('Invalid repetition, stop range or speed policy')
+    if ('hard_cte_limit_m' not in experiment or
+            not 0 < experiment['maximum_cte_m'] < experiment['hard_cte_limit_m'] <= .60):
+        raise ValueError('Tracking policy v2 requires 0 < maximum_cte_m < hard_cte_limit_m <= 0.60; use the updated experiment YAML')
+    if 'path_tracking' not in experiment['score_weights']:
+        raise ValueError('Tracking policy v2 requires the path_tracking score weight')
     if not isinstance(experiment['require_voltage'], bool):
         raise ValueError('require_voltage must be boolean')
     if set(search['bounds']) != TUNABLES:

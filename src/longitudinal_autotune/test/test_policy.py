@@ -1,11 +1,11 @@
 import math
-from dataclasses import replace
+from dataclasses import replace, asdict
 import numpy as np
 import pytest
-from longitudinal_autotune.policy import Experiment, Sample
+from longitudinal_autotune.policy import Experiment, Sample, TrackingStats, evaluate
 
 
-def run_block(e, direction):
+def run_block(e, direction, cte=0.):
     trial = Experiment(e,direction)
     now,sequence = 10.,0
     trial.arm(now)
@@ -14,7 +14,7 @@ def run_block(e, direction):
         nonlocal now,sequence
         now+=.02;sequence+=1
         event=trial.update(Sample(now,speed,speed,target_speed=target,line=line,
-                    lane_sequence=sequence,yaw_rate=yaw,duty=duty,brake=brake))
+                    lane_sequence=sequence,yaw_rate=yaw,duty=duty,brake=brake,cte=cte))
         if event: events.append(event)
         assert trial.phase != 'FAULT',trial.reason
     for _ in range(140):
@@ -92,8 +92,8 @@ def test_interruption_never_finishes_block(document):
 
 
 @pytest.mark.parametrize('speed,cte,reason,value,limit',[
-    (.46923425793647766,-.2118956446647644,'cross_track_error_limit',-.2118956446647644,.20),
-    (.46923425793647766,.2118956446647644,'cross_track_error_limit',.2118956446647644,.20),
+    (.46923425793647766,-.4118956446647644,'hard_cross_track_error_limit',-.4118956446647644,.40),
+    (.46923425793647766,.4118956446647644,'hard_cross_track_error_limit',.4118956446647644,.40),
     (1.11,0.,'overspeed_limit',1.11,1.1),
     (-.04,0.,'reverse_speed_limit',-.04,-.03),
 ])
@@ -107,7 +107,51 @@ def test_distinct_limit_faults_keep_measured_values(document,speed,cte,reason,va
     assert t.reason==reason and t.fault_details['value']==value
 
 
-def test_limit_boundary_is_accepted_without_weakening_guard(document):
+def test_hard_limit_boundary_is_accepted(document):
     t=Experiment(document['experiment'],'cw');t.arm(1.)
-    t.update(Sample(1.,.469,.626,cte=-.20))
+    t.update(Sample(1.,.469,.626,cte=-.40))
     assert t.running
+
+
+def test_observed_21cm_excursion_continues_and_records_recovery(document):
+    t=Experiment(document['experiment'],'cw');t.arm(1.)
+    for i,cte in enumerate([-.2118956446647644]*30+[.10]*10):
+        t.update(Sample(1.+i*.02,.469,.626,cte=cte,target_speed=.438))
+        assert t.running
+    quality=t.tracking.metrics()
+    assert quality['maximum_cte_m']==.2118956446647644
+    assert quality['cte_exceedance_sec'] > .5
+    assert quality['cte_recovery_count']==1
+    assert not quality['cte_warning']
+
+
+def test_soft_tracking_errors_complete_full_two_lap_block(document):
+    trial,_=run_block(document['experiment'],'cw',cte=-.212)
+    assert trial.phase=='BLOCK_DONE'
+    assert len(trial.results)==4
+    assert all(r['feasible'] and not r['tracking_target_met'] for r in trial.results)
+    assert all(r['cte_exceedance_sec'] > 10. for r in trial.results)
+
+
+def test_tracking_statistics_are_time_weighted():
+    s=TrackingStats(.2)
+    s.add(.25,0.);s.add(.25,.1);s.add(.1,.1)
+    m=s.metrics()
+    assert m['cte_exceedance_sec']==pytest.approx(.1)
+    assert m['cte_excess_area_m_sec']==pytest.approx(.005)
+    assert m['cte_exceedance_fraction']==pytest.approx(.5)
+    assert m['rms_cte_m']==pytest.approx(math.sqrt((.25**2+.1**2)/2))
+    assert m['longest_cte_exceedance_sec']==pytest.approx(.1)
+    assert m['cte_recovery_count']==1
+
+
+def test_worse_tracking_scores_worse_but_remains_comparable(document):
+    def result(cte):
+        rows=[dict(asdict(Sample(10.+i*.02,.4,.4,target_speed=.4,cte=cte)),phase='DRIVE') for i in range(100)]
+        return evaluate(rows,.12,0.,'cw',-math.pi,1,document['experiment'])
+    good,bad,abort=result(.05),result(.212),result(.41)
+    assert good['feasible'] and bad['feasible']
+    assert good['tracking_target_met'] and not bad['tracking_target_met']
+    assert bad['score'] > good['score']
+    assert not abort['feasible']
+    assert 'hard_cross_track_error_limit' in abort['failures']
