@@ -1,5 +1,8 @@
 # auto_control
 
+`vehicle_bringup auto_drive.launch.py` now requires the
+[startup inspection and explicit START approval](STARTUP_INSPECTION.md) before automatic duty.
+
 `auto_control_node` follows the yellow centerline published by `line_detactor`
 as `line_detactor/msg/LaneResult`. It writes to the VESC duty, brake-current,
 and servo topics used by manual driving. Do not run manual and auto driving together.

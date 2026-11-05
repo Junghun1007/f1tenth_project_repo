@@ -24,6 +24,7 @@ class NativeGateTests(unittest.TestCase):
 #include <stdexcept>
 #include <string>
 #include "auto_control/model_startup_gate.hpp"
+#include "auto_control/start_authorization.hpp"
 #include "camera_driver/tunnel_ir_input_policy.hpp"
 #include "ir_camera_driver/ir_frame_rate_gate.hpp"
 using namespace std::chrono_literals;
@@ -33,6 +34,8 @@ void require(bool value) {if (!value) {throw std::runtime_error("readiness/IR re
 struct Controller {
   bool enabled_{true},model_startup_check_required_{true},vesc_connected_{true};
   ModelStartupGate model_startup_gate_;
+  bool startup_safety_enabled_{false},startup_manual_{false},camera_startup_ready_{false};
+  auto_control::StartAuthorization start_authorization_;
   std::string control_mode_{"monitor_only"},avoidance_status_;
   bool avoidance_control_enabled_{false},avoidance_deformation_only_{false};
   bool avoidance_path_{false},avoidance_follow_centerline_{false};

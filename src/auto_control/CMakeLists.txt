@@ -18,6 +18,7 @@ ament_python_install_package(auto_control_tunnel)
 find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(line_detactor REQUIRED)
 find_package(traffic_detection_test REQUIRED)
 find_package(Threads REQUIRED)
@@ -60,6 +61,7 @@ ament_target_dependencies(auto_control_node
   builtin_interfaces
   rclcpp
   std_msgs
+  std_srvs
   rcl_interfaces
 )
 # These packages also export camera/inference components. Control consumes
@@ -74,7 +76,7 @@ target_link_libraries(auto_control_node
 install(TARGETS auto_control_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
-install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check scripts/startup_inspection DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(FILES
@@ -82,6 +84,7 @@ install(FILES
   AUTO_CONTROL_PARAMETER_TUNING_KO.txt
   AUTO_CONTROL_OBSTACLES.md
   AUTO_CONTROL_TUNNEL.md
+  STARTUP_INSPECTION.md
   DESTINATION share/${PROJECT_NAME}
 )
 

@@ -108,6 +108,32 @@ public:
     validateParameters();
     initializeInputCropGeometry();
 
+    // Publish before the blocking measurement; a separate process owns the GUI.
+    rclcpp::PublisherOptions startup_options;
+    startup_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
+    startup_status_publisher_=create_publisher<std_msgs::msg::String>(
+      "~/startup_status",rclcpp::QoS(1).reliable().transient_local(),startup_options);
+    const bool startup_inspection=declare_parameter<bool>("startup_inspection_enabled",false);
+    if (startup_inspection && !performance_measurement_enabled_) {
+      startup_image_publisher_=create_publisher<sensor_msgs::msg::Image>(
+        "~/startup_preview",rclcpp::SensorDataQoS().keep_last(1),startup_options);
+      startup_measurement_config_.roi_preview_enabled=false;
+      startup_measurement_config_.preview_callback=[this](const cv::Mat & image) {
+        const auto clock=SteadyClock::now();
+        if (clock-last_startup_preview_<std::chrono::milliseconds(100)) {return;}
+        last_startup_preview_=clock;
+        cv::Mat resized;
+        cv::resize(image,resized,cv::Size(640,400));
+        sensor_msgs::msg::Image message;
+        message.header.stamp=now(); message.header.frame_id="camera_optical_frame";
+        message.height=resized.rows; message.width=resized.cols; message.encoding="bgr8";
+        message.step=resized.cols*3;
+        message.data.assign(resized.data,resized.data+resized.total()*resized.elemSize());
+        startup_image_publisher_->publish(message);
+      };
+    }
+    publishStartupStatus("MEASURING | keep stationary; checking camera attitude and ground");
+
     if (performance_measurement_enabled_) {
       startup_measurement_config_.roi_preview_enabled = false;
       RCLCPP_INFO(
@@ -168,8 +194,12 @@ public:
         startup_measurement_config_.stable_plane_frame_count,
         startupAttitudeSourceName(startup_measurement_config_.attitude_source));
     }
-    const auto measurement =
-      measureOakStartupExtrinsics(startup_measurement_config_);
+    OakStartupMeasurement measurement;
+    try {measurement=measureOakStartupExtrinsics(startup_measurement_config_);}
+    catch (const std::exception & error) {
+      publishStartupStatus(std::string("FAILED | ")+error.what()); throw;
+    }
+    startup_measurement_config_.preview_callback={};
     const bool share_obstacle_reference=get_parameter("obstacles.share_reference").as_bool();
     camera_model_.position_vehicle_m[2] = measurement.height_m;
     startup_roll_deg_ = measurement.roll_deg;
@@ -260,6 +290,13 @@ public:
       startup_ground_reference_topic_, reference_qos,
       reference_publisher_options);
     publishStartupGroundReference(measurement.attitude_source);
+    {
+      std::ostringstream detail;
+      detail<<"READY | height="<<measurement.height_m<<"m roll="<<measurement.roll_deg
+        <<"deg pitch_down="<<measurement.pitch_down_deg<<"deg source="<<measurement.attitude_source
+        <<" height_source="<<measurement.height_source;
+      publishStartupStatus(detail.str());
+    }
 
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     if (declare_parameter<bool>("tunnel.enabled",false)) {
@@ -2041,6 +2078,13 @@ private:
 
   rclcpp::Subscription<camera_driver::msg::BevInput>::SharedPtr
     input_subscription_;
+  void publishStartupStatus(const std::string & text)
+  {
+    std_msgs::msg::String message; message.data=text; startup_status_publisher_->publish(message);
+  }
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr startup_status_publisher_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr startup_image_publisher_;
+  SteadyClock::time_point last_startup_preview_{};
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr preview_stop_publisher_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr

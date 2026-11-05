@@ -348,6 +348,8 @@ def _apply_parameter_file_defaults(
     ).perform(context).lower()
     if measurement not in ("true", "false"):
         raise RuntimeError("performance_measurement_enabled must be true or false")
+    context.launch_configurations["startup_inspection_active"] = "false" if measurement=="true" else "true"
+    context.launch_configurations["startup_drive_mode_topic"] = prefix + "/drive/mode"
     if measurement == "true":
         # GUI work would contaminate engine comparisons and is unnecessary for
         # the fixed-duration, self-terminating measurement.
@@ -451,6 +453,10 @@ def _apply_parameter_file_defaults(
                     for name in ("input_mode", "can_interface", "slcan_channel", "slcan_bitrate", "can_controller_id")}}.items()))
     from auto_control_tunnel.launch_support import model_check_node
     startup_check = model_check_node(tunnel == "true", traffic_enabled == "true")
+    inspection_actions = []
+    if measurement != "true":
+        from auto_control_tunnel.launch_support import startup_inspection_node
+        inspection_actions.append(startup_inspection_node(tunnel == "true", traffic_enabled == "true"))
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -468,7 +474,7 @@ def _apply_parameter_file_defaults(
         " | tunnel_ir_imu=" + LaunchConfiguration("tunnel_ir_imu_enabled").perform(context) +
         " | tunnel_validation=" + LaunchConfiguration("tunnel_validation_mode").perform(context) +
         " | manual_test=" + manual_test + " | control_mode=" + context.launch_configurations["auto_control_mode"]
-    )), startup_check, *manual_actions, *tunnel_actions, bev_launch, LoadComposableNodes(
+    )), startup_check, *inspection_actions, *manual_actions, *tunnel_actions, bev_launch, LoadComposableNodes(
         target_container="/bev_processor_container",
         composable_node_descriptions=nodes,
     )]
@@ -714,6 +720,7 @@ def generate_launch_description():
     bev_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(bev_launch_path),
         launch_arguments={
+            "startup_inspection_enabled": LaunchConfiguration("startup_inspection_active"),
             "depthai_library_dir": LaunchConfiguration("depthai_library_dir"),
             "bev_params_file": bev_params_file,
             "camera_params_file": LaunchConfiguration("camera_params_file"),
@@ -737,6 +744,8 @@ def generate_launch_description():
 
     controller_overrides.update({
         "model_startup_check_required": True,
+        "startup_safety_enabled": ParameterValue(LaunchConfiguration("startup_inspection_active"),value_type=bool),
+        "startup_drive_mode_topic": LaunchConfiguration("startup_drive_mode_topic"),
         "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
         "avoidance_control_enabled": ParameterValue(LaunchConfiguration("effective_avoidance_control_enabled"), value_type=bool),
         "avoidance_deformation_only": ParameterValue(LaunchConfiguration("effective_avoidance_deformation_only"), value_type=bool),

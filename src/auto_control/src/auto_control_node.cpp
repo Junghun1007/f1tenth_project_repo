@@ -1,6 +1,8 @@
 #include "auto_control/control_core.hpp"
 #include "auto_control/lane_capture_order.hpp"
 #include "auto_control/model_startup_gate.hpp"
+#include "auto_control/start_authorization.hpp"
+#include "std_srvs/srv/trigger.hpp"
 #include "auto_control/runtime_speed_limit.hpp"
 #include "line_detactor/msg/speed_limit_state.hpp"
 #include "std_msgs/msg/float64.hpp"
@@ -93,11 +95,45 @@ public:
     input_to_control_decision_pub_ = create_publisher<std_msgs::msg::Float32>(
       input_to_control_decision_topic_, command_qos);
     model_startup_check_required_ = declare_parameter<bool>("model_startup_check_required", false);
+    startup_safety_enabled_=declare_parameter<bool>("startup_safety_enabled",false);
+    if (startup_safety_enabled_) {
+      model_startup_check_required_=true;
+      const auto state_qos=rclcpp::QoS(1).reliable().transient_local();
+      startup_state_pub_=create_publisher<std_msgs::msg::String>("~/startup_state",state_qos);
+      camera_startup_sub_=create_subscription<std_msgs::msg::String>(
+        "/bev_processor/startup_status",state_qos,
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          camera_startup_ready_=message->data.rfind("READY | ",0)==0;
+          if (!camera_startup_ready_) {start_authorization_.revoke();}
+        });
+      startup_mode_sub_=create_subscription<std_msgs::msg::String>(
+        declare_parameter<std::string>("startup_drive_mode_topic","/autopilot03/drive/mode"),state_qos,
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          if (message->data!="AUTO" && message->data!="MANUAL" && message->data!="STOPPING") {return;}
+          startup_drive_mode_=message->data;
+          startup_manual_=message->data=="MANUAL" || message->data=="STOPPING";
+          if (startup_manual_) {start_authorization_.revoke();}
+        });
+      startup_start_service_=create_service<std_srvs::srv::Trigger>("~/start",
+        [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+          std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+          refresh_start_authorization();
+          const auto reason=stop_reason(now().nanoseconds(),false);
+          response->success=start_authorization_.request(!reason.has_value() && control_mode_=="drive");
+          response->message=response->success ? "STARTED: automatic duty permitted" :
+            (reason ? *reason : "critical readiness not satisfied or automatic drive mode required");
+          publish_startup_state();
+        });
+      startup_state_timer_=create_wall_timer(std::chrono::milliseconds(100),[this]() {
+        refresh_start_authorization(); publish_startup_state();
+      });
+    }
     if (model_startup_check_required_) {
       model_ready_sub_ = create_subscription<std_msgs::msg::Bool>(
         "/perception/models_ready", rclcpp::QoS(1).reliable().transient_local(),
         [this](std_msgs::msg::Bool::ConstSharedPtr message) {
           model_startup_gate_.observe(message->data, std::chrono::steady_clock::now());
+          if (!message->data) {start_authorization_.revoke();}
         });
     }
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
@@ -227,7 +263,9 @@ public:
         measurement_->power_description().c_str());
     }
     if (driving_log_enabled_) {start_driving_log();}
-    if (enabled_ && control_mode_ == "drive") {
+    if (enabled_ && control_mode_ == "drive" && startup_safety_enabled_) {
+      RCLCPP_INFO(get_logger(),"Startup inspection active: automatic duty awaits camera/models/telemetry/lane checks and the GUI START button.");
+    } else if (enabled_ && control_mode_ == "drive") {
       RCLCPP_WARN(get_logger(),
         "Automatic control is armed at launch. The vehicle will move when VESC telemetry, "
         "a valid ML centerline and all required models are ready.");
@@ -1441,9 +1479,13 @@ private:
     } else {publish_commands(0.0, 0.0, latest_servo_position_, "stop");}
   }
 
-  std::optional<std::string> stop_reason(std::int64_t now_ns) const
+  std::optional<std::string> stop_reason(std::int64_t now_ns, bool check_start=true) const
   {
     if (!enabled_) {return "disabled";}
+    if (startup_safety_enabled_ && control_mode_=="drive") {
+      if (startup_manual_) {return "manual_mode";}
+      if (!camera_startup_ready_) {return "waiting_for_camera_pose";}
+    }
     if (model_startup_check_required_ &&
       !model_startup_gate_.ready(std::chrono::steady_clock::now()))
     {return "waiting_for_models";}
@@ -1473,7 +1515,31 @@ private:
     if (path_capture_ns_ && seconds(now_ns - *path_capture_ns_) > path_capture_maximum_age_sec_) {
       return "centerline_stale";
     }
+    if (check_start && startup_safety_enabled_ && control_mode_=="drive" &&
+      !start_authorization_.approved()) {return "waiting_for_start_button";}
     return std::nullopt;
+  }
+
+  void refresh_start_authorization()
+  {
+    const auto clock=now().nanoseconds();
+    const bool erpm_fresh=last_erpm_ns_ && clock>=*last_erpm_ns_ &&
+      seconds(clock-*last_erpm_ns_)<=erpm_timeout_sec_;
+    const bool models=!model_startup_check_required_ || model_startup_gate_.ready(std::chrono::steady_clock::now());
+    start_authorization_.observe(enabled_ && camera_startup_ready_ && models && vesc_connected_ && erpm_fresh,
+      startup_manual_ || control_mode_!="drive");
+  }
+  void publish_startup_state()
+  {
+    if (!startup_state_pub_) {return;}
+    std_msgs::msg::String message;
+    const auto reason=stop_reason(now().nanoseconds(),false);
+    if (startup_drive_mode_=="STOPPING") {message.data="WAITING | switching to manual; braking until stopped";}
+    else if (startup_manual_ || control_mode_!="drive") {message.data="MANUAL | automatic start bypassed";}
+    else if (start_authorization_.approved()) {message.data="STARTED | "+reason.value_or("automatic duty permitted");}
+    else if (reason) {message.data="WAITING | "+*reason;}
+    else {message.data="READY_TO_START | press START to permit automatic duty";}
+    startup_state_pub_->publish(message);
   }
 
   bool update_control_from_path(
@@ -1817,6 +1883,11 @@ private:
   void publish_commands(
     double duty, double brake_current, double servo_position, const std::string & motor_mode)
   {
+    // Last line of defence: every automatic duty publisher goes through here.
+    if (startup_safety_enabled_ && control_mode_=="drive") {
+      refresh_start_authorization();
+      if (motor_mode=="duty" && !start_authorization_.approved()) {duty=0.0;}
+    }
     if (motor_mode == "brake" || motor_mode == "brake_release") {
       last_brake_command_ns_ = now().nanoseconds();
     }
@@ -1916,12 +1987,14 @@ private:
   void on_connection_status(const std_msgs::msg::Bool::ConstSharedPtr message)
   {
     vesc_connected_ = message->data;
+    if (!vesc_connected_) {start_authorization_.revoke();}
   }
 
   void on_enable(const std_msgs::msg::Bool::ConstSharedPtr message)
   {
     enabled_ = message->data;
     if (!enabled_) {
+      start_authorization_.revoke();
       stop_control("disabled");
       publish_commands(0.0, 0.0, latest_servo_position_, "stop");
     }
@@ -1930,6 +2003,7 @@ private:
 
   void on_watchdog()
   {
+    if (startup_safety_enabled_) {refresh_start_authorization();}
     const bool slowdown_released=refresh_obstacle_slowdown();
     if (const auto reason = stop_reason(now().nanoseconds())) {
       if (avoidance_control_enabled_ && *reason!="avoidance_confirming") {avoidance_confirmations_=0;}
@@ -2342,6 +2416,13 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_duty_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_motor_current_sub_;
   bool model_startup_check_required_{false};
+  bool startup_safety_enabled_{false}, camera_startup_ready_{false}, startup_manual_{false};
+  std::string startup_drive_mode_{"AUTO"};
+  StartAuthorization start_authorization_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr startup_state_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr camera_startup_sub_, startup_mode_sub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr startup_start_service_;
+  rclcpp::TimerBase::SharedPtr startup_state_timer_;
   ModelStartupGate model_startup_gate_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr model_ready_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_, enable_sub_;

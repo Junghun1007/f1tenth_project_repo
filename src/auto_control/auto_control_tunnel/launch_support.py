@@ -73,3 +73,13 @@ def model_check_node(tunnel_enabled, traffic_enabled):
     return Node(package='auto_control', executable='model_startup_check',
                 name='model_startup_check', output='screen',
                 parameters=[{'expected_nodes': expected}])
+
+
+def startup_inspection_node(tunnel_enabled, traffic_enabled):
+    expected = ['line_detactor']
+    if tunnel_enabled:
+        expected += ['ir_line_detactor', 'tunnel_tcn_test']
+    if traffic_enabled:
+        expected += ['traffic_light_detector']
+    return Node(package='auto_control', executable='startup_inspection',
+                name='startup_inspection', output='screen', parameters=[{'expected_nodes': expected}])

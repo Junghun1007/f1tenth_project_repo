@@ -228,6 +228,7 @@ def generate_launch_description():
 
     return LaunchDescription(
         [
+            DeclareLaunchArgument("startup_inspection_enabled",default_value="false"),
             DeclareLaunchArgument(
                 "depthai_library_dir", default_value="",
                 description="DepthAI shared library directory; empty uses the SDK selected at build time.",
@@ -392,6 +393,8 @@ def generate_launch_description():
                             LaunchConfiguration("bev_params_file"),
                             LaunchConfiguration("perception_params_file"),
                             {
+                                "startup_inspection_enabled": ParameterValue(
+                                    LaunchConfiguration("startup_inspection_enabled"),value_type=bool),
                                 "obstacles.share_reference": ParameterValue(PythonExpression([
                                     "'", LaunchConfiguration("obstacles_enabled"), "' == 'true' or '",
                                     LaunchConfiguration("tunnel_enabled"), "' == 'true'"]), value_type=bool),

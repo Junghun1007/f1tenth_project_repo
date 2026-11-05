@@ -134,6 +134,9 @@ class LaunchTests(unittest.TestCase):
                 node = helper.model_check_node(tunnel, traffic)
                 self.assertEqual(node['parameters'][0]['expected_nodes'], expected)
                 self.assertEqual(node['executable'], 'model_startup_check')
+                inspection = helper.startup_inspection_node(tunnel, traffic)
+                self.assertEqual(inspection['parameters'][0]['expected_nodes'], expected)
+                self.assertEqual(inspection['executable'], 'startup_inspection')
 
     def test_ir_model_input_contract_matches_working_standalone_test(self):
         path = SOURCE/'ir_bev_line_detection/ir_bev_line_detection/settings.py'

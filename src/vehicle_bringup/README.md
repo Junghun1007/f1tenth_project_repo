@@ -1,5 +1,9 @@
 # vehicle_bringup
 
+`auto_drive.launch.py`는 [출발 전 점검 창](../auto_control/STARTUP_INSPECTION.md)을 자동으로 연다.
+카메라 자세·모델·제어 입력 준비 후 START를 눌러야 자율주행 duty를 허용한다.
+수동 모드는 시작 버튼을 건너뛰며 승인 후 점검 창은 닫힌다.
+
 터널 RGB↔IR 자동 전환은 [auto_control의 터널 기능](../auto_control/AUTO_CONTROL_TUNNEL.md)으로
 통합되어 있다. 기존 `auto_drive.launch.py`에 `tunnel_enabled:=true`를 추가해 사용한다.
 외부 RGB 80 FPS, 터널 IR 30 FPS, 외부 IR 추론 대기 0 FPS이며 기존 단독 실행은 유지한다.

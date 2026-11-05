@@ -150,7 +150,7 @@ public:
     dai::ImgFrame & packet,
     const OakStartupMeasurementConfig & config)
   {
-    if (!enabled_) {
+    if (!enabled_ && !config.preview_callback) {
       return;
     }
 
@@ -192,6 +192,9 @@ public:
       cv::rectangle(
         preview_bgr_, measurementRoi(config), cv::Scalar(0, 0, 255),
         1, cv::LINE_8);
+
+      if (config.preview_callback) {config.preview_callback(preview_bgr_);}
+      if (!enabled_) {return;}
 
       if (!window_created_) {
         cv::namedWindow(kStartupRoiPreviewWindowName, cv::WINDOW_NORMAL);
@@ -500,6 +503,7 @@ OakStartupMeasurement measureOakStartupExtrinsics(
   std::unique_ptr<dai::Pipeline> pipeline;
   std::shared_ptr<dai::MessageQueue> depth_queue;
   std::shared_ptr<dai::MessageQueue> imu_queue;
+  std::shared_ptr<dai::MessageQueue> preview_queue;
 
   try {
     device = config.device_id.empty()
@@ -512,6 +516,12 @@ OakStartupMeasurement measureOakStartupExtrinsics(
     pipeline->setAutoCalibrationMode(
       dai::Pipeline::AutoCalibrationMode::OFF);
     pipeline->setXLinkChunkSize(0);
+    if (config.manual_camera_height_enabled && config.preview_callback) {
+      auto camera=pipeline->create<dai::node::Camera>();
+      camera->build(dai::CameraBoardSocket::CAM_A);
+      preview_queue=camera->requestOutput({640,400},dai::ImgFrame::Type::BGR888i,
+        dai::ImgResizeMode::CROP,10.0f,true)->createOutputQueue(1,false);
+    }
 
     if (!config.manual_camera_height_enabled) {
       auto mono_left = pipeline->create<dai::node::Camera>()->build(
@@ -649,6 +659,18 @@ OakStartupMeasurement measureOakStartupExtrinsics(
       }
 
       std::shared_ptr<dai::ImgFrame> depth_packet;
+      if (preview_queue) {
+        if (auto packet=preview_queue->tryGet<dai::ImgFrame>()) {
+          const auto & bytes=packet->getData();
+          const auto stride=packet->getStride() ? packet->getStride() : packet->getWidth()*3;
+          if (packet->getType()==dai::ImgFrame::Type::BGR888i &&
+            bytes.size()>=static_cast<std::size_t>(stride)*packet->getHeight()) {
+            const cv::Mat image(packet->getHeight(),packet->getWidth(),CV_8UC3,
+              const_cast<std::uint8_t *>(bytes.data()),stride);
+            config.preview_callback(image);
+          }
+        }
+      }
       if (depth_queue) {
         depth_packet = depth_queue->tryGet<dai::ImgFrame>();
         if (depth_packet) {

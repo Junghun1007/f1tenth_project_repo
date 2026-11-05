@@ -6,12 +6,15 @@
 #include <string>
 
 #include "oak_startup/startup_attitude.hpp"
+namespace cv {class Mat;}
 
 namespace oak_startup
 {
 
 struct OakStartupMeasurementConfig
 {
+  // Optional observer only: does not change measurement or device calibration.
+  std::function<void(const cv::Mat &)> preview_callback;
   std::string device_id; // Empty selects the first available OAK.
   double stereo_fps{30.0};
   int stereo_width{1280};
