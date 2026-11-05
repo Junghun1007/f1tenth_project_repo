@@ -19,7 +19,7 @@ class DepthaiWorkspaceTests(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.workspace = self.root / "f1tenth_project_repo"
         shutil.copytree(REPOSITORY / "cmake", self.workspace / "cmake")
-        self.sdk = self.root / "depthai-core" / "install"
+        self.sdk = self.root / "system" / "usr" / "local"
         self.library_dir = self.sdk / "lib"
         self.library_dir.mkdir(parents=True)
         self.library = self.library_dir / (
@@ -68,7 +68,7 @@ class DepthaiWorkspaceTests(unittest.TestCase):
     def configure(self, *arguments, success=True):
         result = subprocess.run(
             ["cmake", "-S", str(self.source), "-B", str(self.build),
-             "-DCMAKE_BUILD_TYPE=Release", *arguments],
+             "-DCMAKE_BUILD_TYPE=Release", f"-DF1TENTH_DEPTHAI_PREFIX={self.sdk}", *arguments],
             text=True, capture_output=True,
         )
         if success:
@@ -95,93 +95,57 @@ class DepthaiWorkspaceTests(unittest.TestCase):
             (self.build / "CMakeCache.txt").read_text(),
         )
 
-    def test_missing_sibling_sdk_fails_instead_of_using_another_install(self):
+    def test_missing_selected_sdk_does_not_fall_back_to_another_install(self):
         other_sdk = self.root / "other SDK"
         self.sdk.rename(other_sdk)
         result = self.configure(
             f"-Ddepthai_DIR={other_sdk / 'lib/cmake/depthai'}",
             f"-DCMAKE_PREFIX_PATH={other_sdk}", success=False,
         )
-        self.assertIn("scripts/install_depthai.sh", result.stderr)
-        self.assertIn("workspace DepthAI C++ SDK is missing", result.stderr)
+        self.assertIn("existing DepthAI C++ SDK config was not found", result.stderr)
+        self.assertNotIn("scripts/install_depthai.sh", result.stderr)
 
-    def test_missing_library_fails_with_setup_command(self):
+    def test_missing_library_reports_the_selected_sdk_without_installing(self):
         self.library.unlink()
         result = self.configure(success=False)
-        self.assertIn("scripts/install_depthai.sh", result.stderr)
+        self.assertIn("no SDK build or installation is performed", " ".join(result.stderr.split()))
 
     def test_static_sdk_is_rejected(self):
         self.write_sdk_config(kind="STATIC")
         result = self.configure(success=False)
-        self.assertIn("BUILD_SHARED_LIBS=ON", result.stderr)
+        self.assertIn("not a shared DepthAI SDK", result.stderr)
 
     def test_sdk_export_cannot_point_to_an_external_library(self):
         self.library = self.root / "external-depthai.so"
         self.library.touch()
         self.write_sdk_config()
         result = self.configure(success=False)
-        self.assertIn("outside the sibling depthai-core", result.stderr)
+        self.assertIn("outside the selected SDK prefix", result.stderr)
 
-    def prepare_installer_fixture(self):
-        shutil.copytree(REPOSITORY / "scripts", self.workspace / "scripts")
-        sdk_source = self.sdk.parent
-        (sdk_source / "CMakeLists.txt").write_text(
-            'cmake_minimum_required(VERSION 3.16)\nproject(sdk NONE)\n'
-            'file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/sdk-settings.txt"\n'
-            '  "${CMAKE_INSTALL_PREFIX}\\n${CMAKE_BUILD_TYPE}\\n"\n'
-            '  "${BUILD_SHARED_LIBS}\\n${DEPTHAI_OPENCV_SUPPORT}\\n")\n'
-            'install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sdk-settings.txt" DESTINATION .)\n'
-        )
-
-    def test_installer_uses_sibling_checkout_from_another_working_directory(self):
-        self.prepare_installer_fixture()
-        result = subprocess.run(
-            ["bash", str(self.workspace / "scripts/install_depthai.sh")],
-            cwd=self.root, capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+    def test_copied_source_is_ignored_and_existing_sdk_is_unchanged(self):
+        copied = self.workspace.parent / "depthai-core" / "build"
+        copied.mkdir(parents=True)
+        (copied / "depthaiConfig.cmake").write_text('message(FATAL_ERROR "WRONG SDK")\n')
+        (copied.parent / "CMakeLists.txt").write_text('message(FATAL_ERROR "DO NOT BUILD SDK")\n')
+        paths = list(self.sdk.rglob("*")) + list(copied.parent.rglob("*"))
+        before = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths if p.is_file()}
+        self.configure(f"-Ddepthai_DIR={copied}", f"-DCMAKE_PREFIX_PATH={copied}")
+        after = {str(p): (p.read_bytes(), p.stat().st_mtime_ns) for p in paths if p.is_file()}
+        self.assertEqual(before, after)
         self.assertEqual(
-            (self.sdk / "sdk-settings.txt").read_text().splitlines(),
-            [str(self.sdk), "Release", "ON", "ON"],
+            (self.build / "selection.txt").read_text().splitlines()[0], str(self.config)
         )
 
-    def test_existing_sdk_install_does_not_reconfigure_or_build(self):
-        self.prepare_installer_fixture()
-        sdk_source = self.sdk.parent
-        result = subprocess.run(
-            ["cmake", "-S", str(sdk_source), "-B", str(sdk_source / "build")],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        (sdk_source / "CMakeLists.txt").write_text('message(FATAL_ERROR "MUST NOT RECONFIGURE")\n')
-        result = subprocess.run(
-            ["bash", str(self.workspace / "scripts/install_depthai.sh"), "--install-existing"],
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertTrue((self.sdk / "sdk-settings.txt").is_file())
-
-    def test_old_linux_cmake_fails_before_running_sdk_configuration(self):
-        self.prepare_installer_fixture()
-        tools = self.root / "mock tools"
-        tools.mkdir()
-        for name, script in (
-            ("uname", '#!/bin/sh\nprintf "Linux\\n"\n'),
-            ("cmake", '#!/bin/sh\nif [ "$1" = --version ]; then\n'
-             '  printf "cmake version 3.22.1\\n"\nelse\n  exit 99\nfi\n'),
-        ):
-            path = tools / name
-            path.write_text(script)
-            path.chmod(0o755)
-        result = subprocess.run(
-            ["bash", str(self.workspace / "scripts/install_depthai.sh")],
-            env=dict(os.environ, PATH=str(tools) + os.pathsep + os.environ["PATH"]),
-            capture_output=True, text=True,
-        )
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("CMake 3.30.1+", result.stderr)
-        self.assertIn("--prepare-tools", result.stderr)
-        self.assertFalse((self.sdk.parent / "build").exists())
+    def test_moving_dated_workspace_keeps_the_same_existing_sdk(self):
+        self.configure()
+        first = (self.build / "selection.txt").read_text()
+        moved = self.workspace.with_name("different-date-workspace")
+        self.workspace.rename(moved)
+        self.workspace = moved
+        self.source = moved / "src/probe"
+        self.build = self.root / "new ROS build"
+        self.configure()
+        self.assertEqual((self.build / "selection.txt").read_text(), first)
 
     def test_hook_moves_sdk_ahead_of_conflicting_paths_on_every_source(self):
         self.configure()

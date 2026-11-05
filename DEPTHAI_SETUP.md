@@ -1,125 +1,67 @@
-# DepthAI C++ 경로 고정
+# 기존 DepthAI SDK 경로 고정
 
-모든 OAK 관련 패키지는 워크스페이스 옆의 **`depthai-core/install`**에 설치한
-동일한 DepthAI C++ 3.6+ 공유 라이브러리를 사용한다.
+차량 PC에서 확인한 기존 C++ SDK를 그대로 사용한다.
+
+```text
+CMake config: /usr/local/lib/cmake/depthai/depthaiConfig.cmake
+공유 라이브러리: /usr/local/lib/libdepthai-core.so
+```
+
+`/opt/ros/humble`에도 별도 DepthAI가 있으므로 헤더·링크 라이브러리와 실행 시
+로드하는 라이브러리가 서로 달라지지 않도록 두 경로를 함께 고정한다.
+`undefined symbol` 오류는 이러한 불일치에서 발생할 수 있다. 실제 원인 확정에는
+실행 바이너리의 `ldd` 결과를 확인한다.
+
+## 날짜별 폴더 구성
 
 ```text
 1030ML/
-├── depthai-core/
-│   ├── CMakeLists.txt
-│   ├── build/
-│   └── install/                 # 이 SDK만 사용
-│       ├── include/
-│       └── lib/cmake/depthai/
+├── depthai-core/               # 기존에 복사해 둔 소스 폴더: 수정하지 않음
 └── f1tenth_project_repo/
     ├── cmake/DepthaiWorkspace.cmake
-    ├── scripts/install_depthai.sh
     ├── src/
     ├── build/
     ├── install/
     └── log/
 ```
 
-`1030ML` 상위 경로나 사용자 이름은 하드코딩하지 않는다. 각 PC에서 저장소 위치를
-기준으로 계산하므로 두 폴더를 나란히 두면 된다. `lib64`와 multiarch lib 경로도 지원한다.
+`depthai-core` 소스 폴더의 위치와 이미 설치된 C++ SDK의 위치는 별개다.
+확인한 차량 PC에서는 SDK 공유 라이브러리가 `/usr/local/lib`에 있다.
+날짜별로 `f1tenth_project_repo`와 소스 폴더를 복사해도 설치된 SDK는 같은 위치에
+유지되므로 브랜치 날짜를 SDK 경로에 넣지 않는다.
 
-## 처음 한 번 SDK 설치
+ROS 패키지의 CMake는 기본 SDK prefix를 `/usr/local`로 고정하고, 이전
+`depthai_DIR` 캐시를 해당 prefix의 config로 교정한다. ROS 패키지만 빌드하며
+SDK 소스 재설정·재빌드·재설치, vcpkg 실행, 빌드 도구 설치를 수행하지 않는다.
+이전에 추가했던 `scripts/install_depthai.sh`는 제거했다.
+`../depthai-core/install` 폴더도 요구하지 않는다.
 
-기존 `depthai-core` 체크아웃을 사용한다. ROS 2 Humble, C++ 빌드 도구, OpenCV 개발
-패키지와 DepthAI 빌드 의존성이 설치되어 있어야 한다. Python의 `pip install depthai`는
-C++ SDK 설치를 대신하지 않는다.
+## 전체 ROS 패키지 빌드
 
-```bash
-cd ~/Desktop/1030ML/f1tenth_project_repo
-bash scripts/install_depthai.sh
-```
-
-스크립트는 `../depthai-core/build`를 Release/OpenCV/공유 라이브러리 설정으로 빌드하고
-`../depthai-core/install`에 설치한다. 기본 병렬 수는 2이며, 필요하면
-`DEPTHAI_BUILD_JOBS=4 bash scripts/install_depthai.sh`로 조절한다.
-SDK 소스를 다시 다운로드하거나 시스템 `/usr/local` 설치, `ldconfig` 변경을 수행하지 않는다.
-최초 SDK 빌드에서는 vcpkg가 의존 라이브러리를 다운로드할 수 있다.
-SDK 소스를 업데이트했을 때만 다시 실행하면 된다.
-
-### Jetson에서 vcpkg의 CMake 다운로드/압축 해제 오류가 날 때
-
-`depthai-core` 소스가 이미 있어도 vcpkg가 별도의 CMake/Ninja를 받으려 할 수 있다.
-`Expected ... cmake-3.30.1-linux-aarch64/bin/cmake to exist after fetching`은
-이 빌드 도구 준비 단계의 오류다. 컴파일러/Make 관련 후속 메시지만 보고
-컴파일러가 없다고 단정하지 않는다.
-
-Ubuntu의 CMake 3.22를 유지하면서 SDK 전용 도구를 준비한다.
-
-```bash
-sudo apt update &&
-sudo apt install -y python3-venv build-essential ninja-build curl zip unzip tar pkg-config &&
-cd ~/Desktop/1030ML/f1tenth_project_repo &&
-bash scripts/install_depthai.sh --prepare-tools
-```
-
-`../depthai-core/.build-tools` 가상환경에 CMake 3.30.1과 Ninja 1.11.1.4를 설치한다.
-이 옵션은 PyPI에서 빌드 도구를 다운로드한다. DepthAI 소스는 기존 폴더를 그대로 사용한다.
-이후 스크립트는 해당 도구를 자동 선택하고, Linux에서는
-`VCPKG_FORCE_SYSTEM_BINARIES=1`로 vcpkg의 CMake/Ninja 다운로드를 우회한다.
-의존 라이브러리 다운로드는 별개이며 vcpkg를 끄지는 않는다.
-
-이미 **컴파일까지 완료한** SDK의 `build/cmake_install.cmake`와 공유 라이브러리가
-남아 있다면 재설정/vcpkg/빌드를 생략하고 설치만 할 수 있다.
-
-```bash
-bash scripts/install_depthai.sh --install-existing
-```
-
-소스를 다운로드만 한 상태에서는 이 옵션을 사용할 수 없다.
-SDK 설치 후에는 ROS 빌드부터 다시 진행하면 된다. 이미 삭제한 ROS 산출물을
-다시 지울 필요는 없다.
-
-## ROS 패키지 재빌드
-
-기존 SDK로 빌드한 패키지는 처음 한 번 다시 빌드한다. 새 터미널에서 진행하고,
-빌드 전에 이 워크스페이스의 `install/setup.bash`를 source하지 않는다.
-`.bashrc`에서 자동 source한다면 해당 설정을 잠시 해제한다.
-
-```bash
-cd ~/Desktop/1030ML/f1tenth_project_repo
-source /opt/ros/humble/setup.bash
-colcon build --packages-up-to point_cloud roi_lidar --cmake-clean-cache \
-  --cmake-args -DCMAKE_BUILD_TYPE=Release
-source install/setup.bash
-ros2 launch point_cloud point_cloud.launch.py
-```
-
-카메라/BEV/IR/신호등 패키지도 사용한다면 해당 패키지와 의존 패키지를 재빌드한다.
-전체 환경이 갖춰진 차량 PC에서는 같은 옵션으로 `--packages-up-to ...`를 생략해
-워크스페이스 전체를 빌드할 수 있다. 브랜치 변경 후 삭제된 패키지의
-`local_setup.bash`가 없다는 메시지는 별도의 오래된 install 문제이므로 설치 산출물을
-백업하고 필요한 패키지를 새로 빌드해야 한다.
-
-## 기존 산출물을 모두 폐기하고 전체 재빌드
-
-실행 중인 ROS 노드를 종료한 뒤 차량 PC의 새 터미널에서 실행한다.
-`build/`, `install/`, `log/`를 삭제하며 소스와 루트의 개인 YAML은 유지한다.
-기존 터미널 환경에 남은 작업공간 경로도 해제한 뒤 ROS Humble만 다시 불러온다.
+실행 중인 ROS 노드를 종료한 뒤 새 터미널에서 실행한다.
+이미 ROS의 `build/`, `install/`, `log/`를 삭제했다면 추가 삭제 없이 아래부터
+진행하면 된다. `--cmake-clean-cache`로 남아 있을 수 있는 예전 SDK 선택도 비운다.
 
 ```bash
 cd ~/Desktop/1030ML/f1tenth_project_repo &&
 git switch 1030ML &&
 git pull --ff-only origin 1030ML &&
-rm -rf -- build install log &&
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH LD_LIBRARY_PATH PYTHONPATH &&
 source /opt/ros/humble/setup.bash &&
-bash scripts/install_depthai.sh &&
-CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --executor sequential \
+CMAKE_BUILD_PARALLEL_LEVEL=2 colcon build --executor sequential --cmake-clean-cache \
   --cmake-args -DCMAKE_BUILD_TYPE=Release &&
 source install/setup.bash
 ```
 
-패키지 선택 제한 없이 전체 패키지를 빌드한다. 메모리 사용을 줄이기 위해 패키지는
-순차 실행하고 각 CMake 빌드의 병렬 수는 2로 제한한다. SDK 설치 스크립트는 기존
-DepthAI 빌드를 재사용한다. 위 명령은 SDK 소스와 SDK 빌드 폴더를 삭제하지 않는다.
-빌드가 성공하면 `ros2 launch point_cloud point_cloud.launch.py` 등으로 실행한다.
+기존 ROS 산출물을 전부 폐기하려는 경우에만, 위 빌드 전에 워크스페이스 루트에서
+`rm -rf -- build install log`를 실행한다. 이 명령은 ROS 빌드·설치 산출물과 빌드 로그를
+삭제하며 `src/`, 개인 YAML, `../depthai-core`, `/usr/local`은 변경하지 않는다.
 
-## 이후 실행
+패키지는 순차 빌드하고 각 CMake 빌드의 병렬 수는 2로 제한한다.
+ROS 패키지 빌드에는 차량 PC에 원래 설치된 CMake를 사용하면 된다.
+SDK 재빌드용 CMake 3.30.1 가상환경을 활성화할 필요가 없다.
+
+## 실행
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -127,23 +69,33 @@ source ~/Desktop/1030ML/f1tenth_project_repo/install/setup.bash
 ros2 launch point_cloud point_cloud.launch.py
 ```
 
-`source install/setup.bash`는 공통 환경 훅으로 SDK의 라이브러리 경로를
-`LD_LIBRARY_PATH` 맨 앞에 배치한다. 중복 경로는 제거하므로 반복 source해도
-누적되지 않는다. `ros2 run`과 컴포넌트 컨테이너에도 같은 환경이 적용된다.
-기존 launch의 `depthai_library_dir` 인자는 기본값 그대로 사용한다. 명시적으로
-다른 경로를 전달하면 해당 launch의 실행 SDK를 바꾸므로 일반 실행에서는 생략한다.
+`source install/setup.bash`는 환경 훅으로 선택된 SDK 라이브러리 경로를
+`LD_LIBRARY_PATH` 맨 앞에 배치한다. 반복 source 시 중복도 제거한다.
+각 패키지의 RPATH와 `depthai_runtime_dir.txt` 역시 동일한 SDK를 기록한다.
+`ros2 run`, standalone 노드, 컴포넌트 컨테이너에 같은 환경을 적용한다.
+기존 launch의 `depthai_library_dir`는 기본값을 사용한다.
 
-빌드 시 이전 `depthai_DIR` 캐시를 덮어쓰며 `/opt/ros`나 `/usr/local`의 다른 DepthAI로
-자동 대체하지 않는다. SDK가 없거나 정적 라이브러리이면 설치 명령과 함께 빌드를 중단한다.
-선택된 config/공유 라이브러리는 CMake 로그의 `Workspace DepthAI` 항목에 출력하고,
-각 패키지의 `share/<package>/depthai_runtime_dir.txt`에도 기록한다.
+SDK가 기본 경로에 없거나 요구 버전(3.6+)과 다르면 자동 설치나 ROS SDK로의
+자동 대체 없이 선택 경로와 오류를 표시한다. 다른 PC에서 **이미 설치된** SDK가
+다른 위치에 있는 경우에만 모든 관련 패키지에 공통 prefix를 전달한다.
+
+```bash
+colcon build --cmake-args -DF1TENTH_DEPTHAI_PREFIX=/existing/sdk/prefix
+```
+
+## 실제 선택 확인
 
 ```bash
 cat install/point_cloud/share/point_cloud/depthai_runtime_dir.txt
 ldd install/point_cloud/lib/point_cloud/point_cloud_node | grep depthai
+ldd install/oak_startup/lib/liboak_startup_measurement.so | grep depthai
 ```
 
-경로 정책과 실제 공유 라이브러리 충돌에 대한 ROS 독립 검증:
+확인한 차량 PC에서는 `/usr/local/lib`의 라이브러리가 선택되어야 한다.
+CMake 로그의 `Workspace DepthAI config`와 `Workspace DepthAI library`에도
+선택한 경로가 출력된다.
+
+ROS 없이 SDK 선택과 실제 공유 라이브러리 충돌을 검증하려면:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_depthai_workspace.py' -v

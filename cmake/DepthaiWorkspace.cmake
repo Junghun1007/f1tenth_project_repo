@@ -1,12 +1,12 @@
-# One SDK for every ROS package: <workspace>/../depthai-core/install.
+# One existing SDK for every ROS package: /usr/local on the vehicle PC.
 # Include this before loading ament dependencies which may import DepthAI.
 include_guard(DIRECTORY)
 
-get_filename_component(F1TENTH_DEPTHAI_ROOT
-  "${CMAKE_CURRENT_LIST_DIR}/../../depthai-core" ABSOLUTE)
-set(F1TENTH_DEPTHAI_PREFIX "${F1TENTH_DEPTHAI_ROOT}/install")
+set(F1TENTH_DEPTHAI_PREFIX "/usr/local" CACHE PATH
+  "Prefix of the existing DepthAI C++ SDK (never built or installed here)")
+get_filename_component(F1TENTH_DEPTHAI_PREFIX "${F1TENTH_DEPTHAI_PREFIX}" ABSOLUTE)
 
-# Ignore an old depthai_DIR cache, ROS underlays and /usr/local. Mixing the
+# Ignore an old depthai_DIR cache and the separate SDK in ROS underlays. Mixing the
 # headers from one SDK with another SDK's shared library fails at runtime.
 unset(_f1tenth_depthai_config_dir CACHE)
 unset(_f1tenth_depthai_config_dir)
@@ -20,14 +20,14 @@ find_path(_f1tenth_depthai_config_dir
   NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
 if(NOT _f1tenth_depthai_config_dir)
   message(FATAL_ERROR
-    "The workspace DepthAI C++ SDK is missing from ${F1TENTH_DEPTHAI_PREFIX}. "
-    "Place depthai-core beside the workspace and run "
-    "bash scripts/install_depthai.sh from the workspace root. "
-    "System/ROS DepthAI installations are intentionally not used.")
+    "The existing DepthAI C++ SDK config was not found in ${F1TENTH_DEPTHAI_PREFIX}. "
+    "Check the installed SDK location and F1TENTH_DEPTHAI_PREFIX; see DEPTHAI_SETUP.md. "
+    "The copied depthai-core source tree is not configured or built, and the ROS "
+    "DepthAI installation is not used as a fallback.")
 endif()
 
 set(depthai_DIR "${_f1tenth_depthai_config_dir}" CACHE PATH
-  "DepthAI SDK belonging to this workspace" FORCE)
+  "Existing DepthAI SDK used by all workspace packages" FORCE)
 list(PREPEND CMAKE_PREFIX_PATH "${F1TENTH_DEPTHAI_PREFIX}")
 find_package(depthai 3.6 CONFIG REQUIRED
   PATHS "${depthai_DIR}" NO_DEFAULT_PATH)
@@ -35,8 +35,8 @@ find_package(depthai 3.6 CONFIG REQUIRED
 get_target_property(_f1tenth_depthai_type depthai::core TYPE)
 if(NOT _f1tenth_depthai_type STREQUAL "SHARED_LIBRARY")
   message(FATAL_ERROR
-    "${F1TENTH_DEPTHAI_PREFIX} must contain a shared DepthAI SDK. "
-    "Run bash scripts/install_depthai.sh to build with BUILD_SHARED_LIBS=ON.")
+    "The SDK selected in ${F1TENTH_DEPTHAI_PREFIX} is not a shared DepthAI SDK. "
+    "Check the existing SDK selection; no SDK build or installation is performed.")
 endif()
 
 # Resolve the imported library for the shell hook as well as the RPATH.
@@ -54,17 +54,19 @@ if(NOT _f1tenth_depthai_library)
   endforeach()
 endif()
 if(NOT _f1tenth_depthai_library OR NOT EXISTS "${_f1tenth_depthai_library}")
-  message(FATAL_ERROR "The workspace DepthAI shared library is missing; "
-    "run bash scripts/install_depthai.sh again.")
+  message(FATAL_ERROR "The existing DepthAI shared library is missing: "
+    "${_f1tenth_depthai_library}. Check the SDK config in ${depthai_DIR}; "
+    "no SDK build or installation is performed.")
 endif()
-get_filename_component(_f1tenth_depthai_real_root "${F1TENTH_DEPTHAI_ROOT}" REALPATH)
-get_filename_component(_f1tenth_depthai_real_library "${_f1tenth_depthai_library}" REALPATH)
+# Check the exported path, allowing an installed SDK's ordinary library symlinks.
+get_filename_component(_f1tenth_depthai_prefix_path "${F1TENTH_DEPTHAI_PREFIX}" ABSOLUTE)
+get_filename_component(_f1tenth_depthai_library_path "${_f1tenth_depthai_library}" ABSOLUTE)
 file(RELATIVE_PATH _f1tenth_depthai_relative_library
-  "${_f1tenth_depthai_real_root}" "${_f1tenth_depthai_real_library}")
+  "${_f1tenth_depthai_prefix_path}" "${_f1tenth_depthai_library_path}")
 if(IS_ABSOLUTE "${_f1tenth_depthai_relative_library}" OR
     _f1tenth_depthai_relative_library MATCHES "^\\.\\./")
-  message(FATAL_ERROR "The DepthAI package points outside the sibling depthai-core: "
-    "${_f1tenth_depthai_library}. Run bash scripts/install_depthai.sh again.")
+  message(FATAL_ERROR "The DepthAI package points outside the selected SDK prefix: "
+    "${_f1tenth_depthai_library}. Check F1TENTH_DEPTHAI_PREFIX and ${depthai_DIR}.")
 endif()
 get_filename_component(F1TENTH_DEPTHAI_LIBRARY_DIR
   "${_f1tenth_depthai_library}" DIRECTORY)

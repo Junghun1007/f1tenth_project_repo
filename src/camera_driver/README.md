@@ -99,35 +99,16 @@ Python의 `pip install depthai`만으로는 이 C++ 패키지를 빌드할 수 �
 `depthaiConfig.cmake`와 `depthai::core` 공유 라이브러리를 제공하는 DepthAI
 C++ 설치가 필요하다.
 
-### Jetson에 DepthAI C++ 설치
+### 기존 Jetson DepthAI C++ SDK 경로
 
-ROS 2 Humble을 사용하는 Ubuntu/Jetson에서 필요한 기본 패키지를 설치한다.
+차량 PC에 이미 설치되어 있던 `/usr/local`의 SDK를 공통으로 사용한다.
+CMake config는 `/usr/local/lib/cmake/depthai/depthaiConfig.cmake`,
+실행 라이브러리는 `/usr/local/lib/libdepthai-core.so`다.
+`/opt/ros/humble`의 별도 DepthAI와 섞이지 않도록 빌드와 실행 경로를 함께 고정한다.
 
-```bash
-sudo apt update
-sudo apt install -y \
-  build-essential git cmake libudev-dev libopencv-dev
-```
-
-DepthAI C++ 3.6+ 체크아웃을 워크스페이스와 나란히 둔다.
-모든 OAK 관련 패키지는 `../depthai-core/install`의 동일한 SDK를 사용한다.
-
-```text
-1030ML/
-├── depthai-core/
-└── f1tenth_project_repo/
-    └── src/
-```
-
-```bash
-cd ~/Desktop/1030ML/f1tenth_project_repo
-bash scripts/install_depthai.sh
-```
-
-공유 라이브러리/OpenCV 지원을 켜서 `../depthai-core/build`에서 빌드하고
-`../depthai-core/install`에 설치한다. 최초 설치 또는 SDK 소스 변경 시에만 실행한다.
-빌드 시 다른 `depthai_DIR` 캐시를 자동으로 교정하며, `source install/setup.bash`가
-실행 시 라이브러리 경로도 적용하므로 매번 경로 인자를 전달할 필요가 없다.
+날짜별 워크스페이스 옆에 복사한 `depthai-core` 소스 폴더는 그대로 둔다.
+ROS 패키지 빌드 중 SDK 재설정·재빌드·재설치나 빌드 도구 설치를 수행하지 않는다.
+`source install/setup.bash`가 기존 SDK의 실행 경로를 적용한다.
 상세 절차와 진단은 [공통 DepthAI 설정](../../DEPTHAI_SETUP.md)을 참고한다.
 
 DepthAI는 OpenCV 지원을 켜고 빌드되어야 한다. 프리뷰를 켠 경우에만
