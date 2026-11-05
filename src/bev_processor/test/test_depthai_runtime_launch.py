@@ -73,9 +73,9 @@ class DepthaiRuntimeTests(unittest.TestCase):
         cmake = shutil.which('cmake')
         if not cmake:
             self.skipTest('CMake unavailable')
-        source = (PACKAGE/'CMakeLists.txt').read_text()
+        source = (PACKAGE.parents[1]/'cmake/DepthaiWorkspace.cmake').read_text()
         start = source.index('file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"')
-        block = source[start:source.index('find_package(Threads REQUIRED)', start)]
+        block = source[start:source.index('# Also cover ros2 run', start)]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             sdk = root/'external SDK/lib'

@@ -109,52 +109,26 @@ sudo apt install -y \
   build-essential git cmake libudev-dev libopencv-dev
 ```
 
-DepthAI C++ 3.x 소스를 받아 공유 라이브러리로 빌드한다. 메모리가 부족한
-Jetson을 고려해 병렬 빌드 수는 2로 제한한다.
-
-```bash
-cd ~/Desktop/f1tenth_test0724
-git clone \
-  --branch v3.6.1 \
-  --depth 1 \
-  --recurse-submodules \
-  https://github.com/luxonis/depthai-core.git
-
-cmake \
-  -S depthai-core \
-  -B depthai-core/build \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_SHARED_LIBS=ON \
-  -DDEPTHAI_OPENCV_SUPPORT=ON \
-  -DCMAKE_INSTALL_PREFIX=/usr/local
-
-cmake --build depthai-core/build --parallel 2
-sudo cmake --install depthai-core/build
-sudo ldconfig
-```
-
-설치 결과를 확인한다.
-
-```bash
-find /usr/local -name depthaiConfig.cmake -print
-```
-
-일반적으로 다음 경로가 출력된다.
+DepthAI C++ 3.6+ 체크아웃을 워크스페이스와 나란히 둔다.
+모든 OAK 관련 패키지는 `../depthai-core/install`의 동일한 SDK를 사용한다.
 
 ```text
-/usr/local/lib/cmake/depthai/depthaiConfig.cmake
+1030ML/
+├── depthai-core/
+└── f1tenth_project_repo/
+    └── src/
 ```
-
-다른 prefix에 설치했다면 워크스페이스 빌드 시 해당 위치를 직접 전달한다.
 
 ```bash
-colcon build \
-  --packages-select camera_driver \
-  --cmake-clean-cache \
-  --cmake-args \
-    -DCMAKE_BUILD_TYPE=Release \
-    -Ddepthai_DIR=/path/to/depthai-install/lib/cmake/depthai
+cd ~/Desktop/1030ML/f1tenth_project_repo
+bash scripts/install_depthai.sh
 ```
+
+공유 라이브러리/OpenCV 지원을 켜서 `../depthai-core/build`에서 빌드하고
+`../depthai-core/install`에 설치한다. 최초 설치 또는 SDK 소스 변경 시에만 실행한다.
+빌드 시 다른 `depthai_DIR` 캐시를 자동으로 교정하며, `source install/setup.bash`가
+실행 시 라이브러리 경로도 적용하므로 매번 경로 인자를 전달할 필요가 없다.
+상세 절차와 진단은 [공통 DepthAI 설정](../../DEPTHAI_SETUP.md)을 참고한다.
 
 DepthAI는 OpenCV 지원을 켜고 빌드되어야 한다. 프리뷰를 켠 경우에만
 `ImgFrame::getCvFrame()`으로 NV12를 CPU BGR로 변환한다. GRAY8 프리뷰는
@@ -165,11 +139,11 @@ OpenCV에서 BGR 세 채널로 확장해 같은 창에 표시한다.
 Jetson에서 워크스페이스 루트로 이동한 후 Release 모드로 빌드한다.
 
 ```bash
-cd ~/Desktop/f1tenth_test0724/f1tenth_project_repo
+cd ~/Desktop/1030ML/f1tenth_project_repo
 source /opt/ros/humble/setup.bash
 
 colcon build \
-  --packages-select camera_driver \
+  --packages-up-to camera_driver \
   --cmake-clean-cache \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash

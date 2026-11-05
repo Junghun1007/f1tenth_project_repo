@@ -29,20 +29,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 # Import all DepthAI targets before the ament dependency exports.
-find_package(depthai 3.6 CONFIG QUIET)
-if(NOT depthai_FOUND)
-  message(FATAL_ERROR
-    "DepthAI C++ 3.6+ was not found. bev_processor performs an OAK stereo "
-    "ground-plane and IMU startup measurement and therefore "
-    "links directly against depthai::core."
-  )
-endif()
-# The shared container must load the same SDK that was selected for linking.
-file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
-  CONTENT "$<TARGET_FILE_DIR:depthai::core>\n")
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
-  DESTINATION share/${PROJECT_NAME})
-
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/DepthaiWorkspace.cmake")
 find_package(Threads REQUIRED)
 find_package(oak_startup REQUIRED)
 find_package(camera_driver REQUIRED)

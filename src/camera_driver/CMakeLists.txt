@@ -23,16 +23,7 @@ find_package(std_msgs REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 # Load the complete DepthAI export set in this directory before ament loads
 # dependencies that may expose only depthai::core from a nested scope.
-find_package(depthai 3.6 CONFIG QUIET)
-if(NOT depthai_FOUND)
-  message(FATAL_ERROR
-    "DepthAI C++ 3.6+ was not found. The Python 'depthai' wheel is not "
-    "sufficient because this package links against depthai::core. Install "
-    "depthai-core as a shared C++ library, then pass "
-    "-Ddepthai_DIR=<prefix>/lib/cmake/depthai or add <prefix> to "
-    "CMAKE_PREFIX_PATH. See camera_driver/README.md."
-  )
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/DepthaiWorkspace.cmake")
 find_package(Threads REQUIRED)
 find_package(point_cloud REQUIRED)
 

@@ -68,13 +68,7 @@ if(
     "libnvonnxparsers-dev, and libnvinfer-plugin-dev)."
   )
 endif()
-find_package(depthai 3 CONFIG QUIET)
-if(NOT depthai_FOUND)
-  message(FATAL_ERROR
-    "DepthAI C++ 3.x was not found. Install depthai-core as a shared C++ "
-    "library and provide depthai_DIR or CMAKE_PREFIX_PATH."
-  )
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/DepthaiWorkspace.cmake")
 find_package(Threads REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}

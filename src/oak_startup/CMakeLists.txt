@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core highgui imgproc)
-find_package(depthai 3.6 CONFIG REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/DepthaiWorkspace.cmake")
 find_package(Threads REQUIRED)
 add_library(measurement SHARED
   src/ground_plane_estimator.cpp src/startup_attitude.cpp src/oak_startup_measurement.cpp)

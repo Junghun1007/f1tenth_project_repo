@@ -28,25 +28,11 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 # Import all DepthAI targets before the ament dependency exports.
-find_package(depthai 3.6 CONFIG QUIET)
-if(NOT depthai_FOUND)
-  message(FATAL_ERROR
-    "DepthAI C++ 3.6+ was not found. ir_camera_driver links directly "
-    "against depthai::core. Install the same DepthAI C++ library used by "
-    "camera_driver and provide depthai_DIR."
-  )
-endif()
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/DepthaiWorkspace.cmake")
 find_package(Threads REQUIRED)
 find_package(bev_processor REQUIRED)
 find_package(camera_driver REQUIRED)
 find_package(oak_startup REQUIRED)
-
-# Record the library selected at build time so the launch process can prefer
-# that same installation over an incompatible ROS-provided DepthAI library.
-file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
-  CONTENT "$<TARGET_FILE_DIR:depthai::core>\n")
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/depthai_runtime_dir.txt"
-  DESTINATION share/${PROJECT_NAME})
 
 add_library(ir_center_reprojector STATIC
   src/cuda_center_reprojector.cu

@@ -20,7 +20,7 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core highgui imgproc)
-find_package(depthai 3.6 CONFIG REQUIRED)
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/DepthaiWorkspace.cmake")
 find_package(oak_startup REQUIRED)
 
 add_library(depth_lidar_geometry src/depth_lidar_geometry.cpp src/depth_lidar_stabilization.cpp src/depth_lidar_grid.cpp)
