@@ -44,7 +44,7 @@ if(BUILD_TESTING)
   target_link_libraries(roi_lidar_terrain_test point_cloud::point_cloud_depth_source)
   add_test(NAME roi_lidar_terrain_test COMMAND roi_lidar_terrain_test)
   # Requires a desktop display; normal headless colcon test leaves it disabled.
-  option(ROI_LIDAR_GUI_TESTS "Run OpenCV trackbar interaction tests" OFF)
+  option(ROI_LIDAR_GUI_TESTS "Run OpenCV numeric input interaction tests" OFF)
   if(ROI_LIDAR_GUI_TESTS)
     add_executable(roi_lidar_controls_test test/controls_test.cpp)
     target_include_directories(roi_lidar_controls_test PRIVATE include ${OpenCV_INCLUDE_DIRS})

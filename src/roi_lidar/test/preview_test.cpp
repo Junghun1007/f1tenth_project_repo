@@ -72,10 +72,10 @@ int main()
   const auto grid=terrainGrid(dense,o,view,terrain);
   auto topdown=blank.clone();
   terrainOverlay(topdown,grid,dense,o,view,800,false,true,.4,1,.3);
-  check(topdown.at<cv::Vec3b>(mapPixel(1,.12,view,800))==cv::Vec3b(20,80,255),"First obstacle endpoint lost");
-  check(topdown.at<cv::Vec3b>(mapPixel(2,.12,view,800))==cv::Vec3b(20,80,255),"Farther endpoint wrongly reduced to nearest scan");
-  check(topdown.at<cv::Vec3b>(mapPixel(3,.12,view,800))!=cv::Vec3b(20,80,255),"Height cap ignored");
-  check(topdown.at<cv::Vec3b>(mapPixel(1.5,.12,view,800))!=cv::Vec3b(20,80,255),"Floor leaked into obstacle layer");
+  check(topdown.at<cv::Vec3b>(mapPixel(1,.12,view,800))==cv::Vec3b(0,0,255),"First obstacle endpoint lost");
+  check(topdown.at<cv::Vec3b>(mapPixel(2,.12,view,800))==cv::Vec3b(0,0,255),"Farther endpoint wrongly reduced to nearest scan");
+  check(topdown.at<cv::Vec3b>(mapPixel(3,.12,view,800))!=cv::Vec3b(0,0,255),"Height cap ignored");
+  check(topdown.at<cv::Vec3b>(mapPixel(1.5,.12,view,800))!=cv::Vec3b(0,0,255),"Floor leaked into obstacle layer");
   auto colors=blank.clone();
   auto measured=emptyScan(o); measured.surface_points={{1.01,.12,0},{1.02,.12,0},{2.01,.12,.2},{2.02,.12,.2}};
   const auto classified=terrainGrid(measured,o,view,terrain);

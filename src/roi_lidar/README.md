@@ -37,21 +37,26 @@ ros2 launch roi_lidar roi_lidar.launch.py \
 - **RGB BEV**: 실제 RGB 지면 투영 영상 위에 XY 포인트와 바닥 분류를 표시한다.
 - **select depth ROI**: rectified-right 흑백 영상에서 사각형을 드래그한다.
   `preview.camera_image=false`이면 깊이 컬러 영상으로 바뀐다.
-- **live controls**: 프리뷰를 유지하면서 높이, 지면 제거, 샘플링, 바닥 분류와 표시를 조절한다.
-- **depth settings (A apply)**: 카메라 FPS, confidence, 좌우 일치 검사, subpixel,
-  IR dot/flood를 조절한 뒤 **A**를 눌러 한 번에 적용한다. 이때 스트리밍은 재시작한다.
+- **parameters**: 관련 파라미터 24개를 한 창의 두 열에 숫자 입력칸으로 표시한다.
+  슬라이더와 스크롤바는 사용하지 않는다. 프리뷰와 ROI 화면은 그대로 유지한다.
 
-R은 전체 이미지 ROI로 복원하고, Q/Esc는 종료한다. GUI는 ROS 메인 스레드에서 처리한다.
+값을 클릭해 숫자를 입력하고 **Enter**, **A** 또는 **Apply edits** 버튼으로 변경분을
+한 번에 적용한다. 단위는 ROS/YAML과 같아 최대 높이 50cm는 `height.max_m=0.5`로 입력한다.
+켜기/끄기는 `0`/`1`, 표본 수·픽셀 간격은 정수를 입력한다.
+Tab으로 다음 항목으로 이동하고 Backspace로 입력한 숫자를 지운다.
+편집 중 Esc는 해당 입력을 취소한다. 편집 중이 아닐 때 R은 전체 ROI 복원,
+Q/Esc는 노드 종료다. **Reload current values**는 미적용 입력을 모두 버린다.
 
-라이브 슬라이더 변경은 카메라를 재시작하지 않는다. 슬라이더 위치에 이름의 `+숫자`를
-더하면 표시 단위의 값이다. 예: `Max obstacle height (cm, +1)`에서 위치 49는 50cm다.
-컨트롤 창 아래에는 실제 적용된 최대 Z, 지면 기준, 상한과 셀 크기를 m 단위로 표시한다.
-유효하지 않은 조합은 적용하지 않고 원래 값으로 돌린 뒤 창과 로그에 이유를 표시한다.
+`*` 표시된 카메라·DepthAI 항목이 실제로 바뀌면 적용 시 스트리밍을 재시작한다.
+그 외 값만 변경하면 카메라 재시작 없이 다음 프레임에 반영한다.
+지면 기준은 **ground.distance_m <= ground.max_distance_m < height.max_m**을
+만족해야 한다. 서로 연관된 값을 함께 수정해 한 번에 적용할 수 있다.
+잘못된 숫자나 범위·조합은 배치 전체를 거부하고 창과 로그에 이유를 표시한다.
+입력은 남겨 두므로 수정 후 다시 적용하면 된다. 외부 `ros2 param set` 변경도 반영한다.
 
-지면 기준은 **base <= cap < max height**를 만족해야 한다. 최대 높이를 낮출 때는
-필요하면 지면 제거 상한과 기본 두께부터 낮춘다. GUI의 최대 높이 범위는 1cm~3m이며
-더 큰 값 등 GUI 범위 밖 설정은 YAML/`ros2 param set`으로 지정한다.
-외부 ROS 파라미터 변경도 GUI에 반영한다.
+XY 포인트는 순수 빨강(BGR `0,0,255`)으로 표시한다.
+`/roi_lidar/obstacle_points`에는 같은 빨간색을 나타내는 PCL 형식의 `rgb` 필드도 추가했다.
+RViz에서 포인트 색상 변환을 `RGB8`로 선택하면 이 색을 사용한다.
 
 ## 포인트 높이 필터
 
@@ -116,7 +121,7 @@ RGB 보간은 `preview.interpolation=nearest/linear/cubic/lanczos4`이며 장애
 
 | 토픽 | 형식 | 내용 |
 |---|---|---|
-| `/roi_lidar/obstacle_points` | PointCloud2 | 모든 높이 필터 통과 XY 포인트. x/y/z는 float32(m), z=0, `height`에 원래 지면 기준 Z(m). 화면 밖도 포함 |
+| `/roi_lidar/obstacle_points` | PointCloud2 | 모든 높이 필터 통과 XY 포인트. x/y/z는 float32(m), z=0, `height`에 원래 지면 기준 Z(m), `rgb`에 빨간색. 화면 밖도 포함 |
 | `/roi_lidar/terrain` | OccupancyGrid | -1=미관측/불확실, 0=관측 바닥, 100=위험 관측. X방향 열, Y방향 행. 원점=(0,-표시폭/2), resolution=셀 크기 |
 | `/roi_lidar/scan` | LaserScan | 기존 각도별 최근접 반환점. 프리뷰와 새 포인트 토픽의 입력으로 쓰지 않음 |
 | `/roi_lidar/bev_preview` | Image bgr8 | RGB BEV + 현재 XY 포인트/바닥 색상 |
@@ -136,7 +141,7 @@ GUI가 없는 환경은 `gui:=false`로 영상/데이터 토픽을 사용한다.
 
 ## 조절값 저장
 
-슬라이더·ROI 변경은 원본 YAML에 자동 저장하지 않는다.
+숫자 입력·ROI 변경은 원본 YAML에 자동 저장하지 않는다.
 
 ```bash
 ros2 param dump /roi_lidar > roi_lidar_test.yaml
@@ -154,6 +159,8 @@ ROI/바닥 제거/거리/좌표축/기울기, 현재 프레임 표본의 보존,
 함몰 근거, 프레임 초기화, 높이 상한과 XY 투영 및 색상을 테스트한다.
 실제 장치의 FPS·오검출·시작 지면 측정과 ROS 전체 빌드/GUI 동작은 차량 PC에서 확인한다.
 
-컨트롤의 실시간 높이 적용, 단위 변환, A 키 전 카메라 설정 보류와 외부 파라미터 동기화는
-`test/controls_test.cpp`로 검증한다. 실제 데스크톱 창을 열므로 기본 테스트에서는 제외한다.
+숫자 입력, 명시적 일괄 적용, 잘못된 입력 배치 거부와 외부 파라미터 동기화에 대한
+기존 GUI 테스트 코드는 `test/controls_test.cpp`에 있다. 실제 데스크톱 창을 열므로 기본 테스트에서는 제외한다.
 디스플레이가 있는 환경에서 `-DROI_LIDAR_GUI_TESTS=ON`으로 빌드하면 함께 실행할 수 있다.
+
+**이번 숫자 입력 GUI·빨간 포인트 변경은 사용자 요청에 따라 빌드 및 테스트를 실행하지 않았다.**

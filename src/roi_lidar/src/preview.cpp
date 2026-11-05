@@ -209,7 +209,7 @@ void terrainOverlay(cv::Mat & image, const Terrain & terrain, const Scan & scan,
       const cv::Point pixel(static_cast<int>(std::lround(layout.center_x-p[1]*layout.scale)),
         static_cast<int>(std::lround(layout.origin_y-p[0]*layout.scale)));
       cv::circle(plot,pixel-layout.area.tl(),point_radius,
-        {20,80,255},-1,cv::LINE_8);
+        {0,0,255},-1,cv::LINE_8);
     }
   }
   // Vehicle width reference at the origin only; no clearance computation.

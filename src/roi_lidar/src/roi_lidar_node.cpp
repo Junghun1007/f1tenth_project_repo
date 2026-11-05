@@ -167,17 +167,21 @@ class Node : public rclcpp::Node
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header=grid.header;
     sensor_msgs::PointCloud2Modifier modifier(cloud);
-    modifier.setPointCloud2Fields(4,"x",1,sensor_msgs::msg::PointField::FLOAT32,
+    modifier.setPointCloud2Fields(5,"x",1,sensor_msgs::msg::PointField::FLOAT32,
       "y",1,sensor_msgs::msg::PointField::FLOAT32,"z",1,sensor_msgs::msg::PointField::FLOAT32,
-      "height",1,sensor_msgs::msg::PointField::FLOAT32);
+      "height",1,sensor_msgs::msg::PointField::FLOAT32,"rgb",1,sensor_msgs::msg::PointField::FLOAT32);
     const auto count=std::count_if(scan.surface_points.begin(),scan.surface_points.end(),
       [&](const auto & p) {return projectedObstacle(p,c.scan);});
     modifier.resize(count); cloud.is_dense=true;
     if (count>0) {
       sensor_msgs::PointCloud2Iterator<float> x(cloud,"x"),y(cloud,"y"),z(cloud,"z"),height(cloud,"height");
+      sensor_msgs::PointCloud2Iterator<float> color(cloud,"rgb");
+      const std::uint32_t packed_red=0x00ff0000;
+      float red; std::memcpy(&red,&packed_red,sizeof(red));
       for (const auto & p:scan.surface_points) {
         if (!projectedObstacle(p,c.scan)) {continue;}
-        *x=p[0]; *y=p[1]; *z=0; *height=p[2]; ++x; ++y; ++z; ++height;
+        *x=p[0]; *y=p[1]; *z=0; *height=p[2]; *color=red;
+        ++x; ++y; ++z; ++height; ++color;
       }
     }
     points_pub_->publish(cloud);
@@ -363,16 +367,17 @@ class Node : public rclcpp::Node
         cv::imshow("ROI LiDAR - RGB BEV",image);
         roi_width_=fresh ? roi.cols : 0; roi_height_=fresh ? roi.rows : 0;
         cv::imshow("ROI LiDAR - select depth ROI",roi);
-        const int key=cv::waitKey(1)&255;
-        if (key=='q' || key==27) {stop_=true; rclcpp::shutdown();}
-        if (key=='r') {set_parameters_atomically({rclcpp::Parameter("roi.x",0.0),rclcpp::Parameter("roi.y",0.0),
+        const int key=cv::waitKeyEx(1);
+        const bool editing=controls_.editing();
+        if (!editing && (key=='q' || key==27)) {stop_=true; rclcpp::shutdown();}
+        if (!editing && key=='r') {set_parameters_atomically({rclcpp::Parameter("roi.x",0.0),rclcpp::Parameter("roi.y",0.0),
           rclcpp::Parameter("roi.width",1.0),rclcpp::Parameter("roi.height",1.0)});}
         const auto changes=controls_.poll([this](const char * name) {
           const auto p=get_parameter(name);
           if (p.get_type()==rclcpp::ParameterType::PARAMETER_BOOL) {return p.as_bool() ? 1.0 : 0.0;}
           if (p.get_type()==rclcpp::ParameterType::PARAMETER_INTEGER) {return double(p.as_int());}
           return p.as_double();
-        },key=='a');
+        },key);
         if (!changes.empty()) {
           std::vector<rclcpp::Parameter> edits;
           for (const auto & change:changes) {
@@ -381,7 +386,7 @@ class Node : public rclcpp::Node
             else {edits.emplace_back(change.name,change.value);}
           }
           const auto result=set_parameters_atomically(edits);
-          if (!result.successful) {controls_.reset(); controls_.message("REJECTED: "+result.reason);
+          if (!result.successful) {controls_.message("REJECTED: "+result.reason);
             RCLCPP_WARN(get_logger(),"GUI settings rejected: %s",result.reason.c_str());}
           else {controls_.message("Applied. Values are live; dump parameters to save."); syncParameters();}
         }
