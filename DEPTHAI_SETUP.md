@@ -37,8 +37,42 @@ bash scripts/install_depthai.sh
 스크립트는 `../depthai-core/build`를 Release/OpenCV/공유 라이브러리 설정으로 빌드하고
 `../depthai-core/install`에 설치한다. 기본 병렬 수는 2이며, 필요하면
 `DEPTHAI_BUILD_JOBS=4 bash scripts/install_depthai.sh`로 조절한다.
-다운로드, `sudo`, 시스템 `/usr/local` 설치 또는 `ldconfig` 변경은 수행하지 않는다.
+SDK 소스를 다시 다운로드하거나 시스템 `/usr/local` 설치, `ldconfig` 변경을 수행하지 않는다.
+최초 SDK 빌드에서는 vcpkg가 의존 라이브러리를 다운로드할 수 있다.
 SDK 소스를 업데이트했을 때만 다시 실행하면 된다.
+
+### Jetson에서 vcpkg의 CMake 다운로드/압축 해제 오류가 날 때
+
+`depthai-core` 소스가 이미 있어도 vcpkg가 별도의 CMake/Ninja를 받으려 할 수 있다.
+`Expected ... cmake-3.30.1-linux-aarch64/bin/cmake to exist after fetching`은
+이 빌드 도구 준비 단계의 오류다. 컴파일러/Make 관련 후속 메시지만 보고
+컴파일러가 없다고 단정하지 않는다.
+
+Ubuntu의 CMake 3.22를 유지하면서 SDK 전용 도구를 준비한다.
+
+```bash
+sudo apt update &&
+sudo apt install -y python3-venv build-essential ninja-build curl zip unzip tar pkg-config &&
+cd ~/Desktop/1030ML/f1tenth_project_repo &&
+bash scripts/install_depthai.sh --prepare-tools
+```
+
+`../depthai-core/.build-tools` 가상환경에 CMake 3.30.1과 Ninja 1.11.1.4를 설치한다.
+이 옵션은 PyPI에서 빌드 도구를 다운로드한다. DepthAI 소스는 기존 폴더를 그대로 사용한다.
+이후 스크립트는 해당 도구를 자동 선택하고, Linux에서는
+`VCPKG_FORCE_SYSTEM_BINARIES=1`로 vcpkg의 CMake/Ninja 다운로드를 우회한다.
+의존 라이브러리 다운로드는 별개이며 vcpkg를 끄지는 않는다.
+
+이미 **컴파일까지 완료한** SDK의 `build/cmake_install.cmake`와 공유 라이브러리가
+남아 있다면 재설정/vcpkg/빌드를 생략하고 설치만 할 수 있다.
+
+```bash
+bash scripts/install_depthai.sh --install-existing
+```
+
+소스를 다운로드만 한 상태에서는 이 옵션을 사용할 수 없다.
+SDK 설치 후에는 ROS 빌드부터 다시 진행하면 된다. 이미 삭제한 ROS 산출물을
+다시 지울 필요는 없다.
 
 ## ROS 패키지 재빌드
 
