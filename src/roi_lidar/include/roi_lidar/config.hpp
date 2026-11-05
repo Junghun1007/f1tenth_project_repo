@@ -1,6 +1,7 @@
 #pragma once
 #include "roi_lidar/clusters.hpp"
 #include "roi_lidar/view.hpp"
+#include "roi_lidar/terrain.hpp"
 #include <point_cloud/depth_source.hpp>
 namespace roi_lidar
 {
@@ -10,17 +11,26 @@ struct Config
   Options scan;
   ClusterOptions cluster;
   ViewOptions view;
+  TerrainOptions terrain;
+  bool show_terrain{true}, show_projected_points{true};
+  double terrain_alpha{0.40};
+  int point_radius{1};
   bool gui{true}, publish_preview{true}, camera_image{true};
   double preview_fps{15}, rgb_fps{15}, sync_sec{0.08}, max_age{0.25};
   int preview_size{800};
   bool show_raw_points{false};
   std::string interpolation{"linear"};
-  Config() {camera.fps=90; camera.subpixel=true; camera.dot_intensity=0.7;}
+  Config() {camera.fps=90; camera.subpixel=true; camera.dot_intensity=0.7; cluster.enabled=false;}
 };
 inline void validate(const Config & c)
 {
   point_cloud::validate(c.camera); validate(c.scan); validateView(c.view); validateClusters(c.cluster);
-  if (c.cluster.min_height_m>c.scan.max_height) {
+  validateTerrain(c.terrain,c.view);
+  if (!std::isfinite(c.terrain_alpha) || c.terrain_alpha<0 || c.terrain_alpha>1 ||
+    c.point_radius<1 || c.point_radius>4) {
+    throw std::invalid_argument("preview.terrain_alpha=0..1, preview.point_radius=1..4");
+  }
+  if (c.cluster.enabled && c.cluster.min_height_m>c.scan.max_height) {
     throw std::invalid_argument("cluster.min_height_m must not exceed height.max_m");
   }
   if (c.interpolation!="nearest" && c.interpolation!="linear" && c.interpolation!="cubic" && c.interpolation!="lanczos4") {
@@ -37,6 +47,15 @@ inline void validate(const Config & c)
 }
 // Shared declaration/snapshot/validation table; startup and mount are read-only.
 #define ROI_PARAMETERS(X) \
+  X("terrain.cell_m",terrain.cell_m,as_double) \
+  X("terrain.below_ground_m",terrain.below_ground_m,as_double) \
+  X("terrain.min_ground_samples",terrain.min_ground_samples,as_int) \
+  X("terrain.min_obstacle_samples",terrain.min_obstacle_samples,as_int) \
+  X("terrain.vehicle_width_m",terrain.vehicle_width_m,as_double) \
+  X("preview.show_terrain",show_terrain,as_bool) \
+  X("preview.show_projected_points",show_projected_points,as_bool) \
+  X("preview.point_radius",point_radius,as_int) \
+  X("preview.terrain_alpha",terrain_alpha,as_double) \
   X("camera.resolution",camera.resolution,as_string) \
   X("camera.fps",camera.fps,as_double) \
   X("depth.mode",camera.mode,as_string) \

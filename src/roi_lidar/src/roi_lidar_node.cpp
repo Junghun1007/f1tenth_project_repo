@@ -1,10 +1,14 @@
 #include "roi_lidar/config.hpp"
 #include "roi_lidar/preview.hpp"
 #include "roi_lidar/freshness.hpp"
+#include "roi_lidar/controls.hpp"
 #include <point_cloud/startup_parameters.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/point_cloud2.hpp>
+#include <sensor_msgs/point_cloud2_iterator.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <opencv2/highgui.hpp>
@@ -70,6 +74,7 @@ class Node : public rclcpp::Node
   {
     Scan scan;
     Clusters clusters;
+    Terrain terrain;
     std::shared_ptr<dai::ImgFrame> depth, right, rgb;
     point_cloud::RigidTransform vehicle_from_rgb;
     std::uint64_t revision{0};
@@ -90,11 +95,14 @@ class Node : public rclcpp::Node
   std::vector<rclcpp::Parameter> last_parameters_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr obstacles_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr points_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_pub_, roi_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::TimerBase::SharedPtr sync_timer_, preview_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr callback_;
   BevProjector bev_;
+  Controls controls_;
   std::vector<double> rgb_key_;
   std::uint64_t preview_revision_{std::numeric_limits<std::uint64_t>::max()};
   double last_preview_{0};
@@ -148,10 +156,38 @@ class Node : public rclcpp::Node
     }
     obstacles_pub_->publish(msg);
   }
+  void publishTerrain(const Terrain & terrain, const Scan & scan, const Config & c,
+    const rclcpp::Time & stamp)
+  {
+    nav_msgs::msg::OccupancyGrid grid;
+    grid.header.stamp=stamp; grid.header.frame_id=frame_id_;
+    grid.info.resolution=terrain.cell_m; grid.info.width=terrain.width; grid.info.height=terrain.height;
+    grid.info.origin.position.y=terrain.y_min; grid.info.origin.orientation.w=1;
+    grid.data=terrain.cells; terrain_pub_->publish(grid);
+    sensor_msgs::msg::PointCloud2 cloud;
+    cloud.header=grid.header;
+    sensor_msgs::PointCloud2Modifier modifier(cloud);
+    modifier.setPointCloud2Fields(4,"x",1,sensor_msgs::msg::PointField::FLOAT32,
+      "y",1,sensor_msgs::msg::PointField::FLOAT32,"z",1,sensor_msgs::msg::PointField::FLOAT32,
+      "height",1,sensor_msgs::msg::PointField::FLOAT32);
+    const auto count=std::count_if(scan.surface_points.begin(),scan.surface_points.end(),
+      [&](const auto & p) {return projectedObstacle(p,c.scan);});
+    modifier.resize(count); cloud.is_dense=true;
+    if (count>0) {
+      sensor_msgs::PointCloud2Iterator<float> x(cloud,"x"),y(cloud,"y"),z(cloud,"z"),height(cloud,"height");
+      for (const auto & p:scan.surface_points) {
+        if (!projectedObstacle(p,c.scan)) {continue;}
+        *x=p[0]; *y=p[1]; *z=0; *height=p[2]; ++x; ++y; ++z; ++height;
+      }
+    }
+    points_pub_->publish(cloud);
+  }
   void invalidate(const Config & c,const std::string & text)
   {
     {std::lock_guard<std::mutex> lock(mutex_); snapshot_=Snapshot{}; snapshot_.state=text;}
-    publishScan(emptyScan(c.scan),c,now(),0); publishObstacles(Clusters{},now()); state(text);
+    const auto empty=emptyScan(c.scan);
+    publishScan(empty,c,now(),0); publishObstacles(Clusters{},now());
+    publishTerrain(terrainGrid(empty,c.scan,c.view,c.terrain),empty,c,now()); state(text);
   }
   void run()
   {
@@ -208,6 +244,7 @@ class Node : public rclcpp::Node
           const auto & bytes=depth->getData();
           auto scan=projector.project(bytes.data(),bytes.size(),depth->getStride() ? depth->getStride() : depth->getWidth()*2);
           auto clusters=clusterScan(scan,c.scan,c.cluster);
+          auto terrain=terrainGrid(scan,c.scan,c.view,c.terrain);
           auto stamp=now();
           const auto delay=rclcpp::Duration::from_seconds(std::max(0.0,age));
           if (stamp.nanoseconds()>=delay.nanoseconds()) {stamp=stamp-delay;}
@@ -215,15 +252,17 @@ class Node : public rclcpp::Node
           {std::lock_guard<std::mutex> lock(mutex_); if (version!=revision_) {continue;}}
           publishScan(scan,c,stamp,last_capture>0 ? capture-last_capture : 0);
           publishObstacles(clusters,stamp);
+          publishTerrain(terrain,scan,c,stamp);
           ++frames; work_ms+=std::chrono::duration<double,std::milli>(Clock::now()-host).count();
           if (clock-report>=1) {
             fps=frames/(clock-report); host_ms=work_ms/frames;
-            RCLCPP_INFO(get_logger(),"requested=%.1f depth_fps=%.1f host=%.2fms age=%.1fms ROI_rays=%zu depth=%zu ground_removed=%zu height_removed=%zu accepted=%zu bins=%zu clusters=%zu low_bins=%zu small_bins=%zu range_limit=%.1fm",
-              c.camera.fps,fps,host_ms,age*1000,projector.rayCount(),scan.depth_points,scan.ground_removed,scan.height_removed,scan.accepted_points,scan.valid_bins,clusters.objects.size(),clusters.height_rejected_bins,clusters.small_rejected_bins,c.scan.max_range);
+            RCLCPP_INFO(get_logger(),"requested=%.1f depth_fps=%.1f host=%.2fms age=%.1fms ROI_rays=%zu depth=%zu ground_removed=%zu height_removed=%zu accepted=%zu bins=%zu floor_cells=%zu hazard_cells=%zu clusters=%zu range_limit=%.1fm",
+              c.camera.fps,fps,host_ms,age*1000,projector.rayCount(),scan.depth_points,scan.ground_removed,scan.height_removed,scan.accepted_points,scan.valid_bins,terrain.ground_cells,terrain.obstacle_cells,clusters.objects.size(),c.scan.max_range);
             report=clock; frames=0; work_ms=0;
           }
           {std::lock_guard<std::mutex> lock(mutex_);
-            snapshot_.scan=std::move(scan); snapshot_.clusters=std::move(clusters); snapshot_.depth=std::move(depth); snapshot_.capture=capture;
+            snapshot_.scan=std::move(scan); snapshot_.clusters=std::move(clusters); snapshot_.terrain=std::move(terrain);
+            snapshot_.depth=std::move(depth); snapshot_.capture=capture;
             snapshot_.revision=version; snapshot_.fps=fps; snapshot_.host_ms=host_ms; snapshot_.age_ms=age*1000;
             snapshot_.state="STREAMING";
           }
@@ -272,6 +311,7 @@ class Node : public rclcpp::Node
     if (!c.gui && windows_) {
       try {cv::destroyAllWindows();} catch (const cv::Exception &) {}
       windows_=false;
+      controls_.reset();
     }
     if (!c.gui && !c.publish_preview) {return;}
     try {
@@ -288,14 +328,20 @@ class Node : public rclcpp::Node
         background=bev_.render(frameView(*s.rgb,CV_8UC3),c.interpolation);
       }
       std::ostringstream text; text<<s.state<<" | depth "<<std::fixed<<std::setprecision(1)<<s.fps
-        <<" FPS / host "<<s.host_ms<<" ms | clusters "<<(fresh ? s.clusters.objects.size() : 0);
+        <<" FPS / host "<<s.host_ms<<" ms | max height "<<c.scan.max_height<<"m"
+        <<" | floor "<<(fresh ? s.terrain.ground_cells : 0)<<" hazard "<<(fresh ? s.terrain.obstacle_cells : 0);
       if (!rgb_fresh) {text<<" | WAIT RGB";}
       else if (!aligned) {text<<" | OVERLAY WAIT SYNC";}
       else {text<<" | delta "<<std::abs(s.capture-seconds(s.rgb->getTimestamp()))*1000<<" ms";}
-      const Clusters no_clusters;
-      const Clusters * visible_clusters=c.cluster.enabled ? (aligned ? &s.clusters : &no_clusters) : nullptr;
-      auto image=mapPreview(aligned ? s.scan : emptyScan(c.scan),c.scan,c.view,c.preview_size,text.str(),
-        background,visible_clusters,c.show_raw_points);
+      // With no RGB available, still show fresh depth on a plain metric canvas.
+      // With fresh but unsynchronized RGB, suppress the depth overlay.
+      const bool visible=fresh && (!rgb_fresh || aligned);
+      const auto empty=emptyScan(c.scan);
+      const Clusters hidden_scan;
+      auto image=mapPreview(empty,c.scan,c.view,c.preview_size,text.str(),background,&hidden_scan,false);
+      const auto unknown=terrainGrid(empty,c.scan,c.view,c.terrain);
+      terrainOverlay(image,visible ? s.terrain : unknown,visible ? s.scan : empty,c.scan,
+        c.view,c.preview_size,c.show_terrain,c.show_projected_points,c.terrain_alpha,c.point_radius,c.terrain.vehicle_width_m);
       if (c.publish_preview) {preview_pub_->publish(imageMessage(image,now()));}
       cv::Mat roi;
       if (fresh) {
@@ -321,6 +367,24 @@ class Node : public rclcpp::Node
         if (key=='q' || key==27) {stop_=true; rclcpp::shutdown();}
         if (key=='r') {set_parameters_atomically({rclcpp::Parameter("roi.x",0.0),rclcpp::Parameter("roi.y",0.0),
           rclcpp::Parameter("roi.width",1.0),rclcpp::Parameter("roi.height",1.0)});}
+        const auto changes=controls_.poll([this](const char * name) {
+          const auto p=get_parameter(name);
+          if (p.get_type()==rclcpp::ParameterType::PARAMETER_BOOL) {return p.as_bool() ? 1.0 : 0.0;}
+          if (p.get_type()==rclcpp::ParameterType::PARAMETER_INTEGER) {return double(p.as_int());}
+          return p.as_double();
+        },key=='a');
+        if (!changes.empty()) {
+          std::vector<rclcpp::Parameter> edits;
+          for (const auto & change:changes) {
+            if (change.type==Controls::Type::Boolean) {edits.emplace_back(change.name,change.value!=0);}
+            else if (change.type==Controls::Type::Integer) {edits.emplace_back(change.name,static_cast<int>(std::lround(change.value)));}
+            else {edits.emplace_back(change.name,change.value);}
+          }
+          const auto result=set_parameters_atomically(edits);
+          if (!result.successful) {controls_.reset(); controls_.message("REJECTED: "+result.reason);
+            RCLCPP_WARN(get_logger(),"GUI settings rejected: %s",result.reason.c_str());}
+          else {controls_.message("Applied. Values are live; dump parameters to save."); syncParameters();}
+        }
       }
     } catch (const cv::Exception & e) {
       gui_failed_=true; RCLCPP_ERROR_THROTTLE(get_logger(),*get_clock(),5000,"Preview: %s",e.what());
@@ -355,6 +419,8 @@ public:
     const auto qos=rclcpp::SensorDataQoS().keep_last(1);
     scan_pub_=create_publisher<sensor_msgs::msg::LaserScan>("~/scan",qos);
     obstacles_pub_=create_publisher<geometry_msgs::msg::PoseArray>("~/obstacles",qos);
+    terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain",qos);
+    points_pub_=create_publisher<sensor_msgs::msg::PointCloud2>("~/obstacle_points",qos);
     preview_pub_=create_publisher<sensor_msgs::msg::Image>("~/bev_preview",qos);
     roi_pub_=create_publisher<sensor_msgs::msg::Image>("~/roi_preview",qos);
     status_pub_=create_publisher<std_msgs::msg::String>("~/status",rclcpp::QoS(1).transient_local());

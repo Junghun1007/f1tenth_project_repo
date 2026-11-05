@@ -65,5 +65,23 @@ int main()
   check(roi.rows==40 && roi.cols==60 && roi.type()==CV_8UC3,"Depth ROI preview malformed");
   cv::Mat gray(40,60,CV_8UC1,cv::Scalar(100));
   check(roiPreview(gray,o,false).type()==CV_8UC3,"Camera ROI preview malformed");
+  // All XY endpoints survive, including multiple depths along the same scan bin.
+  auto dense=emptyScan(o);
+  dense.surface_points={{1,.12,.2},{2,.12,.3},{3,.12,1.5},{1.5,.12,.0}};
+  TerrainOptions terrain;
+  const auto grid=terrainGrid(dense,o,view,terrain);
+  auto topdown=blank.clone();
+  terrainOverlay(topdown,grid,dense,o,view,800,false,true,.4,1,.3);
+  check(topdown.at<cv::Vec3b>(mapPixel(1,.12,view,800))==cv::Vec3b(20,80,255),"First obstacle endpoint lost");
+  check(topdown.at<cv::Vec3b>(mapPixel(2,.12,view,800))==cv::Vec3b(20,80,255),"Farther endpoint wrongly reduced to nearest scan");
+  check(topdown.at<cv::Vec3b>(mapPixel(3,.12,view,800))!=cv::Vec3b(20,80,255),"Height cap ignored");
+  check(topdown.at<cv::Vec3b>(mapPixel(1.5,.12,view,800))!=cv::Vec3b(20,80,255),"Floor leaked into obstacle layer");
+  auto colors=blank.clone();
+  auto measured=emptyScan(o); measured.surface_points={{1.01,.12,0},{1.02,.12,0},{2.01,.12,.2},{2.02,.12,.2}};
+  const auto classified=terrainGrid(measured,o,view,terrain);
+  terrainOverlay(colors,classified,measured,o,view,800,true,false,1,1,.3);
+  check(colors.at<cv::Vec3b>(mapPixel(1.025,.125,view,800))==cv::Vec3b(65,190,65),"Ground color incorrect");
+  check(colors.at<cv::Vec3b>(mapPixel(2.025,.125,view,800))==cv::Vec3b(45,55,220),"Hazard color incorrect");
+  check(colors.at<cv::Vec3b>(mapPixel(3.025,.125,view,800))==cv::Vec3b(90,90,90),"Unknown color incorrect");
   std::cout<<"RGB BEV preview tests passed: metric projection, axes, FOV mask, obstacle overlay, ROI\n";
 }

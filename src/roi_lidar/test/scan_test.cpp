@@ -24,6 +24,7 @@ int main()
   // 2m bottom row hits floor at z=0; central row is obstacle at camera height.
   set(2,3,2000); set(2,2,2000); set(1,2,4000); set(3,2,8000);
   auto scan=p.project(bytes.data(),bytes.size(),stride);
+  check(scan.surface_points.size()==4,"Measured floor endpoints lost before terrain classification");
   check(scan.ground_removed==1 && scan.valid_bins==3,"Floor/obstacles not separated");
   check(std::abs(scan.ranges[70]-2)<1e-6,"Central surface range wrong");
   check(std::isfinite(scan.ranges[76]) && std::isfinite(scan.ranges[64]),"Left/right axes incorrect");
@@ -44,7 +45,9 @@ int main()
   // Far samples in a bin must not support an isolated near outlier.
   bytes.assign(bytes.size(),0); set(2,2,2000); set(2,1,5000);
   p.configure(width,height,k,mount,o);
-  check(p.project(bytes.data(),bytes.size(),stride).valid_bins==0,"Distant points supported near outlier");
+  const auto two_surfaces=p.project(bytes.data(),bytes.size(),stride);
+  check(two_surfaces.valid_bins==0,"Distant points supported near outlier");
+  check(two_surfaces.surface_points.size()==2,"XY points incorrectly collapsed to angular nearest return");
   set(2,1,2050);
   check(p.project(bytes.data(),bytes.size(),stride).valid_bins==1,"Same-range support lost");
   o.min_samples=1; o.max_range=12;

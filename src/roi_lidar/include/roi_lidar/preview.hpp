@@ -1,6 +1,7 @@
 #pragma once
 #include "roi_lidar/clusters.hpp"
 #include "roi_lidar/view.hpp"
+#include "roi_lidar/terrain.hpp"
 #include <opencv2/core.hpp>
 #include <string>
 namespace roi_lidar
@@ -23,4 +24,7 @@ public:
   cv::Mat render(const cv::Mat & bgr, const std::string & interpolation = "linear") const;
 };
 cv::Mat roiPreview(const cv::Mat & gray_or_depth, const Options & o, bool depth);
+void terrainOverlay(cv::Mat & image, const Terrain & terrain, const Scan & scan,
+  const Options & o, const ViewOptions & view, int size, bool show_cells,
+  bool show_points, double alpha, int point_radius, double vehicle_width_m);
 }

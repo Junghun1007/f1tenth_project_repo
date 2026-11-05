@@ -21,5 +21,11 @@ int main()
   rejects([](auto & p){p.preview_size=10000;});
   rejects([](auto & p){p.scan.roi_width=2;});
   rejects([](auto & p){p.camera.subpixel=true; p.camera.extended=true;});
+  rejects([](auto & p){p.terrain.cell_m=0;});
+  rejects([](auto & p){p.terrain.below_ground_m=-.01;});
+  rejects([](auto & p){p.terrain.min_ground_samples=0;});
+  rejects([](auto & p){p.terrain.vehicle_width_m=0;});
+  rejects([](auto & p){p.terrain_alpha=1.1;});
+  rejects([](auto & p){p.point_radius=0;});
   std::cout<<"ROI camera/profile configuration tests passed\n";
 }

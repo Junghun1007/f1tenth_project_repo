@@ -48,11 +48,22 @@ roi_lidar:
     input.max_age_sec: 0.25
 
     # 장애물 군집: 높이 근거가 있는 2D 스캔점만 연결. 바닥 점을 연결 경로로 쓰지 않음.
-    cluster.enabled: true
+    cluster.enabled: false         # 기본 BEV는 군집 없이 모든 높이 필터 통과 XY 포인트를 표시.
     cluster.tolerance_m: 0.15       # 이웃 반환점 XY 간격 15cm 이내. 크면 서로 다른 물체도 합쳐짐.
     cluster.min_bins: 2             # 최소 스캔 방향 수(depth 픽셀 수 아님). 1은 고립점도 허용.
     cluster.max_gap_bins: 1         # 연결 사이에 허용하는 미관측/제외 방향 개수.
     cluster.min_height_m: 0.10      # 선택 거리 주변에서 지면 위 10cm 이상의 높이 근거 필요.
+
+    # 현재 프레임의 실제 depth 끝점만 셀에 집계. 광선/미관측 공간을 바닥으로 채우지 않음.
+    terrain.cell_m: 0.05
+    terrain.below_ground_m: 0.05   # 지면 아래 5cm 초과 관측은 함몰/위험 근거.
+    terrain.min_ground_samples: 2
+    terrain.min_obstacle_samples: 2
+    terrain.vehicle_width_m: 0.30 # 폭 눈금만 표시. 차량 통과/안전 여유 판정에는 미적용.
+    preview.show_terrain: true    # 초록=관측 바닥, 빨강=높이/함몰 위험, 회색=미관측·근거부족.
+    preview.show_projected_points: true # 각도별 최근접점으로 줄이지 않은 XY 포인트 전체.
+    preview.terrain_alpha: 0.40   # 0이면 원본 RGB BEV를 유지. 포인트는 별도 표시.
+    preview.point_radius: 1
 
     # Separate RGB/GUI rates preserve headroom for depth processing.
     preview.show_raw_points: false # true: 군집 전 스캔점도 회색으로 비교 표시.

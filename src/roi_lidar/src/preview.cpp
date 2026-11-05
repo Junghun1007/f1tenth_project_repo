@@ -173,4 +173,52 @@ cv::Mat roiPreview(const cv::Mat & input, const Options & o, bool depth)
   cv::putText(image,"Drag ROI | R: reset",{10,22},cv::FONT_HERSHEY_SIMPLEX,.5,{40,255,40},1,cv::LINE_AA);
   return image;
 }
+void terrainOverlay(cv::Mat & image, const Terrain & terrain, const Scan & scan,
+  const Options & o, const ViewOptions & view, int size, bool show_cells,
+  bool show_points, double alpha, int point_radius, double vehicle_width_m)
+{
+  const auto layout=mapLayout(view,size);
+  if (image.size()!=layout.canvas || image.type()!=CV_8UC3) {
+    throw std::invalid_argument("Terrain overlay canvas mismatch");
+  }
+  if (show_cells && !terrain.cells.empty()) {
+    auto tinted=image.clone();
+    for (int row=layout.area.y;row<layout.area.br().y;++row) {
+      for (int col=layout.area.x;col<layout.area.br().x;++col) {
+        const double x=(layout.origin_y-row)/layout.scale;
+        const double y=(layout.center_x-col)/layout.scale;
+        const int gx=static_cast<int>(std::floor(x/terrain.cell_m));
+        const int gy=static_cast<int>(std::floor((y-terrain.y_min)/terrain.cell_m));
+        int state=-1;
+        if (x>=0 && x<terrain.x_max && y>=terrain.y_min && y<terrain.y_max &&
+          gx>=0 && gy>=0 && gx<terrain.width && gy<terrain.height) {
+          state=terrain.cells[static_cast<std::size_t>(gy)*terrain.width+gx];
+        }
+        tinted.at<cv::Vec3b>(row,col)=state==0 ? cv::Vec3b(65,190,65) :
+          (state==100 ? cv::Vec3b(45,55,220) : cv::Vec3b(90,90,90));
+      }
+    }
+    cv::addWeighted(tinted(layout.area),alpha,image(layout.area),1-alpha,0,image(layout.area));
+  }
+  auto plot=image(layout.area);
+  if (show_points) {
+    for (const auto & p:scan.surface_points) {
+      if (!projectedObstacle(p,o) || !insideView(p[0],p[1],view)) {continue;}
+      // Every measured endpoint in the height band is flattened to XY;
+      // no angular nearest-return reduction, hull, or object grouping.
+      const cv::Point pixel(static_cast<int>(std::lround(layout.center_x-p[1]*layout.scale)),
+        static_cast<int>(std::lround(layout.origin_y-p[0]*layout.scale)));
+      cv::circle(plot,pixel-layout.area.tl(),point_radius,
+        {20,80,255},-1,cv::LINE_8);
+    }
+  }
+  // Vehicle width reference at the origin only; no clearance computation.
+  cv::line(plot,mapPixel(0,-vehicle_width_m/2,view,size)-layout.area.tl(),
+    mapPixel(0,vehicle_width_m/2,view,size)-layout.area.tl(),{255,210,40},3);
+  cv::rectangle(image,{0,image.rows-38,image.cols,38},{245,245,245},-1);
+  cv::putText(image,"GREEN observed floor | RED hazard | GRAY unknown",{12,image.rows-23},
+    cv::FONT_HERSHEY_SIMPLEX,.34,{45,45,45},1,cv::LINE_AA);
+  cv::putText(image,"XY points | width reference | Q quit / R ROI / A depth",{12,image.rows-8},
+    cv::FONT_HERSHEY_SIMPLEX,.32,{45,45,45},1,cv::LINE_AA);
+}
 }

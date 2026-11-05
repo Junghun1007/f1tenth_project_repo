@@ -59,10 +59,21 @@ inline Rect imageRoi(int width, int height, const Options & o)
 }
 struct Scan
 {
+  // Current-frame measured endpoints, before floor removal; never ray-filled.
+  std::vector<point_cloud::Vector3> surface_points;
   std::vector<float> ranges;
   std::vector<float> max_heights; // Height evidence only from samples near the selected range.
   std::size_t depth_points{0}, ground_removed{0}, height_removed{0}, accepted_points{0}, valid_bins{0};
 };
+inline double groundMargin(double x,double y,const Options & o)
+{
+  return std::min(o.ground_max_distance,o.ground_distance+o.ground_distance_per_meter*std::hypot(x,y));
+}
+inline bool projectedObstacle(const point_cloud::Vector3 & p,const Options & o)
+{
+  return std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) &&
+    p[2]<=o.max_height && (!o.ground_enabled || p[2]>groundMargin(p[0],p[1],o));
+}
 inline Scan emptyScan(const Options & o)
 {
   Scan s; s.ranges.assign(o.bins, std::numeric_limits<float>::quiet_NaN());
@@ -109,6 +120,7 @@ public:
     }
     const auto & o=options_;
     auto out=emptyScan(o);
+    out.surface_points.reserve(rays_.size());
     struct Sample {int bin; float range, height;};
     std::vector<Sample> samples; samples.reserve(rays_.size());
     for (const auto & ray : rays_) {
@@ -125,10 +137,11 @@ public:
       const double range=std::hypot(x,y);
       const double floor_margin=std::min(o.ground_max_distance,
         o.ground_distance+o.ground_distance_per_meter*range);
-      if (o.ground_enabled && z<=floor_margin) {++out.ground_removed; continue;}
       if (range<o.min_range || range>o.max_range) {continue;}
       const double angle=std::atan2(y,x)/radians;
       if (angle<o.angle_min || angle>o.angle_max) {continue;}
+      out.surface_points.push_back({x,y,z});
+      if (o.ground_enabled && z<=floor_margin) {++out.ground_removed; continue;}
       const int bin=std::clamp(static_cast<int>(std::lround(
         (angle-o.angle_min)*(o.bins-1)/(o.angle_max-o.angle_min))),0,o.bins-1);
       auto & nearest=out.ranges[bin];
