@@ -195,7 +195,7 @@ class Node:public rclcpp::Node {
   bool inputs() {
     input_recoverable_=true;waiting_for_pair_=false;
     if (!lane_ || now().seconds()-lane_received_at_>lane_receipt_timeout_ || !fresh(lane_->header.stamp)) {waiting_for_pair_=true;status_="STOP: missing/stale lane";return false;}
-    if((!planner_.guidance() && (!lane_->centerline_valid || lane_->centerline_points.size()<2)) ||
+    if((!lane_->centerline_valid || lane_->centerline_points.size()<2) ||
       lane_->centerline_points.size()>static_cast<std::size_t>(max_lane_points_)) {status_="STOP: invalid/missing lane reference";return false;}
     nav_msgs::msg::OccupancyGrid::ConstSharedPtr match;
     double delta=max_sync_;
@@ -233,7 +233,7 @@ class Node:public rclcpp::Node {
         path_minimum_x_,path_maximum_x_,path_maximum_gap_,config_.geometry_window);
       points.clear();if(ordered)for(auto p:ordered->points)points.push_back({p.x,p.y});
     }
-    if (points.size()<2 && !planner_.guidance()) {status_="STOP: disconnected lane";return false;}
+    if (points.size()<2) {status_="STOP: disconnected lane";return false;}
     lane_points_=std::move(points);
     const auto filter_begin=std::chrono::steady_clock::now();
     auto confirmed=confirmedTerrain(match);
@@ -264,7 +264,7 @@ class Node:public rclcpp::Node {
         std::clamp(std::atan(config_.wheelbase*measured_yaw_rate_/std::max(.1,std::abs(measured_speed_))),-config_.max_steer,config_.max_steer);
       result_=planner_.plan(display_,lane_points_,working);
       const double planned_at=now().seconds();
-      if(result_.reference_blocked || result_.guidance)last_avoidance_at_=planned_at;
+      if(result_.reference_blocked || result_.used_vfh)last_avoidance_at_=planned_at;
       if(obstacle_slowdown_ && planned_at-last_avoidance_at_<=obstacle_clear_sec_)result_.speed=std::min(result_.speed,obstacle_speed_cap_);
       if(last_target_>0 && std::abs(measured_speed_)>=.05 && planned_at>last_plan_at_)
         result_.speed=std::min(result_.speed,last_target_+recovery_acceleration_*(planned_at-last_plan_at_));
@@ -288,7 +288,7 @@ class Node:public rclcpp::Node {
     frame.elapsed_sec=std::chrono::duration<double>(std::chrono::steady_clock::now()-log_started_).count();
     frame.labels={state};
     frame.values={active?result_.speed:0,measured_speed_,drive_command_.steer,drive_command_.duty,drive_command_.brake,
-      requested_?1.:0.,locked_?1.:0.,result_.length,double(result_.candidates.size()),result_.used_vfh?1.:0.,result_.guidance?1.:0.,
+      requested_?1.:0.,locked_?1.:0.,result_.length,double(result_.candidates.size()),result_.used_vfh?1.:0.,result_.used_fallback?1.:0.,
       double(hazard_stats_.raw),double(hazard_stats_.confirmed),double(hazard_stats_.pending),double(hazard_stats_.immediate),hazard_filter_ms_};
     for(const auto& p:result_.path)frame.path.push_back({p.x,p.y});
     driving_log_->enqueue(std::move(frame));
@@ -297,7 +297,7 @@ class Node:public rclcpp::Node {
     if(!drive_enabled_ || !drive_)return;
     const auto clock=std::chrono::steady_clock::now();
     const double dt=std::chrono::duration<double>(clock-last_drive_tick_).count();last_drive_tick_=clock;
-    drive_command_=drive_->update(active,result_.speed,measured_speed_,result_.steer,dt,result_.used_vfh || result_.guidance);
+    drive_command_=drive_->update(active,result_.speed,measured_speed_,result_.steer,dt,result_.used_vfh);
     // Publish one motor mode per cycle: duty and brake messages replace each
     // other in the bridge. Zero propulsion during braking is recorded below.
     if(drive_command_.brake_mode)publishFloat(brake_pub_,drive_command_.brake);
@@ -442,6 +442,9 @@ public:
     PARAM("hazard_filter_enabled",hazard_filter_enabled);PARAM("hazard_confirm_frames",hazard_confirm_frames);
     PARAM("hazard_small_max_cells",hazard_small_max_cells);PARAM("hazard_match_radius_cells",hazard_match_radius_cells);
     PARAM("hazard_max_gap_sec",hazard_max_gap_sec);
+    PARAM("avoidance_curve_enabled",avoidance_curve_enabled);PARAM("avoidance_curve_samples",avoidance_curve_samples);
+    PARAM("avoidance_length_slack_m",avoidance_length_slack_m);PARAM("avoidance_lane_weight",avoidance_lane_weight);
+    PARAM("avoidance_steering_weight",avoidance_steering_weight);
     config_.curvature_speed_control=declare_parameter("curvature_speed_control_enabled",true,fixed);
     PARAM("deceleration_mps2",deceleration);PARAM("response_delay_sec",delay);PARAM("reference_distance_m",reference_distance);
 #undef PARAM
@@ -595,7 +598,7 @@ public:
       std::string parameters;
       for(const auto& name:list_parameters({},10).names)parameters+=name+"="+get_parameter(name).value_to_string()+"\n";
       driving_log_=std::make_unique<auto_control::DrivingLog>(log_directory,
-        "ros_ns,elapsed_sec,dropped,state,target_speed_mps,speed_mps,steer_rad,duty,brake_amps,requested,locked,path_length_m,candidates,vfh,guidance,hazard_raw,hazard_confirmed,hazard_pending,hazard_immediate,hazard_filter_ms,path",parameters);
+        "ros_ns,elapsed_sec,dropped,state,target_speed_mps,speed_mps,steer_rad,duty,brake_amps,requested,locked,path_length_m,candidates,vfh,curve_fallback,hazard_raw,hazard_confirmed,hazard_pending,hazard_immediate,hazard_filter_ms,path",parameters);
       RCLCPP_INFO(get_logger(),"VFH driving CSV: %s",driving_log_->path().c_str());
     }
     publishLock(false);

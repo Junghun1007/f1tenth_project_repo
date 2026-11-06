@@ -8,7 +8,7 @@ int main(){
   Config c;Planner planner;
   auto plan=planner.plan(g,lane,c);
   check(!plan.path.empty() && plan.speed>0 && plan.speed<=.7,"open lane failed");
-  check(plan.candidates.size()<=52,"candidate cap exceeded");
+  check(plan.candidates.size()<=92,"candidate cap exceeded");
   check(std::abs(plan.path.back().y)<.1,"open lane swerved");
   check(!plan.used_vfh && plan.status.find("LANE:")==0,"clear lane did not bypass VFH");
   std::vector<Point> curve;
@@ -33,7 +33,7 @@ int main(){
   for(int x=18;x<=20;++x)for(int y=11;y<=12;++y)cone.cells[y*60+x]=100;
   planner.reset();plan=planner.plan(cone,lane,c);
   std::cout<<"cone path="<<plan.path.size()<<" speed="<<plan.speed<<" candidates="<<plan.candidates.size()<<"\n";
-  check(plan.used_vfh && plan.reference_blocked && !plan.guidance,"cone did not trigger ordinary VFH avoidance");
+  check(plan.used_vfh && plan.reference_blocked,"cone did not trigger ordinary VFH avoidance");
   check(plan.length>1.2,"single cone route stops before avoidance");
   check(!plan.path.empty(),"single cone did not produce a local route");
   for(auto p:plan.path)check(std::abs(p.steer)<=c.max_steer+1e-9,"steering exceeds limit");
@@ -53,15 +53,33 @@ int main(){
   tuning.hist_low=density*.8;tuning.hist_high=density*1.2;
   check(planner.plan(cone,lane,tuning).binary[30],"hysteresis state was discarded");
   planner.reset();check(!planner.plan(cone,lane,tuning).binary[30],"reset retained histogram state");
-  // Long paired boundaries are confirmed; lane loss then uses the observed corridor.
-  auto guide=g;for(int x=16;x<38;++x){guide.cells[9*60+x]=100;guide.cells[21*60+x]=100;}
-  planner.reset();check(!planner.plan(guide,lane,c).guidance,"unconfirmed guidance activated");
-  planner.plan(guide,lane,c);auto entered=planner.plan(guide,lane,c);
-  check(entered.guidance && entered.length>1.2 && entered.path.back().y>.1,"confirmed guide entry failed");
-  auto lost=planner.plan(guide,{},c);check(lost.guidance && !lost.path.empty(),"corridor lost with lane labels");
-  check(planner.plan(unknown,{},c).path.empty(),"old corridor reused without current boundaries");
-  auto single_wall=g;for(int x=16;x<38;++x)single_wall.cells[9*60+x]=100;
-  planner.reset();for(int i=0;i<5;++i)check(!planner.plan(single_wall,lane,c).guidance,"one wall enabled guidance");
+  // Cone walls use exactly the same avoidance flow, without mission/entry
+  // classification, and every returned pose obeys the ordinary departure mask.
+  auto walls=g;for(int x=16;x<38;++x){walls.cells[9*60+x]=100;walls.cells[21*60+x]=100;}
+  planner.reset();const auto detour=planner.plan(walls,lane,c);
+  check(detour.used_vfh && detour.reference_blocked && !detour.path.empty(),"paired walls did not use ordinary avoidance");
+  std::vector<std::uint8_t> allowed(g.cells.size(),1);
+  for(int v=0;v<g.height;++v)for(int u=0;u<g.width;++u)
+    allowed[std::size_t(v)*g.width+u]=laneDistance({g.x0+(u+.5)*g.resolution,g.y0+(v+.5)*g.resolution},lane)<=c.lane_width/2+c.departure;
+  for(std::size_t i=1;i<detour.path.size();++i)
+    check(footprintBlock(walls,c,detour.path[i],&allowed)==Block::None,"detour crossed a wall/route/grid limit");
+  const auto rejoined=planner.plan(g,lane,c);
+  check(!rejoined.used_vfh && rejoined.speed>0,"clear return trajectory did not restore lane tracking");
+  check(planner.plan(walls,{},c).speed==0,"missing lane bypassed reference requirement");
+  // Nearby side hazards + a forward cone can mask every polar sector while a
+  // collision-checked forward prefix remains. Search curves before stopping.
+  auto masked_scene=cone;masked_scene.cells[7*60+2]=100;masked_scene.cells[16*60+2]=100;
+  auto masked_config=c;masked_config.margin=.02;masked_config.hist_low=0;masked_config.hist_high=.001;
+  planner.reset();const auto masked_plan=planner.plan(masked_scene,lane,masked_config);
+  check(std::all_of(masked_plan.masked.begin(),masked_plan.masked.end(),[](bool b){return b;}),"fixture did not mask every sector");
+  check(masked_plan.fallback_candidates>0 && masked_plan.used_fallback && masked_plan.speed>0,"fully masked histogram skipped checked curves");
+  for(std::size_t i=1;i<masked_plan.path.size();++i)
+    check(footprintBlock(masked_scene,masked_config,masked_plan.path[i],&allowed)==Block::None,"fallback bypassed collision checks");
+  auto tight=c;tight.departure=0;planner.reset();const auto limited=planner.plan(cone,lane,tight);
+  for(std::size_t i=1;i<limited.path.size();++i) {
+    const auto& p=limited.path[i];
+    check(laneDistance({p.x,p.y},lane)<=tight.lane_width/2,"departure limit ignored");
+  }
   bool threw=false;try {auto bad=c;bad.hist_low=bad.hist_high;bad.validate();}catch(...){threw=true;}
   check(threw,"invalid hysteresis accepted");
   std::cout<<"Planner tests passed\n";

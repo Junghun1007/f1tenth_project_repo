@@ -37,3 +37,8 @@ IMU는 camera_driver와 같은 calibrated gyro 및 보정 회전을 사용하되
 
 VFH launch는 vesc_bridge_node를 기본으로 함께 실행하며 vehicle_bringup/config/vesc_config.yaml을 재사용한다.
 포트·namespace·5개 VESC 토픽을 VFH/실측속도 설정과 일치시킨다. 외부 bridge 사용 시 vesc_bridge_enabled:=false로 끈다.
+
+주행은 차선 추종 → 막히면 회피 → 충돌 없는 복귀 궤적이 열리면 차선 추종으로 통합했다.
+유도 미션/입구/양쪽 콘 통로 판정 및 통로에서의 차선 이탈 제한 해제는 제거했다.
+모든 회피는 동일한 차선 이탈 한도와 격자·차체 검사를 따른다.
+VFH 마스크가 모두 막혀도 별도 곡선을 차체 검사하며, 관련 샘플 수·길이 여유·복귀/연속성 가중치는 VFH 설정창에서 출발 전에 조절한다.

@@ -12,8 +12,8 @@ struct PlannerField {
   double minimum,maximum;
   const char* unit;
 };
-inline const std::array<PlannerField,16>& plannerFields() {
-  static const std::array<PlannerField,16> fields{{
+inline const std::array<PlannerField,21>& plannerFields() {
+  static const std::array<PlannerField,21> fields{{
     {"nominal_speed_mps",&Config::speed,.05,3,"max speed, m/s; YAML ceiling"},
     {"lane_lookahead_m",&Config::lane_lookahead,.01,.8,"Stanley tangent, m (0.01..0.8)"},
     {"safety_margin_m",&Config::margin,0,.2,"each side / front, m (0..0.2)"},
@@ -29,7 +29,12 @@ inline const std::array<PlannerField,16>& plannerFields() {
     {"hazard_confirm_frames",&Config::hazard_confirm_frames,1,5,"consecutive depth frames (integer)"},
     {"hazard_small_max_cells",&Config::hazard_small_max_cells,1,50,"small 8-connected component (integer)"},
     {"hazard_match_radius_cells",&Config::hazard_match_radius_cells,0,2,"motion-aligned search cells (integer)"},
-    {"hazard_max_gap_sec",&Config::hazard_max_gap_sec,.02,.5,"max gap between observations, sec"}
+    {"hazard_max_gap_sec",&Config::hazard_max_gap_sec,.02,.5,"max gap between observations, sec"},
+    {"avoidance_curve_enabled",&Config::avoidance_curve_enabled,0,1,"extra checked curves: 0=off / 1=on"},
+    {"avoidance_curve_samples",&Config::avoidance_curve_samples,3,17,"steering seeds; ODD integer 3..17"},
+    {"avoidance_length_slack_m",&Config::avoidance_length_slack_m,0,.5,"length gap for comparing return costs, m"},
+    {"avoidance_lane_weight",&Config::avoidance_lane_weight,0,5,"soft lane return weight (0..5)"},
+    {"avoidance_steering_weight",&Config::avoidance_steering_weight,0,5,"steering continuity weight (0..5)"}
   }};
   return fields;
 }
@@ -51,12 +56,12 @@ inline void validatePlannerEdits(const Config& config,double deceleration_ceilin
 }
 class PlannerControls {
   struct Edit {double observed{};std::string draft;bool pending{false};};
-  std::array<Edit,16> edits_;
+  std::array<Edit,21> edits_;
   bool ready_{false},open_{false},select_all_{false};
   int active_{-1};
   std::size_t page_{0};
   static constexpr std::size_t page_size=12;
-  static constexpr std::size_t pages=(16+page_size-1)/page_size;
+  static constexpr std::size_t pages=(21+page_size-1)/page_size;
   std::string message_{"Edit values, then Apply. Start also applies valid edits."};
   static std::string format(double value){std::ostringstream s;s<<std::setprecision(8)<<value;return s.str();}
   static cv::Rect field(std::size_t i){i%=page_size;return {250+int(i/6)*374,166+int(i%6)*48,104,30};}

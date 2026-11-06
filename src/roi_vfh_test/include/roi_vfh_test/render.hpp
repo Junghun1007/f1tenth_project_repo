@@ -30,7 +30,7 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
         cv::rectangle(canvas,{12+4*b,270,3,8},plan.binary[b]?cv::Scalar(60,60,210):cv::Scalar(200,200,200),-1);
         cv::rectangle(canvas,{12+4*b,284,3,8},plan.masked[b]?cv::Scalar(210,80,50):cv::Scalar(200,200,200),-1);
       }
-      cv::putText(canvas,plan.used_vfh?"primary / binary / masked":"Reference clear - VFH bypass",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
+      cv::putText(canvas,plan.used_vfh?(plan.used_fallback?"VFH mask + collision-checked curve":"primary / binary / masked"):"Reference clear - VFH bypass",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     }
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,hazards && hazards->enabled?"Current terrain / hazard confirmation":"Current frame only / no memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
@@ -49,6 +49,8 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       if(hazards->enabled && !hazards->motion_ready)
         cv::putText(canvas,"Confirmation waiting for speed + IMU",{12,528},cv::FONT_HERSHEY_SIMPLEX,.34,{35,65,190},1);
     }
+    if(plan.used_vfh)
+      cv::putText(canvas,cv::format("Extra curves %zu | selected %s",plan.fallback_candidates,plan.used_fallback?"yes":"no"),{12,548},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
     if (grid.width>0) {
       const double scale=std::min(430./(grid.width*grid.resolution),400./(grid.height*grid.resolution));
       const auto pixel=[&](double x,double y){return cv::Point(int(490-y*scale),int(584-x*scale));};

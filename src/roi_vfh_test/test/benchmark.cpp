@@ -10,7 +10,7 @@ int main(){
   for(int scene=0;scene<4;++scene){
     auto grid=base;const char* name="open";
     if(scene==1){name="cone";for(int x=18;x<=20;++x)for(int y=11;y<=12;++y)grid.cells[y*60+x]=100;}
-    if(scene==2){name="guidance";for(int x=16;x<38;++x){grid.cells[9*60+x]=100;grid.cells[21*60+x]=100;}}
+    if(scene==2){name="cone_walls";for(int x=16;x<38;++x){grid.cells[9*60+x]=100;grid.cells[21*60+x]=100;}}
     if(scene==3){name="unknown";grid.cells.assign(1440,-1);}
     Planner planner;std::vector<double> ms;
     for(int i=0;i<320;++i){
