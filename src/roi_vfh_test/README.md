@@ -61,7 +61,32 @@ GTK에서는 `WND_PROP_AUTOSIZE`를 보조 조회하며, 지원되는 속성을 
    유효 입력에서 경로만 막힌 경우에는 제동하면서 재계획한다.
 
 VFH 설정은 `config/preview.yaml`, 차량 모델은 기존 `auto_control`/`obstacles` YAML에서 launch 시 가져온다.
-VFH 설정은 시작 시 고정이며 YAML 수정 후 재실행한다. 라이브 조절은 기존 ROI 파라미터 창을 사용한다.
+VFH 실행창 상단 **VFH parameters** 또는 **P**로 같은 크기의 설정 화면을 연다.
+값을 클릭해 숫자를 입력하고 **Apply / Enter / A**로 일괄 적용한다. Tab은 다음 항목,
+입력 중 Esc는 해당 필드 취소다. **Reload**는 현재 적용값을 다시 읽어 미적용 입력을 버린다.
+Start를 누르면 미적용 입력도 검증·적용한 뒤 출발한다. 잘못된 값이면 출발하지 않고 이유를 표시한다.
+Start를 요청한 순간(ROI 잠금 ACK 대기 포함)부터 VFH GUI와 `ros2 param set`을 잠그며,
+Stop 또는 입력 유실로 정지하면 다시 편집할 수 있다. 잠긴 상태에서도 설정값 조회·화면 전환은 가능하다.
+ROI 파라미터 창의 기존 잠금도 함께 유지한다. Apply는 카메라를 재시작하지 않는다.
+
+| 실행창 항목 | 기본값 | 의미 |
+|---|---:|---|
+| `nominal_speed_mps` | 0.7 | 최대 목표 속도, 0.05~1m/s |
+| `lane_lookahead_m` | 0.30 | 차선·통로 추종 lookahead, 0.15~0.8m |
+| `safety_margin_m` | 0.02 | 차체 좌우/앞 여유, 0~0.2m; 셀 교차 여유는 별도 |
+| `horizon_m` | 1.4 | 검사할 궤적 길이, 0.3~2.5m |
+| `reference_distance_m` | 1.0 | VFH 후보 목표 거리, 0.3~3m |
+| `sample_step_m` | 0.04 | 궤적 검사 간격, 0.02~0.08m |
+| `lane_departure_m` | 0.40 | 일반 회피의 차체 차선 이탈 한도, 0~0.4m |
+| `deceleration_mps2` | 0.5 | 계획 감속도; 시작 시 controller에서 가져온 상한 이하 |
+| `response_delay_sec` | 0.20 | 계획 반응 시간, 0~1초; 프레임 처리 지연 하한은 유지 |
+| `histogram_low` | 1.0 | VFH 낮은 임계값; high보다 작아야 함 |
+| `histogram_high` | 2.0 | VFH 높은 임계값; low보다 커야 함 |
+
+GUI와 ROS 변경은 같은 검증을 사용하며 서로 반영된다. 적용 시 이전 계획·히스토그램을 초기화한다.
+차량 형상·조향 한계·구동 PID·토픽 등은 기존처럼 시작 시 고정한다.
+실행 중 수정은 이번 세션에 적용되며 재실행 기본값은 `config/preview.yaml`에서 정한다.
+이번 파라미터 GUI 변경은 사용자 요청대로 **빌드·테스트를 실행하지 않았다.**
 비정상 프로세스 강제 종료 후 ROI만 남아 잠겨 있으면 테스트 launch를 다시 실행하거나 다음으로 해제한다:
 
 ```bash

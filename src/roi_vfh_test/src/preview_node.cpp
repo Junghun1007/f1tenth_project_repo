@@ -2,6 +2,8 @@
 #include "roi_vfh_test/motion.hpp"
 #include "roi_vfh_test/render.hpp"
 #include "roi_vfh_test/drive.hpp"
+#include "roi_vfh_test/controls.hpp"
+#include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -21,6 +23,9 @@
 namespace roi_vfh_test {
 class Node:public rclcpp::Node {
   Config config_; Planner planner_; Plan result_;
+  PlannerControls controls_;
+  double planner_deceleration_ceiling_{.5};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr planner_parameters_callback_;
   bool drive_enabled_{false},vesc_connected_{false},servo_commanded_{false};
   double drive_max_age_{.20};
   std::unique_ptr<DriveController> drive_;
@@ -57,17 +62,57 @@ class Node:public rclcpp::Node {
   bool fresh(const builtin_interfaces::msg::Time & t) {const double age=now().seconds()-stamp(t);return age>=-.02 && age<=max_age_;}
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
   void stop(const std::string& reason) {
+    controls_.blur();controls_.message("Stopped. ROI and VFH parameters unlocked.");
     requested_=false;locked_=false;planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
+    if(!applyPlannerEdits())return;
+    controls_.show(false);
     requested_=true;locked_=false;planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
   }
   static void mouse(int event,int x,int y,int,void * ptr) {
     if (event!=cv::EVENT_LBUTTONDOWN) return;
     auto & self=*static_cast<Node*>(ptr);
-    if (startButton().contains(cv::Point(x,y)) && !self.requested_) self.start();
-    if (stopButton().contains(cv::Point(x,y))) {self.stop("STOPPED: parameters unlocked");self.publish();}
+    if (stopButton().contains(cv::Point(x,y))) {self.stop("STOPPED: parameters unlocked");self.publish();return;}
+    if (PlannerControls::toggleButton().contains(cv::Point(x,y))) {self.controls_.toggle();return;}
+    if (startButton().contains(cv::Point(x,y)) && !self.requested_) {self.start();return;}
+    self.controlAction(self.controls_.click(x,y,self.requested_));
+  }
+  Config plannerParameters()const {
+    auto result=config_;
+    for(const auto& field:plannerFields())result.*(field.member)=get_parameter(field.name).as_double();
+    return result;
+  }
+  void syncPlannerParameters() {
+    const auto next=plannerParameters();bool changed=false;
+    for(const auto& field:plannerFields())if(next.*(field.member)!=config_.*(field.member))changed=true;
+    if(!changed)return;
+    validatePlannerEdits(next,planner_deceleration_ceiling_);
+    config_=next;planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
+    controls_.sync(config_);
+  }
+  bool applyPlannerEdits() {
+    if(requested_){controls_.message("Locked: press Stop before editing VFH parameters.");return false;}
+    try {
+      syncPlannerParameters();
+      std::vector<rclcpp::Parameter> edits;
+      for(const auto& change:controls_.changes())edits.emplace_back(change.first,change.second);
+      if(!edits.empty()) {
+        const auto result=set_parameters_atomically(edits);
+        if(!result.successful)throw std::invalid_argument(result.reason);
+      }
+      syncPlannerParameters();controls_.reload(config_);controls_.message("Applied. Start uses these values.");return true;
+    }catch(const std::exception& e) {
+      controls_.show(true);controls_.message(std::string("REJECTED: ")+e.what());
+      status_="STOPPED: invalid VFH parameters; correct highlighted edits";
+      RCLCPP_WARN(get_logger(),"VFH settings rejected: %s",e.what());return false;
+    }
+  }
+  void controlAction(PlannerControls::Action action) {
+    if(requested_)return;
+    if(action==PlannerControls::Action::Apply)applyPlannerEdits();
+    if(action==PlannerControls::Action::Reload){controls_.reload(config_);controls_.message("Reloaded applied values. Draft edits discarded.");}
   }
   bool inputs() {
     if (!lane_ || !fresh(lane_->header.stamp) ||
@@ -206,7 +251,8 @@ class Node:public rclcpp::Node {
   }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
-    const auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
+    auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
+    controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id="front_axle_bev";
       msg.width=canvas.cols;msg.height=canvas.rows;msg.encoding="bgr8";msg.step=canvas.cols*3;
@@ -215,16 +261,21 @@ class Node:public rclcpp::Node {
     if (gui_) {
       if (!window_) {cv::namedWindow("ROI VFH+ test",cv::WINDOW_AUTOSIZE);cv::setMouseCallback("ROI VFH+ test",mouse,this);window_=true;}
       cv::imshow("ROI VFH+ test",canvas);
-      const int key=cv::waitKey(1);if (key==' ' || key=='s'){stop("STOPPED: parameters unlocked");publish();}
-      if (key=='q' || key==27 || windowClosed()) {
-        stop("STOPPED: preview closed");publish();
+      const int key=cv::waitKeyEx(1);const bool editing=controls_.editing();
+      if (key==' ' || key=='s' || key=='S'){stop("STOPPED: parameters unlocked");publish();}
+      else if (key=='q' || (key==27 && !editing) || windowClosed()) {
+        stop("STOPPED: window closed");publish();
         RCLCPP_INFO(get_logger(),"VFH window closed: stopping and unlocking ROI parameters");
         rclcpp::shutdown();
+      }else {
+        if(key=='p' || key=='P')controls_.toggle();
+        controlAction(controls_.key(key,requested_));
       }
     }
   }
   void tick() {
     try {
+      syncPlannerParameters();
       const bool ok=inputs();
       if (requested_ && !locked_)publishLock(true);
       if (!ok && requested_ && locked_) {const auto reason=status_;stop(reason);}
@@ -236,9 +287,10 @@ class Node:public rclcpp::Node {
 public:
   Node():rclcpp::Node("roi_vfh_test") {
     rcl_interfaces::msg::ParameterDescriptor fixed;fixed.read_only=true;
+    rcl_interfaces::msg::ParameterDescriptor editable;editable.description="Editable only before Start or after Stop";
     gui_=declare_parameter("gui",true,fixed);
     drive_enabled_=declare_parameter("drive_enabled",false,fixed);
-#define PARAM(name,field) config_.field=declare_parameter(name,config_.field,fixed)
+#define PARAM(name,field) config_.field=declare_parameter(name,config_.field,plannerField(name)?editable:fixed)
     PARAM("nominal_speed_mps",speed);PARAM("horizon_m",horizon);PARAM("sample_step_m",step);
     PARAM("wheelbase_m",wheelbase);PARAM("vehicle_width_m",width);PARAM("rear_extent_m",rear);PARAM("front_overhang_m",front);
     PARAM("safety_margin_m",margin);PARAM("lane_width_m",lane_width);PARAM("lane_departure_m",departure);
@@ -247,8 +299,10 @@ public:
 #undef PARAM
     config_.max_steer=declare_parameter("max_steering_deg",30.,fixed)*pi/180;
     config_.steer_rate=declare_parameter("steering_rate_deg_per_sec",240.,fixed)*pi/180;
-    config_.hist_low=declare_parameter("histogram_low",1.,fixed);config_.hist_high=declare_parameter("histogram_high",2.,fixed);
+    config_.hist_low=declare_parameter("histogram_low",1.,editable);config_.hist_high=declare_parameter("histogram_high",2.,editable);
     config_.validate();motion_.front_axle_offset=config_.wheelbase;
+    planner_deceleration_ceiling_=config_.deceleration;
+    validatePlannerEdits(config_,planner_deceleration_ceiling_);controls_.reload(config_);
     max_age_=declare_parameter("max_age_sec",.30,fixed);max_sync_=declare_parameter("max_sync_sec",.10,fixed);
     if(!std::isfinite(max_age_) || !std::isfinite(max_sync_) || max_age_<.05 || max_age_>.5 || max_sync_<.001 || max_sync_>.15)throw std::invalid_argument("invalid synchronization limits");
     DriveOptions drive_options;drive_options.max_steer=config_.max_steer;
@@ -322,6 +376,22 @@ public:
         locked_=requested_ && p->data;
       });
     RCLCPP_INFO(get_logger(),"VFH telemetry: speed=%s (Float32 m/s), IMU=/roi_lidar/imu (vehicle-frame Z rad/s)",speed_sub_->get_topic_name());
+    planner_parameters_callback_=add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& parameters) {
+      rcl_interfaces::msg::SetParametersResult result;
+      if(requested_){result.reason="VFH is locked: press Stop before changing parameters";return result;}
+      try {
+        auto next=plannerParameters();
+        for(const auto& parameter:parameters) {
+          const auto* field=plannerField(parameter.get_name());
+          if(!field)throw std::invalid_argument("Only VFH planner fields are runtime-editable");
+          if(parameter.get_type()!=rclcpp::ParameterType::PARAMETER_DOUBLE)
+            throw std::invalid_argument(parameter.get_name()+": expected a floating-point number");
+          next.*(field->member)=parameter.as_double();
+        }
+        validatePlannerEdits(next,planner_deceleration_ceiling_);result.successful=true;
+      }catch(const std::exception& e){result.reason=e.what();}
+      return result;
+    });
     publishLock(false);
     timer_=create_wall_timer(std::chrono::milliseconds(67),[this]{tick();});
   }
