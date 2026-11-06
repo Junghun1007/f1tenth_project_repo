@@ -190,3 +190,14 @@ ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 �
 상단 `filled`는 해당 프레임에서 채운 셀 수다. Depth 중단 시 두 지도 모두 미관측으로
 초기화한다. 장애물 포인트/스캔과 다른 패키지의 주행 제어에는 이 보정을 적용하지 않는다.
 기존 본문의 무보간 설명은 `terrain_raw` 및 보정 OFF에 해당한다.
+
+## VFH+ 프리뷰 연결
+
+`roi_vfh_test/README.md`의 통합 launch에서 파라미터 창과 Start/Stop 프리뷰를 함께 실행한다.
+`preview.publish_lane_bev=true`이면 같은 RGB의 깨끗한 120×300/1cm BEV를 `~/lane_bev`로 발행한다.
+`motion.publish_imu=true`이면 같은 OAK 세션에서 gyro를 읽어 앞차축 좌표의 `~/imu`로 발행한다.
+두 기능의 기본값은 false이며 활성화 변경은 카메라 재시작을 요구한다.
+`~/terrain_for_planning`은 보정 결과에 단일 위험 표본도 100으로 차단한 계획 입력이다.
+화면과 기존 terrain/raw 토픽의 분류 의미는 유지한다.
+`/roi_vfh_test/running=true` 수신 시 GUI 편집과 ROS 파라미터 쓰기를 모두 잠그고
+`~/parameters_locked`로 ACK한다. Stop(false) 수신 후 다시 변경할 수 있다.

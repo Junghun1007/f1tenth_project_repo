@@ -39,6 +39,11 @@ int main() {
   c.setDraft("terrain.fill_enabled","0"); c.setDraft("terrain.fill_max_cells","4");
   changes=c.poll(read,13);
   if (changes.size()!=2) {throw std::runtime_error("Live hole controls missing");}
+  values["terrain.fill_enabled"]=0;values["terrain.fill_max_cells"]=4;c.poll(read);
+  c.setLocked(true);c.poll(read,9);c.poll(read,'5');
+  if(!c.poll(read,13).empty() || c.editing())throw std::runtime_error("Locked controls accepted edit");
+  c.setLocked(false);c.setDraft("terrain.fill_enabled","1");
+  changes=c.poll(read,13);if(changes.size()!=1)throw std::runtime_error("Stop did not unlock controls");
   cv::waitKey(1); cv::destroyAllWindows();
   std::cout<<"GUI tests passed: numeric input, explicit apply, invalid batch rejection, external parameter synchronization\n";
 }

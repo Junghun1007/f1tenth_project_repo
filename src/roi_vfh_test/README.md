@@ -1,0 +1,109 @@
+# ROI terrain + 차선 VFH+ 국소 주행 프리뷰
+
+**프리뷰 전용**이다. 액추에이터/VESC 명령은 발행하지 않는다.
+`roi_lidar`의 terrain, 같은 OAK RGB에서 만든 차선 결과, VESC 실측 속도와 IMU yaw rate를 사용한다.
+목표 속도 상한은 0.7m/s다. 좁은 통로·곡률·관측된 정지 가능 길이에 따라 낮아진다.
+
+## 실행
+
+차량의 ROS 2 Humble/DepthAI/TensorRT 환경에서 저장소 루트 기준:
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to roi_vfh_test --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+ros2 launch roi_vfh_test preview.launch.py
+```
+
+기존 camera_driver/auto_drive/point_cloud/roi_lidar를 종료하고 OAK는 이 실행 하나에서 사용한다.
+차량은 평지에서 정지한 채 시작 지면 측정과 차선 모델 준비를 완료한다.
+VESC 텔레메트리는 기존 수동주행 실행 등에서 받아야 한다. 이 launch는 VESC 연결이나 수동 구동을 시작하지 않는다.
+기본 ERPM/연결 토픽은 `/autopilot03/vesc/measured_erpm`, `/autopilot03/vesc/connected`다.
+`measured_erpm_topic:=... vesc_connection_topic:=...`로 바꿀 수 있다.
+receive-only dynamics monitor가 이미 있으면 `dynamics_enabled:=false measured_speed_topic:=/실측속도토픽`으로 재사용한다.
+
+ROI RGB BEV/파라미터 창과 `ROI VFH+ test` 창이 함께 열린다.
+
+1. 출발 전에는 선택 경로 없음, 목표 속도/조향 0. ROI 창에서 값을 조절하고 Apply한다.
+2. **Start preview**: ROI 파라미터 잠금을 요청하고 ACK를 받은 뒤 계획을 시작한다.
+3. 실행 중에는 ROI GUI 입력 및 `ros2 param set /roi_lidar ...`를 거부한다.
+4. **Stop / unlock**, Space 또는 S: 즉시 빈 경로/속도 0/조향 0, 관측 기억 초기화, 파라미터 잠금 해제.
+5. Q/Esc/프리뷰 창 닫기도 Stop 처리한다. 센서·차선·속도·IMU 유실은 정지하고 다시 Start를 요구한다.
+
+VFH 설정은 `config/preview.yaml`, 차량 모델은 기존 `auto_control`/`obstacles` YAML에서 launch 시 가져온다.
+VFH 설정은 시작 시 고정이며 YAML 수정 후 재실행한다. 라이브 조절은 기존 ROI 파라미터 창을 사용한다.
+비정상 프로세스 강제 종료 후 ROI만 남아 잠겨 있으면 테스트 launch를 다시 실행하거나 다음으로 해제한다:
+
+```bash
+ros2 topic pub --once /roi_vfh_test/running std_msgs/msg/Bool '{data: false}'
+```
+
+## 알고리즘과 미션
+
+[VFH+ 원 논문](https://www.cs.cmu.edu/~motionplanning/papers/sbp_papers/integrated1/borenstein_VFHplus.pdf)의
+4단계(주 극좌표 히스토그램 → 이중 임계값 이진 히스토그램 → 최소 회전 원에 따른 마스크 → 후보 방향 비용)를 사용한다.
+이 테스트의 차이는 전방 ±75°/2.5° 섹터, 셀 면적 정규화, 미관측 셀의 차단 처리,
+차폭 기반 각도 확장 뒤 직사각형 차체 추가 검사, 빈 방향 안의 추가 후보와 3가지 조향 프로파일이다.
+원 논문의 원형 로봇/360°/누적 certainty 구현과 수치적으로 동일한 재현은 아니다.
+
+- 일반 구간: 차선 중심 전방 방향 우선. 비용에 현재 전진 방향과 이전 선택 방향을 포함한다.
+- 소량 콘: VFH+의 통과 방향에서 차량 운동/조향 변화율을 반영한 국소 궤적을 생성한다.
+  관측된 평지, 차체 외곽의 차선 밖 각각 40cm, 회전 한계를 검사한다.
+- 유도 경로: 현재 프레임에서 양쪽 위험 경계, 연결 가능한 평지 입구, 0.35m 이상 종방향 근거를
+  3개의 새 관측에서 확인한다. 확인 뒤에는 통로 중심 방향을 사용하고 40cm 제한을 해제한다.
+  확인된 통로 바깥을 가로지르는 후보는 제외한다. 한쪽 경계만으로 유도 모드에 진입하지 않는다.
+- 유도 구간에서 차선 중심선이 사라져도 유효한 LaneResult 메시지와 양쪽 통로 관측이 계속 있으면
+  통로 방향으로 계획한다. 일반 구간의 차선 유실과 차선 노드 자체의 입력 중단은 정지한다.
+- 완전히 막히면 속도 0으로 재계획한다. 탐색 범위 밖의 우회 경로 존재를 보장하지 않는다.
+
+terrain은 요청대로 폭 **1.2m × 전방 3m**다. 허용된 40cm 중 실제 관측한 부분만 쓸 수 있다.
+차선 모델은 깨끗한 **120×300 / 1cm** BEV를 받으며 HUD/점/terrain 색상은 입력하지 않는다.
+범위 밖, 현재 위험 근거가 있는 셀을 보간으로 통과시키지 않는다.
+
+## 관측 기억과 차량 모델
+
+같은 OAK 세션에서 보정된 gyro를 읽고 EEPROM 상대 회전을 거쳐 앞차축 차량 좌표로 변환한다.
+VESC 속도와 yaw rate를 적분하고 앞차축의 횡방향 이동(축간거리 × yaw rate)을 반영한다.
+VESC 속도를 뒤차축 종방향 속도로 보는 초기 모델이므로 실제 속도 환산·미끄러짐 오차는 차량에서 확인한다.
+이렇게 얻은 **depth 촬영 시각**의 자세로 관측을 저장·재투영한다.
+차선 결과도 RGB 촬영 시각에서 해당 depth 좌표로 보정하며, 출력 경로에는 depth 촬영 시각을 기록한다.
+기본 기억 한도는 0.5초 및 이동 0.35m 중 먼저 도달하는 것이다. IMU/속도 0.15초 유실 시 정지하며
+시간 역전·관측 공백·정지 버튼은 기억을 초기화한다. 기억에서 가져온 셀은 수명을 갱신하지 않는다.
+현재 바닥/위험 관측이 기억보다 우선한다. 단일 위험 표본도 `terrain_for_planning`에서는 차단하여
+기억의 바닥으로 덮지 않는다. 움직이는 물체의 의미 추적이나 차량 추종은 이 패키지 범위에 없다.
+
+차량 폭은 기존 `obstacles.avoidance.vehicle_half_width_m × 2`(현재 0.30m), 앞뒤 검사 길이는
+`vehicle_half_length_m`(각 0.25m)을 가져온다. 실제 앞차축 위치의 비대칭 돌출 실측값이 아니라
+기존 검사 모델이다. 축간거리 0.33m, 최대 조향 30°, 조향 변화율 240°/s는 기존 제어 설정을 따른다.
+
+사용자 선택대로 **전방 관측 영역만 검사**한다. 음의 X 후방의 차체 회전 공간은 검증하지 않으며
+화면·상태에 `rear unverified`로 표시한다. 이 프리뷰의 통과 결과를 실차 무충돌 보증으로 쓰지 않는다.
+
+## 출력과 검증
+
+`/roi_vfh_test/path`, `/roi_vfh_test/target_speed`, `/roi_vfh_test/steering_angle_rad`,
+`/roi_vfh_test/status`, `/roi_vfh_test/preview`는 모두 진단 출력이다.
+`/roi_lidar/lane_bev`, `/roi_lidar/imu`, `/roi_lidar/terrain_for_planning`은 이 launch에서 센서 입력으로 사용한다.
+일반 ROI 실행은 새 센서 스트림이 기본 OFF이므로 기존 동작을 유지한다.
+
+```bash
+colcon test --packages-select roi_lidar roi_vfh_test --event-handlers console_direct+
+colcon test-result --verbose
+```
+
+로컬에서는 순수 C++ 계획/관측 기억, 프리뷰 렌더와 버튼 영역, launch 구성,
+ROI 격자/스캔/프리뷰/설정 및 GUI 잠금을 검사한다. 계획·기억 코어의 UBSan 검사도 수행한다.
+ROS 전체 실행, 실제 IMU 축/속도 환산, 모델 추론 지연과 버튼-파라미터 ACK 연결은 차량 환경에서 확인한다.
+
+## 로컬 연산 측정
+
+재현 명령(ROS 불필요):
+
+```bash
+c++ -std=c++17 -O2 -Isrc/roi_vfh_test/include src/roi_vfh_test/test/benchmark.cpp -o /tmp/roi-vfh-benchmark
+/tmp/roi-vfh-benchmark
+```
+
+1440셀의 정지 장면 4개에서 20회 워밍업 후 300회 측정한다. 기억 격자 갱신과 계획을 포함하며
+카메라/차선 추론/ROS/GUI 비용은 제외한다. 전체 Jetson 실행시간은 해당 기기에서 측정해야 한다.
+노드 HUD의 `plan` 시간은 계획부만 측정하며 관측 기억 갱신 비용은 제외한다.

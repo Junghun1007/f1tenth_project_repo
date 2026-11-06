@@ -6,10 +6,12 @@
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <geometry_msgs/msg/pose_array.hpp>
 #include <sensor_msgs/msg/image.hpp>
+#include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
@@ -81,6 +83,9 @@ class Node : public rclcpp::Node
     double capture{0}, fps{0}, host_ms{0}, age_ms{0};
     std::string state{"MEASURING GROUND: keep stationary"};
   };
+  std::atomic_bool parameters_locked_{false};
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr running_sub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr locked_pub_;
   Config config_;
   Snapshot snapshot_;
   std::mutex mutex_;
@@ -95,13 +100,14 @@ class Node : public rclcpp::Node
   std::vector<rclcpp::Parameter> last_parameters_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr obstacles_pub_;
-  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_pub_, raw_terrain_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_pub_, raw_terrain_pub_, planning_terrain_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr imu_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr points_pub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_pub_, roi_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_pub_, roi_pub_, lane_bev_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
   rclcpp::TimerBase::SharedPtr sync_timer_, preview_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr callback_;
-  BevProjector bev_;
+  BevProjector bev_, lane_bev_;
   Controls controls_;
   std::vector<double> rgb_key_;
   std::uint64_t preview_revision_{std::numeric_limits<std::uint64_t>::max()};
@@ -128,7 +134,7 @@ class Node : public rclcpp::Node
       changed=true;
       const auto & n=names_[i];
       reopen|=n.rfind("camera.",0)==0 || n.rfind("depth.",0)==0 ||
-        n=="preview.rgb_fps" || n=="preview.camera_image" || n=="preview.gui" || n=="preview.publish";
+        n=="motion.publish_imu" || n=="preview.publish_lane_bev" || n=="preview.rgb_fps" || n=="preview.camera_image" || n=="preview.gui" || n=="preview.publish";
     }
     if (!changed) {return;}
     auto c=readParameters();
@@ -165,6 +171,7 @@ class Node : public rclcpp::Node
     grid.info.origin.position.y=terrain.y_min; grid.info.origin.orientation.w=1;
     grid.data=terrain.cells; terrain_pub_->publish(grid);
     grid.data=terrain.raw_cells; raw_terrain_pub_->publish(grid);
+    grid.data=terrain.planning_cells; planning_terrain_pub_->publish(grid);
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header=grid.header;
     sensor_msgs::PointCloud2Modifier modifier(cloud);
@@ -216,7 +223,7 @@ class Node : public rclcpp::Node
         invalidate(startup_config,"OPENING CAMERA");
         point_cloud::DepthSource source(startup_config.camera,selected,
           startup_config.camera_image && (startup_config.gui || startup_config.publish_preview),
-          (startup_config.gui || startup_config.publish_preview) ? startup_config.rgb_fps : 0.0);
+          (startup_config.gui || startup_config.publish_preview || startup_config.publish_lane_bev) ? startup_config.rgb_fps : 0.0,startup_config.publish_imu);
         Projector projector;
         std::vector<double> key;
         std::uint64_t configured_revision=std::numeric_limits<std::uint64_t>::max();
@@ -227,6 +234,18 @@ class Node : public rclcpp::Node
           Config c; std::uint64_t version;
           {std::lock_guard<std::mutex> lock(mutex_); c=config_; version=revision_;}
           const auto host=Clock::now(); const double clock=seconds(host);
+          if (auto imu=source.tryGetImu()) {
+            for(const auto & packet:imu->packets) {
+              const auto & gyro=packet.gyroscope;
+              const double age=clock-seconds(gyro.getTimestamp());
+              if(age<0 || age>c.max_age)continue;
+              const auto rate=point_cloud::rotate(vehicle_from_camera.rotation,
+                source.cameraGyroscope({gyro.x,gyro.y,gyro.z}));
+              sensor_msgs::msg::Imu msg;msg.header.stamp=now()-rclcpp::Duration::from_seconds(age);msg.header.frame_id=frame_id_;
+              msg.orientation_covariance[0]=-1;msg.linear_acceleration_covariance[0]=-1;
+              msg.angular_velocity.x=rate[0];msg.angular_velocity.y=rate[1];msg.angular_velocity.z=rate[2];imu_pub_->publish(msg);
+            }
+          }
           if (auto rgb=source.tryGetRgb()) {
             const auto transform=point_cloud::compose(vehicle_from_camera,source.rgbFromFrame(*rgb));
             std::lock_guard<std::mutex> lock(mutex_); snapshot_.rgb=std::move(rgb); snapshot_.vehicle_from_rgb=transform;
@@ -318,7 +337,7 @@ class Node : public rclcpp::Node
       windows_=false;
       controls_.reset();
     }
-    if (!c.gui && !c.publish_preview) {return;}
+    if (!c.gui && !c.publish_preview && !c.publish_lane_bev) {return;}
     {std::lock_guard<std::mutex> lock(mutex_); s=snapshot_;}
     try {
       const bool fresh=s.depth && s.revision==version && freshCapture(s.capture,clock,c.max_age);
@@ -329,7 +348,13 @@ class Node : public rclcpp::Node
         const auto key=geometryKey(*s.rgb,s.vehicle_from_rgb);
         if (key!=rgb_key_) {
           bev_.configure(s.rgb->getWidth(),s.rgb->getHeight(),intrinsics(*s.rgb),s.vehicle_from_rgb,c.view,c.preview_size);
+          lane_bev_.configureLane(s.rgb->getWidth(),s.rgb->getHeight(),intrinsics(*s.rgb),s.vehicle_from_rgb);
           rgb_key_=key;
+        }
+        if (c.publish_lane_bev) {
+          const auto age=std::max(0.0,clock-seconds(s.rgb->getTimestamp()));
+          const auto capture=now()-rclcpp::Duration::from_seconds(age);
+          lane_bev_pub_->publish(imageMessage(lane_bev_.render(frameView(*s.rgb,CV_8UC3)),capture));
         }
         background=bev_.render(frameView(*s.rgb,CV_8UC3),c.interpolation);
       }
@@ -375,6 +400,7 @@ class Node : public rclcpp::Node
         if (!editing && (key=='q' || key==27)) {stop_=true; rclcpp::shutdown();}
         if (!editing && key=='r') {set_parameters_atomically({rclcpp::Parameter("roi.x",0.0),rclcpp::Parameter("roi.y",0.0),
           rclcpp::Parameter("roi.width",1.0),rclcpp::Parameter("roi.height",1.0)});}
+        controls_.setLocked(parameters_locked_.load());
         const auto changes=controls_.poll([this](const char * name) {
           const auto p=get_parameter(name);
           if (p.get_type()==rclcpp::ParameterType::PARAMETER_BOOL) {return p.as_bool() ? 1.0 : 0.0;}
@@ -428,13 +454,28 @@ public:
     scan_pub_=create_publisher<sensor_msgs::msg::LaserScan>("~/scan",qos);
     obstacles_pub_=create_publisher<geometry_msgs::msg::PoseArray>("~/obstacles",qos);
     terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain",qos);
+    imu_pub_=create_publisher<sensor_msgs::msg::Imu>("~/imu",qos);
+    planning_terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain_for_planning",qos);
     raw_terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain_raw",qos);
     points_pub_=create_publisher<sensor_msgs::msg::PointCloud2>("~/obstacle_points",qos);
     preview_pub_=create_publisher<sensor_msgs::msg::Image>("~/bev_preview",qos);
+    lane_bev_pub_=create_publisher<sensor_msgs::msg::Image>("~/lane_bev",qos);
     roi_pub_=create_publisher<sensor_msgs::msg::Image>("~/roi_preview",qos);
     status_pub_=create_publisher<std_msgs::msg::String>("~/status",rclcpp::QoS(1).transient_local());
+    const auto latch=rclcpp::QoS(1).reliable().transient_local();
+    locked_pub_=create_publisher<std_msgs::msg::Bool>("~/parameters_locked",latch);
+    running_sub_=create_subscription<std_msgs::msg::Bool>("/roi_vfh_test/running",latch,
+      [this](std_msgs::msg::Bool::ConstSharedPtr msg) {
+        if(msg->data)syncParameters();
+        parameters_locked_=msg->data;
+        bool ready=false;
+        {std::lock_guard<std::mutex> lock(mutex_);ready=snapshot_.revision==revision_ && snapshot_.state=="STREAMING" &&
+          freshCapture(snapshot_.capture,seconds(Clock::now()),config_.max_age);}
+        std_msgs::msg::Bool ack; ack.data=msg->data && ready; locked_pub_->publish(ack);
+      });
     callback_=add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {
       rcl_interfaces::msg::SetParametersResult out;
+      if (parameters_locked_) {out.reason="VFH preview running: press Stop before changing ROI parameters"; return out;}
       try {auto c=readParameters(); for (const auto & p:ps) {apply(c,p);} validate(c); out.successful=true;}
       catch (const std::exception & e) {out.reason=e.what();} return out;
     });

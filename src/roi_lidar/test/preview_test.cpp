@@ -85,5 +85,17 @@ int main()
   check(colors.at<cv::Vec3b>(mapPixel(1.025,.125,view,800))==cv::Vec3b(65,190,65),"Ground color incorrect");
   check(colors.at<cv::Vec3b>(mapPixel(2.025,.125,view,800))==cv::Vec3b(45,55,220),"Hazard color incorrect");
   check(colors.at<cv::Vec3b>(mapPixel(3.025,.125,view,800))==cv::Vec3b(90,90,90),"Unknown color incorrect");
+  BevProjector clean;clean.configureLane(100,100,k,t);
+  const auto clean_image=clean.render(rgb);
+  check(clean_image.rows==300 && clean_image.cols==120,"Lane input includes preview padding");
+  check(clean_image.at<cv::Vec3b>(199,59)==cv::Vec3b(10,80,160),"Metric lane pixel mapping lost");
+  clean.configureLane(320,200,intrinsics,tilted);
+  const point_cloud::Vector3 lane_delta{1.005-tilted.translation[0],.205-tilted.translation[1],-tilted.translation[2]};
+  point_cloud::Vector3 lane_optical{};
+  for(int axis=0;axis<3;++axis)for(int j=0;j<3;++j)lane_optical[axis]+=tilted.rotation[j*3+axis]*lane_delta[j];
+  const double lane_u=intrinsics.fx*lane_optical[0]/lane_optical[2]+intrinsics.cx;
+  const double lane_v=intrinsics.fy*lane_optical[1]/lane_optical[2]+intrinsics.cy;
+  const auto lane_color=clean.render(gradient).at<cv::Vec3b>(199,39);
+  check(std::abs(lane_color[0]-lane_u/2)<2 && std::abs(lane_color[1]-lane_v)<2,"Clean lane BEV axes/centers mismatched");
   std::cout<<"RGB BEV preview tests passed: metric projection, axes, FOV mask, obstacle overlay, ROI\n";
 }

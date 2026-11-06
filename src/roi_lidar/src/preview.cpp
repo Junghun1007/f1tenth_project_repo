@@ -147,6 +147,24 @@ void BevProjector::configure(int width, int height, const point_cloud::Intrinsic
     }
   }
 }
+// Clean 120x300, 1cm/pixel, front-axle BEV for the existing lane model.
+// Pixel centers match LaneResult's explicit metric conversion; no HUD or terrain.
+void BevProjector::configureLane(int width,int height,const point_cloud::Intrinsics & k,
+  const point_cloud::RigidTransform & t)
+{
+  if (width<1 || height<1 || k.fx<=0 || k.fy<=0) {throw std::invalid_argument("Invalid lane BEV camera");}
+  map_x_=cv::Mat(300,120,CV_32F,cv::Scalar(-1));
+  map_y_=cv::Mat(300,120,CV_32F,cv::Scalar(-1));
+  for (int v=0;v<300;++v) {for (int u=0;u<120;++u) {
+    const point_cloud::Vector3 delta{3-(v+.5)*.01-t.translation[0],
+      .6-(u+.5)*.01-t.translation[1],-t.translation[2]};
+    point_cloud::Vector3 camera{};
+    for (int axis=0;axis<3;++axis) {for (int j=0;j<3;++j) {camera[axis]+=t.rotation[j*3+axis]*delta[j];}}
+    if (camera[2]<=0) {continue;}
+    const double x=k.fx*camera[0]/camera[2]+k.cx,y=k.fy*camera[1]/camera[2]+k.cy;
+    if (x>=0 && y>=0 && x<width-1 && y<height-1) {map_x_.at<float>(v,u)=x; map_y_.at<float>(v,u)=y;}
+  }}
+}
 cv::Mat BevProjector::render(const cv::Mat & bgr, const std::string & interpolation) const
 {
   if (map_x_.empty() || bgr.type()!=CV_8UC3) {throw std::invalid_argument("Unconfigured RGB BEV preview");}

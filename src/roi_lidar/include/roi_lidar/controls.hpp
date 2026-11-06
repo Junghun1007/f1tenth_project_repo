@@ -58,6 +58,7 @@ private:
     {"depth.ir_dot_projector_intensity","0..1",Type::Real,true},
     {"depth.ir_flood_light_intensity","0..1",Type::Real,true}
   };
+  bool locked_{false};
   bool ready_{false}, apply_requested_{false}, reload_requested_{false}, select_all_{false};
   int active_{-1};
   std::string message_;
@@ -92,6 +93,7 @@ private:
   {
     if (event!=cv::EVENT_LBUTTONDOWN) {return;}
     auto & self=*static_cast<Controls *>(data);
+    if (self.locked_) {return;}
     for (std::size_t i=0;i<self.entries_.size();++i) {
       if (field(i).contains(cv::Point(x,y))) {
         self.active_=static_cast<int>(i); self.select_all_=true; return;
@@ -103,6 +105,7 @@ private:
   }
   void keyboard(int key)
   {
+    if (locked_) {return;}
     if (key==13 || key==10 || key=='a' || key=='A') {apply_requested_=true; active_=-1; return;}
     if (key==9) {
       active_=active_<0 ? 0 : (active_+1)%static_cast<int>(entries_.size());
@@ -126,7 +129,7 @@ private:
     const auto text=[&](const std::string & value,cv::Point at,double scale,cv::Scalar color) {
       cv::putText(canvas,value,at,cv::FONT_HERSHEY_SIMPLEX,scale,color,1,cv::LINE_AA);
     };
-    text("ROI PARAMETERS - numeric input",{16,25},.60,{35,35,35});
+    text(locked_ ? "ROI PARAMETERS - LOCKED (press Stop)" : "ROI PARAMETERS - numeric input",{16,25},.60,{35,35,35});
     text("Click a value and type. Enter / A / Apply: apply all edits together. Tab: next field.",{16,48},.39,{55,55,55});
     text("* Camera setting: restarts streaming on Apply. Units match ROS/YAML. Booleans: 0 or 1.",{16,69},.37,{55,55,55});
     for (std::size_t i=0;i<entries_.size();++i) {
@@ -153,6 +156,14 @@ private:
     cv::imshow(windowName(),canvas);
   }
 public:
+  void setLocked(bool locked)
+  {
+    if (locked && !locked_) {
+      active_=-1; apply_requested_=reload_requested_=false;
+      for (auto & entry:entries_) {restore(entry);}
+    }
+    locked_=locked;
+  }
   void reset()
   {
     ready_=false; active_=-1; apply_requested_=reload_requested_=false;

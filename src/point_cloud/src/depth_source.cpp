@@ -128,6 +128,9 @@ RigidTransform rgbFromFrame(dai::ImgFrame & frame, const dai::CalibrationHandler
 }
 
 DepthSource::DepthSource(const Config & c, const std::string & device_id, bool right_preview, double rgb_fps)
+: DepthSource(c,device_id,right_preview,rgb_fps,false) {}
+
+DepthSource::DepthSource(const Config & c, const std::string & device_id, bool right_preview, double rgb_fps, bool imu_enabled)
 {
   validate(c);
   if (!std::isfinite(rgb_fps) || rgb_fps < 0 || rgb_fps > 60) {
@@ -148,6 +151,26 @@ DepthSource::DepthSource(const Config & c, const std::string & device_id, bool r
     rgb_output = rgb->requestOutput({640,400}, dai::ImgFrame::Type::BGR888i,
       dai::ImgResizeMode::CROP, static_cast<float>(rgb_fps), true);
     rgb_queue_ = rgb_output->createOutputQueue(1, false);
+  }
+  if (imu_enabled) {
+    const auto calibration=device_->getCalibration();
+    const auto a=calibration.getImuToCameraExtrinsics(dai::CameraBoardSocket::CAM_A,false);
+    const auto b=calibration.getEepromData().imuExtrinsics.rotationMatrix;
+    if(a.size()<3 || b.size()!=3)throw std::runtime_error("Missing IMU calibration");
+    for(int i=0;i<3;++i)for(int j=0;j<3;++j){
+      if(a[i].size()<3 || b[j].size()!=3)throw std::runtime_error("Malformed IMU calibration");
+      rgb_from_imu_[i*3+j]=0;
+      for(int k=0;k<3;++k)rgb_from_imu_[i*3+j]+=a[i][k]*b[j][k];
+      if(!std::isfinite(rgb_from_imu_[i*3+j]))throw std::runtime_error("Invalid IMU rotation");
+    }
+    for(int i=0;i<3;++i)for(int j=0;j<3;++j){
+      double dot=0;for(int k=0;k<3;++k)dot+=rgb_from_imu_[i*3+k]*rgb_from_imu_[j*3+k];
+      if(std::abs(dot-(i==j ? 1.0 : 0.0))>.01)throw std::runtime_error("Non-orthonormal IMU rotation");
+    }
+    auto imu=pipeline_->create<dai::node::IMU>();
+    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_CALIBRATED,200);
+    imu->setBatchReportThreshold(1);imu->setMaxBatchReports(5);
+    imu_queue_=imu->out.createOutputQueue(20,false);
   }
   pipeline_->build();
   const auto bridge = stereo->depth.getXLinkBridge();
@@ -217,6 +240,9 @@ RigidTransform DepthSource::rgbFromFrame(dai::ImgFrame & frame)
   }
   return compose(found->second, reference_from_frame);
 }
+
+std::shared_ptr<dai::IMUData> DepthSource::tryGetImu()
+{return imu_queue_ ? imu_queue_->tryGet<dai::IMUData>() : nullptr;}
 
 std::string DepthSource::deviceId() const {return device_->getDeviceId();}
 }  // namespace point_cloud

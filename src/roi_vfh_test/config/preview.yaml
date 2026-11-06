@@ -1,0 +1,17 @@
+roi_vfh_test:
+  ros__parameters:
+    gui: true
+    nominal_speed_mps: 0.7
+    horizon_m: 1.4
+    sample_step_m: 0.04
+    safety_margin_m: 0.04
+    lane_departure_m: 0.40 # Body outer edge; normal obstacle avoidance only.
+    reference_distance_m: 1.0
+    histogram_low: 1.0
+    histogram_high: 2.0
+    memory_time_sec: 0.5
+    memory_distance_m: 0.35
+    max_age_sec: 0.30
+    max_sync_sec: 0.10
+    deceleration_mps2: 0.8 # Preview assumption, NOT measured braking capability.
+    response_delay_sec: 0.20

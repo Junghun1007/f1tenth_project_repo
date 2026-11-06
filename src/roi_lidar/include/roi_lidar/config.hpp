@@ -15,6 +15,7 @@ struct Config
   bool show_terrain{true}, show_projected_points{true};
   double terrain_alpha{0.80};
   int point_radius{2};
+  bool publish_lane_bev{false},publish_imu{false};
   bool gui{true}, publish_preview{true}, camera_image{true};
   double preview_fps{15}, rgb_fps{15}, sync_sec{0.08}, max_age{0.25};
   int preview_size{800};
@@ -47,6 +48,8 @@ inline void validate(const Config & c)
 }
 // Shared declaration/snapshot/validation table; startup and mount are read-only.
 #define ROI_PARAMETERS(X) \
+  X("motion.publish_imu",publish_imu,as_bool) \
+  X("preview.publish_lane_bev",publish_lane_bev,as_bool) \
   X("terrain.fill_enabled",terrain.fill_enabled,as_bool) \
   X("terrain.fill_max_cells",terrain.fill_max_cells,as_int) \
   X("terrain.fill_clearance_cells",terrain.fill_clearance_cells,as_int) \

@@ -1,0 +1,75 @@
+"""Exercise the real launch assembly with lightweight ROS launch API doubles."""
+import importlib.util
+from pathlib import Path
+import sys
+import types
+import unittest
+from unittest.mock import patch
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def record(kind):
+    return lambda *args, **kwargs: dict(kind=kind, args=args, **kwargs)
+
+
+class Configuration:
+    def __init__(self, name):
+        self.name = name
+
+    def perform(self, context):
+        return context[self.name]
+
+
+class LaunchTest(unittest.TestCase):
+    def setUp(self):
+        modules = {}
+        for name in ("ament_index_python", "ament_index_python.packages", "launch", "launch.actions",
+                     "launch.launch_description_sources", "launch.substitutions", "launch_ros", "launch_ros.actions"):
+            modules[name] = types.ModuleType(name)
+        modules["ament_index_python.packages"].get_package_share_directory = lambda name: str(ROOT / name)
+        modules["launch"].LaunchDescription = list
+        for name in ("DeclareLaunchArgument", "IncludeLaunchDescription", "OpaqueFunction"):
+            setattr(modules["launch.actions"], name, record(name))
+        modules["launch.launch_description_sources"].PythonLaunchDescriptionSource = record("PythonSource")
+        modules["launch.substitutions"].LaunchConfiguration = Configuration
+        modules["launch_ros.actions"].Node = record("Node")
+        self.patch = patch.dict(sys.modules, modules)
+        self.patch.start()
+        self.addCleanup(self.patch.stop)
+        spec = importlib.util.spec_from_file_location("roi_test_launch", ROOT / "roi_vfh_test/launch/preview.launch.py")
+        self.module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.module)
+        self.context = {a["args"][0]: a["default_value"] for a in self.module.generate_launch_description()
+                        if a["kind"] == "DeclareLaunchArgument"}
+
+    def test_preview_defaults_and_shared_camera(self):
+        actions = self.module.nodes(self.context)
+        roi = next(a for a in actions if a.get("package") == "roi_lidar")["parameters"][0]
+        self.assertEqual((roi["camera.fps"], roi["preview.width_m"], roi["preview.forward_m"]), (30, 1.2, 3))
+        self.assertTrue(roi["preview.gui"] and roi["preview.publish_lane_bev"] and roi["motion.publish_imu"])
+        test = next(a for a in actions if a.get("package") == "roi_vfh_test")["parameters"][0]
+        self.assertEqual((test["nominal_speed_mps"], test["vehicle_width_m"], test["wheelbase_m"]), (.7, .3, .33))
+        self.assertEqual(test["front_overhang_m"], test["rear_extent_m"])
+        self.assertFalse(any(a.get("package") in ("camera_driver", "vehicle_bringup", "vesc_bridge") for a in actions))
+        lane = next(a for a in actions if a["kind"] == "IncludeLaunchDescription")
+        self.assertEqual(dict(lane["launch_arguments"])["input_topic"], "/roi_lidar/lane_bev")
+        dynamics = next(a for a in actions if a.get("package") == "vehicle_dynamics_monitor")["parameters"][0]
+        self.assertEqual((dynamics["input_mode"], dynamics["imu_topic"], dynamics["imu_yaw_axis"]),
+                         ("ros_topic", "/roi_lidar/imu", "z"))
+
+    def test_external_telemetry(self):
+        self.context.update(dynamics_enabled="false", measured_speed_topic="/existing/speed")
+        actions = self.module.nodes(self.context)
+        self.assertFalse(any(a.get("package") == "vehicle_dynamics_monitor" for a in actions))
+        test = next(a for a in actions if a.get("package") == "roi_vfh_test")["parameters"][0]
+        self.assertEqual(test["measured_speed_topic"], "/existing/speed")
+
+    def test_invalid_mode(self):
+        self.context["dynamics_enabled"] = "invalid"
+        with self.assertRaises(ValueError):
+            self.module.nodes(self.context)
+
+
+if __name__ == "__main__":
+    unittest.main()

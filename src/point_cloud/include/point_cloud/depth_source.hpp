@@ -56,10 +56,13 @@ class DepthSource
 {
 public:
   DepthSource(const Config & config, const std::string & device_id, bool right_preview = false, double rgb_fps = 0.0);
+  DepthSource(const Config & config, const std::string & device_id, bool right_preview, double rgb_fps, bool imu_enabled);
   ~DepthSource();
   std::shared_ptr<dai::ImgFrame> tryGet();
   std::shared_ptr<dai::ImgFrame> tryGetRight();
   std::shared_ptr<dai::ImgFrame> tryGetRgb();
+  std::shared_ptr<dai::IMUData> tryGetImu();
+  Vector3 cameraGyroscope(const Vector3 & report) const {return rotate(rgb_from_imu_,report);}
   std::string deviceId() const;
   RigidTransform rgbFromFrame(dai::ImgFrame & frame);
 
@@ -67,6 +70,7 @@ private:
   std::map<dai::CameraBoardSocket, RigidTransform> rgb_from_reference_;
   std::shared_ptr<dai::Device> device_;
   std::unique_ptr<dai::Pipeline> pipeline_;
-  std::shared_ptr<dai::MessageQueue> queue_, right_queue_, rgb_queue_;
+  std::shared_ptr<dai::MessageQueue> queue_, right_queue_, rgb_queue_, imu_queue_;
+  Matrix3 rgb_from_imu_{1,0,0,0,1,0,0,0,1};
 };
 }  // namespace point_cloud
