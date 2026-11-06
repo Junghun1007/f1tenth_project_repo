@@ -1,5 +1,6 @@
 #include "roi_vfh_test/planner.hpp"
 #include "roi_vfh_test/motion.hpp"
+#include "roi_vfh_test/hazard_filter.hpp"
 #include "roi_vfh_test/render.hpp"
 #include "roi_vfh_test/drive.hpp"
 #include "roi_vfh_test/controls.hpp"
@@ -26,6 +27,9 @@ namespace roi_vfh_test {
 class Node:public rclcpp::Node {
   Config config_; Planner planner_; Plan result_;
   PlannerControls controls_;
+  HazardFilter hazard_filter_;HazardStats hazard_stats_;
+  std::uint64_t hazard_motion_generation_{0};
+  double hazard_filter_ms_{0};
   double planner_deceleration_ceiling_{.5},speed_ceiling_{1.8};
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr planner_parameters_callback_;
   bool drive_enabled_{false},vesc_connected_{false},servo_commanded_{false};
@@ -83,19 +87,19 @@ class Node:public rclcpp::Node {
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
   void stop(const std::string& reason) {
     controls_.blur();controls_.message("Stopped. ROI and VFH parameters unlocked.");
-    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
+    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
     if(!applyPlannerEdits())return;
     controls_.show(false);
-    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
   }
   bool active()const {return requested_ && locked_ && !suspended_;}
   void pauseForInput(const std::string& reason) {
     if(!requested_ || !locked_)return;
     if(!suspended_) {
-      result_=Plan{};last_grid_.reset();planned_lane_.reset();planner_.reset();previous_pose_valid_=false;
+      result_=Plan{};last_grid_.reset();planned_lane_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;
       last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     }
     suspended_=true;healthy_since_.reset();last_recovery_check_.reset();
@@ -137,7 +141,7 @@ class Node:public rclcpp::Node {
     for(const auto& field:plannerFields())if(next.*(field.member)!=config_.*(field.member))changed=true;
     if(!changed)return;
     validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_);
-    config_=next;planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
+    config_=next;hazard_filter_.reset();hazard_stats_={};planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
     controls_.sync(config_);
   }
   bool applyPlannerEdits() {
@@ -161,6 +165,32 @@ class Node:public rclcpp::Node {
     if(requested_)return;
     if(action==PlannerControls::Action::Apply)applyPlannerEdits();
     if(action==PlannerControls::Action::Reload){controls_.reload(config_);controls_.message("Reloaded applied values. Draft edits discarded.");}
+  }
+  HazardResult confirmedTerrain(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr& match) {
+    if(hazard_motion_generation_!=motion_.generation) {
+      hazard_filter_.reset();hazard_motion_generation_=motion_.generation;
+    }
+    // Process every available depth observation up to the selected capture, in
+    // time order. A blank intervening frame breaks a weak hazard's streak even
+    // if that frame was not chosen for the lane/depth synchronization pair.
+    std::vector<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> frames;
+    for(const auto& g:grids_)if(stamp(g->header.stamp)<=stamp(match->header.stamp) && fresh(g->header.stamp))frames.push_back(g);
+    std::stable_sort(frames.begin(),frames.end(),[](const auto& a,const auto& b){return stamp(a->header.stamp)<stamp(b->header.stamp);});
+    HazardResult output;bool found=false;
+    for(const auto& g:frames) {
+      if(g->header.frame_id!=frame_id_ || std::abs(g->info.origin.orientation.x)>1e-6 ||
+        std::abs(g->info.origin.orientation.y)>1e-6 || std::abs(g->info.origin.orientation.z)>1e-6 ||
+        std::abs(g->info.origin.orientation.w-1)>1e-6) {hazard_filter_.reset();continue;}
+      Grid raw;raw.width=g->info.width;raw.height=g->info.height;raw.resolution=g->info.resolution;
+      raw.x0=g->info.origin.position.x;raw.y0=g->info.origin.position.y;raw.cells=g->data;
+      MotionPose pose;std::optional<MotionPose> capture_pose;
+      const double clock=now().seconds();
+      if(motion_ok_ && clock-speed_at_<=erpm_timeout_ && clock-imu_at_<=imu_timeout_ && motion_.at(stamp(g->header.stamp),pose))capture_pose=pose;
+      auto filtered=hazard_filter_.apply(raw,stamp(g->header.stamp),capture_pose,config_);
+      if(g==match){output=std::move(filtered);found=true;}
+    }
+    if(!found)throw std::invalid_argument("selected terrain missing from hazard confirmation input");
+    return output;
   }
   bool inputs() {
     input_recoverable_=true;waiting_for_pair_=false;
@@ -204,7 +234,11 @@ class Node:public rclcpp::Node {
       points.clear();if(ordered)for(auto p:ordered->points)points.push_back({p.x,p.y});
     }
     if (points.size()<2 && !planner_.guidance()) {status_="STOP: disconnected lane";return false;}
-    lane_points_=std::move(points);display_=std::move(grid);
+    lane_points_=std::move(points);
+    const auto filter_begin=std::chrono::steady_clock::now();
+    auto confirmed=confirmedTerrain(match);
+    hazard_filter_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-filter_begin).count();
+    display_=std::move(confirmed.grid);hazard_stats_=confirmed.stats;
     if(requested_ && locked_ && now().seconds()-speed_at_>erpm_timeout_){status_="STOP: missing/stale measured speed (check VESC ERPM topic/bridge)";return false;}
     if(requested_ && locked_ && now().seconds()-imu_at_>imu_timeout_){status_="STOP: missing/stale vehicle-frame IMU (/roi_lidar/imu)";return false;}
     MotionPose pose;
@@ -254,7 +288,8 @@ class Node:public rclcpp::Node {
     frame.elapsed_sec=std::chrono::duration<double>(std::chrono::steady_clock::now()-log_started_).count();
     frame.labels={state};
     frame.values={active?result_.speed:0,measured_speed_,drive_command_.steer,drive_command_.duty,drive_command_.brake,
-      requested_?1.:0.,locked_?1.:0.,result_.length,double(result_.candidates.size()),result_.used_vfh?1.:0.,result_.guidance?1.:0.};
+      requested_?1.:0.,locked_?1.:0.,result_.length,double(result_.candidates.size()),result_.used_vfh?1.:0.,result_.guidance?1.:0.,
+      double(hazard_stats_.raw),double(hazard_stats_.confirmed),double(hazard_stats_.pending),double(hazard_stats_.immediate),hazard_filter_ms_};
     for(const auto& p:result_.path)frame.path.push_back({p.x,p.y});
     driving_log_->enqueue(std::move(frame));
   }
@@ -320,6 +355,7 @@ class Node:public rclcpp::Node {
     message.data=status_+cv::format(" | target v=%.2fm/s steer=%.1fdeg plan=%.2fms candidates=%zu | rear unverified",
       speed.data,steer.data*180/pi,plan_ms_,result_.candidates.size());
     if(drive_enabled_)message.data+=cv::format(" | DRIVE duty=%.3f brake=%.2fA command_steer=%.1fdeg",drive_command_.duty,drive_command_.brake,drive_command_.steer*180/pi);
+    message.data+=cv::format(" | hazard raw=%zu confirmed=%zu pending=%zu immediate=%zu filter=%.2fms",hazard_stats_.raw,hazard_stats_.confirmed,hazard_stats_.pending,hazard_stats_.immediate,hazard_filter_ms_);
     status_pub_->publish(message);
     if(!drive_enabled_)logDrive(active);
     RCLCPP_INFO_THROTTLE(get_logger(),*get_clock(),static_cast<int64_t>(1000/status_rate_),"%s",message.data.c_str());
@@ -342,7 +378,7 @@ class Node:public rclcpp::Node {
   }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
-    auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
+    auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake,&hazard_stats_);
     controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_,speed_ceiling_);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id=frame_id_;
@@ -403,6 +439,9 @@ public:
     PARAM("stanley_corner_opposing_correction_ratio",stanley_opposing);
     PARAM("path_geometry_window_m",geometry_window);PARAM("steering_current_weight",steering_weight);
     PARAM("control_rate_hz",control_rate);
+    PARAM("hazard_filter_enabled",hazard_filter_enabled);PARAM("hazard_confirm_frames",hazard_confirm_frames);
+    PARAM("hazard_small_max_cells",hazard_small_max_cells);PARAM("hazard_match_radius_cells",hazard_match_radius_cells);
+    PARAM("hazard_max_gap_sec",hazard_max_gap_sec);
     config_.curvature_speed_control=declare_parameter("curvature_speed_control_enabled",true,fixed);
     PARAM("deceleration_mps2",deceleration);PARAM("response_delay_sec",delay);PARAM("reference_distance_m",reference_distance);
 #undef PARAM
@@ -496,7 +535,7 @@ public:
     steer_pub_=create_publisher<std_msgs::msg::Float32>("~/steering_angle_rad",1);
     status_pub_=create_publisher<std_msgs::msg::String>("~/status",1);
     image_pub_=create_publisher<sensor_msgs::msg::Image>("~/preview",sensor);
-    grid_sub_=create_subscription<nav_msgs::msg::OccupancyGrid>("/roi_lidar/terrain_for_planning",sensor,
+    grid_sub_=create_subscription<nav_msgs::msg::OccupancyGrid>("/roi_lidar/terrain_for_planning",rclcpp::SensorDataQoS().keep_last(16),
       [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr p){grids_.push_back(p);while(grids_.size()>16)grids_.pop_front();});
     const auto speed_topic=declare_parameter<std::string>("measured_speed_topic","/vehicle/dynamics/speed_mps",fixed);
     speed_sub_=create_subscription<std_msgs::msg::Float32>(speed_topic,sensor,
@@ -556,7 +595,7 @@ public:
       std::string parameters;
       for(const auto& name:list_parameters({},10).names)parameters+=name+"="+get_parameter(name).value_to_string()+"\n";
       driving_log_=std::make_unique<auto_control::DrivingLog>(log_directory,
-        "ros_ns,elapsed_sec,dropped,state,target_speed_mps,speed_mps,steer_rad,duty,brake_amps,requested,locked,path_length_m,candidates,vfh,guidance,path",parameters);
+        "ros_ns,elapsed_sec,dropped,state,target_speed_mps,speed_mps,steer_rad,duty,brake_amps,requested,locked,path_length_m,candidates,vfh,guidance,hazard_raw,hazard_confirmed,hazard_pending,hazard_immediate,hazard_filter_ms,path",parameters);
       RCLCPP_INFO(get_logger(),"VFH driving CSV: %s",driving_log_->path().c_str());
     }
     publishLock(false);

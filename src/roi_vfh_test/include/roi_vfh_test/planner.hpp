@@ -39,6 +39,9 @@ struct Config {
   double stanley_gain{1.3},stanley_softening{.3},stanley_corner_heading{60*pi/180},stanley_opposing{.8};
   double geometry_window{.16},steering_weight{.4},control_rate{100};
   bool curvature_speed_control{true};
+  // Numeric 0/1 and integer-valued doubles share the pre-Start GUI/ROS edit path.
+  double hazard_filter_enabled{1},hazard_confirm_frames{2},hazard_small_max_cells{5};
+  double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
   void validate() const {
     for (double a:{speed,horizon,step,wheelbase,width,rear,front,margin,max_steer,steer_rate,
@@ -46,6 +49,14 @@ struct Config {
       minimum_path_length,uncertainty,max_curvature,lane_lateral_acceleration,avoidance_lateral_acceleration,
       stanley_gain,stanley_softening,stanley_corner_heading,stanley_opposing,geometry_window,steering_weight,control_rate})
       if (!std::isfinite(a) || a<0) throw std::invalid_argument("nonfinite/negative VFH parameter");
+    for(double a:{hazard_filter_enabled,hazard_confirm_frames,hazard_small_max_cells,hazard_match_radius_cells,hazard_max_gap_sec})
+      if(!std::isfinite(a))throw std::invalid_argument("nonfinite hazard filter parameter");
+    if((hazard_filter_enabled!=0 && hazard_filter_enabled!=1) ||
+      hazard_confirm_frames<1 || hazard_confirm_frames>5 || std::floor(hazard_confirm_frames)!=hazard_confirm_frames ||
+      hazard_small_max_cells<1 || hazard_small_max_cells>50 || std::floor(hazard_small_max_cells)!=hazard_small_max_cells ||
+      hazard_match_radius_cells<0 || hazard_match_radius_cells>2 || std::floor(hazard_match_radius_cells)!=hazard_match_radius_cells ||
+      hazard_max_gap_sec<.02 || hazard_max_gap_sec>.5)
+      throw std::invalid_argument("invalid hazard confirmation limits/integer values");
     if(!std::isfinite(current_speed) || std::abs(current_speed)>6 || minimum_path_length<.02 || minimum_path_length>1 ||
       uncertainty>.5 || max_curvature<.1 || max_curvature>10 || lane_lateral_acceleration<=0 ||
       avoidance_lateral_acceleration<=0 || geometry_window<=0 || steering_weight<=0 || steering_weight>1 ||

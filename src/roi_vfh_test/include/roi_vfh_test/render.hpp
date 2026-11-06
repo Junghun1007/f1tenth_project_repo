@@ -1,12 +1,13 @@
 #pragma once
 #include "roi_vfh_test/planner.hpp"
+#include "roi_vfh_test/hazard_filter.hpp"
 #include <opencv2/imgproc.hpp>
 namespace roi_vfh_test {
 inline cv::Rect startButton(){return {12,12,160,36};}
 inline cv::Rect stopButton(){return {184,12,160,36};}
 inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
   const Plan& plan,const Config& config,bool requested,bool locked,const std::string& status,double plan_ms,
-  bool drive_enabled=false,double duty=0,double brake=0) {
+  bool drive_enabled=false,double duty=0,double brake=0,const HazardStats* hazards=nullptr) {
     cv::Mat canvas(620,760,CV_8UC3,cv::Scalar(245,245,245));
     auto text=[&](std::string s,int y){cv::putText(canvas,s,{12,y},cv::FONT_HERSHEY_SIMPLEX,.43,{35,35,35},1,cv::LINE_AA);};
     cv::rectangle(canvas,startButton(),requested?cv::Scalar(160,160,160):cv::Scalar(70,150,70),-1);
@@ -32,7 +33,7 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       cv::putText(canvas,plan.used_vfh?"primary / binary / masked":"Reference clear - VFH bypass",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     }
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
-    cv::putText(canvas,"Current frame only / no memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
+    cv::putText(canvas,hazards && hazards->enabled?"Current terrain / hazard confirmation":"Current frame only / no memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Blue: lane reference",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
     cv::putText(canvas,"Yellow: selected driving path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
@@ -42,6 +43,12 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       {12,444},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,cv::format("Longest candidate: %.2fm",plan.longest_candidate),
       {12,464},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
+    if(hazards) {
+      cv::putText(canvas,cv::format("Hazard raw %zu / confirmed %zu",hazards->raw,hazards->confirmed),{12,488},cv::FONT_HERSHEY_SIMPLEX,.37,{35,35,35},1);
+      cv::putText(canvas,cv::format("Pending %zu / immediate %zu",hazards->pending,hazards->immediate),{12,508},cv::FONT_HERSHEY_SIMPLEX,.37,{35,35,35},1);
+      if(hazards->enabled && !hazards->motion_ready)
+        cv::putText(canvas,"Confirmation waiting for speed + IMU",{12,528},cv::FONT_HERSHEY_SIMPLEX,.34,{35,65,190},1);
+    }
     if (grid.width>0) {
       const double scale=std::min(430./(grid.width*grid.resolution),400./(grid.height*grid.resolution));
       const auto pixel=[&](double x,double y){return cv::Point(int(490-y*scale),int(584-x*scale));};
