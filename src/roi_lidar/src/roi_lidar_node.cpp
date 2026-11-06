@@ -95,7 +95,7 @@ class Node : public rclcpp::Node
   std::vector<rclcpp::Parameter> last_parameters_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_pub_;
   rclcpp::Publisher<geometry_msgs::msg::PoseArray>::SharedPtr obstacles_pub_;
-  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_pub_;
+  rclcpp::Publisher<nav_msgs::msg::OccupancyGrid>::SharedPtr terrain_pub_, raw_terrain_pub_;
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr points_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_pub_, roi_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
@@ -164,6 +164,7 @@ class Node : public rclcpp::Node
     grid.info.resolution=terrain.cell_m; grid.info.width=terrain.width; grid.info.height=terrain.height;
     grid.info.origin.position.y=terrain.y_min; grid.info.origin.orientation.w=1;
     grid.data=terrain.cells; terrain_pub_->publish(grid);
+    grid.data=terrain.raw_cells; raw_terrain_pub_->publish(grid);
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header=grid.header;
     sensor_msgs::PointCloud2Modifier modifier(cloud);
@@ -308,7 +309,7 @@ class Node : public rclcpp::Node
   void preview()
   {
     Config c; Snapshot s; std::uint64_t version;
-    {std::lock_guard<std::mutex> lock(mutex_); c=config_; s=snapshot_; version=revision_;}
+    {std::lock_guard<std::mutex> lock(mutex_); c=config_; version=revision_;}
     const double clock=seconds(Clock::now());
     if (clock-last_preview_<1.0/c.preview_fps) {return;} last_preview_=clock;
     if (preview_revision_!=version) {rgb_key_.clear(); preview_revision_=version;}
@@ -318,6 +319,7 @@ class Node : public rclcpp::Node
       controls_.reset();
     }
     if (!c.gui && !c.publish_preview) {return;}
+    {std::lock_guard<std::mutex> lock(mutex_); s=snapshot_;}
     try {
       const bool fresh=s.depth && s.revision==version && freshCapture(s.capture,clock,c.max_age);
       const bool rgb_fresh=s.rgb && freshCapture(seconds(s.rgb->getTimestamp()),clock,c.max_age);
@@ -333,7 +335,8 @@ class Node : public rclcpp::Node
       }
       std::ostringstream text; text<<s.state<<" | depth "<<std::fixed<<std::setprecision(1)<<s.fps
         <<" FPS / host "<<s.host_ms<<" ms | max height "<<c.scan.max_height<<"m"
-        <<" | floor "<<(fresh ? s.terrain.ground_cells : 0)<<" hazard "<<(fresh ? s.terrain.obstacle_cells : 0);
+        <<" | floor "<<(fresh ? s.terrain.ground_cells : 0)<<" hazard "<<(fresh ? s.terrain.obstacle_cells : 0)
+        <<" filled "<<(fresh ? s.terrain.filled_cells : 0);
       if (!rgb_fresh) {text<<" | WAIT RGB";}
       else if (!aligned) {text<<" | OVERLAY WAIT SYNC";}
       else {text<<" | delta "<<std::abs(s.capture-seconds(s.rgb->getTimestamp()))*1000<<" ms";}
@@ -425,6 +428,7 @@ public:
     scan_pub_=create_publisher<sensor_msgs::msg::LaserScan>("~/scan",qos);
     obstacles_pub_=create_publisher<geometry_msgs::msg::PoseArray>("~/obstacles",qos);
     terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain",qos);
+    raw_terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain_raw",qos);
     points_pub_=create_publisher<sensor_msgs::msg::PointCloud2>("~/obstacle_points",qos);
     preview_pub_=create_publisher<sensor_msgs::msg::Image>("~/bev_preview",qos);
     roi_pub_=create_publisher<sensor_msgs::msg::Image>("~/roi_preview",qos);

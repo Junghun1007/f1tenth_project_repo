@@ -4,6 +4,7 @@
 int main()
 {
   roi_lidar::Config c; roi_lidar::validate(c);
+  if (c.camera.fps!=30 || c.terrain_alpha!=.8 || c.point_radius!=2 || c.view.width_m!=1.2 || c.view.forward_m!=3) {throw std::runtime_error("Requested defaults lost");}
   c.camera.fps=110; c.camera.subpixel=false; roi_lidar::validate(c);
   c.camera.resolution="800p"; c.camera.fps=30; c.camera.subpixel=true;
   c.scan.max_depth=25; c.scan.max_range=20; roi_lidar::validate(c);
@@ -22,6 +23,10 @@ int main()
   rejects([](auto & p){p.scan.roi_width=2;});
   rejects([](auto & p){p.camera.subpixel=true; p.camera.extended=true;});
   rejects([](auto & p){p.terrain.cell_m=0;});
+  rejects([](auto & p){p.terrain.fill_max_cells=0;});
+  rejects([](auto & p){p.terrain.fill_max_cells=17;});
+  rejects([](auto & p){p.terrain.fill_clearance_cells=-1;});
+  rejects([](auto & p){p.terrain.fill_clearance_cells=5;});
   rejects([](auto & p){p.terrain.below_ground_m=-.01;});
   rejects([](auto & p){p.terrain.min_ground_samples=0;});
   rejects([](auto & p){p.terrain.vehicle_width_m=0;});

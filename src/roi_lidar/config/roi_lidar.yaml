@@ -6,7 +6,7 @@ roi_lidar:
     device_id: ""
     # Request, not a measured/guaranteed device rate. 'fast' profile disables subpixel.
     camera.resolution: "400p"
-    camera.fps: 90.0
+    camera.fps: 30.0
     depth.mode: "high_density"
     depth.subpixel: true
     depth.subpixel_fractional_bits: 3
@@ -54,7 +54,10 @@ roi_lidar:
     cluster.max_gap_bins: 1         # 연결 사이에 허용하는 미관측/제외 방향 개수.
     cluster.min_height_m: 0.10      # 선택 거리 주변에서 지면 위 10cm 이상의 높이 근거 필요.
 
-    # 현재 프레임의 실제 depth 끝점만 셀에 집계. 광선/미관측 공간을 바닥으로 채우지 않음.
+    # 현재 프레임 실제 depth 끝점을 집계한 뒤 작은 내부 구멍만 선택적으로 보정.
+    terrain.fill_enabled: true # Small enclosed holes only; false preserves raw cells.
+    terrain.fill_max_cells: 2 # 1..16, 8-connected component size at current cell resolution.
+    terrain.fill_clearance_cells: 1 # 0..4, hazard exclusion radius in cells.
     terrain.cell_m: 0.05
     terrain.below_ground_m: 0.05   # 지면 아래 5cm 초과 관측은 함몰/위험 근거.
     terrain.min_ground_samples: 2
@@ -62,8 +65,8 @@ roi_lidar:
     terrain.vehicle_width_m: 0.30 # 폭 눈금만 표시. 차량 통과/안전 여유 판정에는 미적용.
     preview.show_terrain: true    # 초록=관측 바닥, 빨강=높이/함몰 위험, 회색=미관측·근거부족.
     preview.show_projected_points: true # 각도별 최근접점으로 줄이지 않은 XY 포인트 전체.
-    preview.terrain_alpha: 0.40   # 0이면 원본 RGB BEV를 유지. 포인트는 별도 표시.
-    preview.point_radius: 1
+    preview.terrain_alpha: 0.80   # 0이면 원본 RGB BEV를 유지. 포인트는 별도 표시.
+    preview.point_radius: 2
 
     # Separate RGB/GUI rates preserve headroom for depth processing.
     preview.show_raw_points: false # true: 군집 전 스캔점도 회색으로 비교 표시.
@@ -76,6 +79,6 @@ roi_lidar:
     preview.fps: 15.0
     preview.rgb_fps: 15.0           # 640x400 undistorted CAM_A; same device session as stereo.
     preview.max_sync_sec: 0.08      # Suppress overlay if RGB/depth timestamps differ more than this.
-    preview.width_m: 1.5           # Vehicle Y: -0.75..+0.75m. Display only.
-    preview.forward_m: 4.0         # Vehicle X: 0..4m. Scan range remains independent.
+    preview.width_m: 1.2           # Vehicle Y: -0.6..+0.6m. Display only.
+    preview.forward_m: 3.0         # Vehicle X: 0..4m. Scan range remains independent.
     preview.size_px: 800           # Long-side pixel budget including header/footer.

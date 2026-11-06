@@ -6,6 +6,8 @@ int main()
 {
   Options o;
   ViewOptions view;
+  check(view.width_m==1.2 && view.forward_m==3.0,"New display defaults lost");
+  view.width_m=1.5; view.forward_m=4.0; // Exercise the original configurable footprint.
   const auto layout=mapLayout(view,800);
   const auto origin=mapPixel(0,0,view,800),front=mapPixel(1,0,view,800),left=mapPixel(1,.5,view,800);
   check(front.y<origin.y && left.x<front.x,"BEV axes mirrored");

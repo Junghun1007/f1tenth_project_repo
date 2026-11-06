@@ -36,6 +36,9 @@ private:
     {"ground.max_distance_m","m",Type::Real,false},
     {"ground.enabled","0=off / 1=on",Type::Boolean,false},
     {"terrain.below_ground_m","m",Type::Real,false},
+    {"terrain.fill_enabled","0=off / 1=on",Type::Boolean,false},
+    {"terrain.fill_max_cells","1..16 cells",Type::Integer,false},
+    {"terrain.fill_clearance_cells","0..4 cells",Type::Integer,false},
     {"terrain.cell_m","m",Type::Real,false},
     {"terrain.min_ground_samples","samples per cell",Type::Integer,false},
     {"terrain.min_obstacle_samples","samples per cell",Type::Integer,false},
@@ -60,10 +63,10 @@ private:
   std::string message_;
   static cv::Rect field(std::size_t index)
   {
-    return {322+int(index/12)*520,104+int(index%12)*40,174,30};
+    return {316+int(index/14)*450,88+int(index%14)*30,112,26};
   }
-  static cv::Rect applyButton() {return {20,598,490,44};}
-  static cv::Rect reloadButton() {return {530,598,490,44};}
+  static cv::Rect applyButton() {return {16,518,426,32};}
+  static cv::Rect reloadButton() {return {458,518,426,32};}
   static std::string format(double value)
   {
     std::ostringstream text; text<<std::setprecision(10)<<value; return text.str();
@@ -119,34 +122,34 @@ private:
   }
   void draw()
   {
-    cv::Mat canvas(690,1040,CV_8UC3,cv::Scalar(242,242,242));
+    cv::Mat canvas(590,900,CV_8UC3,cv::Scalar(242,242,242));
     const auto text=[&](const std::string & value,cv::Point at,double scale,cv::Scalar color) {
       cv::putText(canvas,value,at,cv::FONT_HERSHEY_SIMPLEX,scale,color,1,cv::LINE_AA);
     };
-    text("ROI PARAMETERS - numeric input",{20,30},.72,{35,35,35});
-    text("Click a value and type. Enter / A / Apply: apply all edits together. Tab: next field.",{20,56},.46,{55,55,55});
-    text("* Camera setting: restarts streaming on Apply. Units match ROS/YAML. Booleans: 0 or 1.",{20,80},.44,{55,55,55});
+    text("ROI PARAMETERS - numeric input",{16,25},.60,{35,35,35});
+    text("Click a value and type. Enter / A / Apply: apply all edits together. Tab: next field.",{16,48},.39,{55,55,55});
+    text("* Camera setting: restarts streaming on Apply. Units match ROS/YAML. Booleans: 0 or 1.",{16,69},.37,{55,55,55});
     for (std::size_t i=0;i<entries_.size();++i) {
       const auto & entry=entries_[i];
       const auto box=field(i);
-      const int left=20+int(i/12)*520;
-      text(std::string(entry.depth ? "* " : "")+entry.name,{left,box.y+13},.39,{35,35,35});
-      text(entry.unit,{left,box.y+29},.32,{105,105,105});
+      const int left=16+int(i/14)*450;
+      text(std::string(entry.depth ? "* " : "")+entry.name,{left,box.y+11},.34,{35,35,35});
+      text(entry.unit,{left,box.y+25},.28,{105,105,105});
       cv::rectangle(canvas,box,entry.pending ? cv::Scalar(220,245,255) : cv::Scalar(255,255,255),-1);
       cv::rectangle(canvas,box,active_==static_cast<int>(i) ? cv::Scalar(220,120,30) : cv::Scalar(165,165,165),
         active_==static_cast<int>(i) ? 2 : 1);
       if (active_==static_cast<int>(i) && select_all_) {
         cv::rectangle(canvas,box.tl()+cv::Point(3,3),box.br()-cv::Point(3,3),{220,170,100},-1);
       }
-      const auto visible=entry.draft.size()>16 ? entry.draft.substr(entry.draft.size()-16) : entry.draft;
+      const auto visible=entry.draft.size()>12 ? entry.draft.substr(entry.draft.size()-12) : entry.draft;
       text(visible+(active_==static_cast<int>(i) && !select_all_ ? "_" : ""),
-        box.tl()+cv::Point(7,21),.51,{25,25,25});
+        box.tl()+cv::Point(5,19),.43,{25,25,25});
     }
     cv::rectangle(canvas,applyButton(),{75,150,70},-1);
     cv::rectangle(canvas,reloadButton(),{175,175,175},-1);
-    text("Apply edits (Enter / A)",{135,627},.60,{255,255,255});
-    text("Reload current values / discard edits",{560,627},.53,{35,35,35});
-    text(message_.substr(0,132),{20,669},.43,{35,65,190});
+    text("Apply edits (Enter / A)",{98,540},.48,{255,255,255});
+    text("Reload current values / discard edits",{475,540},.43,{35,35,35});
+    text(message_.substr(0,118),{16,575},.38,{35,65,190});
     cv::imshow(windowName(),canvas);
   }
 public:

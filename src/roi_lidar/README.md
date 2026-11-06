@@ -29,7 +29,7 @@ ros2 launch roi_lidar roi_lidar.launch.py \
 기존 point_cloud의 보정/깊이 입력 라이브러리를 공유하되 해당 노드나 RViz는 시작하지 않는다.
 기본 좌표 원점은 앞차축 지면이며 +X는 전방, +Y는 차량 좌측이다.
 
-기본 표시 영역은 폭 1.5m, 전방 4m로 미터당 픽셀 비율을 동일하게 유지한다.
+기본 표시 영역은 폭 1.2m, 전방 3m로 미터당 픽셀 비율을 동일하게 유지한다.
 최대 검출 거리는 별도의 `range.max_m`이며 화면 밖 포인트도 토픽에는 남는다.
 
 ## 화면과 조작
@@ -37,7 +37,7 @@ ros2 launch roi_lidar roi_lidar.launch.py \
 - **RGB BEV**: 실제 RGB 지면 투영 영상 위에 XY 포인트와 바닥 분류를 표시한다.
 - **select depth ROI**: rectified-right 흑백 영상에서 사각형을 드래그한다.
   `preview.camera_image=false`이면 깊이 컬러 영상으로 바뀐다.
-- **parameters**: 관련 파라미터 24개를 한 창의 두 열에 숫자 입력칸으로 표시한다.
+- **parameters**: 관련 파라미터 27개를 한 창의 두 열에 숫자 입력칸으로 표시한다.
   슬라이더와 스크롤바는 사용하지 않는다. 프리뷰와 ROI 화면은 그대로 유지한다.
 
 값을 클릭해 숫자를 입력하고 **Enter**, **A** 또는 **Apply edits** 버튼으로 변경분을
@@ -87,7 +87,7 @@ min(ground.max_distance_m,
 위험이 우선한다. 위험 표본이 하나만 있어도 초록색으로 판정하지 않는다.
 보이지 않는 공간, 광선 앞쪽과 장애물 뒤쪽을 초록색으로 채우지 않는다.
 단, 실제 바닥이 별도로 관측된 셀은 차량과의 연결성 여부와 관계없이 초록색이 될 수 있다.
-프레임 간 누적, 메모리, 셀 보간, 팽창, 군집 연결은 수행하지 않는다.
+프레임 간 누적, 메모리, 팽창, 군집 연결은 수행하지 않는다. 작은 내부 구멍 보정은 아래 설정으로 선택한다.
 `ground.enabled`는 포인트 하한에만 적용되며 바닥 셀 분류 기준은 유지한다.
 
 차량 폭 **0.30m**는 원점의 폭 눈금에만 반영한다. 차체 길이, 조향 궤적, 장애물 여유 간격,
@@ -110,8 +110,8 @@ min(ground.max_distance_m,
 | `points.pixel_stride` | 2 | ROI 이미지 표본 간격 |
 | `preview.show_terrain` | true | 바닥 분류 색상 표시 |
 | `preview.show_projected_points` | true | XY 포인트 표시 |
-| `preview.terrain_alpha` | 0.40 | 색상 불투명도, 0이면 RGB 원본 유지 |
-| `preview.point_radius` | 1 | XY 포인트 반경(px) |
+| `preview.terrain_alpha` | 0.80 | 색상 불투명도, 0이면 RGB 원본 유지 |
+| `preview.point_radius` | 2 | XY 포인트 반경(px) |
 
 RGB 보간은 `preview.interpolation=nearest/linear/cubic/lanczos4`이며 장애물 좌표에는
 영향을 주지 않는다. 샘플링을 줄이면 바닥 셀의 근거도 줄어 회색 영역이 늘 수 있다.
@@ -163,4 +163,30 @@ ROI/바닥 제거/거리/좌표축/기울기, 현재 프레임 표본의 보존,
 기존 GUI 테스트 코드는 `test/controls_test.cpp`에 있다. 실제 데스크톱 창을 열므로 기본 테스트에서는 제외한다.
 디스플레이가 있는 환경에서 `-DROI_LIDAR_GUI_TESTS=ON`으로 빌드하면 함께 실행할 수 있다.
 
-**이번 숫자 입력 GUI·빨간 포인트 변경은 사용자 요청에 따라 빌드 및 테스트를 실행하지 않았다.**
+로컬 C++ terrain·scan·preview·config 테스트와 GUI 입력 테스트를 확인했다.
+설정 테스트는 설치된 DepthAI SDK와 연결했으며 로컬 Clang의 SDK 헤더 호환 옵션을 사용했다.
+ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 별도 확인한다.
+
+## 작은 내부 구멍 보정과 축소된 파라미터 창
+
+기본 카메라 요청은 **30 FPS**이며 파라미터 창은 **900×590px** 두 열로 표시한다.
+사진의 표시값을 반영해 `preview.terrain_alpha=0.8`, `preview.point_radius=2`,
+`preview.width_m=1.2`, `preview.forward_m=3.0`을 기본값으로 사용한다.
+투영점 표시 ON, confidence 200, LR ON/10, subpixel ON, dot 0.7, flood 0은 유지한다.
+
+`terrain.fill_enabled` (기본 true)를 실행 중 0/1로 바꾸고 Enter/A/Apply로 적용한다.
+`terrain.fill_max_cells` (기본 2, 1~16)는 8방향으로 연결된 회색 묶음의 최대 셀 수다.
+`terrain.fill_clearance_cells` (기본 1, 0~4)는 위험 표본 주변 보정 금지 반경이다.
+세 설정은 카메라 재시작 없이 다음 프레임부터 반영하며 YAML에 자동 저장하지 않는다.
+현재 5cm 격자에서 2셀은 50cm² 면적이다. 셀 크기를 바꾸면 물리적 보정 면적도 바뀐다.
+
+작고 관측 바닥으로 완전히 둘러싸인 묶음만 채운다. 지도 가장자리나 원거리 회색에
+대각선으로라도 연결되면 제외한다. 한 개라도 위험 표본이 있는 셀, 위험 경계와
+접한 구멍은 보정하지 않는다. 원래 관측만 기준으로 검사해 연쇄적으로 확장하지 않으며
+과거 프레임을 누적하지 않는다. 이 보정은 주변 바닥에 근거한 추정이며 새로운 실측이 아니다.
+
+`/roi_lidar/terrain`은 보정 결과, `/roi_lidar/terrain_raw`는 보정 전 판정이다.
+보정 OFF이면 두 결과가 같다. 화면은 실측 바닥 초록, 보정 바닥 청록으로 구분하며
+상단 `filled`는 해당 프레임에서 채운 셀 수다. Depth 중단 시 두 지도 모두 미관측으로
+초기화한다. 장애물 포인트/스캔과 다른 패키지의 주행 제어에는 이 보정을 적용하지 않는다.
+기존 본문의 무보간 설명은 `terrain_raw` 및 보정 OFF에 해당한다.

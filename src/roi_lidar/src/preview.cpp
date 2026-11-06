@@ -189,12 +189,14 @@ void terrainOverlay(cv::Mat & image, const Terrain & terrain, const Scan & scan,
         const double y=(layout.center_x-col)/layout.scale;
         const int gx=static_cast<int>(std::floor(x/terrain.cell_m));
         const int gy=static_cast<int>(std::floor((y-terrain.y_min)/terrain.cell_m));
-        int state=-1;
+        int state=-1; bool inferred=false;
         if (x>=0 && x<terrain.x_max && y>=terrain.y_min && y<terrain.y_max &&
           gx>=0 && gy>=0 && gx<terrain.width && gy<terrain.height) {
-          state=terrain.cells[static_cast<std::size_t>(gy)*terrain.width+gx];
+          const auto index=static_cast<std::size_t>(gy)*terrain.width+gx;
+          state=terrain.cells[index];
+          inferred=index<terrain.inferred.size() && terrain.inferred[index];
         }
-        tinted.at<cv::Vec3b>(row,col)=state==0 ? cv::Vec3b(65,190,65) :
+        tinted.at<cv::Vec3b>(row,col)=state==0 ? (inferred ? cv::Vec3b(190,190,65) : cv::Vec3b(65,190,65)) :
           (state==100 ? cv::Vec3b(45,55,220) : cv::Vec3b(90,90,90));
       }
     }
@@ -216,7 +218,7 @@ void terrainOverlay(cv::Mat & image, const Terrain & terrain, const Scan & scan,
   cv::line(plot,mapPixel(0,-vehicle_width_m/2,view,size)-layout.area.tl(),
     mapPixel(0,vehicle_width_m/2,view,size)-layout.area.tl(),{255,210,40},3);
   cv::rectangle(image,{0,image.rows-38,image.cols,38},{245,245,245},-1);
-  cv::putText(image,"GREEN observed floor | RED hazard | GRAY unknown",{12,image.rows-23},
+  cv::putText(image,"GREEN floor | CYAN inferred | RED hazard | GRAY unknown",{12,image.rows-23},
     cv::FONT_HERSHEY_SIMPLEX,.34,{45,45,45},1,cv::LINE_AA);
   cv::putText(image,"XY points | width reference | Q quit / R ROI / A depth",{12,image.rows-8},
     cv::FONT_HERSHEY_SIMPLEX,.32,{45,45,45},1,cv::LINE_AA);

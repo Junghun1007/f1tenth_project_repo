@@ -8,6 +8,8 @@ struct TerrainOptions
 {
   double cell_m{0.05}, below_ground_m{0.05};
   int min_ground_samples{2}, min_obstacle_samples{2};
+  bool fill_enabled{true};
+  int fill_max_cells{2}, fill_clearance_cells{1};
   double vehicle_width_m{0.30}; // Reference only; no footprint inflation.
 };
 inline void validateTerrain(const TerrainOptions & t, const ViewOptions & view)
@@ -15,10 +17,11 @@ inline void validateTerrain(const TerrainOptions & t, const ViewOptions & view)
   if (!std::isfinite(t.cell_m) || t.cell_m<0.02 || t.cell_m>0.25 ||
     !std::isfinite(t.below_ground_m) || t.below_ground_m<0 || t.below_ground_m>0.30 ||
     !std::isfinite(t.vehicle_width_m) || t.vehicle_width_m<=0 || t.vehicle_width_m>3 ||
+    t.fill_max_cells<1 || t.fill_max_cells>16 || t.fill_clearance_cells<0 || t.fill_clearance_cells>4 ||
     t.min_ground_samples<1 || t.min_ground_samples>1000 ||
     t.min_obstacle_samples<1 || t.min_obstacle_samples>1000 ||
     std::ceil(view.forward_m/t.cell_m)*std::ceil(view.width_m/t.cell_m)>250000) {
-    throw std::invalid_argument("terrain: cell=0.02..0.25m, below_ground=0..0.30m, samples=1..1000, grid<=250000 cells");
+    throw std::invalid_argument("terrain: cell=0.02..0.25m, below_ground=0..0.30m, samples=1..1000, grid<=250000 cells, fill_max_cells=1..16, fill_clearance_cells=0..4");
   }
 }
 struct Terrain
@@ -27,8 +30,54 @@ struct Terrain
   int width{0}, height{0};
   double cell_m{0.05}, y_min{0}, x_max{0}, y_max{0};
   std::vector<std::int8_t> cells; // -1 unknown, 0 observed ground, 100 obstacle/depression
+  std::vector<std::int8_t> raw_cells;
+  std::vector<std::uint8_t> inferred;
+  std::size_t filled_cells{0};
   std::size_t ground_cells{0}, obstacle_cells{0};
 };
+// Examine raw unknown components only; inferred ground never seeds another fill.
+inline void fillSmallHoles(Terrain & out, const std::vector<int> & hazard,
+  const TerrainOptions & t)
+{
+  out.raw_cells=out.cells;
+  out.inferred.assign(out.cells.size(),0);
+  out.filled_cells=0;
+  if (!t.fill_enabled) {return;}
+  std::vector<std::uint8_t> visited(out.cells.size(),0);
+  std::vector<std::size_t> queue; queue.reserve(out.cells.size());
+  for (std::size_t seed=0;seed<out.cells.size();++seed) {
+    if (visited[seed] || out.raw_cells[seed]!=-1) {continue;}
+    queue.clear(); queue.push_back(seed); visited[seed]=1;
+    bool eligible=true;
+    for (std::size_t head=0;head<queue.size();++head) {
+      const auto index=queue[head];
+      const int x=index%out.width,y=index/out.width;
+      if (x==0 || y==0 || x==out.width-1 || y==out.height-1 || hazard[index]) {eligible=false;}
+      for (int dy=-1;dy<=1;++dy) {for (int dx=-1;dx<=1;++dx) {
+        if (!dx && !dy) {continue;}
+        const int nx=x+dx,ny=y+dy;
+        if (nx<0 || ny<0 || nx>=out.width || ny>=out.height) {continue;}
+        const auto n=static_cast<std::size_t>(ny)*out.width+nx;
+        if (out.raw_cells[n]==-1) {
+          if (!visited[n]) {visited[n]=1; queue.push_back(n);}
+        } else if (out.raw_cells[n]!=0) {eligible=false;}
+      }}
+    }
+    if (!eligible || queue.size()>static_cast<std::size_t>(t.fill_max_cells)) {continue;}
+    for (const auto index:queue) {
+      const int x=index%out.width,y=index/out.width;
+      for (int dy=-t.fill_clearance_cells;dy<=t.fill_clearance_cells;++dy) {
+        for (int dx=-t.fill_clearance_cells;dx<=t.fill_clearance_cells;++dx) {
+          const int nx=x+dx,ny=y+dy;
+          if (nx>=0 && ny>=0 && nx<out.width && ny<out.height &&
+            hazard[static_cast<std::size_t>(ny)*out.width+nx]) {eligible=false;}
+        }
+      }
+    }
+    if (!eligible) {continue;}
+    for (const auto index:queue) {out.cells[index]=0; out.inferred[index]=1; ++out.filled_cells;}
+  }
+}
 inline Terrain terrainGrid(const Scan & scan, const Options & o,
   const ViewOptions & view, const TerrainOptions & t)
 {
@@ -57,6 +106,7 @@ inline Terrain terrainGrid(const Scan & scan, const Options & o,
     // Even one unsupported hazard sample vetoes a green cell.
     else if (obstacle[i]==0 && ground[i]>=t.min_ground_samples) {out.cells[i]=0; ++out.ground_cells;}
   }
+  fillSmallHoles(out,obstacle,t);
   return out;
 }
 }

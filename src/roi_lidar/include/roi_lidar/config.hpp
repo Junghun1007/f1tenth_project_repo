@@ -13,14 +13,14 @@ struct Config
   ViewOptions view;
   TerrainOptions terrain;
   bool show_terrain{true}, show_projected_points{true};
-  double terrain_alpha{0.40};
-  int point_radius{1};
+  double terrain_alpha{0.80};
+  int point_radius{2};
   bool gui{true}, publish_preview{true}, camera_image{true};
   double preview_fps{15}, rgb_fps{15}, sync_sec{0.08}, max_age{0.25};
   int preview_size{800};
   bool show_raw_points{false};
   std::string interpolation{"linear"};
-  Config() {camera.fps=90; camera.subpixel=true; camera.dot_intensity=0.7; cluster.enabled=false;}
+  Config() {camera.fps=30; camera.subpixel=true; camera.dot_intensity=0.7; cluster.enabled=false;}
 };
 inline void validate(const Config & c)
 {
@@ -47,6 +47,9 @@ inline void validate(const Config & c)
 }
 // Shared declaration/snapshot/validation table; startup and mount are read-only.
 #define ROI_PARAMETERS(X) \
+  X("terrain.fill_enabled",terrain.fill_enabled,as_bool) \
+  X("terrain.fill_max_cells",terrain.fill_max_cells,as_int) \
+  X("terrain.fill_clearance_cells",terrain.fill_clearance_cells,as_int) \
   X("terrain.cell_m",terrain.cell_m,as_double) \
   X("terrain.below_ground_m",terrain.below_ground_m,as_double) \
   X("terrain.min_ground_samples",terrain.min_ground_samples,as_int) \
