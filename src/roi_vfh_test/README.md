@@ -11,10 +11,22 @@
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-up-to roi_vfh_test --cmake-args -DCMAKE_BUILD_TYPE=Release
+bash scripts/build_roi_vfh_low_memory.sh
 source install/setup.bash
 ros2 launch roi_vfh_test preview.launch.py
 ```
+
+빌드는 새 터미널에서 ROS만 source한 상태로 진행한다. 빌드 전에 이 저장소의
+`install/setup.bash`를 source하면 자기 설치물을 underlay로 인식하는 override 경고가 발생할 수 있다.
+빌드 스크립트는 패키지를 순차 처리하고 Make/CMake 컴파일도 1개로 제한한다.
+`camera_driver`와 `roi_lidar`가 동시에 컴파일될 때 메모리 사용량이 겹치는 것을 줄이며,
+Release 최적화는 유지한다. `BUILD_TESTING=OFF`로 테스트 타깃 생성도 제외한다.
+
+`c++: fatal error: Killed signal terminated program cc1plus`는 컴파일러 프로세스가
+강제 종료됐다는 뜻이며 메모리 부족이 흔한 원인이다. DepthAI의 GCC ABI `note`와 구분한다.
+순차 빌드에서도 반복되면 `sudo dmesg -T | tail -n 80`에서 OOM 기록을 확인하고
+메모리를 사용하는 다른 작업을 종료하거나 시스템 swap 설정을 점검한다.
+이 스크립트 추가 시 빌드·테스트는 실행하지 않았다.
 
 기존 camera_driver/auto_drive/point_cloud/roi_lidar를 종료하고 OAK는 이 실행 하나에서 사용한다.
 차량은 평지에서 정지한 채 시작 지면 측정과 차선 모델 준비를 완료한다.
