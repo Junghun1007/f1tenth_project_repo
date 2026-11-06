@@ -23,6 +23,9 @@ VESC 텔레메트리는 기존 수동주행 실행 등에서 받아야 한다. �
 receive-only dynamics monitor가 이미 있으면 `dynamics_enabled:=false measured_speed_topic:=/실측속도토픽`으로 재사용한다.
 
 ROI RGB BEV/파라미터 창과 `ROI VFH+ test` 창이 함께 열린다.
+GTK HighGUI의 `WND_PROP_VISIBLE=-1`은 미지원 값이므로 창 닫힘으로 판단하지 않는다.
+GTK에서는 `WND_PROP_AUTOSIZE`를 보조 조회하며, 지원되는 속성을 관측한 뒤에만
+창 소멸을 판단한다. 이 호환성 수정은 빌드·테스트를 실행하지 않았다.
 
 1. 출발 전에는 선택 경로 없음, 목표 속도/조향 0. ROI 창에서 값을 조절하고 Apply한다.
 2. **Start preview**: ROI 파라미터 잠금을 요청하고 ACK를 받은 뒤 계획을 시작한다.

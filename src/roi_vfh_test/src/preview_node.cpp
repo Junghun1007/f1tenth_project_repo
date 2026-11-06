@@ -28,6 +28,7 @@ class Node:public rclcpp::Node {
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   bool gui_{true},requested_{false},locked_{false},window_{false};
+  bool visible_supported_{false},autosize_supported_{false};
   double max_age_{.30},max_sync_{.10},plan_ms_{0};
   std::deque<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> grids_;
   line_detactor::msg::LaneResult::ConstSharedPtr lane_;
@@ -139,6 +140,22 @@ class Node:public rclcpp::Node {
     status_pub_->publish(message);
     RCLCPP_INFO_THROTTLE(get_logger(),*get_clock(),1000,"%s",message.data.c_str());
   }
+  bool windowClosed() {
+    // Older GTK HighGUI returns -1 for unsupported VISIBLE, even for an open window.
+    // AUTOSIZE is available on GTK. Observe support before treating a missing
+    // property/window as closure, so unsupported queries never terminate startup.
+    try {
+      const double visible=cv::getWindowProperty("ROI VFH+ test",cv::WND_PROP_VISIBLE);
+      if (visible>0) {visible_supported_=true;return false;}
+      if (visible==0 && visible_supported_) return true;
+      const double autosize=cv::getWindowProperty("ROI VFH+ test",cv::WND_PROP_AUTOSIZE);
+      if (autosize>=0) {autosize_supported_=true;return false;}
+      return visible_supported_ || autosize_supported_;
+    } catch (const cv::Exception&) {
+      // Some backends throw after the last native window has been destroyed.
+      return visible_supported_ || autosize_supported_;
+    }
+  }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
     const auto canvas=renderPreview(display_,observed_display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_);
@@ -151,7 +168,11 @@ class Node:public rclcpp::Node {
       if (!window_) {cv::namedWindow("ROI VFH+ test",cv::WINDOW_AUTOSIZE);cv::setMouseCallback("ROI VFH+ test",mouse,this);window_=true;}
       cv::imshow("ROI VFH+ test",canvas);
       const int key=cv::waitKey(1);if (key==' ' || key=='s'){stop("STOPPED: parameters unlocked");publish();}
-      if (key=='q' || key==27 || cv::getWindowProperty("ROI VFH+ test",cv::WND_PROP_VISIBLE)<1) {stop("STOPPED: preview closed");publish();rclcpp::shutdown();}
+      if (key=='q' || key==27 || windowClosed()) {
+        stop("STOPPED: preview closed");publish();
+        RCLCPP_INFO(get_logger(),"VFH preview closed: stopping and unlocking ROI parameters");
+        rclcpp::shutdown();
+      }
     }
   }
   void tick() {
