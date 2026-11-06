@@ -61,7 +61,8 @@ struct Plan {
   std::vector<Candidate> candidates; std::vector<Pose> path;
   std::array<double,61> histogram{};
   std::array<bool,61> binary{},masked{};
-  double speed{},steer{},length{}; bool guidance{},rear_unverified{true};
+  double speed{},steer{},length{},longest_candidate{}; bool guidance{},rear_unverified{true};
+  std::size_t hazard_ends{},edge_ends{},route_ends{},short_candidates{};
   std::string status{"STOP: no feasible route"};
 };
 // VFH+ four-stage histogram reduction, followed by Ackermann rollout verification.
@@ -187,12 +188,15 @@ public:
         if (longitudinal < -c.rear-pad || longitudinal>c.front+c.margin+pad || std::abs(lateral)>half+pad) continue;
         if (x<0) continue; // No rear sensor/history: Rear terrain remains unverified.
         if (x<=c.front && std::abs(y)<=c.width/2) continue; // Current self-occupied area only.
-        if (v<0 || v>=g.height || blockedTerrain(g.cells[std::size_t(v)*g.width+u]) || !allowed[std::size_t(v)*g.width+u]) return false;
+        if(v<0 || v>=g.height){++out.edge_ends;return false;}
+        const auto index=std::size_t(v)*g.width+u;
+        if(blockedTerrain(g.cells[index])){++out.hazard_ends;return false;}
+        if(!allowed[index]){++out.route_ends;return false;}
       }
       // Explicit forward/lateral bounds, even when the bounding loop was clipped.
       for (double a:{-c.rear,c.front+c.margin}) for (double b:{-half,half}) {
         const double x=p.x+a*cs-b*sn,y=p.y+a*sn+b*cs;
-        if (x>=0 && (x>=g.x0+g.width*g.resolution || y<g.y0 || y>=g.y0+g.height*g.resolution)) return false;
+        if (x>=0 && (x>=g.x0+g.width*g.resolution || y<g.y0 || y>=g.y0+g.height*g.resolution)) {++out.edge_ends;return false;}
       }
       return true;
     };
@@ -220,6 +224,9 @@ public:
       if (!duplicate) targets.push_back(a);
       if (targets.size()>=17) break;
     }
+    if(targets.empty()) {
+      out.status="STOP: no free VFH+ direction (hazard/turn mask)";return out;
+    }
     double best_score=1e9;
     const double dt=c.step/c.speed;
     for (double angle:targets) for (int profile=0;profile<3;++profile) {
@@ -243,7 +250,9 @@ public:
         candidate.path.push_back(p);candidate.length=s;
       }
       const double usable=std::max(0.,candidate.length-c.step);
+      out.longest_candidate=std::max(out.longest_candidate,usable);
       candidate.valid=usable>=.25 && candidate.path.size()>2;
+      if(!candidate.valid)++out.short_candidates;
       if (candidate.valid) {
         const auto last=candidate.path.back();
         candidate.score=4*(c.horizon-candidate.length)+1.5*std::abs(wrap(angle-target_angle))+
@@ -255,7 +264,11 @@ public:
       }
       out.candidates.push_back(std::move(candidate));
     }
-    if (out.path.empty()) return out;
+    if (out.path.empty()) {
+      out.status="STOP: no path >=0.25m; hazard="+std::to_string(out.hazard_ends)+
+        " edge="+std::to_string(out.edge_ends)+" route="+std::to_string(out.route_ends);
+      return out;
+    }
     const auto last=out.path.back();previous_angle_=std::atan2(last.y,last.x);
     // v*delay+v^2/(2a) <= checked remaining path (unknown allowed); nominal speed is an upper bound.
     out.speed=std::min(c.speed,-c.deceleration*c.delay+

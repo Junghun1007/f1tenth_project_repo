@@ -34,6 +34,14 @@ inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::ve
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Cyan: short memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
+    cv::putText(canvas,"Blue: lane reference",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
+    cv::putText(canvas,"Yellow: selected VFH+ path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
+    cv::putText(canvas,cv::format("Ends: hazard %zu / edge %zu",plan.hazard_ends,plan.edge_ends),
+      {12,424},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
+    cv::putText(canvas,cv::format("Route limit %zu / short %zu",plan.route_ends,plan.short_candidates),
+      {12,444},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
+    cv::putText(canvas,cv::format("Longest candidate: %.2fm",plan.longest_candidate),
+      {12,464},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     if (grid.width>0) {
       const double scale=std::min(430./(grid.width*grid.resolution),400./(grid.height*grid.resolution));
       const auto pixel=[&](double x,double y){return cv::Point(int(490-y*scale),int(584-x*scale));};

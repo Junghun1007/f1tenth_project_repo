@@ -19,7 +19,7 @@ roi_lidar:
     depth.ir_flood_light_intensity: 0.0
     # Startup IR is separate. Set both intensities to 0.0 on a non-Pro device.
     measurement_ir_dot_projector_intensity: 0.7
-    measurement_roi_preview_enabled: false
+    measurement_roi_preview_enabled: true # Same oak_startup ROI preview; closes after startup measurement.
 
     # Normalized image ROI: top-left X/Y and width/height in [0,1].
     # Full image initially; drag in the depth/right ROI window to select a rectangle.

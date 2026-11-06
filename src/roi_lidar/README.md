@@ -260,3 +260,19 @@ PointCloud2의 `height`와 스캔의 높이 근거도 선택된 지면 기준 �
 캐시하여 프리뷰와 점군 발행이 전체 바닥 점을 반복 분류하지 않게 한다.
 HUD/로그의 `plane RANSAC/FALLBACK/FIXED`, `inliers/samples`, `isolated`/`outlier_removed`로
 적용 상태를 확인한다. 처리 후 입력 만료 시간을 넘은 프레임은 발행하지 않는다.
+
+
+## 시작 지면 측정 프리뷰
+
+ROI 실행도 BEV/auto_control과 동일한 `oak_startup::measureOakStartupExtrinsics`를 사용한다.
+launch는 BEV 설정의 `measurement_roi_width=456`, `measurement_roi_height=228`,
+`measurement_roi_vertical_offset_px=80` 등을 가져온다. 시작할 때 차량을 평지에 정지시키고
+빨간 ROI 안에 전방 노면이 보이도록 한다. ROI 안의 콘/벽/차체는 측정에서 피한다.
+
+`measurement_roi_preview_enabled=true`와 `preview.gui=true`이면 공유 측정기가 생성한
+동일한 회색 depth 영상과 빨간 ROI를 `OAK startup ground-plane ROI` 창에 표시한다.
+원본 측정기의 ROI 좌표/영상 크기를 그대로 사용하며, 완료 또는 실패하면 창을 자동으로 닫고
+일반 terrain·depth ROI·파라미터 창으로 전환한다. GUI는 ROS/main thread에서만 처리하고,
+작업 스레드는 최대 10Hz로 최신 프레임 한 장만 전달한다. headless/GUI OFF에서는 표시하지 않는다.
+이후 프레임별 RANSAC은 별도의 보정이며 시작 카메라 좌표·BEV 자세 측정을 대체하지 않는다.
+이번 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.
