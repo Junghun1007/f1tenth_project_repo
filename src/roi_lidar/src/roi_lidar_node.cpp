@@ -116,6 +116,7 @@ class Node : public rclcpp::Node
   std::vector<double> rgb_key_;
   std::uint64_t preview_revision_{std::numeric_limits<std::uint64_t>::max()};
   double last_preview_{0};
+  bool bev_window_{false};
   bool windows_{false}, gui_failed_{false}, dragging_{false};
   int roi_width_{0},roi_height_{0};
   cv::Point drag_start_;
@@ -367,7 +368,7 @@ class Node : public rclcpp::Node
     }
     if (!c.gui && windows_) {
       try {cv::destroyAllWindows();} catch (const cv::Exception &) {}
-      windows_=false;
+      windows_=false;bev_window_=false;
       controls_.reset();
     }
     if (!c.gui && !c.publish_preview && !c.publish_lane_bev) {return;}
@@ -424,11 +425,15 @@ class Node : public rclcpp::Node
       if (c.publish_preview) {roi_pub_->publish(imageMessage(roi,now()));}
       if (c.gui && !gui_failed_) {
         if (!windows_) {
-          cv::namedWindow("ROI LiDAR - RGB BEV",cv::WINDOW_AUTOSIZE);
           cv::namedWindow("ROI LiDAR - select depth ROI",cv::WINDOW_AUTOSIZE);
           cv::setMouseCallback("ROI LiDAR - select depth ROI",mouse,this); windows_=true;
         }
-        cv::imshow("ROI LiDAR - RGB BEV",image);
+        if(c.show_bev_window) {
+          if(!bev_window_) {cv::namedWindow("ROI LiDAR - RGB BEV",cv::WINDOW_AUTOSIZE);bev_window_=true;}
+          cv::imshow("ROI LiDAR - RGB BEV",image);
+        }else if(bev_window_) {
+          cv::destroyWindow("ROI LiDAR - RGB BEV");bev_window_=false;
+        }
         roi_width_=fresh ? roi.cols : 0; roi_height_=fresh ? roi.rows : 0;
         cv::imshow("ROI LiDAR - select depth ROI",roi);
         const int key=cv::waitKeyEx(1);

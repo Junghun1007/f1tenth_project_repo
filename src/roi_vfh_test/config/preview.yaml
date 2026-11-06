@@ -11,7 +11,8 @@ roi_vfh_test:
     lane_lookahead_m: 0.05 # Stanley tangent lookahead; attached controller profile overrides this value.
     histogram_low: 1.0
     histogram_high: 2.0
-    max_age_sec: 0.30
+    max_age_sec: 0.30 # User-selected lane/terrain capture lifetime; also used by the actuator guard.
+    input_resume_stable_sec: 0.50 # Input pause resumes after continuous valid input; Stop cancels.
     max_sync_sec: 0.10
     deceleration_mps2: 0.5 # Upper-bounded by auto_control planning deceleration; not a measured guarantee.
     response_delay_sec: 0.20

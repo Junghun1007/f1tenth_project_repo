@@ -47,12 +47,15 @@ class LaunchTest(unittest.TestCase):
         actions = self.module.nodes(self.context)
         roi = next(a for a in actions if a.get("package") == "roi_lidar")["parameters"][0]
         self.assertEqual((roi["camera.fps"], roi["preview.width_m"], roi["preview.forward_m"]), (60, 1.5, 4))
+        self.assertFalse(roi["preview.show_bev_window"])
         self.assertTrue(roi["preview.gui"] and roi["preview.publish_lane_bev"] and roi["motion.publish_imu"])
         test = next(a for a in actions if a.get("package") == "roi_vfh_test")["parameters"][0]
         self.assertEqual((test["nominal_speed_mps"], test["vehicle_width_m"], test["wheelbase_m"]), (.7, .3, .33))
         self.assertEqual((test["front_overhang_m"], test["rear_extent_m"]), (.05, .25))
         self.assertEqual((test["speed_ceiling_mps"], test["lane_lookahead_m"]), (1.8, .05))
         self.assertEqual((test["planning_rate_hz"], test["control_rate_hz"]), (20, 100))
+        self.assertEqual((test["max_age_sec"], test["drive.max_command_age_sec"], test["input_resume_stable_sec"]), (.30, .30, .50))
+        self.assertEqual(test["lane_receipt_timeout_sec"], .30)
         self.assertEqual((roi["bev.camera_x_m"], roi["preview.rgb_width_px"], roi["preview.rgb_height_px"]), (-.09, 1280, 800))
         self.assertEqual(roi["motion.imu_rate_hz"], 400)
         self.assertFalse(any(a.get("package") in ("camera_driver", "vehicle_bringup", "vesc_bridge") for a in actions))

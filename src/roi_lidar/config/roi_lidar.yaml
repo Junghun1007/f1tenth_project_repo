@@ -88,6 +88,7 @@ roi_lidar:
     # nearest: 최근접 / linear: 쌍선형(기본) / cubic: 3차 / lanczos4: Lanczos 4
     preview.interpolation: "linear"
     preview.gui: true
+    preview.show_bev_window: true # VFH launch hides only this duplicate BEV window.
     preview.publish: true
     preview.camera_image: true     # Rectified-right grayscale ROI; false uses depth colors, saves USB.
     preview.fps: 15.0

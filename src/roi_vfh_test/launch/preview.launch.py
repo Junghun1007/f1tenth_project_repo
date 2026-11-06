@@ -34,7 +34,7 @@ def nodes(context):
         raise ValueError("Shared lane BEV currently requires 0..3m, +/-0.6m, 120x300 at 1cm/pixel")
     if camera["camera_socket"] != "CAM_A" or camera["resize_mode"] != "CROP" or not camera["undistort_enabled"]:
         raise ValueError("ROI shared RGB requires undistorted CAM_A with CROP resize")
-    roi.update({"preview.publish_lane_bev": True, "motion.publish_imu": True,
+    roi.update({"preview.show_bev_window": False, "preview.publish_lane_bev": True, "motion.publish_imu": True,
                 "preview.rgb_width_px": camera["width"], "preview.rgb_height_px": camera["height"],
                 "motion.imu_rate_hz": int(camera["imu_rate_hz"]),
                 "motion.imu_queue_size": camera["imu_queue_size"],
@@ -87,9 +87,8 @@ def nodes(context):
                  "path_maximum_x_m": control["path_maximum_x_m"],
                  "path_maximum_gap_m": control["path_maximum_gap_m"],
                  "path_geometry_window_m": control["path_geometry_window_m"],
-                 "lane_receipt_timeout_sec": control["path_timeout_sec"],
+                 "lane_receipt_timeout_sec": max(control["path_timeout_sec"], test["max_age_sec"]),
                  "erpm_timeout_sec": control["erpm_timeout_sec"],
-                 "max_age_sec": control["path_capture_maximum_age_sec"],
                  "max_lane_points": lane["centerline_max_samples"],
                  "max_sync_sec": min(roi["preview.max_sync_sec"], obstacles["obstacles.avoidance.max_sync_sec"]),
                  "obstacle_slowdown_enabled": control["obstacle_slowdown_enabled"],
@@ -118,7 +117,7 @@ def nodes(context):
                 "obstacle_coast_probe_sec", "corner_coast_probe_sec",
                 "obstacle_brake_deceleration_margin_mps2", "corner_brake_deceleration_margin_mps2"):
         test["drive." + key] = control[key]
-    test["drive.max_command_age_sec"] = control["path_capture_maximum_age_sec"]
+    test["drive.max_command_age_sec"] = test["max_age_sec"]
     test["deceleration_mps2"] = min(control["longitudinal_planning_deceleration_mps2"],
                                     obstacles["obstacles.avoidance.deceleration_mps2"])
     test["response_delay_sec"] = max(test["response_delay_sec"], control["traffic_brake_response_time_sec"])

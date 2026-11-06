@@ -277,3 +277,5 @@ launch는 BEV 설정의 `measurement_roi_width=456`, `measurement_roi_height=228
 작업 스레드는 최대 10Hz로 최신 프레임 한 장만 전달한다. headless/GUI OFF에서는 표시하지 않는다.
 이후 프레임별 RANSAC은 별도의 보정이며 시작 카메라 좌표·BEV 자세 측정을 대체하지 않는다.
 이번 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.
+
+`preview.show_bev_window`(기본 true)는 별도 RGB BEV창 표시만 제어한다. VFH launch는 false로 설정하여 VFH 창에 BEV를 통합하며, ROI 선택창과 파라미터 창·센서 발행은 유지한다.

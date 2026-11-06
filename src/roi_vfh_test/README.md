@@ -58,7 +58,9 @@ IMU는 별도 camera_driver를 켜지 않고 `/roi_lidar/imu`를 사용한다. �
 갱신하지만, 속도·IMU가 모두 유효해지기 전에는 촬영 시각 보정이나 계획을 진행하지 않는다.
 receive-only dynamics monitor가 이미 있으면 `dynamics_enabled:=false measured_speed_topic:=/실측속도토픽`으로 재사용한다.
 
-ROI RGB BEV/파라미터 창과 `ROI VFH+ test` 창이 함께 열린다.
+BEV는 `ROI VFH+ test` 창 하나로 표시한다. 별도 `ROI LiDAR - RGB BEV` 창은 열지 않으며,
+뎁스 ROI 선택창과 ROI 파라미터 창은 함께 유지한다. 일반 roi_lidar 단독 실행은 기존 BEV창을 유지한다.
+`preview.show_bev_window`는 ROI BEV창 표시만 제어하며 센서·차선 BEV 발행에는 영향을 주지 않는다.
 GTK HighGUI의 `WND_PROP_VISIBLE=-1`은 미지원 값이므로 창 닫힘으로 판단하지 않는다.
 GTK에서는 `WND_PROP_AUTOSIZE`를 보조 조회하며, 지원되는 속성을 관측한 뒤에만
 창 소멸을 판단한다.
@@ -69,8 +71,15 @@ GTK에서는 `WND_PROP_AUTOSIZE`를 보조 조회하며, 지원되는 속성을 
 3. 실행 중에는 ROI GUI 입력 및 `ros2 param set /roi_lidar ...`를 거부한다.
 4. **Stop / unlock**, Space 또는 S: 구동 Duty 0, 기존 `brake_maximum_current_amps`(현재 2A) 제동,
    마지막 서보 조향 유지. 진단 경로/목표 속도·조향은 0으로 초기화하고 ROI 잠금을 해제한다.
-5. Q/Esc/창 닫기도 Stop 처리한다. 센서·차선·속도·IMU·연결·잠금 유실은 정지하고 다시 Start를 요구한다.
-   유효 입력에서 경로만 막힌 경우에는 제동하면서 재계획한다.
+5. Q/Esc/창 닫기도 Stop 처리한다. Stop/종료, VESC 연결·ROI 잠금 유실, 중복 구동 publisher,
+   좌표/메시지 오류는 자동 재출발하지 않는다.
+6. 차선·terrain의 촬영 후 허용 시간은 **0.30초**다. 새 동기 입력을 기다리는 동안에는
+   기존 계획에 사용한 차선과 terrain이 모두 이 시간 안에 있을 때 직전 경로를 유지한다.
+   수명이 지난 입력의 timestamp를 새로 찍어 유효한 것처럼 연장하지 않는다.
+7. 입력 지연·유실(차선/terrain/속도/IMU/촬영 시각 정렬) 때는 `WAIT` 상태로 제동한다.
+   Start 요청과 ROI/VFH 파라미터 잠금은 유지하며, 최신 입력과 유효 경로가
+   **0.50초 연속 정상**이면 자동 재출발한다. 기다리는 중 Stop을 누르면 자동 재출발을 취소하고 잠금을 푼다.
+   유효 입력에서 경로만 막힌 경우에도 제동하면서 재계획한다.
 
 VFH 고유 설정은 `config/preview.yaml`, 대응하는 차량·제어·센서·인식 설정은 `config/reference`의 첨부 YAML에서 가져온다.
 우선순위와 적용 범위는 [APPLIED_SETTINGS.md](config/reference/APPLIED_SETTINGS.md)를 참고한다.
@@ -79,7 +88,7 @@ VFH 실행창 상단 **VFH parameters** 또는 **P**로 같은 크기의 설정 
 입력 중 Esc는 해당 필드 취소다. **Reload**는 현재 적용값을 다시 읽어 미적용 입력을 버린다.
 Start를 누르면 미적용 입력도 검증·적용한 뒤 출발한다. 잘못된 값이면 출발하지 않고 이유를 표시한다.
 Start를 요청한 순간(ROI 잠금 ACK 대기 포함)부터 VFH GUI와 `ros2 param set`을 잠그며,
-Stop 또는 입력 유실로 정지하면 다시 편집할 수 있다. 잠긴 상태에서도 설정값 조회·화면 전환은 가능하다.
+Stop을 눌러 자동 재출발을 취소하면 다시 편집할 수 있다. 입력 대기 중에는 잠금을 유지한다. 잠긴 상태에서도 설정값 조회·화면 전환은 가능하다.
 ROI 파라미터 창의 기존 잠금도 함께 유지한다. Apply는 카메라를 재시작하지 않는다.
 
 | 실행창 항목 | 기본값 | 의미 |
@@ -150,7 +159,7 @@ terrain은 첨부 ROI YAML대로 폭 **1.5m × 전방 4m**다. 허용된 40cm �
 촬영 시각이 다른 차선과 depth를 정렬하기 위한 `MotionHistory`는 유지한다.
 같은 OAK 세션에서 차량 좌표로 보정한 gyro Z와 VESC 속도를 적분하고,
 앞차축의 횡방향 이동(축간거리 × yaw rate)을 반영해 RGB 차선을 depth 촬영 시각으로 변환한다.
-이 이력은 terrain 셀을 저장하지 않는다. IMU 0.10초/속도 0.15초 유실 시 정지하며 다시 Start가 필요하다.
+이 이력은 terrain 셀을 저장하지 않는다. IMU 0.10초/속도 0.15초 유실 시 일시 제동하며, 정상 입력·유효 경로 0.50초 유지 후 자동 재출발한다.
 VFH 이중 임계값·직전 방향과 유도 모드 연속 확인은 결정의 흔들림 방지용으로 유지한다.
 차선이 열려 기본 추종으로 복귀하면 이전 히스토그램 상태는 초기화한다.
 움직이는 물체의 의미 추적이나 차량 추종은 이 패키지 범위에 없다.
@@ -192,7 +201,11 @@ controller YAML에서 `drive.*` 파라미터로 전달한다. 이 어댑터는 V
 auto_control의 신호등/정지선/코너 상태기를 복제하지 않는다.
 제동 중에는 모터 모드를 브레이크 하나로 보내고, 0A 해제를 별도 주기에 발행한 뒤 Duty를 재개한다.
 제동 중 `command_duty=0`이며, 실제 `/vesc/duty`에 0을 동시 발행해 브레이크를 덮어쓰지 않는다.
-최대 계획 입력 수명은 controller의 `path_capture_maximum_age_sec`(현재 0.20초),
+최대 계획 입력 수명은 사용자 선택대로 VFH `max_age_sec=0.30`을 사용하며,
+구동 감시의 `drive.max_command_age_sec`도 같은 값을 따른다. 차선 수신 timeout은
+controller 설정과 이 수명 중 큰 값(현재 0.30초)을 사용한다. 재출발 대기 시간은
+`input_resume_stable_sec=0.50`이다. 이 값들은 실행 YAML에서 지정하는 시작 시 고정 파라미터다.
+계획에 사용한 차선과 terrain 촬영 수명을 각각 검사한다.
 계획 감속도는 controller의 `longitudinal_planning_deceleration_mps2` 이하(현재 0.5m/s²)로 제한한다.
 강제 종료·통신 단절 때의 최종 모터 명령 만료는 기존 bridge watchdog을 따른다.
 

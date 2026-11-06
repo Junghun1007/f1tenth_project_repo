@@ -20,6 +20,7 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <cstring>
 namespace roi_vfh_test {
 class Node:public rclcpp::Node {
@@ -28,7 +29,7 @@ class Node:public rclcpp::Node {
   double planner_deceleration_ceiling_{.5},speed_ceiling_{1.8};
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr planner_parameters_callback_;
   bool drive_enabled_{false},vesc_connected_{false},servo_commanded_{false};
-  double drive_max_age_{.20};
+  double drive_max_age_{.30};
   std::unique_ptr<DriveController> drive_;
   DriveCommand drive_command_;
   std::chrono::steady_clock::time_point last_drive_tick_{std::chrono::steady_clock::now()};
@@ -44,8 +45,13 @@ class Node:public rclcpp::Node {
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   bool gui_{true},requested_{false},locked_{false},window_{false};
   bool visible_supported_{false},autosize_supported_{false};
-  double max_age_{.20},max_sync_{.06},plan_ms_{0};
-  double lane_receipt_timeout_{.15},erpm_timeout_{.15},imu_timeout_{.10},lane_received_at_{-1e9};
+  bool suspended_{false},input_recoverable_{true},waiting_for_pair_{false};
+  double resume_stable_sec_{.5};
+  std::optional<std::chrono::steady_clock::time_point> healthy_since_,last_recovery_check_;
+  double planned_lane_stamp_{-1e9};
+  line_detactor::msg::LaneResult::ConstSharedPtr planned_lane_;
+  double max_age_{.30},max_sync_{.06},plan_ms_{0};
+  double lane_receipt_timeout_{.30},erpm_timeout_{.15},imu_timeout_{.10},lane_received_at_{-1e9};
   double planning_rate_{20},status_rate_{2};
   int path_minimum_points_{8},max_lane_points_{2000};
   double path_minimum_x_{.01},path_maximum_x_{2.98},path_maximum_gap_{.15};
@@ -75,13 +81,41 @@ class Node:public rclcpp::Node {
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
   void stop(const std::string& reason) {
     controls_.blur();controls_.message("Stopped. ROI and VFH parameters unlocked.");
-    requested_=false;locked_=false;planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
+    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
     if(!applyPlannerEdits())return;
     controls_.show(false);
-    requested_=true;locked_=false;planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
+  }
+  bool active()const {return requested_ && locked_ && !suspended_;}
+  void pauseForInput(const std::string& reason) {
+    if(!requested_ || !locked_)return;
+    if(!suspended_) {
+      result_=Plan{};last_grid_.reset();planned_lane_.reset();planner_.reset();previous_pose_valid_=false;
+      last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+    }
+    suspended_=true;healthy_since_.reset();last_recovery_check_.reset();
+    status_="WAIT input: "+reason;
+    controls_.message("Input wait: parameters locked. Stop cancels automatic restart.");
+    applyDrive(false);
+  }
+  void updateRecovery(bool inputs_ok) {
+    if(!suspended_ || !requested_ || !locked_)return;
+    if(!inputs_ok || !last_grid_ || result_.speed<=0) {
+      healthy_since_.reset();last_recovery_check_.reset();return;
+    }
+    const auto clock=std::chrono::steady_clock::now();
+    if(last_recovery_check_ && std::chrono::duration<double>(clock-*last_recovery_check_).count()>std::max(.1,2/planning_rate_))
+      healthy_since_.reset(); // A stalled event loop is not continuous healthy input.
+    last_recovery_check_=clock;
+    if(!healthy_since_)healthy_since_=clock;
+    const double elapsed=std::chrono::duration<double>(clock-*healthy_since_).count();
+    if(elapsed>=resume_stable_sec_) {
+      suspended_=false;healthy_since_.reset();last_recovery_check_.reset();status_=result_.status;
+      controls_.message("Inputs recovered. Driving resumed; parameters remain locked.");
+    }else status_=cv::format("WAIT: inputs stable %.2f / %.2fs (braking)",elapsed,resume_stable_sec_);
   }
   static void mouse(int event,int x,int y,int,void * ptr) {
     if (event!=cv::EVENT_LBUTTONDOWN) return;
@@ -127,23 +161,25 @@ class Node:public rclcpp::Node {
     if(action==PlannerControls::Action::Reload){controls_.reload(config_);controls_.message("Reloaded applied values. Draft edits discarded.");}
   }
   bool inputs() {
-    if (!lane_ || now().seconds()-lane_received_at_>lane_receipt_timeout_ || !fresh(lane_->header.stamp) ||
-      (!planner_.guidance() && (!lane_->centerline_valid || lane_->centerline_points.size()<2)) || lane_->centerline_points.size()>static_cast<std::size_t>(max_lane_points_)) {status_="STOP: missing/stale lane";return false;}
+    input_recoverable_=true;waiting_for_pair_=false;
+    if (!lane_ || now().seconds()-lane_received_at_>lane_receipt_timeout_ || !fresh(lane_->header.stamp)) {waiting_for_pair_=true;status_="STOP: missing/stale lane";return false;}
+    if((!planner_.guidance() && (!lane_->centerline_valid || lane_->centerline_points.size()<2)) ||
+      lane_->centerline_points.size()>static_cast<std::size_t>(max_lane_points_)) {status_="STOP: invalid/missing lane reference";return false;}
     nav_msgs::msg::OccupancyGrid::ConstSharedPtr match;
     double delta=max_sync_;
     for (const auto & g:grids_) {
       const double d=std::abs(stamp(g->header.stamp)-stamp(lane_->header.stamp));
       if (fresh(g->header.stamp) && d<=delta) {match=g;delta=d;}
     }
-    if (!match) {status_="STOP: no synchronized fresh terrain";return false;}
+    if (!match) {waiting_for_pair_=true;status_="STOP: no synchronized fresh terrain";return false;}
     if (match->header.frame_id!=frame_id_ || lane_->header.frame_id!=match->header.frame_id ||
       std::abs(match->info.origin.orientation.x)>1e-6 || std::abs(match->info.origin.orientation.y)>1e-6 ||
       std::abs(match->info.origin.orientation.z)>1e-6 || std::abs(match->info.origin.orientation.w-1)>1e-6) {
-      status_="STOP: coordinate/frame mismatch";return false;
+      input_recoverable_=false;status_="STOP: coordinate/frame mismatch";return false;
     }
     if (!lane_->source_width || !lane_->source_height || lane_->source_width>4096 || lane_->source_height>4096 || !std::isfinite(lane_->centerline_bev_width_m) ||
       !std::isfinite(lane_->centerline_bev_height_m) || lane_->centerline_bev_width_m<=0 || lane_->centerline_bev_height_m<=0) {
-      status_="STOP: invalid lane geometry";return false;
+      input_recoverable_=false;status_="STOP: invalid lane geometry";return false;
     }
     Grid grid;grid.width=match->info.width;grid.height=match->info.height;grid.resolution=match->info.resolution;
     grid.x0=match->info.origin.position.x;grid.y0=match->info.origin.position.y;grid.cells=match->data;
@@ -151,7 +187,7 @@ class Node:public rclcpp::Node {
     std::vector<Point> points;
     if (lane_->centerline_valid) for (const auto & p:lane_->centerline_points) {
       if (!std::isfinite(p.x) || !std::isfinite(p.y) || p.x<0 || p.x>=double(lane_->source_width)+lane_->padding_left+lane_->padding_right || p.y<0 || p.y>=lane_->source_height) {
-        status_="STOP: invalid lane point";return false;
+        input_recoverable_=false;status_="STOP: invalid lane point";return false;
       }
       Point q{lane_->centerline_bev_height_m-(p.y+.5)*lane_->centerline_bev_height_m/lane_->source_height,
         lane_->centerline_bev_width_m/2-(p.x-lane_->padding_left+.5)*lane_->centerline_bev_width_m/lane_->source_width};
@@ -177,7 +213,7 @@ class Node:public rclcpp::Node {
       }
       for(auto& point:lane_points_)point=reproject(point,lane_pose,pose);
     }
-    if (requested_ && locked_ && match!=last_grid_) {
+    if (requested_ && locked_ && (match!=last_grid_ || lane_!=planned_lane_)) {
       if(!motion_ok_ || now().seconds()-speed_at_>erpm_timeout_ || !motion_.at(stamp(match->header.stamp),pose)) {
         status_="STOP: fresh VESC speed + IMU required";return false;
       }
@@ -198,7 +234,7 @@ class Node:public rclcpp::Node {
         result_.speed=std::min(result_.speed,last_target_+recovery_acceleration_*(planned_at-last_plan_at_));
       last_target_=result_.speed;last_plan_at_=planned_at;
       plan_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
-      last_grid_=match;status_=result_.status;
+      last_grid_=match;planned_lane_=lane_;planned_lane_stamp_=stamp(lane_->header.stamp);status_=result_.status;
     }
     return true;
   }
@@ -236,10 +272,12 @@ class Node:public rclcpp::Node {
     publishFloat(servo_log_pub_,drive_command_.servo);
     logDrive(active);
   }
-  std::string driveGuard() {
-    if(!vesc_connected_)return "STOP: VESC not connected";
-    if(count_publishers(duty_pub_->get_topic_name())>1 || count_publishers(brake_pub_->get_topic_name())>1 ||
-      count_publishers(servo_pub_->get_topic_name())>1)return "STOP: another actuator publisher (stop auto/manual controller)";
+  std::string driveGuard(bool* recoverable=nullptr) {
+    if(recoverable)*recoverable=false;
+    if(drive_enabled_ && !vesc_connected_)return "STOP: VESC not connected";
+    if(drive_enabled_ && (count_publishers(duty_pub_->get_topic_name())>1 || count_publishers(brake_pub_->get_topic_name())>1 ||
+      count_publishers(servo_pub_->get_topic_name())>1))return "STOP: another actuator publisher (stop auto/manual controller)";
+    if(recoverable)*recoverable=true;
     if(locked_) {
       if(!lane_ || now().seconds()-lane_received_at_>lane_receipt_timeout_ || !fresh(lane_->header.stamp))return "STOP: drive lane input expired";
       const double clock=now().seconds();
@@ -248,17 +286,23 @@ class Node:public rclcpp::Node {
       if(clock-imu_at_>imu_timeout_ || clock<imu_at_-.02 || !motion_ok_)
         return "STOP: drive IMU/motion history expired";
       if(!last_grid_)return "STOP: no drive plan input";
-      const double age=now().seconds()-stamp(last_grid_->header.stamp);
-      if(age<-.02 || age>drive_max_age_)return "STOP: drive path capture expired";
+      const double age=clock-stamp(last_grid_->header.stamp),lane_age=clock-planned_lane_stamp_;
+      if(age<-.02 || age>drive_max_age_ || lane_age<-.02 || lane_age>drive_max_age_)
+        return cv::format("STOP: capture expired terrain %.3fs lane %.3fs (limit %.2fs)",age,lane_age,drive_max_age_);
     }
     return {};
   }
+  bool checkDriveGuard() {
+    if(!requested_ || !locked_)return false;
+    bool recoverable=false;const auto reason=driveGuard(&recoverable);
+    if(reason.empty())return true;
+    if(recoverable)pauseForInput(reason);else stop(reason);
+    return false;
+  }
   void publish() {
-    if(drive_enabled_ && requested_) {
-      const auto reason=driveGuard();if(!reason.empty())stop(reason);
-    }
+    checkDriveGuard();
     nav_msgs::msg::Path path;path.header.stamp=now();path.header.frame_id=frame_id_;
-    const bool active=requested_ && locked_;
+    const bool active=this->active();
     if(active && last_grid_)path.header=last_grid_->header;
     if (active) for (const auto & p:result_.path) {
       geometry_msgs::msg::PoseStamped pose;pose.header=path.header;pose.pose.position.x=p.x;pose.pose.position.y=p.y;
@@ -293,7 +337,7 @@ class Node:public rclcpp::Node {
   }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
-    auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
+    auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
     controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_,speed_ceiling_);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id=frame_id_;
@@ -320,7 +364,17 @@ class Node:public rclcpp::Node {
       syncPlannerParameters();
       const bool ok=inputs();
       if (requested_ && !locked_)publishLock(true);
-      if (!ok && requested_ && locked_) {const auto reason=status_;stop(reason);}
+      bool held=false;
+      if(!ok && requested_ && locked_) {
+        bool recoverable=false;
+        const bool cached_ok=last_grid_ && driveGuard(&recoverable).empty();
+        if(input_recoverable_ && waiting_for_pair_ && !suspended_ && cached_ok) {
+          held=true;status_="HOLD: previous valid path; waiting for synchronized input";
+        }else if(input_recoverable_)pauseForInput(status_);
+        else {const auto reason=status_;stop(reason);}
+      }
+      const bool guarded=checkDriveGuard();
+      updateRecovery(ok && guarded && !held);
       if (!requested_)result_=Plan{};
       publish();
     } catch (const std::exception& e) {stop(std::string("STOP: ")+e.what());publish();}
@@ -360,7 +414,7 @@ public:
     if(!std::isfinite(max_age_) || !std::isfinite(max_sync_) || max_age_<.05 || max_age_>.5 || max_sync_<.001 || max_sync_>.15)throw std::invalid_argument("invalid synchronization limits");
     frame_id_=declare_parameter<std::string>("frame_id","front_axle_bev",fixed);
     lane_topic_=declare_parameter<std::string>("lane_result_topic","/line_detactor/result",fixed);
-    lane_receipt_timeout_=declare_parameter("lane_receipt_timeout_sec",.15,fixed);
+    lane_receipt_timeout_=declare_parameter("lane_receipt_timeout_sec",.30,fixed);
     erpm_timeout_=declare_parameter("erpm_timeout_sec",.15,fixed);imu_timeout_=declare_parameter("imu_timeout_sec",.10,fixed);
     planning_rate_=declare_parameter("planning_rate_hz",20.,fixed);status_rate_=declare_parameter("status_log_rate_hz",2.,fixed);
     path_minimum_points_=declare_parameter("path_minimum_points",8,fixed);max_lane_points_=declare_parameter("max_lane_points",2000,fixed);
@@ -405,8 +459,11 @@ public:
     DRIVE_PARAM("corner_brake_deceleration_margin_mps2",normal_deceleration_margin);
 #undef DRIVE_PARAM
     drive_=std::make_unique<DriveController>(drive_options);
-    drive_max_age_=declare_parameter("drive.max_command_age_sec",.20,fixed);
+    drive_max_age_=declare_parameter("drive.max_command_age_sec",.30,fixed);
     if(!std::isfinite(drive_max_age_) || drive_max_age_<.05 || drive_max_age_>.3)throw std::invalid_argument("invalid drive command age");
+    resume_stable_sec_=declare_parameter("input_resume_stable_sec",.5,fixed);
+    if(!std::isfinite(resume_stable_sec_) || resume_stable_sec_<.1 || resume_stable_sec_>5)
+      throw std::invalid_argument("invalid input resume stability period");
     const auto sensor=rclcpp::SensorDataQoS().keep_last(1);
     const auto latch=rclcpp::QoS(1).reliable().transient_local();
     const auto duty_topic=declare_parameter<std::string>("duty_topic","/vesc/duty",fixed);
@@ -494,8 +551,8 @@ public:
     timer_=create_wall_timer(std::chrono::duration<double>(1/planning_rate_),[this]{tick();});
     if(drive_enabled_)actuator_timer_=create_wall_timer(std::chrono::duration<double>(1/config_.control_rate),[this]{
       try {
-        if(requested_ && locked_ && last_grid_) {const auto reason=driveGuard();if(!reason.empty()){stop(reason);publish();}}
-        applyDrive(requested_ && locked_ && bool(last_grid_));
+        checkDriveGuard();
+        applyDrive(active() && bool(last_grid_));
       }catch(const std::exception& e){stop(std::string("STOP: actuator loop ")+e.what());publish();}
     });
   }
