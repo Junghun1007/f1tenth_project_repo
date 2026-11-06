@@ -94,7 +94,8 @@ class Node:public rclcpp::Node {
     }
     if (points.size()<2 && !planner_.guidance()) {status_="STOP: disconnected lane";return false;}
     lane_points_=std::move(points);observed_display_=grid;display_=std::move(grid);
-    if(requested_ && locked_ && (now().seconds()-imu_at_>.15 || now().seconds()-speed_at_>.15)){status_="STOP: motion telemetry stale";return false;}
+    if(requested_ && locked_ && now().seconds()-speed_at_>.15){status_="STOP: missing/stale measured speed (check VESC ERPM topic/bridge)";return false;}
+    if(requested_ && locked_ && now().seconds()-imu_at_>.15){status_="STOP: missing/stale vehicle-frame IMU (/roi_lidar/imu)";return false;}
     MotionPose pose;
     if(requested_ && locked_) {
       MotionPose lane_pose;
@@ -213,21 +214,27 @@ public:
     image_pub_=create_publisher<sensor_msgs::msg::Image>("~/preview",sensor);
     grid_sub_=create_subscription<nav_msgs::msg::OccupancyGrid>("/roi_lidar/terrain_for_planning",sensor,
       [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr p){grids_.push_back(p);while(grids_.size()>16)grids_.pop_front();});
-    speed_sub_=create_subscription<std_msgs::msg::Float32>(declare_parameter<std::string>("measured_speed_topic","/vehicle/dynamics/speed_mps",fixed),sensor,
-      [this](std_msgs::msg::Float32::ConstSharedPtr p){measured_speed_=p->data;speed_at_=now().seconds();});
+    const auto speed_topic=declare_parameter<std::string>("measured_speed_topic","/vehicle/dynamics/speed_mps",fixed);
+    speed_sub_=create_subscription<std_msgs::msg::Float32>(speed_topic,sensor,
+      [this](std_msgs::msg::Float32::ConstSharedPtr p){
+        if(!std::isfinite(p->data)){speed_at_=-1e9;motion_.clear();motion_ok_=false;return;}
+        measured_speed_=p->data;speed_at_=now().seconds();
+      });
     imu_sub_=create_subscription<sensor_msgs::msg::Imu>("/roi_lidar/imu",sensor,
       [this](sensor_msgs::msg::Imu::ConstSharedPtr p){
-        if(p->header.frame_id!="front_axle_bev" || !fresh(p->header.stamp) || now().seconds()-speed_at_>.15) {
+        if(p->header.frame_id!="front_axle_bev" || !fresh(p->header.stamp) || !std::isfinite(p->angular_velocity.z)) {
           motion_.clear();motion_ok_=false;return;
         }
         imu_at_=stamp(p->header.stamp);
         measured_yaw_rate_=p->angular_velocity.z;
+        if(now().seconds()-speed_at_>.15){motion_.clear();motion_ok_=false;return;}
         motion_.add(stamp(p->header.stamp),measured_speed_,measured_yaw_rate_);motion_ok_=true;
       });
     lane_sub_=create_subscription<line_detactor::msg::LaneResult>("/line_detactor/result",sensor,
       [this](line_detactor::msg::LaneResult::ConstSharedPtr p){lane_=p;});
     lock_sub_=create_subscription<std_msgs::msg::Bool>("/roi_lidar/parameters_locked",latch,
       [this](std_msgs::msg::Bool::ConstSharedPtr p){locked_=requested_ && p->data;});
+    RCLCPP_INFO(get_logger(),"Preview telemetry: speed=%s (Float32 m/s), IMU=/roi_lidar/imu (vehicle-frame Z rad/s)",speed_sub_->get_topic_name());
     publishLock(false);
     timer_=create_wall_timer(std::chrono::milliseconds(67),[this]{tick();});
   }

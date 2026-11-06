@@ -58,6 +58,39 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual((dynamics["input_mode"], dynamics["imu_topic"], dynamics["imu_yaw_axis"]),
                          ("ros_topic", "/roi_lidar/imu", "z"))
 
+    def test_controller_telemetry_defaults(self):
+        control = self.module.load(self.context["vehicle_params_file"], "auto_control")
+        actions = self.module.nodes(self.context)
+        dynamics = next(a for a in actions if a.get("package") == "vehicle_dynamics_monitor")["parameters"][0]
+        self.assertEqual(dynamics["measured_erpm_topic"], control["measured_erpm_topic"])
+        self.assertEqual(dynamics["connection_status_topic"], control["connection_status_topic"])
+        test = next(a for a in actions if a.get("package") == "roi_vfh_test")["parameters"][0]
+        self.assertEqual(dynamics["speed_topic"], test["measured_speed_topic"])
+        original = self.module.load
+        def customized(path, node):
+            result = original(path, node)
+            if node == "auto_control":
+                result.update(wheel_diameter_m=.12, speed_scale_correction=1.2,
+                              speed_filter_time_constant_sec=.08)
+            return result
+        with patch.object(self.module, "load", side_effect=customized):
+            dynamics = next(a for a in self.module.nodes(self.context)
+                            if a.get("package") == "vehicle_dynamics_monitor")["parameters"][0]
+        self.assertEqual((dynamics["wheel_diameter_m"], dynamics["speed_scale_correction"],
+                          dynamics["speed_filter_time_constant_sec"]), (.12, 1.2, .08))
+
+    def test_namespaced_and_explicit_telemetry(self):
+        self.context["vehicle_namespace"] = "/autopilot03/"
+        dynamics = next(a for a in self.module.nodes(self.context)
+                        if a.get("package") == "vehicle_dynamics_monitor")["parameters"][0]
+        self.assertEqual(dynamics["measured_erpm_topic"], "/autopilot03/vesc/measured_erpm")
+        self.assertEqual(dynamics["connection_status_topic"], "/autopilot03/vesc/connected")
+        self.context.update(measured_erpm_topic="/custom/erpm", vesc_connection_topic="/custom/connected")
+        dynamics = next(a for a in self.module.nodes(self.context)
+                        if a.get("package") == "vehicle_dynamics_monitor")["parameters"][0]
+        self.assertEqual(dynamics["measured_erpm_topic"], "/custom/erpm")
+        self.assertEqual(dynamics["connection_status_topic"], "/custom/connected")
+
     def test_external_telemetry(self):
         self.context.update(dynamics_enabled="false", measured_speed_topic="/existing/speed")
         actions = self.module.nodes(self.context)

@@ -18,8 +18,26 @@ ros2 launch roi_vfh_test preview.launch.py
 기존 camera_driver/auto_drive/point_cloud/roi_lidar를 종료하고 OAK는 이 실행 하나에서 사용한다.
 차량은 평지에서 정지한 채 시작 지면 측정과 차선 모델 준비를 완료한다.
 VESC 텔레메트리는 기존 수동주행 실행 등에서 받아야 한다. 이 launch는 VESC 연결이나 수동 구동을 시작하지 않는다.
-기본 ERPM/연결 토픽은 `/autopilot03/vesc/measured_erpm`, `/autopilot03/vesc/connected`다.
-`measured_erpm_topic:=... vesc_connection_topic:=...`로 바꿀 수 있다.
+기본 ERPM/연결 토픽은 `auto_control.yaml`의 `measured_erpm_topic`과 `connection_status_topic`을
+가져온다(현재 `/vesc/measured_erpm`, `/vesc/connected`). 바퀴 지름·극쌍·기어비·방향·속도 배율과
+속도 필터 시간도 같은 controller YAML에서 가져온다. 수동주행 launch가 `/autopilot03` namespace로
+VESC를 실행 중이면 `vehicle_namespace:=autopilot03`을 붙인다.
+`measured_erpm_topic:=... vesc_connection_topic:=...`는 namespace보다 우선하는 직접 지정이다.
+
+```bash
+# vesc_only.launch.py로 root /vesc 텔레메트리를 이미 실행한 경우
+ros2 launch roi_vfh_test preview.launch.py
+# manual_drive.launch.py로 /autopilot03/vesc를 이미 실행한 경우
+ros2 launch roi_vfh_test preview.launch.py vehicle_namespace:=autopilot03
+```
+
+VESC bridge가 아예 없다면 별도 터미널에서 `ros2 launch vehicle_bringup vesc_only.launch.py`로
+root bridge를 실행할 수 있다. 기존 bridge와 중복 실행하지 않는다.
+이 프리뷰는 bridge나 auto_control을 자동으로 실행하지 않는다.
+IMU는 별도 camera_driver를 켜지 않고 `/roi_lidar/imu`를 사용한다. 시작 보정으로 이미 차량 좌표로
+회전한 각속도이므로 Z축이 yaw이며, 원본 `/camera/imu`의 -Y축 설정을 복사하면 안 된다.
+실측 속도 미수신과 IMU 미수신은 별도 정지 사유로 표시한다. 속도가 없어도 유효 IMU 수신 시간은
+갱신하지만, 속도·IMU가 모두 유효해지기 전에는 이동 관측 기억이나 계획을 진행하지 않는다.
 receive-only dynamics monitor가 이미 있으면 `dynamics_enabled:=false measured_speed_topic:=/실측속도토픽`으로 재사용한다.
 
 ROI RGB BEV/파라미터 창과 `ROI VFH+ test` 창이 함께 열린다.

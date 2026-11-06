@@ -13,6 +13,14 @@ def load(path, node):
         return yaml.safe_load(stream)[node]["ros__parameters"]
 
 
+def telemetry_topic(override, configured, namespace):
+    # Match auto_control's root topics by default; manual_drive adds a vehicle namespace.
+    if override.strip():
+        return override.strip()
+    prefix = namespace.strip("/")
+    return "/" + "/".join(part for part in (prefix, configured.strip("/")) if part)
+
+
 def nodes(context):
     def arg(name):
         return LaunchConfiguration(name).perform(context)
@@ -35,6 +43,8 @@ def nodes(context):
                  "result_publish_enabled": True, "result_topic": "/line_detactor/result"})
     control = load(arg("vehicle_params_file"), "auto_control")
     obstacles = load(arg("obstacle_params_file"), "auto_obstacles")
+    erpm_topic = telemetry_topic(arg("measured_erpm_topic"), control["measured_erpm_topic"], arg("vehicle_namespace"))
+    connection_topic = telemetry_topic(arg("vesc_connection_topic"), control["connection_status_topic"], arg("vehicle_namespace"))
     test = load(arg("params_file"), "roi_vfh_test")
     test.update({"wheelbase_m": control["avoidance_wheelbase_m"],
                  "max_steering_deg": control["maximum_steering_angle_deg"],
@@ -57,10 +67,15 @@ def nodes(context):
                     output="screen", parameters=[test])]
     if arg("dynamics_enabled").lower() == "true":
         dynamics = load(str(Path(get_package_share_directory("vehicle_dynamics_monitor")) / "config/vehicle_dynamics.yaml"), "/**")
-        dynamics.update({"input_mode": "ros_topic", "measured_erpm_topic": arg("measured_erpm_topic"),
-                         "connection_status_topic": arg("vesc_connection_topic"),
+        dynamics.update({"input_mode": "ros_topic", "measured_erpm_topic": erpm_topic,
+                         "connection_status_topic": connection_topic,
                          "speed_topic": arg("measured_speed_topic"), "imu_topic": "/roi_lidar/imu",
                          "imu_yaw_axis": "z", "imu_yaw_rate_sign": 1.0})
+        # Keep ERPM-to-m/s calibration consistent with the existing controller.
+        for key in ("wheel_diameter_m", "motor_pole_pairs", "motor_pinion_teeth", "spur_gear_teeth",
+                    "differential_pinion_teeth", "differential_ring_teeth", "erpm_direction_sign",
+                    "speed_scale_correction", "speed_filter_time_constant_sec"):
+            dynamics[key] = control[key]
         actions.append(Node(package="vehicle_dynamics_monitor", executable="vehicle_dynamics_node",
                             name="roi_vfh_dynamics", output="screen", parameters=[dynamics]))
     elif arg("dynamics_enabled").lower() != "false":
@@ -77,7 +92,7 @@ def generate_launch_description():
                 "bev_params_file": Path(get_package_share_directory("bev_processor")) / "config/bev_config.yaml",
                 "vehicle_params_file": auto / "config/auto_control.yaml",
                 "obstacle_params_file": auto / "config/obstacles.yaml",
-                "dynamics_enabled": "true", "measured_erpm_topic": "/autopilot03/vesc/measured_erpm",
-                "vesc_connection_topic": "/autopilot03/vesc/connected",
+                "dynamics_enabled": "true", "vehicle_namespace": "", "measured_erpm_topic": "",
+                "vesc_connection_topic": "",
                 "measured_speed_topic": "/roi_vfh_test/measured_speed"}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=str(v)) for k, v in defaults.items()] + [OpaqueFunction(function=nodes)])
