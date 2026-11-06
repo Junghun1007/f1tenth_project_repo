@@ -25,7 +25,7 @@ int main()
   scan.surface_points.push_back({1.03,.03,.2});
   grid=terrainGrid(scan,o,v,t);
   check(grid.cells[index(1.01,.01)]==-1,"Single hazard outlier did not veto green floor");
-  check(grid.planning_cells[index(1.01,.01)]==100,"Planning output lost unsupported hazard evidence");
+  check(grid.planning_cells[index(1.01,.01)]==-1,"Planning output bypassed the configured hazard sample threshold");
   scan.surface_points.push_back({1.03,.03,.25});
   grid=terrainGrid(scan,o,v,t);
   check(grid.cells[index(1.01,.01)]==100,"Obstacle did not dominate ground");

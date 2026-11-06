@@ -49,6 +49,11 @@ inline void validate(const Config & c)
 // Shared declaration/snapshot/validation table; startup and mount are read-only.
 #define ROI_PARAMETERS(X) \
   X("motion.publish_imu",publish_imu,as_bool) \
+  X("motion.imu_rate_hz",camera.imu_rate_hz,as_int) \
+  X("motion.imu_queue_size",camera.imu_queue_size,as_int) \
+  X("motion.imu_max_batch_reports",camera.imu_max_batch_reports,as_int) \
+  X("preview.rgb_width_px",camera.rgb_width,as_int) \
+  X("preview.rgb_height_px",camera.rgb_height,as_int) \
   X("preview.publish_lane_bev",publish_lane_bev,as_bool) \
   X("terrain.fill_enabled",terrain.fill_enabled,as_bool) \
   X("terrain.fill_max_cells",terrain.fill_max_cells,as_int) \

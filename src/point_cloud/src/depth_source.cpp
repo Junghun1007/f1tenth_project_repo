@@ -38,6 +38,10 @@ dai::StereoDepthConfig::MedianFilter median(const std::string & value)
 
 void validate(const Config & c)
 {
+  if(c.rgb_width<16 || c.rgb_width>4096 || c.rgb_height<16 || c.rgb_height>4096 ||
+    c.imu_rate_hz<1 || c.imu_rate_hz>1000 || c.imu_queue_size<1 || c.imu_queue_size>1000 ||
+    c.imu_max_batch_reports<1 || c.imu_max_batch_reports>1000)
+    throw std::invalid_argument("Invalid shared RGB size or IMU rate/queue/batch");
   validateGround(c.ground);
   validateBev(c.bev);
   resolutionSize(c.resolution);
@@ -148,7 +152,7 @@ DepthSource::DepthSource(const Config & c, const std::string & device_id, bool r
   if (rgb_fps > 0) {
     auto rgb = pipeline_->create<dai::node::Camera>();
     rgb->build(dai::CameraBoardSocket::CAM_A);
-    rgb_output = rgb->requestOutput({640,400}, dai::ImgFrame::Type::BGR888i,
+    rgb_output = rgb->requestOutput({c.rgb_width,c.rgb_height}, dai::ImgFrame::Type::BGR888i,
       dai::ImgResizeMode::CROP, static_cast<float>(rgb_fps), true);
     rgb_queue_ = rgb_output->createOutputQueue(1, false);
   }
@@ -168,9 +172,9 @@ DepthSource::DepthSource(const Config & c, const std::string & device_id, bool r
       if(std::abs(dot-(i==j ? 1.0 : 0.0))>.01)throw std::runtime_error("Non-orthonormal IMU rotation");
     }
     auto imu=pipeline_->create<dai::node::IMU>();
-    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_CALIBRATED,200);
-    imu->setBatchReportThreshold(1);imu->setMaxBatchReports(5);
-    imu_queue_=imu->out.createOutputQueue(20,false);
+    imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_CALIBRATED,c.imu_rate_hz);
+    imu->setBatchReportThreshold(1);imu->setMaxBatchReports(c.imu_max_batch_reports);
+    imu_queue_=imu->out.createOutputQueue(c.imu_queue_size,false);
   }
   pipeline_->build();
   const auto bridge = stereo->depth.getXLinkBridge();

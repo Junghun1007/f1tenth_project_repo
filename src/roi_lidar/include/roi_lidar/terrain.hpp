@@ -114,7 +114,7 @@ inline Terrain terrainGrid(const Scan & scan, const Options & o,
   }
   fillSmallHoles(out,fill_veto,t);
   out.planning_cells=out.cells;
-  for(std::size_t i=0;i<size;++i)if(obstacle[i]>0)out.planning_cells[i]=100;
+  // Planning uses the same configured sample threshold and colors as the ROI grid.
   return out;
 }
 }

@@ -37,7 +37,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 rosidl_get_typesupport_target(avoidance_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 
 # Export the existing pure control helpers for the VFH actuator adapter.
-add_library(auto_control_core STATIC src/control_core.cpp)
+add_library(auto_control_core STATIC src/control_core.cpp src/driving_log.cpp)
+target_link_libraries(auto_control_core PUBLIC Threads::Threads)
 set_target_properties(auto_control_core PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME control_core)
 target_include_directories(auto_control_core PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -107,5 +108,5 @@ if(BUILD_TESTING)
   add_test(NAME staged_brake_test COMMAND staged_brake_test)
 endif()
 
-ament_export_dependencies(rosidl_default_runtime)
+ament_export_dependencies(rosidl_default_runtime Threads)
 ament_package()

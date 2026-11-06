@@ -14,7 +14,6 @@ def load(path, node):
 
 
 def telemetry_topic(override, configured, namespace):
-    # Match auto_control's root topics by default; manual_drive adds a vehicle namespace.
     if override.strip():
         return override.strip()
     prefix = namespace.strip("/")
@@ -24,23 +23,28 @@ def telemetry_topic(override, configured, namespace):
 def nodes(context):
     def arg(name):
         return LaunchConfiguration(name).perform(context)
-    roi = load(arg("roi_params_file"), "roi_lidar")
-    # Keep the user's requested 1.2x3m terrain and a separate clean 120x300 lane BEV.
-    roi.update({"camera.fps": 30.0, "preview.width_m": 1.2, "preview.forward_m": 3.0,
-                "preview.gui": True, "preview.publish_lane_bev": True,
-                "motion.publish_imu": True})
+    # The attached ROI file predates the RANSAC/terrain options; retain defaults
+    # for absent keys, then apply every explicitly supplied ROI value.
+    roi = load(Path(get_package_share_directory("roi_lidar")) / "config/roi_lidar.yaml", "roi_lidar")
+    roi.update(load(arg("roi_params_file"), "roi_lidar"))
     bev = load(arg("bev_params_file"), "bev_processor")
+    camera = load(arg("camera_params_file"), "camera_driver")
+    if (bev["x_min_m"], bev["x_max_m"], bev["y_min_m"], bev["y_max_m"],
+        bev["meter_per_pixel"], bev["output_width"], bev["output_height"]) != (0, 3, -.6, .6, .01, 120, 300):
+        raise ValueError("Shared lane BEV currently requires 0..3m, +/-0.6m, 120x300 at 1cm/pixel")
+    if camera["camera_socket"] != "CAM_A" or camera["resize_mode"] != "CROP" or not camera["undistort_enabled"]:
+        raise ValueError("ROI shared RGB requires undistorted CAM_A with CROP resize")
+    roi.update({"preview.publish_lane_bev": True, "motion.publish_imu": True,
+                "preview.rgb_width_px": camera["width"], "preview.rgb_height_px": camera["height"],
+                "motion.imu_rate_hz": int(camera["imu_rate_hz"]),
+                "motion.imu_queue_size": camera["imu_queue_size"],
+                "motion.imu_max_batch_reports": camera["imu_max_batch_reports"]})
     for key in ("camera_x_m", "camera_y_m", "camera_yaw_deg"):
         roi["bev." + key] = bev[key]
     roi.update({k: v for k, v in bev.items()
                 if k.startswith("measurement_") or k.startswith("manual_camera_height_")})
-    roi["frame_id"] = "front_axle_bev"
+    roi["frame_id"] = bev["output_frame_id"]
     lane = load(arg("lane_params_file"), "line_detactor")
-    lane.update({"input_topic": "/roi_lidar/lane_bev", "direct_bev_input_enabled": False,
-                 "preview_enabled": False, "bev_theme_enable": False,
-                 "centerline_enabled": True, "connection_enabled": True,
-                 "centerline_bev_width_m": 1.2, "centerline_bev_height_m": 3.0,
-                 "result_publish_enabled": True, "result_topic": "/line_detactor/result"})
     control = load(arg("vehicle_params_file"), "auto_control")
     obstacles = load(arg("obstacle_params_file"), "auto_obstacles")
     erpm_topic = telemetry_topic(arg("measured_erpm_topic"), control["measured_erpm_topic"], arg("vehicle_namespace"))
@@ -49,15 +53,54 @@ def nodes(context):
     drive_mode = arg("drive_enabled").strip().lower() or str(test.get("drive_enabled", False)).lower()
     if drive_mode not in ("true", "false"):
         raise ValueError("drive_enabled must be true or false")
-    test.update({"drive_enabled": drive_mode == "true",
-                 "vesc_connection_topic": connection_topic,
+    if drive_mode == "true" and (not control["enabled"] or control["control_mode"] != "drive"):
+        raise ValueError("Vehicle profile must enable control_mode=drive, or launch with drive_enabled:=false")
+    test.update({"drive_enabled": drive_mode == "true", "vesc_connection_topic": connection_topic,
+                 "speed_ceiling_mps": control["maximum_speed_mps"],
+                 "nominal_speed_mps": min(test["nominal_speed_mps"], control["maximum_speed_mps"]),
                  "wheelbase_m": control["avoidance_wheelbase_m"],
                  "max_steering_deg": control["maximum_steering_angle_deg"],
                  "steering_rate_deg_per_sec": control["steering_rate_limit_deg_per_sec"],
                  "vehicle_width_m": 2 * obstacles["obstacles.avoidance.vehicle_half_width_m"],
                  "rear_extent_m": obstacles["obstacles.avoidance.vehicle_half_length_m"],
-                 "front_overhang_m": obstacles["obstacles.avoidance.vehicle_half_length_m"],
+                 "front_overhang_m": control["traffic_front_axle_to_bumper_m"],
+                 "safety_margin_m": obstacles["obstacles.avoidance.safety_margin_m"],
+                 "obstacle_uncertainty_m": obstacles["obstacles.avoidance.unknown_extent_m"],
+                 "sample_step_m": obstacles["obstacles.avoidance.sample_step_m"],
+                 "max_curvature_per_m": obstacles["obstacles.avoidance.max_curvature_per_m"],
+                 "lane_lateral_acceleration_mps2": control["maximum_lateral_acceleration_mps2"],
+                 "avoidance_lateral_acceleration_mps2": obstacles["obstacles.avoidance.lateral_acceleration_mps2"],
+                 "curvature_speed_control_enabled": control["curvature_speed_control_enabled"],
                  "lane_width_m": lane["centerline_lane_width_m"],
+                 "lane_lookahead_m": control["stanley_heading_lookahead_m"],
+                 "stanley_gain": control["stanley_gain"],
+                 "stanley_softening_speed_mps": control["stanley_softening_speed_mps"],
+                 "stanley_corner_heading_threshold_deg": control["stanley_corner_heading_threshold_deg"],
+                 "stanley_corner_opposing_correction_ratio": control["stanley_corner_opposing_correction_ratio"],
+                 "steering_current_weight": control["steering_current_weight"],
+                 "control_rate_hz": control["control_rate_hz"],
+                 "planning_rate_hz": obstacles["obstacles.avoidance.max_fps"],
+                 "status_log_rate_hz": control["status_log_rate_hz"],
+                 "path_minimum_points": control["path_minimum_points"],
+                 "minimum_path_length_m": control["path_minimum_span_m"],
+                 "path_minimum_x_m": control["path_minimum_x_m"],
+                 "path_maximum_x_m": control["path_maximum_x_m"],
+                 "path_maximum_gap_m": control["path_maximum_gap_m"],
+                 "path_geometry_window_m": control["path_geometry_window_m"],
+                 "lane_receipt_timeout_sec": control["path_timeout_sec"],
+                 "erpm_timeout_sec": control["erpm_timeout_sec"],
+                 "max_age_sec": control["path_capture_maximum_age_sec"],
+                 "max_lane_points": lane["centerline_max_samples"],
+                 "max_sync_sec": min(roi["preview.max_sync_sec"], obstacles["obstacles.avoidance.max_sync_sec"]),
+                 "obstacle_slowdown_enabled": control["obstacle_slowdown_enabled"],
+                 "obstacle_slowdown_speed_mps": control["obstacle_slowdown_speed_mps"],
+                 "obstacle_slowdown_clear_sec": control["obstacle_slowdown_clear_sec"],
+                 "target_recovery_acceleration_mps2": control["corner_planning_acceleration_mps2"],
+                 "driving_log_enabled": control["driving_log_enabled"],
+                 "driving_log_rate_hz": control["driving_log_rate_hz"],
+                 "driving_log_directory": control["driving_log_directory"],
+                 "reference_profile": " | ".join(arg(name) for name in ("vehicle_params_file", "obstacle_params_file", "bev_params_file", "camera_params_file", "lane_params_file", "roi_params_file")),
+                 "lane_result_topic": lane["result_topic"], "frame_id": bev["output_frame_id"],
                  "measured_speed_topic": arg("measured_speed_topic")})
     for key in ("duty_topic", "brake_current_topic", "servo_position_topic"):
         test[key] = telemetry_topic(arg(key), control[key], arg("vehicle_namespace"))
@@ -65,30 +108,44 @@ def nodes(context):
                 "longitudinal_pid_kp", "longitudinal_pid_ki", "longitudinal_pid_kd", "longitudinal_pid_integral_limit",
                 "longitudinal_feedforward_offset_duty", "longitudinal_feedforward_duty_per_mps",
                 "longitudinal_feedforward_fade_speed_mps", "brake_maximum_current_amps",
-                "longitudinal_brake_speed_gain", "traffic_brake_speed_hysteresis_mps",
+                "longitudinal_brake_speed_gain",
                 "brake_current_rise_amps_per_sec", "brake_current_fall_amps_per_sec",
-                "servo_left", "servo_center", "servo_right", "steering_servo_inverted"):
+                "servo_left", "servo_center", "servo_right", "steering_servo_inverted",
+                "longitudinal_recovery_duty_rise_per_sec", "longitudinal_recovery_start_ramp_sec",
+                "electrical_brake_enabled", "longitudinal_deceleration_filter_sec",
+                "longitudinal_brake_deceleration_gain", "brake_entry_speed_error_mps", "brake_exit_speed_error_mps",
+                "obstacle_brake_entry_margin_mps", "obstacle_brake_exit_margin_mps",
+                "obstacle_coast_probe_sec", "corner_coast_probe_sec",
+                "obstacle_brake_deceleration_margin_mps2", "corner_brake_deceleration_margin_mps2"):
         test["drive." + key] = control[key]
     test["drive.max_command_age_sec"] = control["path_capture_maximum_age_sec"]
-    test["deceleration_mps2"] = min(test["deceleration_mps2"], control["longitudinal_planning_deceleration_mps2"])
+    test["deceleration_mps2"] = min(control["longitudinal_planning_deceleration_mps2"],
+                                    obstacles["obstacles.avoidance.deceleration_mps2"])
+    test["response_delay_sec"] = max(test["response_delay_sec"], control["traffic_brake_response_time_sec"])
+    lane_overrides = {"input_topic": "/roi_lidar/lane_bev", "direct_bev_input_enabled": "false",
+                      "preview_enabled": "false", "bev_theme_enable": "false",
+                      "centerline_enabled": "true", "connection_enabled": "true",
+                      "centerline_bev_width_m": str(bev["y_max_m"]-bev["y_min_m"]),
+                      "centerline_bev_height_m": str(bev["x_max_m"]-bev["x_min_m"]),
+                      "result_publish_enabled": "true", "result_topic": lane["result_topic"]}
     actions = [Node(package="roi_lidar", executable="roi_lidar_node", name="roi_lidar",
                     output="screen", parameters=[roi]),
                IncludeLaunchDescription(PythonLaunchDescriptionSource(str(Path(get_package_share_directory("line_detactor")) / "launch/line_detactor.launch.py")),
-                    launch_arguments={"params_file": arg("lane_params_file"),
-                                      "input_topic": lane["input_topic"], "direct_bev_input_enabled": "false",
-                                      "preview_enabled": "false", "bev_theme_enable": "false",
-                                      "centerline_enabled": "true", "connection_enabled": "true",
-                                      "centerline_bev_width_m": "1.2", "centerline_bev_height_m": "3.0",
-                                      "result_publish_enabled": "true", "result_topic": "/line_detactor/result"}.items()),
+                                        launch_arguments={"params_file": arg("lane_params_file"), **lane_overrides}.items()),
                Node(package="roi_vfh_test", executable="roi_vfh_preview", name="roi_vfh_test",
                     output="screen", parameters=[test])]
     if arg("dynamics_enabled").lower() == "true":
-        dynamics = load(str(Path(get_package_share_directory("vehicle_dynamics_monitor")) / "config/vehicle_dynamics.yaml"), "/**")
+        dynamics = load(Path(get_package_share_directory("vehicle_dynamics_monitor")) / "config/vehicle_dynamics.yaml", "/**")
         dynamics.update({"input_mode": "ros_topic", "measured_erpm_topic": erpm_topic,
                          "connection_status_topic": connection_topic,
                          "speed_topic": arg("measured_speed_topic"), "imu_topic": "/roi_lidar/imu",
-                         "imu_yaw_axis": "z", "imu_yaw_rate_sign": 1.0})
-        # Keep ERPM-to-m/s calibration consistent with the existing controller.
+                         "imu_yaw_axis": "z", "imu_yaw_rate_sign": 1.0,
+                         "sample_timeout_sec": control["erpm_timeout_sec"],
+                         "wheelbase_m": control["avoidance_wheelbase_m"],
+                         "maximum_left_steering_angle_deg": control["maximum_steering_angle_deg"],
+                         "maximum_right_steering_angle_deg": control["maximum_steering_angle_deg"],
+                         "servo_left": control["servo_left"], "servo_center": control["servo_center"],
+                         "servo_right": control["servo_right"]})
         for key in ("wheel_diameter_m", "motor_pole_pairs", "motor_pinion_teeth", "spur_gear_teeth",
                     "differential_pinion_teeth", "differential_ring_teeth", "erpm_direction_sign",
                     "speed_scale_correction", "speed_filter_time_constant_sec"):
@@ -102,15 +159,15 @@ def nodes(context):
 
 def generate_launch_description():
     share = Path(get_package_share_directory("roi_vfh_test"))
-    auto = Path(get_package_share_directory("auto_control"))
+    reference = share / "config/reference"
     defaults = {"params_file": share / "config/preview.yaml",
-                "roi_params_file": Path(get_package_share_directory("roi_lidar")) / "config/roi_lidar.yaml",
-                "lane_params_file": Path(get_package_share_directory("line_detactor")) / "config/line_detactor.yaml",
-                "bev_params_file": Path(get_package_share_directory("bev_processor")) / "config/bev_config.yaml",
-                "vehicle_params_file": auto / "config/auto_control.yaml",
-                "obstacle_params_file": auto / "config/obstacles.yaml",
+                "roi_params_file": reference / "roi_lidar_test.yaml",
+                "lane_params_file": reference / "line_detactor_test.yaml",
+                "bev_params_file": reference / "bev_config_test.yaml",
+                "camera_params_file": reference / "camera_config_test.yaml",
+                "vehicle_params_file": reference / "auto_control_test.yaml",
+                "obstacle_params_file": reference / "obstacles_test.yaml",
                 "drive_enabled": "", "duty_topic": "", "brake_current_topic": "", "servo_position_topic": "",
                 "dynamics_enabled": "true", "vehicle_namespace": "", "measured_erpm_topic": "",
-                "vesc_connection_topic": "",
-                "measured_speed_topic": "/roi_vfh_test/measured_speed"}
+                "vesc_connection_topic": "", "measured_speed_topic": "/roi_vfh_test/measured_speed"}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=str(v)) for k, v in defaults.items()] + [OpaqueFunction(function=nodes)])

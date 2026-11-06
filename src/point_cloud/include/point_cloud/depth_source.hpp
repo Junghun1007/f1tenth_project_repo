@@ -17,6 +17,8 @@ struct Config
 {
   std::string resolution{"400p"};
   double fps{50.0};
+  int rgb_width{640},rgb_height{400};
+  int imu_rate_hz{200},imu_queue_size{20},imu_max_batch_reports{5};
   std::string mode{"high_density"};
   double dot_intensity{0.5};
   double flood_intensity{0.0};

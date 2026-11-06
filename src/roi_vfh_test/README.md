@@ -3,7 +3,7 @@
 **기본 실행은 실차 주행 모드**다. Start driving을 누르면 VESC Duty·브레이크·서보 명령을 발행한다.
 `drive_enabled:=false`로 실행하면 기존처럼 프리뷰만 출력한다.
 `roi_lidar`의 terrain, 같은 OAK RGB에서 만든 차선 결과, VESC 실측 속도와 IMU yaw rate를 사용한다.
-목표 속도 상한은 0.7m/s다. 좁은 통로·곡률·검사된 경로 길이에 따라 낮아진다.
+기본 목표 속도는 0.7m/s이며, 출발 전 GUI에서 첨부 controller YAML 상한(1.8m/s)까지 조절한다. 좁은 통로·곡률·검사된 경로 길이에 따라 낮아진다.
 
 ## 실행
 
@@ -24,7 +24,7 @@ ROI는 auto_control/BEV와 같은 `oak_startup` 측정과 BEV 설정의 456×228
 VESC bridge는 별도 실행한다. 이 launch는 bridge나 수동/자동주행 제어 노드를 시작하지 않는다.
 실차 모드에서는 auto_control/actuator_commander 등 다른 Duty·브레이크·서보 발행 노드를 종료한다.
 같은 명령 토픽에 다른 publisher가 감지되면 Start를 거부하거나 주행을 정지한다.
-기본 ERPM/연결 토픽은 `auto_control.yaml`의 `measured_erpm_topic`과 `connection_status_topic`을
+기본 ERPM/연결 토픽은 `config/reference/auto_control_test.yaml`의 `measured_erpm_topic`과 `connection_status_topic`을
 가져온다(현재 `/vesc/measured_erpm`, `/vesc/connected`). 바퀴 지름·극쌍·기어비·방향·속도 배율과
 속도 필터 시간도 같은 controller YAML에서 가져온다. bridge가 `/autopilot03` namespace로
 실행 중이면 `vehicle_namespace:=autopilot03`을 붙인다. 수동 제어 노드와는 동시 구동하지 않는다.
@@ -60,7 +60,8 @@ GTK에서는 `WND_PROP_AUTOSIZE`를 보조 조회하며, 지원되는 속성을 
 5. Q/Esc/창 닫기도 Stop 처리한다. 센서·차선·속도·IMU·연결·잠금 유실은 정지하고 다시 Start를 요구한다.
    유효 입력에서 경로만 막힌 경우에는 제동하면서 재계획한다.
 
-VFH 설정은 `config/preview.yaml`, 차량 모델은 기존 `auto_control`/`obstacles` YAML에서 launch 시 가져온다.
+VFH 고유 설정은 `config/preview.yaml`, 대응하는 차량·제어·센서·인식 설정은 `config/reference`의 첨부 YAML에서 가져온다.
+우선순위와 적용 범위는 [APPLIED_SETTINGS.md](config/reference/APPLIED_SETTINGS.md)를 참고한다.
 VFH 실행창 상단 **VFH parameters** 또는 **P**로 같은 크기의 설정 화면을 연다.
 값을 클릭해 숫자를 입력하고 **Apply / Enter / A**로 일괄 적용한다. Tab은 다음 항목,
 입력 중 Esc는 해당 필드 취소다. **Reload**는 현재 적용값을 다시 읽어 미적용 입력을 버린다.
@@ -71,12 +72,12 @@ ROI 파라미터 창의 기존 잠금도 함께 유지한다. Apply는 카메라
 
 | 실행창 항목 | 기본값 | 의미 |
 |---|---:|---|
-| `nominal_speed_mps` | 0.7 | 최대 목표 속도, 0.05~1m/s |
-| `lane_lookahead_m` | 0.30 | 차선·통로 추종 lookahead, 0.15~0.8m |
-| `safety_margin_m` | 0.02 | 차체 좌우/앞 여유, 0~0.2m; 셀 교차 여유는 별도 |
+| `nominal_speed_mps` | 0.7 | 최대 목표 속도, 0.05~첨부 YAML 상한(현재 1.8)m/s |
+| `lane_lookahead_m` | 0.05 | Stanley 접선 방향 계산 거리, 0.01~0.8m |
+| `safety_margin_m` | 0.04 | 첨부 obstacles 기준 좌우/앞 여유, 0~0.2m; 불확실성 0.01m 별도 |
 | `horizon_m` | 1.4 | 검사할 궤적 길이, 0.3~2.5m |
 | `reference_distance_m` | 1.0 | VFH 후보 목표 거리, 0.3~3m |
-| `sample_step_m` | 0.04 | 궤적 검사 간격, 0.02~0.08m |
+| `sample_step_m` | 0.02 | 궤적 검사 간격, 0.02~0.08m |
 | `lane_departure_m` | 0.40 | 일반 회피의 차체 차선 이탈 한도, 0~0.4m |
 | `deceleration_mps2` | 0.5 | 계획 감속도; 시작 시 controller에서 가져온 상한 이하 |
 | `response_delay_sec` | 0.20 | 계획 반응 시간, 0~1초; 프레임 처리 지연 하한은 유지 |
@@ -85,7 +86,7 @@ ROI 파라미터 창의 기존 잠금도 함께 유지한다. Apply는 카메라
 
 GUI와 ROS 변경은 같은 검증을 사용하며 서로 반영된다. 적용 시 이전 계획·히스토그램을 초기화한다.
 차량 형상·조향 한계·구동 PID·토픽 등은 기존처럼 시작 시 고정한다.
-실행 중 수정은 이번 세션에 적용되며 재실행 기본값은 `config/preview.yaml`에서 정한다.
+실행 중 수정은 이번 세션에 적용된다. 재실행 기본값은 대응하는 첨부 YAML이 우선하며, VFH 고유 값은 `config/preview.yaml`에서 정한다.
 이번 파라미터 GUI 변경은 사용자 요청대로 **빌드·테스트를 실행하지 않았다.**
 비정상 프로세스 강제 종료 후 ROI만 남아 잠겨 있으면 테스트 launch를 다시 실행하거나 다음으로 해제한다:
 
@@ -102,7 +103,7 @@ ros2 topic pub --once /roi_vfh_test/running std_msgs/msg/Bool '{data: false}'
 원 논문의 원형 로봇/360°/누적 certainty 구현과 수치적으로 동일한 재현은 아니다.
 
 - 일반 구간: **차선 궤적 우선**. 인식된 중앙선 전체를 따라 매 step 전방 목표를 갱신하는
-  pure-pursuit 궤적을 먼저 생성한다(`lane_lookahead_m=0.30`). 차량 조향 한계·변화율과 차체를 검사하고,
+  auto_control의 Stanley 제어로 궤적을 먼저 생성한다(`lane_lookahead_m=0.05`). 차량 조향 한계·변화율과 차체를 검사하고,
   충돌이 없으면 이 궤적을 그대로 선택하며 VFH 히스토그램을 건너뛴다. 옆쪽 장애물 때문에 우회하지 않는다.
 - 소량 콘: 차선 추종 차체 궤적이 **현재 빨간 셀과 충돌할 때만** VFH+를 사용한다.
   전진 길이·방향 안정성과 함께 전체 차선에서의 평균 이탈, 끝점 이탈·접선 방향을 평가한다.
@@ -116,7 +117,7 @@ ros2 topic pub --once /roi_vfh_test/running std_msgs/msg/Bool '{data: false}'
   통로 방향으로 계획한다. 일반 구간의 차선 유실과 차선 노드 자체의 입력 중단은 정지한다.
 - 완전히 막히면 속도 0으로 재계획한다. 탐색 범위 밖의 우회 경로 존재를 보장하지 않는다.
 
-terrain은 요청대로 폭 **1.2m × 전방 3m**다. 허용된 40cm 중 이 격자 범위 안의 부분만 쓸 수 있다.
+terrain은 첨부 ROI YAML대로 폭 **1.5m × 전방 4m**다. 허용된 40cm 중 이 격자 범위 안의 부분만 쓸 수 있다.
 차선 모델은 깨끗한 **120×300 / 1cm** BEV를 받으며 HUD/점/terrain 색상은 입력하지 않는다.
 범위 밖, 현재 위험 근거가 있는 셀은 계속 통과 불가다.
 
@@ -137,14 +138,14 @@ terrain은 요청대로 폭 **1.2m × 전방 3m**다. 허용된 40cm 중 이 격
 촬영 시각이 다른 차선과 depth를 정렬하기 위한 `MotionHistory`는 유지한다.
 같은 OAK 세션에서 차량 좌표로 보정한 gyro Z와 VESC 속도를 적분하고,
 앞차축의 횡방향 이동(축간거리 × yaw rate)을 반영해 RGB 차선을 depth 촬영 시각으로 변환한다.
-이 이력은 terrain 셀을 저장하지 않는다. IMU/속도 0.15초 유실 시 정지하며 다시 Start가 필요하다.
+이 이력은 terrain 셀을 저장하지 않는다. IMU 0.10초/속도 0.15초 유실 시 정지하며 다시 Start가 필요하다.
 VFH 이중 임계값·직전 방향과 유도 모드 연속 확인은 결정의 흔들림 방지용으로 유지한다.
 차선이 열려 기본 추종으로 복귀하면 이전 히스토그램 상태는 초기화한다.
 움직이는 물체의 의미 추적이나 차량 추종은 이 패키지 범위에 없다.
 
-차량 폭은 기존 `obstacles.avoidance.vehicle_half_width_m × 2`(현재 0.30m), 앞뒤 검사 길이는
-`vehicle_half_length_m`(각 0.25m)을 가져온다. 실제 앞차축 위치의 비대칭 돌출 실측값이 아니라
-기존 검사 모델이다. 축간거리 0.33m, 최대 조향 30°, 조향 변화율 240°/s는 기존 제어 설정을 따른다.
+차량 폭은 `obstacles.avoidance.vehicle_half_width_m × 2`(0.30m), 앞차축부터 앞범퍼는
+`traffic_front_axle_to_bumper_m`(0.05m), 뒤쪽 검사 길이는 `vehicle_half_length_m`(0.25m)이다.
+이 값은 첨부 설정의 검사 모델이며 전체 차체 실측 형상을 보증하지 않는다. 축간거리 0.33m, 최대 조향 30°, 조향 변화율 240°/s는 기존 제어 설정을 따른다.
 
 사용자 선택대로 **전방 관측 영역만 검사**한다. 음의 X 후방의 차체 회전 공간은 검증하지 않으며
 화면·상태에 `rear unverified`로 표시한다. 격자 안의 미관측 통과 허용과 후방 미검증은 실차 모드에도 그대로 적용된다.
@@ -155,18 +156,19 @@ VFH 이중 임계값·직전 방향과 유도 모드 연속 확인은 결정의 
 실제 선택된 주행 경로(차선 추종 또는 VFH+ 회피)는 **노란 선**이며 Start/잠금 완료 후 유효 경로가 있을 때만 표시한다.
 회색 선은 검사한 후보 궤적이다. 파란 선이 장애물을 가로지른다고 그 선으로 구동하는 것은 아니다.
 통과 가능한 VFH 방향이 없으면 `no free VFH+ direction`, 후보의 차체 검사가 모두 짧게 끝나면
-`no path >=0.25m`와 종료 원인별 횟수를 표시한다.
+`no path >=0.12m`와 종료 원인별 횟수를 표시한다.
 `Ends: hazard / edge`는 후보가 장애물/격자 끝에서 중단된 횟수,
-`Route limit / short`는 차선·유도 통로 제한으로 중단된 횟수/0.25m 미만 후보 수다.
+`Route limit / short`는 차선·유도 통로 제한으로 중단된 횟수/0.12m 미만 후보 수다.
 차선 추종 후보 1개와 VFH 후보 최대 51개를 검사한다. 유효 후보도 먼 지점에서 중단될 수 있으므로 종료 횟수와 탈락 후보 수는 같은 의미가 아니다.
 `Longest candidate`로 확보한 최대 검사 길이를 확인한다. 단순 빈 공간 유무 외에도 차폭·셀 여유,
 회전반경·앞 돌출·격자 폭·차선 이탈 제한을 만족해야 회피할 수 있다.
-이번 차선 우선·현재 프레임 변경은 planner/motion 코어·렌더·launch 구성을 간단히 검증했다. 차량 ROS 실행은 검증하지 않았다.
+이번 첨부 YAML 반영은 사용자 요청대로 빌드·테스트를 실행하지 않았다.
 
 ## 실차 연결과 선택한 여유
 
-- `safety_margin_m=0.02`: 차체 좌우 각각 2cm. 폭 30cm 기준 명목 검사 폭 34cm이며,
-  셀 교차를 빠뜨리지 않기 위한 `cell_m × 0.71` 여유가 추가된다. 앞쪽 검사에도 같은 margin을 더한다.
+- `safety_margin_m=0.04`: 첨부 obstacles 설정대로 좌우/앞 각각 4cm와 불확실성 1cm를 적용한다.
+  폭 30cm 기준 검사 폭은 40cm다. 회전한 차체 직사각형과 셀 사각형의 교차를 직접 검사하며,
+  셀 대각선 길이를 고정 패딩으로 추가하지 않는다. GUI에서 margin을 변경할 수 있다.
 - `nominal_speed_mps=0.7`: 상한이며, 곡률·남은 검사 길이에 따라 감속한다.
 - 정지 시 구동 Duty 0 + 기존 최대 브레이크 전류, 조향 유지. 출발 전에도 제동하며,
   최초 Start 전에는 서보를 임의로 중앙 정렬하지 않는다.
@@ -182,7 +184,8 @@ auto_control의 신호등/정지선/코너 상태기를 복제하지 않는다.
 계획 감속도는 controller의 `longitudinal_planning_deceleration_mps2` 이하(현재 0.5m/s²)로 제한한다.
 강제 종료·통신 단절 때의 최종 모터 명령 만료는 기존 bridge watchdog을 따른다.
 
-실차 출력 연결 당시에는 사용자 요청에 따라 빌드·테스트를 실행하지 않았다. 이번 검증도 실제 차량 구동을 포함하지 않는다.
+계획은 20Hz, 구동·정지 감시는 100Hz다. 첨부 설정대로 `driving_logs`에 최대 30Hz CSV를
+비동기로 기록하며, 적용된 파라미터·상태·속도·Duty·브레이크·조향·경로를 함께 남긴다.
 
 ## 출력과 검증
 
@@ -200,8 +203,7 @@ colcon test-result --verbose
 ```
 
 기존 테스트 코드는 순수 C++ 계획/촬영 시각 보정, 프리뷰 렌더와 버튼 영역, launch 구성,
-ROI 격자/스캔/프리뷰/설정 및 GUI 잠금을 검사한다. 이번에는 planner/motion/render 순수 C++ 검증과
-ROS launch API 대역을 사용한 Python launch 테스트 5개가 통과했다. 위 전체 colcon test 명령은 실행하지 않았다.
+ROI 격자/스캔/프리뷰/설정 및 GUI 잠금을 검사한다. 이번 변경에서는 위 명령과 개별 테스트, 빌드를 모두 실행하지 않았다.
 ROS 전체 실행, 실제 IMU 축/속도 환산, 모델 추론 지연과 버튼-파라미터 ACK 연결은 차량 환경에서 확인한다.
 
 ## 로컬 연산 측정
@@ -209,7 +211,8 @@ ROS 전체 실행, 실제 IMU 축/속도 환산, 모델 추론 지연과 버튼-
 재현 명령(ROS 불필요):
 
 ```bash
-c++ -std=c++17 -O2 -Isrc/roi_vfh_test/include src/roi_vfh_test/test/benchmark.cpp -o /tmp/roi-vfh-benchmark
+c++ -std=c++17 -O2 -Isrc/roi_vfh_test/include -Isrc/auto_control/include \
+  src/roi_vfh_test/test/benchmark.cpp src/auto_control/src/control_core.cpp -o /tmp/roi-vfh-benchmark
 /tmp/roi-vfh-benchmark
 ```
 

@@ -138,7 +138,7 @@ class Node : public rclcpp::Node
       changed=true;
       const auto & n=names_[i];
       reopen|=n.rfind("camera.",0)==0 || n.rfind("depth.",0)==0 ||
-        n=="motion.publish_imu" || n=="preview.publish_lane_bev" || n=="preview.rgb_fps" || n=="preview.camera_image" || n=="preview.gui" || n=="preview.publish";
+        n.rfind("motion.",0)==0 || n=="preview.publish_lane_bev" || n.rfind("preview.rgb_",0)==0 || n=="preview.camera_image" || n=="preview.gui" || n=="preview.publish";
     }
     if (!changed) {return;}
     auto c=readParameters();

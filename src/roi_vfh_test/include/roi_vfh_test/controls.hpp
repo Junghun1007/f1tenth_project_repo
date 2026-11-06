@@ -14,8 +14,8 @@ struct PlannerField {
 };
 inline const std::array<PlannerField,11>& plannerFields() {
   static const std::array<PlannerField,11> fields{{
-    {"nominal_speed_mps",&Config::speed,.05,1,"max speed, m/s (0.05..1)"},
-    {"lane_lookahead_m",&Config::lane_lookahead,.15,.8,"lane tracking, m (0.15..0.8)"},
+    {"nominal_speed_mps",&Config::speed,.05,3,"max speed, m/s; YAML ceiling"},
+    {"lane_lookahead_m",&Config::lane_lookahead,.01,.8,"Stanley tangent, m (0.01..0.8)"},
     {"safety_margin_m",&Config::margin,0,.2,"each side / front, m (0..0.2)"},
     {"horizon_m",&Config::horizon,.3,2.5,"planning length, m (0.3..2.5)"},
     {"reference_distance_m",&Config::reference_distance,.3,3,"VFH target, m (0.3..3)"},
@@ -32,7 +32,7 @@ inline const PlannerField* plannerField(const std::string& name) {
   for(const auto& field:plannerFields())if(name==field.name)return &field;
   return nullptr;
 }
-inline void validatePlannerEdits(const Config& config,double deceleration_ceiling) {
+inline void validatePlannerEdits(const Config& config,double deceleration_ceiling,double speed_ceiling=3) {
   for(const auto& f:plannerFields()) {
     const double value=config.*(f.member);
     if(!std::isfinite(value) || value<f.minimum || value>f.maximum)
@@ -41,6 +41,7 @@ inline void validatePlannerEdits(const Config& config,double deceleration_ceilin
   if(config.hist_low>=config.hist_high)throw std::invalid_argument("histogram_low must be smaller than histogram_high");
   if(config.deceleration>deceleration_ceiling+1e-9)
     throw std::invalid_argument("deceleration_mps2 exceeds startup controller ceiling");
+  if(config.speed>speed_ceiling+1e-9)throw std::invalid_argument("nominal_speed_mps exceeds source controller maximum_speed_mps");
   config.validate();
 }
 class PlannerControls {
@@ -102,7 +103,7 @@ public:
     }else return Action::None;
     select_all_=false;e.pending=true;return Action::None;
   }
-  void draw(cv::Mat& canvas,bool locked,double deceleration_ceiling)const {
+  void draw(cv::Mat& canvas,bool locked,double deceleration_ceiling,double speed_ceiling=3)const {
     const auto text=[&](const std::string& value,cv::Point at,double scale,cv::Scalar color){cv::putText(canvas,value,at,cv::FONT_HERSHEY_SIMPLEX,scale,color,1,cv::LINE_AA);};
     cv::rectangle(canvas,toggleButton(),{120,110,75},-1);
     text(open_?"Back to view":"VFH parameters",{378,36},.49,{255,255,255});
@@ -122,7 +123,7 @@ public:
     cv::rectangle(canvas,reloadButton(),{175,175,175},-1);
     text("Apply edits (Enter / A)",{70,512},.48,{255,255,255});text("Reload / discard edits",{440,512},.48,{35,35,35});
     text(message_.substr(0,104),{16,550},.39,{35,65,190});
-    text(cv::format("Deceleration ceiling: %.2f m/s^2 (controller startup setting)",deceleration_ceiling),{16,576},.40,{60,60,60});
+    text(cv::format("YAML ceilings: speed %.2f m/s, deceleration %.2f m/s^2",speed_ceiling,deceleration_ceiling),{16,576},.40,{60,60,60});
     text("Start applies edits and locks ROI + VFH. Stop unlocks both.",{16,601},.40,{60,60,60});
   }
 };
