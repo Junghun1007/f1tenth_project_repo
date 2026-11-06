@@ -26,6 +26,8 @@ struct Grid {
       throw std::invalid_argument("invalid metric terrain grid");
   }
 };
+// Unknown (-1) is traversable for this preview; positive occupancy remains blocked.
+inline bool blockedTerrain(int value) {return value>0;}
 struct Config {
   double speed{.7},horizon{1.4},step{.04},wheelbase{.33},width{.30},rear{.25},front{.25};
   double margin{.04},max_steer{30*pi/180},steer_rate{240*pi/180};
@@ -60,7 +62,7 @@ struct Plan {
   std::array<double,61> histogram{};
   std::array<bool,61> binary{},masked{};
   double speed{},steer{},length{}; bool guidance{},rear_unverified{true};
-  std::string status{"STOP: no observed route"};
+  std::string status{"STOP: no feasible route"};
 };
 // VFH+ four-stage histogram reduction, followed by Ackermann rollout verification.
 // The preview explicitly reports that negative-X (rear) terrain is unobserved.
@@ -103,7 +105,7 @@ public:
         if(have && gap>=c.width+2*c.margin && gap<c.lane_width+.3 &&
           (bands.empty() || (std::abs(center-last_center)<.18 && x-bands.back().x<=.15))) {
           const double e=std::abs(center-last_center);
-          bool free=true;for(double q=wall+evidence.resolution;q<y-evidence.resolution*.5;q+=evidence.resolution)if(evidence.at(x,q)!=0)free=false;
+          bool free=true;for(double q=wall+evidence.resolution;q<y-evidence.resolution*.5;q+=evidence.resolution)if(blockedTerrain(evidence.at(x,q)))free=false;
           if(free && e<error){best={x,wall,y};error=e;found=true;}
         }
         wall=y;have=true;
@@ -116,7 +118,7 @@ public:
     for(const auto& band:bands) {
       Point near{};double distance=1e9;
       for(auto p:lane)if(std::abs(p.x-band.x)<distance){near=p;distance=std::abs(p.x-band.x);}
-      if(near.y<band.lo+c.width/2 || near.y>band.hi-c.width/2 || evidence.at(band.x,near.y)!=0)lane_blocked=true;
+      if(near.y<band.lo+c.width/2 || near.y>band.hi-c.width/2 || blockedTerrain(evidence.at(band.x,near.y)))lane_blocked=true;
     }
     const bool corridor=pair_valid && lane_blocked;
     std::vector<Point> reference=lane;
@@ -139,7 +141,7 @@ public:
     const double front_turn_radius=std::hypot(turn_radius,c.wheelbase);
     double left_limit=pi,right_limit=-pi;
     for (int v=0;v<g.height;++v) for (int u=0;u<g.width;++u) {
-      if (g.cells[std::size_t(v)*g.width+u]==0) continue;
+      if (!blockedTerrain(g.cells[std::size_t(v)*g.width+u])) continue;
       const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
       if (x<0 || (x<c.front && std::abs(y)<c.width/2)) continue;
       const double d=std::hypot(x,y); if (d<.05 || d>c.horizon+.3) continue;
@@ -185,7 +187,7 @@ public:
         if (longitudinal < -c.rear-pad || longitudinal>c.front+c.margin+pad || std::abs(lateral)>half+pad) continue;
         if (x<0) continue; // No rear sensor/history: diagnostic preview, never actuator control.
         if (x<=c.front && std::abs(y)<=c.width/2) continue; // Current self-occupied area only.
-        if (v<0 || v>=g.height || g.cells[std::size_t(v)*g.width+u]!=0 || !allowed[std::size_t(v)*g.width+u]) return false;
+        if (v<0 || v>=g.height || blockedTerrain(g.cells[std::size_t(v)*g.width+u]) || !allowed[std::size_t(v)*g.width+u]) return false;
       }
       // Explicit forward/lateral bounds, even when the bounding loop was clipped.
       for (double a:{-c.rear,c.front+c.margin}) for (double b:{-half,half}) {
@@ -255,12 +257,12 @@ public:
     }
     if (out.path.empty()) return out;
     const auto last=out.path.back();previous_angle_=std::atan2(last.y,last.x);
-    // v*delay+v^2/(2a) <= confirmed remaining path; nominal speed is an upper bound.
+    // v*delay+v^2/(2a) <= checked remaining path (unknown allowed); nominal speed is an upper bound.
     out.speed=std::min(c.speed,-c.deceleration*c.delay+
       std::sqrt(c.deceleration*c.deceleration*c.delay*c.delay+2*c.deceleration*out.length));
     double curvature=0;for (auto p:out.path)curvature=std::max(curvature,std::abs(std::tan(p.steer)/c.wheelbase));
     out.speed=std::min(out.speed,std::sqrt(.4/std::max(.01,curvature)));
-    out.status=guidance_ ? "GUIDANCE: terrain corridor" : (std::abs(previous_angle_-target_angle)>.1 ? "AVOID: lane direction preferred" : "LANE: observed route");
+    out.status=guidance_ ? "GUIDANCE: terrain corridor" : (std::abs(previous_angle_-target_angle)>.1 ? "AVOID: lane direction preferred" : "LANE: route (unknown allowed)");
     return out;
   }
 };

@@ -18,7 +18,7 @@ inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::ve
     text(cv::format("target %.2f / nominal %.2f m/s | steer %.1f deg | %.2f ms",
       active?plan.speed:0,config.speed,active?plan.steer*180/pi:0,plan_ms),114);
     text("Forward terrain check; rear/out-of-view body sweep is UNVERIFIED",136);
-    text(cv::format("VFH+ candidates: %zu | confirmed length: %.2fm",plan.candidates.size(),plan.length),156);
+    text(cv::format("VFH+ candidates: %zu | checked length: %.2fm",plan.candidates.size(),plan.length),156);
     if(active) {
       const double peak=std::max(1.,*std::max_element(plan.histogram.begin(),plan.histogram.end()));
       for(int b=0;b<61;++b) {
@@ -31,7 +31,7 @@ inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::ve
     }
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Cyan: short memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
-    cv::putText(canvas,"Gray: unknown / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
+    cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     if (grid.width>0) {
       const double scale=std::min(430./(grid.width*grid.resolution),400./(grid.height*grid.resolution));
       const auto pixel=[&](double x,double y){return cv::Point(int(490-y*scale),int(584-x*scale));};

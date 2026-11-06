@@ -10,8 +10,8 @@ int main(){
   check(!plan.path.empty() && plan.speed>0 && plan.speed<=.7,"open lane failed");
   check(plan.candidates.size()<=51,"candidate cap exceeded");
   check(std::abs(plan.path.back().y)<.1,"open lane swerved");
-  auto blocked=g;blocked.cells.assign(1440,-1);planner.reset();
-  check(planner.plan(blocked,lane,c).path.empty(),"unknown terrain treated as free");
+  auto unknown=g;unknown.cells.assign(1440,-1);planner.reset();
+  check(planner.plan(unknown,lane,c).speed>0,"unknown terrain was blocked");
   auto cone=g;
   for(int x=18;x<=20;++x)for(int y=11;y<=12;++y)cone.cells[y*60+x]=100;
   planner.reset();plan=planner.plan(cone,lane,c);
@@ -35,7 +35,7 @@ int main(){
   planner.plan(guide,lane,c);auto entered=planner.plan(guide,lane,c);
   check(entered.guidance && entered.length>1.2,"confirmed guide entry failed");
   auto lost=planner.plan(guide,{},c);check(lost.guidance && !lost.path.empty(),"corridor lost with lane labels");
-  check(planner.plan(guide,{},c,&blocked).path.empty(),"memory substituted for current corridor evidence");
+  check(planner.plan(guide,{},c,&unknown).path.empty(),"memory substituted for current corridor evidence");
   auto single_wall=g;for(int x=16;x<38;++x)single_wall.cells[9*60+x]=100;
   planner.reset();for(int i=0;i<5;++i)check(!planner.plan(single_wall,lane,c).guidance,"one wall enabled guidance");
   bool threw=false;try {auto bad=c;bad.hist_low=bad.hist_high;bad.validate();}catch(...){threw=true;}
