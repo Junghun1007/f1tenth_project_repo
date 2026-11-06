@@ -27,17 +27,17 @@ roi_lidar:
     roi.y: 0.0
     roi.width: 1.0
     roi.height: 1.0
-    points.pixel_stride: 2
+    points.pixel_stride: 1
     points.min_depth_m: 0.1
     points.max_depth_m: 20.0
     # 시작 측정 지면(Z=0) 기준 제거 두께:
     # min(max_distance_m, distance_m + distance_per_meter * 수평거리).
-    # 기본 1m에서 6cm, 4m에서 9cm, 7m 이상에서 최대 12cm. 낮은 장애물도 제외될 수 있음.
+    # 기본 1m에서 7cm, 3m에서 11cm, 3.5m 이상에서 최대 12cm. 낮은 장애물도 제외될 수 있음.
     ground.enabled: true
     ground.distance_m: 0.05
-    ground.distance_per_meter: 0.01 # 거리 1m마다 제거 높이 1cm 증가. 0이면 고정 두께.
+    ground.distance_per_meter: 0.02 # 거리 1m마다 제거 높이 2cm 증가. 0이면 고정 두께.
     ground.max_distance_m: 0.12     # 제거 높이 증가 상한. distance_m 이상.
-    height.max_m: 1.0
+    height.max_m: 0.5
     range.min_m: 0.1
     range.max_m: 12.0               # Software limit, NOT a guaranteed detection range.
     scan.angle_min_deg: -70.0
@@ -58,11 +58,11 @@ roi_lidar:
     terrain.fill_enabled: true # Small enclosed holes only; false preserves raw cells.
     terrain.fill_max_cells: 2 # 1..16, 8-connected component size at current cell resolution.
     terrain.fill_clearance_cells: 1 # 0..4, hazard exclusion radius in cells.
-    terrain.cell_m: 0.05
-    terrain.below_ground_m: 0.05   # 지면 아래 5cm 초과 관측은 함몰/위험 근거.
+    terrain.cell_m: 0.06
+    terrain.below_ground_m: 0.30   # 지면 아래 30cm 초과 관측은 함몰/위험 근거.
     terrain.min_ground_samples: 2
     terrain.min_obstacle_samples: 2
-    terrain.vehicle_width_m: 0.30 # 폭 눈금만 표시. 차량 통과/안전 여유 판정에는 미적용.
+    terrain.vehicle_width_m: 2.0 # 폭 눈금만 표시. 차량 통과/안전 여유 판정에는 미적용.
     preview.show_terrain: true    # 초록=관측 바닥, 빨강=높이/함몰 위험, 회색=미관측·근거부족.
     preview.show_projected_points: true # 각도별 최근접점으로 줄이지 않은 XY 포인트 전체.
     preview.terrain_alpha: 0.80   # 0이면 원본 RGB BEV를 유지. 포인트는 별도 표시.
@@ -80,5 +80,5 @@ roi_lidar:
     preview.rgb_fps: 15.0           # 640x400 undistorted CAM_A; same device session as stereo.
     preview.max_sync_sec: 0.08      # Suppress overlay if RGB/depth timestamps differ more than this.
     preview.width_m: 1.2           # Vehicle Y: -0.6..+0.6m. Display only.
-    preview.forward_m: 3.0         # Vehicle X: 0..4m. Scan range remains independent.
+    preview.forward_m: 3.0         # Vehicle X: 0..3m. Scan range remains independent.
     preview.size_px: 800           # Long-side pixel budget including header/footer.

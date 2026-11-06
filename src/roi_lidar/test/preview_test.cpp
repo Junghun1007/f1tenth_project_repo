@@ -70,7 +70,7 @@ int main()
   // All XY endpoints survive, including multiple depths along the same scan bin.
   auto dense=emptyScan(o);
   dense.surface_points={{1,.12,.2},{2,.12,.3},{3,.12,1.5},{1.5,.12,.0}};
-  TerrainOptions terrain;
+  TerrainOptions terrain;terrain.cell_m=.05;terrain.below_ground_m=.05; // Fixed color fixture.
   const auto grid=terrainGrid(dense,o,view,terrain);
   auto topdown=blank.clone();
   terrainOverlay(topdown,grid,dense,o,view,800,false,true,.4,1,.3);

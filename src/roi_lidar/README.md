@@ -74,7 +74,7 @@ min(ground.max_distance_m,
 
 ## 바닥·장애물·미관측 분류
 
-현재 프레임의 실제 표본을 기본 5cm 셀에 집계하며 초록/빨강/회색으로 표시한다.
+현재 프레임의 실제 표본을 기본 6cm 셀에 집계하며 초록/빨강/회색으로 표시한다.
 이 색상은 지면 관측 근거의 구분이며 경로 계획이나 차량의 최종 통과 판정이 아니다.
 
 | 셀 | 조건 |
@@ -90,7 +90,7 @@ min(ground.max_distance_m,
 프레임 간 누적, 메모리, 팽창, 군집 연결은 수행하지 않는다. 작은 내부 구멍 보정은 아래 설정으로 선택한다.
 `ground.enabled`는 포인트 하한에만 적용되며 바닥 셀 분류 기준은 유지한다.
 
-차량 폭 **0.30m**는 원점의 폭 눈금에만 반영한다. 차체 길이, 조향 궤적, 장애물 여유 간격,
+표시용 폭 눈금 **2.0m**는 원점의 폭 눈금에만 반영한다. 차체 길이, 조향 궤적, 장애물 여유 간격,
 연결된 통로 폭과 바닥 경사는 아직 평가하지 않는다. 녹색을 차량 전체가 통과 가능하다는
 뜻으로 사용하지 않는다. 지면 아래 표본은 실제 함몰과 깊이 오류를 구별하지 않는다.
 
@@ -98,16 +98,16 @@ min(ground.max_distance_m,
 
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
-| `height.max_m` | 1.0 | 표시/발행/셀 집계에 사용할 지면 기준 최대 높이 |
+| `height.max_m` | 0.5 | 표시/발행/셀 집계에 사용할 지면 기준 최대 높이 |
 | `ground.distance_m` | 0.05 | 지면 제거 기본 두께 |
-| `ground.distance_per_meter` | 0.01 | 수평거리 1m당 두께 증가 |
+| `ground.distance_per_meter` | 0.02 | 수평거리 1m당 두께 증가 |
 | `ground.max_distance_m` | 0.12 | 지면 제거 두께 상한 |
-| `terrain.below_ground_m` | 0.05 | 지면 아래 허용 두께 |
-| `terrain.cell_m` | 0.05 | 셀 크기, 0.02~0.25m |
+| `terrain.below_ground_m` | 0.30 | 지면 아래 허용 두께 |
+| `terrain.cell_m` | 0.06 | 셀 크기, 0.02~0.25m |
 | `terrain.min_ground_samples` | 2 | 셀을 바닥으로 판정할 최소 표본 수 |
 | `terrain.min_obstacle_samples` | 2 | 셀을 위험으로 판정할 최소 표본 수 |
-| `terrain.vehicle_width_m` | 0.30 | 폭 표시 기준 |
-| `points.pixel_stride` | 2 | ROI 이미지 표본 간격 |
+| `terrain.vehicle_width_m` | 2.0 | 폭 표시 기준 |
+| `points.pixel_stride` | 1 | ROI 이미지 표본 간격 |
 | `preview.show_terrain` | true | 바닥 분류 색상 표시 |
 | `preview.show_projected_points` | true | XY 포인트 표시 |
 | `preview.terrain_alpha` | 0.80 | 색상 불투명도, 0이면 RGB 원본 유지 |
@@ -178,7 +178,7 @@ ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 �
 `terrain.fill_max_cells` (기본 2, 1~16)는 8방향으로 연결된 회색 묶음의 최대 셀 수다.
 `terrain.fill_clearance_cells` (기본 1, 0~4)는 위험 표본 주변 보정 금지 반경이다.
 세 설정은 카메라 재시작 없이 다음 프레임부터 반영하며 YAML에 자동 저장하지 않는다.
-현재 5cm 격자에서 2셀은 50cm² 면적이다. 셀 크기를 바꾸면 물리적 보정 면적도 바뀐다.
+현재 6cm 격자에서 2셀은 72cm² 면적이다. 셀 크기를 바꾸면 물리적 보정 면적도 바뀐다.
 
 작고 관측 바닥으로 완전히 둘러싸인 묶음만 채운다. 지도 가장자리나 원거리 회색에
 대각선으로라도 연결되면 제외한다. 한 개라도 위험 표본이 있는 셀, 위험 경계와
@@ -201,3 +201,8 @@ ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 �
 화면과 기존 terrain/raw 토픽의 분류 의미는 유지한다.
 `/roi_vfh_test/running=true` 수신 시 GUI 편집과 ROS 파라미터 쓰기를 모두 잠그고
 `~/parameters_locked`로 ACK한다. Stop(false) 수신 후 다시 변경할 수 있다.
+
+스크린샷 기본값 변경: 높이 상한 0.5m, 거리별 두께 증가 0.02m/m, 아래 허용 깊이 0.30m,
+셀 0.06m, 표시 폭 눈금 2.0m, 픽셀 간격 1. 나머지 사진 값과 카메라 30 FPS는 유지한다.
+`terrain.vehicle_width_m`는 표시용이며 VFH+ 차량 검사 폭은 기존 차량 설정을 따른다.
+이번 기본값 변경의 빌드·테스트는 사용자 요청에 따라 실행하지 않았다.

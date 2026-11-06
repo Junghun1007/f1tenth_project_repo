@@ -13,10 +13,10 @@ constexpr double radians = 3.14159265358979323846 / 180.0;
 struct Options
 {
   double roi_x{0}, roi_y{0}, roi_width{1}, roi_height{1}; // normalized image rectangle
-  int pixel_stride{2};
+  int pixel_stride{1};
   bool ground_enabled{true};
-  double ground_distance{0.05}, ground_distance_per_meter{0.01}, ground_max_distance{0.12};
-  double max_height{1.0}; // measured plane is vehicle Z=0
+  double ground_distance{0.05}, ground_distance_per_meter{0.02}, ground_max_distance{0.12};
+  double max_height{0.5}; // measured plane is vehicle Z=0
   double min_depth{0.1}, max_depth{20.0};
   double min_range{0.1}, max_range{12.0};
   double angle_min{-70}, angle_max{70};
