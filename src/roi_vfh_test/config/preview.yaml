@@ -6,7 +6,7 @@ roi_vfh_test:
     horizon_m: 1.4
     sample_step_m: 0.02 # Attached obstacles profile overrides this value.
     safety_margin_m: 0.04 # Attached obstacles profile overrides this value.
-    lane_departure_m: 0.40 # Body outer edge; normal obstacle avoidance only.
+    lane_departure_m: 0.65 # Body outer edge; normal obstacle avoidance only.
     reference_distance_m: 1.0
     lane_lookahead_m: 0.05 # Stanley tangent lookahead; attached controller profile overrides this value.
     histogram_low: 1.0

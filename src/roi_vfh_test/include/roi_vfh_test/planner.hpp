@@ -32,7 +32,7 @@ inline bool blockedTerrain(int value) {return value>=50;}
 struct Config {
   double speed{.7},horizon{1.4},step{.02},wheelbase{.33},width{.30},rear{.25},front{.05};
   double margin{.04},max_steer{30*pi/180},steer_rate{240*pi/180};
-  double lane_width{.65},departure{.40},deceleration{.8},delay{.20};
+  double lane_width{.65},departure{.65},deceleration{.8},delay{.20};
   double current_steer{0},current_speed{.7};
   double minimum_path_length{.12},uncertainty{.01},max_curvature{2};
   double lane_lateral_acceleration{1.6},avoidance_lateral_acceleration{.4};
@@ -65,7 +65,7 @@ struct Config {
     if (!std::isfinite(current_steer) || std::abs(current_steer)>max_steer || speed<.05 || speed>3 || horizon<.3 || horizon>2.5 || step<.02 || step>.08 ||
       wheelbase<.1 || wheelbase>1 || width<.1 || width>1 || rear>1 || front>.5 || margin>.2 ||
       max_steer<.05 || max_steer>pi/3 || steer_rate<.1 || steer_rate>20 ||
-      lane_width<width || lane_width>2 || departure>.4 || deceleration<.1 || deceleration>3 || delay>1 || reference_distance<.3 || lane_lookahead<.01 || lane_lookahead>.8 || hist_low>=hist_high || hist_high>1000)
+      lane_width<width || lane_width>2 || departure>1.0 || deceleration<.1 || deceleration>3 || delay>1 || reference_distance<.3 || lane_lookahead<.01 || lane_lookahead>.8 || hist_low>=hist_high || hist_high>1000)
       throw std::invalid_argument("VFH parameter outside test limits");
   }
 };

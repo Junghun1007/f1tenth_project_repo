@@ -20,7 +20,7 @@ inline const std::array<PlannerField,16>& plannerFields() {
     {"horizon_m",&Config::horizon,.3,2.5,"planning length, m (0.3..2.5)"},
     {"reference_distance_m",&Config::reference_distance,.3,3,"VFH target, m (0.3..3)"},
     {"sample_step_m",&Config::step,.02,.08,"path sample, m (0.02..0.08)"},
-    {"lane_departure_m",&Config::departure,0,.4,"body departure, m (0..0.4)"},
+    {"lane_departure_m",&Config::departure,0,1.0,"body departure, m (0..1.0)"},
     {"deceleration_mps2",&Config::deceleration,.1,3,"m/s^2; startup ceiling applies"},
     {"response_delay_sec",&Config::delay,0,1,"response delay, sec (0..1)"},
     {"histogram_low",&Config::hist_low,0,999,"VFH low (must be < high)"},
