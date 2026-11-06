@@ -30,9 +30,9 @@ struct Grid {
 // Match the preview: mint/gray are traversable; only red occupancy (>=50) blocks.
 inline bool blockedTerrain(int value) {return value>=50;}
 struct Config {
-  double speed{.7},horizon{1.4},step{.02},wheelbase{.33},width{.30},rear{.25},front{.05};
-  double margin{.04},max_steer{30*pi/180},steer_rate{240*pi/180};
-  double lane_width{.65},departure{.65},deceleration{.8},delay{.20};
+  double speed{.8},horizon{1.4},step{.03},wheelbase{.33},width{.30},rear{.25},front{.05};
+  double margin{.03},max_steer{30*pi/180},steer_rate{240*pi/180};
+  double lane_width{.65},departure{.40},deceleration{.4},delay{.10};
   double current_steer{0},current_speed{.7};
   double minimum_path_length{.12},uncertainty{.01},max_curvature{2};
   double lane_lateral_acceleration{1.6},avoidance_lateral_acceleration{.4};
@@ -40,7 +40,7 @@ struct Config {
   double geometry_window{.16},steering_weight{.4},control_rate{100};
   bool curvature_speed_control{true};
   // Numeric 0/1 and integer-valued doubles share the pre-Start GUI/ROS edit path.
-  double hazard_filter_enabled{1},hazard_confirm_frames{2},hazard_small_max_cells{5};
+  double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
   double avoidance_curve_enabled{1},avoidance_curve_samples{9},avoidance_length_slack_m{.10};
   double avoidance_lane_weight{1},avoidance_steering_weight{1};
@@ -159,7 +159,7 @@ inline Candidate followReference(const std::vector<Point>& reference,const Confi
   return out;
 }
 enum class Block {None,Hazard,Edge,Route};
-inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const std::vector<std::uint8_t>* allowed=nullptr) {
+inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const std::vector<std::uint8_t>* allowed=nullptr,const std::vector<Point>* lane=nullptr) {
   const double half=c.width/2+c.margin+c.uncertainty,cs=std::cos(p.yaw),sn=std::sin(p.yaw);
   const double back=c.rear+c.uncertainty,front=c.front+c.margin+c.uncertainty;
   const double longitudinal_half=(front+back)/2,offset=(front-back)/2;
@@ -168,8 +168,8 @@ inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const st
   const double y_radius=longitudinal_half*std::abs(sn)+half*std::abs(cs);
   const int u0=std::max(0,int(std::floor((center_x-x_radius-cell_half-g.x0)/g.resolution)));
   const int u1=std::min(g.width-1,int(std::ceil((center_x+x_radius+cell_half-g.x0)/g.resolution)));
-  const int v0=int(std::floor((center_y-y_radius-cell_half-g.y0)/g.resolution));
-  const int v1=int(std::ceil((center_y+y_radius+cell_half-g.y0)/g.resolution));
+  const int v0=std::max(0,int(std::floor((center_y-y_radius-cell_half-g.y0)/g.resolution)));
+  const int v1=std::min(g.height-1,int(std::ceil((center_y+y_radius+cell_half-g.y0)/g.resolution)));
   const double cell_projection=cell_half*(std::abs(cs)+std::abs(sn));
   for(int v=v0;v<=v1;++v)for(int u=u0;u<=u1;++u) {
     const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
@@ -180,14 +180,31 @@ inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const st
       std::abs(dx*cs+dy*sn)>longitudinal_half+cell_projection ||
       std::abs(-dx*sn+dy*cs)>half+cell_projection)continue;
     if(x<0 || (x<=c.front && std::abs(y)<=c.width/2))continue;
-    if(v<0 || v>=g.height)return Block::Edge;
     const auto index=std::size_t(v)*g.width+u;
     if(blockedTerrain(g.cells[index]))return Block::Hazard;
     if(allowed && !(*allowed)[index])return Block::Route;
   }
-  for(double a:{-back,front})for(double b:{-half,half}) {
-    const double x=p.x+a*cs-b*sn,y=p.y+a*sn+b*cs;
-    if(x>=0 && (x>=g.x0+g.width*g.resolution || y<g.y0 || y>=g.y0+g.height*g.resolution))return Block::Edge;
+  // No cell outside the sensor grid means assumed free, not a map-edge wall.
+  // Continue checking the departure boundary outside the grid as well, using
+  // perimeter samples instead of extending the occupied/unknown map.
+  if(lane && (center_x-x_radius<g.x0 || center_x+x_radius>=g.x0+g.width*g.resolution ||
+      center_y-y_radius<g.y0 || center_y+y_radius>=g.y0+g.height*g.resolution)) {
+    const int longitudinal_steps=std::max(1,int(std::ceil((front+back)/c.step)));
+    const int lateral_steps=std::max(1,int(std::ceil(2*half/c.step)));
+    const auto outsideRoute=[&](double a,double b) {
+      const Point q{p.x+a*cs-b*sn,p.y+a*sn+b*cs};
+      const bool outside=q.x<g.x0 || q.x>=g.x0+g.width*g.resolution ||
+        q.y<g.y0 || q.y>=g.y0+g.height*g.resolution;
+      return q.x>=0 && outside && laneDistance(q,*lane)>c.lane_width/2+c.departure;
+    };
+    for(int i=0;i<=longitudinal_steps;++i) {
+      const double a=-back+(front+back)*i/longitudinal_steps;
+      if(outsideRoute(a,-half) || outsideRoute(a,half))return Block::Route;
+    }
+    for(int i=0;i<=lateral_steps;++i) {
+      const double b=-half+2*half*i/lateral_steps;
+      if(outsideRoute(-back,b) || outsideRoute(front,b))return Block::Route;
+    }
   }
   return Block::None;
 }
@@ -197,6 +214,9 @@ struct Plan {
   std::array<bool,61> binary{},masked{};
   double speed{},steer{},length{},longest_candidate{}; bool used_vfh{},used_fallback{},reference_blocked{},rear_unverified{true};
   std::size_t fallback_candidates{};
+  Block reference_end{Block::None};
+  Pose reference_stop_pose{};
+  double avoidance_trigger_distance{},reference_hazard_distance{-1};
   std::size_t hazard_ends{},edge_ends{},route_ends{},short_candidates{};
   std::string status{"STOP: no feasible route"};
 };
@@ -268,11 +288,12 @@ public:
     };
     // This is also the return connector from an offset vehicle pose. Rejoin
     // only when the actual Stanley rollout, not just the drawn lane, is clear.
+    out.avoidance_trigger_distance=c.horizon;
     Candidate track=followReference(reference,c);
     Block reference_end=Block::None;std::size_t retained=track.path.empty()?0:1;
     for(std::size_t i=1;i<track.path.size();++i) {
-      reference_end=footprintBlock(g,c,track.path[i],&allowed);
-      if(reference_end!=Block::None){recordEnd(reference_end);break;}
+      reference_end=footprintBlock(g,c,track.path[i],&allowed,&lane);
+      if(reference_end!=Block::None){out.reference_stop_pose=track.path[i];recordEnd(reference_end);break;}
       ++retained;
     }
     track.path.resize(retained);track.length=retained>0?(retained-1)*c.step:0;
@@ -280,13 +301,20 @@ public:
     track.valid=track_usable+1e-9>=c.minimum_path_length && track.path.size()>2;
     out.longest_candidate=track_usable;if(!track.valid)++out.short_candidates;
     out.candidates.push_back(track);
-    out.reference_blocked=reference_end!=Block::None;
+    out.reference_end=reference_end;
+    // Only an observed hazard intersecting the lane-following body sweep
+    // within the full horizon activates avoidance. Route limits never request
+    // an unrelated longer curve. Outside-grid space is assumed free.
+    if(reference_end==Block::Hazard)out.reference_hazard_distance=retained*c.step;
+    out.reference_blocked=reference_end==Block::Hazard;
     if(!out.reference_blocked) {
       binary_.fill(false);binary_rotation_residual_=0;
       if(track.valid) {
         out.path=track.path;out.length=track_usable;out.steer=track.command_steer;setSpeed();
-        out.status="LANE: clear tracking/return trajectory (VFH bypass)";
-      }else out.status="STOP: lane reference too short";
+        out.status=reference_end==Block::Route?"LANE: departure-limited tracking (VFH bypass)":
+          "LANE: clear tracking/return trajectory (VFH bypass)";
+      }else out.status=reference_end==Block::Edge?"STOP: lane tracking too short at grid boundary":
+        (reference_end==Block::Route?"STOP: lane tracking too short at departure limit":"STOP: lane reference too short");
       return out;
     }
     out.used_vfh=true;
@@ -352,7 +380,7 @@ public:
         p.x+=c.step*std::cos(middle)-c.wheelbase*turn*std::sin(middle);
         p.y+=c.step*std::sin(middle)+c.wheelbase*turn*std::cos(middle);p.yaw=wrap(p.yaw+turn);
         if(std::abs(p.yaw)>=pi/2 || p.x<0)break;
-        const auto why=footprintBlock(g,c,p,&allowed);
+        const auto why=footprintBlock(g,c,p,&allowed,&lane);
         if(why!=Block::None){recordEnd(why);break;}
         candidate.path.push_back(p);candidate.length=s;
       }

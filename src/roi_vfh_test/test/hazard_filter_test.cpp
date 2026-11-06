@@ -5,7 +5,7 @@ void check(bool ok,const char* message){if(!ok)throw std::runtime_error(message)
 Grid emptyGrid(){Grid g;g.width=30;g.height=40;g.resolution=.1;g.y0=-2;g.cells.assign(1200,-1);return g;}
 std::size_t cell(int x,int y){return std::size_t(y)*30+x;}
 int main(){
-  Config c;c.hazard_match_radius_cells=0;
+  Config c;c.hazard_confirm_frames=2;c.hazard_small_max_cells=5;c.hazard_match_radius_cells=0;
   HazardFilter filter;auto g=emptyGrid();g.cells[cell(10,20)]=100;
   const auto pose=[](double t,double x=0,double yaw=0){return std::optional<MotionPose>{MotionPose{t,x,0,yaw,0}};};
   auto result=filter.apply(g,1,pose(1),c);

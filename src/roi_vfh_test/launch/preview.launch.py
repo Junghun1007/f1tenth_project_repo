@@ -64,9 +64,9 @@ def nodes(context):
                  "vehicle_width_m": 2 * obstacles["obstacles.avoidance.vehicle_half_width_m"],
                  "rear_extent_m": obstacles["obstacles.avoidance.vehicle_half_length_m"],
                  "front_overhang_m": control["traffic_front_axle_to_bumper_m"],
-                 "safety_margin_m": obstacles["obstacles.avoidance.safety_margin_m"],
+                 "safety_margin_m": test["safety_margin_m"],
                  "obstacle_uncertainty_m": obstacles["obstacles.avoidance.unknown_extent_m"],
-                 "sample_step_m": obstacles["obstacles.avoidance.sample_step_m"],
+                 "sample_step_m": test["sample_step_m"],
                  "max_curvature_per_m": obstacles["obstacles.avoidance.max_curvature_per_m"],
                  "lane_lateral_acceleration_mps2": control["maximum_lateral_acceleration_mps2"],
                  "avoidance_lateral_acceleration_mps2": obstacles["obstacles.avoidance.lateral_acceleration_mps2"],
@@ -118,9 +118,9 @@ def nodes(context):
                 "obstacle_brake_deceleration_margin_mps2", "corner_brake_deceleration_margin_mps2"):
         test["drive." + key] = control[key]
     test["drive.max_command_age_sec"] = test["max_age_sec"]
-    test["deceleration_mps2"] = min(control["longitudinal_planning_deceleration_mps2"],
+    test["deceleration_mps2"] = min(test["deceleration_mps2"], control["longitudinal_planning_deceleration_mps2"],
                                     obstacles["obstacles.avoidance.deceleration_mps2"])
-    test["response_delay_sec"] = max(test["response_delay_sec"], control["traffic_brake_response_time_sec"])
+    # VFH response delay is user-selected; the node still applies measured input age + planning-period floor.
     lane_overrides = {"input_topic": "/roi_lidar/lane_bev", "direct_bev_input_enabled": "false",
                       "preview_enabled": "false", "bev_theme_enable": "false",
                       "centerline_enabled": "true", "connection_enabled": "true",

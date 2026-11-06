@@ -5,7 +5,7 @@ void check(bool ok,const char* reason){if(!ok)throw std::runtime_error(reason);}
 int main(){
   Grid g;g.width=60;g.height=24;g.resolution=.05;g.y0=-.6;g.cells.assign(1440,0);
   std::vector<Point> lane;for(double x=.05;x<2.9;x+=.05)lane.push_back({x,0});
-  Config c;Planner planner;
+  Config c;c.speed=.7;Planner planner;
   auto plan=planner.plan(g,lane,c);
   check(!plan.path.empty() && plan.speed>0 && plan.speed<=.7,"open lane failed");
   check(plan.candidates.size()<=92,"candidate cap exceeded");
@@ -53,6 +53,15 @@ int main(){
   tuning.hist_low=density*.8;tuning.hist_high=density*1.2;
   check(planner.plan(cone,lane,tuning).binary[30],"hysteresis state was discarded");
   planner.reset();check(!planner.plan(cone,lane,tuning).binary[30],"reset retained histogram state");
+  // Sensor map boundaries and departure limits must never activate VFH.
+  auto small_grid=g;small_grid.width=10;small_grid.cells.assign(240,-1);
+  planner.reset();const auto beyond_grid=planner.plan(small_grid,lane,c);
+  check(!beyond_grid.used_vfh && beyond_grid.speed>0 && beyond_grid.length>.8,"map boundary vetoed clear lane tracking");
+  auto route_config=c;route_config.departure=0;route_config.current_steer=c.max_steer;
+  std::vector<std::uint8_t> no_route(g.cells.size(),0);
+  check(footprintBlock(g,c,Pose{.4,0,0,0},&no_route)==Block::Route,"route boundary fixture failed");
+  planner.reset();const auto route_limited=planner.plan(g,return_lane,route_config);
+  check(!route_limited.used_vfh,"departure boundary activated avoidance without a hazard");
   // Cone walls use exactly the same avoidance flow, without mission/entry
   // classification, and every returned pose obeys the ordinary departure mask.
   auto walls=g;for(int x=16;x<38;++x){walls.cells[9*60+x]=100;walls.cells[21*60+x]=100;}

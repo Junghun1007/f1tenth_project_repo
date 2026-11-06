@@ -20,7 +20,7 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
     const bool active=requested && locked;
     text(cv::format("target %.2f / nominal %.2f m/s | steer %.1f deg | %.2f ms",
       active?plan.speed:0,config.speed,active?plan.steer*180/pi:0,plan_ms),114);
-    text("Forward terrain check; rear/out-of-view body sweep is UNVERIFIED",136);
+    text("Forward terrain check; outside-grid assumed free; rear sweep UNVERIFIED",136);
     text(cv::format("Checked candidates: %zu | checked length: %.2fm",plan.candidates.size(),plan.length),156);
     if(active) {
       const double peak=std::max(1.,*std::max_element(plan.histogram.begin(),plan.histogram.end()));
@@ -51,6 +51,11 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
     }
     if(plan.used_vfh)
       cv::putText(canvas,cv::format("Extra curves %zu | selected %s",plan.fallback_candidates,plan.used_fallback?"yes":"no"),{12,548},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
+    if(plan.reference_end!=Block::None)
+      cv::putText(canvas,plan.reference_end==Block::Hazard?"Lane end: HAZARD (orange body)":
+        (plan.reference_end==Block::Edge?"Lane end: grid boundary":"Lane end: departure limit"),{12,570},cv::FONT_HERSHEY_SIMPLEX,.35,{35,65,190},1);
+    if(plan.reference_hazard_distance>=0)
+      cv::putText(canvas,cv::format("Hazard at %.2fm | trigger %.2fm",plan.reference_hazard_distance,plan.avoidance_trigger_distance),{12,590},cv::FONT_HERSHEY_SIMPLEX,.35,{35,65,190},1);
     if (grid.width>0) {
       const double scale=std::min(430./(grid.width*grid.resolution),400./(grid.height*grid.resolution));
       const auto pixel=[&](double x,double y){return cv::Point(int(490-y*scale),int(584-x*scale));};
@@ -66,6 +71,15 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
         for (const auto& c:plan.candidates)for(std::size_t i=1;i<c.path.size();++i)
           cv::line(canvas,pixel(c.path[i-1].x,c.path[i-1].y),pixel(c.path[i].x,c.path[i].y),{175,175,175},1);
         for(std::size_t i=1;i<plan.path.size();++i)cv::line(canvas,pixel(plan.path[i-1].x,plan.path[i-1].y),pixel(plan.path[i].x,plan.path[i].y),{0,220,255},3);
+      }
+      if(active && plan.reference_end==Block::Hazard) {
+        const auto& p=plan.reference_stop_pose;const double cs=std::cos(p.yaw),sn=std::sin(p.yaw);
+        const double half=config.width/2+config.margin+config.uncertainty;
+        const double front=config.front+config.margin+config.uncertainty,back=config.rear+config.uncertainty;
+        std::array<cv::Point,4> corners;std::size_t i=0;
+        for(auto q:std::array<Point,4>{{{-back,-half},{front,-half},{front,half},{-back,half}}})
+          corners[i++]=pixel(p.x+q.x*cs-q.y*sn,p.y+q.x*sn+q.y*cs);
+        for(std::size_t j=0;j<4;++j)cv::line(canvas,corners[j],corners[(j+1)%4],{0,130,255},2);
       }
       cv::circle(canvas,pixel(0,0),5,{220,60,30},-1);
     }

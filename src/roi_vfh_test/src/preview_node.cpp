@@ -355,6 +355,9 @@ class Node:public rclcpp::Node {
     message.data=status_+cv::format(" | target v=%.2fm/s steer=%.1fdeg plan=%.2fms candidates=%zu | rear unverified",
       speed.data,steer.data*180/pi,plan_ms_,result_.candidates.size());
     if(drive_enabled_)message.data+=cv::format(" | DRIVE duty=%.3f brake=%.2fA command_steer=%.1fdeg",drive_command_.duty,drive_command_.brake,drive_command_.steer*180/pi);
+    message.data+=cv::format(" | lane_end=%s hazard_at=%.2fm avoid_trigger=%.2fm",
+      result_.reference_end==Block::Hazard?"hazard":(result_.reference_end==Block::Route?"departure":"clear"),
+      result_.reference_hazard_distance,result_.avoidance_trigger_distance);
     message.data+=cv::format(" | hazard raw=%zu confirmed=%zu pending=%zu immediate=%zu filter=%.2fms",hazard_stats_.raw,hazard_stats_.confirmed,hazard_stats_.pending,hazard_stats_.immediate,hazard_filter_ms_);
     status_pub_->publish(message);
     if(!drive_enabled_)logDrive(active);

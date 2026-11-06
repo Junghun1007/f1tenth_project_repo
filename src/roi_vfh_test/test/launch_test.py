@@ -50,7 +50,7 @@ class LaunchTest(unittest.TestCase):
         self.assertFalse(roi["preview.show_bev_window"])
         self.assertTrue(roi["preview.gui"] and roi["preview.publish_lane_bev"] and roi["motion.publish_imu"])
         test = next(a for a in actions if a.get("package") == "roi_vfh_test")["parameters"][0]
-        self.assertEqual((test["nominal_speed_mps"], test["vehicle_width_m"], test["wheelbase_m"]), (.7, .3, .33))
+        self.assertEqual((test["nominal_speed_mps"], test["vehicle_width_m"], test["wheelbase_m"]), (.8, .3, .33))
         self.assertEqual((test["front_overhang_m"], test["rear_extent_m"]), (.05, .25))
         self.assertEqual((test["speed_ceiling_mps"], test["lane_lookahead_m"]), (1.8, .05))
         self.assertEqual((test["planning_rate_hz"], test["control_rate_hz"]), (20, 100))
