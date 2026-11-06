@@ -222,15 +222,14 @@ void terrainOverlay(cv::Mat & image, const Terrain & terrain, const Scan & scan,
   }
   auto plot=image(layout.area);
   if (show_points) {
-    for (const auto & p:scan.surface_points) {
-      if (!projectedObstacle(p,o) || !insideView(p[0],p[1],view)) {continue;}
-      // Every measured endpoint in the height band is flattened to XY;
-      // no angular nearest-return reduction, hull, or object grouping.
+    forEachObstacle(scan,o,[&](const auto& p){
+      if (!insideView(p[0],p[1],view)) {return;}
+      // Post-ground/outlier measured endpoints; no angular nearest-return collapse.
       const cv::Point pixel(static_cast<int>(std::lround(layout.center_x-p[1]*layout.scale)),
         static_cast<int>(std::lround(layout.origin_y-p[0]*layout.scale)));
       cv::circle(plot,pixel-layout.area.tl(),point_radius,
         {0,0,255},-1,cv::LINE_8);
-    }
+    });
   }
   // Vehicle width reference at the origin only; no clearance computation.
   cv::line(plot,mapPixel(0,-vehicle_width_m/2,view,size)-layout.area.tl(),

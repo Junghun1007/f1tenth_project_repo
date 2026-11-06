@@ -13,7 +13,7 @@ int main()
   check(!overlayAllowed(1.0,1.1,1.11,.25,.08),"Unsynchronized overlay admitted");
   check(!overlayAllowed(1.0,1.02,1.4,.25,.08),"Stale overlay admitted");
   check(!overlayAllowed(2.0,2.02,1.0,.25,.08),"Future frames admitted");
-  Options o; o.max_height=1.0; o.min_samples=1; // Preserve the synthetic elevated samples.
+  Options o; o.ransac.enabled=false; o.outlier.enabled=false; o.max_height=1.0; o.min_samples=1; // Preserve the synthetic elevated samples.
   o.ground_distance_per_meter=0; o.pixel_stride=1; o.bins=141;
   const int width=5,height=5,stride=14; // padded RAW16 rows
   std::vector<std::uint8_t> bytes(stride*height,0);

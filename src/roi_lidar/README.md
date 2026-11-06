@@ -2,7 +2,7 @@
 
 실제 RGB 카메라의 지면 BEV 위에 스테레오 깊이 포인트를 **위에서 수직으로 내려다본
 XY 위치**로 표시한다. 객체를 묶거나 외곽선을 그리지 않고, 설정한 최대 높이 이하의
-관측 포인트를 그대로 그린다. 차선 인식은 수행하지 않는다.
+관측 후처리를 통과한 포인트를 그린다. 차선 인식은 수행하지 않는다.
 
 예를 들어 같은 방향에서 1m와 2m 표면이 각각 관측되었다면 두 포인트를 모두 표시한다.
 기존 `/scan`처럼 각도별 최근접점 하나로 줄인 결과를 프리뷰에 쓰지 않는다.
@@ -37,7 +37,7 @@ ros2 launch roi_lidar roi_lidar.launch.py \
 - **RGB BEV**: 실제 RGB 지면 투영 영상 위에 XY 포인트와 바닥 분류를 표시한다.
 - **select depth ROI**: rectified-right 흑백 영상에서 사각형을 드래그한다.
   `preview.camera_image=false`이면 깊이 컬러 영상으로 바뀐다.
-- **parameters**: 관련 파라미터 27개를 한 창의 두 열에 숫자 입력칸으로 표시한다.
+- **parameters**: 관련 파라미터를 한 창의 두 열과 페이지로 나눠 숫자 입력칸으로 표시한다. Prev/Next 또는 [ / ]로 페이지를 전환한다.
   슬라이더와 스크롤바는 사용하지 않는다. 프리뷰와 ROI 화면은 그대로 유지한다.
 
 값을 클릭해 숫자를 입력하고 **Enter**, **A** 또는 **Apply edits** 버튼으로 변경분을
@@ -60,17 +60,19 @@ RViz에서 포인트 색상 변환을 `RGB8`로 선택하면 이 색을 사용�
 
 ## 포인트 높이 필터
 
-각 depth 표본을 보정된 차량 좌표 `(X,Y,Z)`로 변환한다. Z는 시작할 때 측정한 지면
-기준 높이(m)다. 다음 조건의 실제 표본을 `(X,Y,0)`에 표시한다.
+각 depth 표본을 시작 보정의 차량 좌표 `(X,Y,Z)`로 변환한다.
+RANSAC 성공 범위에서는 정규화된 현재 평면으로부터의 부호 있는 거리 `h=n·p+d`를 높이로 사용하고,
+OFF/실패/범위 밖에서는 시작 지면의 `h=Z`를 사용한다. 지면 및 고립점 필터 통과 표본만 `(X,Y,0)`에 표시한다.
 
 ```text
-min(ground.max_distance_m,
-    ground.distance_m + ground.distance_per_meter × hypot(X,Y)) < Z <= height.max_m
+선택된 지면 허용 두께 < h <= height.max_m
+# RANSAC 성공 범위: ground.ransac_distance_m
+# 그 외: min(ground.max_distance_m, ground.distance_m + ground.distance_per_meter × hypot(X,Y))
 ```
 
 `ground.enabled=false`면 포인트의 지면 제거 하한을 해제한다. 최대 높이 제한은 유지한다.
 픽셀 하나당 깊이는 하나뿐이므로 실제 LiDAR처럼 가려진 뒷면까지 반환되는 것은 아니다.
-화면의 빨간 포인트는 필터를 통과한 원시 관측이며 셀의 최소 표본 수와 무관하다.
+화면의 빨간 포인트는 지면·고립점 필터를 통과한 측정 표본이며 셀의 최소 표본 수와 무관하다.
 
 ## 바닥·장애물·미관측 분류
 
@@ -79,7 +81,7 @@ min(ground.max_distance_m,
 
 | 셀 | 조건 |
 |---|---|
-| 초록: 관측 바닥 | `-terrain.below_ground_m <= Z <= 거리별 지면 제거 두께`인 표본이 최소 수 이상이고 위험 표본은 없음 |
+| 초록: 관측 바닥 | `-terrain.below_ground_m <= h <= 선택된 지면 허용 두께`인 표본이 최소 수 이상이고 위험 표본은 없음 |
 | 빨강: 위험 관측 | 지면 두께보다 높은 표본 또는 지면 아래 허용값보다 낮은 표본이 최소 수 이상 |
 | 회색: 미관측/불확실 | 유효 깊이 없음, ROI 밖, 근거 부족, 또는 최소 수에 못 미치는 위험 표본이 있음 |
 
@@ -206,3 +208,49 @@ ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 �
 셀 0.06m, 표시 폭 눈금 2.0m, 픽셀 간격 1. 나머지 사진 값과 카메라 30 FPS는 유지한다.
 `terrain.vehicle_width_m`는 표시용이며 VFH+ 차량 검사 폭은 기존 차량 설정을 따른다.
 이번 기본값 변경의 빌드·테스트는 사용자 요청에 따라 실행하지 않았다.
+
+## 프레임별 RANSAC·고립점 제거 — 실행창 2페이지
+
+이번 변경은 사용자 요청에 따라 **빌드·테스트를 실행하지 않았다.**
+900×590px 설정창의 **Next >** 또는 **]**로 2페이지를 연다. 모든 항목은 Enter/A/Apply로
+일괄 적용되며 카메라 재시작이 필요 없다. Prev/[로 되돌아갈 수 있고 Tab도 페이지를 넘어간다.
+VFH+ 실행 중에는 기존 GUI/ROS 쓰기 잠금이 적용된다. 페이지 이동과 값 확인은 가능하다.
+
+| 파라미터 | 기본값 | 의미 |
+|---|---:|---|
+| `ground.ransac_enabled` | true | 현재 프레임 평면 추정 ON/OFF |
+| `ground.ransac_distance_m` | 0.025m | 평면 inlier 및 성공 범위의 위쪽 지면 제거 두께 |
+| `ground.ransac_max_range_m` | 3.0m | 수평거리 기준 평면 추정·적용 상한 |
+| `ground.ransac_max_tilt_deg` | 10° | 시작 지면의 위 방향 대비 최대 기울기 |
+| `ground.ransac_max_offset_m` | 0.08m | 시작 지면 원점에서 평면까지 최대 수직 거리 |
+| `ground.ransac_min_inlier_ratio` | 0.50 | 샘플 중 필요한 최소 평면 지지 비율 |
+| `ground.ransac_max_iterations` | 60 | RANSAC 반복 상한; 충분한 지지 비율이면 조기 종료 |
+| `ground.ransac_max_samples` | 800 | 추정에 사용하는 최대 샘플 수 |
+| `outlier.enabled` | true | 고립된 비지면 표본 제거 ON/OFF |
+| `outlier.radius_m` | 0.06m | 원래 차량 XYZ에서 이웃을 찾는 3D 반경 |
+| `outlier.min_neighbors` | 3 | 자신을 제외한 비지면 이웃의 최소 수 |
+
+RANSAC은 범위·시작 지면 주변 후보에서 reservoir sampling으로 점 수를 제한한다.
+평면 법선·높이·inlier 비율뿐 아니라 지지점의 전방 25cm/좌우 20cm 이상 분포도 요구한다.
+작은 2×2 최소제곱으로 평면을 정련하며 큰 PCL 점군이나 법선 계산을 추가하지 않는다.
+실패하면 이전 프레임 평면을 무한 유지하지 않고 시작 지면 기준 거리별 두께로 복귀한다.
+성공해도 적용 거리 밖에는 평면을 외삽하지 않는다.
+
+성공 범위의 위쪽 두께는 `ground.ransac_distance_m`를 사용한다. 기존 `ground.distance_m`,
+`ground.distance_per_meter`, `ground.max_distance_m`는 OFF/실패/범위 밖에서 사용하는 값이다.
+`terrain.below_ground_m`의 아래쪽 허용 깊이는 기존 설정을 유지한다. `ground.enabled`는
+기존처럼 포인트의 지면 제거를 제어하며 terrain의 바닥 분류 자체를 끄지는 않는다.
+RANSAC은 분류용 높이를 바꾸며 XY와 RGB BEV의 시작 좌표 변환을 재설정하지 않는다.
+PointCloud2의 `height`와 스캔의 높이 근거도 선택된 지면 기준 높이를 사용한다.
+
+고립점 제거는 먼저 비지면 후보를 추리고, 3D 공간 해시의 인접 27개 버킷만 조회한다.
+지면 표본을 이웃으로 세지 않으며 최소 수를 찾으면 탐색을 끝낸다. 이웃 판정은 같은 프레임
+전체 후보를 기준으로 하므로 삭제 순서에 따라 연쇄적으로 점이 사라지지 않는다.
+거부된 점은 빨간 점·스캔·군집·terrain 위험 표본에서 제외한다. 그 셀에 별도의 유효 바닥이
+없다면 미관측으로 남기고 작은 구멍 보정으로 바로 바닥을 만들지 않는다.
+너무 큰 반경/이웃 수는 작은 콘이나 먼 물체의 표본도 지울 수 있으므로 조절 가능하게 두었다.
+
+점 좌표 복원과 거리/각도 계산은 한 번 수행하고 위치·bin을 재사용한다. 장애물 인덱스도
+캐시하여 프리뷰와 점군 발행이 전체 바닥 점을 반복 분류하지 않게 한다.
+HUD/로그의 `plane RANSAC/FALLBACK/FIXED`, `inliers/samples`, `isolated`/`outlier_removed`로
+적용 상태를 확인한다. 처리 후 입력 만료 시간을 넘은 프레임은 발행하지 않는다.

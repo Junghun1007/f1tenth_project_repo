@@ -12,6 +12,11 @@ int main() {
     {"depth.confidence_threshold",200},{"depth.left_right_check",1},{"depth.left_right_threshold",10},
     {"depth.subpixel",1},{"depth.ir_dot_projector_intensity",.7},{"depth.ir_flood_light_intensity",0}};
   values["terrain.fill_enabled"]=1; values["terrain.fill_max_cells"]=2; values["terrain.fill_clearance_cells"]=1;
+  values["ground.ransac_enabled"]=1;values["ground.ransac_distance_m"]=.025;
+  values["ground.ransac_max_range_m"]=3;values["ground.ransac_max_tilt_deg"]=10;
+  values["ground.ransac_max_offset_m"]=.08;values["ground.ransac_min_inlier_ratio"]=.5;
+  values["ground.ransac_max_iterations"]=60;values["ground.ransac_max_samples"]=800;
+  values["outlier.enabled"]=1;values["outlier.radius_m"]=.06;values["outlier.min_neighbors"]=3;
   Controls c; auto read=[&](const char * n) {return values.at(n);};
   if (!c.poll(read).empty()) {throw std::runtime_error("Initial GUI modified parameters");}
   c.poll(read,9); // Focus the first numeric field; typing replaces its selected value.

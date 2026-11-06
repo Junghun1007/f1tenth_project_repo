@@ -81,6 +81,17 @@ inline void validate(const Config & c)
   X("points.pixel_stride",scan.pixel_stride,as_int) \
   X("points.min_depth_m",scan.min_depth,as_double) \
   X("points.max_depth_m",scan.max_depth,as_double) \
+  X("ground.ransac_enabled",scan.ransac.enabled,as_bool) \
+  X("ground.ransac_distance_m",scan.ransac.distance_m,as_double) \
+  X("ground.ransac_max_range_m",scan.ransac.max_range_m,as_double) \
+  X("ground.ransac_max_tilt_deg",scan.ransac.max_tilt_deg,as_double) \
+  X("ground.ransac_max_offset_m",scan.ransac.max_offset_m,as_double) \
+  X("ground.ransac_min_inlier_ratio",scan.ransac.min_inlier_ratio,as_double) \
+  X("ground.ransac_max_iterations",scan.ransac.max_iterations,as_int) \
+  X("ground.ransac_max_samples",scan.ransac.max_samples,as_int) \
+  X("outlier.enabled",scan.outlier.enabled,as_bool) \
+  X("outlier.radius_m",scan.outlier.radius_m,as_double) \
+  X("outlier.min_neighbors",scan.outlier.min_neighbors,as_int) \
   X("ground.enabled",scan.ground_enabled,as_bool) \
   X("ground.distance_m",scan.ground_distance,as_double) \
   X("ground.distance_per_meter",scan.ground_distance_per_meter,as_double) \

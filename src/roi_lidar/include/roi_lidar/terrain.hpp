@@ -97,7 +97,7 @@ inline Terrain terrainGrid(const Scan & scan, const Options & o,
     const int x=static_cast<int>(p[0]/t.cell_m);
     const int y=static_cast<int>((p[1]-out.y_min)/t.cell_m);
     const auto index=static_cast<std::size_t>(y)*out.width+x;
-    const double margin=groundMargin(p[0],p[1],o);
+    const double margin=groundMargin(p[0],p[1],o,&scan);
     if (p[2]<-t.below_ground_m || p[2]>margin) {++obstacle[index];}
     else {++ground[index];}
   }
@@ -106,7 +106,13 @@ inline Terrain terrainGrid(const Scan & scan, const Options & o,
     // Even one unsupported hazard sample vetoes a green cell.
     else if (obstacle[i]==0 && ground[i]>=t.min_ground_samples) {out.cells[i]=0; ++out.ground_cells;}
   }
-  fillSmallHoles(out,obstacle,t);
+  auto fill_veto=obstacle;
+  for(const auto & p:scan.rejected_points){
+    if(!std::isfinite(p[0]) || !std::isfinite(p[1]) || p[0]<0 || p[0]>=view.forward_m || p[1]<out.y_min || p[1]>=out.y_max)continue;
+    const int x=static_cast<int>(p[0]/t.cell_m),y=static_cast<int>((p[1]-out.y_min)/t.cell_m);
+    fill_veto[static_cast<std::size_t>(y)*out.width+x]=1;
+  }
+  fillSmallHoles(out,fill_veto,t);
   out.planning_cells=out.cells;
   for(std::size_t i=0;i<size;++i)if(obstacle[i]>0)out.planning_cells[i]=100;
   return out;

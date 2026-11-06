@@ -2,6 +2,7 @@
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 #include <cmath>
+#include <algorithm>
 #include <functional>
 #include <iomanip>
 #include <limits>
@@ -56,16 +57,34 @@ private:
     {"depth.left_right_threshold","0..128",Type::Integer,true},
     {"depth.subpixel","0=off / 1=on",Type::Boolean,true},
     {"depth.ir_dot_projector_intensity","0..1",Type::Real,true},
-    {"depth.ir_flood_light_intensity","0..1",Type::Real,true}
+    {"depth.ir_flood_light_intensity","0..1",Type::Real,true},
+    {"ground.ransac_enabled","0=off / 1=on",Type::Boolean,false},
+    {"ground.ransac_distance_m","plane inlier band, m",Type::Real,false},
+    {"ground.ransac_max_range_m","fit/apply range, m",Type::Real,false},
+    {"ground.ransac_max_tilt_deg","from startup up, deg",Type::Real,false},
+    {"ground.ransac_max_offset_m","from startup ground, m",Type::Real,false},
+    {"ground.ransac_min_inlier_ratio","0.1..1",Type::Real,false},
+    {"ground.ransac_max_iterations","1..300",Type::Integer,false},
+    {"ground.ransac_max_samples","30..4000",Type::Integer,false},
+    {"outlier.enabled","0=off / 1=on",Type::Boolean,false},
+    {"outlier.radius_m","3D neighbor radius, m",Type::Real,false},
+    {"outlier.min_neighbors","1..64, excluding self",Type::Integer,false}
   };
+  static constexpr std::size_t page_size=27;
+  std::size_t page_{0};
   bool locked_{false};
   bool ready_{false}, apply_requested_{false}, reload_requested_{false}, select_all_{false};
   int active_{-1};
   std::string message_;
   static cv::Rect field(std::size_t index)
   {
+    index%=page_size;
     return {316+int(index/14)*450,88+int(index%14)*30,112,26};
   }
+  static cv::Rect previousButton(){return {620,8,70,26};}
+  static cv::Rect nextButton(){return {700,8,70,26};}
+  std::size_t pages()const{return (entries_.size()+page_size-1)/page_size;}
+  void changePage(std::size_t page){page_=page;active_=-1;}
   static cv::Rect applyButton() {return {16,518,426,32};}
   static cv::Rect reloadButton() {return {458,518,426,32};}
   static std::string format(double value)
@@ -93,8 +112,10 @@ private:
   {
     if (event!=cv::EVENT_LBUTTONDOWN) {return;}
     auto & self=*static_cast<Controls *>(data);
+    if(previousButton().contains(cv::Point(x,y))){if(self.page_>0)self.changePage(self.page_-1);return;}
+    if(nextButton().contains(cv::Point(x,y))){if(self.page_+1<self.pages())self.changePage(self.page_+1);return;}
     if (self.locked_) {return;}
-    for (std::size_t i=0;i<self.entries_.size();++i) {
+    for (std::size_t i=self.page_*page_size;i<std::min(self.entries_.size(),(self.page_+1)*page_size);++i) {
       if (field(i).contains(cv::Point(x,y))) {
         self.active_=static_cast<int>(i); self.select_all_=true; return;
       }
@@ -105,10 +126,13 @@ private:
   }
   void keyboard(int key)
   {
+    if(key=='['){if(page_>0)changePage(page_-1);return;}
+    if(key==']'){if(page_+1<pages())changePage(page_+1);return;}
     if (locked_) {return;}
     if (key==13 || key==10 || key=='a' || key=='A') {apply_requested_=true; active_=-1; return;}
     if (key==9) {
-      active_=active_<0 ? 0 : (active_+1)%static_cast<int>(entries_.size());
+      active_=active_<0 ? static_cast<int>(page_*page_size) : (active_+1)%static_cast<int>(entries_.size());
+      page_=static_cast<std::size_t>(active_)/page_size;
       select_all_=true; return;
     }
     if (active_<0 || key<0) {return;}
@@ -132,10 +156,13 @@ private:
     text(locked_ ? "ROI PARAMETERS - LOCKED (press Stop)" : "ROI PARAMETERS - numeric input",{16,25},.60,{35,35,35});
     text("Click a value and type. Enter / A / Apply: apply all edits together. Tab: next field.",{16,48},.39,{55,55,55});
     text("* Camera setting: restarts streaming on Apply. Units match ROS/YAML. Booleans: 0 or 1.",{16,69},.37,{55,55,55});
-    for (std::size_t i=0;i<entries_.size();++i) {
+    cv::rectangle(canvas,previousButton(),{200,200,200},-1);cv::rectangle(canvas,nextButton(),{200,200,200},-1);
+    text("< Prev",{627,26},.38,{35,35,35});text("Next >",{707,26},.38,{35,35,35});
+    text(std::to_string(page_+1)+" / "+std::to_string(pages()),{792,26},.43,{35,35,35});
+    for (std::size_t i=page_*page_size;i<std::min(entries_.size(),(page_+1)*page_size);++i) {
       const auto & entry=entries_[i];
       const auto box=field(i);
-      const int left=16+int(i/14)*450;
+      const int left=16+int((i%page_size)/14)*450;
       text(std::string(entry.depth ? "* " : "")+entry.name,{left,box.y+11},.34,{35,35,35});
       text(entry.unit,{left,box.y+25},.28,{105,105,105});
       cv::rectangle(canvas,box,entry.pending ? cv::Scalar(220,245,255) : cv::Scalar(255,255,255),-1);
@@ -166,7 +193,7 @@ public:
   }
   void reset()
   {
-    ready_=false; active_=-1; apply_requested_=reload_requested_=false;
+    ready_=false; page_=0; active_=-1; apply_requested_=reload_requested_=false;
     for (auto & entry:entries_) {entry.pending=false;}
   }
   bool editing() const {return active_>=0;}

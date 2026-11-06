@@ -178,19 +178,18 @@ class Node : public rclcpp::Node
     modifier.setPointCloud2Fields(5,"x",1,sensor_msgs::msg::PointField::FLOAT32,
       "y",1,sensor_msgs::msg::PointField::FLOAT32,"z",1,sensor_msgs::msg::PointField::FLOAT32,
       "height",1,sensor_msgs::msg::PointField::FLOAT32,"rgb",1,sensor_msgs::msg::PointField::FLOAT32);
-    const auto count=std::count_if(scan.surface_points.begin(),scan.surface_points.end(),
-      [&](const auto & p) {return projectedObstacle(p,c.scan);});
+    const std::size_t count=scan.processed ? scan.obstacle_indices.size() : std::count_if(scan.surface_points.begin(),scan.surface_points.end(),
+      [&](const auto & p) {return projectedObstacle(p,c.scan,&scan);});
     modifier.resize(count); cloud.is_dense=true;
     if (count>0) {
       sensor_msgs::PointCloud2Iterator<float> x(cloud,"x"),y(cloud,"y"),z(cloud,"z"),height(cloud,"height");
       sensor_msgs::PointCloud2Iterator<float> color(cloud,"rgb");
       const std::uint32_t packed_red=0x00ff0000;
       float red; std::memcpy(&red,&packed_red,sizeof(red));
-      for (const auto & p:scan.surface_points) {
-        if (!projectedObstacle(p,c.scan)) {continue;}
+      forEachObstacle(scan,c.scan,[&](const auto& p){
         *x=p[0]; *y=p[1]; *z=0; *height=p[2]; *color=red;
         ++x; ++y; ++z; ++height; ++color;
-      }
+      });
     }
     points_pub_->publish(cloud);
   }
@@ -266,11 +265,13 @@ class Node : public rclcpp::Node
             key=next_key; configured_revision=version;
           }
           const auto & bytes=depth->getData();
-          auto scan=projector.project(bytes.data(),bytes.size(),depth->getStride() ? depth->getStride() : depth->getWidth()*2);
+          auto scan=projector.project(bytes.data(),bytes.size(),depth->getStride() ? depth->getStride() : depth->getWidth()*2,c.terrain.below_ground_m);
           auto clusters=clusterScan(scan,c.scan,c.cluster);
           auto terrain=terrainGrid(scan,c.scan,c.view,c.terrain);
+          const double publish_age=seconds(Clock::now())-capture;
+          if(publish_age>c.max_age){invalidate(c,"STALE: filtering exceeded input age");continue;}
           auto stamp=now();
-          const auto delay=rclcpp::Duration::from_seconds(std::max(0.0,age));
+          const auto delay=rclcpp::Duration::from_seconds(std::max(0.0,publish_age));
           if (stamp.nanoseconds()>=delay.nanoseconds()) {stamp=stamp-delay;}
           // Never publish an in-flight result after settings were replaced.
           {std::lock_guard<std::mutex> lock(mutex_); if (version!=revision_) {continue;}}
@@ -280,14 +281,14 @@ class Node : public rclcpp::Node
           ++frames; work_ms+=std::chrono::duration<double,std::milli>(Clock::now()-host).count();
           if (clock-report>=1) {
             fps=frames/(clock-report); host_ms=work_ms/frames;
-            RCLCPP_INFO(get_logger(),"requested=%.1f depth_fps=%.1f host=%.2fms age=%.1fms ROI_rays=%zu depth=%zu ground_removed=%zu height_removed=%zu accepted=%zu bins=%zu floor_cells=%zu hazard_cells=%zu clusters=%zu range_limit=%.1fm",
-              c.camera.fps,fps,host_ms,age*1000,projector.rayCount(),scan.depth_points,scan.ground_removed,scan.height_removed,scan.accepted_points,scan.valid_bins,terrain.ground_cells,terrain.obstacle_cells,clusters.objects.size(),c.scan.max_range);
+            RCLCPP_INFO(get_logger(),"requested=%.1f depth_fps=%.1f host=%.2fms age=%.1fms ROI_rays=%zu depth=%zu ground_removed=%zu height_removed=%zu accepted=%zu bins=%zu floor_cells=%zu hazard_cells=%zu clusters=%zu range_limit=%.1fm ground_model=%s inliers=%zu/%zu outlier_removed=%zu/%zu",
+              c.camera.fps,fps,host_ms,publish_age*1000,projector.rayCount(),scan.depth_points,scan.ground_removed,scan.height_removed,scan.accepted_points,scan.valid_bins,terrain.ground_cells,terrain.obstacle_cells,clusters.objects.size(),c.scan.max_range,scan.ground_plane.detected?"RANSAC":(c.scan.ransac.enabled?"FALLBACK":"FIXED"),scan.ground_plane.inliers,scan.ground_plane.samples,scan.outlier_removed,scan.outlier_candidates);
             report=clock; frames=0; work_ms=0;
           }
           {std::lock_guard<std::mutex> lock(mutex_);
             snapshot_.scan=std::move(scan); snapshot_.clusters=std::move(clusters); snapshot_.terrain=std::move(terrain);
             snapshot_.depth=std::move(depth); snapshot_.capture=capture;
-            snapshot_.revision=version; snapshot_.fps=fps; snapshot_.host_ms=host_ms; snapshot_.age_ms=age*1000;
+            snapshot_.revision=version; snapshot_.fps=fps; snapshot_.host_ms=host_ms; snapshot_.age_ms=publish_age*1000;
             snapshot_.state="STREAMING";
           }
           if (last_capture==0 || stale) {state("STREAMING");}
@@ -361,7 +362,10 @@ class Node : public rclcpp::Node
       std::ostringstream text; text<<s.state<<" | depth "<<std::fixed<<std::setprecision(1)<<s.fps
         <<" FPS / host "<<s.host_ms<<" ms | max height "<<c.scan.max_height<<"m"
         <<" | floor "<<(fresh ? s.terrain.ground_cells : 0)<<" hazard "<<(fresh ? s.terrain.obstacle_cells : 0)
-        <<" filled "<<(fresh ? s.terrain.filled_cells : 0);
+        <<" filled "<<(fresh ? s.terrain.filled_cells : 0)
+        <<" | plane "<<(fresh && s.scan.ground_plane.detected ? "RANSAC" : (c.scan.ransac.enabled ? "FALLBACK" : "FIXED"))
+        <<" "<<s.scan.ground_plane.inliers<<"/"<<s.scan.ground_plane.samples
+        <<" | isolated "<<(fresh ? s.scan.outlier_removed : 0);
       if (!rgb_fresh) {text<<" | WAIT RGB";}
       else if (!aligned) {text<<" | OVERLAY WAIT SYNC";}
       else {text<<" | delta "<<std::abs(s.capture-seconds(s.rgb->getTimestamp()))*1000<<" ms";}
