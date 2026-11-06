@@ -26,22 +26,22 @@ struct Grid {
       throw std::invalid_argument("invalid metric terrain grid");
   }
 };
-// Unknown (-1) is traversable for this preview; positive occupancy remains blocked.
-inline bool blockedTerrain(int value) {return value>0;}
+// Match the preview: mint/gray are traversable; only red occupancy (>=50) blocks.
+inline bool blockedTerrain(int value) {return value>=50;}
 struct Config {
   double speed{.7},horizon{1.4},step{.04},wheelbase{.33},width{.30},rear{.25},front{.25};
   double margin{.02},max_steer{30*pi/180},steer_rate{240*pi/180};
   double lane_width{.65},departure{.40},deceleration{.8},delay{.20};
   double current_steer{0};
-  double reference_distance{1.0},hist_low{1.0},hist_high{2.0};
+  double reference_distance{1.0},lane_lookahead{.30},hist_low{1.0},hist_high{2.0};
   void validate() const {
     for (double a:{speed,horizon,step,wheelbase,width,rear,front,margin,max_steer,steer_rate,
-      lane_width,departure,deceleration,delay,reference_distance,hist_low,hist_high})
+      lane_width,departure,deceleration,delay,reference_distance,lane_lookahead,hist_low,hist_high})
       if (!std::isfinite(a) || a<0) throw std::invalid_argument("nonfinite/negative VFH parameter");
     if (!std::isfinite(current_steer) || std::abs(current_steer)>max_steer || speed<.05 || speed>1 || horizon<.3 || horizon>2.5 || step<.02 || step>.08 ||
       wheelbase<.1 || wheelbase>1 || width<.1 || width>1 || rear>1 || front>.5 || margin>.2 ||
       max_steer<.05 || max_steer>pi/3 || steer_rate<.1 || steer_rate>20 ||
-      lane_width<width || lane_width>2 || departure>.4 || deceleration<.1 || deceleration>3 || delay>1 || reference_distance<.3 || hist_low>=hist_high || hist_high>1000)
+      lane_width<width || lane_width>2 || departure>.4 || deceleration<.1 || deceleration>3 || delay>1 || reference_distance<.3 || lane_lookahead<.15 || lane_lookahead>.8 || hist_low>=hist_high || hist_high>1000)
       throw std::invalid_argument("VFH parameter outside test limits");
   }
 };
@@ -57,11 +57,87 @@ inline double laneDistance(Point p,const std::vector<Point>& lane) {
   return best;
 }
 struct Candidate {std::vector<Pose> path; double score{},length{},direction{}; bool valid{};};
+// Follow the complete ordered lane/corridor polyline, not a single far target.
+class Polyline {
+  const std::vector<Point>& points_;
+  std::vector<double> arc_;
+public:
+  explicit Polyline(const std::vector<Point>& points):points_(points),arc_(points.size(),0) {
+    for(std::size_t i=1;i<points.size();++i)arc_[i]=arc_[i-1]+std::hypot(points[i].x-points[i-1].x,points[i].y-points[i-1].y);
+  }
+  double length()const{return arc_.empty()?0:arc_.back();}
+  double nearest(Point p,double minimum=0)const {
+    double best=1e30,result=minimum;
+    for(std::size_t i=1;i<points_.size();++i) {
+      if(arc_[i]<minimum)continue;
+      const auto a=points_[i-1],b=points_[i];const double dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy;
+      const double span=arc_[i]-arc_[i-1];if(span<1e-9)continue;
+      const double t=std::clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/d2,std::clamp((minimum-arc_[i-1])/span,0.,1.),1.);
+      const double ex=p.x-a.x-t*dx,ey=p.y-a.y-t*dy,d=ex*ex+ey*ey;
+      if(d<best){best=d;result=arc_[i-1]+t*span;}
+    }
+    return result;
+  }
+  Point at(double s)const {
+    if(s<=0)return points_.front();if(s>=length())return points_.back();
+    const auto upper=std::upper_bound(arc_.begin(),arc_.end(),s);
+    const std::size_t i=static_cast<std::size_t>(upper-arc_.begin());
+    const double t=(s-arc_[i-1])/(arc_[i]-arc_[i-1]);
+    return {points_[i-1].x+t*(points_[i].x-points_[i-1].x),points_[i-1].y+t*(points_[i].y-points_[i-1].y)};
+  }
+  double heading(Point p)const {
+    const double s=nearest(p);const auto a=at(std::max(0.,s-.025)),b=at(std::min(length(),s+.025));
+    return std::atan2(b.y-a.y,b.x-a.x);
+  }
+};
+inline Candidate followReference(const std::vector<Point>& reference,const Config& c) {
+  Candidate out;if(reference.size()<2)return out;
+  const Polyline curve(reference);if(curve.length()<1e-6)return out;
+  Pose p;p.steer=c.current_steer;out.path.push_back(p);double progress=0;
+  const double dt=c.step/c.speed;
+  for(double s=c.step;s<=c.horizon+1e-8;s+=c.step) {
+    progress=curve.nearest({p.x,p.y},progress);
+    if(curve.length()-progress<c.step*.5)break;
+    const auto goal=curve.at(std::min(curve.length(),progress+c.lane_lookahead));
+    const double dx=goal.x-p.x,dy=goal.y-p.y,d2=dx*dx+dy*dy;
+    const double desired=std::clamp(std::atan2(2*c.wheelbase*(-std::sin(p.yaw)*dx+std::cos(p.yaw)*dy),std::max(.01,d2)),-c.max_steer,c.max_steer);
+    p.steer+=std::clamp(desired-p.steer,-c.steer_rate*dt,c.steer_rate*dt);
+    const double turn=c.step*std::tan(p.steer)/c.wheelbase;
+    p.x+=c.step*std::cos(p.yaw+turn/2);p.y+=c.step*std::sin(p.yaw+turn/2);p.yaw=wrap(p.yaw+turn);
+    if(std::abs(p.yaw)>=pi/2)break;
+    out.path.push_back(p);out.length=s;
+  }
+  return out;
+}
+enum class Block {None,Hazard,Edge,Route};
+inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const std::vector<std::uint8_t>* allowed=nullptr) {
+  const double half=c.width/2+c.margin,cs=std::cos(p.yaw),sn=std::sin(p.yaw),pad=g.resolution*.71;
+  const double extent=std::hypot(c.rear+pad,half+pad)+c.front;
+  const int u0=std::max(0,int(std::floor((p.x-extent-g.x0)/g.resolution)));
+  const int u1=std::min(g.width-1,int(std::ceil((p.x+extent-g.x0)/g.resolution)));
+  const int v0=int(std::floor((p.y-extent-g.y0)/g.resolution));
+  const int v1=int(std::ceil((p.y+extent-g.y0)/g.resolution));
+  for(int v=v0;v<=v1;++v)for(int u=u0;u<=u1;++u) {
+    const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
+    const double dx=x-p.x,dy=y-p.y,longitudinal=dx*cs+dy*sn,lateral=-dx*sn+dy*cs;
+    if(longitudinal < -c.rear-pad || longitudinal>c.front+c.margin+pad || std::abs(lateral)>half+pad)continue;
+    if(x<0 || (x<=c.front && std::abs(y)<=c.width/2))continue;
+    if(v<0 || v>=g.height)return Block::Edge;
+    const auto index=std::size_t(v)*g.width+u;
+    if(blockedTerrain(g.cells[index]))return Block::Hazard;
+    if(allowed && !(*allowed)[index])return Block::Route;
+  }
+  for(double a:{-c.rear,c.front+c.margin})for(double b:{-half,half}) {
+    const double x=p.x+a*cs-b*sn,y=p.y+a*sn+b*cs;
+    if(x>=0 && (x>=g.x0+g.width*g.resolution || y<g.y0 || y>=g.y0+g.height*g.resolution))return Block::Edge;
+  }
+  return Block::None;
+}
 struct Plan {
   std::vector<Candidate> candidates; std::vector<Pose> path;
   std::array<double,61> histogram{};
   std::array<bool,61> binary{},masked{};
-  double speed{},steer{},length{},longest_candidate{}; bool guidance{},rear_unverified{true};
+  double speed{},steer{},length{},longest_candidate{}; bool guidance{},used_vfh{},reference_blocked{},rear_unverified{true};
   std::size_t hazard_ends{},edge_ends{},route_ends{},short_candidates{};
   std::string status{"STOP: no feasible route"};
 };
@@ -83,14 +159,17 @@ public:
     }
   }
   bool guidance() const {return guidance_;}
-  Plan plan(const Grid& g,const std::vector<Point>& lane,const Config& c,const Grid* current=nullptr) {
-    g.validate(); c.validate(); Plan out;
-    if(current) {
-      current->validate();
-      if(current->width!=g.width || current->height!=g.height || current->resolution!=g.resolution ||
-        current->x0!=g.x0 || current->y0!=g.y0)throw std::invalid_argument("current terrain geometry mismatch");
+  Plan plan(const Grid& g,const std::vector<Point>& lane,const Config& c) {
+    g.validate();c.validate();Plan out;
+    if(lane.size()>1000){out.status="STOP: lane sample limit";return out;}
+    for(auto p:lane)if(!std::isfinite(p.x)||!std::isfinite(p.y)){out.status="STOP: invalid lane";return out;}
+    const Candidate raw_lane=followReference(lane,c);
+    bool lane_blocked=false;
+    for(std::size_t i=1;i<raw_lane.path.size();++i) {
+      const auto why=footprintBlock(g,c,raw_lane.path[i]);
+      if(why!=Block::None){lane_blocked=why==Block::Hazard;break;}
     }
-    const Grid& evidence=current?*current:g;
+    const Grid& evidence=g; // Current frame only; no accumulated terrain.
     struct Band {double x,lo,hi;};std::vector<Band> bands,best_bands;
     double last_center=0;
     for(double x=.3;x<std::min(c.horizon+.5,g.x0+g.width*g.resolution);x+=g.resolution) {
@@ -115,22 +194,14 @@ public:
     }
     if(!best_bands.empty() && (bands.empty() || best_bands.back().x-best_bands.front().x>bands.back().x-bands.front().x))bands=std::move(best_bands);
     const bool pair_valid=bands.size()>=5 && bands.back().x-bands.front().x>=.35;
-    bool lane_blocked=false;
-    for(const auto& band:bands) {
-      Point near{};double distance=1e9;
-      for(auto p:lane)if(std::abs(p.x-band.x)<distance){near=p;distance=std::abs(p.x-band.x);}
-      if(near.y<band.lo+c.width/2 || near.y>band.hi-c.width/2 || blockedTerrain(evidence.at(band.x,near.y)))lane_blocked=true;
-    }
     const bool corridor=pair_valid && lane_blocked;
     std::vector<Point> reference=lane;
-    if(lane.size()<2 && (!guidance_ || !pair_valid)) {out.status="STOP: lane/corridor reference unavailable";return out;}
-    if(lane.size()>1000) {out.status="STOP: lane sample limit";return out;}
-    for(auto p:lane)if(!std::isfinite(p.x)||!std::isfinite(p.y)){out.status="STOP: invalid lane";return out;}
     if (corridor) ++guide_confirm_; else guide_confirm_=0;
     if (guide_confirm_>=3) guidance_=true;
     if (guidance_ && !pair_valid) {if (++exit_confirm_>=8) guidance_=false;} else exit_confirm_=0;
-    out.guidance=guidance_;
-    if(guidance_ && pair_valid) {
+    out.guidance=guidance_ && pair_valid;
+    if(lane.size()<2 && !out.guidance){out.status="STOP: lane/corridor reference unavailable";return out;}
+    if(out.guidance) {
       reference.clear();for(const auto& b:bands)reference.push_back({b.x,(b.lo+b.hi)/2});
     }
     if(reference.size()<2){out.status="STOP: lost corridor";return out;}
@@ -140,6 +211,55 @@ public:
     const double half=c.width/2+c.margin, radius=half+g.resolution*.71;
     const double turn_radius=c.wheelbase/std::tan(c.max_steer);
     const double front_turn_radius=std::hypot(turn_radius,c.wheelbase);
+    // Lane departure allowance is rasterized once; path sampling uses constant-time queries.
+    std::vector<std::uint8_t> allowed(g.cells.size(),1);
+    if (!out.guidance) for (int v=0;v<g.height;++v) for (int u=0;u<g.width;++u)
+      allowed[std::size_t(v)*g.width+u]=laneDistance({g.x0+(u+.5)*g.resolution,g.y0+(v+.5)*g.resolution},lane)
+        <=c.lane_width/2+c.departure;
+    if(out.guidance)for(int v=0;v<g.height;++v)for(int u=0;u<g.width;++u){
+      const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
+      if(x<bands.front().x)continue;
+      const Band* near=&bands.front();for(const auto& band:bands)if(std::abs(band.x-x)<std::abs(near->x-x))near=&band;
+      allowed[std::size_t(v)*g.width+u]=std::abs(near->x-x)<=.10 && y>near->lo && y<near->hi;
+    }
+    const auto footprint=[&](const Pose& p) {
+      const auto why=footprintBlock(g,c,p,&allowed);
+      if(why==Block::Hazard)++out.hazard_ends;
+      if(why==Block::Edge)++out.edge_ends;
+      if(why==Block::Route)++out.route_ends;
+      return why==Block::None;
+    };
+    const auto setSpeed=[&]() {
+      const auto last=out.path.back();previous_angle_=std::atan2(last.y,last.x);
+      out.speed=std::min(c.speed,-c.deceleration*c.delay+
+        std::sqrt(c.deceleration*c.deceleration*c.delay*c.delay+2*c.deceleration*out.length));
+      double curvature=0;for(auto p:out.path)curvature=std::max(curvature,std::abs(std::tan(p.steer)/c.wheelbase));
+      out.speed=std::min(out.speed,std::sqrt(.4/std::max(.01,curvature)));
+    };
+    // First try tracking every bend of the lane (or the confirmed cone corridor).
+    Candidate track=out.guidance?followReference(reference,c):raw_lane;
+    Block reference_end=Block::None;std::size_t retained=track.path.empty()?0:1;
+    for(std::size_t i=1;i<track.path.size();++i) {
+      reference_end=footprintBlock(g,c,track.path[i],&allowed);
+      if(reference_end!=Block::None){footprint(track.path[i]);break;}
+      ++retained;
+    }
+    track.path.resize(retained);track.length=retained>0?(retained-1)*c.step:0;
+    const double track_usable=std::max(0.,track.length-c.step);
+    track.valid=track_usable>=.25 && track.path.size()>2;
+    out.longest_candidate=track_usable;if(!track.valid)++out.short_candidates;
+    out.candidates.push_back(track);
+    out.reference_blocked=reference_end==Block::Hazard || (!out.guidance && lane_blocked);
+    if(!out.reference_blocked) {
+      // Off-route hazards and histogram history cannot veto a clear lane curve.
+      binary_.fill(false);binary_rotation_residual_=0;
+      if(track.valid) {
+        out.path=track.path;out.length=track_usable;out.steer=track.path[1].steer;setSpeed();
+        out.status=out.guidance?"GUIDANCE: follow confirmed corridor":"LANE: clear lane trajectory (VFH bypass)";
+      }else out.status="STOP: reference too short or outside route/map";
+      return out;
+    }
+    out.used_vfh=true;
     double left_limit=pi,right_limit=-pi;
     for (int v=0;v<g.height;++v) for (int u=0;u<g.width;++u) {
       if (!blockedTerrain(g.cells[std::size_t(v)*g.width+u])) continue;
@@ -163,43 +283,6 @@ public:
       const double angle=(-75+2.5*b)*pi/180;
       out.masked[b]=binary_[b] || angle>=left_limit || angle<=right_limit;
     }
-    // Lane departure allowance is rasterized once; path sampling uses constant-time queries.
-    std::vector<std::uint8_t> allowed(g.cells.size(),1);
-    if (!guidance_) for (int v=0;v<g.height;++v) for (int u=0;u<g.width;++u)
-      allowed[std::size_t(v)*g.width+u]=laneDistance({g.x0+(u+.5)*g.resolution,g.y0+(v+.5)*g.resolution},lane)
-        <=c.lane_width/2+c.departure;
-    if(guidance_ && pair_valid)for(int v=0;v<g.height;++v)for(int u=0;u<g.width;++u){
-      const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
-      if(x<bands.front().x)continue;
-      const Band* near=&bands.front();for(const auto& band:bands)if(std::abs(band.x-x)<std::abs(near->x-x))near=&band;
-      allowed[std::size_t(v)*g.width+u]=std::abs(near->x-x)<=.10 && y>near->lo && y<near->hi;
-    }
-    const auto footprint=[&](const Pose& p) {
-      const double cs=std::cos(p.yaw),sn=std::sin(p.yaw),pad=g.resolution*.71;
-      const double extent=std::hypot(c.rear+pad,half+pad)+c.front;
-      const int u0=std::max(0,int(std::floor((p.x-extent-g.x0)/g.resolution)));
-      const int u1=std::min(g.width-1,int(std::ceil((p.x+extent-g.x0)/g.resolution)));
-      const int v0=int(std::floor((p.y-extent-g.y0)/g.resolution));
-      const int v1=int(std::ceil((p.y+extent-g.y0)/g.resolution));
-      // Sample all footprint cells, including subcell intersection padding.
-      for (int v=v0;v<=v1;++v) for (int u=u0;u<=u1;++u) {
-        const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
-        const double dx=x-p.x,dy=y-p.y,longitudinal=dx*cs+dy*sn,lateral=-dx*sn+dy*cs;
-        if (longitudinal < -c.rear-pad || longitudinal>c.front+c.margin+pad || std::abs(lateral)>half+pad) continue;
-        if (x<0) continue; // No rear sensor/history: Rear terrain remains unverified.
-        if (x<=c.front && std::abs(y)<=c.width/2) continue; // Current self-occupied area only.
-        if(v<0 || v>=g.height){++out.edge_ends;return false;}
-        const auto index=std::size_t(v)*g.width+u;
-        if(blockedTerrain(g.cells[index])){++out.hazard_ends;return false;}
-        if(!allowed[index]){++out.route_ends;return false;}
-      }
-      // Explicit forward/lateral bounds, even when the bounding loop was clipped.
-      for (double a:{-c.rear,c.front+c.margin}) for (double b:{-half,half}) {
-        const double x=p.x+a*cs-b*sn,y=p.y+a*sn+b*cs;
-        if (x>=0 && (x>=g.x0+g.width*g.resolution || y<g.y0 || y>=g.y0+g.height*g.resolution)) {++out.edge_ends;return false;}
-      }
-      return true;
-    };
     // Keep the preferred lane direction, prior direction, and low-density valley directions.
     std::vector<double> angles;
     for (int b=0;b<61;) {
@@ -227,6 +310,7 @@ public:
     if(targets.empty()) {
       out.status="STOP: no free VFH+ direction (hazard/turn mask)";return out;
     }
+    const Polyline reference_curve(reference);
     double best_score=1e9;
     const double dt=c.step/c.speed;
     for (double angle:targets) for (int profile=0;profile<3;++profile) {
@@ -255,8 +339,11 @@ public:
       if(!candidate.valid)++out.short_candidates;
       if (candidate.valid) {
         const auto last=candidate.path.back();
-        candidate.score=4*(c.horizon-candidate.length)+1.5*std::abs(wrap(angle-target_angle))+
-          .4*std::abs(angle)+.6*std::abs(wrap(angle-previous_angle_))+.3*std::abs(last.yaw-target_angle);
+        double deviation=0;for(const auto& p:candidate.path)deviation+=laneDistance({p.x,p.y},reference);
+        deviation/=candidate.path.size();
+        candidate.score=4*(c.horizon-candidate.length)+5*deviation+2*laneDistance({last.x,last.y},reference)+
+          1.5*std::abs(wrap(angle-target_angle))+.2*std::abs(angle)+.6*std::abs(wrap(angle-previous_angle_))+
+          .5*std::abs(wrap(last.yaw-reference_curve.heading({last.x,last.y})));
         if (candidate.score<best_score) {
           best_score=candidate.score;out.path=candidate.path;out.length=usable;
           out.steer=candidate.path[1].steer;
@@ -269,13 +356,8 @@ public:
         " edge="+std::to_string(out.edge_ends)+" route="+std::to_string(out.route_ends);
       return out;
     }
-    const auto last=out.path.back();previous_angle_=std::atan2(last.y,last.x);
-    // v*delay+v^2/(2a) <= checked remaining path (unknown allowed); nominal speed is an upper bound.
-    out.speed=std::min(c.speed,-c.deceleration*c.delay+
-      std::sqrt(c.deceleration*c.deceleration*c.delay*c.delay+2*c.deceleration*out.length));
-    double curvature=0;for (auto p:out.path)curvature=std::max(curvature,std::abs(std::tan(p.steer)/c.wheelbase));
-    out.speed=std::min(out.speed,std::sqrt(.4/std::max(.01,curvature)));
-    out.status=guidance_ ? "GUIDANCE: terrain corridor" : (std::abs(previous_angle_-target_angle)>.1 ? "AVOID: lane direction preferred" : "LANE: route (unknown allowed)");
+    setSpeed();
+    out.status=out.guidance?"GUIDANCE: VFH+ within corridor":"AVOID: VFH+ around blocked lane, return preferred";
     return out;
   }
 };

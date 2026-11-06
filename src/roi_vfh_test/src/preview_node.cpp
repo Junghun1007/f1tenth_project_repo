@@ -1,5 +1,5 @@
 #include "roi_vfh_test/planner.hpp"
-#include "roi_vfh_test/memory.hpp"
+#include "roi_vfh_test/motion.hpp"
 #include "roi_vfh_test/render.hpp"
 #include "roi_vfh_test/drive.hpp"
 #include <sensor_msgs/msg/imu.hpp>
@@ -29,9 +29,9 @@ class Node:public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_,brake_pub_,servo_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_log_pub_,brake_log_pub_,servo_log_pub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_;
-  MotionHistory motion_;TerrainMemory memory_;
+  MotionHistory motion_;
   std::uint64_t motion_generation_{0};
-  double measured_yaw_rate_{0},measured_speed_{0},speed_at_{-1e9},imu_at_{-1e9},memory_ttl_{.5},memory_distance_{.35};
+  double measured_yaw_rate_{0},measured_speed_{0},speed_at_{-1e9},imu_at_{-1e9};
   bool motion_ok_{false};
   MotionPose previous_pose_;bool previous_pose_valid_{false};
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
@@ -42,7 +42,7 @@ class Node:public rclcpp::Node {
   std::deque<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> grids_;
   line_detactor::msg::LaneResult::ConstSharedPtr lane_;
   nav_msgs::msg::OccupancyGrid::ConstSharedPtr last_grid_;
-  std::vector<Point> lane_points_; Grid display_, observed_display_, fused_display_;
+  std::vector<Point> lane_points_; Grid display_;
   std::string status_{"STOPPED: configure ROI, then Start"};
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr grid_sub_;
   rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_;
@@ -57,10 +57,10 @@ class Node:public rclcpp::Node {
   bool fresh(const builtin_interfaces::msg::Time & t) {const double age=now().seconds()-stamp(t);return age>=-.02 && age<=max_age_;}
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
   void stop(const std::string& reason) {
-    requested_=false;locked_=false;planner_.reset();memory_.clear();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();status_=reason;publishLock(false);applyDrive(false);
+    requested_=false;locked_=false;planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
-    requested_=true;locked_=false;planner_.reset();memory_.clear();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();
+    requested_=true;locked_=false;planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
   }
   static void mouse(int event,int x,int y,int,void * ptr) {
@@ -102,25 +102,22 @@ class Node:public rclcpp::Node {
       points.push_back(q);
     }
     if (points.size()<2 && !planner_.guidance()) {status_="STOP: disconnected lane";return false;}
-    lane_points_=std::move(points);observed_display_=grid;display_=std::move(grid);
+    lane_points_=std::move(points);display_=std::move(grid);
     if(requested_ && locked_ && now().seconds()-speed_at_>.15){status_="STOP: missing/stale measured speed (check VESC ERPM topic/bridge)";return false;}
     if(requested_ && locked_ && now().seconds()-imu_at_>.15){status_="STOP: missing/stale vehicle-frame IMU (/roi_lidar/imu)";return false;}
     MotionPose pose;
     if(requested_ && locked_) {
       MotionPose lane_pose;
       if(!motion_ok_ || !motion_.at(stamp(match->header.stamp),pose) || !motion_.at(stamp(lane_->header.stamp),lane_pose)) {
-        memory_.clear();status_="STOP: motion history cannot align sensor captures";return false;
+        status_="STOP: motion history cannot align sensor captures";return false;
       }
       for(auto& point:lane_points_)point=reproject(point,lane_pose,pose);
-      if(match==last_grid_)display_=fused_display_;
     }
     if (requested_ && locked_ && match!=last_grid_) {
       if(!motion_ok_ || now().seconds()-speed_at_>.15 || !motion_.at(stamp(match->header.stamp),pose)) {
-        memory_.clear();status_="STOP: fresh VESC speed + IMU required";return false;
+        status_="STOP: fresh VESC speed + IMU required";return false;
       }
-      if(motion_generation_!=motion_.generation) {memory_.clear();previous_pose_valid_=false;motion_generation_=motion_.generation;}
-      const Grid observed=display_;
-      display_=memory_.update(observed,pose,memory_ttl_,memory_distance_);fused_display_=display_;
+      if(motion_generation_!=motion_.generation) {previous_pose_valid_=false;motion_generation_=motion_.generation;}
       if(previous_pose_valid_)planner_.rotateReference(wrap(pose.yaw-previous_pose_.yaw));
       previous_pose_=pose;previous_pose_valid_=true;
       const auto begin=std::chrono::steady_clock::now();
@@ -128,7 +125,7 @@ class Node:public rclcpp::Node {
       working.delay=std::max(config_.delay,std::max(0.0,now().seconds()-stamp(match->header.stamp))+.067);
       working.current_steer=drive_enabled_ && servo_commanded_ ? drive_command_.steer :
         std::clamp(std::atan(config_.wheelbase*measured_yaw_rate_/std::max(.1,std::abs(measured_speed_))),-config_.max_steer,config_.max_steer);
-      result_=planner_.plan(display_,lane_points_,working,&observed);
+      result_=planner_.plan(display_,lane_points_,working);
       plan_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
       last_grid_=match;status_=result_.status;
     }
@@ -209,7 +206,7 @@ class Node:public rclcpp::Node {
   }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
-    const auto canvas=renderPreview(display_,observed_display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
+    const auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id="front_axle_bev";
       msg.width=canvas.cols;msg.height=canvas.rows;msg.encoding="bgr8";msg.step=canvas.cols*3;
@@ -245,14 +242,13 @@ public:
     PARAM("nominal_speed_mps",speed);PARAM("horizon_m",horizon);PARAM("sample_step_m",step);
     PARAM("wheelbase_m",wheelbase);PARAM("vehicle_width_m",width);PARAM("rear_extent_m",rear);PARAM("front_overhang_m",front);
     PARAM("safety_margin_m",margin);PARAM("lane_width_m",lane_width);PARAM("lane_departure_m",departure);
+    PARAM("lane_lookahead_m",lane_lookahead);
     PARAM("deceleration_mps2",deceleration);PARAM("response_delay_sec",delay);PARAM("reference_distance_m",reference_distance);
 #undef PARAM
     config_.max_steer=declare_parameter("max_steering_deg",30.,fixed)*pi/180;
     config_.steer_rate=declare_parameter("steering_rate_deg_per_sec",240.,fixed)*pi/180;
     config_.hist_low=declare_parameter("histogram_low",1.,fixed);config_.hist_high=declare_parameter("histogram_high",2.,fixed);
     config_.validate();motion_.front_axle_offset=config_.wheelbase;
-    memory_ttl_=declare_parameter("memory_time_sec",.5,fixed);memory_distance_=declare_parameter("memory_distance_m",.35,fixed);
-    if(!std::isfinite(memory_ttl_)||!std::isfinite(memory_distance_)||memory_ttl_<=0||memory_ttl_>2||memory_distance_<=0||memory_distance_>.5)throw std::invalid_argument("invalid memory limits");
     max_age_=declare_parameter("max_age_sec",.30,fixed);max_sync_=declare_parameter("max_sync_sec",.10,fixed);
     if(!std::isfinite(max_age_) || !std::isfinite(max_sync_) || max_age_<.05 || max_age_>.5 || max_sync_<.001 || max_sync_>.15)throw std::invalid_argument("invalid synchronization limits");
     DriveOptions drive_options;drive_options.max_steer=config_.max_steer;

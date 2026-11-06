@@ -8,10 +8,9 @@ roi_vfh_test:
     safety_margin_m: 0.02
     lane_departure_m: 0.40 # Body outer edge; normal obstacle avoidance only.
     reference_distance_m: 1.0
+    lane_lookahead_m: 0.30 # Track the full lane/corridor curve before invoking VFH+.
     histogram_low: 1.0
     histogram_high: 2.0
-    memory_time_sec: 0.5
-    memory_distance_m: 0.35
     max_age_sec: 0.30
     max_sync_sec: 0.10
     deceleration_mps2: 0.5 # Upper-bounded by auto_control planning deceleration; not a measured guarantee.

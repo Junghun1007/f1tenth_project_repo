@@ -1,7 +1,6 @@
 #pragma once
 #include "roi_vfh_test/planner.hpp"
 #include <deque>
-#include <unordered_map>
 namespace roi_vfh_test {
 struct MotionPose {double t{},x{},y{},yaw{},distance{};};
 inline Point reproject(Point p,const MotionPose& from,const MotionPose& to){
@@ -36,43 +35,6 @@ public:
     const auto p=poses_.back();const double dt=t-p.t;
     const double angle=p.yaw+last_yaw_rate_*dt/2,lateral=front_axle_offset*last_yaw_rate_;
     out={t,p.x+dt*(last_speed_*std::cos(angle)-lateral*std::sin(angle)),p.y+dt*(last_speed_*std::sin(angle)+lateral*std::cos(angle)),wrap(p.yaw+last_yaw_rate_*dt),p.distance+std::hypot(last_speed_,lateral)*dt};return true;
-  }
-};
-class TerrainMemory {
-  struct Cell{double x,y,t,distance;std::int8_t value;};
-  struct Key{int x,y;bool operator==(const Key& k)const{return x==k.x&&y==k.y;}};
-  struct Hash{std::size_t operator()(const Key& k)const{return std::hash<int>{}(k.x)^(std::hash<int>{}(k.y)<<1);}};
-  std::unordered_map<Key,Cell,Hash> cells_;
-  double resolution_{0};
-public:
-  void clear(){cells_.clear();resolution_=0;}
-  Grid update(const Grid& raw,const MotionPose& pose,double ttl,double max_distance){
-    raw.validate();if(resolution_!=raw.resolution){clear();resolution_=raw.resolution;}
-    const double cs=std::cos(pose.yaw),sn=std::sin(pose.yaw);
-    for(auto it=cells_.begin();it!=cells_.end();) {
-      if(pose.t<it->second.t || pose.t-it->second.t>ttl || pose.distance-it->second.distance>max_distance)it=cells_.erase(it);else ++it;
-    }
-    Grid out=raw;
-    // Observed current cells always win. Memory never extends the current map footprint.
-    for(const auto& entry:cells_){const auto& c=entry.second;
-      const double dx=c.x-pose.x,dy=c.y-pose.y,x=cs*dx+sn*dy,y=-sn*dx+cs*dy;
-      const int u=int(std::floor((x-raw.x0)/raw.resolution)),v=int(std::floor((y-raw.y0)/raw.resolution));
-      if(u<0||v<0||u>=raw.width||v>=raw.height)continue;
-      const auto index=std::size_t(v)*raw.width+u;
-      if(raw.cells[index]==-1 && (out.cells[index]==-1 || c.value>=50))out.cells[index]=c.value;
-    }
-    std::unordered_map<Key,Cell,Hash> fresh;
-    for(int v=0;v<raw.height;++v)for(int u=0;u<raw.width;++u){
-      const auto value=raw.cells[std::size_t(v)*raw.width+u];if(value!=0&&value<50)continue;
-      const double x=raw.x0+(u+.5)*raw.resolution,y=raw.y0+(v+.5)*raw.resolution;
-      const double wx=pose.x+cs*x-sn*y,wy=pose.y+sn*x+cs*y;
-      const Key key{int(std::floor(wx/raw.resolution)),int(std::floor(wy/raw.resolution))};
-      const auto found=fresh.find(key);
-      if(found==fresh.end() || value>=50)fresh[key]={wx,wy,pose.t,pose.distance,value};
-    }
-    for(const auto& c:fresh)cells_[c.first]=c.second;
-    if(cells_.size()>100000)clear();
-    return out;
   }
 };
 }

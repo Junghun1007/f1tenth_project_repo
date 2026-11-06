@@ -4,7 +4,7 @@
 namespace roi_vfh_test {
 inline cv::Rect startButton(){return {12,12,160,36};}
 inline cv::Rect stopButton(){return {184,12,160,36};}
-inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::vector<Point>& lane,
+inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
   const Plan& plan,const Config& config,bool requested,bool locked,const std::string& status,double plan_ms,
   bool drive_enabled=false,double duty=0,double brake=0) {
     cv::Mat canvas(620,760,CV_8UC3,cv::Scalar(245,245,245));
@@ -20,7 +20,7 @@ inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::ve
     text(cv::format("target %.2f / nominal %.2f m/s | steer %.1f deg | %.2f ms",
       active?plan.speed:0,config.speed,active?plan.steer*180/pi:0,plan_ms),114);
     text("Forward terrain check; rear/out-of-view body sweep is UNVERIFIED",136);
-    text(cv::format("VFH+ candidates: %zu | checked length: %.2fm",plan.candidates.size(),plan.length),156);
+    text(cv::format("Checked candidates: %zu | checked length: %.2fm",plan.candidates.size(),plan.length),156);
     if(active) {
       const double peak=std::max(1.,*std::max_element(plan.histogram.begin(),plan.histogram.end()));
       for(int b=0;b<61;++b) {
@@ -29,13 +29,13 @@ inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::ve
         cv::rectangle(canvas,{12+4*b,270,3,8},plan.binary[b]?cv::Scalar(60,60,210):cv::Scalar(200,200,200),-1);
         cv::rectangle(canvas,{12+4*b,284,3,8},plan.masked[b]?cv::Scalar(210,80,50):cv::Scalar(200,200,200),-1);
       }
-      cv::putText(canvas,"primary / binary / masked",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
+      cv::putText(canvas,plan.used_vfh?"primary / binary / masked":"Reference clear - VFH bypass",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     }
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
-    cv::putText(canvas,"Cyan: short memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
+    cv::putText(canvas,"Current frame only / no memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Blue: lane reference",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
-    cv::putText(canvas,"Yellow: selected VFH+ path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
+    cv::putText(canvas,"Yellow: selected driving path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
     cv::putText(canvas,cv::format("Ends: hazard %zu / edge %zu",plan.hazard_ends,plan.edge_ends),
       {12,424},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,cv::format("Route limit %zu / short %zu",plan.route_ends,plan.short_candidates),
@@ -50,7 +50,7 @@ inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::ve
         const auto a=pixel(grid.x0+u*grid.resolution,grid.y0+v*grid.resolution);
         const auto b=pixel(grid.x0+(u+1)*grid.resolution,grid.y0+(v+1)*grid.resolution);
         cv::rectangle(canvas,cv::Rect(cv::Point(std::min(a.x,b.x),std::min(a.y,b.y)),cv::Point(std::max(a.x,b.x)+1,std::max(a.y,b.y)+1)),
-          state==0?(observed.at(grid.x0+(u+.5)*grid.resolution,grid.y0+(v+.5)*grid.resolution)==0 ? cv::Scalar(175,220,175) : cv::Scalar(220,210,130)):(state>=50?cv::Scalar(75,75,220):cv::Scalar(125,125,125)),-1);
+          state==0?cv::Scalar(175,220,175):(state>=50?cv::Scalar(75,75,220):cv::Scalar(125,125,125)),-1);
       }
       for(std::size_t i=1;i<lane.size();++i)cv::line(canvas,pixel(lane[i-1].x,lane[i-1].y),pixel(lane[i].x,lane[i].y),{220,90,30},2);
       if (active) {
