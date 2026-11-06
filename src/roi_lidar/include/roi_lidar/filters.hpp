@@ -13,15 +13,15 @@ namespace roi_lidar
 struct RansacOptions
 {
   bool enabled{true};
-  double distance_m{0.025}, max_range_m{3.0}, max_tilt_deg{10.0}, max_offset_m{0.08};
+  double distance_m{0.06}, max_range_m{3.0}, max_tilt_deg{10.0}, max_offset_m{0.08};
   double min_inlier_ratio{0.50};
-  int max_iterations{60}, max_samples{800};
+  int max_iterations{60}, max_samples{700};
 };
 struct OutlierOptions
 {
   bool enabled{true};
-  double radius_m{0.06};
-  int min_neighbors{3}; // Other non-ground points, excluding the query point.
+  double radius_m{0.08};
+  int min_neighbors{8}; // Other non-ground points, excluding the query point.
 };
 inline void validateFilters(const RansacOptions & r,const OutlierOptions & o)
 {

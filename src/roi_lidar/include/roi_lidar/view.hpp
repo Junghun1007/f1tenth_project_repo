@@ -6,8 +6,8 @@ namespace roi_lidar
 // Display footprint in the front-axle frame; independent of LiDAR range limits.
 struct ViewOptions
 {
-  double width_m{1.2};
-  double forward_m{3.0};
+  double width_m{1.5};
+  double forward_m{4.0};
 };
 inline void validateView(const ViewOptions & v)
 {

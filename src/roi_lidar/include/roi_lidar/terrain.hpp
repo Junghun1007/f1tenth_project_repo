@@ -6,8 +6,8 @@ namespace roi_lidar
 {
 struct TerrainOptions
 {
-  double cell_m{0.06}, below_ground_m{0.30};
-  int min_ground_samples{2}, min_obstacle_samples{2};
+  double cell_m{0.07}, below_ground_m{0.30};
+  int min_ground_samples{2}, min_obstacle_samples{8};
   bool fill_enabled{true};
   int fill_max_cells{2}, fill_clearance_cells{1};
   double vehicle_width_m{2.0}; // Reference only; no footprint inflation.
@@ -28,7 +28,7 @@ struct Terrain
 {
   // ROS grid order: X increases by column, Y increases by row.
   int width{0}, height{0};
-  double cell_m{0.06}, y_min{0}, x_max{0}, y_max{0};
+  double cell_m{0.07}, y_min{0}, x_max{0}, y_max{0};
   std::vector<std::int8_t> cells; // -1 unknown, 0 observed ground, 100 obstacle/depression
   std::vector<std::int8_t> raw_cells, planning_cells;
   std::vector<std::uint8_t> inferred;

@@ -29,7 +29,7 @@ ros2 launch roi_lidar roi_lidar.launch.py \
 기존 point_cloud의 보정/깊이 입력 라이브러리를 공유하되 해당 노드나 RViz는 시작하지 않는다.
 기본 좌표 원점은 앞차축 지면이며 +X는 전방, +Y는 차량 좌측이다.
 
-기본 표시 영역은 폭 1.2m, 전방 3m로 미터당 픽셀 비율을 동일하게 유지한다.
+기본 표시 영역은 폭 1.5m, 전방 4m로 미터당 픽셀 비율을 동일하게 유지한다.
 최대 검출 거리는 별도의 `range.max_m`이며 화면 밖 포인트도 토픽에는 남는다.
 
 ## 화면과 조작
@@ -66,7 +66,7 @@ OFF/실패/범위 밖에서는 시작 지면의 `h=Z`를 사용한다. 지면 �
 
 ```text
 선택된 지면 허용 두께 < h <= height.max_m
-# RANSAC 성공 범위: obstacle.min_height_m (기본 0.05m)
+# RANSAC 성공 범위: obstacle.min_height_m (기본 0.06m)
 # 그 외: min(ground.max_distance_m, ground.distance_m + ground.distance_per_meter × hypot(X,Y))
 ```
 
@@ -76,7 +76,7 @@ OFF/실패/범위 밖에서는 시작 지면의 `h=Z`를 사용한다. 지면 �
 
 ## 바닥·장애물·미관측 분류
 
-현재 프레임의 실제 표본을 기본 6cm 셀에 집계하며 초록/빨강/회색으로 표시한다.
+현재 프레임의 실제 표본을 기본 7cm 셀에 집계하며 초록/빨강/회색으로 표시한다.
 이 색상은 지면 관측 근거의 구분이며 경로 계획이나 차량의 최종 통과 판정이 아니다.
 
 | 셀 | 조건 |
@@ -100,14 +100,14 @@ OFF/실패/범위 밖에서는 시작 지면의 `h=Z`를 사용한다. 지면 �
 
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
-| `height.max_m` | 0.5 | 표시/발행/셀 집계에 사용할 지면 기준 최대 높이 |
-| `ground.distance_m` | 0.05 | 지면 제거 기본 두께 |
-| `ground.distance_per_meter` | 0.02 | 수평거리 1m당 두께 증가 |
+| `height.max_m` | 1.0 | 표시/발행/셀 집계에 사용할 지면 기준 최대 높이 |
+| `ground.distance_m` | 0.06 | 지면 제거 기본 두께 |
+| `ground.distance_per_meter` | 0.01 | 수평거리 1m당 두께 증가 |
 | `ground.max_distance_m` | 0.12 | 지면 제거 두께 상한 |
 | `terrain.below_ground_m` | 0.30 | 지면 아래 허용 두께 |
-| `terrain.cell_m` | 0.06 | 셀 크기, 0.02~0.25m |
+| `terrain.cell_m` | 0.07 | 셀 크기, 0.02~0.25m |
 | `terrain.min_ground_samples` | 2 | 셀을 바닥으로 판정할 최소 표본 수 |
-| `terrain.min_obstacle_samples` | 2 | 셀을 위험으로 판정할 최소 표본 수 |
+| `terrain.min_obstacle_samples` | 8 | 셀을 위험으로 판정할 최소 표본 수 |
 | `terrain.vehicle_width_m` | 2.0 | 폭 표시 기준 |
 | `points.pixel_stride` | 1 | ROI 이미지 표본 간격 |
 | `preview.show_terrain` | true | 바닥 분류 색상 표시 |
@@ -180,7 +180,7 @@ ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 �
 `terrain.fill_max_cells` (기본 2, 1~16)는 8방향으로 연결된 회색 묶음의 최대 셀 수다.
 `terrain.fill_clearance_cells` (기본 1, 0~4)는 위험 표본 주변 보정 금지 반경이다.
 세 설정은 카메라 재시작 없이 다음 프레임부터 반영하며 YAML에 자동 저장하지 않는다.
-현재 6cm 격자에서 2셀은 72cm² 면적이다. 셀 크기를 바꾸면 물리적 보정 면적도 바뀐다.
+현재 7cm 격자에서 2셀은 98cm² 면적이다. 셀 크기를 바꾸면 물리적 보정 면적도 바뀐다.
 
 작고 관측 바닥으로 완전히 둘러싸인 묶음만 채운다. 지도 가장자리나 원거리 회색에
 대각선으로라도 연결되면 제외한다. 한 개라도 위험 표본이 있는 셀, 위험 경계와
@@ -205,8 +205,8 @@ ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 �
 `/roi_vfh_test/running=true` 수신 시 GUI 편집과 ROS 파라미터 쓰기를 모두 잠그고
 `~/parameters_locked`로 ACK한다. Stop(false) 수신 후 다시 변경할 수 있다.
 
-스크린샷 기본값 변경: 높이 상한 0.5m, 거리별 두께 증가 0.02m/m, 아래 허용 깊이 0.30m,
-셀 0.06m, 표시 폭 눈금 2.0m, 픽셀 간격 1. 나머지 사진 값과 카메라 30 FPS는 유지한다.
+최신 스크린샷 기본값: 높이 상한 1.0m, 거리별 두께 증가 0.01m/m, 아래 허용 깊이 0.30m,
+셀 0.07m, 장애물 표본 8개, 표시 폭 눈금 2.0m, 픽셀 간격 1, 카메라 60 FPS를 사용한다.
 `terrain.vehicle_width_m`는 표시용이며 VFH+ 차량 검사 폭은 기존 차량 설정을 따른다.
 이번 기본값 변경의 빌드·테스트는 사용자 요청에 따라 실행하지 않았다.
 
@@ -220,17 +220,17 @@ VFH+ 실행 중에는 기존 GUI/ROS 쓰기 잠금이 적용된다. 페이지 �
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
 | `ground.ransac_enabled` | true | 현재 프레임 평면 추정 ON/OFF |
-| `ground.ransac_distance_m` | 0.025m | 대표 평면을 찾을 때만 쓰는 inlier 허용 오차 |
-| `obstacle.min_height_m` | 0.05m | 대표 평면 위 장애물 최소 높이; 이 값을 초과한 점만 위쪽 장애물 후보 |
+| `ground.ransac_distance_m` | 0.06m | 대표 평면을 찾을 때만 쓰는 inlier 허용 오차 |
+| `obstacle.min_height_m` | 0.06m | 대표 평면 위 장애물 최소 높이; 이 값을 초과한 점만 위쪽 장애물 후보 |
 | `ground.ransac_max_range_m` | 3.0m | 수평거리 기준 평면 추정·적용 상한 |
 | `ground.ransac_max_tilt_deg` | 10° | 시작 지면의 위 방향 대비 최대 기울기 |
 | `ground.ransac_max_offset_m` | 0.08m | 시작 지면 원점에서 평면까지 최대 수직 거리 |
 | `ground.ransac_min_inlier_ratio` | 0.50 | 샘플 중 필요한 최소 평면 지지 비율 |
 | `ground.ransac_max_iterations` | 60 | RANSAC 반복 상한; 충분한 지지 비율이면 조기 종료 |
-| `ground.ransac_max_samples` | 800 | 추정에 사용하는 최대 샘플 수 |
+| `ground.ransac_max_samples` | 700 | 추정에 사용하는 최대 샘플 수 |
 | `outlier.enabled` | true | 고립된 비지면 표본 제거 ON/OFF |
-| `outlier.radius_m` | 0.06m | 원래 차량 XYZ에서 이웃을 찾는 3D 반경 |
-| `outlier.min_neighbors` | 3 | 자신을 제외한 비지면 이웃의 최소 수 |
+| `outlier.radius_m` | 0.08m | 원래 차량 XYZ에서 이웃을 찾는 3D 반경 |
+| `outlier.min_neighbors` | 8 | 자신을 제외한 비지면 이웃의 최소 수 |
 
 RANSAC은 범위·시작 지면 주변 후보에서 reservoir sampling으로 점 수를 제한한다.
 평면 법선·높이·inlier 비율뿐 아니라 지지점의 전방 25cm/좌우 20cm 이상 분포도 요구한다.
@@ -279,3 +279,9 @@ launch는 BEV 설정의 `measurement_roi_width=456`, `measurement_roi_height=228
 이번 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.
 
 `preview.show_bev_window`(기본 true)는 별도 RGB BEV창 표시만 제어한다. VFH launch는 false로 설정하여 VFH 창에 BEV를 통합하며, ROI 선택창과 파라미터 창·센서 발행은 유지한다.
+
+IMU ON일 때는 카메라 세션별 전용 수신 스레드를 사용한다. depth RANSAC/고립점 처리 중에도
+IMU 배치를 계속 수신하며 원래 측정 시각을 보존한다. 장치를 닫기 전에 수신 스레드를 종료한다.
+2026-11-06 16:32 첨부 이미지의 파라미터를 일반 YAML 및 코드 기본값에 반영했다.
+terrain 셀 0.07m/최소 장애물 표본 8개, RANSAC 거리 0.06m/표본 700개,
+최소 장애물 높이 0.06m, 고립점 반경 0.08m/이웃 8개를 사용한다. 빌드·테스트는 미진행이다.

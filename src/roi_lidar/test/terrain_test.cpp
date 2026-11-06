@@ -5,6 +5,7 @@ static void check(bool ok,const char * text) {if (!ok) {throw std::runtime_error
 int main()
 {
   Options o; ViewOptions v; TerrainOptions t;
+  v.width_m=1.2; v.forward_m=3; t.min_obstacle_samples=2;
   t.cell_m=.05; t.below_ground_m=.05; // Fixed synthetic scene geometry.
   auto scan=emptyScan(o);
   auto grid=terrainGrid(scan,o,v,t);

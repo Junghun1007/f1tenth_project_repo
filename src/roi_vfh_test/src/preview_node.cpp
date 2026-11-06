@@ -38,6 +38,8 @@ class Node:public rclcpp::Node {
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_;
   MotionHistory motion_;
   std::uint64_t motion_generation_{0};
+  double imu_received_at_{-1e9};
+  std::string imu_issue_{"no messages received"};
   double measured_yaw_rate_{0},measured_speed_{0},speed_at_{-1e9},imu_at_{-1e9};
   bool motion_ok_{false};
   MotionPose previous_pose_;bool previous_pose_valid_{false};
@@ -283,8 +285,11 @@ class Node:public rclcpp::Node {
       const double clock=now().seconds();
       if(clock-speed_at_>erpm_timeout_ || clock<speed_at_-.02 || !std::isfinite(measured_speed_))
         return "STOP: drive speed telemetry expired";
-      if(clock-imu_at_>imu_timeout_ || clock<imu_at_-.02 || !motion_ok_)
-        return "STOP: drive IMU/motion history expired";
+      if(imu_received_at_<0)return "STOP: no IMU received on /roi_lidar/imu";
+      if(clock-imu_received_at_>imu_timeout_)return cv::format("STOP: IMU receive timeout %.3fs",clock-imu_received_at_);
+      if(clock-imu_at_>imu_timeout_ || clock<imu_at_-.02)
+        return cv::format("STOP: IMU capture age %.3fs; %s",clock-imu_at_,imu_issue_.c_str());
+      if(!motion_ok_)return "STOP: IMU motion history unavailable; "+imu_issue_;
       if(!last_grid_)return "STOP: no drive plan input";
       const double age=clock-stamp(last_grid_->header.stamp),lane_age=clock-planned_lane_stamp_;
       if(age<-.02 || age>drive_max_age_ || lane_age<-.02 || lane_age>drive_max_age_)
@@ -499,15 +504,24 @@ public:
         if(!std::isfinite(p->data)){speed_at_=-1e9;motion_.clear();motion_ok_=false;return;}
         measured_speed_=p->data;speed_at_=now().seconds();
       });
-    imu_sub_=create_subscription<sensor_msgs::msg::Imu>("/roi_lidar/imu",sensor,
+    // Keep a bounded capture history across short GUI/planner stalls; grids
+    // still use latest-only QoS. Never refresh an old IMU sample's timestamp.
+    imu_sub_=create_subscription<sensor_msgs::msg::Imu>("/roi_lidar/imu",rclcpp::SensorDataQoS().keep_last(200),
       [this](sensor_msgs::msg::Imu::ConstSharedPtr p){
-        if(p->header.frame_id!=frame_id_ || !fresh(p->header.stamp) || !std::isfinite(p->angular_velocity.z)) {
-          motion_.clear();motion_ok_=false;return;
+        imu_received_at_=now().seconds();
+        if(p->header.frame_id!=frame_id_ || !std::isfinite(p->angular_velocity.z)) {
+          imu_issue_="invalid frame or yaw rate";motion_.clear();motion_ok_=false;return;
         }
-        imu_at_=stamp(p->header.stamp);
-        measured_yaw_rate_=p->angular_velocity.z;
-        if(now().seconds()-speed_at_>erpm_timeout_){motion_.clear();motion_ok_=false;return;}
-        motion_.add(stamp(p->header.stamp),measured_speed_,measured_yaw_rate_);motion_ok_=true;
+        const double capture=stamp(p->header.stamp),age=imu_received_at_-capture;
+        if(age<-.02 || age>max_age_) {imu_issue_="stale/future IMU sample discarded";return;}
+        if(capture<=imu_at_)return; // A duplicate must not erase the integration history.
+        imu_at_=capture;measured_yaw_rate_=p->angular_velocity.z;
+        if(imu_received_at_-speed_at_>erpm_timeout_) {
+          imu_issue_="waiting for fresh VESC speed";motion_.clear();motion_ok_=false;return;
+        }
+        motion_.add(capture,measured_speed_,measured_yaw_rate_);
+        MotionPose pose;motion_ok_=motion_.at(capture,pose);
+        imu_issue_=motion_ok_?"ok":"motion sample rejected (speed/yaw/time)";
       });
     lane_sub_=create_subscription<line_detactor::msg::LaneResult>(lane_topic_,sensor,
       [this](line_detactor::msg::LaneResult::ConstSharedPtr p){lane_=p;lane_received_at_=now().seconds();});

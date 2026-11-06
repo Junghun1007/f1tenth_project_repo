@@ -54,7 +54,7 @@ root bridge를 실행할 수 있다. 기존 bridge와 중복 실행하지 않는
 namespace 및 `duty_topic`, `brake_current_topic`, `servo_position_topic` 직접 지정도 지원한다.
 IMU는 별도 camera_driver를 켜지 않고 `/roi_lidar/imu`를 사용한다. 시작 보정으로 이미 차량 좌표로
 회전한 각속도이므로 Z축이 yaw이며, 원본 `/camera/imu`의 -Y축 설정을 복사하면 안 된다.
-실측 속도 미수신과 IMU 미수신은 별도 정지 사유로 표시한다. 속도가 없어도 유효 IMU 수신 시간은
+실측 속도 미수신과 IMU 미수신은 별도 정지 사유로 표시한다. IMU는 수신 없음·수신 중단·측정 시각 만료·이동 이력 오류를 구분한다. 속도가 없어도 유효 IMU 수신 시간은
 갱신하지만, 속도·IMU가 모두 유효해지기 전에는 촬영 시각 보정이나 계획을 진행하지 않는다.
 receive-only dynamics monitor가 이미 있으면 `dynamics_enabled:=false measured_speed_topic:=/실측속도토픽`으로 재사용한다.
 
@@ -244,3 +244,23 @@ c++ -std=c++17 -O2 -Isrc/roi_vfh_test/include -Isrc/auto_control/include \
 1440셀의 정지 장면 4개에서 20회 워밍업 후 300회 측정한다. 현재 격자의 계획만 측정하며
 카메라/차선 추론/ROS/GUI 비용은 제외한다. 전체 Jetson 실행시간은 해당 기기에서 측정해야 한다.
 노드 HUD의 `plan` 시간은 계획부만 측정한다.
+
+## IMU 수신과 최신 ROI 기본값
+
+`auto_control_node` 자체는 IMU를 직접 구독하지 않는다. auto_control 실행 구성의
+`camera_driver`는 전용 IMU 스레드를 사용한다. ROI도 동일하게 depth 처리와 별개인
+IMU 스레드로 큐를 지속 수신한다. RANSAC/고립점 처리에 IMU 수신이 묶이지 않도록 했다.
+보정 gyro에서 카메라 좌표로의 회전은 camera_driver와 같은 방식이며,
+ROI는 시작 지면 측정 회전을 추가 적용하므로 yaw는 차량 Z축이다.
+별도 camera_driver를 추가 실행할 필요가 없다.
+
+VFH의 IMU 수신 큐는 영상의 latest-only 큐와 분리해 200개로 제한한다.
+중복·역순 timestamp와 오래된 패킷은 이력을 지우지 않고 무시한다.
+실제 측정 시각이 0.10초를 넘으면 계속 제동하며, 수신 시각으로 덮어 만료를 숨기지 않는다.
+기존 정상 입력 0.50초 후 자동 재출발 정책을 유지한다.
+
+2026-11-06 16:32 첨부 이미지 기본값을 ROI 일반 설정과 VFH ROI 프로필에 반영했다.
+주요 변경은 terrain 셀 0.07m/장애물 표본 8개, RANSAC 허용 거리 0.06m/표본 700개,
+최소 장애물 높이 0.06m, 고립점 반경 0.08m/이웃 8개,
+고정 지면 두께 0.06m+거리당 0.01m, 높이 상한 1m, depth 60FPS, terrain 1.5×4m다.
+이번 수정은 빌드·테스트를 실행하지 않았다.

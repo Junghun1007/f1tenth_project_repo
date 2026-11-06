@@ -20,6 +20,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <iomanip>
+#include <exception>
 #include <mutex>
 #include <sstream>
 #include <thread>
@@ -70,6 +71,25 @@ static void apply(Config & c,const rclcpp::Parameter & p)
   ROI_PARAMETERS(APPLY)
 #undef APPLY
 }
+// Joins before the local DepthSource is destroyed, including exception/reopen paths.
+class ScopedImuReader
+{
+  std::atomic_bool done_{false};
+  std::mutex mutex_;
+  std::exception_ptr error_;
+  std::thread thread_;
+public:
+  template<class Function> ScopedImuReader(bool enabled, Function function) {
+    if(enabled)thread_=std::thread([this,function] {
+      try {function(done_);}
+      catch(...) {std::lock_guard<std::mutex> lock(mutex_);error_=std::current_exception();}
+    });
+  }
+  ~ScopedImuReader() {done_=true;if(thread_.joinable())thread_.join();}
+  void rethrowIfFailed() {
+    std::lock_guard<std::mutex> lock(mutex_);if(error_)std::rethrow_exception(error_);
+  }
+};
 class Node : public rclcpp::Node
 {
   struct Snapshot
@@ -232,6 +252,33 @@ class Node : public rclcpp::Node
         point_cloud::DepthSource source(startup_config.camera,selected,
           startup_config.camera_image && (startup_config.gui || startup_config.publish_preview),
           (startup_config.gui || startup_config.publish_preview || startup_config.publish_lane_bev) ? startup_config.rgb_fps : 0.0,startup_config.publish_imu);
+        // Match camera_driver's independent IMU reader: depth RANSAC/outlier
+        // work must not throttle the 400Hz IMU or leave old batches queued.
+        ScopedImuReader imu_reader(startup_config.publish_imu,[&](const std::atomic_bool& done) {
+          while(!done && !stopping() && camera_revision==camera_revision_) {
+            bool received=false;
+            for(int batch=0;batch<startup_config.camera.imu_queue_size && !done && !stopping();++batch) {
+              auto data=source.tryGetImu();if(!data)break;received=true;
+              const auto host_now=Clock::now();const auto ros_now=now();
+              double maximum_age;
+              {std::lock_guard<std::mutex> lock(mutex_);maximum_age=config_.max_age;}
+              for(const auto& packet:data->packets) {
+                const auto& gyro=packet.gyroscope;
+                const double age=seconds(host_now)-seconds(gyro.getTimestamp());
+                if(!std::isfinite(age) || age<-.01 || age>maximum_age)continue;
+                const auto rate=point_cloud::rotate(vehicle_from_camera.rotation,
+                  source.cameraGyroscope({gyro.x,gyro.y,gyro.z}));
+                if(!std::isfinite(rate[0]) || !std::isfinite(rate[1]) || !std::isfinite(rate[2]))continue;
+                sensor_msgs::msg::Imu msg;
+                msg.header.stamp=ros_now-rclcpp::Duration::from_seconds(age);msg.header.frame_id=frame_id_;
+                msg.orientation_covariance[0]=-1;msg.linear_acceleration_covariance[0]=-1;
+                msg.angular_velocity.x=rate[0];msg.angular_velocity.y=rate[1];msg.angular_velocity.z=rate[2];
+                imu_pub_->publish(msg);
+              }
+            }
+            if(!received)std::this_thread::sleep_for(1ms);
+          }
+        });
         Projector projector;
         std::vector<double> key;
         std::uint64_t configured_revision=std::numeric_limits<std::uint64_t>::max();
@@ -239,21 +286,10 @@ class Node : public rclcpp::Node
         std::size_t frames=0; double work_ms=0,fps=0,host_ms=0;
         bool stale=false;
         while (!stopping() && camera_revision==camera_revision_) {
+          imu_reader.rethrowIfFailed();
           Config c; std::uint64_t version;
           {std::lock_guard<std::mutex> lock(mutex_); c=config_; version=revision_;}
           const auto host=Clock::now(); const double clock=seconds(host);
-          if (auto imu=source.tryGetImu()) {
-            for(const auto & packet:imu->packets) {
-              const auto & gyro=packet.gyroscope;
-              const double age=clock-seconds(gyro.getTimestamp());
-              if(age<0 || age>c.max_age)continue;
-              const auto rate=point_cloud::rotate(vehicle_from_camera.rotation,
-                source.cameraGyroscope({gyro.x,gyro.y,gyro.z}));
-              sensor_msgs::msg::Imu msg;msg.header.stamp=now()-rclcpp::Duration::from_seconds(age);msg.header.frame_id=frame_id_;
-              msg.orientation_covariance[0]=-1;msg.linear_acceleration_covariance[0]=-1;
-              msg.angular_velocity.x=rate[0];msg.angular_velocity.y=rate[1];msg.angular_velocity.z=rate[2];imu_pub_->publish(msg);
-            }
-          }
           if (auto rgb=source.tryGetRgb()) {
             const auto transform=point_cloud::compose(vehicle_from_camera,source.rgbFromFrame(*rgb));
             std::lock_guard<std::mutex> lock(mutex_); snapshot_.rgb=std::move(rgb); snapshot_.vehicle_from_rgb=transform;
@@ -507,7 +543,7 @@ public:
     scan_pub_=create_publisher<sensor_msgs::msg::LaserScan>("~/scan",qos);
     obstacles_pub_=create_publisher<geometry_msgs::msg::PoseArray>("~/obstacles",qos);
     terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain",qos);
-    imu_pub_=create_publisher<sensor_msgs::msg::Imu>("~/imu",qos);
+    imu_pub_=create_publisher<sensor_msgs::msg::Imu>("~/imu",rclcpp::SensorDataQoS().keep_last(200));
     planning_terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain_for_planning",qos);
     raw_terrain_pub_=create_publisher<nav_msgs::msg::OccupancyGrid>("~/terrain_raw",qos);
     points_pub_=create_publisher<sensor_msgs::msg::PointCloud2>("~/obstacle_points",qos);

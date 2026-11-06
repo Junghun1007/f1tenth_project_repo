@@ -22,7 +22,7 @@ struct Config
   int preview_size{800};
   bool show_raw_points{false};
   std::string interpolation{"linear"};
-  Config() {camera.fps=30; camera.subpixel=true; camera.dot_intensity=0.7; cluster.enabled=false;}
+  Config() {camera.fps=60; camera.subpixel=true; camera.dot_intensity=0.7; cluster.enabled=false;}
 };
 inline void validate(const Config & c)
 {

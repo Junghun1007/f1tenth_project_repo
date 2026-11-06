@@ -6,7 +6,7 @@ int main()
 {
   Options o;
   ViewOptions view;
-  check(view.width_m==1.2 && view.forward_m==3.0,"New display defaults lost");
+  check(view.width_m==1.5 && view.forward_m==4.0,"New display defaults lost");
   view.width_m=1.5; view.forward_m=4.0; // Exercise the original configurable footprint.
   const auto layout=mapLayout(view,800);
   const auto origin=mapPixel(0,0,view,800),front=mapPixel(1,0,view,800),left=mapPixel(1,.5,view,800);
@@ -70,7 +70,7 @@ int main()
   // All XY endpoints survive, including multiple depths along the same scan bin.
   auto dense=emptyScan(o);
   dense.surface_points={{1,.12,.2},{2,.12,.3},{3,.12,1.5},{1.5,.12,.0}};
-  TerrainOptions terrain;terrain.cell_m=.05;terrain.below_ground_m=.05; // Fixed color fixture.
+  TerrainOptions terrain;terrain.min_obstacle_samples=2;terrain.cell_m=.05;terrain.below_ground_m=.05; // Fixed color fixture.
   const auto grid=terrainGrid(dense,o,view,terrain);
   auto topdown=blank.clone();
   terrainOverlay(topdown,grid,dense,o,view,800,false,true,.4,1,.3);
