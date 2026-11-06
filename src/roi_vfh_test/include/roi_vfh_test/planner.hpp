@@ -30,7 +30,7 @@ struct Grid {
 inline bool blockedTerrain(int value) {return value>0;}
 struct Config {
   double speed{.7},horizon{1.4},step{.04},wheelbase{.33},width{.30},rear{.25},front{.25};
-  double margin{.04},max_steer{30*pi/180},steer_rate{240*pi/180};
+  double margin{.02},max_steer{30*pi/180},steer_rate{240*pi/180};
   double lane_width{.65},departure{.40},deceleration{.8},delay{.20};
   double current_steer{0};
   double reference_distance{1.0},hist_low{1.0},hist_high{2.0};
@@ -185,7 +185,7 @@ public:
         const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
         const double dx=x-p.x,dy=y-p.y,longitudinal=dx*cs+dy*sn,lateral=-dx*sn+dy*cs;
         if (longitudinal < -c.rear-pad || longitudinal>c.front+c.margin+pad || std::abs(lateral)>half+pad) continue;
-        if (x<0) continue; // No rear sensor/history: diagnostic preview, never actuator control.
+        if (x<0) continue; // No rear sensor/history: Rear terrain remains unverified.
         if (x<=c.front && std::abs(y)<=c.width/2) continue; // Current self-occupied area only.
         if (v<0 || v>=g.height || blockedTerrain(g.cells[std::size_t(v)*g.width+u]) || !allowed[std::size_t(v)*g.width+u]) return false;
       }

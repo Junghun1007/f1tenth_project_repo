@@ -1,6 +1,7 @@
 #include "roi_vfh_test/planner.hpp"
 #include "roi_vfh_test/memory.hpp"
 #include "roi_vfh_test/render.hpp"
+#include "roi_vfh_test/drive.hpp"
 #include <sensor_msgs/msg/imu.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -20,6 +21,14 @@
 namespace roi_vfh_test {
 class Node:public rclcpp::Node {
   Config config_; Planner planner_; Plan result_;
+  bool drive_enabled_{false},vesc_connected_{false},servo_commanded_{false};
+  double drive_max_age_{.20};
+  std::unique_ptr<DriveController> drive_;
+  DriveCommand drive_command_;
+  std::chrono::steady_clock::time_point last_drive_tick_{std::chrono::steady_clock::now()};
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_,brake_pub_,servo_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_log_pub_,brake_log_pub_,servo_log_pub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_;
   MotionHistory motion_;TerrainMemory memory_;
   std::uint64_t motion_generation_{0};
   double measured_yaw_rate_{0},measured_speed_{0},speed_at_{-1e9},imu_at_{-1e9},memory_ttl_{.5},memory_distance_{.35};
@@ -48,7 +57,7 @@ class Node:public rclcpp::Node {
   bool fresh(const builtin_interfaces::msg::Time & t) {const double age=now().seconds()-stamp(t);return age>=-.02 && age<=max_age_;}
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
   void stop(const std::string& reason) {
-    requested_=false;locked_=false;planner_.reset();memory_.clear();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();status_=reason;publishLock(false);
+    requested_=false;locked_=false;planner_.reset();memory_.clear();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
     requested_=true;locked_=false;planner_.reset();memory_.clear();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();
@@ -117,16 +126,56 @@ class Node:public rclcpp::Node {
       const auto begin=std::chrono::steady_clock::now();
       auto working=config_;
       working.delay=std::max(config_.delay,std::max(0.0,now().seconds()-stamp(match->header.stamp))+.067);
-      working.current_steer=std::clamp(std::atan(config_.wheelbase*measured_yaw_rate_/std::max(.1,std::abs(measured_speed_))),-config_.max_steer,config_.max_steer);
+      working.current_steer=drive_enabled_ && servo_commanded_ ? drive_command_.steer :
+        std::clamp(std::atan(config_.wheelbase*measured_yaw_rate_/std::max(.1,std::abs(measured_speed_))),-config_.max_steer,config_.max_steer);
       result_=planner_.plan(display_,lane_points_,working,&observed);
       plan_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
       last_grid_=match;status_=result_.status;
     }
     return true;
   }
+  static void publishFloat(const rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr& publisher,double value) {
+    if(!publisher)return;
+    std_msgs::msg::Float32 msg;msg.data=static_cast<float>(value);publisher->publish(msg);
+  }
+  void applyDrive(bool active) {
+    if(!drive_enabled_ || !drive_)return;
+    const auto clock=std::chrono::steady_clock::now();
+    const double dt=std::chrono::duration<double>(clock-last_drive_tick_).count();last_drive_tick_=clock;
+    drive_command_=drive_->update(active,result_.speed,measured_speed_,result_.steer,dt);
+    // Publish one motor mode per cycle: duty and brake messages replace each
+    // other in the bridge. Zero propulsion during braking is recorded below.
+    if(drive_command_.brake_mode)publishFloat(brake_pub_,drive_command_.brake);
+    else publishFloat(duty_pub_,drive_command_.duty);
+    if(active && result_.speed>0)servo_commanded_=true;
+    if(servo_commanded_)publishFloat(servo_pub_,drive_command_.servo);
+    publishFloat(duty_log_pub_,drive_command_.duty);
+    publishFloat(brake_log_pub_,drive_command_.brake);
+    publishFloat(servo_log_pub_,drive_command_.servo);
+  }
+  std::string driveGuard() {
+    if(!vesc_connected_)return "STOP: VESC not connected";
+    if(count_publishers(duty_pub_->get_topic_name())>1 || count_publishers(brake_pub_->get_topic_name())>1 ||
+      count_publishers(servo_pub_->get_topic_name())>1)return "STOP: another actuator publisher (stop auto/manual controller)";
+    if(locked_) {
+      const double clock=now().seconds();
+      if(clock-speed_at_>.15 || clock<speed_at_-.02 || !std::isfinite(measured_speed_))
+        return "STOP: drive speed telemetry expired";
+      if(clock-imu_at_>.15 || clock<imu_at_-.02 || !motion_ok_)
+        return "STOP: drive IMU/motion history expired";
+      if(!last_grid_)return "STOP: no drive plan input";
+      const double age=now().seconds()-stamp(last_grid_->header.stamp);
+      if(age<-.02 || age>drive_max_age_)return "STOP: drive path capture expired";
+    }
+    return {};
+  }
   void publish() {
+    if(drive_enabled_ && requested_) {
+      const auto reason=driveGuard();if(!reason.empty())stop(reason);
+    }
     nav_msgs::msg::Path path;path.header.stamp=now();path.header.frame_id="front_axle_bev";
     const bool active=requested_ && locked_;
+    applyDrive(active);
     if(active && last_grid_)path.header=last_grid_->header;
     if (active) for (const auto & p:result_.path) {
       geometry_msgs::msg::PoseStamped pose;pose.header=path.header;pose.pose.position.x=p.x;pose.pose.position.y=p.y;
@@ -136,8 +185,9 @@ class Node:public rclcpp::Node {
     std_msgs::msg::Float32 speed,steer;speed.data=active?result_.speed:0;steer.data=active?result_.steer:0;
     speed_pub_->publish(speed);steer_pub_->publish(steer);
     std_msgs::msg::String message;
-    message.data=status_+cv::format(" | preview v=%.2fm/s steer=%.1fdeg plan=%.2fms candidates=%zu | rear unverified",
+    message.data=status_+cv::format(" | target v=%.2fm/s steer=%.1fdeg plan=%.2fms candidates=%zu | rear unverified",
       speed.data,steer.data*180/pi,plan_ms_,result_.candidates.size());
+    if(drive_enabled_)message.data+=cv::format(" | DRIVE duty=%.3f brake=%.2fA command_steer=%.1fdeg",drive_command_.duty,drive_command_.brake,drive_command_.steer*180/pi);
     status_pub_->publish(message);
     RCLCPP_INFO_THROTTLE(get_logger(),*get_clock(),1000,"%s",message.data.c_str());
   }
@@ -159,7 +209,7 @@ class Node:public rclcpp::Node {
   }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
-    const auto canvas=renderPreview(display_,observed_display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_);
+    const auto canvas=renderPreview(display_,observed_display_,lane_points_,result_,config_,requested_,locked_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id="front_axle_bev";
       msg.width=canvas.cols;msg.height=canvas.rows;msg.encoding="bgr8";msg.step=canvas.cols*3;
@@ -171,7 +221,7 @@ class Node:public rclcpp::Node {
       const int key=cv::waitKey(1);if (key==' ' || key=='s'){stop("STOPPED: parameters unlocked");publish();}
       if (key=='q' || key==27 || windowClosed()) {
         stop("STOPPED: preview closed");publish();
-        RCLCPP_INFO(get_logger(),"VFH preview closed: stopping and unlocking ROI parameters");
+        RCLCPP_INFO(get_logger(),"VFH window closed: stopping and unlocking ROI parameters");
         rclcpp::shutdown();
       }
     }
@@ -190,6 +240,7 @@ public:
   Node():rclcpp::Node("roi_vfh_test") {
     rcl_interfaces::msg::ParameterDescriptor fixed;fixed.read_only=true;
     gui_=declare_parameter("gui",true,fixed);
+    drive_enabled_=declare_parameter("drive_enabled",false,fixed);
 #define PARAM(name,field) config_.field=declare_parameter(name,config_.field,fixed)
     PARAM("nominal_speed_mps",speed);PARAM("horizon_m",horizon);PARAM("sample_step_m",step);
     PARAM("wheelbase_m",wheelbase);PARAM("vehicle_width_m",width);PARAM("rear_extent_m",rear);PARAM("front_overhang_m",front);
@@ -204,8 +255,45 @@ public:
     if(!std::isfinite(memory_ttl_)||!std::isfinite(memory_distance_)||memory_ttl_<=0||memory_ttl_>2||memory_distance_<=0||memory_distance_>.5)throw std::invalid_argument("invalid memory limits");
     max_age_=declare_parameter("max_age_sec",.30,fixed);max_sync_=declare_parameter("max_sync_sec",.10,fixed);
     if(!std::isfinite(max_age_) || !std::isfinite(max_sync_) || max_age_<.05 || max_age_>.5 || max_sync_<.001 || max_sync_>.15)throw std::invalid_argument("invalid synchronization limits");
+    DriveOptions drive_options;drive_options.max_steer=config_.max_steer;
+#define DRIVE_PARAM(name,field) drive_options.field=declare_parameter("drive." name,drive_options.field,fixed)
+    DRIVE_PARAM("maximum_duty",maximum_duty);DRIVE_PARAM("longitudinal_start_duty",start_duty);
+    DRIVE_PARAM("duty_rise_rate_per_sec",rise);DRIVE_PARAM("duty_fall_rate_per_sec",fall);
+    DRIVE_PARAM("longitudinal_pid_kp",kp);DRIVE_PARAM("longitudinal_pid_ki",ki);
+    DRIVE_PARAM("longitudinal_pid_kd",kd);DRIVE_PARAM("longitudinal_pid_integral_limit",integral_limit);
+    DRIVE_PARAM("longitudinal_feedforward_offset_duty",ff_offset);
+    DRIVE_PARAM("longitudinal_feedforward_duty_per_mps",ff_slope);
+    DRIVE_PARAM("longitudinal_feedforward_fade_speed_mps",ff_fade_speed);
+    DRIVE_PARAM("brake_maximum_current_amps",brake_max);DRIVE_PARAM("longitudinal_brake_speed_gain",brake_speed_gain);
+    DRIVE_PARAM("traffic_brake_speed_hysteresis_mps",brake_hysteresis);
+    DRIVE_PARAM("brake_current_rise_amps_per_sec",brake_rise);DRIVE_PARAM("brake_current_fall_amps_per_sec",brake_fall);
+    DRIVE_PARAM("servo_left",servo_left);DRIVE_PARAM("servo_center",servo_center);DRIVE_PARAM("servo_right",servo_right);
+    DRIVE_PARAM("steering_servo_inverted",inverted);
+#undef DRIVE_PARAM
+    drive_=std::make_unique<DriveController>(drive_options);
+    drive_max_age_=declare_parameter("drive.max_command_age_sec",.20,fixed);
+    if(!std::isfinite(drive_max_age_) || drive_max_age_<.05 || drive_max_age_>.3)throw std::invalid_argument("invalid drive command age");
     const auto sensor=rclcpp::SensorDataQoS().keep_last(1);
     const auto latch=rclcpp::QoS(1).reliable().transient_local();
+    const auto duty_topic=declare_parameter<std::string>("duty_topic","/vesc/duty",fixed);
+    const auto brake_topic=declare_parameter<std::string>("brake_current_topic","/vesc/brake_current",fixed);
+    const auto servo_topic=declare_parameter<std::string>("servo_position_topic","/vesc/servo_position",fixed);
+    const auto connection_topic=declare_parameter<std::string>("vesc_connection_topic","/vesc/connected",fixed);
+    if(drive_enabled_) {
+      const auto command=rclcpp::QoS(1).reliable().durability_volatile();
+      duty_pub_=create_publisher<std_msgs::msg::Float32>(duty_topic,command);
+      brake_pub_=create_publisher<std_msgs::msg::Float32>(brake_topic,command);
+      servo_pub_=create_publisher<std_msgs::msg::Float32>(servo_topic,command);
+      duty_log_pub_=create_publisher<std_msgs::msg::Float32>("~/command_duty",1);
+      brake_log_pub_=create_publisher<std_msgs::msg::Float32>("~/command_brake_current",1);
+      servo_log_pub_=create_publisher<std_msgs::msg::Float32>("~/command_servo_position",1);
+      connection_sub_=create_subscription<std_msgs::msg::Bool>(connection_topic,latch,
+        [this](std_msgs::msg::Bool::ConstSharedPtr p){
+          vesc_connected_=p->data;
+          if(!vesc_connected_ && requested_){stop("STOP: VESC disconnected");publish();}
+        });
+      RCLCPP_INFO(get_logger(),"DRIVE output after Start: duty=%s brake=%s servo=%s connection=%s",duty_topic.c_str(),brake_topic.c_str(),servo_topic.c_str(),connection_topic.c_str());
+    }
     running_pub_=create_publisher<std_msgs::msg::Bool>("~/running",latch);
     path_pub_=create_publisher<nav_msgs::msg::Path>("~/path",1);
     speed_pub_=create_publisher<std_msgs::msg::Float32>("~/target_speed",1);
@@ -233,8 +321,11 @@ public:
     lane_sub_=create_subscription<line_detactor::msg::LaneResult>("/line_detactor/result",sensor,
       [this](line_detactor::msg::LaneResult::ConstSharedPtr p){lane_=p;});
     lock_sub_=create_subscription<std_msgs::msg::Bool>("/roi_lidar/parameters_locked",latch,
-      [this](std_msgs::msg::Bool::ConstSharedPtr p){locked_=requested_ && p->data;});
-    RCLCPP_INFO(get_logger(),"Preview telemetry: speed=%s (Float32 m/s), IMU=/roi_lidar/imu (vehicle-frame Z rad/s)",speed_sub_->get_topic_name());
+      [this](std_msgs::msg::Bool::ConstSharedPtr p){
+        if(requested_ && locked_ && !p->data){stop("STOP: ROI parameter lock lost");publish();return;}
+        locked_=requested_ && p->data;
+      });
+    RCLCPP_INFO(get_logger(),"VFH telemetry: speed=%s (Float32 m/s), IMU=/roi_lidar/imu (vehicle-frame Z rad/s)",speed_sub_->get_topic_name());
     publishLock(false);
     timer_=create_wall_timer(std::chrono::milliseconds(67),[this]{tick();});
   }

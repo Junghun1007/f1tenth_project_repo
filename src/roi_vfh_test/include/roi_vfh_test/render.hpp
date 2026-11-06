@@ -5,14 +5,16 @@ namespace roi_vfh_test {
 inline cv::Rect startButton(){return {12,12,160,36};}
 inline cv::Rect stopButton(){return {184,12,160,36};}
 inline cv::Mat renderPreview(const Grid& grid,const Grid& observed,const std::vector<Point>& lane,
-  const Plan& plan,const Config& config,bool requested,bool locked,const std::string& status,double plan_ms) {
+  const Plan& plan,const Config& config,bool requested,bool locked,const std::string& status,double plan_ms,
+  bool drive_enabled=false,double duty=0,double brake=0) {
     cv::Mat canvas(620,760,CV_8UC3,cv::Scalar(245,245,245));
     auto text=[&](std::string s,int y){cv::putText(canvas,s,{12,y},cv::FONT_HERSHEY_SIMPLEX,.43,{35,35,35},1,cv::LINE_AA);};
     cv::rectangle(canvas,startButton(),requested?cv::Scalar(160,160,160):cv::Scalar(70,150,70),-1);
     cv::rectangle(canvas,stopButton(),{70,70,200},-1);
-    cv::putText(canvas,"Start preview",{24,36},cv::FONT_HERSHEY_SIMPLEX,.55,{255,255,255},1);
+    cv::putText(canvas,drive_enabled?"Start driving":"Start preview",{24,36},cv::FONT_HERSHEY_SIMPLEX,.55,{255,255,255},1);
     cv::putText(canvas,"Stop / unlock",{196,36},cv::FONT_HERSHEY_SIMPLEX,.55,{255,255,255},1);
-    text("PREVIEW ONLY - no steering, motor or brake commands",70);
+    text(drive_enabled?cv::format("DRIVE ENABLED | duty %.3f | brake %.2f A",duty,brake):
+      "PREVIEW ONLY - no steering, motor or brake commands",70);
     text(status,92);
     const bool active=requested && locked;
     text(cv::format("target %.2f / nominal %.2f m/s | steer %.1f deg | %.2f ms",

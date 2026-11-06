@@ -36,6 +36,15 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES builtin_interfaces std_msgs geometry_msgs)
 rosidl_get_typesupport_target(avoidance_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
 
+# Export the existing pure control helpers for the VFH actuator adapter.
+add_library(auto_control_core STATIC src/control_core.cpp)
+set_target_properties(auto_control_core PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME control_core)
+target_include_directories(auto_control_core PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+install(TARGETS auto_control_core EXPORT auto_control_core_targets ARCHIVE DESTINATION lib)
+ament_export_targets(auto_control_core_targets HAS_LIBRARY_TARGET)
+
 add_library(auto_obstacle_component SHARED
   src/obstacle_detector_node.cpp src/obstacle_worker.cpp src/control_core.cpp)
 target_include_directories(auto_obstacle_component PRIVATE include ${OpenCV_INCLUDE_DIRS})

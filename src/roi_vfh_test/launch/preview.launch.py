@@ -46,7 +46,12 @@ def nodes(context):
     erpm_topic = telemetry_topic(arg("measured_erpm_topic"), control["measured_erpm_topic"], arg("vehicle_namespace"))
     connection_topic = telemetry_topic(arg("vesc_connection_topic"), control["connection_status_topic"], arg("vehicle_namespace"))
     test = load(arg("params_file"), "roi_vfh_test")
-    test.update({"wheelbase_m": control["avoidance_wheelbase_m"],
+    drive_mode = arg("drive_enabled").strip().lower() or str(test.get("drive_enabled", False)).lower()
+    if drive_mode not in ("true", "false"):
+        raise ValueError("drive_enabled must be true or false")
+    test.update({"drive_enabled": drive_mode == "true",
+                 "vesc_connection_topic": connection_topic,
+                 "wheelbase_m": control["avoidance_wheelbase_m"],
                  "max_steering_deg": control["maximum_steering_angle_deg"],
                  "steering_rate_deg_per_sec": control["steering_rate_limit_deg_per_sec"],
                  "vehicle_width_m": 2 * obstacles["obstacles.avoidance.vehicle_half_width_m"],
@@ -54,6 +59,18 @@ def nodes(context):
                  "front_overhang_m": obstacles["obstacles.avoidance.vehicle_half_length_m"],
                  "lane_width_m": lane["centerline_lane_width_m"],
                  "measured_speed_topic": arg("measured_speed_topic")})
+    for key in ("duty_topic", "brake_current_topic", "servo_position_topic"):
+        test[key] = telemetry_topic(arg(key), control[key], arg("vehicle_namespace"))
+    for key in ("maximum_duty", "longitudinal_start_duty", "duty_rise_rate_per_sec", "duty_fall_rate_per_sec",
+                "longitudinal_pid_kp", "longitudinal_pid_ki", "longitudinal_pid_kd", "longitudinal_pid_integral_limit",
+                "longitudinal_feedforward_offset_duty", "longitudinal_feedforward_duty_per_mps",
+                "longitudinal_feedforward_fade_speed_mps", "brake_maximum_current_amps",
+                "longitudinal_brake_speed_gain", "traffic_brake_speed_hysteresis_mps",
+                "brake_current_rise_amps_per_sec", "brake_current_fall_amps_per_sec",
+                "servo_left", "servo_center", "servo_right", "steering_servo_inverted"):
+        test["drive." + key] = control[key]
+    test["drive.max_command_age_sec"] = control["path_capture_maximum_age_sec"]
+    test["deceleration_mps2"] = min(test["deceleration_mps2"], control["longitudinal_planning_deceleration_mps2"])
     actions = [Node(package="roi_lidar", executable="roi_lidar_node", name="roi_lidar",
                     output="screen", parameters=[roi]),
                IncludeLaunchDescription(PythonLaunchDescriptionSource(str(Path(get_package_share_directory("line_detactor")) / "launch/line_detactor.launch.py")),
@@ -92,6 +109,7 @@ def generate_launch_description():
                 "bev_params_file": Path(get_package_share_directory("bev_processor")) / "config/bev_config.yaml",
                 "vehicle_params_file": auto / "config/auto_control.yaml",
                 "obstacle_params_file": auto / "config/obstacles.yaml",
+                "drive_enabled": "", "duty_topic": "", "brake_current_topic": "", "servo_position_topic": "",
                 "dynamics_enabled": "true", "vehicle_namespace": "", "measured_erpm_topic": "",
                 "vesc_connection_topic": "",
                 "measured_speed_topic": "/roi_vfh_test/measured_speed"}
