@@ -16,6 +16,7 @@ struct Options
   double roi_x{0}, roi_y{0}, roi_width{1}, roi_height{1}; // normalized image rectangle
   int pixel_stride{1};
   bool ground_enabled{true};
+  double obstacle_min_height{0.05}; // Above fitted ground; independent of plane inlier tolerance.
   RansacOptions ransac;
   OutlierOptions outlier;
   double ground_distance{0.05}, ground_distance_per_meter{0.02}, ground_max_distance{0.12};
@@ -30,9 +31,12 @@ inline void validate(const Options & o)
 {
   validateFilters(o.ransac,o.outlier);
   for (const auto v : {o.roi_x,o.roi_y,o.roi_width,o.roi_height,o.ground_distance,
-    o.ground_distance_per_meter,o.ground_max_distance,o.max_height,o.min_depth,o.max_depth,o.min_range,o.max_range,o.angle_min,
+    o.ground_distance_per_meter,o.ground_max_distance,o.obstacle_min_height,o.max_height,o.min_depth,o.max_depth,o.min_range,o.max_range,o.angle_min,
     o.angle_max,o.support_distance}) {
     if (!std::isfinite(v)) {throw std::invalid_argument("ROI/scan values must be finite");}
+  }
+  if (o.obstacle_min_height<0 || o.obstacle_min_height>=o.max_height) {
+    throw std::invalid_argument("obstacle.min_height_m must be >= 0 and < height.max_m");
   }
   if (o.roi_x < 0 || o.roi_y < 0 || o.roi_width <= 0 || o.roi_height <= 0 ||
     o.roi_x+o.roi_width > 1.0000001 || o.roi_y+o.roi_height > 1.0000001 ||
@@ -77,12 +81,12 @@ struct Scan
 };
 inline double groundLimit(double range,const Options & o,const Scan * scan=nullptr)
 {
-  if(scan && scan->ground_plane.detected && range<=o.ransac.max_range_m)return o.ransac.distance_m;
+  if(scan && scan->ground_plane.detected && range<=o.ransac.max_range_m)return o.obstacle_min_height;
   return std::min(o.ground_max_distance,o.ground_distance+o.ground_distance_per_meter*range);
 }
 inline double groundMargin(double x,double y,const Options & o,const Scan * scan=nullptr)
 {
-  if(scan && scan->ground_plane.detected && x*x+y*y<=o.ransac.max_range_m*o.ransac.max_range_m)return o.ransac.distance_m;
+  if(scan && scan->ground_plane.detected && x*x+y*y<=o.ransac.max_range_m*o.ransac.max_range_m)return o.obstacle_min_height;
   return groundLimit(std::hypot(x,y),o);
 }
 inline bool projectedObstacle(const point_cloud::Vector3 & p,const Options & o,const Scan * scan=nullptr)

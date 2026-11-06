@@ -81,6 +81,7 @@ inline void validate(const Config & c)
   X("points.pixel_stride",scan.pixel_stride,as_int) \
   X("points.min_depth_m",scan.min_depth,as_double) \
   X("points.max_depth_m",scan.max_depth,as_double) \
+  X("obstacle.min_height_m",scan.obstacle_min_height,as_double) \
   X("ground.ransac_enabled",scan.ransac.enabled,as_bool) \
   X("ground.ransac_distance_m",scan.ransac.distance_m,as_double) \
   X("ground.ransac_max_range_m",scan.ransac.max_range_m,as_double) \

@@ -50,7 +50,7 @@ Q/Esc는 노드 종료다. **Reload current values**는 미적용 입력을 모�
 `*` 표시된 카메라·DepthAI 항목이 실제로 바뀌면 적용 시 스트리밍을 재시작한다.
 그 외 값만 변경하면 카메라 재시작 없이 다음 프레임에 반영한다.
 지면 기준은 **ground.distance_m <= ground.max_distance_m < height.max_m**을
-만족해야 한다. 서로 연관된 값을 함께 수정해 한 번에 적용할 수 있다.
+만족해야 한다. `obstacle.min_height_m`도 0 이상, `height.max_m` 미만이어야 한다. 서로 연관된 값을 함께 수정해 한 번에 적용할 수 있다.
 잘못된 숫자나 범위·조합은 배치 전체를 거부하고 창과 로그에 이유를 표시한다.
 입력은 남겨 두므로 수정 후 다시 적용하면 된다. 외부 `ros2 param set` 변경도 반영한다.
 
@@ -66,7 +66,7 @@ OFF/실패/범위 밖에서는 시작 지면의 `h=Z`를 사용한다. 지면 �
 
 ```text
 선택된 지면 허용 두께 < h <= height.max_m
-# RANSAC 성공 범위: ground.ransac_distance_m
+# RANSAC 성공 범위: obstacle.min_height_m (기본 0.05m)
 # 그 외: min(ground.max_distance_m, ground.distance_m + ground.distance_per_meter × hypot(X,Y))
 ```
 
@@ -219,7 +219,8 @@ VFH+ 실행 중에는 기존 GUI/ROS 쓰기 잠금이 적용된다. 페이지 �
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
 | `ground.ransac_enabled` | true | 현재 프레임 평면 추정 ON/OFF |
-| `ground.ransac_distance_m` | 0.025m | 평면 inlier 및 성공 범위의 위쪽 지면 제거 두께 |
+| `ground.ransac_distance_m` | 0.025m | 대표 평면을 찾을 때만 쓰는 inlier 허용 오차 |
+| `obstacle.min_height_m` | 0.05m | 대표 평면 위 장애물 최소 높이; 이 값을 초과한 점만 위쪽 장애물 후보 |
 | `ground.ransac_max_range_m` | 3.0m | 수평거리 기준 평면 추정·적용 상한 |
 | `ground.ransac_max_tilt_deg` | 10° | 시작 지면의 위 방향 대비 최대 기울기 |
 | `ground.ransac_max_offset_m` | 0.08m | 시작 지면 원점에서 평면까지 최대 수직 거리 |
@@ -236,7 +237,12 @@ RANSAC은 범위·시작 지면 주변 후보에서 reservoir sampling으로 점
 실패하면 이전 프레임 평면을 무한 유지하지 않고 시작 지면 기준 거리별 두께로 복귀한다.
 성공해도 적용 거리 밖에는 평면을 외삽하지 않는다.
 
-성공 범위의 위쪽 두께는 `ground.ransac_distance_m`를 사용한다. 기존 `ground.distance_m`,
+대표 평면은 기존처럼 하나만 추정하며, 성공 범위의 장애물 높이 기준은 별도의
+`obstacle.min_height_m`를 사용한다. 기본 5cm 이하의 요철은 위쪽 장애물에서 제외한다.
+이 기준은 빨간 포인트·스캔·terrain·고립점 후보 선정에 공통 적용된다.
+`ground.ransac_distance_m`는 평면 추정에만 영향을 주며 장애물 높이를 직접 바꾸지 않는다.
+두 값은 2페이지에서 각각 조절하고 Apply로 다음 프레임에 반영한다.
+기존 `ground.distance_m`,
 `ground.distance_per_meter`, `ground.max_distance_m`는 OFF/실패/범위 밖에서 사용하는 값이다.
 `terrain.below_ground_m`의 아래쪽 허용 깊이는 기존 설정을 유지한다. `ground.enabled`는
 기존처럼 포인트의 지면 제거를 제어하며 terrain의 바닥 분류 자체를 끄지는 않는다.

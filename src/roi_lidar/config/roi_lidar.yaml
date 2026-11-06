@@ -35,7 +35,8 @@ roi_lidar:
     # 기본 1m에서 7cm, 3m에서 11cm, 3.5m 이상에서 최대 12cm. 낮은 장애물도 제외될 수 있음.
     # Per-frame bounded RANSAC. Changing these values does not reopen the camera.
     ground.ransac_enabled: true
-    ground.ransac_distance_m: 0.025 # Inlier/removal band after a successful fit.
+    ground.ransac_distance_m: 0.025 # Plane-fitting tolerance only, NOT obstacle height.
+    obstacle.min_height_m: 0.05 # Obstacle if above fitted plane by >5cm; must be < height.max_m.
     ground.ransac_max_range_m: 3.0 # Do not extrapolate the fitted plane beyond this radius.
     ground.ransac_max_tilt_deg: 10.0
     ground.ransac_max_offset_m: 0.08
