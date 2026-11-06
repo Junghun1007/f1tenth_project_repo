@@ -33,24 +33,29 @@ Release 최적화는 유지한다. `BUILD_TESTING=OFF`로 테스트 타깃 생�
 ROI는 auto_control/BEV와 같은 `oak_startup` 측정과 BEV 설정의 456×228px/아래 80px ROI를 사용한다.
 `OAK startup ground-plane ROI` 창의 빨간 사각형 안에 평평한 노면이 보이게 하고,
 측정 완료 시 이 창은 자동으로 닫힌다. 수동 높이 모드는 BEV 설정대로 별도 동작한다.
-VESC bridge는 별도 실행한다. 이 launch는 bridge나 수동/자동주행 제어 노드를 시작하지 않는다.
+VESC bridge는 이 launch에서 기본으로 함께 실행한다. `vesc_only.launch.py`와 같은
+`vehicle_bringup/config/vesc_config.yaml`을 사용하며 기본 포트는 `/dev/ttyTHS1`이다.
+수동/별도 자동주행 제어 노드는 실행하지 않으며, 실제 주행은 기존 Start 버튼 이후에 시작한다.
 실차 모드에서는 auto_control/actuator_commander 등 다른 Duty·브레이크·서보 발행 노드를 종료한다.
 같은 명령 토픽에 다른 publisher가 감지되면 Start를 거부하거나 주행을 정지한다.
 기본 ERPM/연결 토픽은 `config/reference/auto_control_test.yaml`의 `measured_erpm_topic`과 `connection_status_topic`을
 가져온다(현재 `/vesc/measured_erpm`, `/vesc/connected`). 바퀴 지름·극쌍·기어비·방향·속도 배율과
-속도 필터 시간도 같은 controller YAML에서 가져온다. bridge가 `/autopilot03` namespace로
-실행 중이면 `vehicle_namespace:=autopilot03`을 붙인다. 수동 제어 노드와는 동시 구동하지 않는다.
+속도 필터 시간도 같은 controller YAML에서 가져온다. `vehicle_namespace:=autopilot03`을 붙이면
+통합 bridge와 제어·실측속도 노드 모두 같은 namespace의 VESC 토픽을 사용한다. 수동 제어 노드와는 동시 구동하지 않는다.
 `measured_erpm_topic:=... vesc_connection_topic:=...`는 namespace보다 우선하는 직접 지정이다.
 
 ```bash
-# vesc_only.launch.py로 root /vesc 텔레메트리를 이미 실행한 경우
+# VESC bridge까지 함께 실행 (별도 vesc_only 실행 불필요)
 ros2 launch roi_vfh_test preview.launch.py
 # 프리뷰만 볼 경우
 ros2 launch roi_vfh_test preview.launch.py drive_enabled:=false
 ```
 
-VESC bridge가 아예 없다면 별도 터미널에서 `ros2 launch vehicle_bringup vesc_only.launch.py`로
-root bridge를 실행할 수 있다. 기존 bridge와 중복 실행하지 않는다.
+기존 `vesc_only` 등 별도 bridge를 종료한 뒤 실행한다. 외부 bridge를 계속 사용할 경우에만
+`vesc_bridge_enabled:=false`를 지정한다. `drive_enabled:=false` 프리뷰에서도 실측속도 입력을 위해
+통합 bridge는 기본으로 실행한다.
+포트는 `vesc_port:=/dev/ttyUSB0`, 설정 파일은 `vesc_params_file:=/절대경로/vesc_config.yaml`로 변경한다.
+bridge의 Duty·브레이크·서보·ERPM·연결 토픽은 VFH 및 dynamics와 같은 값으로 연결한다.
 namespace 및 `duty_topic`, `brake_current_topic`, `servo_position_topic` 직접 지정도 지원한다.
 IMU는 별도 camera_driver를 켜지 않고 `/roi_lidar/imu`를 사용한다. 시작 보정으로 이미 차량 좌표로
 회전한 각속도이므로 Z축이 yaw이며, 원본 `/camera/imu`의 -Y축 설정을 복사하면 안 된다.
@@ -264,3 +269,8 @@ VFH의 IMU 수신 큐는 영상의 latest-only 큐와 분리해 200개로 제한
 최소 장애물 높이 0.06m, 고립점 반경 0.08m/이웃 8개,
 고정 지면 두께 0.06m+거리당 0.01m, 높이 상한 1m, depth 60FPS, terrain 1.5×4m다.
 이번 수정은 빌드·테스트를 실행하지 않았다.
+
+VFH 기본 차선 프로필 `config/reference/line_detactor_test.yaml`의
+`centerline_corner_outward_offset_m`은 사용자 요청대로 0.0m다.
+코너 외측 추가 오프셋을 끄며 기존 외측 경계 형상 가중치 설정은 유지한다.
+VESC 통합/오프셋 변경 시 빌드·테스트는 실행하지 않았다.

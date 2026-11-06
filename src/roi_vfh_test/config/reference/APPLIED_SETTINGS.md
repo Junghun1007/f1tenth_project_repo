@@ -1,6 +1,6 @@
 # 첨부 YAML 적용 범위
 
-이 디렉터리의 YAML은 사용자 첨부 설정을 기준으로 한다. roi_lidar_test.yaml은 후속 요청의 2026-11-06 16:32 스크린샷 기본값으로 갱신했으며, 나머지 8개 YAML은 첨부 원본을 보관한다. launch 기본 경로는 설치된 패키지 내부이므로 다른 컴퓨터의 절대 경로에 의존하지 않는다.
+이 디렉터리의 YAML은 사용자 첨부 설정을 기준으로 한다. roi_lidar_test.yaml은 후속 요청의 2026-11-06 16:32 스크린샷 기본값으로 갱신했으며, line_detactor_test.yaml의 centerline_corner_outward_offset_m은 후속 요청대로 0.0m로 변경했다. 나머지 7개 YAML은 첨부 원본을 보관한다. launch 기본 경로는 설치된 패키지 내부이므로 다른 컴퓨터의 절대 경로에 의존하지 않는다.
 
 | 파일 | VFH 실행에 적용하는 내용 |
 |---|---|
@@ -34,3 +34,6 @@
 VFH 실행에서는 중복 ROI RGB BEV창만 숨긴다(preview.show_bev_window=false). 뎁스 선택/ROI 파라미터 창과 센서·차선 출력은 유지한다.
 
 IMU는 camera_driver와 같은 calibrated gyro 및 보정 회전을 사용하되, ROI에서는 시작 측정으로 차량 좌표까지 변환한다. 따라서 /camera/imu의 optical Y축 대신 /roi_lidar/imu의 차량 Z축을 yaw로 사용한다. ROI의 IMU 큐 수신을 depth/RANSAC/고립점 처리와 분리된 전용 스레드로 변경했다. ROS IMU 송수신 큐는 200개로 제한하며, 실제 측정 timestamp와 0.10초 IMU 만료 검사는 유지한다. 장치 재시작·예외 시 전용 스레드를 먼저 종료하고 장치를 해제한다.
+
+VFH launch는 vesc_bridge_node를 기본으로 함께 실행하며 vehicle_bringup/config/vesc_config.yaml을 재사용한다.
+포트·namespace·5개 VESC 토픽을 VFH/실측속도 설정과 일치시킨다. 외부 bridge 사용 시 vesc_bridge_enabled:=false로 끈다.

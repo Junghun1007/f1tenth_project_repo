@@ -133,6 +133,20 @@ def nodes(context):
                                         launch_arguments={"params_file": arg("lane_params_file"), **lane_overrides}.items()),
                Node(package="roi_vfh_test", executable="roi_vfh_preview", name="roi_vfh_test",
                     output="screen", parameters=[test])]
+    bridge_mode = arg("vesc_bridge_enabled").strip().lower()
+    if bridge_mode not in ("true", "false"):
+        raise ValueError("vesc_bridge_enabled must be true or false")
+    if bridge_mode == "true":
+        # Same bridge executable/config as vehicle_bringup/vesc_only.launch.py.
+        # Resolve all five topics exactly as the VFH controller and speed monitor
+        # do, including explicit overrides and vehicle_namespace.
+        bridge_topics = {key: test[key] for key in ("duty_topic", "brake_current_topic", "servo_position_topic")}
+        bridge_topics.update({"measured_erpm_topic": erpm_topic,
+                              "connection_status_topic": connection_topic,
+                              "port": arg("vesc_port")})
+        actions.insert(0, Node(package="vesc_bridge", executable="vesc_bridge_node",
+                               name="vesc_bridge_node", namespace=arg("vehicle_namespace").strip("/"),
+                               output="screen", parameters=[arg("vesc_params_file"), bridge_topics]))
     if arg("dynamics_enabled").lower() == "true":
         dynamics = load(Path(get_package_share_directory("vehicle_dynamics_monitor")) / "config/vehicle_dynamics.yaml", "/**")
         dynamics.update({"input_mode": "ros_topic", "measured_erpm_topic": erpm_topic,
@@ -167,6 +181,8 @@ def generate_launch_description():
                 "vehicle_params_file": reference / "auto_control_test.yaml",
                 "obstacle_params_file": reference / "obstacles_test.yaml",
                 "drive_enabled": "", "duty_topic": "", "brake_current_topic": "", "servo_position_topic": "",
+                "vesc_bridge_enabled": "true", "vesc_port": "/dev/ttyTHS1",
+                "vesc_params_file": Path(get_package_share_directory("vehicle_bringup")) / "config/vesc_config.yaml",
                 "dynamics_enabled": "true", "vehicle_namespace": "", "measured_erpm_topic": "",
                 "vesc_connection_topic": "", "measured_speed_topic": "/roi_vfh_test/measured_speed"}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=str(v)) for k, v in defaults.items()] + [OpaqueFunction(function=nodes)])

@@ -58,7 +58,10 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual(test["lane_receipt_timeout_sec"], .30)
         self.assertEqual((roi["bev.camera_x_m"], roi["preview.rgb_width_px"], roi["preview.rgb_height_px"]), (-.09, 1280, 800))
         self.assertEqual(roi["motion.imu_rate_hz"], 400)
-        self.assertFalse(any(a.get("package") in ("camera_driver", "vehicle_bringup", "vesc_bridge") for a in actions))
+        self.assertFalse(any(a.get("package") in ("camera_driver", "vehicle_bringup") for a in actions))
+        bridge = next(a for a in actions if a.get("package") == "vesc_bridge")
+        self.assertEqual(bridge["parameters"][1]["port"], "/dev/ttyTHS1")
+        self.assertEqual(bridge["parameters"][1]["duty_topic"], test["duty_topic"])
         lane = next(a for a in actions if a["kind"] == "IncludeLaunchDescription")
         self.assertEqual(dict(lane["launch_arguments"])["input_topic"], "/roi_lidar/lane_bev")
         dynamics = next(a for a in actions if a.get("package") == "vehicle_dynamics_monitor")["parameters"][0]
