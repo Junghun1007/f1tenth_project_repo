@@ -16,6 +16,7 @@ struct Options
   double roi_x{0}, roi_y{0}, roi_width{1}, roi_height{1}; // normalized image rectangle
   int pixel_stride{1};
   bool ground_enabled{true};
+  bool use_startup_plane{false};
   double obstacle_min_height{0.06}; // Above fitted ground; independent of plane inlier tolerance.
   RansacOptions ransac;
   OutlierOptions outlier;
@@ -81,12 +82,14 @@ struct Scan
 };
 inline double groundLimit(double range,const Options & o,const Scan * scan=nullptr)
 {
-  if(scan && scan->ground_plane.detected && range<=o.ransac.max_range_m)return o.obstacle_min_height;
+  if(((scan && scan->ground_plane.detected) || (!o.ransac.enabled && o.use_startup_plane)) &&
+    range<=o.ransac.max_range_m)return o.obstacle_min_height;
   return std::min(o.ground_max_distance,o.ground_distance+o.ground_distance_per_meter*range);
 }
 inline double groundMargin(double x,double y,const Options & o,const Scan * scan=nullptr)
 {
-  if(scan && scan->ground_plane.detected && x*x+y*y<=o.ransac.max_range_m*o.ransac.max_range_m)return o.obstacle_min_height;
+  if (((scan && scan->ground_plane.detected) || (!o.ransac.enabled && o.use_startup_plane)) &&
+    x*x+y*y<=o.ransac.max_range_m*o.ransac.max_range_m) {return o.obstacle_min_height;}
   return groundLimit(std::hypot(x,y),o);
 }
 inline bool projectedObstacle(const point_cloud::Vector3 & p,const Options & o,const Scan * scan=nullptr)
@@ -148,7 +151,7 @@ public:
     const auto & o=options_;
     auto out=emptyScan(o);
     out.surface_points.reserve(rays_.size());
-    struct Location {float range;int bin;};
+    struct Location {float range;double angle;};
     std::vector<Location> locations;locations.reserve(rays_.size());
     const double source_height=o.max_height+(o.ransac.enabled ? o.ransac.max_offset_m+std::tan(o.ransac.max_tilt_deg*radians)*o.ransac.max_range_m : 0);
     struct Sample {int bin; float range, height;};
@@ -168,11 +171,10 @@ public:
       if (range<o.min_range || range>o.max_range) {continue;}
       const double angle=std::atan2(y,x)/radians;
       if (angle<o.angle_min || angle>o.angle_max) {continue;}
-      const int bin=std::clamp(static_cast<int>(std::lround(
-        (angle-o.angle_min)*(o.bins-1)/(o.angle_max-o.angle_min))),0,o.bins-1);
-      out.surface_points.push_back({x,y,z});locations.push_back({static_cast<float>(range),bin});
+      out.surface_points.push_back({x,y,z});
+      locations.push_back({static_cast<float>(range),angle});
     }
-    out.ground_plane=fitGround(out.surface_points,o.ransac);
+    if (o.ransac.enabled) {out.ground_plane=fitGround(out.surface_points,o.ransac);}
     std::vector<std::uint8_t> keep(out.surface_points.size(),1);
     std::vector<IndexedPoint> candidates;
     if(o.outlier.enabled)candidates.reserve(out.surface_points.size()/8);
@@ -200,9 +202,11 @@ public:
       const auto location=locations[i];const auto index=retained++;
       if(o.ground_enabled && point[2]<=groundMargin(point[0],point[1],o,&out)){++out.ground_removed;continue;}
       out.obstacle_indices.push_back(index);
-      auto & nearest=out.ranges[location.bin];
+      const int bin=std::clamp(static_cast<int>(std::lround(
+        (location.angle-o.angle_min)*(o.bins-1)/(o.angle_max-o.angle_min))),0,o.bins-1);
+      auto & nearest=out.ranges[bin];
       if(!std::isfinite(nearest) || location.range<nearest)nearest=location.range;
-      samples.push_back({location.bin,location.range,static_cast<float>(point[2])});++out.accepted_points;
+      samples.push_back({bin,location.range,static_cast<float>(point[2])});++out.accepted_points;
     }
     out.surface_points.resize(retained);out.processed=true;
     std::vector<int> support(o.bins,0);

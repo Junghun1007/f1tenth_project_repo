@@ -30,11 +30,12 @@ roi_lidar:
     points.pixel_stride: 1
     points.min_depth_m: 0.1
     points.max_depth_m: 20.0
-    # RANSAC OFF/실패/적용 범위 밖에서 사용하는 시작 지면 기준 제거 두께:
+    # 시작 평면 모드 OFF 또는 RANSAC 실패/적용 범위 밖에서 사용하는 시작 지면 기준 제거 두께:
     # min(max_distance_m, distance_m + distance_per_meter * 수평거리).
     # 현재 1m에서 7cm, 3m에서 9cm, 6m 이상에서 최대 12cm. 낮은 장애물도 제외될 수 있음.
     # Per-frame bounded RANSAC. Changing these values does not reopen the camera.
-    ground.ransac_enabled: true
+    ground.use_startup_plane: true
+    ground.ransac_enabled: false
     ground.ransac_distance_m: 0.06 # Plane-fitting tolerance only, NOT obstacle height.
     obstacle.min_height_m: 0.06 # Obstacle if above fitted plane by >6cm; must be < height.max_m.
     ground.ransac_max_range_m: 3.0 # Do not extrapolate the fitted plane beyond this radius.

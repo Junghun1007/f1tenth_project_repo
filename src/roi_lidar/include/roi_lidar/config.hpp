@@ -22,7 +22,7 @@ struct Config
   int preview_size{800};
   bool show_raw_points{false};
   std::string interpolation{"linear"};
-  Config() {camera.fps=60; camera.subpixel=true; camera.dot_intensity=0.7; cluster.enabled=false;}
+  Config() {camera.fps=60; camera.subpixel=true; camera.dot_intensity=0.7; cluster.enabled=false; scan.use_startup_plane=true; scan.ransac.enabled=false;}
 };
 inline void validate(const Config & c)
 {
@@ -89,6 +89,7 @@ inline void validate(const Config & c)
   X("points.min_depth_m",scan.min_depth,as_double) \
   X("points.max_depth_m",scan.max_depth,as_double) \
   X("obstacle.min_height_m",scan.obstacle_min_height,as_double) \
+  X("ground.use_startup_plane",scan.use_startup_plane,as_bool) \
   X("ground.ransac_enabled",scan.ransac.enabled,as_bool) \
   X("ground.ransac_distance_m",scan.ransac.distance_m,as_double) \
   X("ground.ransac_max_range_m",scan.ransac.max_range_m,as_double) \

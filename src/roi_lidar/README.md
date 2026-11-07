@@ -219,7 +219,8 @@ VFH+ 실행 중에는 기존 GUI/ROS 쓰기 잠금이 적용된다. 페이지 �
 
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
-| `ground.ransac_enabled` | true | 현재 프레임 평면 추정 ON/OFF |
+| `ground.ransac_enabled` | false | 각 depth 프레임에서 평면 재추정 |
+| `ground.use_startup_plane` | true | RANSAC OFF일 때 시작 측정 평면 재사용 |
 | `ground.ransac_distance_m` | 0.06m | 대표 평면을 찾을 때만 쓰는 inlier 허용 오차 |
 | `obstacle.min_height_m` | 0.06m | 대표 평면 위 장애물 최소 높이; 이 값을 초과한 점만 위쪽 장애물 후보 |
 | `ground.ransac_max_range_m` | 3.0m | 수평거리 기준 평면 추정·적용 상한 |
@@ -285,3 +286,15 @@ IMU 배치를 계속 수신하며 원래 측정 시각을 보존한다. 장치�
 2026-11-06 16:32 첨부 이미지의 파라미터를 일반 YAML 및 코드 기본값에 반영했다.
 terrain 셀 0.07m/최소 장애물 표본 8개, RANSAC 거리 0.06m/표본 700개,
 최소 장애물 높이 0.06m, 고립점 반경 0.08m/이웃 8개를 사용한다. 빌드·테스트는 미진행이다.
+
+
+기본 모드는 시작 평면 재사용이다. 시작 측정 결과로 좌표를 변환하면 지면은 차량 좌표의
+Z=0이다. RANSAC이 꺼져 있고 `ground.use_startup_plane=true`이면 기존 적용 반경
+(`ground.ransac_max_range_m`, 기본 3m) 안에서 Z=0 기준 `obstacle.min_height_m`를 사용한다.
+반경 밖은 기존 거리별 기준을 적용한다. 두 옵션이 모두 꺼져 있으면 전 범위에서 거리별 기준을 적용한다.
+경사나 카메라 자세가 주행 중 달라지는 환경에서는 `ground.ransac_enabled=true`로 프레임별
+보정을 사용할 수 있다. HUD와 로그에서 시작 평면 재사용 모드는 `STARTUP`으로 표시한다.
+
+ROI 로그의 `scan`은 투영·지면·고립점·스캔 처리 평균 시간이고 `grid_cluster`는
+격자·군집 처리 평균 시간이다. `host`와 `age`도 함께 비교한다. ROI BEV창이 숨겨져 있고
+구독자가 없으면 해당 영상 합성을 건너뛴다. 차선 입력 BEV와 계획 격자는 계속 발행한다.

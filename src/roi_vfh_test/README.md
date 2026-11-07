@@ -360,3 +360,7 @@ VFH YAML의 padding/step/response 값이 첨부 controller/obstacles 값으로 �
 계획 감속도는 VFH 설정과 첨부 감속 상한 중 최솟값을 사용한다. 실제 입력 지연과 계획 주기를
 반영하는 response delay 하한은 계속 적용한다. 새 회피 곡선 관련 값은 기존 기본값을 유지한다.
 빌드·테스트는 실행하지 않았다.
+
+프리뷰 하단의 ROI 평균은 약 1초 동안 처리한 depth 프레임 기준이며, host 전체 시간,
+scan 시간, 격자·군집 시간과 실제 처리 FPS를 표시한다. VFH hazard filter와 plan은 각각
+최근 최대 30회 호출의 평균(ms)을 표시한다. ROI 측정값이 3초 이상 수신되지 않으면 대기 상태를 표시한다.

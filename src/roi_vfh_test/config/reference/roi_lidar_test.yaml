@@ -48,7 +48,7 @@ roi_lidar:
     input.max_age_sec: 0.25
 
     # 장애물 군집: 높이 근거가 있는 2D 스캔점만 연결. 바닥 점을 연결 경로로 쓰지 않음.
-    cluster.enabled: true
+    cluster.enabled: false       # VFH consumes terrain_for_planning, not obstacle clusters.
     cluster.tolerance_m: 0.15       # 이웃 반환점 XY 간격 15cm 이내. 크면 서로 다른 물체도 합쳐짐.
     cluster.min_bins: 2             # 최소 스캔 방향 수(depth 픽셀 수 아님). 1은 고립점도 허용.
     cluster.max_gap_bins: 1         # 연결 사이에 허용하는 미관측/제외 방향 개수.
@@ -82,7 +82,8 @@ roi_lidar:
     preview.show_projected_points: true
     preview.terrain_alpha: 0.8
     preview.point_radius: 2
-    ground.ransac_enabled: true
+    ground.use_startup_plane: true
+    ground.ransac_enabled: false
     ground.ransac_distance_m: 0.06
     obstacle.min_height_m: 0.06
     ground.ransac_max_range_m: 3.0

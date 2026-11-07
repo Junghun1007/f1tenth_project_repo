@@ -11,6 +11,7 @@
 #include <sensor_msgs/point_cloud2_iterator.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <rcl_interfaces/msg/set_parameters_result.hpp>
 #include <opencv2/highgui.hpp>
@@ -43,6 +44,12 @@ static std::vector<double> geometryKey(dai::ImgFrame & frame, const point_cloud:
   std::vector<double> key{double(frame.getWidth()),double(frame.getHeight()),k.fx,k.fy,k.cx,k.cy};
   key.insert(key.end(),t.rotation.begin(),t.rotation.end());
   key.insert(key.end(),t.translation.begin(),t.translation.end()); return key;
+}
+static const char * groundModel(const Options & options, const Scan & scan)
+{
+  if (scan.ground_plane.detected) {return "RANSAC";}
+  if (options.ransac.enabled) {return "FALLBACK";}
+  return options.use_startup_plane ? "STARTUP" : "FIXED";
 }
 static cv::Mat frameView(dai::ImgFrame & frame, int cv_type)
 {
@@ -129,6 +136,7 @@ class Node : public rclcpp::Node
   rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr points_pub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr preview_pub_, roi_pub_, lane_bev_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr status_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr timing_pub_;
   rclcpp::TimerBase::SharedPtr sync_timer_, preview_timer_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr callback_;
   BevProjector bev_, lane_bev_;
@@ -197,6 +205,7 @@ class Node : public rclcpp::Node
     grid.data=terrain.cells; terrain_pub_->publish(grid);
     grid.data=terrain.raw_cells; raw_terrain_pub_->publish(grid);
     grid.data=terrain.planning_cells; planning_terrain_pub_->publish(grid);
+    if (points_pub_->get_subscription_count() == 0) {return;}
     sensor_msgs::msg::PointCloud2 cloud;
     cloud.header=grid.header;
     sensor_msgs::PointCloud2Modifier modifier(cloud);
@@ -284,6 +293,7 @@ class Node : public rclcpp::Node
         std::uint64_t configured_revision=std::numeric_limits<std::uint64_t>::max();
         double last_capture=0,last_rx=seconds(Clock::now()),report=last_rx;
         std::size_t frames=0; double work_ms=0,fps=0,host_ms=0;
+        double scan_ms=0, terrain_ms=0;
         bool stale=false;
         while (!stopping() && camera_revision==camera_revision_) {
           imu_reader.rethrowIfFailed();
@@ -310,10 +320,13 @@ class Node : public rclcpp::Node
             key=next_key; configured_revision=version;
           }
           const auto & bytes=depth->getData();
+          const auto scan_begin=Clock::now();
           auto scan=projector.project(bytes.data(),bytes.size(),depth->getStride() ? depth->getStride() : depth->getWidth()*2,c.terrain.below_ground_m);
+          const auto scan_end=Clock::now();
           auto clusters=clusterScan(scan,c.scan,c.cluster);
           auto terrain=terrainGrid(scan,c.scan,c.view,c.terrain);
-          const double publish_age=seconds(Clock::now())-capture;
+          const auto terrain_end=Clock::now();
+          const double publish_age=seconds(terrain_end)-capture;
           if(publish_age>c.max_age){invalidate(c,"STALE: filtering exceeded input age");continue;}
           auto stamp=now();
           const auto delay=rclcpp::Duration::from_seconds(std::max(0.0,publish_age));
@@ -323,12 +336,18 @@ class Node : public rclcpp::Node
           publishScan(scan,c,stamp,last_capture>0 ? capture-last_capture : 0);
           publishObstacles(clusters,stamp);
           publishTerrain(terrain,scan,c,stamp);
+          scan_ms+=std::chrono::duration<double,std::milli>(scan_end-scan_begin).count();
+          terrain_ms+=std::chrono::duration<double,std::milli>(terrain_end-scan_end).count();
           ++frames; work_ms+=std::chrono::duration<double,std::milli>(Clock::now()-host).count();
           if (clock-report>=1) {
             fps=frames/(clock-report); host_ms=work_ms/frames;
-            RCLCPP_INFO(get_logger(),"requested=%.1f depth_fps=%.1f host=%.2fms age=%.1fms ROI_rays=%zu depth=%zu ground_removed=%zu height_removed=%zu accepted=%zu bins=%zu floor_cells=%zu hazard_cells=%zu clusters=%zu range_limit=%.1fm ground_model=%s inliers=%zu/%zu outlier_removed=%zu/%zu",
-              c.camera.fps,fps,host_ms,publish_age*1000,projector.rayCount(),scan.depth_points,scan.ground_removed,scan.height_removed,scan.accepted_points,scan.valid_bins,terrain.ground_cells,terrain.obstacle_cells,clusters.objects.size(),c.scan.max_range,scan.ground_plane.detected?"RANSAC":(c.scan.ransac.enabled?"FALLBACK":"FIXED"),scan.ground_plane.inliers,scan.ground_plane.samples,scan.outlier_removed,scan.outlier_candidates);
-            report=clock; frames=0; work_ms=0;
+            RCLCPP_INFO(get_logger(),"requested=%.1f depth_fps=%.1f host=%.2fms scan=%.2fms grid_cluster=%.2fms age=%.1fms ROI_rays=%zu depth=%zu ground_removed=%zu height_removed=%zu accepted=%zu bins=%zu floor_cells=%zu hazard_cells=%zu clusters=%zu range_limit=%.1fm ground_model=%s inliers=%zu/%zu outlier_removed=%zu/%zu",
+              c.camera.fps,fps,host_ms,scan_ms/frames,terrain_ms/frames,publish_age*1000,projector.rayCount(),scan.depth_points,scan.ground_removed,scan.height_removed,scan.accepted_points,scan.valid_bins,terrain.ground_cells,terrain.obstacle_cells,clusters.objects.size(),c.scan.max_range,groundModel(c.scan,scan),scan.ground_plane.inliers,scan.ground_plane.samples,scan.outlier_removed,scan.outlier_candidates);
+            std_msgs::msg::Float64MultiArray timing;
+            // Milliseconds per processed depth frame, followed by effective FPS.
+            timing.data={host_ms,scan_ms/frames,terrain_ms/frames,fps};
+            timing_pub_->publish(timing);
+            report=clock; frames=0; work_ms=scan_ms=terrain_ms=0;
           }
           {std::lock_guard<std::mutex> lock(mutex_);
             snapshot_.scan=std::move(scan); snapshot_.clusters=std::move(clusters); snapshot_.terrain=std::move(terrain);
@@ -407,8 +426,23 @@ class Node : public rclcpp::Node
       windows_=false;bev_window_=false;
       controls_.reset();
     }
-    if (!c.gui && !c.publish_preview && !c.publish_lane_bev) {return;}
-    {std::lock_guard<std::mutex> lock(mutex_); s=snapshot_;}
+    const bool publish_bev=c.publish_preview && preview_pub_->get_subscription_count()>0;
+    const bool publish_roi=c.publish_preview && roi_pub_->get_subscription_count()>0;
+    const bool render_bev=publish_bev || (c.gui && !gui_failed_ && c.show_bev_window);
+    if (!c.gui && !publish_bev && !publish_roi && !c.publish_lane_bev) {return;}
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (render_bev) {
+        s=snapshot_;
+      } else {
+        s.depth=snapshot_.depth;
+        s.right=snapshot_.right;
+        s.rgb=snapshot_.rgb;
+        s.vehicle_from_rgb=snapshot_.vehicle_from_rgb;
+        s.capture=snapshot_.capture;
+        s.revision=snapshot_.revision;
+      }
+    }
     try {
       const bool fresh=s.depth && s.revision==version && freshCapture(s.capture,clock,c.max_age);
       const bool rgb_fresh=s.rgb && freshCapture(seconds(s.rgb->getTimestamp()),clock,c.max_age);
@@ -426,39 +460,44 @@ class Node : public rclcpp::Node
           const auto capture=now()-rclcpp::Duration::from_seconds(age);
           lane_bev_pub_->publish(imageMessage(lane_bev_.render(frameView(*s.rgb,CV_8UC3)),capture));
         }
-        background=bev_.render(frameView(*s.rgb,CV_8UC3),c.interpolation);
+        if (render_bev) {background=bev_.render(frameView(*s.rgb,CV_8UC3),c.interpolation);}
       }
-      std::ostringstream text; text<<s.state<<" | depth "<<std::fixed<<std::setprecision(1)<<s.fps
-        <<" FPS / host "<<s.host_ms<<" ms | max height "<<c.scan.max_height<<"m"
-        <<" | floor "<<(fresh ? s.terrain.ground_cells : 0)<<" hazard "<<(fresh ? s.terrain.obstacle_cells : 0)
-        <<" filled "<<(fresh ? s.terrain.filled_cells : 0)
-        <<" | plane "<<(fresh && s.scan.ground_plane.detected ? "RANSAC" : (c.scan.ransac.enabled ? "FALLBACK" : "FIXED"))
-        <<" "<<s.scan.ground_plane.inliers<<"/"<<s.scan.ground_plane.samples
-        <<" | isolated "<<(fresh ? s.scan.outlier_removed : 0);
-      if (!rgb_fresh) {text<<" | WAIT RGB";}
-      else if (!aligned) {text<<" | OVERLAY WAIT SYNC";}
-      else {text<<" | delta "<<std::abs(s.capture-seconds(s.rgb->getTimestamp()))*1000<<" ms";}
-      // With no RGB available, still show fresh depth on a plain metric canvas.
-      // With fresh but unsynchronized RGB, suppress the depth overlay.
-      const bool visible=fresh && (!rgb_fresh || aligned);
-      const auto empty=emptyScan(c.scan);
-      const Clusters hidden_scan;
-      auto image=mapPreview(empty,c.scan,c.view,c.preview_size,text.str(),background,&hidden_scan,false);
-      const auto unknown=terrainGrid(empty,c.scan,c.view,c.terrain);
-      terrainOverlay(image,visible ? s.terrain : unknown,visible ? s.scan : empty,c.scan,
-        c.view,c.preview_size,c.show_terrain,c.show_projected_points,c.terrain_alpha,c.point_radius,c.terrain.vehicle_width_m);
-      if (c.publish_preview) {preview_pub_->publish(imageMessage(image,now()));}
+      cv::Mat image;
+      if (render_bev) {
+        std::ostringstream text; text<<s.state<<" | depth "<<std::fixed<<std::setprecision(1)<<s.fps
+          <<" FPS / host "<<s.host_ms<<" ms | max height "<<c.scan.max_height<<"m"
+          <<" | floor "<<(fresh ? s.terrain.ground_cells : 0)<<" hazard "<<(fresh ? s.terrain.obstacle_cells : 0)
+          <<" filled "<<(fresh ? s.terrain.filled_cells : 0)
+          <<" | plane "<<groundModel(c.scan,s.scan)
+          <<" "<<s.scan.ground_plane.inliers<<"/"<<s.scan.ground_plane.samples
+          <<" | isolated "<<(fresh ? s.scan.outlier_removed : 0);
+        if (!rgb_fresh) {text<<" | WAIT RGB";}
+        else if (!aligned) {text<<" | OVERLAY WAIT SYNC";}
+        else {text<<" | delta "<<std::abs(s.capture-seconds(s.rgb->getTimestamp()))*1000<<" ms";}
+        // With no RGB available, still show fresh depth on a plain metric canvas.
+        // With fresh but unsynchronized RGB, suppress the depth overlay.
+        const bool visible=fresh && (!rgb_fresh || aligned);
+        const auto empty=emptyScan(c.scan);
+        const Clusters hidden_scan;
+        image=mapPreview(empty,c.scan,c.view,c.preview_size,text.str(),background,&hidden_scan,false);
+        const auto unknown=visible ? Terrain{} : terrainGrid(empty,c.scan,c.view,c.terrain);
+        terrainOverlay(image,visible ? s.terrain : unknown,visible ? s.scan : empty,c.scan,
+          c.view,c.preview_size,c.show_terrain,c.show_projected_points,c.terrain_alpha,c.point_radius,c.terrain.vehicle_width_m);
+        if (publish_bev) {preview_pub_->publish(imageMessage(image,now()));}
+      }
       cv::Mat roi;
-      if (fresh) {
-        const bool right=c.camera_image && s.right &&
-          std::abs(seconds(s.right->getTimestamp())-s.capture)<=c.sync_sec;
-        auto frame=right ? s.right : s.depth;
-        roi=roiPreview(frameView(*frame,right ? CV_8UC1 : CV_16UC1),c.scan,!right);
-      } else {
-        roi=cv::Mat(400,640,CV_8UC3,cv::Scalar(30,30,30));
-        cv::putText(roi,"NO FRESH DEPTH",{20,40},cv::FONT_HERSHEY_SIMPLEX,.7,{220,220,220},1,cv::LINE_AA);
+      if (publish_roi || (c.gui && !gui_failed_)) {
+        if (fresh) {
+          const bool right=c.camera_image && s.right &&
+            std::abs(seconds(s.right->getTimestamp())-s.capture)<=c.sync_sec;
+          auto frame=right ? s.right : s.depth;
+          roi=roiPreview(frameView(*frame,right ? CV_8UC1 : CV_16UC1),c.scan,!right);
+        } else {
+          roi=cv::Mat(400,640,CV_8UC3,cv::Scalar(30,30,30));
+          cv::putText(roi,"NO FRESH DEPTH",{20,40},cv::FONT_HERSHEY_SIMPLEX,.7,{220,220,220},1,cv::LINE_AA);
+        }
+        if (publish_roi) {roi_pub_->publish(imageMessage(roi,now()));}
       }
-      if (c.publish_preview) {roi_pub_->publish(imageMessage(roi,now()));}
       if (c.gui && !gui_failed_) {
         if (!windows_) {
           cv::namedWindow("ROI LiDAR - select depth ROI",cv::WINDOW_AUTOSIZE);
@@ -550,6 +589,7 @@ public:
     preview_pub_=create_publisher<sensor_msgs::msg::Image>("~/bev_preview",qos);
     lane_bev_pub_=create_publisher<sensor_msgs::msg::Image>("~/lane_bev",qos);
     roi_pub_=create_publisher<sensor_msgs::msg::Image>("~/roi_preview",qos);
+    timing_pub_=create_publisher<std_msgs::msg::Float64MultiArray>("~/processing_timing",qos);
     status_pub_=create_publisher<std_msgs::msg::String>("~/status",rclcpp::QoS(1).transient_local());
     const auto latch=rclcpp::QoS(1).reliable().transient_local();
     locked_pub_=create_publisher<std_msgs::msg::Bool>("~/parameters_locked",latch);

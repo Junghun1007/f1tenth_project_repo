@@ -15,9 +15,12 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_msgs/msg/float64_multi_array.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <deque>
 #include <memory>
@@ -29,6 +32,27 @@ class Node:public rclcpp::Node {
   PlannerControls controls_;
   HazardFilter hazard_filter_;HazardStats hazard_stats_;
   std::uint64_t hazard_motion_generation_{0};
+  struct TimingAverage {
+    std::deque<double> samples;
+    double sum{0};
+
+    void add(double milliseconds) {
+      samples.push_back(milliseconds);
+      sum+=milliseconds;
+      if (samples.size()>30) {
+        sum-=samples.front();
+        samples.pop_front();
+      }
+    }
+    std::string display() const {
+      if (samples.empty()) {return "--";}
+      return cv::format("%.2f",sum/samples.size());
+    }
+  };
+  TimingAverage filter_average_,plan_average_;
+  std::array<double,4> roi_timing_{};
+  std::optional<std::chrono::steady_clock::time_point> roi_timing_received_;
+  rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr roi_timing_sub_;
   double hazard_filter_ms_{0};
   double planner_deceleration_ceiling_{.5},speed_ceiling_{1.8};
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr planner_parameters_callback_;
@@ -238,6 +262,7 @@ class Node:public rclcpp::Node {
     const auto filter_begin=std::chrono::steady_clock::now();
     auto confirmed=confirmedTerrain(match);
     hazard_filter_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-filter_begin).count();
+    filter_average_.add(hazard_filter_ms_);
     display_=std::move(confirmed.grid);hazard_stats_=confirmed.stats;
     if(requested_ && locked_ && now().seconds()-speed_at_>erpm_timeout_){status_="STOP: missing/stale measured speed (check VESC ERPM topic/bridge)";return false;}
     if(requested_ && locked_ && now().seconds()-imu_at_>imu_timeout_){status_="STOP: missing/stale vehicle-frame IMU (/roi_lidar/imu)";return false;}
@@ -270,6 +295,7 @@ class Node:public rclcpp::Node {
         result_.speed=std::min(result_.speed,last_target_+recovery_acceleration_*(planned_at-last_plan_at_));
       last_target_=result_.speed;last_plan_at_=planned_at;
       plan_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+      plan_average_.add(plan_ms_);
       last_grid_=match;planned_lane_=lane_;planned_lane_stamp_=stamp(lane_->header.stamp);status_=result_.status;
     }
     return true;
@@ -382,6 +408,16 @@ class Node:public rclcpp::Node {
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
     auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake,&hazard_stats_);
+    const bool roi_fresh=roi_timing_received_ &&
+      std::chrono::steady_clock::now()-*roi_timing_received_<std::chrono::seconds(3);
+    const std::string roi_line=roi_fresh?
+      cv::format("ROI avg ms | host %.2f | scan %.2f | grid + cluster %.2f | %.1f FPS",
+        roi_timing_[0],roi_timing_[1],roi_timing_[2],roi_timing_[3]):
+      "ROI avg ms | waiting for processing timing";
+    const std::string vfh_line="VFH avg ms (last 30 calls) | hazard filter "+filter_average_.display()+
+      " | plan "+plan_average_.display();
+    cv::putText(canvas,roi_line,{12,603},cv::FONT_HERSHEY_SIMPLEX,.34,{35,35,35},1,cv::LINE_AA);
+    cv::putText(canvas,vfh_line,{12,616},cv::FONT_HERSHEY_SIMPLEX,.34,{35,35,35},1,cv::LINE_AA);
     controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_,speed_ceiling_);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id=frame_id_;
@@ -541,6 +577,15 @@ public:
     steer_pub_=create_publisher<std_msgs::msg::Float32>("~/steering_angle_rad",1);
     status_pub_=create_publisher<std_msgs::msg::String>("~/status",1);
     image_pub_=create_publisher<sensor_msgs::msg::Image>("~/preview",sensor);
+    roi_timing_sub_=create_subscription<std_msgs::msg::Float64MultiArray>("/roi_lidar/processing_timing",sensor,
+      [this](std_msgs::msg::Float64MultiArray::ConstSharedPtr message) {
+        if (message->data.size()!=roi_timing_.size() ||
+          !std::all_of(message->data.begin(),message->data.end(),[](double value) {
+            return std::isfinite(value) && value>=0;
+          })) {return;}
+        std::copy(message->data.begin(),message->data.end(),roi_timing_.begin());
+        roi_timing_received_=std::chrono::steady_clock::now();
+      });
     grid_sub_=create_subscription<nav_msgs::msg::OccupancyGrid>("/roi_lidar/terrain_for_planning",rclcpp::SensorDataQoS().keep_last(16),
       [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr p){grids_.push_back(p);while(grids_.size()>16)grids_.pop_front();});
     const auto speed_topic=declare_parameter<std::string>("measured_speed_topic","/vehicle/dynamics/speed_mps",fixed);
