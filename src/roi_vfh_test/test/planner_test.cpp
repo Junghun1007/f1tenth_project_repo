@@ -85,10 +85,18 @@ int main(){
   for(std::size_t i=1;i<masked_plan.path.size();++i)
     check(footprintBlock(masked_scene,masked_config,masked_plan.path[i],&allowed)==Block::None,"fallback bypassed collision checks");
   auto tight=c;tight.departure=0;planner.reset();const auto limited=planner.plan(cone,lane,tight);
-  for(std::size_t i=1;i<limited.path.size();++i) {
-    const auto& p=limited.path[i];
-    check(laneDistance({p.x,p.y},lane)<=tight.lane_width/2,"departure limit ignored");
-  }
+  check(limited.free_detour && limited.length>.9,"short bounded prefix prevented a wider detour");
+  for(std::size_t i=1;i<limited.path.size();++i)
+    check(footprintBlock(cone,tight,limited.path[i])==Block::None,"wider detour skipped obstacle checking");
+  const std::vector<Point> remembered_heading{{0,0},{1,.6}};
+  planner.reset();const auto no_lane=planner.plan(unknown,remembered_heading,c,true);
+  check(no_lane.free_detour && no_lane.used_vfh && no_lane.speed>0,"lane loss did not advance through unknown terrain");
+  check(std::abs(no_lane.path.back().y)<.12,"remembered lane dominated open-space progress");
+  const auto blocked_return=planner.plan(cone,lane,c);
+  check(blocked_return.free_detour && blocked_return.used_vfh,"visible but blocked return canceled the detour");
+  const auto clear_return=planner.plan(g,return_lane,c);
+  check(!clear_return.free_detour && !clear_return.used_vfh && clear_return.speed>0,"clear lane did not resume tracking");
+  planner.reset();check(planner.plan(narrow,remembered_heading,c,true).speed==0,"lane-loss mode drove into an occupied grid");
   bool threw=false;try {auto bad=c;bad.hist_low=bad.hist_high;bad.validate();}catch(...){threw=true;}
   check(threw,"invalid hysteresis accepted");
   std::cout<<"Planner tests passed\n";

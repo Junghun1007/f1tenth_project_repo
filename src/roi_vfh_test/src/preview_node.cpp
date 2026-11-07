@@ -78,7 +78,7 @@ class Node:public rclcpp::Node {
   bool suspended_{false},input_recoverable_{true},waiting_for_pair_{false};
   double resume_stable_sec_{.5};
   std::optional<std::chrono::steady_clock::time_point> healthy_since_,last_recovery_check_;
-  double planned_lane_stamp_{-1e9};
+  std::optional<double> planned_lane_stamp_,last_lane_heading_;
   line_detactor::msg::LaneResult::ConstSharedPtr planned_lane_;
   double max_age_{.30},max_sync_{.06},plan_ms_{0};
   double lane_receipt_timeout_{.30},erpm_timeout_{.15},imu_timeout_{.10},lane_received_at_{-1e9};
@@ -111,12 +111,12 @@ class Node:public rclcpp::Node {
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
   void stop(const std::string& reason) {
     controls_.blur();controls_.message("Stopped. ROI and VFH parameters unlocked.");
-    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
+    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();last_lane_heading_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
     if(!applyPlannerEdits())return;
     controls_.show(false);
-    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();last_lane_heading_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
   }
   bool active()const {return requested_ && locked_ && !suspended_;}
@@ -218,35 +218,37 @@ class Node:public rclcpp::Node {
   }
   bool inputs() {
     input_recoverable_=true;waiting_for_pair_=false;
-    if (!lane_ || now().seconds()-lane_received_at_>lane_receipt_timeout_ || !fresh(lane_->header.stamp)) {waiting_for_pair_=true;status_="STOP: missing/stale lane";return false;}
-    if((!lane_->centerline_valid || lane_->centerline_points.size()<2) ||
-      lane_->centerline_points.size()>static_cast<std::size_t>(max_lane_points_)) {status_="STOP: invalid/missing lane reference";return false;}
+    const bool lane_fresh=lane_ && now().seconds()-lane_received_at_<=lane_receipt_timeout_ && fresh(lane_->header.stamp);
+    const auto lane_input=lane_fresh && lane_->centerline_valid && lane_->centerline_points.size()>=2 &&
+      lane_->centerline_points.size()<=static_cast<std::size_t>(max_lane_points_) ? lane_ : nullptr;
     nav_msgs::msg::OccupancyGrid::ConstSharedPtr match;
-    double delta=max_sync_;
-    for (const auto & g:grids_) {
-      const double d=std::abs(stamp(g->header.stamp)-stamp(lane_->header.stamp));
-      if (fresh(g->header.stamp) && d<=delta) {match=g;delta=d;}
+    if(lane_input) {
+      double delta=max_sync_;
+      for (const auto & g:grids_) {
+        const double d=std::abs(stamp(g->header.stamp)-stamp(lane_input->header.stamp));
+        if (fresh(g->header.stamp) && d<=delta) {match=g;delta=d;}
+      }
     }
-    if (!match) {waiting_for_pair_=true;status_="STOP: no synchronized fresh terrain";return false;}
-    if (match->header.frame_id!=frame_id_ || lane_->header.frame_id!=match->header.frame_id ||
+    const auto paired_lane=match?lane_input:nullptr;
+    if(!match)for(const auto& g:grids_)
+      if(fresh(g->header.stamp) && (!match || stamp(g->header.stamp)>stamp(match->header.stamp)))match=g;
+    if (!match) {waiting_for_pair_=true;status_="STOP: no fresh terrain";return false;}
+    if (match->header.frame_id!=frame_id_ || (paired_lane && paired_lane->header.frame_id!=match->header.frame_id) ||
       std::abs(match->info.origin.orientation.x)>1e-6 || std::abs(match->info.origin.orientation.y)>1e-6 ||
       std::abs(match->info.origin.orientation.z)>1e-6 || std::abs(match->info.origin.orientation.w-1)>1e-6) {
       input_recoverable_=false;status_="STOP: coordinate/frame mismatch";return false;
     }
-    if (!lane_->source_width || !lane_->source_height || lane_->source_width>4096 || lane_->source_height>4096 || !std::isfinite(lane_->centerline_bev_width_m) ||
-      !std::isfinite(lane_->centerline_bev_height_m) || lane_->centerline_bev_width_m<=0 || lane_->centerline_bev_height_m<=0) {
+    if (paired_lane && (!paired_lane->source_width || !paired_lane->source_height || paired_lane->source_width>4096 || paired_lane->source_height>4096 || !std::isfinite(paired_lane->centerline_bev_width_m) ||
+      !std::isfinite(paired_lane->centerline_bev_height_m) || paired_lane->centerline_bev_width_m<=0 || paired_lane->centerline_bev_height_m<=0)) {
       input_recoverable_=false;status_="STOP: invalid lane geometry";return false;
     }
-    Grid grid;grid.width=match->info.width;grid.height=match->info.height;grid.resolution=match->info.resolution;
-    grid.x0=match->info.origin.position.x;grid.y0=match->info.origin.position.y;grid.cells=match->data;
-    grid.validate();
     std::vector<Point> points;
-    if (lane_->centerline_valid) for (const auto & p:lane_->centerline_points) {
-      if (!std::isfinite(p.x) || !std::isfinite(p.y) || p.x<0 || p.x>=double(lane_->source_width)+lane_->padding_left+lane_->padding_right || p.y<0 || p.y>=lane_->source_height) {
+    if (paired_lane) for (const auto & p:paired_lane->centerline_points) {
+      if (!std::isfinite(p.x) || !std::isfinite(p.y) || p.x<0 || p.x>=double(paired_lane->source_width)+paired_lane->padding_left+paired_lane->padding_right || p.y<0 || p.y>=paired_lane->source_height) {
         input_recoverable_=false;status_="STOP: invalid lane point";return false;
       }
-      Point q{lane_->centerline_bev_height_m-(p.y+.5)*lane_->centerline_bev_height_m/lane_->source_height,
-        lane_->centerline_bev_width_m/2-(p.x-lane_->padding_left+.5)*lane_->centerline_bev_width_m/lane_->source_width};
+      Point q{paired_lane->centerline_bev_height_m-(p.y+.5)*paired_lane->centerline_bev_height_m/paired_lane->source_height,
+        paired_lane->centerline_bev_width_m/2-(p.x-paired_lane->padding_left+.5)*paired_lane->centerline_bev_width_m/paired_lane->source_width};
       if (!points.empty() && std::hypot(q.x-points.back().x,q.y-points.back().y)>path_maximum_gap_) break;
       points.push_back(q);
     }
@@ -257,7 +259,7 @@ class Node:public rclcpp::Node {
         path_minimum_x_,path_maximum_x_,path_maximum_gap_,config_.geometry_window);
       points.clear();if(ordered)for(auto p:ordered->points)points.push_back({p.x,p.y});
     }
-    if (points.size()<2) {status_="STOP: disconnected lane";return false;}
+    if(points.size()<2)points.clear();
     lane_points_=std::move(points);
     const auto filter_begin=std::chrono::steady_clock::now();
     auto confirmed=confirmedTerrain(match);
@@ -269,16 +271,16 @@ class Node:public rclcpp::Node {
     MotionPose pose;
     if(requested_ && locked_) {
       MotionPose lane_pose;
-      if(!motion_ok_ || !motion_.at(stamp(match->header.stamp),pose) || !motion_.at(stamp(lane_->header.stamp),lane_pose)) {
+      if(!motion_ok_ || !motion_.at(stamp(match->header.stamp),pose) ||
+        (!lane_points_.empty() && !motion_.at(stamp(paired_lane->header.stamp),lane_pose))) {
         status_="STOP: motion history cannot align sensor captures";return false;
       }
       for(auto& point:lane_points_)point=reproject(point,lane_pose,pose);
     }
-    if (requested_ && locked_ && (match!=last_grid_ || lane_!=planned_lane_)) {
-      if(!motion_ok_ || now().seconds()-speed_at_>erpm_timeout_ || !motion_.at(stamp(match->header.stamp),pose)) {
-        status_="STOP: fresh VESC speed + IMU required";return false;
+    if (requested_ && locked_ && (match!=last_grid_ || paired_lane!=planned_lane_)) {
+      if(motion_generation_!=motion_.generation) {
+        previous_pose_valid_=false;last_lane_heading_.reset();planner_.reset();motion_generation_=motion_.generation;
       }
-      if(motion_generation_!=motion_.generation) {previous_pose_valid_=false;motion_generation_=motion_.generation;}
       if(previous_pose_valid_)planner_.rotateReference(wrap(pose.yaw-previous_pose_.yaw));
       previous_pose_=pose;previous_pose_valid_=true;
       const auto begin=std::chrono::steady_clock::now();
@@ -287,16 +289,27 @@ class Node:public rclcpp::Node {
       working.current_speed=measured_speed_;
       working.current_steer=drive_enabled_ && servo_commanded_ ? drive_command_.steer :
         std::clamp(std::atan(config_.wheelbase*measured_yaw_rate_/std::max(.1,std::abs(measured_speed_))),-config_.max_steer,config_.max_steer);
-      result_=planner_.plan(display_,lane_points_,working);
+      const bool lane_missing=lane_points_.empty();
+      if(lane_missing) {
+        const double direction=std::clamp(wrap(last_lane_heading_.value_or(pose.yaw)-pose.yaw),-pi/2,pi/2);
+        const double length=std::max(working.horizon,working.reference_distance);
+        result_=planner_.plan(display_,{{0,0},{length*std::cos(direction),length*std::sin(direction)}},working,true);
+        result_.status="NO LANE | "+result_.status;
+      }else {
+        last_lane_heading_=wrap(pose.yaw+Polyline(lane_points_).heading({working.lane_lookahead,0}));
+        result_=planner_.plan(display_,lane_points_,working);
+      }
       const double planned_at=now().seconds();
-      if(result_.reference_blocked || result_.used_vfh)last_avoidance_at_=planned_at;
+      if(result_.reference_blocked || (result_.used_vfh && !lane_missing))last_avoidance_at_=planned_at;
       if(obstacle_slowdown_ && planned_at-last_avoidance_at_<=obstacle_clear_sec_)result_.speed=std::min(result_.speed,obstacle_speed_cap_);
       if(last_target_>0 && std::abs(measured_speed_)>=.05 && planned_at>last_plan_at_)
         result_.speed=std::min(result_.speed,last_target_+recovery_acceleration_*(planned_at-last_plan_at_));
       last_target_=result_.speed;last_plan_at_=planned_at;
       plan_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
       plan_average_.add(plan_ms_);
-      last_grid_=match;planned_lane_=lane_;planned_lane_stamp_=stamp(lane_->header.stamp);status_=result_.status;
+      last_grid_=match;planned_lane_=paired_lane;planned_lane_stamp_.reset();
+      if(!lane_missing)planned_lane_stamp_=stamp(paired_lane->header.stamp);
+      status_=result_.status;
     }
     return true;
   }
@@ -342,7 +355,6 @@ class Node:public rclcpp::Node {
       count_publishers(servo_pub_->get_topic_name())>1))return "STOP: another actuator publisher (stop auto/manual controller)";
     if(recoverable)*recoverable=true;
     if(locked_) {
-      if(!lane_ || now().seconds()-lane_received_at_>lane_receipt_timeout_ || !fresh(lane_->header.stamp))return "STOP: drive lane input expired";
       const double clock=now().seconds();
       if(clock-speed_at_>erpm_timeout_ || clock<speed_at_-.02 || !std::isfinite(measured_speed_))
         return "STOP: drive speed telemetry expired";
@@ -352,7 +364,7 @@ class Node:public rclcpp::Node {
         return cv::format("STOP: IMU capture age %.3fs; %s",clock-imu_at_,imu_issue_.c_str());
       if(!motion_ok_)return "STOP: IMU motion history unavailable; "+imu_issue_;
       if(!last_grid_)return "STOP: no drive plan input";
-      const double age=clock-stamp(last_grid_->header.stamp),lane_age=clock-planned_lane_stamp_;
+      const double age=clock-stamp(last_grid_->header.stamp),lane_age=planned_lane_stamp_?clock-*planned_lane_stamp_:0.;
       if(age<-.02 || age>drive_max_age_ || lane_age<-.02 || lane_age>drive_max_age_)
         return cv::format("STOP: capture expired terrain %.3fs lane %.3fs (limit %.2fs)",age,lane_age,drive_max_age_);
     }

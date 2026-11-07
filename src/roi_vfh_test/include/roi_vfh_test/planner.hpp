@@ -80,14 +80,15 @@ struct Config {
 };
 inline double wrap(double a) {return std::atan2(std::sin(a),std::cos(a));}
 inline double laneDistance(Point p,const std::vector<Point>& lane) {
-  double best=1e9;
+  double best_squared=1e18;
   for (std::size_t i=1;i<lane.size();++i) {
     const auto a=lane[i-1],b=lane[i]; const double dx=b.x-a.x,dy=b.y-a.y,d2=dx*dx+dy*dy;
     if (d2<1e-9) continue;
     const double t=std::clamp(((p.x-a.x)*dx+(p.y-a.y)*dy)/d2,0.,1.);
-    best=std::min(best,std::hypot(p.x-a.x-t*dx,p.y-a.y-t*dy));
+    const double ex=p.x-a.x-t*dx,ey=p.y-a.y-t*dy;
+    best_squared=std::min(best_squared,ex*ex+ey*ey);
   }
-  return best;
+  return std::sqrt(best_squared);
 }
 struct Candidate {std::vector<Pose> path; double score{},length{},direction{},command_steer{}; bool valid{};};
 // Follow the complete ordered lane polyline, not a single far target.
@@ -159,7 +160,8 @@ inline Candidate followReference(const std::vector<Point>& reference,const Confi
   return out;
 }
 enum class Block {None,Hazard,Edge,Route};
-inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const std::vector<std::uint8_t>* allowed=nullptr,const std::vector<Point>* lane=nullptr) {
+inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const std::vector<std::uint8_t>* allowed=nullptr,const std::vector<Point>* lane=nullptr,
+    std::vector<double>* lane_cache=nullptr) {
   const double half=c.width/2+c.margin+c.uncertainty,cs=std::cos(p.yaw),sn=std::sin(p.yaw);
   const double back=c.rear+c.uncertainty,front=c.front+c.margin+c.uncertainty;
   const double longitudinal_half=(front+back)/2,offset=(front-back)/2;
@@ -183,6 +185,11 @@ inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p,const st
     const auto index=std::size_t(v)*g.width+u;
     if(blockedTerrain(g.cells[index]))return Block::Hazard;
     if(allowed && !(*allowed)[index])return Block::Route;
+    if(lane_cache) {
+      auto& distance=(*lane_cache)[index];
+      if(distance<0)distance=laneDistance({x,y},*lane);
+      if(distance>c.lane_width/2+c.departure)return Block::Route;
+    }
   }
   // No cell outside the sensor grid means assumed free, not a map-edge wall.
   // Continue checking the departure boundary outside the grid as well, using
@@ -212,7 +219,7 @@ struct Plan {
   std::vector<Candidate> candidates; std::vector<Pose> path;
   std::array<double,61> histogram{};
   std::array<bool,61> binary{},masked{};
-  double speed{},steer{},length{},longest_candidate{}; bool used_vfh{},used_fallback{},reference_blocked{},rear_unverified{true};
+  double speed{},steer{},length{},longest_candidate{}; bool used_vfh{},used_fallback{},free_detour{},reference_blocked{},rear_unverified{true};
   std::size_t fallback_candidates{};
   Block reference_end{Block::None};
   Pose reference_stop_pose{};
@@ -225,9 +232,9 @@ struct Plan {
 class Planner {
   std::array<bool,61> binary_{};
   double previous_angle_{0},previous_command_{0},binary_rotation_residual_{0};
-  bool have_previous_{false};
+  bool have_previous_{false},free_detour_{false};
 public:
-  void reset() {previous_angle_=previous_command_=binary_rotation_residual_=0;have_previous_=false;binary_.fill(false);}
+  void reset() {previous_angle_=previous_command_=binary_rotation_residual_=0;have_previous_=free_detour_=false;binary_.fill(false);}
   void rotateReference(double yaw) {
     previous_angle_=wrap(previous_angle_-yaw);
     binary_rotation_residual_+=yaw;
@@ -238,7 +245,7 @@ public:
       for(int b=0;b<61;++b)binary_[b]=(b+shift>=0 && b+shift<61)?old[b+shift]:true;
     }
   }
-  Plan plan(const Grid& g,const std::vector<Point>& lane,const Config& c) {
+  Plan plan(const Grid& g,const std::vector<Point>& lane,const Config& c,bool direction_only=false) {
     g.validate();c.validate();Plan out;
     const int curve_samples=static_cast<int>(c.avoidance_curve_samples);
     const std::size_t candidate_capacity=1+51+(c.avoidance_curve_enabled!=0?(curve_samples+1)*4:0);
@@ -246,6 +253,7 @@ public:
     if(lane.size()>2000){out.status="STOP: lane sample limit";return out;}
     for(auto p:lane)if(!std::isfinite(p.x)||!std::isfinite(p.y)){out.status="STOP: invalid lane";return out;}
     if(lane.size()<2){out.status="STOP: lane reference unavailable";return out;}
+    if(direction_only)free_detour_=true;
     const auto& reference=lane;
     const Polyline reference_curve(reference);
     if(reference_curve.length()<1e-6){out.status="STOP: degenerate lane reference";return out;}
@@ -256,18 +264,16 @@ public:
     const double steering_limit=std::min(c.max_steer,std::atan(c.wheelbase*c.max_curvature));
     const double turn_radius=c.wheelbase/std::tan(steering_limit);
     const double front_turn_radius=std::hypot(turn_radius,c.wheelbase);
-    // One metric lane-distance field supports both the HARD departure boundary
-    // and inexpensive SOFT return costs for every candidate sample.
-    std::vector<double> lane_distance(g.cells.size());
-    std::vector<std::uint8_t> allowed(g.cells.size(),1);
-    for(int v=0;v<g.height;++v)for(int u=0;u<g.width;++u) {
-      const auto i=std::size_t(v)*g.width+u;
-      lane_distance[i]=laneDistance({g.x0+(u+.5)*g.resolution,g.y0+(v+.5)*g.resolution},lane);
-      allowed[i]=lane_distance[i]<=c.lane_width/2+c.departure;
-    }
+    // Cache lane distances only for cells visited by the footprint or scorer.
+    std::vector<double> lane_distance(g.cells.size(),-1.);
+    const auto cellLaneDistance=[&](int u,int v) {
+      auto& distance=lane_distance[std::size_t(v)*g.width+u];
+      if(distance<0)distance=laneDistance({g.x0+(u+.5)*g.resolution,g.y0+(v+.5)*g.resolution},lane);
+      return distance;
+    };
     const auto distanceToLane=[&](Point p) {
       const int u=int(std::floor((p.x-g.x0)/g.resolution)),v=int(std::floor((p.y-g.y0)/g.resolution));
-      if(u>=0 && v>=0 && u<g.width && v<g.height)return lane_distance[std::size_t(v)*g.width+u];
+      if(u>=0 && v>=0 && u<g.width && v<g.height)return cellLaneDistance(u,v);
       return laneDistance(p,lane);
     };
     const auto recordEnd=[&](Block why) {
@@ -289,12 +295,18 @@ public:
     // This is also the return connector from an offset vehicle pose. Rejoin
     // only when the actual Stanley rollout, not just the drawn lane, is clear.
     out.avoidance_trigger_distance=c.horizon;
-    Candidate track=followReference(reference,c);
+    Candidate track=direction_only ? Candidate{} : followReference(reference,c);
     Block reference_end=Block::None;std::size_t retained=track.path.empty()?0:1;
     for(std::size_t i=1;i<track.path.size();++i) {
-      reference_end=footprintBlock(g,c,track.path[i],&allowed,&lane);
+      reference_end=footprintBlock(g,c,track.path[i],nullptr,free_detour_?nullptr:&lane,free_detour_?nullptr:&lane_distance);
       if(reference_end!=Block::None){out.reference_stop_pose=track.path[i];recordEnd(reference_end);break;}
       ++retained;
+    }
+    // A departure limit can precede a real obstacle along the reference.
+    bool reference_hazard=reference_end==Block::Hazard;
+    if(reference_end==Block::Route)for(std::size_t i=retained;i<track.path.size();++i) {
+      if(footprintBlock(g,c,track.path[i])!=Block::Hazard)continue;
+      reference_hazard=true;out.reference_hazard_distance=i*c.step;break;
     }
     track.path.resize(retained);track.length=retained>0?(retained-1)*c.step:0;
     const double track_usable=std::max(0.,track.length-c.step);
@@ -303,13 +315,22 @@ public:
     out.candidates.push_back(track);
     out.reference_end=reference_end;
     // Only an observed hazard intersecting the lane-following body sweep
-    // within the full horizon activates avoidance. Route limits never request
-    // an unrelated longer curve. Outside-grid space is assumed free.
+    // within the full horizon activates a new avoidance maneuver. An ongoing
+    // free detour can continue while a return connector remains unavailable.
     if(reference_end==Block::Hazard)out.reference_hazard_distance=retained*c.step;
-    out.reference_blocked=reference_end==Block::Hazard;
-    if(!out.reference_blocked) {
+    out.reference_blocked=reference_hazard;
+    if(free_detour_ && !direction_only && track.valid) {
+      const double start_distance=laneDistance({0,0},lane);
+      const auto& end=track.path.back();
+      if(start_distance>c.lane_width/2+c.departure &&
+        laneDistance({end.x,end.y},lane)>=start_distance)track.valid=false;
+    }
+    if(!out.reference_blocked && !direction_only && (!free_detour_ || track.valid)) {
       binary_.fill(false);binary_rotation_residual_=0;
       if(track.valid) {
+        if(free_detour_ && laneDistance({0,0},lane)<=c.lane_width/2+c.departure-c.width/2-c.margin)
+          free_detour_=false;
+        out.free_detour=free_detour_;
         out.path=track.path;out.length=track_usable;out.steer=track.command_steer;setSpeed();
         out.status=reference_end==Block::Route?"LANE: departure-limited tracking (VFH bypass)":
           "LANE: clear tracking/return trajectory (VFH bypass)";
@@ -319,20 +340,22 @@ public:
     }
     out.used_vfh=true;
     double left_limit=pi,right_limit=-pi;
+    constexpr double first_angle=-75*pi/180,bin_step=2.5*pi/180;
+    const double histogram_range=c.horizon+.3,cell_weight=std::pow(g.resolution/.05,2);
     for (int v=0;v<g.height;++v) for (int u=0;u<g.width;++u) {
       if (!blockedTerrain(g.cells[std::size_t(v)*g.width+u])) continue;
       const double x=g.x0+(u+.5)*g.resolution,y=g.y0+(v+.5)*g.resolution;
       if (x<0 || (x<c.front && std::abs(y)<c.width/2)) continue;
-      const double d=std::hypot(x,y); if (d<.05 || d>c.horizon+.3) continue;
+      const double d=std::hypot(x,y); if (d<.05 || d>histogram_range) continue;
       const double angle=std::atan2(y,x);
       // Minimum-turn-circle masking, VFH+ stage 3. Rectangle verification follows.
       if (angle>0 && std::hypot(x+c.wheelbase,y-turn_radius)<front_turn_radius+radius) left_limit=std::min(left_limit,angle);
       if (angle<0 && std::hypot(x+c.wheelbase,y+turn_radius)<front_turn_radius+radius) right_limit=std::max(right_limit,angle);
       const double spread=std::asin(std::min(1.,radius/d));
-      for (int b=0;b<61;++b) {
-        const double a=(-75+2.5*b)*pi/180;
-        if (std::abs(wrap(a-angle))<=spread) out.histogram[b]+=std::max(0.,1-d*d/((c.horizon+.3)*(c.horizon+.3)))*std::pow(g.resolution/.05,2);
-      }
+      const int first=std::max(0,int(std::ceil((angle-spread-first_angle)/bin_step-1e-12)));
+      const int last=std::min(60,int(std::floor((angle+spread-first_angle)/bin_step+1e-12)));
+      const double weight=std::max(0.,1-d*d/(histogram_range*histogram_range))*cell_weight;
+      for(int b=first;b<=last;++b)out.histogram[b]+=weight;
     }
     for (int b=0;b<61;++b) {
       if (out.histogram[b]>c.hist_high) binary_[b]=true;
@@ -380,7 +403,7 @@ public:
         p.x+=c.step*std::cos(middle)-c.wheelbase*turn*std::sin(middle);
         p.y+=c.step*std::sin(middle)+c.wheelbase*turn*std::cos(middle);p.yaw=wrap(p.yaw+turn);
         if(std::abs(p.yaw)>=pi/2 || p.x<0)break;
-        const auto why=footprintBlock(g,c,p,&allowed,&lane);
+        const auto why=footprintBlock(g,c,p,nullptr,free_detour_?nullptr:&lane,free_detour_?nullptr:&lane_distance);
         if(why!=Block::None){recordEnd(why);break;}
         candidate.path.push_back(p);candidate.length=s;
       }
@@ -391,38 +414,85 @@ public:
       if(is_fallback)++out.fallback_candidates;
       out.candidates.push_back(std::move(candidate));fallback.push_back(is_fallback);
     };
-    // Preferred VFH+ valleys and their three original steering profiles.
-    for(double angle:targets)for(int profile=0;profile<3;++profile) {
-      const Point goal{c.reference_distance*std::cos(angle),c.reference_distance*std::sin(angle)};
-      rollout([&](const Pose& p,double s) {
-        if(profile==0) {
-          const double dx=goal.x-p.x,dy=goal.y-p.y,d2=dx*dx+dy*dy;
-          return std::atan2(2*c.wheelbase*(-std::sin(p.yaw)*dx+std::cos(p.yaw)*dy),std::max(.1,d2));
-        }
+    const auto generateCandidates=[&]() {
+      // Preferred VFH+ valleys and their three original steering profiles.
+      for(double angle:targets)for(int profile=0;profile<3;++profile) {
+        const Point goal{c.reference_distance*std::cos(angle),c.reference_distance*std::sin(angle)};
         const double initial=std::atan(2*c.wheelbase*std::sin(angle)/c.reference_distance)*(profile==1?2.:3.);
-        return s<c.horizon/3?initial:(s<2*c.horizon/3?-initial:0.);
-      },false,angle);
-    }
-    // A blocked polar ray does not prove every curved path collides. These
-    // bounded extra profiles are still subject to the complete footprint check.
-    if(c.avoidance_curve_enabled!=0) {
-      std::vector<double> seeds;seeds.reserve(curve_samples+1);
-      const int half_samples=(curve_samples-1)/2;
-      for(int i=-half_samples;i<=half_samples;++i)seeds.push_back(steering_limit*i/half_samples);
-      const double current=std::clamp(c.current_steer,-steering_limit,steering_limit);
-      if(std::none_of(seeds.begin(),seeds.end(),[&](double a){return std::abs(a-current)<1e-4;}))seeds.push_back(current);
-      for(double initial:seeds)for(int profile=0;profile<4;++profile) {
-        rollout([&](const Pose&,double s) {
-          if(profile==3)return s<std::min(.20,c.horizon*.2)?0.:initial;
-          if(profile==0 || s<c.horizon*.4)return initial;
-          if(profile==1 || s>=c.horizon*.8)return 0.;
-          return -initial;
-        },true,std::atan(std::tan(initial)*c.reference_distance/c.wheelbase));
+        rollout([&](const Pose& p,double s) {
+          if(profile==0) {
+            const double dx=goal.x-p.x,dy=goal.y-p.y,d2=dx*dx+dy*dy;
+            return std::atan2(2*c.wheelbase*(-std::sin(p.yaw)*dx+std::cos(p.yaw)*dy),std::max(.1,d2));
+          }
+          return s<c.horizon/3?initial:(s<2*c.horizon/3?-initial:0.);
+        },false,angle);
+      }
+      // A blocked polar ray does not prove every curved path collides. These
+      // bounded extra profiles are still subject to the complete footprint check.
+      if(c.avoidance_curve_enabled!=0) {
+        std::vector<double> seeds;seeds.reserve(curve_samples+1);
+        const int half_samples=(curve_samples-1)/2;
+        for(int i=-half_samples;i<=half_samples;++i)seeds.push_back(steering_limit*i/half_samples);
+        const double current=std::clamp(c.current_steer,-steering_limit,steering_limit);
+        if(std::none_of(seeds.begin(),seeds.end(),[&](double a){return std::abs(a-current)<1e-4;}))seeds.push_back(current);
+        for(double initial:seeds)for(int profile=0;profile<4;++profile) {
+          rollout([&](const Pose&,double s) {
+            if(profile==3)return s<std::min(.20,c.horizon*.2)?0.:initial;
+            if(profile==0 || s<c.horizon*.4)return initial;
+            if(profile==1 || s>=c.horizon*.8)return 0.;
+            return -initial;
+          },true,std::atan(std::tan(initial)*c.reference_distance/c.wheelbase));
+        }
+      }
+    };
+    generateCandidates();
+    const auto longestValid=[&]() {
+      double length=0;
+      for(std::size_t i=1;i<out.candidates.size();++i)if(out.candidates[i].valid)
+        length=std::max(length,std::max(0.,out.candidates[i].length-c.step));
+      return length;
+    };
+    double longest=longestValid();
+    // A prefix that stops before the blocked portion is useful for braking,
+    // but does not establish that the vehicle can get around the obstacle.
+    const double pass_distance=std::min(c.horizon-c.step,
+      out.reference_hazard_distance+c.front+c.rear+c.margin);
+    if(!free_detour_ && out.route_ends>0 && (longest==0 || longest+c.step<pass_distance)) {
+      free_detour_=true;
+      auto bounded=std::move(out.candidates);
+      auto bounded_fallback=std::move(fallback);
+      const auto bounded_fallback_count=out.fallback_candidates;
+      out.candidates.reserve(candidate_capacity);out.candidates.push_back(bounded.front());
+      fallback.reserve(candidate_capacity);fallback.push_back(false);
+      out.fallback_candidates=0;
+      generateCandidates();
+      const double wider=longestValid();
+      if(wider>0 && (longest==0 || wider>longest+c.avoidance_length_slack_m))longest=wider;
+      else {
+        free_detour_=false;
+        out.candidates=std::move(bounded);fallback=std::move(bounded_fallback);
+        out.fallback_candidates=bounded_fallback_count;
       }
     }
-    double longest=0;
-    for(std::size_t i=1;i<out.candidates.size();++i)if(out.candidates[i].valid)
-      longest=std::max(longest,std::max(0.,out.candidates[i].length-c.step));
+    out.free_detour=free_detour_;
+    // Capped distance to the nearest hazard, in cells. This affects ranking
+    // only; the rectangle intersection remains the collision decision.
+    std::vector<int> clearance;
+    const int clearance_cap=std::max(1,int(std::ceil((half+.12)/g.resolution)));
+    if(free_detour_) {
+      clearance.resize(g.cells.size(),clearance_cap);
+      for(std::size_t i=0;i<g.cells.size();++i)if(blockedTerrain(g.cells[i]))clearance[i]=0;
+      for(int v=0;v<g.height;++v)for(int u=0;u<g.width;++u) {
+        const auto i=std::size_t(v)*g.width+u;
+        if(u>0)clearance[i]=std::min(clearance[i],clearance[i-1]+1);
+        if(v>0)clearance[i]=std::min(clearance[i],clearance[i-g.width]+1);
+      }
+      for(int v=g.height-1;v>=0;--v)for(int u=g.width-1;u>=0;--u) {
+        const auto i=std::size_t(v)*g.width+u;
+        if(u+1<g.width)clearance[i]=std::min(clearance[i],clearance[i+1]+1);
+        if(v+1<g.height)clearance[i]=std::min(clearance[i],clearance[i+g.width]+1);
+      }
+    }
     // Progress first: lane proximity must not select a short dead-end prefix
     // instead of a substantially longer feasible detour. Within the configured
     // length slack, use soft lane-return and steering-continuity costs.
@@ -433,15 +503,28 @@ public:
       const double usable=std::max(0.,candidate.length-c.step);
       if(usable+length_slack+1e-9<longest)continue;
       const auto last=candidate.path.back();
-      double deviation=0;for(const auto& p:candidate.path)deviation+=distanceToLane({p.x,p.y});
-      deviation/=candidate.path.size();
-      const double lane_cost=1.2*deviation+.8*distanceToLane({last.x,last.y})+
-        .35*std::abs(wrap(last.yaw-reference_curve.heading({last.x,last.y})));
+      double lane_cost=0,clearance_reward=0;
+      if(free_detour_) {
+        for(const auto& p:candidate.path) {
+          const int u=int(std::floor((p.x-g.x0)/g.resolution)),v=int(std::floor((p.y-g.y0)/g.resolution));
+          if(u>=0 && v>=0 && u<g.width && v<g.height)
+            clearance_reward+=clearance[std::size_t(v)*g.width+u]*g.resolution;
+        }
+        clearance_reward/=candidate.path.size();
+      }else {
+        double deviation=0;for(const auto& p:candidate.path)deviation+=distanceToLane({p.x,p.y});
+        deviation/=candidate.path.size();
+        lane_cost=1.2*deviation+.8*distanceToLane({last.x,last.y})+
+          .35*std::abs(wrap(last.yaw-reference_curve.heading({last.x,last.y})));
+      }
       const double continuity_cost=.35*std::abs(candidate.command_steer-c.current_steer)/steering_limit+
         (have_previous_?.2*std::abs(candidate.command_steer-previous_command_)/steering_limit+
           .25*std::abs(wrap(std::atan2(last.y,last.x)-previous_angle_)):0.);
       candidate.score=2*(longest-usable)+c.avoidance_lane_weight*lane_cost+
         c.avoidance_steering_weight*continuity_cost+(fallback[i]?.03:0.)-.3*last.x;
+      if(free_detour_)candidate.score=2*(longest-usable)-2*clearance_reward-.5*last.x+
+        .15*c.avoidance_steering_weight*continuity_cost+
+        .18*std::abs(last.yaw)+.08*std::abs(wrap(last.yaw-target_angle));
       if(candidate.score<best_score) {
         best_score=candidate.score;best_index=i;
       }
@@ -455,7 +538,7 @@ public:
     out.path=best.path;out.length=std::max(0.,best.length-c.step);
     out.steer=best.command_steer;out.used_fallback=fallback[best_index];
     setSpeed();
-    out.status=out.used_fallback?(all_masked?"AVOID: checked curve (VFH fully masked); lane return preferred":
+    out.status=free_detour_?"AVOID: collision-checked free corridor":out.used_fallback?(all_masked?"AVOID: checked curve (VFH fully masked); lane return preferred":
       "AVOID: checked curve; lane return preferred"):"AVOID: VFH+ valley; lane return preferred";
     return out;
   }
