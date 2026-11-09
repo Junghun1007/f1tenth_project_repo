@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>roi_vfh_test</name><version>0.1.0</version>
-  <description>VFH+ local driving and preview using ROI terrain and lane results.</description>
+  <description>Shared simulator/vehicle VFH+ policy with ROI sensor and VESC adapters.</description>
   <maintainer email="ojeonghun@example.com">ojeonghun</maintainer><license>Apache-2.0</license>
   <buildtool_depend>ament_cmake</buildtool_depend>
   <depend>rclcpp</depend><depend>rcl_interfaces</depend><depend>nav_msgs</depend>

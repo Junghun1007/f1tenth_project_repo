@@ -12,15 +12,14 @@ struct PlannerField {
   double minimum,maximum;
   const char* unit;
 };
-inline const std::array<PlannerField,21>& plannerFields() {
-  static const std::array<PlannerField,21> fields{{
+inline const std::array<PlannerField,25>& plannerFields() {
+  static const std::array<PlannerField,25> fields{{
     {"nominal_speed_mps",&Config::speed,.05,3,"max speed, m/s; YAML ceiling"},
     {"lane_lookahead_m",&Config::lane_lookahead,.01,.8,"Stanley tangent, m (0.01..0.8)"},
     {"safety_margin_m",&Config::margin,0,.2,"each side / front, m (0..0.2)"},
     {"horizon_m",&Config::horizon,.3,2.5,"planning length, m (0.3..2.5)"},
     {"reference_distance_m",&Config::reference_distance,.3,3,"VFH target, m (0.3..3)"},
     {"sample_step_m",&Config::step,.02,.08,"path sample, m (0.02..0.08)"},
-    {"lane_departure_m",&Config::departure,0,1.0,"body departure, m (0..1.0)"},
     {"deceleration_mps2",&Config::deceleration,.1,3,"m/s^2; startup ceiling applies"},
     {"response_delay_sec",&Config::delay,0,1,"response delay, sec (0..1)"},
     {"histogram_low",&Config::hist_low,0,999,"VFH low (must be < high)"},
@@ -34,7 +33,12 @@ inline const std::array<PlannerField,21>& plannerFields() {
     {"avoidance_curve_samples",&Config::avoidance_curve_samples,3,17,"steering seeds; ODD integer 3..17"},
     {"avoidance_length_slack_m",&Config::avoidance_length_slack_m,0,.5,"length gap for comparing return costs, m"},
     {"avoidance_lane_weight",&Config::avoidance_lane_weight,0,5,"soft lane return weight (0..5)"},
-    {"avoidance_steering_weight",&Config::avoidance_steering_weight,0,5,"steering continuity weight (0..5)"}
+    {"avoidance_steering_weight",&Config::avoidance_steering_weight,0,5,"steering continuity weight (0..5)"},
+    {"avoidance_clearance_weight",&Config::clearance_weight,0,5,"forward-grid clearance preference (0..5)"},
+    {"lane_trust_duration_sec",&Config::lane_trust_duration,.05,3,"continuous lane observation, sec"},
+    {"lane_trust_min_length_m",&Config::lane_trust_length,.15,2,"minimum observed lane length, m"},
+    {"lane_trust_max_offset_m",&Config::lane_trust_offset,.02,.5,"observation position consistency, m"},
+    {"lane_trust_max_heading_deg",&Config::lane_trust_angle_deg,1,45,"observation heading consistency, deg"}
   }};
   return fields;
 }
@@ -56,12 +60,12 @@ inline void validatePlannerEdits(const Config& config,double deceleration_ceilin
 }
 class PlannerControls {
   struct Edit {double observed{};std::string draft;bool pending{false};};
-  std::array<Edit,21> edits_;
+  std::array<Edit,25> edits_;
   bool ready_{false},open_{false},select_all_{false};
   int active_{-1};
   std::size_t page_{0};
   static constexpr std::size_t page_size=12;
-  static constexpr std::size_t pages=(21+page_size-1)/page_size;
+  static constexpr std::size_t pages=(25+page_size-1)/page_size;
   std::string message_{"Edit values, then Apply. Start also applies valid edits."};
   static std::string format(double value){std::ostringstream s;s<<std::setprecision(8)<<value;return s.str();}
   static cv::Rect field(std::size_t i){i%=page_size;return {250+int(i/6)*374,166+int(i%6)*48,104,30};}

@@ -5,10 +5,10 @@ void check(bool ok,const char* reason){if(!ok)throw std::runtime_error(reason);}
 int main(){
   Grid g;g.width=60;g.height=24;g.resolution=.05;g.y0=-.6;g.cells.assign(1440,0);
   std::vector<Point> lane;for(double x=.05;x<2.9;x+=.05)lane.push_back({x,0});
-  Config c;c.speed=.7;Planner planner;
+  Config c;c.speed=.7;c.horizon=2.3;Planner planner;
   auto plan=planner.plan(g,lane,c);
   check(!plan.path.empty() && plan.speed>0 && plan.speed<=.7,"open lane failed");
-  check(plan.candidates.size()<=92,"candidate cap exceeded");
+  check(plan.candidates.size()<=124,"candidate cap exceeded");
   check(std::abs(plan.path.back().y)<.1,"open lane swerved");
   check(!plan.used_vfh && plan.status.find("LANE:")==0,"clear lane did not bypass VFH");
   std::vector<Point> curve;
@@ -57,21 +57,12 @@ int main(){
   auto small_grid=g;small_grid.width=10;small_grid.cells.assign(240,-1);
   planner.reset();const auto beyond_grid=planner.plan(small_grid,lane,c);
   check(!beyond_grid.used_vfh && beyond_grid.speed>0 && beyond_grid.length>.8,"map boundary vetoed clear lane tracking");
-  auto route_config=c;route_config.departure=0;route_config.current_steer=c.max_steer;
-  std::vector<std::uint8_t> no_route(g.cells.size(),0);
-  check(footprintBlock(g,c,Pose{.4,0,0,0},&no_route)==Block::Route,"route boundary fixture failed");
-  planner.reset();const auto route_limited=planner.plan(g,return_lane,route_config);
-  check(!route_limited.used_vfh,"departure boundary activated avoidance without a hazard");
-  // Cone walls use exactly the same avoidance flow, without mission/entry
-  // classification, and every returned pose obeys the ordinary departure mask.
+  // Cone rows use the same flow, with no mission classifier or route boundary.
   auto walls=g;for(int x=16;x<38;++x){walls.cells[9*60+x]=100;walls.cells[21*60+x]=100;}
   planner.reset();const auto detour=planner.plan(walls,lane,c);
   check(detour.used_vfh && detour.reference_blocked && !detour.path.empty(),"paired walls did not use ordinary avoidance");
-  std::vector<std::uint8_t> allowed(g.cells.size(),1);
-  for(int v=0;v<g.height;++v)for(int u=0;u<g.width;++u)
-    allowed[std::size_t(v)*g.width+u]=laneDistance({g.x0+(u+.5)*g.resolution,g.y0+(v+.5)*g.resolution},lane)<=c.lane_width/2+c.departure;
   for(std::size_t i=1;i<detour.path.size();++i)
-    check(footprintBlock(walls,c,detour.path[i],&allowed)==Block::None,"detour crossed a wall/route/grid limit");
+    check(footprintBlock(walls,c,detour.path[i])==Block::None,"detour skipped obstacle checking");
   const auto rejoined=planner.plan(g,lane,c);
   check(!rejoined.used_vfh && rejoined.speed>0,"clear return trajectory did not restore lane tracking");
   check(planner.plan(walls,{},c).speed==0,"missing lane bypassed reference requirement");
@@ -83,19 +74,16 @@ int main(){
   check(std::all_of(masked_plan.masked.begin(),masked_plan.masked.end(),[](bool b){return b;}),"fixture did not mask every sector");
   check(masked_plan.fallback_candidates>0 && masked_plan.used_fallback && masked_plan.speed>0,"fully masked histogram skipped checked curves");
   for(std::size_t i=1;i<masked_plan.path.size();++i)
-    check(footprintBlock(masked_scene,masked_config,masked_plan.path[i],&allowed)==Block::None,"fallback bypassed collision checks");
-  auto tight=c;tight.departure=0;planner.reset();const auto limited=planner.plan(cone,lane,tight);
-  check(limited.free_detour && limited.length>.9,"short bounded prefix prevented a wider detour");
-  for(std::size_t i=1;i<limited.path.size();++i)
-    check(footprintBlock(cone,tight,limited.path[i])==Block::None,"wider detour skipped obstacle checking");
+    check(footprintBlock(masked_scene,masked_config,masked_plan.path[i])==Block::None,"fallback bypassed collision checks");
   const std::vector<Point> remembered_heading{{0,0},{1,.6}};
   planner.reset();const auto no_lane=planner.plan(unknown,remembered_heading,c,true);
-  check(no_lane.free_detour && no_lane.used_vfh && no_lane.speed>0,"lane loss did not advance through unknown terrain");
-  check(std::abs(no_lane.path.back().y)<.12,"remembered lane dominated open-space progress");
+  check(no_lane.used_vfh && no_lane.speed>0,"lane loss did not advance through unknown terrain");
+  for(std::size_t i=1;i<no_lane.path.size();++i)
+    check(footprintBlock(unknown,c,no_lane.path[i])==Block::None,"lane preference bypassed collision checking");
   const auto blocked_return=planner.plan(cone,lane,c);
-  check(blocked_return.free_detour && blocked_return.used_vfh,"visible but blocked return canceled the detour");
+  check(blocked_return.used_vfh,"visible but blocked return canceled the detour");
   const auto clear_return=planner.plan(g,return_lane,c);
-  check(!clear_return.free_detour && !clear_return.used_vfh && clear_return.speed>0,"clear lane did not resume tracking");
+  check(!clear_return.used_vfh && clear_return.speed>0,"clear lane did not resume tracking");
   planner.reset();check(planner.plan(narrow,remembered_heading,c,true).speed==0,"lane-loss mode drove into an occupied grid");
   bool threw=false;try {auto bad=c;bad.hist_low=bad.hist_high;bad.validate();}catch(...){threw=true;}
   check(threw,"invalid hysteresis accepted");

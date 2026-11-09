@@ -1,13 +1,14 @@
 #pragma once
 #include "roi_vfh_test/planner.hpp"
 #include "roi_vfh_test/hazard_filter.hpp"
+#include "roi_vfh_test/policy_state.hpp"
 #include <opencv2/imgproc.hpp>
 namespace roi_vfh_test {
 inline cv::Rect startButton(){return {12,12,160,36};}
 inline cv::Rect stopButton(){return {184,12,160,36};}
 inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
   const Plan& plan,const Config& config,bool requested,bool locked,const std::string& status,double plan_ms,
-  bool drive_enabled=false,double duty=0,double brake=0,const HazardStats* hazards=nullptr) {
+  bool drive_enabled=false,double duty=0,double brake=0,const HazardStats* hazards=nullptr,const LaneReference* lane_reference=nullptr) {
     cv::Mat canvas(620,760,CV_8UC3,cv::Scalar(245,245,245));
     auto text=[&](std::string s,int y){cv::putText(canvas,s,{12,y},cv::FONT_HERSHEY_SIMPLEX,.43,{35,35,35},1,cv::LINE_AA);};
     cv::rectangle(canvas,startButton(),requested?cv::Scalar(160,160,160):cv::Scalar(70,150,70),-1);
@@ -20,7 +21,7 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
     const bool active=requested && locked;
     text(cv::format("target %.2f / nominal %.2f m/s | steer %.1f deg | %.2f ms",
       active?plan.speed:0,config.speed,active?plan.steer*180/pi:0,plan_ms),114);
-    text("Forward terrain check; outside-grid assumed free; rear sweep UNVERIFIED",136);
+    text("Unknown / outside-grid assumed free; rear observations incomplete",136);
     text(cv::format("Checked candidates: %zu | checked length: %.2fm",plan.candidates.size(),plan.length),156);
     if(active) {
       const double peak=std::max(1.,*std::max_element(plan.histogram.begin(),plan.histogram.end()));
@@ -33,13 +34,13 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       cv::putText(canvas,plan.used_vfh?(plan.used_fallback?"VFH mask + collision-checked curve":"primary / binary / masked"):"Reference clear - VFH bypass",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     }
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
-    cv::putText(canvas,hazards && hazards->enabled?"Current terrain / hazard confirmation":"Current frame only / no memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
+    cv::putText(canvas,"Current terrain + blind-spot obstacle memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Blue: lane reference",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
     cv::putText(canvas,"Yellow: selected driving path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
-    cv::putText(canvas,cv::format("Ends: hazard %zu / edge %zu",plan.hazard_ends,plan.edge_ends),
+    cv::putText(canvas,cv::format("Hazard ends %zu / short %zu",plan.hazard_ends,plan.short_candidates),
       {12,424},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
-    cv::putText(canvas,cv::format("Route limit %zu / short %zu",plan.route_ends,plan.short_candidates),
+    cv::putText(canvas,cv::format("Remembered blind hazards: %zu",grid.remembered_hazards.size()),
       {12,444},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,cv::format("Longest candidate: %.2fm",plan.longest_candidate),
       {12,464},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
@@ -51,14 +52,14 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
     }
     if(plan.used_vfh)
       cv::putText(canvas,cv::format("Extra curves %zu | selected %s",plan.fallback_candidates,plan.used_fallback?"yes":"no"),{12,548},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
-    if(plan.reference_end!=Block::None)
-      cv::putText(canvas,plan.reference_end==Block::Hazard?"Lane end: HAZARD (orange body)":
-        (plan.reference_end==Block::Edge?"Lane end: grid boundary":"Lane end: departure limit"),{12,570},cv::FONT_HERSHEY_SIMPLEX,.35,{35,65,190},1);
-    if(plan.reference_hazard_distance>=0)
-      cv::putText(canvas,cv::format("Hazard at %.2fm | trigger %.2fm",plan.reference_hazard_distance,plan.avoidance_trigger_distance),{12,590},cv::FONT_HERSHEY_SIMPLEX,.35,{35,65,190},1);
+    if(lane_reference) {
+      cv::putText(canvas,"Lane: "+lane_reference->state,{12,570},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
+      cv::putText(canvas,cv::format("Lane memory: %s, age %.2fs; no departure cap",
+        lane_reference->has_memory?"yes":"no",lane_reference->memory_age),{12,590},cv::FONT_HERSHEY_SIMPLEX,.32,{35,35,35},1);
+    }
     if (grid.width>0) {
       const double scale=std::min(430./(grid.width*grid.resolution),400./(grid.height*grid.resolution));
-      const auto pixel=[&](double x,double y){return cv::Point(int(490-y*scale),int(584-x*scale));};
+      const auto pixel=[&](double x,double y){return cv::Point(int(490-y*scale),int(570-x*scale));};
       for (int v=0;v<grid.height;++v)for (int u=0;u<grid.width;++u){
         const int state=grid.cells[std::size_t(v)*grid.width+u];
         const auto a=pixel(grid.x0+u*grid.resolution,grid.y0+v*grid.resolution);
@@ -72,15 +73,7 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
           cv::line(canvas,pixel(c.path[i-1].x,c.path[i-1].y),pixel(c.path[i].x,c.path[i].y),{175,175,175},1);
         for(std::size_t i=1;i<plan.path.size();++i)cv::line(canvas,pixel(plan.path[i-1].x,plan.path[i-1].y),pixel(plan.path[i].x,plan.path[i].y),{0,220,255},3);
       }
-      if(active && plan.reference_end==Block::Hazard) {
-        const auto& p=plan.reference_stop_pose;const double cs=std::cos(p.yaw),sn=std::sin(p.yaw);
-        const double half=config.width/2+config.margin+config.uncertainty;
-        const double front=config.front+config.margin+config.uncertainty,back=config.rear+config.uncertainty;
-        std::array<cv::Point,4> corners;std::size_t i=0;
-        for(auto q:std::array<Point,4>{{{-back,-half},{front,-half},{front,half},{-back,half}}})
-          corners[i++]=pixel(p.x+q.x*cs-q.y*sn,p.y+q.x*sn+q.y*cs);
-        for(std::size_t j=0;j<4;++j)cv::line(canvas,corners[j],corners[(j+1)%4],{0,130,255},2);
-      }
+      for(auto p:grid.remembered_hazards)cv::circle(canvas,pixel(p.x,p.y),2,{0,150,230},-1);
       cv::circle(canvas,pixel(0,0),5,{220,60,30},-1);
     }
   return canvas;

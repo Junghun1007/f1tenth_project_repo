@@ -2,15 +2,18 @@
 (() => {
   const M=window.VFHSim;
   const defaults={
-    speed:.8, horizon:1.4, sampleStep:.03, margin:.03, departure:.4,
-    frontOverhang:.05, rearExtent:.25, deceleration:.4, responseDelay:.1,
+    speed:1, horizon:1.2, sampleStep:.03, margin:.02,
+    frontOverhang:.05, rearExtent:.45, deceleration:.4, responseDelay:.1,
     acceleration:.8, lowThreshold:1, highThreshold:2, laneLookahead:.05, referenceDistance:1,
-    terrainWidth:1.5, terrainForward:4, terrainCell:.07, planHz:20,
+    terrainWidth:1.5, terrainForward:4, terrainCell:.025, planHz:20,
     hazardEnabled:1, hazardFrames:4, hazardSmall:8, hazardRadius:1, hazardGap:.15,
-    extraCurves:1, curveSamples:13, lengthSlack:.25, laneWeight:.8, steeringWeight:.5, laneTrustSeconds:.8, laneTrustLength:.4, laneTrustOffset:.15, laneTrustAngle:12,
-    laneFadeSeconds:8, laneFadeDistance:6, laneVisibleLength:3
+    extraCurves:1, curveSamples:17, lengthSlack:.40, laneWeight:.8, steeringWeight:.1, laneTrustSeconds:.8, laneTrustLength:.4, laneTrustOffset:.15, laneTrustAngle:12,
+    laneVisibleLength:3,
+    clearanceWeight:1
   };
   Object.assign(M.defaults,defaults);
+  // Track selection never overrides the single set of VFH defaults.
+  M.trackDefaults={};
   const ReferenceSimulation=M.Simulation;
   class NativePlanner {
     constructor(config) {
@@ -30,17 +33,21 @@
         if(u>=0 && u<width && v>=0 && v<height)hazards.add(v*width+u);
       }
       const lane=[];
-      if(c.laneVisible)for(let x=Math.max(0,pose.x-3.1);x<=pose.x+3.1;x+=.02) {
-        const p=M.local({x,y:0},pose);
-        if(p.x>=.01 && p.x<=Math.min(2.98,c.laneVisibleLength) && Math.abs(p.y)<=.6)lane.push(p);
+      if(c.laneVisible) {
+        const position=c.trackLayout==='loop'?M.projectTrack(pose).s:pose.x;
+        for(let distance=0;distance<=3.1;distance+=.02) {
+          const source=c.trackLayout==='loop'?M.trackPoint(position+distance):{x:position+distance,y:0};
+          const p=M.local(source,pose);
+          if(p.x>=.01 && p.x<=Math.min(2.98,c.laneVisibleLength) && Math.abs(p.y)<=.6)lane.push(p);
+        }
       }
       const data=[this.session,time,pose.x,pose.y,pose.yaw,pose.v,pose.steer,
-        c.planHz,c.speed,c.horizon,c.sampleStep,c.margin,c.departure,c.laneWidth,c.width,c.rearExtent,
+        c.planHz,c.speed,c.horizon,c.sampleStep,c.margin,c.laneWidth,c.width,c.rearExtent,
         c.frontOverhang,c.wheelbase,c.maxSteer*M.DEG,c.steerRate*M.DEG,c.deceleration,c.responseDelay,
         c.laneLookahead,c.referenceDistance,c.lowThreshold,c.highThreshold,c.hazardEnabled,c.hazardFrames,
         c.hazardSmall,c.hazardRadius,c.hazardGap,c.extraCurves,c.curveSamples,c.lengthSlack,c.laneWeight,
         c.steeringWeight,width,height,res,y0,c.laneTrustSeconds,c.laneTrustLength,c.laneTrustOffset,
-        c.laneTrustAngle,c.laneFadeSeconds,c.laneFadeDistance,lane.length,hazards.size,
+        c.laneTrustAngle,c.clearanceWeight,lane.length,hazards.size,
         ...lane.flatMap(p=>[p.x,p.y]),...hazards];
       const req=new XMLHttpRequest();
       req.open('POST','/plan',false);
@@ -62,7 +69,10 @@
     }
   }
   M.Simulation=class extends ReferenceSimulation {
-    constructor(config,obstacles){super(config,obstacles,c=>new NativePlanner(c));}
+    constructor(config,obstacles,markers=[]) {
+      super(config?.trackLayout==='loop'?{...M.trackDefaults,...config}:config,
+        obstacles,c=>new NativePlanner(c),markers);
+    }
   };
   M.native=true;
 })();

@@ -17,9 +17,9 @@ global.XMLHttpRequest = class {
 };
 require('./native.js');
 const simulator = window.VFHSim;
-assert.equal(simulator.defaults.lengthSlack, .25);
-assert.equal(simulator.defaults.curveSamples, 13);
-assert.equal(simulator.defaults.steeringWeight, .5);
+assert.equal(simulator.defaults.lengthSlack, .40);
+assert.equal(simulator.defaults.curveSamples, 17);
+assert.equal(simulator.defaults.steeringWeight, .1);
 assert.equal(simulator.defaults.laneWeight, .8);
 const confirmationFrames = Math.ceil(simulator.defaults.laneTrustSeconds / .05) + 2;
 
@@ -40,13 +40,16 @@ assert(trial.result.memoryPath.length > 2);
 assert(trial.result.usedVfh);
 assert(trial.result.speed > 0);
 
-const originalWeight = trial.result.memoryWeight;
-trial.time += 2;
+trial.time += 60;
 trial.pose.x += .5;
+trial.pose.y += .65;
 trial.senseAndPlan();
-assert(trial.result.memoryWeight < originalWeight);
+assert(trial.result.hasLaneMemory);
+assert(trial.result.speed > 0);
+assert(trial.result.path.at(-1).y < trial.pose.y);
 assert(trial.result.memoryPath[0][0] < 0);
 
+trial.pose.y = 0;
 trial.c.laneVisible = true;
 trial.c.laneVisibleLength = .2;
 trial.time += .05;
@@ -64,7 +67,7 @@ const blocked = new simulator.Simulation({laneVisible: false, hazardEnabled: 0},
   {id: 'wall', shape: 'box', x: .22, y: 0, w: .14, h: 3}
 ]);
 assert.equal(blocked.result.speed, 0);
-console.log('PASS defaults, trust delay, motion-aligned memory, decay, short fragments, reacquisition, blocked path');
+console.log('PASS defaults, trust delay, persistent motion-aligned memory, return from outside lane, short fragments, reacquisition, blocked path');
 
 for (const scene of ['empty', 'static', 'guidance']) {
   const run = new simulator.Simulation({courseLength: 16}, simulator.presets(scene));

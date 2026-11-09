@@ -29,21 +29,24 @@
   </div>
   <div class="viz-controls">
     <label class="form-label">장면
-      <select class="form-select" data-field="preset"><option value="user">사용자 배치</option><option value="guidance">유도 경로</option><option value="static">정지 장애물</option><option value="empty">빈 코스</option><option value="blocked">통로 차단</option></select>
+      <select class="form-select" data-field="preset"><option value="user">사용자 배치</option><option value="track">도면 순환 트랙 · 장애물</option><option value="guidance">유도 경로</option><option value="static">정지 장애물</option><option value="empty">빈 코스</option><option value="blocked">통로 차단</option></select>
     </label>
     <label class="form-label">편집 도구
-      <select class="form-select" data-field="tool"><option value="move">선택·이동</option><option value="circle">원형 장애물 추가</option><option value="box">사각 장애물 추가</option><option value="chain">촘촘한 콘 배열 그리기</option></select>
+      <select class="form-select" data-field="tool"><option value="move">선택·이동</option><option value="circle">원형 장애물 추가</option><option value="box">사각 장애물 추가</option><option value="chain">촘촘한 콘 배열 그리기</option><option value="marker" hidden>통과 영역 추가 (평가용)</option></select>
     </label>
     <label class="form-label">새 장애물 크기(m)<input class="form-control" type="number" min="0.04" max="1.5" step="0.01" value="0.13" data-field="size"></label>
+    <label class="form-label" hidden>통과 영역 지름(m)<input class="form-control" type="number" min="0.04" max="2" step="0.01" value="0.20" data-field="marker-size"></label>
     <button type="button" class="btn" data-act="delete">선택 삭제</button>
     <button type="button" class="btn" data-act="clear">장애물 비우기</button>
     <label class="form-check"><input type="checkbox" class="form-check-input" data-field="lane-visible" checked><span class="form-check-label">차선 관측</span></label>
   </div>
   <div class="viz-controls">
-    <label class="form-label">연산 프리셋<select class="form-select" data-field="planning-profile" aria-describedby="vfh-profile-detail"></select></label>
-    <span class="text-small">선택 즉시 설정 적용 · 차량 초기화 · 장애물 배치 유지</span>
+    <label class="form-label">설정 프리셋<select class="form-select" data-field="planning-profile" aria-describedby="vfh-profile-detail"></select></label>
+    <span class="text-small">선택 즉시 설정 적용 · 차량 초기화 · 장애물·통과 영역 유지</span>
   </div>
   <div id="vfh-profile-detail" class="text-small tabular-nums" data-out="profile-detail" role="status" aria-live="polite"></div>
+  <div class="text-small">편집 도구에서 원형·사각형 추가를 선택해 지도를 클릭하세요. 촘촘한 콘 배열은 드래그로 그립니다. 선택·이동으로 배치를 수정할 수 있습니다. 통과 영역은 평가 전용이며 VFH 주행에는 전달되지 않습니다.</div>
+  <div class="text-small" data-out="markers" hidden></div>
   <div class="sim-status tabular-nums" data-out="status" role="status" aria-live="polite"></div>
   <div class="sim-panes">
     <div>
@@ -52,8 +55,8 @@
       <div class="sim-legend text-small"><span class="obs">현재 관측</span><span class="mem">관측 기억</span><span class="path">선택 경로·주행 궤적</span><span>점선: 통로 기준</span></div>
       <div class="text-small" data-out="selected">선택한 장애물 없음</div>
       <div class="sim-fields" data-area="object">
-        <label class="form-label">전방 위치(m)<input class="form-control" data-object="x" type="number" step="0.01" min="0" max="16"></label>
-        <label class="form-label">좌우 위치(m)<input class="form-control" data-object="y" type="number" step="0.01" min="-1.4" max="1.4"></label>
+        <label class="form-label">X 위치(m)<input class="form-control" data-object="x" type="number" step="0.01" min="0" max="16"></label>
+        <label class="form-label">Y 위치(m)<input class="form-control" data-object="y" type="number" step="0.01" min="-1.4" max="1.4"></label>
         <label class="form-label">지름 / 전후 길이(m)<input class="form-control" data-object="w" type="number" step="0.01" min="0.04" max="2"></label>
         <label class="form-label">사각형 좌우 폭(m)<input class="form-control" data-object="h" type="number" step="0.01" min="0.04" max="3"></label>
       </div>
@@ -63,7 +66,7 @@
     <div class="sim-bev-pane">
       <div>차량 BEV · 120×300</div>
       <canvas width="120" height="300" class="sim-bev" data-canvas="bev" role="img" aria-label="차량 전방 3m, 좌우 각 0.6m의 120 곱하기 300 픽셀 BEV. 장애물 가림 적용."></canvas>
-      <div class="text-small">가로 1.2m · 전방 3m</div>
+      <div class="text-small" data-out="terrain-size">가로 1.2m · 전방 3m</div>
       <div class="text-small tabular-nums" data-out="visibility"></div>
     </div>
   </div>
@@ -86,11 +89,11 @@
     <summary>주행·차량·VFH 설정</summary>
     <div class="sim-fields" data-area="settings"></div>
     <label class="form-check"><input type="checkbox" class="form-check-input" data-field="occlusion" checked><span class="form-check-label">가까운 장애물에 의한 가림 적용</span></label>
-    <div class="viz-row"><button type="button" class="btn" data-act="apply">설정 적용 · 차량 초기화</button><span class="text-small" data-out="limit">차선은 항상 관측 · 차선 경계 밖 0.70m 제한</span></div>
+    <div class="viz-row"><button type="button" class="btn" data-act="apply">설정 적용 · 차량 초기화</button><button type="button" class="btn" data-act="track-tuning" hidden>기본값 복원</button><span class="text-small" data-out="limit"></span></div>
   </details>
   <details>
     <summary>장면·설정 JSON</summary>
-    <textarea class="form-control" data-field="json" aria-label="장애물 배치와 설정 JSON"></textarea>
+    <textarea class="form-control" data-field="json" aria-label="장애물·통과 영역 배치와 설정 JSON"></textarea>
     <div class="viz-row"><button type="button" class="btn" data-act="export">현재 배치 복사 준비</button><button type="button" class="btn" data-act="import">JSON 적용</button></div>
   </details>
   <div class="text-destructive" data-out="error" role="alert"></div>

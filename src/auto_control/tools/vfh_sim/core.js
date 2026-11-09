@@ -5,7 +5,7 @@
   const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
   const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
   const defaults = {
-    courseLength: 16, laneWidth: .65, departure: .70,
+    trackLayout: 'straight', courseLength: 16, laneWidth: .65, departure: .70,
     bevWidth: 120, bevHeight: 300, resolution: .01,
     width: .30, length: .50, wheelbase: .33, frontOverhang: .08,
     maxSteer: 30, steerRate: 240, speed: 1, acceleration: .7, deceleration: 1.2,
@@ -20,6 +20,10 @@
     for (const key of Object.keys(defaults)) {
       if (typeof defaults[key] === 'number' && !Number.isFinite(c[key])) throw Error(key + ': 유한한 숫자가 필요합니다.');
     }
+    if (!['straight','loop'].includes(c.trackLayout)) throw Error('알 수 없는 트랙 형상입니다.');
+    if(c.rearExtent!==undefined && (!Number.isFinite(c.rearExtent) || c.rearExtent<c.wheelbase ||
+      Math.abs(c.rearExtent+c.frontOverhang-c.length)>1e-6))
+      throw Error('앞차축 기준 앞뒤 길이의 합은 전장과 같아야 하고 뒤차축이 차체 안에 있어야 합니다.');
     if (c.width < .1 || c.width > .8 || c.length < .2 || c.length > 1.5 ||
       c.wheelbase < .1 || c.wheelbase > c.length || c.frontOverhang < 0 ||
       c.frontOverhang + c.wheelbase > c.length || c.maxSteer < 5 || c.maxSteer > 45 ||
@@ -366,6 +370,7 @@
   }
   function presets(name) {
     const circle=(x,y,w=.13)=>({id:'o'+Math.random().toString(36).slice(2,9),shape:'circle',x,y,w,h:w});
+    if(name==='track')return api.trackObstacles();
     if(name==='empty')return [];
     if(name==='static')return [circle(2,.12,.18),circle(3.6,-.12,.20),circle(5.1,.13,.16)];
     if(name==='blocked')return [{id:'wall',shape:'box',x:2,y:0,w:.20,h:2.5}];
@@ -391,16 +396,30 @@
     return (hash>>>0).toString(16);
   }
   class Simulation {
-    constructor(config={},obstacles=presets('guidance'),plannerFactory=c=>new Planner(c)) {this.plannerFactory=plannerFactory;this.c=validate(config);this.obstacles=JSON.parse(JSON.stringify(obstacles));this.reset();}
+    constructor(config={},obstacles=presets('guidance'),plannerFactory=c=>new Planner(c),markers=[]) {this.markers=markers.map(m=>({...m}));this.plannerFactory=plannerFactory;this.c=validate(config);this.obstacles=JSON.parse(JSON.stringify(obstacles));this.reset();}
     reset() {
-      this.pose={x:0,y:0,yaw:0,v:0,steer:0};this.time=0;this.distance=0;this.trace=[{...this.pose,t:0}];
+      const start=this.c.trackLayout==='loop'?api.trackPoint(0):{x:0,y:0,yaw:0};
+      this.lapProgress=0;this.previousTrackPosition=0;
+      this.pose={...start,v:0,steer:0};this.time=0;this.distance=0;this.trace=[{...this.pose,t:0}];
       this.planner=this.plannerFactory(this.c);this.observation={rays:[],hits:[]};this.result=null;
       this.done=false;this.collided=collision(this.obstacles,this.pose,this.c);this.departureViolation=false;this.nextPlan=0;
       this.timings={warmupCalls:20,calls:0,sensor:[],planner:[],activePlanner:[],hazard:[],pipeline:[],integration:[],loop:[]};
-      this.minClearance=Infinity;this.maxDeparture=0;this.senseAndPlan();
+      this.minClearance=Infinity;this.maxDeparture=0;this.markerIndex=0;this.checkMarkers(this.pose);this.senseAndPlan();
     }
     recordTime(stage,value) {
       const values=this.timings[stage];if(values.length>=4096)values.shift();values.push(value);
+    }
+    checkMarkers(from) {
+      const dx=this.pose.x-from.x,dy=this.pose.y-from.y,d2=dx*dx+dy*dy;
+      let earliest=0;
+      while(this.markerIndex<this.markers.length) {
+        const m=this.markers[this.markerIndex],x=m.x-from.x,y=m.y-from.y,r=m.w/2;
+        const t=d2?(x*dx+y*dy)/d2:0;
+        const nearest=clamp(t,earliest,1);
+        if(Math.hypot(x-nearest*dx,y-nearest*dy)>r)break;
+        if(d2)earliest=Math.max(earliest,t-Math.sqrt(Math.max(0,r*r-((x-t*dx)**2+(y-t*dy)**2))/d2));
+        this.markerIndex++;
+      }
     }
     senseAndPlan() {
       const started=performance.now();
@@ -430,12 +449,23 @@
       this.pose={...advance(p,p.steer,p.v*dt,c),v:Math.max(0,p.v),steer:p.steer};
       this.time+=dt;this.distance+=p.v*dt;
       this.collided=collision(this.obstacles,this.pose,c);
-      const departure=Math.max(0,...corners(this.pose,c).map(pt=>Math.abs(pt.y)-c.laneWidth/2));
+      if(!this.collided)this.checkMarkers(p);
+      const departure=Math.max(0,...corners(this.pose,c).map(pt=>(c.trackLayout==='loop'?api.projectTrack(pt).distance:Math.abs(pt.y))-c.laneWidth/2));
       this.maxDeparture=Math.max(this.maxDeparture,departure);
-      this.departureViolation=departure>c.departure+.002;
+      this.departureViolation=!this.planner.ownsDeparturePolicy && departure>c.departure+.002;
       if(this.trace.length===0||this.time-this.trace[this.trace.length-1].t>.05)this.trace.push({...this.pose,t:this.time});
       if(this.departureViolation && !r.laneMissing && !this.planner.ownsDeparturePolicy)this.done=true;
-      if(this.pose.x>=c.courseLength){this.done=true;this.pose.v=0;}
+      if(c.trackLayout==='loop') {
+        const position=api.projectTrack(this.pose);
+        let delta=position.s-this.previousTrackPosition;
+        if(delta>api.trackLength/2)delta-=api.trackLength;
+        if(delta<-api.trackLength/2)delta+=api.trackLength;
+        this.previousTrackPosition=position.s;
+        if(position.distance<1.5)this.lapProgress+=delta;
+        if(this.lapProgress>=api.trackLength-.08 && position.distance<c.laneWidth/2) {
+          this.done=true;this.pose.v=0;
+        }
+      }else if(this.pose.x>=c.courseLength){this.done=true;this.pose.v=0;}
       // Independent evaluator only. These values never feed the local planner.
       for(const o of this.obstacles)if(o.shape==='circle')this.minClearance=Math.min(this.minClearance,bodyPointClearance(o,this.pose,c)-o.w/2);
       if(this.timings.calls>this.timings.warmupCalls){this.recordTime('integration',performance.now()-integrated);this.recordTime('loop',performance.now()-stepStarted);}
@@ -445,10 +475,11 @@
     }
     run(seconds=35) {for(let n=0;n<seconds/.01&&!this.done&&!this.collided;n++)this.step(.01);return this.summary();}
     summary() {
-      const reachedFinish=this.done&&!this.departureViolation&&!this.collided&&this.pose.x>=this.c.courseLength;
-      const laneReturned=corners(this.pose,this.c).every(p=>Math.abs(p.y)<=this.c.laneWidth/2);
+      const reachedFinish=this.done&&!this.collided&&(this.c.trackLayout==='loop'?this.lapProgress>=api.trackLength-.08:this.pose.x>=this.c.courseLength);
+      const laneReturned=corners(this.pose,this.c).every(p=>(this.c.trackLayout==='loop'?api.projectTrack(p).distance:Math.abs(p.y))<=this.c.laneWidth/2);
       return {time:+this.time.toFixed(2),x:+this.pose.x.toFixed(3),y:+this.pose.y.toFixed(3),
-      reachedFinish,laneReturned,completed:reachedFinish&&laneReturned,
+      reachedFinish,laneReturned,markersPassed:this.markerIndex,markersTotal:this.markers.length,
+      completed:reachedFinish&&laneReturned&&this.markerIndex===this.markers.length,
       collision:this.collided,departureViolation:this.departureViolation,maxDeparture:+this.maxDeparture.toFixed(3),
       minClearance:Number.isFinite(this.minClearance)?+this.minClearance.toFixed(3):null,status:this.result.status,
       corridorEntries:this.planner.entryCount,
@@ -456,6 +487,6 @@
       plannerCalls:this.planner.planCount,observedMemoryPoints:this.planner.memory.size};}
   }
   const api={defaults,validate,local,world,corners,advance,sense,collision,Planner,Simulation,presets,clamp,DEG,timingStats,fingerprint};
-  if(typeof module!=='undefined'&&module.exports)module.exports=api;
+  if(typeof module!=='undefined'&&module.exports){Object.assign(api,require('./track.js'));module.exports=api;}
   else scope.VFHSim=api;
 })(typeof window!=='undefined'?window:globalThis);

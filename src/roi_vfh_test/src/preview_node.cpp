@@ -1,6 +1,7 @@
 #include "roi_vfh_test/planner.hpp"
 #include "roi_vfh_test/motion.hpp"
 #include "roi_vfh_test/hazard_filter.hpp"
+#include "roi_vfh_test/policy_state.hpp"
 #include "roi_vfh_test/render.hpp"
 #include "roi_vfh_test/drive.hpp"
 #include "roi_vfh_test/controls.hpp"
@@ -29,6 +30,7 @@
 namespace roi_vfh_test {
 class Node:public rclcpp::Node {
   Config config_; Planner planner_; Plan result_;
+  LaneMemory lane_memory_;ObstacleMemory obstacle_memory_;LaneReference lane_reference_;
   PlannerControls controls_;
   HazardFilter hazard_filter_;HazardStats hazard_stats_;
   std::uint64_t hazard_motion_generation_{0};
@@ -78,7 +80,7 @@ class Node:public rclcpp::Node {
   bool suspended_{false},input_recoverable_{true},waiting_for_pair_{false};
   double resume_stable_sec_{.5};
   std::optional<std::chrono::steady_clock::time_point> healthy_since_,last_recovery_check_;
-  std::optional<double> planned_lane_stamp_,last_lane_heading_;
+  std::optional<double> planned_lane_stamp_;
   line_detactor::msg::LaneResult::ConstSharedPtr planned_lane_;
   double max_age_{.30},max_sync_{.06},plan_ms_{0};
   double lane_receipt_timeout_{.30},erpm_timeout_{.15},imu_timeout_{.10},lane_received_at_{-1e9};
@@ -109,20 +111,26 @@ class Node:public rclcpp::Node {
   static double stamp(const builtin_interfaces::msg::Time & t) {return t.sec+t.nanosec*1e-9;}
   bool fresh(const builtin_interfaces::msg::Time & t) {const double age=now().seconds()-stamp(t);return age>=-.02 && age<=max_age_;}
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
+  void resetPolicyState() {
+    lane_memory_.reset();obstacle_memory_.reset();lane_reference_=LaneReference{};lane_points_.clear();
+    display_.remembered_hazards.clear();planned_lane_stamp_.reset();
+  }
   void stop(const std::string& reason) {
     controls_.blur();controls_.message("Stopped. ROI and VFH parameters unlocked.");
-    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();last_lane_heading_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
+    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
     if(!applyPlannerEdits())return;
     controls_.show(false);
-    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();last_lane_heading_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
   }
   bool active()const {return requested_ && locked_ && !suspended_;}
   void pauseForInput(const std::string& reason) {
     if(!requested_ || !locked_)return;
     if(!suspended_) {
+      // Keep geometric memories while odometry remains continuous. A changed
+      // motion generation clears them before the next plan.
       result_=Plan{};last_grid_.reset();planned_lane_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;
       last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     }
@@ -165,7 +173,7 @@ class Node:public rclcpp::Node {
     for(const auto& field:plannerFields())if(next.*(field.member)!=config_.*(field.member))changed=true;
     if(!changed)return;
     validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_);
-    config_=next;hazard_filter_.reset();hazard_stats_={};planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
+    config_=next;resetPolicyState();hazard_filter_.reset();hazard_stats_={};planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
     controls_.sync(config_);
   }
   bool applyPlannerEdits() {
@@ -252,15 +260,8 @@ class Node:public rclcpp::Node {
       if (!points.empty() && std::hypot(q.x-points.back().x,q.y-points.back().y)>path_maximum_gap_) break;
       points.push_back(q);
     }
-    if(points.size()>=2) {
-      std::vector<auto_control::Point> input;input.reserve(points.size());
-      for(auto p:points)input.push_back({p.x,p.y});
-      const auto ordered=auto_control::build_ordered_path(input,path_minimum_points_,config_.minimum_path_length,
-        path_minimum_x_,path_maximum_x_,path_maximum_gap_,config_.geometry_window);
-      points.clear();if(ordered)for(auto p:ordered->points)points.push_back({p.x,p.y});
-    }
     if(points.size()<2)points.clear();
-    lane_points_=std::move(points);
+    if(!requested_ || !locked_)lane_points_=points;
     const auto filter_begin=std::chrono::steady_clock::now();
     auto confirmed=confirmedTerrain(match);
     hazard_filter_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-filter_begin).count();
@@ -272,14 +273,14 @@ class Node:public rclcpp::Node {
     if(requested_ && locked_) {
       MotionPose lane_pose;
       if(!motion_ok_ || !motion_.at(stamp(match->header.stamp),pose) ||
-        (!lane_points_.empty() && !motion_.at(stamp(paired_lane->header.stamp),lane_pose))) {
+        (!points.empty() && !motion_.at(stamp(paired_lane->header.stamp),lane_pose))) {
         status_="STOP: motion history cannot align sensor captures";return false;
       }
-      for(auto& point:lane_points_)point=reproject(point,lane_pose,pose);
+      for(auto& point:points)point=reproject(point,lane_pose,pose);
     }
     if (requested_ && locked_ && (match!=last_grid_ || paired_lane!=planned_lane_)) {
       if(motion_generation_!=motion_.generation) {
-        previous_pose_valid_=false;last_lane_heading_.reset();planner_.reset();motion_generation_=motion_.generation;
+        previous_pose_valid_=false;resetPolicyState();planner_.reset();motion_generation_=motion_.generation;
       }
       if(previous_pose_valid_)planner_.rotateReference(wrap(pose.yaw-previous_pose_.yaw));
       previous_pose_=pose;previous_pose_valid_=true;
@@ -289,16 +290,15 @@ class Node:public rclcpp::Node {
       working.current_speed=measured_speed_;
       working.current_steer=drive_enabled_ && servo_commanded_ ? drive_command_.steer :
         std::clamp(std::atan(config_.wheelbase*measured_yaw_rate_/std::max(.1,std::abs(measured_speed_))),-config_.max_steer,config_.max_steer);
-      const bool lane_missing=lane_points_.empty();
-      if(lane_missing) {
-        const double direction=std::clamp(wrap(last_lane_heading_.value_or(pose.yaw)-pose.yaw),-pi/2,pi/2);
-        const double length=std::max(working.horizon,working.reference_distance);
-        result_=planner_.plan(display_,{{0,0},{length*std::cos(direction),length*std::sin(direction)}},working,true);
-        result_.status="NO LANE | "+result_.status;
-      }else {
-        last_lane_heading_=wrap(pose.yaw+Polyline(lane_points_).heading({working.lane_lookahead,0}));
-        result_=planner_.plan(display_,lane_points_,working);
-      }
+      const LaneInputLimits limits{path_minimum_points_,path_minimum_x_,path_maximum_x_,path_maximum_gap_};
+      lane_reference_=lane_memory_.resolve(points,pose,working,
+        paired_lane?std::optional<double>(stamp(paired_lane->header.stamp)):std::nullopt,limits);
+      lane_points_=lane_reference_.points;
+      const bool lane_missing=!lane_reference_.trusted;
+      if(lane_missing && !lane_reference_.has_memory)working.avoidance_lane_weight=0;
+      obstacle_memory_.augment(display_,pose,working);
+      result_=planner_.plan(display_,lane_points_,working,lane_missing);
+      result_.status="LANE "+lane_reference_.state+" | "+result_.status;
       const double planned_at=now().seconds();
       if(result_.reference_blocked || (result_.used_vfh && !lane_missing))last_avoidance_at_=planned_at;
       if(obstacle_slowdown_ && planned_at-last_avoidance_at_<=obstacle_clear_sec_)result_.speed=std::min(result_.speed,obstacle_speed_cap_);
@@ -328,7 +328,8 @@ class Node:public rclcpp::Node {
     frame.labels={state};
     frame.values={active?result_.speed:0,measured_speed_,drive_command_.steer,drive_command_.duty,drive_command_.brake,
       requested_?1.:0.,locked_?1.:0.,result_.length,double(result_.candidates.size()),result_.used_vfh?1.:0.,result_.used_fallback?1.:0.,
-      double(hazard_stats_.raw),double(hazard_stats_.confirmed),double(hazard_stats_.pending),double(hazard_stats_.immediate),hazard_filter_ms_};
+      double(hazard_stats_.raw),double(hazard_stats_.confirmed),double(hazard_stats_.pending),double(hazard_stats_.immediate),hazard_filter_ms_,double(display_.remembered_hazards.size()),double(obstacle_memory_.size()),
+      lane_reference_.trusted?1.:0.,lane_reference_.has_memory?1.:0.,lane_reference_.memory_age};
     for(const auto& p:result_.path)frame.path.push_back({p.x,p.y});
     driving_log_->enqueue(std::move(frame));
   }
@@ -393,9 +394,9 @@ class Node:public rclcpp::Node {
     message.data=status_+cv::format(" | target v=%.2fm/s steer=%.1fdeg plan=%.2fms candidates=%zu | rear unverified",
       speed.data,steer.data*180/pi,plan_ms_,result_.candidates.size());
     if(drive_enabled_)message.data+=cv::format(" | DRIVE duty=%.3f brake=%.2fA command_steer=%.1fdeg",drive_command_.duty,drive_command_.brake,drive_command_.steer*180/pi);
-    message.data+=cv::format(" | lane_end=%s hazard_at=%.2fm avoid_trigger=%.2fm",
-      result_.reference_end==Block::Hazard?"hazard":(result_.reference_end==Block::Route?"departure":"clear"),
-      result_.reference_hazard_distance,result_.avoidance_trigger_distance);
+    message.data+=cv::format(" | lane_trust=%s lane_memory=%d age=%.2fs remembered_blind=%zu longest=%.2fm",
+      lane_reference_.state.c_str(),int(lane_reference_.has_memory),lane_reference_.memory_age,
+      display_.remembered_hazards.size(),result_.longest_candidate);
     message.data+=cv::format(" | hazard raw=%zu confirmed=%zu pending=%zu immediate=%zu filter=%.2fms",hazard_stats_.raw,hazard_stats_.confirmed,hazard_stats_.pending,hazard_stats_.immediate,hazard_filter_ms_);
     status_pub_->publish(message);
     if(!drive_enabled_)logDrive(active);
@@ -419,7 +420,7 @@ class Node:public rclcpp::Node {
   }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
-    auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake,&hazard_stats_);
+    auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake,&hazard_stats_,&lane_reference_);
     const bool roi_fresh=roi_timing_received_ &&
       std::chrono::steady_clock::now()-*roi_timing_received_<std::chrono::seconds(3);
     const std::string roi_line=roi_fresh?
@@ -481,7 +482,7 @@ public:
 #define PARAM(name,field) config_.field=declare_parameter(name,config_.field,plannerField(name)?editable:fixed)
     PARAM("nominal_speed_mps",speed);PARAM("horizon_m",horizon);PARAM("sample_step_m",step);
     PARAM("wheelbase_m",wheelbase);PARAM("vehicle_width_m",width);PARAM("rear_extent_m",rear);PARAM("front_overhang_m",front);
-    PARAM("safety_margin_m",margin);PARAM("lane_width_m",lane_width);PARAM("lane_departure_m",departure);
+    PARAM("safety_margin_m",margin);PARAM("lane_width_m",lane_width);
     PARAM("lane_lookahead_m",lane_lookahead);
     PARAM("minimum_path_length_m",minimum_path_length);PARAM("obstacle_uncertainty_m",uncertainty);
     PARAM("max_curvature_per_m",max_curvature);PARAM("lane_lateral_acceleration_mps2",lane_lateral_acceleration);
@@ -496,6 +497,9 @@ public:
     PARAM("avoidance_curve_enabled",avoidance_curve_enabled);PARAM("avoidance_curve_samples",avoidance_curve_samples);
     PARAM("avoidance_length_slack_m",avoidance_length_slack_m);PARAM("avoidance_lane_weight",avoidance_lane_weight);
     PARAM("avoidance_steering_weight",avoidance_steering_weight);
+    PARAM("avoidance_clearance_weight",clearance_weight);
+    PARAM("lane_trust_duration_sec",lane_trust_duration);PARAM("lane_trust_min_length_m",lane_trust_length);
+    PARAM("lane_trust_max_offset_m",lane_trust_offset);PARAM("lane_trust_max_heading_deg",lane_trust_angle_deg);
     config_.curvature_speed_control=declare_parameter("curvature_speed_control_enabled",true,fixed);
     PARAM("deceleration_mps2",deceleration);PARAM("response_delay_sec",delay);PARAM("reference_distance_m",reference_distance);
 #undef PARAM
@@ -658,7 +662,7 @@ public:
       std::string parameters;
       for(const auto& name:list_parameters({},10).names)parameters+=name+"="+get_parameter(name).value_to_string()+"\n";
       driving_log_=std::make_unique<auto_control::DrivingLog>(log_directory,
-        "ros_ns,elapsed_sec,dropped,state,target_speed_mps,speed_mps,steer_rad,duty,brake_amps,requested,locked,path_length_m,candidates,vfh,curve_fallback,hazard_raw,hazard_confirmed,hazard_pending,hazard_immediate,hazard_filter_ms,path",parameters);
+        "ros_ns,elapsed_sec,dropped,state,target_speed_mps,speed_mps,steer_rad,duty,brake_amps,requested,locked,path_length_m,candidates,vfh,curve_fallback,hazard_raw,hazard_confirmed,hazard_pending,hazard_immediate,hazard_filter_ms,remembered_blind,remembered_world,lane_trusted,lane_memory,lane_memory_age_sec,path",parameters);
       RCLCPP_INFO(get_logger(),"VFH driving CSV: %s",driving_log_->path().c_str());
     }
     publishLock(false);
