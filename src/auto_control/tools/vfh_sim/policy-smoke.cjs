@@ -20,11 +20,12 @@ const simulator = window.VFHSim;
 assert.equal(simulator.defaults.lengthSlack, .25);
 assert.equal(simulator.defaults.curveSamples, 13);
 assert.equal(simulator.defaults.steeringWeight, .5);
-assert.equal(simulator.defaults.laneWeight, .5);
+assert.equal(simulator.defaults.laneWeight, .8);
+const confirmationFrames = Math.ceil(simulator.defaults.laneTrustSeconds / .05) + 2;
 
 const trial = new simulator.Simulation({}, []);
 assert.equal(trial.result.laneTrust, 'confirming');
-for (let frame = 1; frame <= 12; frame++) {
+for (let frame = 1; frame <= confirmationFrames; frame++) {
   trial.time = frame * .05;
   trial.senseAndPlan();
 }
@@ -53,7 +54,7 @@ trial.senseAndPlan();
 assert.equal(trial.result.laneTrust, 'too short');
 
 trial.c.laneVisibleLength = 3;
-for (let frame = 0; frame < 12; frame++) {
+for (let frame = 0; frame < confirmationFrames; frame++) {
   trial.time += .05;
   trial.senseAndPlan();
 }

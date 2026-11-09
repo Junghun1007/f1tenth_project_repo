@@ -44,7 +44,7 @@ struct Config {
   double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
   double avoidance_curve_enabled{1},avoidance_curve_samples{13},avoidance_length_slack_m{.25};
-  double avoidance_lane_weight{.5},avoidance_steering_weight{.5};
+  double avoidance_lane_weight{.8},avoidance_steering_weight{.5};
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
   void validate() const {
     for (double a:{speed,horizon,step,wheelbase,width,rear,front,margin,max_steer,steer_rate,

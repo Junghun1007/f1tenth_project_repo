@@ -31,13 +31,13 @@ auto_control의 Stanley 제어 코어를 빌드한다. 실차 ROS 패키지의 �
 | lengthSlack / 길이 비교 여유 | 0.25m |
 | curveSamples / 곡선 샘플 | 13 |
 | steeringWeight / 조향 연속성 | 0.5 |
-| laneWeight / 복귀 가중치 | 0.5 |
-| laneTrustSeconds / 연속 관측 | 0.4초 |
-| laneTrustLength / 최소 경로 길이 | 0.5m |
+| laneWeight / 복귀 가중치 | 0.8 |
+| laneTrustSeconds / 연속 관측 | 0.8초 |
+| laneTrustLength / 최소 경로 길이 | 0.4m |
 | laneTrustOffset / 관측 위치 일관성 | 0.15m |
 | laneTrustAngle / 관측 방향 일관성 | 12도 |
-| laneFadeSeconds / 기억 감쇠 시간 | 3초 |
-| laneFadeDistance / 기억 감쇠 거리 | 3m |
+| laneFadeSeconds / 기억 감쇠 시간 | 8초 |
+| laneFadeDistance / 기억 감쇠 거리 | 6m |
 
 연속 관측 간격이 0.15초를 넘으면 신뢰도 확인을 다시 시작한다.
 차선 복귀 선호는 통로 중심을 명시적으로 찾는 기능이 아니므로 통로 밖 우회를 선택할 수도 있다.

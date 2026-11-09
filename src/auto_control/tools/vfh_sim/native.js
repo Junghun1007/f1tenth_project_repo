@@ -7,8 +7,8 @@
     acceleration:.8, lowThreshold:1, highThreshold:2, laneLookahead:.05, referenceDistance:1,
     terrainWidth:1.5, terrainForward:4, terrainCell:.07, planHz:20,
     hazardEnabled:1, hazardFrames:4, hazardSmall:8, hazardRadius:1, hazardGap:.15,
-    extraCurves:1, curveSamples:13, lengthSlack:.25, laneWeight:.5, steeringWeight:.5, laneTrustSeconds:.4, laneTrustLength:.5, laneTrustOffset:.15, laneTrustAngle:12,
-    laneFadeSeconds:3, laneFadeDistance:3, laneVisibleLength:3
+    extraCurves:1, curveSamples:13, lengthSlack:.25, laneWeight:.8, steeringWeight:.5, laneTrustSeconds:.8, laneTrustLength:.4, laneTrustOffset:.15, laneTrustAngle:12,
+    laneFadeSeconds:8, laneFadeDistance:6, laneVisibleLength:3
   };
   Object.assign(M.defaults,defaults);
   const ReferenceSimulation=M.Simulation;
