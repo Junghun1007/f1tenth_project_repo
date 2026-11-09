@@ -33,7 +33,10 @@ class Node:public rclcpp::Node {
   LaneMemory lane_memory_;ObstacleMemory obstacle_memory_;LaneReference lane_reference_;
   PlannerControls controls_;
   HazardFilter hazard_filter_;HazardStats hazard_stats_;
-  std::uint64_t hazard_motion_generation_{0};
+  std::uint64_t hazard_motion_generation_{0},terrain_cache_revision_{0};
+  std::optional<HazardResult> terrain_cache_;
+  nav_msgs::msg::OccupancyGrid::ConstSharedPtr terrain_cache_input_;
+  bool terrain_cache_motion_ready_{false};
   struct TimingAverage {
     std::deque<double> samples;
     double sum{0};
@@ -112,33 +115,40 @@ class Node:public rclcpp::Node {
   static double stamp(const builtin_interfaces::msg::Time & t) {return t.sec+t.nanosec*1e-9;}
   bool fresh(const builtin_interfaces::msg::Time & t) {const double age=now().seconds()-stamp(t);return age>=-.02 && age<=max_age_;}
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
+  void resetHazards() {
+    hazard_filter_.reset();hazard_stats_={};terrain_cache_.reset();terrain_cache_input_.reset();
+    hazard_motion_generation_=motion_.generation;
+  }
   void resetPolicyState() {
     lane_memory_.reset();obstacle_memory_.reset();lane_reference_=LaneReference{};lane_points_.clear();
     display_.remembered_hazards.clear();planned_lane_stamp_.reset();
   }
   void stop(const std::string& reason) {
     controls_.blur();controls_.message("Stopped. ROI and VFH parameters unlocked.");
-    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
+    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();resetHazards();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
     if(!applyPlannerEdits())return;
     controls_.show(false);
-    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();resetHazards();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
   }
   bool active()const {return requested_ && locked_ && !suspended_;}
   void pauseForInput(const std::string& reason) {
     if(!requested_ || !locked_)return;
-    if(!suspended_) {
+    const bool entering=!suspended_;
+    if(entering) {
       // Keep geometric memories while odometry remains continuous. A changed
       // motion generation clears them before the next plan.
-      result_=Plan{};last_grid_.reset();planned_lane_.reset();hazard_filter_.reset();hazard_stats_={};planner_.reset();previous_pose_valid_=false;
+      result_=Plan{};last_grid_.reset();planned_lane_.reset();resetHazards();planner_.reset();previous_pose_valid_=false;
       last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
     }
     suspended_=true;healthy_since_.reset();last_recovery_check_.reset();
     status_="WAIT input: "+reason;
     controls_.message("Input wait: parameters locked. Stop cancels automatic restart.");
-    applyDrive(false);
+    // The actuator timer keeps braking at its existing control rate. Only the
+    // transition needs an extra immediate command from the planning loop.
+    if(entering)applyDrive(false);
   }
   void updateRecovery(bool inputs_ok) {
     if(!suspended_ || !requested_ || !locked_)return;
@@ -174,7 +184,7 @@ class Node:public rclcpp::Node {
     for(const auto& field:plannerFields())if(next.*(field.member)!=config_.*(field.member))changed=true;
     if(!changed)return;
     validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_);
-    config_=next;resetPolicyState();hazard_filter_.reset();hazard_stats_={};planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
+    config_=next;resetPolicyState();resetHazards();planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
     controls_.sync(config_);
   }
   bool applyPlannerEdits() {
@@ -199,10 +209,14 @@ class Node:public rclcpp::Node {
     if(action==PlannerControls::Action::Apply)applyPlannerEdits();
     if(action==PlannerControls::Action::Reload){controls_.reload(config_);controls_.message("Reloaded applied values. Draft edits discarded.");}
   }
-  HazardResult confirmedTerrain(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr& match) {
-    if(hazard_motion_generation_!=motion_.generation) {
-      hazard_filter_.reset();hazard_motion_generation_=motion_.generation;
-    }
+  const HazardResult& confirmedTerrain(const nav_msgs::msg::OccupancyGrid::ConstSharedPtr& match) {
+    if(hazard_motion_generation_!=motion_.generation)resetHazards();
+    MotionPose selected_pose;
+    const double selected_clock=now().seconds();
+    const bool motion_ready=motion_ok_ && selected_clock-speed_at_<=erpm_timeout_ &&
+      selected_clock-imu_at_<=imu_timeout_ && motion_.at(stamp(match->header.stamp),selected_pose);
+    if(terrain_cache_ && terrain_cache_input_==match && terrain_cache_motion_ready_==motion_ready)
+      return *terrain_cache_;
     // Process every available depth observation up to the selected capture, in
     // time order. A blank intervening frame breaks a weak hazard's streak even
     // if that frame was not chosen for the lane/depth synchronization pair.
@@ -223,7 +237,9 @@ class Node:public rclcpp::Node {
       if(g==match){output=std::move(filtered);found=true;}
     }
     if(!found)throw std::invalid_argument("selected terrain missing from hazard confirmation input");
-    return output;
+    terrain_cache_=std::move(output);terrain_cache_input_=match;terrain_cache_motion_ready_=motion_ready;
+    ++terrain_cache_revision_;
+    return *terrain_cache_;
   }
   bool inputs() {
     input_recoverable_=true;waiting_for_pair_=false;
@@ -264,10 +280,13 @@ class Node:public rclcpp::Node {
     if(points.size()<2)points.clear();
     if(!requested_ || !locked_)lane_points_=points;
     const auto filter_begin=std::chrono::steady_clock::now();
-    auto confirmed=confirmedTerrain(match);
-    hazard_filter_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-filter_begin).count();
-    filter_average_.add(hazard_filter_ms_);
-    display_=std::move(confirmed.grid);hazard_stats_=confirmed.stats;
+    const auto cache_revision=terrain_cache_revision_;
+    const auto& confirmed=confirmedTerrain(match);
+    if(terrain_cache_revision_!=cache_revision) {
+      hazard_filter_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-filter_begin).count();
+      filter_average_.add(hazard_filter_ms_);
+      display_=confirmed.grid;hazard_stats_=confirmed.stats;
+    }
     if(requested_ && locked_ && now().seconds()-speed_at_>erpm_timeout_){status_="STOP: missing/stale measured speed (check VESC ERPM topic/bridge)";return false;}
     if(requested_ && locked_ && now().seconds()-imu_at_>imu_timeout_){status_="STOP: missing/stale vehicle-frame IMU (/roi_lidar/imu)";return false;}
     MotionPose pose;
@@ -279,7 +298,13 @@ class Node:public rclcpp::Node {
       }
       for(auto& point:points)point=reproject(point,lane_pose,pose);
     }
-    if (requested_ && locked_ && (match!=last_grid_ || paired_lane!=planned_lane_)) {
+    // Message instances can be re-published for the same exposure. Only a
+    // changed capture pair (including lane loss/recovery) requires a new plan.
+    const auto same_capture=[](const auto& a,const auto& b) {
+      return (!a && !b) || (a && b && a->header.stamp==b->header.stamp);
+    };
+    if (requested_ && locked_ && (motion_generation_!=motion_.generation ||
+        !same_capture(match,last_grid_) || !same_capture(paired_lane,planned_lane_))) {
       if(motion_generation_!=motion_.generation) {
         previous_pose_valid_=false;resetPolicyState();planner_.reset();motion_generation_=motion_.generation;
       }

@@ -486,13 +486,13 @@ class Node : public rclcpp::Node
       const bool rgb_fresh=s.rgb && freshCapture(seconds(s.rgb->getTimestamp()),clock,c.max_age);
       const bool aligned=fresh && rgb_fresh && overlayAllowed(s.capture,seconds(s.rgb->getTimestamp()),clock,c.max_age,c.sync_sec);
       cv::Mat background;
-      if (rgb_fresh) {
+      if (rgb_fresh && render_bev) {
         const auto key=geometryKey(*s.rgb,s.vehicle_from_rgb);
         if (key!=rgb_key_) {
           bev_.configure(s.rgb->getWidth(),s.rgb->getHeight(),intrinsics(*s.rgb),s.vehicle_from_rgb,c.view,c.preview_size);
           rgb_key_=key;
         }
-        if (render_bev) {background=bev_.render(frameView(*s.rgb,CV_8UC3),c.interpolation);}
+        background=bev_.render(frameView(*s.rgb,CV_8UC3),c.interpolation);
       }
       cv::Mat image;
       if (render_bev) {
