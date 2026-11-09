@@ -125,10 +125,28 @@ ROS에서는 실제 센서 수신·추론 지연이 존재하므로 시뮬레이
 새 계획 코어는 차체/점수에서 접근한 셀의 차선 거리만 계산해 재사용하고,
 최종 선택 경로만 출력으로 복사한다. 이번 이식으로 성능을 실측했다고 주장하지 않는다.
 
+## auto_control과 FPS 통일
+
+VFH launch는 선택한 참조 YAML의 속도를 사용한다. 일반 auto_control 기본값과 맞춘 값은 다음과 같다.
+
+| 경로 | 설정값 | 출처 |
+|---|---:|---|
+| RGB / 차선용 BEV | 최대 80FPS | camera `sensor_fps`, `publish_fps`; 양수 BEV `publish_max_fps`가 있으면 함께 제한 |
+| 장애물 Depth / terrain | 요청 40FPS | obstacles `obstacles.camera.fps` |
+| VFH 계획 | 80Hz | obstacles `obstacles.avoidance.max_fps` |
+| ROI / VFH 프리뷰 | 최대 30FPS | BEV `preview_max_fps` |
+| 제어 / IMU / VESC 속도 | 100Hz / 400Hz / 80Hz | 기존 auto_control / camera / VESC 설정 |
+
+RGB 수신을 depth 처리 스레드에서 분리했고, 차선 BEV 발행도 프리뷰 FPS 제한에서 분리했다.
+새 RGB 촬영본당 한 번만 차선 BEV를 발행한다. 프리뷰가 꺼져 있거나 30FPS여도
+차선 입력을 같은 속도로 낮추지 않는다. VFH 계획 빈도를 올려도 같은 terrain 촬영본을
+여러 프레임 관측한 것으로 세지는 않는다. 일반 roi_lidar 단독 실행의 기본 FPS는 유지한다.
+실제 도달 FPS는 장치·전송·추론·계획 처리 성능에 따르며, 이번 변경에서는 실측하지 않았다.
+
 ## 실차 어댑터와 입력 만료
 
 VESC bridge 자동 실행과 namespace/명시 토픽 override, 속도 환산·서보/PID/FF 보정을 유지한다.
-계획은 기본 20Hz, 구동·정지 감시는 100Hz다. 기존 `DriveController`를 사용한다.
+계획은 `auto_control` 회피 설정과 같은 기본 80Hz, 구동·정지 감시는 100Hz다. 기존 `DriveController`를 사용한다.
 정지 시 Duty 0 상태와 최대 2A 제동, 조향 유지 정책을 유지한다.
 실제 모터 명령은 브레이크와 Duty가 서로 덮이지 않도록 기존의 한 모드씩 발행하는 절차를 따른다.
 

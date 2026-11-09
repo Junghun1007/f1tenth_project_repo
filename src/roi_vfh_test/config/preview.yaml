@@ -1,6 +1,8 @@
 roi_vfh_test:
   ros__parameters:
     gui: true
+    planning_rate_hz: 80.0 # launch inherits obstacles.avoidance.max_fps.
+    preview_fps: 30.0 # launch inherits BEV preview_max_fps; separate from planning.
     drive_enabled: true # Start enables the existing VESC adapter; false is preview-only.
     # Shared native simulator/vehicle planning defaults. No mission classifier or departure cap.
     nominal_speed_mps: 1.0

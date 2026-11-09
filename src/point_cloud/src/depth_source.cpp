@@ -137,8 +137,8 @@ DepthSource::DepthSource(const Config & c, const std::string & device_id, bool r
 DepthSource::DepthSource(const Config & c, const std::string & device_id, bool right_preview, double rgb_fps, bool imu_enabled)
 {
   validate(c);
-  if (!std::isfinite(rgb_fps) || rgb_fps < 0 || rgb_fps > 60) {
-    throw std::invalid_argument("RGB preview FPS must be 0..60");
+  if (!std::isfinite(rgb_fps) || rgb_fps < 0 || rgb_fps > 120) {
+    throw std::invalid_argument("RGB FPS must be 0..120");
   }
   device_ = device_id.empty() ? std::make_shared<dai::Device>(dai::UsbSpeed::SUPER) :
     std::make_shared<dai::Device>(dai::DeviceInfo(device_id), dai::UsbSpeed::SUPER);

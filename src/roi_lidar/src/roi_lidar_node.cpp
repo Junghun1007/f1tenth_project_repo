@@ -79,20 +79,20 @@ static void apply(Config & c,const rclcpp::Parameter & p)
 #undef APPLY
 }
 // Joins before the local DepthSource is destroyed, including exception/reopen paths.
-class ScopedImuReader
+class ScopedSensorReader
 {
   std::atomic_bool done_{false};
   std::mutex mutex_;
   std::exception_ptr error_;
   std::thread thread_;
 public:
-  template<class Function> ScopedImuReader(bool enabled, Function function) {
+  template<class Function> ScopedSensorReader(bool enabled, Function function) {
     if(enabled)thread_=std::thread([this,function] {
       try {function(done_);}
       catch(...) {std::lock_guard<std::mutex> lock(mutex_);error_=std::current_exception();}
     });
   }
-  ~ScopedImuReader() {done_=true;if(thread_.joinable())thread_.join();}
+  ~ScopedSensorReader() {done_=true;if(thread_.joinable())thread_.join();}
   void rethrowIfFailed() {
     std::lock_guard<std::mutex> lock(mutex_);if(error_)std::rethrow_exception(error_);
   }
@@ -141,7 +141,8 @@ class Node : public rclcpp::Node
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr callback_;
   BevProjector bev_, lane_bev_;
   Controls controls_;
-  std::vector<double> rgb_key_;
+  std::vector<double> rgb_key_, lane_rgb_key_;
+  double last_lane_capture_{-1};
   std::uint64_t preview_revision_{std::numeric_limits<std::uint64_t>::max()};
   double last_preview_{0};
   bool bev_window_{false};
@@ -261,9 +262,15 @@ class Node : public rclcpp::Node
         point_cloud::DepthSource source(startup_config.camera,selected,
           startup_config.camera_image && (startup_config.gui || startup_config.publish_preview),
           (startup_config.gui || startup_config.publish_preview || startup_config.publish_lane_bev) ? startup_config.rgb_fps : 0.0,startup_config.publish_imu);
+        // rgbFromFrame updates a calibration cache, shared by depth/RGB readers.
+        std::mutex geometry_mutex;
+        auto transformFrame=[&](dai::ImgFrame& frame) {
+          std::lock_guard<std::mutex> lock(geometry_mutex);
+          return point_cloud::compose(vehicle_from_camera,source.rgbFromFrame(frame));
+        };
         // Match camera_driver's independent IMU reader: depth RANSAC/outlier
         // work must not throttle the 400Hz IMU or leave old batches queued.
-        ScopedImuReader imu_reader(startup_config.publish_imu,[&](const std::atomic_bool& done) {
+        ScopedSensorReader imu_reader(startup_config.publish_imu,[&](const std::atomic_bool& done) {
           while(!done && !stopping() && camera_revision==camera_revision_) {
             bool received=false;
             for(int batch=0;batch<startup_config.camera.imu_queue_size && !done && !stopping();++batch) {
@@ -288,6 +295,17 @@ class Node : public rclcpp::Node
             if(!received)std::this_thread::sleep_for(1ms);
           }
         });
+        // RGB must not wait for the slower depth/terrain processing loop.
+        ScopedSensorReader rgb_reader(startup_config.gui || startup_config.publish_preview || startup_config.publish_lane_bev,
+          [&](const std::atomic_bool& done) {
+            while(!done && !stopping() && camera_revision==camera_revision_) {
+              if(auto rgb=source.tryGetRgb()) {
+                const auto transform=transformFrame(*rgb);
+                std::lock_guard<std::mutex> lock(mutex_);
+                snapshot_.rgb=std::move(rgb);snapshot_.vehicle_from_rgb=transform;
+              } else {std::this_thread::sleep_for(1ms);}
+            }
+          });
         Projector projector;
         std::vector<double> key;
         std::uint64_t configured_revision=std::numeric_limits<std::uint64_t>::max();
@@ -296,14 +314,10 @@ class Node : public rclcpp::Node
         double scan_ms=0, terrain_ms=0;
         bool stale=false;
         while (!stopping() && camera_revision==camera_revision_) {
-          imu_reader.rethrowIfFailed();
+          imu_reader.rethrowIfFailed();rgb_reader.rethrowIfFailed();
           Config c; std::uint64_t version;
           {std::lock_guard<std::mutex> lock(mutex_); c=config_; version=revision_;}
           const auto host=Clock::now(); const double clock=seconds(host);
-          if (auto rgb=source.tryGetRgb()) {
-            const auto transform=point_cloud::compose(vehicle_from_camera,source.rgbFromFrame(*rgb));
-            std::lock_guard<std::mutex> lock(mutex_); snapshot_.rgb=std::move(rgb); snapshot_.vehicle_from_rgb=transform;
-          }
           if (auto right=source.tryGetRight()) {
             std::lock_guard<std::mutex> lock(mutex_); snapshot_.right=std::move(right);
           }
@@ -313,7 +327,7 @@ class Node : public rclcpp::Node
           const double capture=seconds(depth->getTimestamp()),age=clock-capture;
           if (age<-.01 || age>c.max_age || capture<=last_capture) {continue;}
           if (depth->getType()!=dai::ImgFrame::Type::RAW16) {throw std::runtime_error("Expected RAW16 depth");}
-          const auto transform=point_cloud::compose(vehicle_from_camera,source.rgbFromFrame(*depth));
+          const auto transform=transformFrame(*depth);
           const auto next_key=geometryKey(*depth,transform);
           if (key!=next_key || configured_revision!=version) {
             projector.configure(depth->getWidth(),depth->getHeight(),intrinsics(*depth),transform,c.scan);
@@ -395,8 +409,32 @@ class Node : public rclcpp::Node
     Config c; Snapshot s; std::uint64_t version;
     {std::lock_guard<std::mutex> lock(mutex_); c=config_; version=revision_;}
     const double clock=seconds(Clock::now());
+    if (preview_revision_!=version) {
+      rgb_key_.clear();lane_rgb_key_.clear();last_lane_capture_=-1;preview_revision_=version;
+    }
+    // Lane input is published once per fresh RGB exposure, independently of GUI FPS.
+    if(startup_finished_ && c.publish_lane_bev) {
+      Snapshot rgb;
+      {std::lock_guard<std::mutex> lock(mutex_);rgb.rgb=snapshot_.rgb;rgb.vehicle_from_rgb=snapshot_.vehicle_from_rgb;}
+      if(rgb.rgb) {
+        const double captured=seconds(rgb.rgb->getTimestamp());
+        if(captured!=last_lane_capture_ && freshCapture(captured,clock,c.max_age)) {
+          try {
+            const auto key=geometryKey(*rgb.rgb,rgb.vehicle_from_rgb);
+            if(key!=lane_rgb_key_) {
+              lane_bev_.configureLane(rgb.rgb->getWidth(),rgb.rgb->getHeight(),intrinsics(*rgb.rgb),rgb.vehicle_from_rgb);
+              lane_rgb_key_=key;
+            }
+            const auto stamp=now()-rclcpp::Duration::from_seconds(std::max(0.0,clock-captured));
+            lane_bev_pub_->publish(imageMessage(lane_bev_.render(frameView(*rgb.rgb,CV_8UC3)),stamp));
+            last_lane_capture_=captured;
+          } catch(const std::exception& e) {
+            RCLCPP_ERROR_THROTTLE(get_logger(),*get_clock(),1000,"Lane BEV: %s",e.what());
+          }
+        }
+      }
+    }
     if (clock-last_preview_<1.0/c.preview_fps) {return;} last_preview_=clock;
-    if (preview_revision_!=version) {rgb_key_.clear(); preview_revision_=version;}
     if (startup_finished_ && startup_window_) {
       try {cv::destroyWindow(startupWindowName());cv::waitKey(1);}catch(const cv::Exception&){}
       startup_window_=false;
@@ -452,13 +490,7 @@ class Node : public rclcpp::Node
         const auto key=geometryKey(*s.rgb,s.vehicle_from_rgb);
         if (key!=rgb_key_) {
           bev_.configure(s.rgb->getWidth(),s.rgb->getHeight(),intrinsics(*s.rgb),s.vehicle_from_rgb,c.view,c.preview_size);
-          lane_bev_.configureLane(s.rgb->getWidth(),s.rgb->getHeight(),intrinsics(*s.rgb),s.vehicle_from_rgb);
           rgb_key_=key;
-        }
-        if (c.publish_lane_bev) {
-          const auto age=std::max(0.0,clock-seconds(s.rgb->getTimestamp()));
-          const auto capture=now()-rclcpp::Duration::from_seconds(age);
-          lane_bev_pub_->publish(imageMessage(lane_bev_.render(frameView(*s.rgb,CV_8UC3)),capture));
         }
         if (render_bev) {background=bev_.render(frameView(*s.rgb,CV_8UC3),c.interpolation);}
       }

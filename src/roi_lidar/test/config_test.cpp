@@ -5,6 +5,7 @@ int main()
 {
   roi_lidar::Config c; roi_lidar::validate(c);
   if (c.camera.fps!=60 || c.terrain_alpha!=.8 || c.point_radius!=2 || c.view.width_m!=1.5 || c.view.forward_m!=4) {throw std::runtime_error("Requested defaults lost");}
+  c.rgb_fps=80; roi_lidar::validate(c);
   c.camera.fps=110; c.camera.subpixel=false; roi_lidar::validate(c);
   c.camera.resolution="800p"; c.camera.fps=30; c.camera.subpixel=true;
   c.scan.max_depth=25; c.scan.max_range=20; roi_lidar::validate(c);

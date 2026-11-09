@@ -34,7 +34,14 @@ def nodes(context):
         raise ValueError("Shared lane BEV currently requires 0..3m, +/-0.6m, 120x300 at 1cm/pixel")
     if camera["camera_socket"] != "CAM_A" or camera["resize_mode"] != "CROP" or not camera["undistort_enabled"]:
         raise ValueError("ROI shared RGB requires undistorted CAM_A with CROP resize")
-    roi.update({"preview.show_bev_window": False, "preview.publish_lane_bev": True, "motion.publish_imu": True,
+    # Use the same sensor/publish rates as the auto_control camera + BEV path.
+    # Keep preview rendering separate from the lane input producer.
+    rgb_rates = [float(camera["sensor_fps"]), float(camera["publish_fps"])]
+    if float(bev["publish_max_fps"]) > 0:
+        rgb_rates.append(float(bev["publish_max_fps"]))
+    roi.update({"camera.fps": load(arg("obstacle_params_file"), "camera_driver")["obstacles.camera.fps"],
+                "preview.rgb_fps": min(rgb_rates), "preview.fps": bev["preview_max_fps"],
+                "preview.show_bev_window": False, "preview.publish_lane_bev": True, "motion.publish_imu": True,
                 "preview.rgb_width_px": camera["width"], "preview.rgb_height_px": camera["height"],
                 "motion.imu_rate_hz": int(camera["imu_rate_hz"]),
                 "motion.imu_queue_size": camera["imu_queue_size"],
@@ -80,6 +87,7 @@ def nodes(context):
                  "steering_current_weight": control["steering_current_weight"],
                  "control_rate_hz": control["control_rate_hz"],
                  "planning_rate_hz": obstacles["obstacles.avoidance.max_fps"],
+                 "preview_fps": bev["preview_max_fps"],
                  "status_log_rate_hz": control["status_log_rate_hz"],
                  "path_minimum_points": control["path_minimum_points"],
                  "minimum_path_length_m": control["path_minimum_span_m"],

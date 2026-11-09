@@ -84,7 +84,8 @@ class Node:public rclcpp::Node {
   line_detactor::msg::LaneResult::ConstSharedPtr planned_lane_;
   double max_age_{.30},max_sync_{.06},plan_ms_{0};
   double lane_receipt_timeout_{.30},erpm_timeout_{.15},imu_timeout_{.10},lane_received_at_{-1e9};
-  double planning_rate_{20},status_rate_{2};
+  double planning_rate_{80},status_rate_{2},preview_rate_{30};
+  std::optional<std::chrono::steady_clock::time_point> last_preview_at_;
   int path_minimum_points_{8},max_lane_points_{2000};
   double path_minimum_x_{.01},path_maximum_x_{2.98},path_maximum_gap_{.15};
   std::string frame_id_{"front_axle_bev"},lane_topic_{"/line_detactor/result"};
@@ -420,6 +421,9 @@ class Node:public rclcpp::Node {
   }
   void draw() {
     if(!gui_ && !image_pub_->get_subscription_count())return;
+    const auto clock=std::chrono::steady_clock::now();
+    if(last_preview_at_ && std::chrono::duration<double>(clock-*last_preview_at_).count()<1/preview_rate_)return;
+    last_preview_at_=clock;
     auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake,&hazard_stats_,&lane_reference_);
     const bool roi_fresh=roi_timing_received_ &&
       std::chrono::steady_clock::now()-*roi_timing_received_<std::chrono::seconds(3);
@@ -518,13 +522,14 @@ public:
     lane_topic_=declare_parameter<std::string>("lane_result_topic","/line_detactor/result",fixed);
     lane_receipt_timeout_=declare_parameter("lane_receipt_timeout_sec",.30,fixed);
     erpm_timeout_=declare_parameter("erpm_timeout_sec",.15,fixed);imu_timeout_=declare_parameter("imu_timeout_sec",.10,fixed);
-    planning_rate_=declare_parameter("planning_rate_hz",20.,fixed);status_rate_=declare_parameter("status_log_rate_hz",2.,fixed);
+    planning_rate_=declare_parameter("planning_rate_hz",80.,fixed);
+    preview_rate_=declare_parameter("preview_fps",30.,fixed);status_rate_=declare_parameter("status_log_rate_hz",2.,fixed);
     path_minimum_points_=declare_parameter("path_minimum_points",8,fixed);max_lane_points_=declare_parameter("max_lane_points",2000,fixed);
     path_minimum_x_=declare_parameter("path_minimum_x_m",.01,fixed);path_maximum_x_=declare_parameter("path_maximum_x_m",2.98,fixed);
     path_maximum_gap_=declare_parameter("path_maximum_gap_m",.15,fixed);
-    for(double v:{lane_receipt_timeout_,erpm_timeout_,imu_timeout_,planning_rate_,status_rate_,path_minimum_x_,path_maximum_x_,path_maximum_gap_})
+    for(double v:{lane_receipt_timeout_,erpm_timeout_,imu_timeout_,planning_rate_,preview_rate_,status_rate_,path_minimum_x_,path_maximum_x_,path_maximum_gap_})
       if(!std::isfinite(v) || v<=0)throw std::invalid_argument("invalid source controller input/watchdog settings");
-    if(frame_id_.empty() || lane_receipt_timeout_>1 || erpm_timeout_>1 || imu_timeout_>1 || planning_rate_>100 || status_rate_>20 ||
+    if(frame_id_.empty() || lane_receipt_timeout_>1 || erpm_timeout_>1 || imu_timeout_>1 || planning_rate_>100 || preview_rate_>60 || status_rate_>20 ||
       path_minimum_points_<2 || max_lane_points_<path_minimum_points_ || max_lane_points_>2000 ||
       path_minimum_x_>=path_maximum_x_ || path_maximum_gap_>1)throw std::invalid_argument("source controller input/watchdog limits exceeded");
     obstacle_slowdown_=declare_parameter("obstacle_slowdown_enabled",true,fixed);

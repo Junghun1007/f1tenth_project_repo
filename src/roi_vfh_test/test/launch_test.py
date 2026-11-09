@@ -46,8 +46,9 @@ class LaunchTest(unittest.TestCase):
     def test_preview_defaults_and_shared_camera(self):
         actions = self.module.nodes(self.context)
         roi = next(a for a in actions if a.get("package") == "roi_lidar")["parameters"][0]
-        self.assertEqual((roi["camera.fps"], roi["preview.width_m"], roi["preview.forward_m"]), (60, 1.5, 4))
+        self.assertEqual((roi["camera.fps"], roi["preview.width_m"], roi["preview.forward_m"]), (40, 1.5, 4))
         self.assertFalse(roi["preview.show_bev_window"])
+        self.assertEqual((roi["preview.rgb_fps"], roi["preview.fps"]), (80, 30))
         self.assertEqual(roi["terrain.cell_m"], .025)
         self.assertTrue(roi["ground.use_startup_plane"])
         self.assertFalse(roi["cluster.enabled"])
@@ -60,9 +61,10 @@ class LaunchTest(unittest.TestCase):
         self.assertEqual((test["avoidance_curve_samples"], test["avoidance_length_slack_m"]), (17.0, .4))
         self.assertEqual((test["lane_trust_duration_sec"], test["lane_trust_min_length_m"]), (.8, .4))
         self.assertNotIn("lane_departure_m", test)
-        self.assertEqual((test["planning_rate_hz"], test["control_rate_hz"]), (20, 100))
+        self.assertEqual((test["planning_rate_hz"], test["control_rate_hz"]), (80, 100))
         self.assertEqual((test["max_age_sec"], test["drive.max_command_age_sec"], test["input_resume_stable_sec"]), (.30, .30, .50))
         self.assertEqual(test["lane_receipt_timeout_sec"], .30)
+        self.assertEqual(test["preview_fps"], 30)
         self.assertEqual((roi["bev.camera_x_m"], roi["preview.rgb_width_px"], roi["preview.rgb_height_px"]), (-.09, 1280, 800))
         self.assertEqual(roi["motion.imu_rate_hz"], 400)
         self.assertFalse(any(a.get("package") in ("camera_driver", "vehicle_bringup") for a in actions))

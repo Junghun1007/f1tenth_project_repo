@@ -57,7 +57,7 @@ auto_obstacles:
 
     # 회피 경로 프리뷰
     obstacles.avoidance.enabled: true
-    obstacles.avoidance.max_fps: 20.0
+    obstacles.avoidance.max_fps: 80.0 # Same planning cap as auto_control/config/obstacles.yaml.
     obstacles.avoidance.max_age_sec: 0.25
     obstacles.avoidance.max_sync_sec: 0.06
 

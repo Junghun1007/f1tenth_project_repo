@@ -39,11 +39,11 @@ inline void validate(const Config & c)
     throw std::invalid_argument("preview.interpolation: nearest / linear / cubic / lanczos4");
   }
   if (!std::isfinite(c.preview_fps) || c.preview_fps<1 || c.preview_fps>60 ||
-    !std::isfinite(c.rgb_fps) || c.rgb_fps<1 || c.rgb_fps>60 ||
+    !std::isfinite(c.rgb_fps) || c.rgb_fps<1 || c.rgb_fps>120 ||
     !std::isfinite(c.sync_sec) || c.sync_sec<0.005 || c.sync_sec>0.25 ||
     !std::isfinite(c.max_age) || c.max_age<0.05 || c.max_age>2 ||
     c.preview_size<240 || c.preview_size>1600) {
-    throw std::invalid_argument("preview/rgb FPS=1..60, sync=0.005..0.25s, age=0.05..2s, size=240..1600");
+    throw std::invalid_argument("preview FPS=1..60, rgb FPS=1..120, sync=0.005..0.25s, age=0.05..2s, size=240..1600");
   }
 }
 }
