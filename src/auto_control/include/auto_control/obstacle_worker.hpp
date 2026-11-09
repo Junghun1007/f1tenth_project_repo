@@ -1,3 +1,4 @@
+#include <bev_handoff/runtime_monitor.hpp>
 #pragma once
 #include "bev_processor/bev_geometry.hpp"
 #include "auto_control/obstacle_clusters.hpp"
@@ -29,6 +30,7 @@ private:
   };
   void run();
   rclcpp::Node & node_;
+  std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
   RectifiedCameraModel camera_;
   BevConfig bev_;
   std::string frame_id_;

@@ -62,6 +62,11 @@ void SpeedLimitPanel::select(int y)
 
 void SpeedLimitPanel::mouse(int event, int x, int y, int flags)
 {
+  if(event==cv::EVENT_LBUTTONUP) {
+    if(metrics_button_.contains(cv::Point(x,y)))action_="metrics";
+    if(parameters_button_.contains(cv::Point(x,y)))action_="parameters";
+    if(stop_button_.contains(cv::Point(x,y)))action_="stop";
+  }
   if (!available_ || state_.ceiling <= state_.minimum) {return;}
   if (event == cv::EVENT_LBUTTONDOWN && hit_.contains(cv::Point(x, y))) {
     dragging_ = true;
@@ -156,6 +161,19 @@ cv::Mat SpeedLimitPanel::append(const cv::Mat & bev, bool themed)
     (now_ < failed_until_ ? "NOT APPLIED" : (pending_ ? "APPLYING..." : "LIVE"));
   text(status, 12, bottom-41, .32, !available_ || pending_ || now_ < failed_until_ ? muted : accent);
   text("DRAG TO ADJUST", 12, bottom-18, .32, muted);
+  const int button_top=canvas.rows,height=std::max(30,cvRound(55*ui));
+  cv::copyMakeBorder(canvas,canvas,0,height,0,0,cv::BORDER_CONSTANT,background);
+  const int third=canvas.cols/3;
+  metrics_button_={0,button_top,third,height};
+  parameters_button_={third,button_top,third,height};
+  stop_button_={2*third,button_top,canvas.cols-2*third,height};
+  const std::vector<std::pair<cv::Rect,std::string>> buttons={
+    {metrics_button_,"Timings"},{parameters_button_,"Params"},{stop_button_,"STOP"}};
+  for(const auto& button:buttons) {
+    cv::rectangle(canvas,button.first,button.second=="STOP"?cv::Scalar(50,50,190):track,-1);
+    cv::putText(canvas,button.second,button.first.tl()+cv::Point(4,height*2/3),
+      cv::FONT_HERSHEY_SIMPLEX,.40*ui,cv::Scalar(255,255,255),1,cv::LINE_AA);
+  }
   return canvas;
 }
 }  // namespace line_detactor

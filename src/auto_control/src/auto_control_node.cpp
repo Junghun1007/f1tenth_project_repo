@@ -1,3 +1,6 @@
+#include <bev_handoff/runtime_monitor.hpp>
+#include <map>
+#include <set>
 #include "auto_control/control_core.hpp"
 #include "auto_control/lane_capture_order.hpp"
 #include "auto_control/model_startup_gate.hpp"
@@ -63,6 +66,7 @@ public:
   {
     declare_and_read_parameters();
     validate_parameters();
+    monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(*this);
     runtime_speed_limit_ = std::make_unique<RuntimeSpeedLimit>(minimum_speed_mps_, maximum_speed_mps_);
     speed_pid_ = std::make_unique<SpeedPid>(
       speed_pid_kp_, speed_pid_ki_, speed_pid_kd_, speed_pid_integral_limit_,
@@ -122,6 +126,7 @@ public:
           response->success=start_authorization_.request(!reason.has_value() && control_mode_=="drive");
           response->message=response->success ? "STARTED: automatic duty permitted" :
             (reason ? *reason : "critical readiness not satisfied or automatic drive mode required");
+          if(response->success)operator_stopped_=false;
           publish_startup_state();
         });
       startup_state_timer_=create_wall_timer(std::chrono::milliseconds(100),[this]() {
@@ -262,6 +267,7 @@ public:
         performance_measurement_duration_sec_, performance_measurement_startup_timeout_sec_,
         measurement_->power_description().c_str());
     }
+    install_runtime_controls();
     if (driving_log_enabled_) {start_driving_log();}
     if (enabled_ && control_mode_ == "drive" && startup_safety_enabled_) {
       RCLCPP_INFO(get_logger(),"Startup inspection active: automatic duty awaits camera/models/telemetry/lane checks and the GUI START button.");
@@ -311,6 +317,12 @@ public:
       brake_maximum_current_amps_, control_rate_hz_);
   }
 
+  bool operator_stopped_{false};
+  std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
+  std::map<std::string,rclcpp::Parameter> staged_parameters_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr runtime_parameter_callback_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
+
   ~AutoControlNode() override
   {
     if (measurement_ && !performance_finished_) {
@@ -325,6 +337,98 @@ public:
   }
 
 private:
+  static const std::vector<std::string>& runtime_parameter_names() {
+    static const std::vector<std::string> names={
+      "brake_current_fall_amps_per_sec", "brake_current_gain_amps_per_mps", "brake_current_rise_amps_per_sec",
+      "brake_entry_speed_error_mps", "brake_exit_speed_error_mps", "brake_maximum_current_amps",
+      "brake_minimum_current_amps", "brake_minimum_vehicle_speed_mps", "corner_brake_deceleration_margin_mps2",
+      "corner_brake_entry_margin_mps", "corner_brake_exit_margin_mps", "corner_coast_entry_margin_mps",
+      "corner_coast_probe_sec", "corner_confirm_frames", "corner_exit_angle_deg",
+      "corner_exit_confirm_sec", "corner_exit_curvature_per_m", "corner_planning_acceleration_mps2",
+      "corner_planning_response_sec", "corner_release_frames", "corner_speed_band_width_mps",
+      "curvature_percentile", "curvature_speed_control_enabled", "driving_log_rate_hz",
+      "duty_fall_rate_per_sec", "duty_rise_rate_per_sec", "electrical_brake_enabled",
+      "erpm_timeout_sec", "longitudinal_brake_deceleration_gain", "longitudinal_brake_release_response_sec",
+      "longitudinal_brake_speed_gain", "longitudinal_deceleration_filter_sec", "longitudinal_feedforward_duty_per_mps",
+      "longitudinal_feedforward_fade_speed_mps", "longitudinal_feedforward_offset_duty", "longitudinal_pid_enabled",
+      "longitudinal_pid_integral_limit", "longitudinal_pid_kd", "longitudinal_pid_ki",
+      "longitudinal_pid_kp", "longitudinal_planning_deceleration_mps2", "longitudinal_recovery_duty_rise_per_sec",
+      "longitudinal_recovery_start_ramp_sec", "longitudinal_staged_control_enabled", "longitudinal_start_duty",
+      "maximum_duty", "maximum_lateral_acceleration_mps2", "maximum_speed_mps",
+      "maximum_steering_angle_deg", "minimum_duty", "obstacle_brake_deceleration_margin_mps2",
+      "obstacle_brake_entry_margin_mps", "obstacle_brake_exit_margin_mps", "obstacle_coast_probe_sec",
+      "obstacle_planning_acceleration_mps2", "obstacle_planning_deceleration_mps2", "path_capture_maximum_age_sec",
+      "path_geometry_window_m", "path_hold_timeout_sec", "path_maximum_gap_m",
+      "path_maximum_x_m", "path_minimum_points", "path_minimum_span_m",
+      "path_minimum_x_m", "path_timeout_sec", "speed_filter_time_constant_sec",
+      "speed_pid_integral_limit", "speed_pid_kd", "speed_pid_ki",
+      "speed_pid_kp", "stanley_corner_heading_threshold_deg", "stanley_corner_opposing_correction_ratio",
+      "stanley_gain", "stanley_heading_lookahead_m", "stanley_softening_speed_mps",
+      "steering_current_weight", "steering_rate_limit_deg_per_sec", "stop_steering_hold_enabled",
+      "traffic_brake_amps_per_mps2", "traffic_brake_deceleration_hysteresis_mps2", "traffic_brake_response_time_sec",
+      "traffic_brake_speed_hysteresis_mps", "traffic_brake_urgent_rise_amps_per_sec", "traffic_coast_probe_sec",
+      "traffic_front_axle_to_bumper_m", "traffic_hold_current_amps", "traffic_pass_if_unstoppable_enabled",
+      "traffic_pass_overshoot_m", "traffic_reapproach_speed_mps", "traffic_state_timeout_sec",
+      "traffic_stop_enabled", "traffic_stop_line_confirm_frames", "traffic_stop_line_current_weight",
+      "traffic_stop_line_match_tolerance_m", "traffic_stop_line_timeout_sec", "traffic_stop_margin_m",
+      "traffic_stop_position_tolerance_m", "traffic_stop_range_max_m", "traffic_terminal_tracking_distance_m",
+      "traffic_terminal_tracking_timeout_sec"};
+    return names;
+  }
+  void install_runtime_controls() {
+    declare_parameter<std::vector<std::string>>("runtime_editable_parameters",runtime_parameter_names());
+    runtime_parameter_callback_=add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter>& parameters) {
+        rcl_interfaces::msg::SetParametersResult reply;reply.successful=false;
+        static const std::set<std::string> editable(runtime_parameter_names().begin(),runtime_parameter_names().end());
+        if(parameters.empty()){reply.successful=true;return reply;}
+        staged_parameters_.clear();
+        for(const auto& p:parameters) {
+          if(!editable.count(p.get_name())) {reply.reason="Startup-only or unsupported live parameter: "+p.get_name();staged_parameters_.clear();return reply;}
+          if(p.get_type()!=get_parameter(p.get_name()).get_type()) {reply.reason="Parameter type mismatch";staged_parameters_.clear();return reply;}
+          if(p.get_type()==rclcpp::ParameterType::PARAMETER_DOUBLE && !std::isfinite(p.as_double())) {reply.reason="Finite number required";staged_parameters_.clear();return reply;}
+          staged_parameters_.emplace(p.get_name(),p);
+        }
+        const bool previous_enabled=enabled_;
+        const double previous_speed=maximum_speed_mps_;
+        staged_parameters_.emplace("enabled",rclcpp::Parameter("enabled",enabled_));
+        staged_parameters_.emplace("maximum_speed_mps",rclcpp::Parameter("maximum_speed_mps",maximum_speed_mps_));
+        try {
+          declare_and_read_parameters();validate_parameters();
+          const double ceiling=runtime_speed_limit_->ceiling();
+          if(maximum_speed_mps_>ceiling)throw std::invalid_argument("maximum_speed_mps exceeds startup ceiling");
+          // Default mutually-exclusive callback group serializes this transaction
+          // with lane/telemetry/control callbacks.
+          auto next_speed_pid=std::make_unique<SpeedPid>(speed_pid_kp_,speed_pid_ki_,speed_pid_kd_,
+            speed_pid_integral_limit_,minimum_duty_,maximum_duty_);
+          auto next_longitudinal_pid=std::make_unique<SpeedPid>(longitudinal_kp_,longitudinal_ki_,
+            longitudinal_kd_,longitudinal_integral_limit_,-1.,1.);
+          auto next_brake_profile=std::make_unique<AutomaticBrakeProfile>(BrakeConfig{
+            brake_entry_speed_error_mps_,brake_exit_speed_error_mps_,brake_minimum_vehicle_speed_mps_,
+            brake_minimum_current_amps_,brake_maximum_current_amps_,brake_current_gain_amps_per_mps_,
+            brake_current_rise_amps_per_sec_,brake_current_fall_amps_per_sec_});
+          speed_pid_=std::move(next_speed_pid);
+          longitudinal_pid_=std::move(next_longitudinal_pid);
+          brake_profile_=std::move(next_brake_profile);
+        }catch(const std::exception& e) {
+          staged_parameters_.clear();declare_and_read_parameters();
+          enabled_=previous_enabled;maximum_speed_mps_=previous_speed;
+          reply.reason=e.what();return reply;
+        }
+        runtime_speed_limit_->request(maximum_speed_mps_);
+        staged_parameters_.clear();publish_speed_limit_state();
+        reply.successful=true;return reply;
+      });
+
+    stop_service_=create_service<std_srvs::srv::Trigger>("~/stop",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+        std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        operator_stopped_=true;start_authorization_.revoke();
+        publish_guard_stop("operator_stop");
+        response->success=true;response->message="STOPPED: press START to drive again";
+        publish_startup_state();
+      });
+  }
   void publish_speed_limit_state()
   {
     line_detactor::msg::SpeedLimitState state;
@@ -338,7 +442,16 @@ private:
   template<typename T>
   T parameter(const std::string & name, const T & default_value)
   {
+    const auto pending=staged_parameters_.find(name);
+    if(pending!=staged_parameters_.end())return pending->second.get_value<T>();
+    if(has_parameter(name))return get_parameter(name).get_value<T>();
     return declare_parameter<T>(name, default_value);
+  }
+
+  template<typename T>
+  T startup_parameter(const std::string& name,T value,const rcl_interfaces::msg::ParameterDescriptor& descriptor) {
+    if(has_parameter(name))return get_parameter(name).get_value<T>();
+    return declare_parameter<T>(name,value,descriptor);
   }
 
   void declare_and_read_parameters()
@@ -346,11 +459,11 @@ private:
     rcl_interfaces::msg::ParameterDescriptor avoidance_descriptor;
     avoidance_descriptor.read_only=true;
     avoidance_descriptor.description="Startup-only mode; deformation-only planning never gates centerline departure";
-    avoidance_control_enabled_=declare_parameter<bool>("avoidance_control_enabled",false,avoidance_descriptor);
-    avoidance_deformation_only_=declare_parameter<bool>("avoidance_deformation_only",true,avoidance_descriptor);
-    obstacle_slowdown_enabled_=declare_parameter<bool>("obstacle_slowdown_enabled",true,avoidance_descriptor);
-    obstacle_slowdown_speed_mps_=declare_parameter<double>("obstacle_slowdown_speed_mps",1.2,avoidance_descriptor);
-    obstacle_slowdown_clear_sec_=declare_parameter<double>("obstacle_slowdown_clear_sec",1.0,avoidance_descriptor);
+    avoidance_control_enabled_=startup_parameter<bool>("avoidance_control_enabled",false,avoidance_descriptor);
+    avoidance_deformation_only_=startup_parameter<bool>("avoidance_deformation_only",true,avoidance_descriptor);
+    obstacle_slowdown_enabled_=startup_parameter<bool>("obstacle_slowdown_enabled",true,avoidance_descriptor);
+    obstacle_slowdown_speed_mps_=startup_parameter<double>("obstacle_slowdown_speed_mps",1.2,avoidance_descriptor);
+    obstacle_slowdown_clear_sec_=startup_parameter<double>("obstacle_slowdown_clear_sec",1.0,avoidance_descriptor);
     obstacle_planning_deceleration_ = parameter("obstacle_planning_deceleration_mps2", 0.35);
     obstacle_planning_acceleration_ = parameter("obstacle_planning_acceleration_mps2", 0.35);
     obstacle_coast_probe_sec_ = parameter("obstacle_coast_probe_sec", 0.20);
@@ -361,13 +474,13 @@ private:
     turn_exit_curvature_ = parameter("corner_exit_curvature_per_m", 0.25);
     turn_exit_angle_rad_ = radians(parameter("corner_exit_angle_deg", 8.0));
     turn_exit_confirm_sec_ = parameter("corner_exit_confirm_sec", 0.20);
-    avoidance_max_age_=declare_parameter<double>("avoidance_max_age_sec",.20,avoidance_descriptor);
+    avoidance_max_age_=startup_parameter<double>("avoidance_max_age_sec",.20,avoidance_descriptor);
     // Compatibility with external YAMLs; never affects speed or validation.
     auto legacy_speed_descriptor=avoidance_descriptor;
     legacy_speed_descriptor.description="Deprecated and ignored; use maximum_speed_mps";
-    declare_parameter<double>("avoidance_speed_cap_mps",.4,legacy_speed_descriptor);
-    avoidance_brake_current_=declare_parameter<double>("avoidance_brake_current_amps",2.5,avoidance_descriptor);
-    avoidance_wheelbase_=declare_parameter<double>("avoidance_wheelbase_m",.33,avoidance_descriptor);
+    startup_parameter<double>("avoidance_speed_cap_mps",.4,legacy_speed_descriptor);
+    avoidance_brake_current_=startup_parameter<double>("avoidance_brake_current_amps",2.5,avoidance_descriptor);
+    avoidance_wheelbase_=startup_parameter<double>("avoidance_wheelbase_m",.33,avoidance_descriptor);
     driving_log_enabled_ = parameter("driving_log_enabled", false);
     driving_log_rate_hz_ = parameter("driving_log_rate_hz", 20.0);
     driving_log_directory_ = parameter<std::string>("driving_log_directory", "driving_logs");
@@ -1462,7 +1575,12 @@ private:
     const bool keep_braking = traffic_stop_requested() && enabled_ &&
       control_mode_ == "drive" && vesc_connected_;
     stop_control(reason);
-    if (keep_braking) {
+    if(operator_stopped_ && enabled_ && control_mode_=="drive" && vesc_connected_) {
+      publish_float(duty_pub_,0.);
+      command_brake_current_=brake_maximum_current_amps_;
+      requested_brake_current_=command_brake_current_;brake_mode_active_=true;
+      publish_commands(0.,command_brake_current_,latest_servo_position_,"brake");
+    } else if (keep_braking) {
       // This is a recoverable input failure, not arrival at the stop position.
       traffic_reapproach_ = true;
       traffic_phase_ = "temporary_stop_control_input";
@@ -1481,6 +1599,7 @@ private:
 
   std::optional<std::string> stop_reason(std::int64_t now_ns, bool check_start=true) const
   {
+    if (check_start && operator_stopped_)return "operator_stop";
     if (!enabled_) {return "disabled";}
     if (startup_safety_enabled_ && control_mode_=="drive") {
       if (startup_manual_) {return "manual_mode";}
@@ -1545,6 +1664,7 @@ private:
   bool update_control_from_path(
     std::int64_t & decision_finished_ros_ns)
   {
+    bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"control");
     const std::int64_t now_ns = now().nanoseconds();
     const double dt = clamp(seconds(now_ns - last_control_ns_), 1.0e-6,
       std::min({path_timeout_sec_, path_capture_maximum_age_sec_, erpm_timeout_sec_}));
@@ -1883,6 +2003,7 @@ private:
   void publish_commands(
     double duty, double brake_current, double servo_position, const std::string & motor_mode)
   {
+    if(operator_stopped_ && motor_mode=="duty")duty=0.;
     // Last line of defence: every automatic duty publisher goes through here.
     if (startup_safety_enabled_ && control_mode_=="drive") {
       refresh_start_authorization();

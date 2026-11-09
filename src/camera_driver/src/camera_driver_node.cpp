@@ -1,3 +1,4 @@
+#include <bev_handoff/runtime_monitor.hpp>
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/tunnel_ir_input_policy.hpp"
@@ -256,6 +257,7 @@ public:
     started_at_(std::chrono::steady_clock::now()),
     last_status_at_(started_at_)
   {
+    monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(node_);
     read_parameters();
     if (imu_stabilization_enabled_) {
       imu_stabilizer_ =
@@ -359,6 +361,23 @@ public:
 
     try {
       start_pipeline();
+      node_.declare_parameter<std::vector<std::string>>("runtime_editable_parameters",{"publish_fps"});
+      runtime_fps_callback_=node_.add_on_set_parameters_callback(
+        [this](const std::vector<rclcpp::Parameter>& values) {
+          rcl_interfaces::msg::SetParametersResult result;result.successful=false;
+          double fps=publish_fps_.load();
+          for(const auto& value:values) {
+            if(value.get_name()!="publish_fps" || value.get_type()!=rclcpp::ParameterType::PARAMETER_DOUBLE) {
+              result.reason="Only publish_fps is live; restart for sensor changes";return result;
+            }
+            fps=value.as_double();
+            if(!std::isfinite(fps) || fps<1 || fps>sensor_fps_) {
+              result.reason="publish_fps must be 1..sensor_fps";return result;
+            }
+          }
+          publish_fps_.store(fps);result.successful=true;return result;
+        });
+
       started_at_ = std::chrono::steady_clock::now();
       last_status_at_ = started_at_;
       const auto status_period =
@@ -1862,6 +1881,7 @@ private:
           frame_available_.notify_all();
         }
 
+        if(monitor_->enabled())monitor_->sample("rgb_capture",0.);
         if (bev_handoff::hasDirectCameraConsumer()) {
           if (packet->getType() == dai::ImgFrame::Type::NV12) {
             const auto & data = packet->getData();
@@ -2466,15 +2486,14 @@ private:
 
   void publish_loop()
   {
-    const bool publish_every_frame =
-      publish_fps_ >= sensor_fps_ * 0.999;
-    const auto period = std::chrono::duration_cast<
-      std::chrono::steady_clock::duration>(
-      std::chrono::duration<double>(1.0 / publish_fps_));
     auto next_deadline = std::chrono::steady_clock::now();
     std::uint64_t published_generation = 0;
 
     while (!stop_requested_.load(std::memory_order_relaxed)) {
+      const double publish_fps=publish_fps_.load();
+      const bool publish_every_frame=publish_fps>=sensor_fps_*.999;
+      const auto period=std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(1./publish_fps));
       if (publish_every_frame) {
         std::unique_lock<std::mutex> lock(wait_mutex_);
         frame_available_.wait(
@@ -2508,6 +2527,7 @@ private:
         &latest_frame_, std::memory_order_acquire);
       if (snapshot && snapshot->generation != published_generation) {
         try {
+          bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"camera_to_bev");
           const auto stabilization_started_at =
             std::chrono::steady_clock::now();
           const auto transform = stabilizationTransform(
@@ -3270,7 +3290,9 @@ private:
   double fixed_view_border_margin_px_{1.5};
   int output_crop_top_px_{0};
   bool publish_enabled_{false};
-  double publish_fps_{80.0};
+  std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
+  std::atomic<double> publish_fps_{80.0};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr runtime_fps_callback_;
   bool fused_bev_output_enabled_{false};
   std::string fused_bev_topic_{"/camera/bev_input"};
   double bev_input_bottom_fraction_{0.70};

@@ -59,7 +59,7 @@ auto_obstacles:
     obstacles.avoidance.deformation_only: true # 차선 안 장애물의 반대쪽으로 중앙선 변형; 출발 차단 없음
     # true일 때 unknown_extent, half_length, max_curvature, lateral_acceleration,
     # deceleration, clear_confirm은 변형 계산에 미사용. safety_margin은 변형량에만 적용(0 허용).
-    obstacles.avoidance.max_fps: 20.0 # 차선과 독립 스레드. 최대 계획 빈도
+    obstacles.avoidance.max_fps: 80.0 # 차선과 독립 스레드. 최대 계획 빈도
     obstacles.avoidance.max_age_sec: 0.25
     obstacles.avoidance.max_sync_sec: 0.06
     obstacles.avoidance.centerline_fallback_enabled: true # 회피 후보의 누락 경계 추정. 기본 중앙선 주행은 양쪽 경계를 요구하지 않음.

@@ -69,6 +69,7 @@ target_include_directories(auto_control_node
 )
 ament_target_dependencies(auto_control_node
   builtin_interfaces
+  bev_handoff
   rclcpp
   std_msgs
   std_srvs
@@ -86,7 +87,7 @@ target_link_libraries(auto_control_node
 install(TARGETS auto_control_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
-install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check scripts/startup_inspection DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check scripts/startup_inspection scripts/runtime_tools DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(FILES

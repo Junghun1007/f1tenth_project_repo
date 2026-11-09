@@ -1,3 +1,5 @@
+#include <bev_handoff/runtime_monitor.hpp>
+#include <map>
 #pragma once
 #include "auto_control/avoidance_planner.hpp"
 #include "auto_control/msg/avoidance_plan.hpp"
@@ -46,19 +48,23 @@ public:
     double legacy_offset_step=.05,legacy_stop_response=.35;
     parameter("offset_step_m",legacy_offset_step); parameter("stop_response_sec",legacy_stop_response);
     parameter("max_age_sec",max_age_); parameter("max_sync_sec",max_sync_);
-    parameter("max_fps",max_fps_);
+    parameter("max_fps",max_fps_);configured_fps_=max_fps_;
     avoidance::validate(o);
     if (!std::isfinite(max_age_)||max_age_<.05||max_age_>.3||!std::isfinite(max_sync_)||
-      max_sync_<.001||max_sync_>.1||!std::isfinite(max_fps_)||max_fps_<1||max_fps_>30) {
-      throw std::invalid_argument("avoidance: max_age_sec must be 0.05..0.30, max_sync_sec 0.001..0.10, max_fps 1..30");
+      max_sync_<.001||max_sync_>.1||!std::isfinite(max_fps_)||max_fps_<1||max_fps_>80) {
+      throw std::invalid_argument("avoidance: max_age_sec must be 0.05..0.30, max_sync_sec 0.001..0.10, max_fps 1..80");
     }
+    const double raw_margin=o.margin;
     // Bound uncorrected capture-to-control movement in low-speed apply mode.
     o.control=control_requested_;
     if (o.control && !o.deformation_only) {
       o.motion_margin=o.reference_speed*.20;
       o.margin+=.01+.5*o.max_curvature*o.motion_margin*o.motion_margin;
     }
+    options_=o;
+    extra_margin_=o.margin-raw_margin;
     planner_=std::make_unique<avoidance::Planner>(o);
+    monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(node_);
     RCLCPP_INFO(node_.get_logger(),"AVOIDANCE mode=%s",o.deformation_only?"DEFORM (nonblocking centerline offsets)":"CHECKED");
     RCLCPP_INFO(node_.get_logger(),
       "AVOIDANCE geometry: model=fixed-square-at-detected-point vehicle_width=%.3fm half_length=%.3fm effective_margin=%.3fm "
@@ -73,6 +79,35 @@ public:
     plans_=node_.create_publisher<auto_control::msg::AvoidancePlan>("/auto/avoidance_plan",rclcpp::QoS(1).best_effort());
     bev_handoff::setAvoidanceDeformationOnly(deformation_only_);
     bev_handoff::setAvoidanceControlRequested(control_requested_);
+    node_.declare_parameter<std::vector<std::string>>("runtime_editable_parameters",{
+"obstacles.avoidance.vehicle_half_width_m","obstacles.avoidance.vehicle_half_length_m","obstacles.avoidance.obstacle_size_m","obstacles.avoidance.safety_margin_m","obstacles.avoidance.unknown_extent_m","obstacles.avoidance.sample_step_m","obstacles.avoidance.max_offset_m","obstacles.avoidance.transition_m","obstacles.avoidance.max_curvature_per_m","obstacles.avoidance.lateral_acceleration_mps2","obstacles.avoidance.deceleration_mps2","obstacles.avoidance.clear_confirm_sec","obstacles.avoidance.max_fps","obstacles.avoidance.enabled"});
+    callback_=node_.add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter>& values) {
+      rcl_interfaces::msg::SetParametersResult result;result.successful=false;
+      std::lock_guard<std::mutex> lock(mutex_);
+      auto next=options_;double fps=configured_fps_;
+      for(const auto& value:values) {
+        const auto name=value.get_name();
+        if(name=="obstacles.avoidance.enabled")continue;
+        const std::string prefix="obstacles.avoidance.";
+        if(name.rfind(prefix,0)!=0 || value.get_type()!=rclcpp::ParameterType::PARAMETER_DOUBLE) {
+          result.reason="Startup-only parameter";return result;
+        }
+        const auto key=name.substr(prefix.size());
+        const double v=value.as_double();
+        if(!std::isfinite(v)){result.reason="Finite number required";return result;}
+        if(key=="max_fps")fps=v;
+        else if(live_options().count(key)) {
+          next.*live_options().at(key)=v+(key=="safety_margin_m"?extra_margin_:0.);
+        }
+        else {result.reason="Startup-only parameter";return result;}
+      }
+      try {
+        avoidance::validate(next);
+        if(fps<1 || fps>80)throw std::invalid_argument("max_fps must be 1..80");
+      }catch(const std::exception& error){result.reason=error.what();return result;}
+      options_=next;configured_fps_=fps;configuration_dirty_=true;
+      result.successful=true;return result;
+    });
     thread_=std::thread([this]() {run();});
   }
   ~AvoidanceWorker()
@@ -84,10 +119,27 @@ public:
     bev_handoff::setAvoidanceControlRequested(false);
   }
 private:
+  static const std::map<std::string,double avoidance::Options::*>& live_options() {
+    static const std::map<std::string,double avoidance::Options::*> fields={
+      {"vehicle_half_width_m",&avoidance::Options::half_width},
+      {"vehicle_half_length_m",&avoidance::Options::half_length},
+      {"obstacle_size_m",&avoidance::Options::obstacle_size},
+      {"safety_margin_m",&avoidance::Options::margin},
+      {"unknown_extent_m",&avoidance::Options::unknown_extent},
+      {"sample_step_m",&avoidance::Options::step},
+      {"max_offset_m",&avoidance::Options::max_offset},
+      {"transition_m",&avoidance::Options::transition},
+      {"max_curvature_per_m",&avoidance::Options::max_curvature},
+      {"lateral_acceleration_mps2",&avoidance::Options::lateral_acceleration},
+      {"deceleration_mps2",&avoidance::Options::deceleration},
+      {"clear_confirm_sec",&avoidance::Options::clear_sec}};
+    return fields;
+  }
   void parameter(const std::string & name,double & value)
   {
     rcl_interfaces::msg::ParameterDescriptor d; d.read_only=true;
-    d.description="Avoidance setting; edit obstacle YAML and restart";
+    d.description="Avoidance setting";
+    if(live_options().count(name) || name=="max_fps")d.read_only=false;
     value=node_.declare_parameter<double>("obstacles.avoidance."+name,value,d);
   }
   void report(const std::string & status)
@@ -111,13 +163,24 @@ private:
   {
     using Clock=std::chrono::steady_clock;
     bool previous_enabled=false;
+    auto next_start=Clock::now();
+    std::shared_ptr<const bev_handoff::ObstacleFrame> previous_obstacles;
     std::shared_ptr<const bev_handoff::PlanningLane> previous;
     while (rclcpp::ok()) {
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (wake_.wait_for(lock,std::chrono::duration<double>(1/max_fps_),[this]() {return stop_;})) {break;}
+        if (wake_.wait_for(lock,std::chrono::milliseconds(1),[this]() {return stop_;})) {break;}
       }
       if (!rclcpp::ok()) {break;}
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if(configuration_dirty_) {
+          planner_=std::make_unique<avoidance::Planner>(options_);
+          max_fps_=configured_fps_;configuration_dirty_=false;
+          previous.reset();previous_obstacles.reset();
+        }
+      }
+      if(Clock::now()<next_start)continue;
       try {
         const bool enabled=node_.get_parameter("obstacles.avoidance.enabled").as_bool();
         if (enabled!=previous_enabled) {
@@ -133,7 +196,6 @@ private:
         if (existing && std::chrono::duration<double>(now-existing->depth_captured_at).count()>max_age_) {
           unavailable("WAIT: stale depth");
         }
-        if (lane==previous) {continue;}
         const auto obstacles=bev_handoff::matchingObstacles(lane->header,max_sync_,max_age_);
         if (!obstacles) {unavailable("WAIT: depth sync"); continue;}
         if (obstacles->width!=lane->width || obstacles->height!=lane->height ||
@@ -141,7 +203,10 @@ private:
           std::abs(obstacles->meter_per_pixel-lane->meter_per_pixel)>1e-5) {
           unavailable("WAIT: geometry mismatch"); continue;
         }
-        previous=lane;
+        if(lane==previous && obstacles==previous_obstacles)continue;
+        previous=lane;previous_obstacles=obstacles;
+        next_start=Clock::now()+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1/max_fps_));
+        bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"avoidance_plan");
         const auto planning_started=Clock::now();
         const bool lane_obstacle_detected=avoidance::hasInLaneObstacle(*lane,*obstacles);
         auto result=std::make_shared<bev_handoff::AvoidancePreview>(planner_->plan(
@@ -189,6 +254,11 @@ private:
       }
     }
   }
+  avoidance::Options options_;
+  double configured_fps_{80},extra_margin_{0};
+  bool configuration_dirty_{false};
+  std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr callback_;
   bool deformation_only_{true};
   rclcpp::Node & node_;
   std::unique_ptr<avoidance::Planner> planner_;

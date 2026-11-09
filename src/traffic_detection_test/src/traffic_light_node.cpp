@@ -1,3 +1,5 @@
+#include <atomic>
+#include <bev_handoff/runtime_monitor.hpp>
 #include "bev_handoff/direct_camera_handoff.hpp"
 #include "traffic_detection_test/yolox_detector.hpp"
 #include "traffic_detection_test/msg/traffic_light_state.hpp"
@@ -29,6 +31,7 @@ public:
   explicit TrafficLightNode(const rclcpp::NodeOptions & options)
   : Node("traffic_light_detector", options)
   {
+    monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(*this);
     model_ = declare_parameter<std::string>("model_path", "");
     if (model_.empty()) {
       model_ = ament_index_cpp::get_package_share_directory("traffic_detection_test") +
@@ -64,9 +67,25 @@ public:
       nms_ < 0 || nms_ > 1 || min_s_ < 0 || min_s_ > 255 || min_v_ < 0 || min_v_ > 255)
     {throw std::invalid_argument("invalid traffic ROI/rate/threshold parameters");}
     workspace_ = static_cast<std::size_t>(workspace) * 1024U * 1024U;
-    period_ = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1.0 / fps));
+    inference_fps_.store(fps);
+    declare_parameter<std::vector<std::string>>("runtime_editable_parameters",{"inference_fps"});
     publisher_ = create_publisher<State>(
       declare_parameter<std::string>("state_topic", "/traffic_light/state"), rclcpp::QoS(1));
+    runtime_fps_callback_=add_on_set_parameters_callback(
+      [this](const std::vector<rclcpp::Parameter>& values) {
+        rcl_interfaces::msg::SetParametersResult result;result.successful=false;
+        double fps=inference_fps_.load();
+        for(const auto& value:values) {
+          if(value.get_name()!="inference_fps" || value.get_type()!=rclcpp::ParameterType::PARAMETER_DOUBLE) {
+            result.reason="Only inference_fps is live; restart for model changes";return result;
+          }
+          fps=value.as_double();
+          if(!std::isfinite(fps) || fps<1 || fps>80) {
+            result.reason="inference_fps must be 1..80";return result;
+          }
+        }
+        inference_fps_.store(fps);result.successful=true;return result;
+      });
     rclcpp::PublisherOptions status_options;
     status_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
     model_status_pub_ = create_publisher<std_msgs::msg::String>(
@@ -188,6 +207,7 @@ private:
     RCLCPP_INFO(get_logger(), "[MODEL CHECK] %s", status.c_str());
   }
 
+  std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
   void run()
   {
     bev_handoff::publishTrafficInferenceFps(0.0, Clock::time_point{});
@@ -234,7 +254,8 @@ private:
         frame = std::move(pending_);
       }
       const auto started = Clock::now();
-      deadline = started + period_;
+      deadline = started + std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(1. / inference_fps_.load()));
       State message;
       cv::Rect2f detected_box;
       message.state = State::UNKNOWN;
@@ -250,6 +271,7 @@ private:
             const cv::Rect roi(
               static_cast<int>(left_ * frame->width), static_cast<int>(top_ * frame->height),
               static_cast<int>(width_ * frame->width), static_cast<int>(height_ * frame->height));
+            bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"traffic_inference");
             const auto result = detector->detect_nv12(frame->nv12, frame->size, frame->stride,
               frame->width, frame->height, roi);
             ++completed_inferences;
@@ -328,7 +350,8 @@ private:
   std::uint8_t candidate_state_{State::UNKNOWN};
   cv::Rect2f candidate_box_;
   Clock::time_point candidate_time_;
-  Clock::duration period_;
+  std::atomic<double> inference_fps_{20.};
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr runtime_fps_callback_;
   std::uint64_t consumer_{0};
   rclcpp::Publisher<State>::SharedPtr publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr model_status_pub_;

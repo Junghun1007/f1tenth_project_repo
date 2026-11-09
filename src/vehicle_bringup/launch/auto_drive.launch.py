@@ -781,6 +781,10 @@ def generate_launch_description():
             "ml_model_path"
         ),
     })
+    runtime_tools_node = Node(
+        package="auto_control", executable="runtime_tools", name="auto_runtime_tools",
+        output="screen", condition=IfCondition(LaunchConfiguration("preview_enabled")),
+    )
     auto_control_node = Node(
         package="auto_control",
         executable="auto_control_node",
@@ -962,5 +966,6 @@ def generate_launch_description():
             dynamics_node,
             performance_shutdown_handler,
             auto_control_node,
+            runtime_tools_node,
         ]
     )

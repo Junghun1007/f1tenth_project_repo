@@ -358,7 +358,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "camera_publish_fps",
-                default_value="30.0",
+                default_value="80.0",
                 description="Maximum rectified RGB publication rate.",
             ),
             DeclareLaunchArgument(

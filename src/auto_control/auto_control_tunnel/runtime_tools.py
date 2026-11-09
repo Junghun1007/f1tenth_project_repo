@@ -1,0 +1,319 @@
+"""On-demand Tk windows. ROS work is asynchronous on the GUI event loop."""
+import json
+import math
+import os
+import time
+
+import rclpy
+from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rclpy.parameter_client import AsyncParameterClient
+from rclpy.qos import QoSProfile, DurabilityPolicy
+from std_msgs.msg import Bool, String
+from std_srvs.srv import Trigger
+
+
+def category(name):
+    if 'fps' in name or name.endswith('rate_hz'):
+        return 'FPS·주기'
+    if name.startswith('obstacles.'):
+        return '장애물·회피'
+    if name.startswith('traffic_'):
+        return '신호등·정지선'
+    if name.startswith(('stanley_', 'steering_', 'maximum_steering', 'stop_steering')):
+        return '차선·조향'
+    if name.startswith(('corner_', 'curvature_', 'maximum_lateral')):
+        return '코너 속도'
+    if name.startswith(('path_', 'erpm_timeout')):
+        return '경로·입력 유효성'
+    if name.startswith(('brake_', 'electrical_')):
+        return '브레이크'
+    if name.startswith(('speed_pid_', 'longitudinal_pid_')):
+        return '속도 PID'
+    if name.startswith(('speed_', 'maximum_speed', 'minimum_speed', 'duty_', 'maximum_duty',
+                        'minimum_duty', 'longitudinal_', 'obstacle_')):
+        return '가감속·속도'
+    return '기타·진단'
+
+
+def numeric(value, kind):
+    v = float(value)
+    if not math.isfinite(v):
+        raise ValueError('유한한 숫자를 입력하세요.')
+    if kind == Parameter.Type.BOOL:
+        if v not in (0., 1.):
+            raise ValueError('ON/OFF는 0 또는 1입니다.')
+        return bool(v)
+    if kind == Parameter.Type.INTEGER:
+        if not v.is_integer():
+            raise ValueError('정수로 입력하세요.')
+        return int(v)
+    return v
+
+
+class RuntimeTools(Node):
+    def __init__(self, root):
+        super().__init__('auto_runtime_tools')
+        from tkinter import ttk
+        self.root = root
+        self.ttk = ttk
+        self.windows = {}
+        self.clients = {}
+        self.latest = {}
+        self.caps = {}
+        self.fields = {}
+        self.pending_nodes = set()
+        self.metrics_pub = self.create_publisher(
+            Bool, '/auto/runtime_metrics/enabled',
+            QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.create_subscription(String, '/auto/ui/action', self.action, 10)
+        self.create_subscription(String, '/auto/runtime_metrics', self.metric, 30)
+        self.stop_client = self.create_client(Trigger, '/auto_control/stop')
+        self.start_client = self.create_client(Trigger, '/auto_control/start')
+        self.set_metrics(False)
+        self.last_heartbeat = 0.
+
+    def set_metrics(self, enabled):
+        self.metrics_pub.publish(Bool(data=enabled))
+
+    def action(self, msg):
+        if msg.data == 'metrics':
+            self.show_metrics()
+        elif msg.data == 'parameters':
+            self.show_parameters()
+        elif msg.data == 'stop':
+            self.request(self.stop_client)
+
+    def request(self, client):
+        if not client.service_is_ready():
+            self.get_logger().error(f'Unavailable service: {client.srv_name}')
+            return
+        client.call_async(Trigger.Request()).add_done_callback(self.report)
+
+    def report(self, future):
+        try:
+            result = future.result()
+            self.get_logger().info(result.message)
+        except Exception as error:
+            self.get_logger().error(str(error))
+
+    def window(self, key, title):
+        import tkinter as tk
+        if key in self.windows:
+            self.windows[key].deiconify()
+            self.windows[key].lift()
+            return None
+        window = tk.Toplevel(self.root)
+        window.title(title)
+        window.geometry('1120x650')
+        window.protocol('WM_DELETE_WINDOW', lambda: self.close(key))
+        self.windows[key] = window
+        return window
+
+    def close(self, key):
+        self.windows.pop(key).destroy()
+        if key == 'metrics':
+            self.set_metrics(False)
+            self.latest.clear()
+
+    def show_metrics(self):
+        window = self.window('metrics', '단계별 연산량 · 창이 열려 있을 때 측정')
+        if window is None:
+            return
+        self.latest.clear()
+        self.read_caps()
+        self.set_metrics(True)
+        self.ttk.Label(window, text='실제 완료 FPS / 평균·p95 연산 시간 / 연산 시간 기준 추정 처리능력'
+                       '    ·    2초 이상 결과가 없으면 STALE').pack(pady=10)
+        columns = ('node', 'stage', 'cap', 'fps', 'mean', 'p95', 'capacity', 'state')
+        self.table = self.ttk.Treeview(window, columns=columns, show='headings')
+        for key, label in zip(columns, ('노드', '처리 단계', '설정 상한', '실제 FPS', '평균 ms',
+                                        'p95 ms', '추정 FPS', '상태')):
+            self.table.heading(key, text=label)
+            self.table.column(key, width=125)
+        self.table.pack(fill='both', expand=True)
+        self.ttk.Label(window, text='rgb_capture는 촬영 관측 빈도입니다. 촬영 연산 시간은 호스트에서 측정할 수 없습니다.'
+                       '\n추정 FPS = 1000 / 평균 ms이며 실제 완료 FPS와 다릅니다. 기존 제어·추론용 타이밍은 계속 사용됩니다.').pack(pady=8)
+
+    def read_caps(self):
+        requests = {
+            '/camera_driver': {'sensor_fps': ('rgb_capture',), 'publish_fps': ('camera_to_bev',)},
+            '/traffic_light_detector': {'inference_fps': ('traffic_inference',)},
+            '/auto_obstacles': {'obstacles.avoidance.max_fps': ('avoidance_plan',)},
+        }
+        for node, stages in requests.items():
+            client = self.clients.setdefault(node, AsyncParameterClient(self, node))
+            if not client.services_are_ready():
+                continue
+            def received(future, stages=stages):
+                try:
+                    for name, value in zip(stages, future.result().values):
+                        cap = value.double_value if value.type == 3 else value.integer_value
+                        for stage in stages[name]:
+                            self.caps[stage] = f'{cap:g}'
+                except Exception as error:
+                    self.get_logger().warning(str(error))
+            client.get_parameters(list(stages)).add_done_callback(received)
+
+    def metric(self, msg):
+        if 'metrics' not in self.windows:
+            return
+        try:
+            row = json.loads(msg.data)
+            self.latest[(row['node'], row['stage'])] = (time.monotonic(), row)
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    def show_parameters(self):
+        window = self.window('parameters', 'auto_control 실시간 파라미터 · 숫자 입력')
+        if window is None:
+            return
+        self.ttk.Label(window, text='기능별 탭 · BOOL은 0/1 · Apply는 해당 탭의 변경분을 노드 단위로 일괄 검증'
+                       '\n재시작 설정은 읽기 전용입니다. 적용값은 현재 실행에만 유지됩니다.').pack(pady=8)
+        self.tabs = self.ttk.Notebook(window)
+        self.tabs.pack(fill='both', expand=True)
+        self.fields = {}
+        self.tab_choices = {}
+        self.tab_selector = self.ttk.Combobox(window, state='readonly')
+        self.tab_selector.pack(fill='x', before=self.tabs, padx=8, pady=4)
+        self.tab_selector.bind('<<ComboboxSelected>>',
+            lambda event: self.tabs.select(self.tab_choices[self.tab_selector.get()]))
+        for name in ('/auto_control', '/auto_obstacles', '/camera_driver', '/bev_processor',
+                     '/line_detactor', '/traffic_light_detector'):
+            client = AsyncParameterClient(self, name)
+            self.clients[name] = client
+            if not client.services_are_ready():
+                self.get_logger().warning(f'Parameter service unavailable: {name}')
+                continue
+            client.list_parameters(depth=0).add_done_callback(
+                lambda future, name=name: self.listed(name, future))
+
+    def listed(self, node, future):
+        if 'parameters' not in self.windows:
+            return
+        try:
+            names = future.result().result.names
+            self.clients[node].get_parameters(names).add_done_callback(
+                lambda f: self.loaded(node, names, f))
+        except Exception as error:
+            self.get_logger().error(str(error))
+
+    def loaded(self, node, names, future):
+        import tkinter as tk
+        if 'parameters' not in self.windows:
+            return
+        try:
+            values = dict(zip(names, future.result().values))
+            editable = set(values['runtime_editable_parameters'].string_array_value) if 'runtime_editable_parameters' in values else set()
+            grouped = {}
+            for name, value in values.items():
+                kind = Parameter.Type(value.type)
+                if kind not in (Parameter.Type.BOOL, Parameter.Type.INTEGER, Parameter.Type.DOUBLE):
+                    continue
+                grouped.setdefault(category(name), []).append((name, value, kind))
+            for group, entries in sorted(grouped.items()):
+                frame = self.ttk.Frame(self.tabs)
+                label = f'{node.lstrip("/")} / {group}'
+                self.tabs.add(frame, text=label)
+                self.tab_choices[label] = frame
+                self.tab_selector['values'] = tuple(self.tab_choices)
+                status = tk.StringVar(value='값을 수정하고 Apply를 누르세요.')
+                self.ttk.Label(frame, textvariable=status).pack()
+                canvas = tk.Canvas(frame, highlightthickness=0)
+                scrollbar = self.ttk.Scrollbar(frame, orient='vertical', command=canvas.yview)
+                canvas.configure(yscrollcommand=scrollbar.set)
+                scrollbar.pack(side='right', fill='y')
+                canvas.pack(side='top', fill='both', expand=True)
+                body = self.ttk.Frame(canvas)
+                canvas.create_window((0, 0), window=body, anchor='nw')
+                body.bind('<Configure>', lambda e, c=canvas: c.configure(scrollregion=c.bbox('all')))
+                rows = []
+                for index, (name, value, kind) in enumerate(sorted(entries)):
+                    current = (value.bool_value if kind == Parameter.Type.BOOL else
+                               value.integer_value if kind == Parameter.Type.INTEGER else value.double_value)
+                    text = str(int(current)) if kind == Parameter.Type.BOOL else str(current)
+                    var = tk.StringVar(value=text)
+                    self.ttk.Label(body, text=name, width=65).grid(row=index, column=0, padx=8, pady=4, sticky='w')
+                    self.ttk.Entry(body, textvariable=var, width=18,
+                                   state='normal' if name in editable else 'readonly').grid(row=index, column=1)
+                    self.ttk.Label(body, text='LIVE' if name in editable else '재시작 필요').grid(row=index, column=2, padx=10)
+                    if name in editable:
+                        rows.append([name, var, kind, current])
+                button = self.ttk.Button(frame, text='Apply',
+                    command=lambda n=node, r=rows, st=status: self.apply(n, r, st))
+                button.pack(pady=6)
+        except Exception as error:
+            self.get_logger().error(str(error))
+
+    def apply(self, node, rows, status):
+        if node in self.pending_nodes:
+            status.set('앞선 적용 결과를 기다리는 중입니다.')
+            return
+        try:
+            changed = [(row, numeric(row[1].get(), row[2])) for row in rows]
+            changed = [(row, value) for row, value in changed if value != row[3]]
+            if not changed:
+                status.set('변경된 값이 없습니다.')
+                return
+            request = [Parameter(row[0], row[2], value) for row, value in changed]
+            self.pending_nodes.add(node)
+            status.set('검증·적용 중…')
+            self.clients[node].set_parameters_atomically(request).add_done_callback(
+                lambda future: self.applied(node, future, changed, status))
+        except Exception as error:
+            status.set(str(error))
+
+    def applied(self, node, future, changed, status):
+        self.pending_nodes.discard(node)
+        if 'parameters' not in self.windows:
+            return
+        try:
+            reply = future.result().result
+            if reply.successful:
+                for row, value in changed:
+                    row[3] = value
+                status.set('적용 완료')
+                if 'metrics' in self.windows:
+                    self.read_caps()
+            else:
+                status.set('거절 · ' + reply.reason)
+        except Exception as error:
+            status.set(str(error))
+
+    def tick(self):
+        rclpy.spin_once(self, timeout_sec=0)
+        now = time.monotonic()
+        if 'metrics' in self.windows:
+            if now - self.last_heartbeat > .5:
+                self.set_metrics(True)
+                self.last_heartbeat = now
+            for (node, stage), (at, row) in self.latest.items():
+                key = node + ':' + stage
+                mean = row['mean_ms']
+                values = (node, stage, self.caps.get(stage, '입력 연동'), f"{row['fps']:.1f}", f'{mean:.3f}' if mean > 0 else '--',
+                          f"{row['p95_ms']:.3f}", f'{1000/mean:.1f}' if mean > 0 else '--',
+                          'LIVE' if now-at < 2 else 'STALE')
+                if self.table.exists(key):
+                    self.table.item(key, values=values)
+                else:
+                    self.table.insert('', 'end', iid=key, values=values)
+        self.root.after(10, self.tick)
+
+
+def main(args=None):
+    import tkinter as tk
+    rclpy.init(args=args)
+    root = tk.Tk()
+    root.withdraw()
+    node = RuntimeTools(root)
+    try:
+        root.after(10, node.tick)
+        root.mainloop()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.set_metrics(False)
+        node.destroy_node()
+        root.destroy()
+        if rclpy.ok():
+            rclpy.shutdown()

@@ -14,7 +14,13 @@ int main(int argc, char ** argv)
   cv::Mat bev(776,360,CV_8UC3,cv::Scalar(255,255,255));
   panel.update({}, false, 0.);
   auto offline = panel.append(bev, true);
-  assert(!panel.available() && offline.cols == 540 && offline.rows == bev.rows);
+  assert(!panel.available() && offline.cols == 540 && offline.rows > bev.rows);
+  panel.mouse(cv::EVENT_LBUTTONUP,10,offline.rows-5,0);
+  assert(panel.take_action()=="metrics");
+  panel.mouse(cv::EVENT_LBUTTONUP,200,offline.rows-5,0);
+  assert(panel.take_action()=="parameters");
+  panel.mouse(cv::EVENT_LBUTTONUP,500,offline.rows-5,0);
+  assert(panel.take_action()=="stop");
   panel.mouse(cv::EVENT_LBUTTONDOWN, 414, 400, 0);
   assert(!panel.take_request(0.));
   panel.update({.8,5.,5.,0}, true, .1);

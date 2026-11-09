@@ -33,6 +33,8 @@
   <depend>std_srvs</depend>
   <depend>sensor_msgs</depend>
   <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-tk</exec_depend>
+  <exec_depend>rclpy</exec_depend>
   <depend>line_detactor</depend>
   <depend>traffic_detection_test</depend>
 

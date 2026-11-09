@@ -123,6 +123,7 @@ class InspectionTests(unittest.TestCase):
 double seconds(std::int64_t n) {return n/1e9;}
 void require(bool x) {if(!x) throw std::runtime_error("startup safety failure");}
 struct Controller {
+  bool operator_stopped_{false};
   bool enabled_{true},model_startup_check_required_{true},vesc_connected_{true};
   bool startup_safety_enabled_{true},startup_manual_{false},camera_startup_ready_{false};
   auto_control::StartAuthorization start_authorization_;
@@ -145,7 +146,7 @@ REFRESH
 GUARD
     return duty;
   }
-  bool request() {refresh_start_authorization(); return start_authorization_.request(!stop_reason(1000000000,false));}
+  bool request() {refresh_start_authorization(); const bool ok=start_authorization_.request(!stop_reason(1000000000,false)); if(ok)operator_stopped_=false; return ok;}
 };
 int main() {
   Controller c;
@@ -160,6 +161,9 @@ int main() {
   c.path_=false; require(!c.request()); c.path_=true;
   require(c.final_duty(.1)==0 && c.request());
   require(!c.stop_reason(1000000000) && c.final_duty(.1)==.1);
+  c.operator_stopped_=true;c.start_authorization_.revoke();
+  require(c.stop_reason(1000000000)=="operator_stop" && c.final_duty(.1)==0);
+  require(c.request() && c.final_duty(.1)==.1);
   c.vesc_connected_=false; require(c.final_duty(.1)==0);
   c.vesc_connected_=true; require(c.final_duty(.1)==0 && c.request());
   c.last_erpm_ns_=0; require(c.final_duty(.1)==0 && !c.request());

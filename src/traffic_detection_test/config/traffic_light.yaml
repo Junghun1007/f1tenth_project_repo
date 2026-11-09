@@ -5,7 +5,7 @@ traffic_light_detector:
     engine_cache_path: ""
     tensorrt_workspace_size_mb: 1024
     # 검출 주기 상한 (0 초과 ~ 80). 실제 FPS는 카메라/추론 속도에 따라 낮아질 수 있음.
-    inference_fps: 30.0
+    inference_fps: 20.0
     max_frame_age_sec: 0.25
     # Fractions of the full rectified COLOR frame, before BEV/IMU projection.
     # Equivalent to x=0,y=65,w=640,h=160 on the standalone 640x400 view.

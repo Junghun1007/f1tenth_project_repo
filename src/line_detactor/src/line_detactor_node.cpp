@@ -1,3 +1,4 @@
+#include <bev_handoff/runtime_monitor.hpp>
 #include "line_detactor/line_detactor_node.hpp"
 
 #include "line_detactor/tensorrt_lane_backend.hpp"
@@ -166,6 +167,8 @@ public:
       RCLCPP_ERROR(node_.get_logger(), "[MODEL CHECK] FAIL: %s", e.what());
       throw;
     }
+    monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(node_);
+    ui_action_pub_=node_.create_publisher<std_msgs::msg::String>("/auto/ui/action",rclcpp::QoS(10));
     start_profiling();
 
     const auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1))
@@ -1145,6 +1148,10 @@ private:
               message->bgr.step * static_cast<std::size_t>(message->bgr.rows),
               message->bgr.step);
           backend_timer.stop();
+          if(monitor_->enabled()) {
+            monitor_->sample("lane_inference",timing.execution_nanoseconds/1.e6);
+            monitor_->sample("lane_gpu_preprocess",timing.preprocessing_nanoseconds/1.e6);
+          }
           if (profile) {
             profile_frame.gpu_preprocess_ms = nanoseconds_to_milliseconds(timing.preprocessing_nanoseconds);
             profile_frame.gpu_inference_ms = nanoseconds_to_milliseconds(timing.execution_nanoseconds);
@@ -1201,6 +1208,7 @@ private:
               std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - started).count());
             timing.correction_nanoseconds += timing.label_export_nanoseconds + connection_nanoseconds;
+            if(monitor_->enabled())monitor_->sample("lane_postprocess",connection_nanoseconds/1.e6);
             profile_frame.correction_ms = nanoseconds_to_milliseconds(timing.correction_nanoseconds);
             ProfileTimer publish_timer(profile, ProfileStage::publish);
             publish_result(
@@ -1412,6 +1420,9 @@ private:
           message.data = *request;
           speed_limit_request_pub_->publish(message);
         }
+        if(const auto action=speed_panel.take_action();!action.empty()) {
+          std_msgs::msg::String message;message.data=action;ui_action_pub_->publish(message);
+        }
         const auto traffic_signal = bev_handoff::latestTrafficSignalState();
         const auto exposure_hud=camera_exposure_hud(bev_handoff::latestCameraExposure(false),
           bev_handoff::latestCameraExposure(true),bev_handoff::latestRgbExposureControl(),SteadyClock::now());
@@ -1614,6 +1625,8 @@ private:
   std::string preview_target_speed_topic_, preview_corner_state_topic_, preview_duty_topic_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr theme_parameter_callback_;
   bool preview_result_only_enabled_{true};
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr ui_action_pub_;
+  std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
   double preview_fps_{30.0};
   double preview_scale_{2.0};
   std::string preview_window_name_;

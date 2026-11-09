@@ -30,6 +30,7 @@ class StartupInspection(Node):
             String, f'/{name}/model_status', lambda msg, name=name: self.on_model(name, msg), qos)
             for name in expected]
         self.client = self.create_client(Trigger, '/auto_control/start')
+        self.stop_client = self.create_client(Trigger, '/auto_control/stop')
 
     def on_camera(self, message):
         self.state.camera = message.data
@@ -49,6 +50,12 @@ class StartupInspection(Node):
             count=message.height*message.step).reshape(message.height, message.step)
         self.image = rows[:, :message.width * 3].reshape(message.height, message.width, 3).copy()
         self.image_at = time.monotonic()
+
+    def request_stop(self):
+        if self.stop_client.service_is_ready():
+            self.stop_client.call_async(Trigger.Request())
+        else:
+            self.state.error = 'STOP service unavailable'
 
     def request_start(self):
         if not self.state.can_start() or self.pending is not None:
@@ -99,9 +106,11 @@ def render(state, image=None, image_fresh=False, pending=False, now=None):
     text('The controller checks models, measured camera pose, VESC feedback and a fresh valid lane.',22,500,scale=.48)
     text('Automatic duty is blocked until an accepted START request. Manual mode skips this button.',22,525,scale=.48)
     ready = state.can_start(now) and not pending
-    cv2.rectangle(canvas,(25,555),(975,630),(65,155,60) if ready else (65,65,65),-1)
+    cv2.rectangle(canvas,(25,555),(740,630),(65,155,60) if ready else (65,65,65),-1)
     label = 'START AUTOMATIC DRIVING' if ready else ('REQUESTING START...' if pending else 'WAITING FOR CHECKS')
-    text(label,240,602,(255,255,255),.85)
+    text(label,70,602,(255,255,255),.85)
+    cv2.rectangle(canvas,(760,555),(975,630),(50,50,190),-1)
+    text('STOP',800,602,(255,255,255),.85)
     text(state.error,22,668,(100,170,255),.48)
     text('Click START or press Enter when READY. Q / closing this window never authorizes duty.',22,710,scale=.48)
     text('Only this inspection window closes after approval; the driving BEV preview remains open.',22,738,scale=.48)
@@ -140,7 +149,8 @@ def main(args=None):
             if not shown:
                 cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
                 cv2.setMouseCallback(window, lambda event,x,y,flags,data: node.request_start()
-                    if event==cv2.EVENT_LBUTTONUP and 25<=x<=975 and 555<=y<=630 else None)
+                    if event==cv2.EVENT_LBUTTONUP and 25<=x<=740 and 555<=y<=630 else
+                    node.request_stop() if event==cv2.EVENT_LBUTTONUP and 760<=x<=975 and 555<=y<=630 else None)
                 shown = True
             cv2.imshow(window, render(node.state,node.image,
                 time.monotonic()-node.image_at<.5,node.pending is not None))

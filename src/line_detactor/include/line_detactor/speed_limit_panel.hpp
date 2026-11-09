@@ -21,6 +21,7 @@ class SpeedLimitPanel
 public:
   void update(const SpeedLimitSnapshot & state, bool fresh, double now);
   cv::Mat append(const cv::Mat & bev, bool themed);
+  std::string take_action(){auto action=action_;action_.clear();return action;}
   void mouse(int event, int x, int y, int flags);
   std::optional<double> take_request(double now);
   static void mouse_callback(int event, int x, int y, int flags, void * userdata);
@@ -35,6 +36,8 @@ private:
   bool dirty_{false}, pending_{false}, released_{false};
   double selected_{0.0}, now_{0.0}, last_sent_{-100.0}, failed_until_{-1.0};
   cv::Rect hit_;
+  cv::Rect metrics_button_,parameters_button_,stop_button_;
+  std::string action_;
   int track_top_{0}, track_bottom_{0}, track_x_{0};
 };
 }  // namespace line_detactor

@@ -1,3 +1,4 @@
+#include <bev_handoff/runtime_monitor.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -103,6 +104,7 @@ public:
   explicit BevProcessorNode(const rclcpp::NodeOptions & options)
   : Node("bev_processor", options)
   {
+    monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(*this);
     declareParameters();
     readParameters();
     validateParameters();
@@ -1123,6 +1125,7 @@ private:
       processed_input_generation = generation;
 
       try {
+        bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"bev_transform");
         const auto started_at = SteadyClock::now();
         auto output = std::make_shared<BevFrame>();
         const auto processor = std::atomic_load_explicit(
@@ -2025,6 +2028,7 @@ private:
   std::string output_frame_id_;
   std::string startup_ground_reference_topic_;
   std::string startup_ground_reference_frame_id_;
+  std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
   double expected_input_fps_{80.0};
   double input_bottom_fraction_{0.70};
   int input_crop_width_{1280};

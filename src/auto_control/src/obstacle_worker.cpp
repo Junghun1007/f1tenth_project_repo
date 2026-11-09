@@ -88,6 +88,7 @@ void ObstacleWorker::observe(const camera_driver::msg::BevInput & input)
 }
 void ObstacleWorker::run()
 {
+  monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(node_);
   using Clock=std::chrono::steady_clock;
   obstacle::Projector projector;
   auto last_capture=Clock::time_point{};
@@ -126,6 +127,7 @@ void ObstacleWorker::run()
       // Retry the latest depth while waiting for nearby RGB geometry; no queue growth.
       if (!match) {++rejected_sync; continue;}
       last_capture=depth->captured_at;
+      bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"obstacle_detection");
       const auto started=Clock::now();
       point_cloud::RigidTransform rgb_from_depth;
       rgb_from_depth.rotation=depth->rgb_from_depth_rotation;
