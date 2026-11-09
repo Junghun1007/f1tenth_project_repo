@@ -2,6 +2,7 @@
 #include <map>
 #pragma once
 #include "auto_control/avoidance_planner.hpp"
+#include "auto_control/capture_pair_order.hpp"
 #include "auto_control/msg/avoidance_plan.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
@@ -105,7 +106,7 @@ public:
         avoidance::validate(next);
         if(fps<1 || fps>80)throw std::invalid_argument("max_fps must be 1..80");
       }catch(const std::exception& error){result.reason=error.what();return result;}
-      options_=next;configured_fps_=fps;configuration_dirty_=true;
+      options_=next;configured_fps_=fps;configuration_dirty_=true;wake_.notify_all();
       result.successful=true;return result;
     });
     thread_=std::thread([this]() {run();});
@@ -145,15 +146,20 @@ private:
   void report(const std::string & status)
   {
     if (!rclcpp::ok()) {return;}
-    // Publish regularly so a late-joining topic echo also sees a persistent
-    // BLOCKED state. Do not suppress a state forever after a throttled change.
+    const auto now=std::chrono::steady_clock::now();
+    // First state/change is immediate; identical status uses a 1Hz heartbeat.
+    if (status==last_status_ && now-last_status_at_<std::chrono::seconds(1)) {return;}
+    last_status_=status;last_status_at_=now;
     std_msgs::msg::String message; message.data=status; status_->publish(message);
     RCLCPP_INFO_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,
       "AVOIDANCE: %s (control_requested=%s)",status.c_str(),control_requested_?"true":"false");
   }
   void unavailable(const std::string & why)
   {
-    planner_->unavailable(); bev_handoff::publishAvoidancePreview(nullptr); report(why);
+    if (!unavailable_ || unavailable_reason_!=why) {
+      planner_->unavailable();bev_handoff::publishAvoidancePreview(nullptr);
+    }
+    unavailable_=true;unavailable_reason_=why;report(why);
     if (control_requested_ && rclcpp::ok()) {
       auto_control::msg::AvoidancePlan invalid;
       invalid.deformation_only=deformation_only_; invalid.control_ready=true; invalid.status=why; plans_->publish(invalid);
@@ -164,38 +170,37 @@ private:
     using Clock=std::chrono::steady_clock;
     bool previous_enabled=false;
     auto next_start=Clock::now();
-    std::shared_ptr<const bev_handoff::ObstacleFrame> previous_obstacles;
-    std::shared_ptr<const bev_handoff::PlanningLane> previous;
+    std::optional<std::int64_t> previous_lane,previous_depth;
     while (rclcpp::ok()) {
       {
         std::unique_lock<std::mutex> lock(mutex_);
-        if (wake_.wait_for(lock,std::chrono::milliseconds(1),[this]() {return stop_;})) {break;}
+        wake_.wait_until(lock,next_start,[this]() {return stop_ || configuration_dirty_;});
+        if(stop_) {break;}
       }
       if (!rclcpp::ok()) {break;}
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if(configuration_dirty_) {
           planner_=std::make_unique<avoidance::Planner>(options_);
-          max_fps_=configured_fps_;configuration_dirty_=false;
-          previous.reset();previous_obstacles.reset();
+          max_fps_=configured_fps_;configuration_dirty_=false;next_start=Clock::now();
+          unavailable_=false;previous_lane.reset();previous_depth.reset();
         }
       }
       if(Clock::now()<next_start)continue;
+      // Also bound OFF/stale/sync/error attempts and invalid-plan publication.
+      next_start=Clock::now()+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1/max_fps_));
       try {
         const bool enabled=node_.get_parameter("obstacles.avoidance.enabled").as_bool();
         if (enabled!=previous_enabled) {
-          planner_->reset(); previous.reset(); bev_handoff::setAvoidancePreviewEnabled(enabled);
+          planner_->reset();previous_lane.reset();previous_depth.reset();
+          unavailable_=false;bev_handoff::setAvoidancePreviewEnabled(enabled);
           previous_enabled=enabled; report(enabled?"WAIT":"OFF");
         }
         if (!enabled) {if (control_requested_) {unavailable("OFF: planning disabled");} continue;}
         const auto lane=bev_handoff::latestPlanningLane();
         const auto now=Clock::now();
         const double lane_age=lane?std::chrono::duration<double>(now-lane->received_at).count():1e9;
-        const auto existing=bev_handoff::latestAvoidancePreview();
         if (!lane || lane_age<0 || lane_age>max_age_) {unavailable("WAIT: stale lane"); continue;}
-        if (existing && std::chrono::duration<double>(now-existing->depth_captured_at).count()>max_age_) {
-          unavailable("WAIT: stale depth");
-        }
         const auto obstacles=bev_handoff::matchingObstacles(lane->header,max_sync_,max_age_);
         if (!obstacles) {unavailable("WAIT: depth sync"); continue;}
         if (obstacles->width!=lane->width || obstacles->height!=lane->height ||
@@ -203,9 +208,12 @@ private:
           std::abs(obstacles->meter_per_pixel-lane->meter_per_pixel)>1e-5) {
           unavailable("WAIT: geometry mismatch"); continue;
         }
-        if(lane==previous && obstacles==previous_obstacles)continue;
-        previous=lane;previous_obstacles=obstacles;
-        next_start=Clock::now()+std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1/max_fps_));
+        const auto capture=[](const std_msgs::msg::Header& h) {
+          return std::int64_t(h.stamp.sec)*1000000000LL+h.stamp.nanosec;
+        };
+        const auto lane_capture=capture(lane->header),depth_capture=capture(obstacles->header);
+        if(capture_pair_order(lane_capture,depth_capture,previous_lane,previous_depth)!=CapturePairOrder::New)continue;
+        previous_lane=lane_capture;previous_depth=depth_capture;
         bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"avoidance_plan");
         const auto planning_started=Clock::now();
         const bool lane_obstacle_detected=avoidance::hasInLaneObstacle(*lane,*obstacles);
@@ -246,7 +254,7 @@ private:
             geometry_msgs::msg::Point32 point; point.x=p.x; point.y=p.y; message.points.push_back(point);
           }
         }
-        plans_->publish(message);
+        plans_->publish(message);unavailable_=false;
         report(result->status); bev_handoff::publishAvoidancePreview(std::move(result));
       } catch (const std::exception & e) {
         unavailable("WAIT: planner error");
@@ -256,7 +264,9 @@ private:
   }
   avoidance::Options options_;
   double configured_fps_{80},extra_margin_{0};
-  bool configuration_dirty_{false};
+  bool configuration_dirty_{false},unavailable_{false};
+  std::string unavailable_reason_,last_status_;
+  std::chrono::steady_clock::time_point last_status_at_{};
   std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr callback_;
   bool deformation_only_{true};

@@ -24,7 +24,8 @@ bev_processor:
     # true면 같은 프로세스의 line_detactor에 CUDA BEV 버퍼를 직접 넘긴다.
     # auto_drive.launch.py는 이 경로를 켜고 ROS BEV 영상 발행을 끄는다.
     direct_output_enabled: false
-    # 직접 전달 중에도 CPU 원본 BEV가 필요한 로컬 오버레이에서만 true.
+    # true: 로컬 오버레이가 표시할 때만 CPU BEV를 가져오는 함수를 제공한다.
+    # GPU 추론 입력마다 다운로드하지 않으며, 같은 촬영본은 한 번만 복사한다.
     direct_host_copy_enabled: false
     publish_max_fps: 0.0
     preview_enabled: false

@@ -2,6 +2,7 @@
 #include <map>
 #include <set>
 #include "auto_control/control_core.hpp"
+#include "auto_control/capture_pair_order.hpp"
 #include "auto_control/lane_capture_order.hpp"
 #include "auto_control/model_startup_gate.hpp"
 #include "auto_control/start_authorization.hpp"
@@ -921,9 +922,10 @@ private:
     if (!message->control_ready || !message->valid) {reject(message->status.empty()?"unavailable":message->status); return;}
     if (!source || !depth || message->header.frame_id!=lane_result_frame_id_ ||
       received<*source || received<*depth || seconds(received-*source)>avoidance_max_age_ ||
-      seconds(received-*depth)>avoidance_max_age_ || std::abs(seconds(*source-*depth))>.10 ||
-      (avoidance_lane_ns_ && *source<=*avoidance_lane_ns_) ||
-      (avoidance_depth_ns_ && *depth<*avoidance_depth_ns_)) {reject("invalid_timestamp_or_frame"); return;}
+      seconds(received-*depth)>avoidance_max_age_ || std::abs(seconds(*source-*depth))>.10) {reject("invalid_timestamp_or_frame"); return;}
+    // A fresh depth can update the same lane. Duplicate/late pairs cannot
+    // replace the accepted path, clear it, or extend its freshness lifetime.
+    if(capture_pair_order(*source,*depth,avoidance_lane_ns_,avoidance_depth_ns_)!=CapturePairOrder::New) {return;}
     if (message->follow_centerline) {
       if (!message->points.empty()) {
         reject("invalid_centerline_decision"); return;

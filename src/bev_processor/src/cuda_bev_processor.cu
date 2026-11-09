@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include <opencv2/imgproc.hpp>
 
@@ -574,6 +575,61 @@ private:
   std::vector<Buffer> buffers_;
 };
 
+// Independent nonblocking stream: preview/capture never locks the BEV stream.
+// The shared downloader and each captured device_owner outlive reconfiguration.
+class HostDownloader
+{
+  int device_;
+  cudaStream_t stream_{nullptr};
+  std::mutex mutex_;
+public:
+  explicit HostDownloader(int device):device_(device) {}
+  ~HostDownloader() {
+    if(stream_) {
+      int previous=0;static_cast<void>(cudaGetDevice(&previous));
+      static_cast<void>(cudaSetDevice(device_));static_cast<void>(cudaStreamDestroy(stream_));
+      static_cast<void>(cudaSetDevice(previous));
+    }
+  }
+  cv::Mat download(const void* source,int width,int height,std::size_t stride) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    int previous=0;checkCuda(cudaGetDevice(&previous),"preview cudaGetDevice");
+    checkCuda(cudaSetDevice(device_),"preview cudaSetDevice");
+    cv::Mat image;
+    try {
+      if(!stream_)checkCuda(cudaStreamCreateWithFlags(&stream_,cudaStreamNonBlocking),"preview stream");
+      image.create(height,width,CV_8UC3);
+      checkCuda(cudaMemcpy2DAsync(image.data,image.step,source,stride,
+        static_cast<std::size_t>(width)*3U,height,cudaMemcpyDeviceToHost,stream_),"lazy BEV download");
+      checkCuda(cudaStreamSynchronize(stream_),"finish lazy BEV download");
+      checkCuda(cudaSetDevice(previous),"restore preview CUDA device");
+      return image;
+    } catch(...) {
+      // A queued transfer must not outlive its host image on an error path.
+      if(stream_)static_cast<void>(cudaStreamSynchronize(stream_));
+      static_cast<void>(cudaSetDevice(previous));throw;
+    }
+  }
+};
+
+struct LazyHostImage
+{
+  std::once_flag once;
+  cv::Mat image;
+  std::shared_ptr<HostDownloader> downloader;
+  std::shared_ptr<const void> owner;
+  const void* source;
+  int width,height;
+  std::size_t stride;
+  LazyHostImage(std::shared_ptr<HostDownloader> reader,std::shared_ptr<const void> buffer,
+    const void* data,int w,int h,std::size_t pitch)
+  :downloader(std::move(reader)),owner(std::move(buffer)),source(data),width(w),height(h),stride(pitch) {}
+  cv::Mat get() {
+    std::call_once(once,[this] {image=downloader->download(source,width,height,stride);});
+    return image;
+  }
+};
+
 }  // namespace
 
 class CudaBevProcessor::Impl
@@ -618,6 +674,7 @@ public:
         cudaGetDeviceProperties(&properties, device),
         "cudaGetDeviceProperties");
       device_name_ = properties.name;
+      host_downloader_=std::make_shared<HostDownloader>(device);
 
       checkCuda(
         cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking),
@@ -792,6 +849,13 @@ public:
     }
 
     checkCuda(cudaStreamSynchronize(stream_), "process NV12 BEV frame");
+    if(!download_to_host) {
+      // Publication follows producer completion; consumers may copy this buffer
+      // later without a cross-stream event or a producer-thread wait.
+      auto lazy=std::make_shared<LazyHostImage>(host_downloader_,device_owner,device_output,
+        output_width_,output_height_,output.device_stride);
+      output.download_bgr=[lazy] {return lazy->get();};
+    }
     return output;
   }
 
@@ -839,6 +903,7 @@ private:
   float * device_map_y_{nullptr};
   float * device_stabilized_to_source_{nullptr};
   std::shared_ptr<DeviceOutputPool> output_pool_;
+  std::shared_ptr<HostDownloader> host_downloader_;
   std::mutex stream_mutex_;
 };
 

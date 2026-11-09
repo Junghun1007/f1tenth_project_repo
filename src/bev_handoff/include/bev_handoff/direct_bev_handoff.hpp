@@ -14,12 +14,14 @@ namespace bev_handoff
 {
 
 // device_owner keeps the CUDA BEV allocation alive while a consumer uses it.
-// The optional cv::Mat independently owns a host copy when one is requested.
+// The optional cv::Mat or cached download independently supplies the host image.
 struct DirectBevFrame
 {
   // Optional CPU image for local preview/capture. The autonomous inference
   // path uses device_bgr and does not require this download.
   cv::Mat bgr;
+  // Optional cached download. Call only on a GUI/capture thread, never inference.
+  std::function<cv::Mat()> download_bgr;
   const std::uint8_t * device_bgr{nullptr};
   std::size_t device_stride{0U};
   int width{0};

@@ -1184,9 +1184,9 @@ private:
           static_cast<int>(input->source_crop_top),
           publish_enabled_ || preview_enabled_ ||
           dataset_collection_enabled_ ||
-          dataset_collection_manual_capture_mode_ ||
-          direct_host_copy_enabled_);
+          dataset_collection_manual_capture_mode_);
         output->bgr = std::move(cuda_result.bgr);
+        if(direct_host_copy_enabled_)output->download_bgr=std::move(cuda_result.download_bgr);
         output->device_bgr = cuda_result.device_bgr;
         output->device_stride = cuda_result.device_stride;
         output->width = bev_config_.output_width;
@@ -1309,7 +1309,7 @@ private:
   {
     const auto frame = std::atomic_load_explicit(
       &latest_output_, std::memory_order_acquire);
-    if (!frame || frame->bgr.empty()) {
+    if (!frame || (frame->bgr.empty() && !frame->download_bgr)) {
       RCLCPP_WARN(
         get_logger(),
         "%s capture requested before a BEV frame was available.",
@@ -1332,7 +1332,8 @@ private:
       const std::filesystem::path filename = directory /
         ("bev_capture_" +
         std::to_string(get_clock()->now().nanoseconds()) + ".png");
-      if (!cv::imwrite(filename.string(), frame->bgr)) {
+      const auto image=frame->bgr.empty() && frame->download_bgr ? frame->download_bgr() : frame->bgr;
+      if (!cv::imwrite(filename.string(), image)) {
         RCLCPP_ERROR(
           get_logger(),
           "Failed to capture BEV image: %s",
@@ -1347,7 +1348,7 @@ private:
         "BEV image captured by %s: %s",
         trigger,
         saved_path.c_str());
-    } catch (const cv::Exception & exception) {
+    } catch (const std::exception & exception) {
       RCLCPP_ERROR(
         get_logger(),
         "Failed to capture BEV image: %s",

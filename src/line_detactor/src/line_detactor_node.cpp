@@ -353,6 +353,7 @@ private:
   {
     std_msgs::msg::Header header;
     cv::Mat bgr;
+    std::function<cv::Mat()> download_bgr;
     const std::uint8_t * device_bgr{nullptr};
     std::size_t device_stride{0U};
     int width{0};
@@ -752,6 +753,7 @@ private:
     auto frame = std::make_shared<InputFrame>();
     frame->header = message->header;
     frame->bgr = message->bgr;
+    frame->download_bgr = message->download_bgr;
     frame->device_bgr = message->device_bgr;
     frame->device_stride = message->device_stride;
     frame->width = message->width;
@@ -814,7 +816,7 @@ private:
     }
     if (
       (preview_enabled_ || shared_ir_preview_output_enabled_) && !preview_result_only_enabled_ &&
-      message.bgr.empty())
+      message.bgr.empty() && !message.download_bgr)
     {
       throw std::invalid_argument(
               "Camera-overlay preview requires direct_host_copy_enabled=true");
@@ -952,7 +954,8 @@ private:
     const InputFrame & input) const
   {
     cv::Mat overlay;
-    cv::copyMakeBorder(input.bgr, overlay, 0, 0,
+    const auto bgr=input.bgr.empty() && input.download_bgr ? input.download_bgr() : input.bgr;
+    cv::copyMakeBorder(bgr, overlay, 0, 0,
       connection_.padding_px, connection_.padding_px,
       cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
     cv::Mat blended;
@@ -1089,6 +1092,7 @@ private:
     StageStats postprocessing;
     StageStats preview_execution;
     StageStats preview_postprocess;
+    FrameRateGate display_gate;
 
     try {
       while (!stop_requested_.load(std::memory_order_acquire)) {
@@ -1137,6 +1141,11 @@ private:
         LaneInferenceTiming timing;
         LaneConnectionResult result;
         std::uint64_t connection_nanoseconds = 0U;
+        // Control geometry is always computed; only owning display buffers are sampled.
+        const double display_fps=preview_enabled_ && bev_theme_enable_.load() ?
+          std::min(preview_fps_,bev_theme_preview_fps_) : preview_fps_;
+        const bool display_due=(preview_enabled_ || shared_ir_preview_output_enabled_) &&
+          display_gate.accept(std::chrono::duration<double>(SteadyClock::now().time_since_epoch()).count(),display_fps);
         try {
           validate_image(*message);
           ProfileTimer backend_timer(profile, ProfileStage::backend_wall);
@@ -1167,7 +1176,7 @@ private:
             // Only skip display buffers; control geometry remains identical.
             const bool render_result = preview_enabled_ || shared_ir_preview_output_enabled_ || image_subscribers;
             const bool render_legacy_image =
-              (preview_enabled_ && !bev_theme_enable_.load()) || shared_ir_preview_output_enabled_ || image_subscribers;
+              (display_due && (shared_ir_preview_output_enabled_ || !bev_theme_enable_.load())) || image_subscribers;
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
             profile_frame.render_result = render_legacy_image;
@@ -1240,7 +1249,7 @@ private:
         preview_execution.record(timing.execution_nanoseconds);
         preview_postprocess.record(timing.correction_nanoseconds);
 
-        if (shared_ir_preview_output_enabled_ && !result.image.empty()) {
+        if (display_due && shared_ir_preview_output_enabled_ && !result.image.empty()) {
           auto shared=std::make_shared<bev_handoff::IrLanePreview>();
           shared->header=message->header;
           shared->image=preview_result_only_enabled_ ? result.image : result_overlay(result,*message);
@@ -1251,7 +1260,7 @@ private:
           bev_handoff::publishIrLanePreview(std::move(shared));
         }
 
-        if (preview_enabled_) {
+        if (display_due && preview_enabled_) {
           auto snapshot = std::make_shared<PreviewFrame>();
           snapshot->header=message->header;
           if (connection_.enabled && !preview_result_only_enabled_) {

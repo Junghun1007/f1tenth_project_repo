@@ -2,6 +2,7 @@
 
 #include <point_cloud/bev_crop.hpp>
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -75,6 +76,7 @@ class Projector
   point_cloud::RigidTransform transform_;
   Options options_;
   int width_{0}, height_{0};
+  std::array<double,11> ray_key_{};
 public:
   void configure(int width, int height, const point_cloud::Intrinsics & k,
     const point_cloud::RigidTransform & transform, const Options & o)
@@ -90,14 +92,22 @@ public:
     for (const auto v : transform.translation) {
       if (!std::isfinite(v)) {throw std::invalid_argument("Invalid translation");}
     }
-    width_=width; height_=height; transform_=transform; options_=o;
-    rays_.clear();
-    for (int v=roi.y;v<roi.y+roi.height;v+=o.pixel_stride) {
-      for (int u=roi.x;u<roi.x+roi.width;u+=o.pixel_stride) {
-        rays_.push_back({u,v,point_cloud::rotate(transform.rotation,
-          {(u-k.cx)/k.fx,(v-k.cy)/k.fy,1.0})});
+    const std::array<double,11> key{double(width),double(height),double(roi.x),double(roi.y),
+      double(roi.width),double(roi.height),double(o.pixel_stride),k.fx,k.fy,k.cx,k.cy};
+    if(key!=ray_key_) {
+      rays_.clear();
+      const auto columns=(roi.width+o.pixel_stride-1)/o.pixel_stride;
+      const auto rows=(roi.height+o.pixel_stride-1)/o.pixel_stride;
+      rays_.reserve(static_cast<std::size_t>(columns)*rows);
+      for (int v=roi.y;v<roi.y+roi.height;v+=o.pixel_stride) {
+        for (int u=roi.x;u<roi.x+roi.width;u+=o.pixel_stride) {
+          rays_.push_back({u,v,{(u-k.cx)/k.fx,(v-k.cy)/k.fy,1.0}});
+        }
       }
+      ray_key_=key;
     }
+    // The changing RGB/IMU pose is never frozen in the intrinsic-ray cache.
+    width_=width; height_=height; transform_=transform; options_=o;
   }
   std::size_t rayCount() const {return rays_.size();}
   Scan project(const std::uint8_t * bytes, std::size_t size, std::size_t stride) const
@@ -117,10 +127,12 @@ public:
       const double depth=raw*0.001;
       if (!raw || depth<o.min_depth || depth>o.max_depth) {continue;}
       ++out.depth_points;
-      const double z=ray.direction[2]*depth+transform_.translation[2];
+      // Rotate only valid depth samples, with the same operation order as before.
+      const auto direction=point_cloud::rotate(transform_.rotation,ray.direction);
+      const double z=direction[2]*depth+transform_.translation[2];
       if (z>o.max_height) {++out.height_removed; continue;}
-      const double x=ray.direction[0]*depth+transform_.translation[0];
-      const double y=ray.direction[1]*depth+transform_.translation[1];
+      const double x=direction[0]*depth+transform_.translation[0];
+      const double y=direction[1]*depth+transform_.translation[1];
       if (x<=0) {continue;}
       const double range=std::hypot(x,y);
       const double floor_margin=std::min(o.ground_max_distance,

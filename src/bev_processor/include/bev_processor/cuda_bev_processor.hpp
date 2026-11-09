@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -37,6 +38,7 @@ struct CudaBevResult
   std::size_t device_stride{0U};
   std::shared_ptr<const void> device_owner;
   cv::Mat bgr;
+  std::function<cv::Mat()> download_bgr; // Lazy, cached; retains the source GPU allocation.
 };
 
 class CudaBevProcessor
