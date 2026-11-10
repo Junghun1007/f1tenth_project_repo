@@ -3,6 +3,9 @@ import json
 import math
 import os
 import time
+from pathlib import Path
+
+from .parameter_preset import parameter_values, write_preset
 
 import rclpy
 from rclpy.node import Node
@@ -63,6 +66,7 @@ class RuntimeTools(Node):
         self.caps = {}
         self.fields = {}
         self.pending_nodes = set()
+        self.preset_request = None
         self.metrics_pub = self.create_publisher(
             Bool, '/auto/runtime_metrics/enabled',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
@@ -111,6 +115,8 @@ class RuntimeTools(Node):
         return window
 
     def close(self, key):
+        if key == 'parameters':
+            self.preset_request = None
         self.windows.pop(key).destroy()
         if key == 'metrics':
             self.set_metrics(False)
@@ -168,8 +174,19 @@ class RuntimeTools(Node):
         window = self.window('parameters', 'auto_control 실시간 파라미터 · 숫자 입력')
         if window is None:
             return
+        import tkinter as tk
+        self.parameter_nodes = set()
+        self.parameter_loading = set()
+        self.parameter_errors = set()
+        self.preset_status = tk.StringVar(value='파라미터를 불러오는 중…')
+        toolbar = self.ttk.Frame(window)
+        toolbar.pack(fill='x', padx=8, pady=6)
+        self.preset_button = self.ttk.Button(
+            toolbar, text='프리셋 저장', command=self.save_preset, state='disabled')
+        self.preset_button.pack(side='left')
+        self.ttk.Label(toolbar, textvariable=self.preset_status, wraplength=900).pack(side='left', padx=10)
         self.ttk.Label(window, text='기능별 탭 · BOOL은 0/1 · Apply는 해당 탭의 변경분을 노드 단위로 일괄 검증'
-                       '\n재시작 설정은 읽기 전용입니다. 적용값은 현재 실행에만 유지됩니다.').pack(pady=8)
+                       '\n프리셋 저장은 모든 연결 노드의 전체 적용값을 YAML로 저장합니다. 미적용 입력은 제외됩니다.').pack(pady=8)
         self.tabs = self.ttk.Notebook(window)
         self.tabs.pack(fill='both', expand=True)
         self.fields = {}
@@ -185,8 +202,93 @@ class RuntimeTools(Node):
             if not client.services_are_ready():
                 self.get_logger().warning(f'Parameter service unavailable: {name}')
                 continue
+            self.parameter_loading.add(name)
             client.list_parameters(depth=0).add_done_callback(
                 lambda future, name=name: self.listed(name, future))
+        self.update_preset_status()
+
+    def update_preset_status(self):
+        if 'parameters' not in self.windows:
+            return
+        ready = (self.parameter_nodes and not self.parameter_loading
+                 and not self.parameter_errors and self.preset_request is None)
+        self.preset_button.configure(state='normal' if ready else 'disabled')
+        if self.parameter_loading:
+            self.preset_status.set('파라미터를 불러오는 중…')
+        elif self.parameter_errors:
+            self.preset_status.set('읽기 실패 · 창을 다시 여세요: ' + ', '.join(sorted(self.parameter_errors)))
+        else:
+            self.preset_status.set('저장 대상: ' + ', '.join(sorted(self.parameter_nodes)))
+
+    def save_preset(self):
+        from tkinter import filedialog
+        if self.preset_request is not None:
+            return
+        if self.pending_nodes:
+            self.preset_status.set('Apply 완료 후 프리셋을 저장하세요.')
+            return
+        if not self.parameter_nodes or self.parameter_loading or self.parameter_errors:
+            return
+        try:
+            directory = Path.home() / '.ros' / 'auto_control' / 'presets'
+            directory.mkdir(parents=True, exist_ok=True)
+            path = filedialog.asksaveasfilename(
+                parent=self.windows['parameters'], title='현재 적용값 프리셋 저장',
+                initialdir=str(directory),
+                initialfile=time.strftime('auto_control_%Y%m%d_%H%M%S.yaml'),
+                defaultextension='.yaml', filetypes=[('ROS parameter YAML', '*.yaml')])
+            if not path:
+                return
+            request = {'path': path, 'remaining': set(self.parameter_nodes), 'snapshot': {}}
+            self.preset_request = request
+            self.preset_button.configure(state='disabled')
+            self.preset_status.set('전체 적용값을 읽는 중…')
+            self.root.after(10000, lambda: self.preset_failed(request, '파라미터 읽기 시간 초과'))
+            for node in sorted(self.parameter_nodes):
+                client = self.clients[node]
+                if not client.services_are_ready():
+                    raise RuntimeError(f'파라미터 서비스 연결 끊김: {node}')
+                client.list_parameters(depth=0).add_done_callback(
+                    lambda future, n=node: self.preset_listed(request, n, future))
+        except Exception as error:
+            if self.preset_request is not None:
+                self.preset_failed(self.preset_request, str(error))
+            else:
+                self.preset_status.set('저장 실패 · ' + str(error))
+
+    def preset_failed(self, request, reason):
+        if self.preset_request is not request:
+            return
+        self.preset_request = None
+        if 'parameters' in self.windows:
+            self.update_preset_status()
+            self.preset_status.set('저장 실패 · ' + reason)
+
+    def preset_listed(self, request, node, future):
+        if self.preset_request is not request:
+            return
+        try:
+            names = list(future.result().result.names)
+            if not names:
+                raise ValueError(f'파라미터가 없습니다: {node}')
+            self.clients[node].get_parameters(names).add_done_callback(
+                lambda f: self.preset_loaded(request, node, names, f))
+        except Exception as error:
+            self.preset_failed(request, str(error))
+
+    def preset_loaded(self, request, node, names, future):
+        if self.preset_request is not request:
+            return
+        try:
+            request['snapshot'][node] = parameter_values(names, future.result().values)
+            request['remaining'].remove(node)
+            if not request['remaining']:
+                write_preset(request['path'], request['snapshot'])
+                self.preset_request = None
+                self.update_preset_status()
+                self.preset_status.set('저장 완료 · ' + request['path'])
+        except Exception as error:
+            self.preset_failed(request, str(error))
 
     def listed(self, node, future):
         if 'parameters' not in self.windows:
@@ -196,6 +298,9 @@ class RuntimeTools(Node):
             self.clients[node].get_parameters(names).add_done_callback(
                 lambda f: self.loaded(node, names, f))
         except Exception as error:
+            self.parameter_loading.discard(node)
+            self.parameter_errors.add(node)
+            self.update_preset_status()
             self.get_logger().error(str(error))
 
     def loaded(self, node, names, future):
@@ -243,9 +348,18 @@ class RuntimeTools(Node):
                     command=lambda n=node, r=rows, st=status: self.apply(n, r, st))
                 button.pack(pady=6)
         except Exception as error:
+            self.parameter_errors.add(node)
             self.get_logger().error(str(error))
+        else:
+            self.parameter_nodes.add(node)
+        finally:
+            self.parameter_loading.discard(node)
+            self.update_preset_status()
 
     def apply(self, node, rows, status):
+        if self.preset_request is not None:
+            status.set('프리셋 저장 완료 후 적용하세요.')
+            return
         if node in self.pending_nodes:
             status.set('앞선 적용 결과를 기다리는 중입니다.')
             return
