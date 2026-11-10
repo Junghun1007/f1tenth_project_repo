@@ -1,6 +1,5 @@
 #pragma once
 #include "roi_vfh_test/motion.hpp"
-#include <map>
 #include <optional>
 #include <string>
 
@@ -30,6 +29,7 @@ public:
   LaneReference resolve(const std::vector<Point>& observed,const MotionPose& pose,const Config& c,
       std::optional<double> capture=std::nullopt,const LaneInputLimits& limits={}) {
     LaneReference result;
+    if(c.lane_memory_enabled==0) {trusted_world_.clear();trusted_at_=-1;}
     const auto worldPoint=[&](Point p) {
       return Point{pose.x+std::cos(pose.yaw)*p.x-std::sin(pose.yaw)*p.y,
         pose.y+std::sin(pose.yaw)*p.x+std::cos(pose.yaw)*p.y};
@@ -62,7 +62,7 @@ public:
         if(!consistent)pending_since_=evidence;
         pending_world_=std::move(world);pending_at_=evidence;evidence_stamp_=evidence;
         evidence_trusted_=evidence-pending_since_+1e-9>=c.lane_trust_duration;
-        if(evidence_trusted_) {trusted_world_=pending_world_;trusted_at_=evidence;}
+        if(evidence_trusted_ && c.lane_memory_enabled!=0) {trusted_world_=pending_world_;trusted_at_=evidence;}
       }
       result.trusted=evidence_trusted_;
       result.state=result.trusted?"trusted":"confirming";
@@ -98,42 +98,4 @@ public:
   }
 };
 
-// Intentionally retain the simulator's current semantics, including its known
-// padded-body overlap stops. No free-space clearing, time decay or new mission
-// rules are introduced by this port.
-class ObstacleMemory {
-  std::map<std::pair<int,int>,Point> world_;
-public:
-  void reset(){world_.clear();}
-  std::size_t size()const{return world_.size();}
-  void augment(Grid& grid,const MotionPose& pose,const Config& c) {
-    if(c.obstacle_memory_enabled==0) {
-      reset();grid.remembered_hazards.clear();return;
-    }
-    const double rear_clearance=std::hypot(c.rear+c.uncertainty,c.width/2+c.margin+c.uncertainty)
-      +grid.resolution/std::sqrt(2.);
-    const double memory_range=std::hypot(grid.width*grid.resolution,grid.height*grid.resolution)+rear_clearance;
-    for(std::size_t index=0;index<grid.cells.size();++index) {
-      if(!blockedTerrain(grid.cells[index]))continue;
-      const Point p{grid.x0+(index%grid.width+.5)*grid.resolution,
-        grid.y0+(index/grid.width+.5)*grid.resolution};
-      const Point world{pose.x+std::cos(pose.yaw)*p.x-std::sin(pose.yaw)*p.y,
-        pose.y+std::sin(pose.yaw)*p.x+std::cos(pose.yaw)*p.y};
-      const auto key=std::make_pair(int(std::floor(world.x/grid.resolution)),int(std::floor(world.y/grid.resolution)));
-      world_[key]=world;
-    }
-    grid.remembered_hazards.clear();
-    for(auto it=world_.begin();it!=world_.end();) {
-      const double x=it->second.x-pose.x,y=it->second.y-pose.y;
-      const Point p{std::cos(pose.yaw)*x+std::sin(pose.yaw)*y,
-        -std::sin(pose.yaw)*x+std::cos(pose.yaw)*y};
-      if(p.x < -rear_clearance || std::hypot(p.x,p.y)>memory_range) {it=world_.erase(it);continue;}
-      const int u=int(std::floor((p.x-grid.x0)/grid.resolution));
-      const int v=int(std::floor((p.y-grid.y0)/grid.resolution));
-      if((u<0 || v<0 || v>=grid.height) && std::hypot(p.x,p.y)<=rear_clearance)
-        grid.remembered_hazards.push_back(p);
-      ++it;
-    }
-  }
-};
 }

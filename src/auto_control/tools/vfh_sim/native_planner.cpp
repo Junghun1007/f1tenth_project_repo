@@ -17,7 +17,6 @@ int main(int argc,char** argv) {
     Planner planner;
     HazardFilter filter;
     LaneMemory lane_memory;
-    ObstacleMemory obstacle_memory;
     std::optional<MotionPose> previous_pose;
     double last_avoidance{-1e9};
     double last_target{0};
@@ -80,7 +79,7 @@ int main(int argc,char** argv) {
       if (state.previous_pose && pose.t<state.previous_pose->t) {
         state.planner.reset();
         state.filter.reset();
-        state.obstacle_memory.reset();state.lane_memory.reset();
+        state.lane_memory.reset();
         state.previous_pose.reset();
         state.last_target=0;
         state.last_avoidance=-1e9;
@@ -97,7 +96,6 @@ int main(int argc,char** argv) {
       const auto start=Clock::now();
       auto filtered=state.filter.apply(grid,pose.t,pose,c);
       auto& planning_grid=filtered.grid;
-      state.obstacle_memory.augment(planning_grid,pose,c);
       const auto after_filter=Clock::now();
       auto result=use_vfh?state.planner.plan(planning_grid,lane,c,lane_missing):
         planFrenet(planning_grid,lane,c,lane_missing);
@@ -129,7 +127,7 @@ int main(int argc,char** argv) {
         << ",\"filterMs\":" << ms(after_filter-start) << ",\"planMs\":" << ms(finish-after_filter)
         << ",\"raw\":" << filtered.stats.raw << ",\"confirmed\":" << filtered.stats.confirmed
         << ",\"pending\":" << filtered.stats.pending
-        << ",\"rememberedHazards\":" << planning_grid.remembered_hazards.size() << ",\"path\":[";
+        << ",\"rememberedHazards\":0,\"path\":["; // Legacy output key; obstacle storage has been removed.
       for (std::size_t i=0; i<result.path.size(); ++i) {
         const auto& p=result.path[i];
         std::cout << (i?",":"") << '[' << p.x << ',' << p.y << ']';

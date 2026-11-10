@@ -24,15 +24,16 @@ int main() {
   memory.reset();reference=memory.resolve({},moved,c);
   check(!reference.has_memory && reference.points.size()==2,"new session did not use forward preference");
 
-  Grid g;g.width=160;g.height=60;g.resolution=.025;g.y0=-.75;g.cells.assign(9600,-1);
-  g.cells[36*g.width+8]=100;
-  ObstacleMemory obstacles;obstacles.augment(g,MotionPose{},c);
-  check(obstacles.size()==1 && g.remembered_hazards.empty(),"front observation became a blind hazard");
-  g.cells.assign(g.cells.size(),-1);
-  obstacles.augment(g,MotionPose{1,.3,0,0,0},c);
-  check(g.remembered_hazards.size()==1,"previous cone disappeared on entering the blind spot");
-  check(g.remembered_hazards.front().x<0,"blind cone was not reprojected behind the axle");
-  obstacles.augment(g,MotionPose{2,2,0,0,0},c);
-  check(obstacles.size()==0 && g.remembered_hazards.empty(),"fully passed cone was retained");
-  std::cout<<"Shared policy state: confidence, exposure deduplication, geometric lane memory and blind-spot retention\n";
+  // Disabling storage must also discard an already remembered lane.
+  for(int i=0;i<22;++i)reference=memory.resolve(lane,MotionPose{i*.05,0,0,0,0},c);
+  check(reference.has_memory,"lane memory setup failed");
+  c.lane_memory_enabled=0;
+  reference=memory.resolve({},MotionPose{2,0,0,0,0},c);
+  check(!reference.has_memory && memory.remembered(MotionPose{}).empty(),"disabled lane storage retained geometry");
+  for(int i=0;i<22;++i)reference=memory.resolve(lane,MotionPose{3+i*.05,0,0,0,0},c);
+  check(reference.trusted && !reference.has_memory,"disabling lane storage disabled current-lane validation");
+  c.lane_memory_enabled=1;
+  reference=memory.resolve({},MotionPose{5,0,0,0,0},c);
+  check(!reference.has_memory,"reenabling lane storage resurrected old geometry");
+  std::cout<<"Shared policy state: confidence, exposure deduplication and optional geometric lane memory\n";
 }

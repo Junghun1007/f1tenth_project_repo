@@ -25,7 +25,7 @@ inline const std::array<PlannerField,planner_field_count>& plannerFields() {
     {"response_delay_sec",&Config::delay,0,1,"response delay, sec (0..1)"},
     {"histogram_low",&Config::hist_low,0,999,"VFH low (must be < high)"},
     {"histogram_high",&Config::hist_high,.001,1000,"VFH high (must be > low)"},
-    {"obstacle_memory_enabled",&Config::obstacle_memory_enabled,0,1,"stored obstacles: 0=off / 1=on"},
+    {"lane_memory_enabled",&Config::lane_memory_enabled,0,1,"stored lane: 0=off / 1=on"},
     {"hazard_filter_enabled",&Config::hazard_filter_enabled,0,1,"0=off / 1=on"},
     {"hazard_confirm_frames",&Config::hazard_confirm_frames,1,5,"consecutive depth frames (integer)"},
     {"hazard_small_max_cells",&Config::hazard_small_max_cells,1,50,"small 8-connected component (integer)"},

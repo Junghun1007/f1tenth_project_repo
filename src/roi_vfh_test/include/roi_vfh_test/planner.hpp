@@ -17,7 +17,6 @@ struct Pose {double x{},y{},yaw{},steer{};};
 struct Grid {
   int width{},height{}; double resolution{},x0{},y0{};
   std::vector<std::int8_t> cells;
-  std::vector<Point> remembered_hazards;
   int at(double x,double y) const {
     const int u=int(std::floor((x-x0)/resolution)),v=int(std::floor((y-y0)/resolution));
     return u<0 || v<0 || u>=width || v>=height ? -1 : cells[std::size_t(v)*width+u];
@@ -42,7 +41,7 @@ struct Config {
   double geometry_window{.16},steering_weight{.4},control_rate{100};
   bool curvature_speed_control{true};
   // Numeric 0/1 and integer-valued doubles share the pre-Start GUI/ROS edit path.
-  double obstacle_memory_enabled{1};
+  double lane_memory_enabled{1};
   double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
   double avoidance_curve_enabled{1},avoidance_curve_samples{17},avoidance_length_slack_m{.40};
@@ -51,8 +50,8 @@ struct Config {
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
   double lane_trust_duration{.8},lane_trust_length{.4},lane_trust_offset{.15},lane_trust_angle_deg{12};
   void validate() const {
-    if(!std::isfinite(obstacle_memory_enabled) || (obstacle_memory_enabled!=0 && obstacle_memory_enabled!=1))
-      throw std::invalid_argument("obstacle_memory_enabled must be 0 or 1");
+    if(!std::isfinite(lane_memory_enabled) || (lane_memory_enabled!=0 && lane_memory_enabled!=1))
+      throw std::invalid_argument("lane_memory_enabled must be 0 or 1");
     for (double a:{speed,horizon,step,wheelbase,width,rear,front,margin,max_steer,steer_rate,
       lane_width,deceleration,delay,reference_distance,lane_lookahead,hist_low,hist_high,
       minimum_path_length,uncertainty,max_curvature,lane_lateral_acceleration,avoidance_lateral_acceleration,
@@ -177,15 +176,6 @@ enum class Block {None,Hazard};
 inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p) {
   const double half=c.width/2+c.margin+c.uncertainty,cs=std::cos(p.yaw),sn=std::sin(p.yaw);
   const double back=c.rear+c.uncertainty,front=c.front+c.margin+c.uncertainty;
-  // Remembered cells can lie behind the axle or outside the forward grid.
-  const double remembered_radius=g.resolution/std::sqrt(2.);
-  for(const auto& obstacle:g.remembered_hazards) {
-    const double dx=obstacle.x-p.x,dy=obstacle.y-p.y;
-    const double longitudinal=dx*cs+dy*sn,lateral=-dx*sn+dy*cs;
-    const double gap_x=std::max({0.,longitudinal-front,-back-longitudinal});
-    const double gap_y=std::max(0.,std::abs(lateral)-half);
-    if(gap_x*gap_x+gap_y*gap_y<=remembered_radius*remembered_radius)return Block::Hazard;
-  }
   const double longitudinal_half=(front+back)/2,offset=(front-back)/2;
   const double center_x=p.x+offset*cs,center_y=p.y+offset*sn,cell_half=g.resolution/2;
   const double x_radius=longitudinal_half*std::abs(cs)+half*std::abs(sn);

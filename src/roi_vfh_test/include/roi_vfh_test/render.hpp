@@ -34,14 +34,13 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       cv::putText(canvas,plan.used_vfh?(plan.used_fallback?"VFH mask + collision-checked curve":"primary / binary / masked"):"Reference clear - VFH bypass",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     }
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
-    cv::putText(canvas,config.obstacle_memory_enabled==0?"Current terrain only (obstacle memory OFF)":
-      "Current terrain + blind-spot obstacle memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
+    cv::putText(canvas,"Current terrain only; no obstacle memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Blue: lane reference",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
     cv::putText(canvas,"Yellow: selected driving path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
     cv::putText(canvas,cv::format("Hazard ends %zu / short %zu",plan.hazard_ends,plan.short_candidates),
       {12,424},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
-    cv::putText(canvas,config.obstacle_memory_enabled==0?"Obstacle memory: OFF":cv::format("Remembered blind hazards: %zu",grid.remembered_hazards.size()),
+    cv::putText(canvas,"Obstacle source: current observations",
       {12,444},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,cv::format("Longest candidate: %.2fm",plan.longest_candidate),
       {12,464},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
@@ -55,7 +54,8 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       cv::putText(canvas,cv::format("Extra curves %zu | selected %s",plan.fallback_candidates,plan.used_fallback?"yes":"no"),{12,548},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
     if(lane_reference) {
       cv::putText(canvas,"Lane: "+lane_reference->state,{12,570},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
-      cv::putText(canvas,cv::format("Lane memory: %s, age %.2fs; no departure cap",
+      cv::putText(canvas,config.lane_memory_enabled==0?"Lane memory: OFF; current observations only":
+        cv::format("Lane memory: %s, age %.2fs; no departure cap",
         lane_reference->has_memory?"yes":"no",lane_reference->memory_age),{12,590},cv::FONT_HERSHEY_SIMPLEX,.32,{35,35,35},1);
     }
     if (grid.width>0) {
@@ -74,7 +74,6 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
           cv::line(canvas,pixel(c.path[i-1].x,c.path[i-1].y),pixel(c.path[i].x,c.path[i].y),{175,175,175},1);
         for(std::size_t i=1;i<plan.path.size();++i)cv::line(canvas,pixel(plan.path[i-1].x,plan.path[i-1].y),pixel(plan.path[i].x,plan.path[i].y),{0,220,255},3);
       }
-      for(auto p:grid.remembered_hazards)cv::circle(canvas,pixel(p.x,p.y),2,{0,150,230},-1);
       cv::circle(canvas,pixel(0,0),5,{220,60,30},-1);
     }
   return canvas;
