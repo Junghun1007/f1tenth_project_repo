@@ -86,11 +86,17 @@ public:
       rcl_interfaces::msg::SetParametersResult result;result.successful=false;
       std::lock_guard<std::mutex> lock(mutex_);
       auto next=options_;double fps=configured_fps_;
+      bool changed=false;
       for(const auto& value:values) {
         const auto name=value.get_name();
-        if(name=="obstacles.avoidance.enabled")continue;
         const std::string prefix="obstacles.avoidance.";
-        if(name.rfind(prefix,0)!=0 || value.get_type()!=rclcpp::ParameterType::PARAMETER_DOUBLE) {
+        // This node also declares detector parameters later, once BEV calibration
+        // arrives. Declaration invokes on-set callbacks too. Other parameter
+        // families are owned by their descriptors / callbacks, not this planner.
+        if(name.rfind(prefix,0)!=0)continue;
+        changed=true;
+        if(name=="obstacles.avoidance.enabled")continue;
+        if(value.get_type()!=rclcpp::ParameterType::PARAMETER_DOUBLE) {
           result.reason="Startup-only parameter";return result;
         }
         const auto key=name.substr(prefix.size());
@@ -102,6 +108,7 @@ public:
         }
         else {result.reason="Startup-only parameter";return result;}
       }
+      if(!changed) {result.successful=true;return result;}
       try {
         avoidance::validate(next);
         if(fps<1 || fps>80)throw std::invalid_argument("max_fps must be 1..80");
