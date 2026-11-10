@@ -34,13 +34,14 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       cv::putText(canvas,plan.used_vfh?(plan.used_fallback?"VFH mask + collision-checked curve":"primary / binary / masked"):"Reference clear - VFH bypass",{12,180},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     }
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
-    cv::putText(canvas,"Current terrain + blind-spot obstacle memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
+    cv::putText(canvas,config.obstacle_memory_enabled==0?"Current terrain only (obstacle memory OFF)":
+      "Current terrain + blind-spot obstacle memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Blue: lane reference",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
     cv::putText(canvas,"Yellow: selected driving path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
     cv::putText(canvas,cv::format("Hazard ends %zu / short %zu",plan.hazard_ends,plan.short_candidates),
       {12,424},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
-    cv::putText(canvas,cv::format("Remembered blind hazards: %zu",grid.remembered_hazards.size()),
+    cv::putText(canvas,config.obstacle_memory_enabled==0?"Obstacle memory: OFF":cv::format("Remembered blind hazards: %zu",grid.remembered_hazards.size()),
       {12,444},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,cv::format("Longest candidate: %.2fm",plan.longest_candidate),
       {12,464},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);

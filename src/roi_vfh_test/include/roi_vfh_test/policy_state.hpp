@@ -107,6 +107,9 @@ public:
   void reset(){world_.clear();}
   std::size_t size()const{return world_.size();}
   void augment(Grid& grid,const MotionPose& pose,const Config& c) {
+    if(c.obstacle_memory_enabled==0) {
+      reset();grid.remembered_hazards.clear();return;
+    }
     const double rear_clearance=std::hypot(c.rear+c.uncertainty,c.width/2+c.margin+c.uncertainty)
       +grid.resolution/std::sqrt(2.);
     const double memory_range=std::hypot(grid.width*grid.resolution,grid.height*grid.resolution)+rear_clearance;

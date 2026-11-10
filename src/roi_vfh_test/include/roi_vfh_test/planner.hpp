@@ -42,6 +42,7 @@ struct Config {
   double geometry_window{.16},steering_weight{.4},control_rate{100};
   bool curvature_speed_control{true};
   // Numeric 0/1 and integer-valued doubles share the pre-Start GUI/ROS edit path.
+  double obstacle_memory_enabled{1};
   double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
   double avoidance_curve_enabled{1},avoidance_curve_samples{17},avoidance_length_slack_m{.40};
@@ -50,6 +51,8 @@ struct Config {
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
   double lane_trust_duration{.8},lane_trust_length{.4},lane_trust_offset{.15},lane_trust_angle_deg{12};
   void validate() const {
+    if(!std::isfinite(obstacle_memory_enabled) || (obstacle_memory_enabled!=0 && obstacle_memory_enabled!=1))
+      throw std::invalid_argument("obstacle_memory_enabled must be 0 or 1");
     for (double a:{speed,horizon,step,wheelbase,width,rear,front,margin,max_steer,steer_rate,
       lane_width,deceleration,delay,reference_distance,lane_lookahead,hist_low,hist_high,
       minimum_path_length,uncertainty,max_curvature,lane_lateral_acceleration,avoidance_lateral_acceleration,

@@ -463,6 +463,7 @@ class Node:public rclcpp::Node {
       lane_reference_.state.c_str(),int(lane_reference_.has_memory),lane_reference_.memory_age,
       display_.remembered_hazards.size(),result_.longest_candidate);
     message.data+=cv::format(" | hazard raw=%zu confirmed=%zu pending=%zu immediate=%zu filter=%.2fms",hazard_stats_.raw,hazard_stats_.confirmed,hazard_stats_.pending,hazard_stats_.immediate,hazard_filter_ms_);
+    message.data+=config_.obstacle_memory_enabled==0?" | obstacle_memory=off":" | obstacle_memory=on";
     const double clock=now().seconds();
     message.data+=cv::format(" | input age terrain=%.3fs IMU=%.3fs speed=%.3fs motion_generation=%llu",
       grids_.empty()?-1.:clock-stamp(grids_.back()->header.stamp),imu_at_<0?-1.:clock-imu_at_,
@@ -566,6 +567,7 @@ public:
     PARAM("stanley_corner_opposing_correction_ratio",stanley_opposing);
     PARAM("path_geometry_window_m",geometry_window);PARAM("steering_current_weight",steering_weight);
     PARAM("control_rate_hz",control_rate);
+    PARAM("obstacle_memory_enabled",obstacle_memory_enabled);
     PARAM("hazard_filter_enabled",hazard_filter_enabled);PARAM("hazard_confirm_frames",hazard_confirm_frames);
     PARAM("hazard_small_max_cells",hazard_small_max_cells);PARAM("hazard_match_radius_cells",hazard_match_radius_cells);
     PARAM("hazard_max_gap_sec",hazard_max_gap_sec);

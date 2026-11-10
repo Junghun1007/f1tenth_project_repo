@@ -23,6 +23,7 @@ roi_vfh_test:
     max_sync_sec: 0.10
     deceleration_mps2: 0.4
     response_delay_sec: 0.10
+    obstacle_memory_enabled: 1.0 # 0.0=off (current observations only), 1.0=on; editable after Stop.
     hazard_filter_enabled: 1.0
     hazard_confirm_frames: 4.0
     hazard_small_max_cells: 8.0

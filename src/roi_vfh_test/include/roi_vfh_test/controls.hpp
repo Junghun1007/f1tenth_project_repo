@@ -12,8 +12,9 @@ struct PlannerField {
   double minimum,maximum;
   const char* unit;
 };
-inline const std::array<PlannerField,25>& plannerFields() {
-  static const std::array<PlannerField,25> fields{{
+inline constexpr std::size_t planner_field_count=26;
+inline const std::array<PlannerField,planner_field_count>& plannerFields() {
+  static const std::array<PlannerField,planner_field_count> fields{{
     {"nominal_speed_mps",&Config::speed,.05,3,"max speed, m/s; YAML ceiling"},
     {"lane_lookahead_m",&Config::lane_lookahead,.01,.8,"Stanley tangent, m (0.01..0.8)"},
     {"safety_margin_m",&Config::margin,0,.2,"each side / front, m (0..0.2)"},
@@ -24,6 +25,7 @@ inline const std::array<PlannerField,25>& plannerFields() {
     {"response_delay_sec",&Config::delay,0,1,"response delay, sec (0..1)"},
     {"histogram_low",&Config::hist_low,0,999,"VFH low (must be < high)"},
     {"histogram_high",&Config::hist_high,.001,1000,"VFH high (must be > low)"},
+    {"obstacle_memory_enabled",&Config::obstacle_memory_enabled,0,1,"stored obstacles: 0=off / 1=on"},
     {"hazard_filter_enabled",&Config::hazard_filter_enabled,0,1,"0=off / 1=on"},
     {"hazard_confirm_frames",&Config::hazard_confirm_frames,1,5,"consecutive depth frames (integer)"},
     {"hazard_small_max_cells",&Config::hazard_small_max_cells,1,50,"small 8-connected component (integer)"},
@@ -60,12 +62,12 @@ inline void validatePlannerEdits(const Config& config,double deceleration_ceilin
 }
 class PlannerControls {
   struct Edit {double observed{};std::string draft;bool pending{false};};
-  std::array<Edit,25> edits_;
+  std::array<Edit,planner_field_count> edits_;
   bool ready_{false},open_{false},select_all_{false};
   int active_{-1};
   std::size_t page_{0};
   static constexpr std::size_t page_size=12;
-  static constexpr std::size_t pages=(25+page_size-1)/page_size;
+  static constexpr std::size_t pages=(planner_field_count+page_size-1)/page_size;
   std::string message_{"Edit values, then Apply. Start also applies valid edits."};
   static std::string format(double value){std::ostringstream s;s<<std::setprecision(8)<<value;return s.str();}
   static cv::Rect field(std::size_t i){i%=page_size;return {250+int(i/6)*374,166+int(i%6)*48,104,30};}
