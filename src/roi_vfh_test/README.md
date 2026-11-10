@@ -135,7 +135,7 @@ VFH launch는 선택한 참조 YAML의 속도를 사용한다. 일반 auto_contr
 | 장애물 Depth / terrain | 요청 40FPS | obstacles `obstacles.camera.fps` |
 | VFH 계획 | 80Hz | obstacles `obstacles.avoidance.max_fps` |
 | ROI / VFH 프리뷰 | 최대 30FPS | BEV `preview_max_fps` |
-| 제어 / IMU / VESC 속도 | 100Hz / 400Hz / 80Hz | 기존 auto_control / camera / VESC 설정 |
+| 제어 / IMU / VESC 속도 | 100Hz / 요청 120Hz / 80Hz | 기존 제어·VESC 설정; VFH 전용 `imu_rate_hz` launch 인자 |
 
 RGB 수신을 depth 처리 스레드에서 분리했고, 차선 BEV 발행도 프리뷰 FPS 제한에서 분리했다.
 새 RGB 촬영본당 한 번만 차선 BEV를 발행한다. 프리뷰가 꺼져 있거나 30FPS여도
@@ -174,7 +174,7 @@ VESC bridge 자동 실행과 namespace/명시 토픽 override, 속도 환산·�
 정지 시 Duty 0 상태와 최대 2A 제동, 조향 유지 정책을 유지한다.
 실제 모터 명령은 브레이크와 Duty가 서로 덮이지 않도록 기존의 한 모드씩 발행하는 절차를 따른다.
 
-- lane/terrain 촬영 최대 수명 0.30초, VESC 속도 0.15초, IMU 0.10초 검사 유지.
+- lane/terrain 촬영 최대 수명 0.30초, VESC 속도 0.15초, IMU 0.25초 검사 적용.
 - 새 입력을 기다릴 때 아직 수명이 남은 직전 경로 유지. 만료되면 제동.
 - 일시적 입력 문제는 0.50초 연속 정상 입력과 유효 경로 후 자동 재출발. Stop은 이를 취소.
 - VESC 단절, 다른 구동 발행자, 좌표 불일치, 잠금 상실 등의 기존 정지 검사 유지.
@@ -193,3 +193,17 @@ CSV에는 기존 주행/위험 셀 기록에 `remembered_blind`, `remembered_wor
 사용자 요청대로 이번 작업에서는 **빌드·테스트·시뮬레이터 재주행·실차 실행을 하지 않았다.**
 새 API와 정책에 맞춰 기존 회귀 테스트 소스를 갱신하고 차선/장애물 기억 회귀 소스를 추가했지만 실행하지 않았다.
 소스 검토와 Git diff의 공백 오류 확인만 수행했다.
+
+## VFH IMU 요청 주기와 허용 수명
+
+VFH 실행의 기본 IMU 요청은 120Hz이고 수신·촬영 수명 제한은 0.25초다.
+RGB/Depth 주기와 일반 auto_control 카메라 설정은 바꾸지 않는다.
+실제 IMU 출력 주기는 장치가 지원하는 주기에 따라 요청값과 다를 수 있다.
+
+```bash
+ros2 launch roi_vfh_test preview.launch.py imu_rate_hz:=120
+```
+
+허용 수명은 VFH `params_file`의 `roi_vfh_test.ros__parameters.imu_timeout_sec`에서
+변경하며 재실행해야 한다. 새 IMU 표본의 원래 촬영 시각은 계속 검사한다.
+이번 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.

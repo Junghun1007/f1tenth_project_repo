@@ -86,7 +86,7 @@ class Node:public rclcpp::Node {
   std::optional<double> planned_lane_stamp_;
   line_detactor::msg::LaneResult::ConstSharedPtr planned_lane_;
   double max_age_{.30},max_sync_{.06},plan_ms_{0};
-  double lane_receipt_timeout_{.30},erpm_timeout_{.15},imu_timeout_{.10},lane_received_at_{-1e9};
+  double lane_receipt_timeout_{.30},erpm_timeout_{.15},imu_timeout_{.25},lane_received_at_{-1e9};
   double planning_rate_{80},status_rate_{2},preview_rate_{30};
   std::optional<std::chrono::steady_clock::time_point> last_preview_at_;
   int path_minimum_points_{8},max_lane_points_{2000};
@@ -546,7 +546,7 @@ public:
     frame_id_=declare_parameter<std::string>("frame_id","front_axle_bev",fixed);
     lane_topic_=declare_parameter<std::string>("lane_result_topic","/line_detactor/result",fixed);
     lane_receipt_timeout_=declare_parameter("lane_receipt_timeout_sec",.30,fixed);
-    erpm_timeout_=declare_parameter("erpm_timeout_sec",.15,fixed);imu_timeout_=declare_parameter("imu_timeout_sec",.10,fixed);
+    erpm_timeout_=declare_parameter("erpm_timeout_sec",.15,fixed);imu_timeout_=declare_parameter("imu_timeout_sec",.25,fixed);
     planning_rate_=declare_parameter("planning_rate_hz",80.,fixed);
     preview_rate_=declare_parameter("preview_fps",30.,fixed);status_rate_=declare_parameter("status_log_rate_hz",2.,fixed);
     path_minimum_points_=declare_parameter("path_minimum_points",8,fixed);max_lane_points_=declare_parameter("max_lane_points",2000,fixed);

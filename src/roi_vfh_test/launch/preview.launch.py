@@ -34,7 +34,10 @@ def nodes(context):
         raise ValueError("Shared lane BEV currently requires 0..3m, +/-0.6m, 120x300 at 1cm/pixel")
     if camera["camera_socket"] != "CAM_A" or camera["resize_mode"] != "CROP" or not camera["undistort_enabled"]:
         raise ValueError("ROI shared RGB requires undistorted CAM_A with CROP resize")
-    # Use the same sensor/publish rates as the auto_control camera + BEV path.
+    imu_rate = int(arg("imu_rate_hz"))
+    if not 1 <= imu_rate <= 1000:
+        raise ValueError("imu_rate_hz must be in 1..1000")
+    # RGB/depth rates follow the reference profiles; VFH requests a lower IMU rate.
     # Keep preview rendering separate from the lane input producer.
     rgb_rates = [float(camera["sensor_fps"]), float(camera["publish_fps"])]
     if float(bev["publish_max_fps"]) > 0:
@@ -43,7 +46,7 @@ def nodes(context):
                 "preview.rgb_fps": min(rgb_rates), "preview.fps": bev["preview_max_fps"],
                 "preview.show_bev_window": False, "preview.publish_lane_bev": True, "motion.publish_imu": True,
                 "preview.rgb_width_px": camera["width"], "preview.rgb_height_px": camera["height"],
-                "motion.imu_rate_hz": int(camera["imu_rate_hz"]),
+                "motion.imu_rate_hz": imu_rate,
                 "motion.imu_queue_size": camera["imu_queue_size"],
                 "motion.imu_max_batch_reports": camera["imu_max_batch_reports"]})
     for key in ("camera_x_m", "camera_y_m", "camera_yaw_deg"):
@@ -192,5 +195,6 @@ def generate_launch_description():
                 "vesc_bridge_enabled": "true", "vesc_port": "/dev/ttyTHS1",
                 "vesc_params_file": Path(get_package_share_directory("vehicle_bringup")) / "config/vesc_config.yaml",
                 "dynamics_enabled": "true", "vehicle_namespace": "", "measured_erpm_topic": "",
+                "imu_rate_hz": "120",
                 "vesc_connection_topic": "", "measured_speed_topic": "/roi_vfh_test/measured_speed"}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=str(v)) for k, v in defaults.items()] + [OpaqueFunction(function=nodes)])

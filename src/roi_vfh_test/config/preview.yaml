@@ -18,6 +18,7 @@ roi_vfh_test:
     histogram_low: 1.0
     histogram_high: 2.0
     max_age_sec: 0.30
+    imu_timeout_sec: 0.25 # IMU capture and receipt freshness; seconds.
     input_resume_stable_sec: 0.50
     max_sync_sec: 0.10
     deceleration_mps2: 0.4
