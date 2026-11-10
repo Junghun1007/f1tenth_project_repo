@@ -25,6 +25,10 @@ class RuntimeMonitor {
 public:
   explicit RuntimeMonitor(rclcpp::Node& node):node_(node.get_fully_qualified_name()) {
     publisher_=node.create_publisher<std_msgs::msg::String>("/auto/runtime_metrics",rclcpp::QoS(20));
+    // Humble only supports volatile durability on its intra-process path.
+    // Keep the GUI enable state latched for components loaded afterwards.
+    rclcpp::SubscriptionOptions options;
+    options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
     subscription_=node.create_subscription<std_msgs::msg::Bool>("/auto/runtime_metrics/enabled",
       rclcpp::QoS(1).reliable().transient_local(),[this](std_msgs::msg::Bool::ConstSharedPtr p) {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -32,7 +36,7 @@ public:
         deadline_ns_.store(std::chrono::duration_cast<std::chrono::nanoseconds>(
           (Clock::now()+std::chrono::seconds(2)).time_since_epoch()).count());
         enabled_.store(p->data);
-      });
+      },options);
   }
   bool enabled()const{return enabled_.load(std::memory_order_relaxed) &&
     std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now().time_since_epoch()).count()<deadline_ns_.load();}

@@ -36,13 +36,16 @@ public:
     bgr_publisher_=create_publisher<sensor_msgs::msg::Image>(
       declare_parameter<std::string>("model_input_topic","/ir_bev_line_detection/image_bgr"),
       rclcpp::SensorDataQoS().keep_last(1));
+    // Retain tunnel state over DDS; Humble rejects latched intra-process subscriptions.
+    rclcpp::SubscriptionOptions mode_options;
+    mode_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
     mode_sub_=create_subscription<std_msgs::msg::String>(
       "/tunnel/compute_source",rclcpp::QoS(1).reliable().transient_local(),
       [this](std_msgs::msg::String::ConstSharedPtr message) {
         if (message->data!="IR" && message->data!="RGB" && message->data!="BOTH") {return;}
         inside_=message->data!="RGB";
         retry_at_=Clock::time_point{};
-      });
+      },mode_options);
     diagnostic_started_=Clock::now();
     diagnostic_timer_=create_wall_timer(std::chrono::seconds(2),[this]() {
       if (!inside_) {diagnostic_started_=Clock::now(); output_count_=0; return;}
