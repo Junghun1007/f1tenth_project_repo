@@ -71,6 +71,12 @@ class RuntimeTools(Node):
             Bool, '/auto/runtime_metrics/enabled',
             QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
         self.create_subscription(String, '/auto/ui/action', self.action, 10)
+        self.open_metrics_service = self.create_service(
+            Trigger, '/auto/runtime_tools/open_metrics',
+            lambda request, response: self.open_tool('metrics', response))
+        self.open_parameters_service = self.create_service(
+            Trigger, '/auto/runtime_tools/open_parameters',
+            lambda request, response: self.open_tool('parameters', response))
         self.create_subscription(String, '/auto/runtime_metrics', self.metric, 30)
         self.stop_client = self.create_client(Trigger, '/auto_control/stop')
         self.start_client = self.create_client(Trigger, '/auto_control/start')
@@ -79,6 +85,41 @@ class RuntimeTools(Node):
 
     def set_metrics(self, enabled):
         self.metrics_pub.publish(Bool(data=enabled))
+
+    def open_tool(self, key, response):
+        try:
+            if key == 'metrics':
+                self.show_metrics()
+            else:
+                self.show_parameters()
+            window = self.windows[key]
+            window.deiconify()
+            window.update_idletasks()
+            window.lift()
+            window.focus_force()
+            # A click explicitly asks for this window; bring it above the inspection.
+            window.attributes('-topmost', True)
+            window.after(250, lambda: self.release_topmost(window))
+            response.success = True
+            response.message = f'{"Timings" if key == "metrics" else "Parameters"} window opened.'
+        except Exception as error:
+            response.success = False
+            response.message = f'Cannot open {key}: {error}'
+            self.get_logger().error(response.message)
+            if key in self.windows:
+                try:
+                    self.close(key)
+                except Exception:
+                    pass
+        return response
+
+    @staticmethod
+    def release_topmost(window):
+        try:
+            if window.winfo_exists():
+                window.attributes('-topmost', False)
+        except Exception:
+            pass  # The user may close the window before the deferred callback.
 
     def action(self, msg):
         if msg.data == 'metrics':
@@ -395,6 +436,16 @@ class RuntimeTools(Node):
             status.set(str(error))
 
     def tick(self):
+        try:
+            self.poll()
+        except Exception as error:
+            self.get_logger().error(f'Runtime tools update failed: {error}')
+        finally:
+            # A Tk/ROS callback error must not silently stop all future requests.
+            if rclpy.ok():
+                self.root.after(10, self.tick)
+
+    def poll(self):
         rclpy.spin_once(self, timeout_sec=0)
         now = time.monotonic()
         if 'metrics' in self.windows:
@@ -411,7 +462,6 @@ class RuntimeTools(Node):
                     self.table.item(key, values=values)
                 else:
                     self.table.insert('', 'end', iid=key, values=values)
-        self.root.after(10, self.tick)
 
 
 def main(args=None):

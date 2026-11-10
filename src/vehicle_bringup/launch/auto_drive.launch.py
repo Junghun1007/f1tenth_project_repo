@@ -457,6 +457,11 @@ def _apply_parameter_file_defaults(
     if measurement != "true":
         from auto_control_tunnel.launch_support import startup_inspection_node
         inspection_actions.append(startup_inspection_node(tunnel == "true", traffic_enabled == "true"))
+        # Tools belong to the inspection controls, not the raw BEV preview.
+        # Start them before including BEV's launch, which sets preview_enabled=false.
+        inspection_actions.append(Node(
+            package="auto_control", executable="runtime_tools", name="auto_runtime_tools",
+            output="screen"))
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -781,10 +786,6 @@ def generate_launch_description():
             "ml_model_path"
         ),
     })
-    runtime_tools_node = Node(
-        package="auto_control", executable="runtime_tools", name="auto_runtime_tools",
-        output="screen", condition=IfCondition(LaunchConfiguration("preview_enabled")),
-    )
     auto_control_node = Node(
         package="auto_control",
         executable="auto_control_node",
@@ -966,6 +967,5 @@ def generate_launch_description():
             dynamics_node,
             performance_shutdown_handler,
             auto_control_node,
-            runtime_tools_node,
         ]
     )

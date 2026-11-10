@@ -35,7 +35,11 @@ class StartupInspection(Node):
         self.speed = InspectionSpeed()
         from std_msgs.msg import Float64
         from line_detactor.msg import SpeedLimitState
-        self.action_pub = self.create_publisher(String, '/auto/ui/action', 10)
+        self.tool_clients = {
+            'metrics': self.create_client(Trigger, '/auto/runtime_tools/open_metrics'),
+            'parameters': self.create_client(Trigger, '/auto/runtime_tools/open_parameters'),
+        }
+        self.pending_tool = None
         self.speed_pub = self.create_publisher(Float64, '/auto/maximum_speed_request', 1)
         self.speed_sub = self.create_subscription(
             SpeedLimitState, '/auto/maximum_speed_state', self.speed.observe,
@@ -99,11 +103,44 @@ class StartupInspection(Node):
             elif contains(STOP, x, y):
                 self.request_stop()
             elif contains(TIMINGS, x, y):
-                self.action_pub.publish(String(data='metrics'))
-                self.state.error = 'Timings window requested.'
+                self.request_tool('metrics')
             elif contains(PARAMS, x, y):
-                self.action_pub.publish(String(data='parameters'))
-                self.state.error = 'Parameters window requested.'
+                self.request_tool('parameters')
+
+    def request_tool(self, key):
+        if self.pending_tool is not None:
+            self.state.error = 'Waiting for tools window response...'
+            return
+        client = self.tool_clients[key]
+        if not client.service_is_ready():
+            self.state.error = 'Tools unavailable: check runtime_tools startup and python3-tk installation.'
+            return
+        try:
+            future = client.call_async(Trigger.Request())
+        except Exception as error:
+            self.state.error = f'Tools request failed: {error}'
+            return
+        self.pending_tool = (future, time.monotonic())
+        self.state.error = f'Opening {"Timings" if key == "metrics" else "Parameters"}...'
+        future.add_done_callback(self.tool_response)
+
+    def tool_response(self, future):
+        if self.pending_tool is None or self.pending_tool[0] is not future:
+            return
+        self.pending_tool = None
+        try:
+            response = future.result()
+            self.state.error = response.message if response.success else 'Tools error: ' + response.message
+        except Exception as error:
+            self.state.error = f'Tools error: {error}'
+
+    def check_tool_timeout(self):
+        if self.pending_tool is not None and time.monotonic()-self.pending_tool[1] > 10.:
+            future = self.pending_tool[0]
+            self.pending_tool = None
+            # Do not replay this click if the tools process becomes available later.
+            future.cancel()
+            self.state.error = 'Tools did not respond within 10s; check runtime_tools process.'
 
     def flush_speed_request(self):
         from std_msgs.msg import Float64
@@ -237,6 +274,7 @@ def main(args=None):
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=.03)
             node.flush_speed_request()
+            node.check_tool_timeout()
             if not gui:
                 continue
             if dismissed:
