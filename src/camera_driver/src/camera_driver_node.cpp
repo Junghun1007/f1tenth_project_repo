@@ -850,7 +850,7 @@ private:
               "between 0 and 5");
     }
     if (publish_enabled_ || fused_bev_output_enabled_) {
-      require_positive(publish_fps_, "publish_fps");
+      require_positive(publish_fps_.load(), "publish_fps");
       if (publish_enabled_ && image_topic_.empty()) {
         throw std::invalid_argument(
                 "image_topic must not be empty when publishing is enabled");
