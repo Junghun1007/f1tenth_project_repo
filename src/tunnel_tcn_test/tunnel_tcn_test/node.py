@@ -1,4 +1,5 @@
 """ROS RGB input, TensorRT inference and a main-thread OpenCV preview."""
+from .loading_status import LoadingStatus
 from collections import deque
 import hashlib
 import json
@@ -45,18 +46,22 @@ class TunnelNode(Node):
         self.model_status = self.create_publisher(String, '~/model_status', QoSProfile(
             depth=1, reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL))
-        self.model_status.publish(String(data=f'LOADING | model={model_path}'))
+        loading = LoadingStatus(lambda text: self.model_status.publish(String(data=text)))
+        loading.stage(f'model={model_path}')
         try:
-            self.backend = TensorRTBackend(model_path, cache_dir, provenance['onnx_sha256'])
+            self.backend = TensorRTBackend(model_path, cache_dir, provenance['onnx_sha256'], progress=loading.stage)
             # Includes engine load/build, buffer allocation and finite output check.
             logits = self.backend.infer(np.zeros((1, 17, 32), dtype=np.float32))
             if logits.shape != (1, 2) or not np.isfinite(logits).all():
                 raise RuntimeError('Invalid TCN trial inference output')
         except Exception as error:
-            self.model_status.publish(String(data=f'FAILED | {error}'))
+            loading.update(f'FAILED | {error}')
             self.get_logger().error(f'[MODEL CHECK] FAIL TCN: {error}')
             raise
-        self.model_status.publish(String(data=f'READY | model={model_path} | trial inference=PASS'))
+        else:
+            loading.update(f'READY | model={model_path} | trial inference=PASS')
+        finally:
+            loading.close()
         self.get_logger().info(f'[MODEL CHECK] PASS TCN | model={model_path}')
         self.get_logger().info(f'TensorRT ready: {self.backend.engine_path}')
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)

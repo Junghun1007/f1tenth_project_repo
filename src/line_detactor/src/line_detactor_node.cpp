@@ -1,3 +1,4 @@
+#include <bev_handoff/model_load_status.hpp>
 #include <bev_handoff/runtime_monitor.hpp>
 #include "line_detactor/line_detactor_node.hpp"
 
@@ -150,7 +151,11 @@ public:
     model_status_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
     model_status_pub_ = node_.create_publisher<std_msgs::msg::String>(
       "~/model_status", rclcpp::QoS(1).reliable().transient_local(), model_status_options);
-    publish_model_status("LOADING | model=" + model_path_);
+    model_load_status_ = std::make_unique<bev_handoff::ModelLoadStatus>(
+      [publisher = model_status_pub_](const std::string & status) {
+        std_msgs::msg::String message; message.data = status; publisher->publish(message);
+      });
+    model_load_status_->update("LOADING | model=" + model_path_);
     try {
       if (!std::filesystem::is_regular_file(model_path_)) {
         throw std::runtime_error("Three-channel ONNX model not found: " + model_path_);
@@ -158,12 +163,14 @@ public:
       backend_ = std::make_unique<TensorRtLaneBackend>(
         model_path_, engine_cache_path_, engine_precision_, model_input_width_, model_input_height_,
         static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
-        mask_threshold_, overlay_alpha_, connection_.enabled, stop_line_mask_threshold_);
+        mask_threshold_, overlay_alpha_, connection_.enabled, stop_line_mask_threshold_,
+        [this](const std::string & stage) {model_load_status_->update("LOADING | " + stage);});
+      model_load_status_->update("LOADING | Trial inference / CUDA warmup");
       warm_up();
-      publish_model_status("READY | model=" + model_path_ + " | engine=" +
+      model_load_status_->update("READY | model=" + model_path_ + " | engine=" +
         backend_->engine_cache_path() + " | trial inference=PASS");
     } catch (const std::exception & e) {
-      publish_model_status(std::string("FAILED | ") + e.what());
+      model_load_status_->update(std::string("FAILED | ") + e.what());
       RCLCPP_ERROR(node_.get_logger(), "[MODEL CHECK] FAIL: %s", e.what());
       throw;
     }
@@ -1647,6 +1654,7 @@ private:
   std::unique_ptr<ProcessingProfileWriter> profile_writer_;
   std::unique_ptr<TensorRtLaneBackend> backend_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr model_status_pub_;
+  std::unique_ptr<bev_handoff::ModelLoadStatus> model_load_status_;
   rclcpp::Subscription<Image>::SharedPtr subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr control_latency_subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_subscription_;

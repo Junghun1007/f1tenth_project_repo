@@ -302,8 +302,10 @@ public:
     const float mask_threshold,
     const float overlay_alpha,
     const bool export_labels,
-    const float stop_line_mask_threshold)
-  : model_path_(model_path),
+    const float stop_line_mask_threshold,
+    std::function<void(const std::string &)> progress)
+  : progress_(std::move(progress)),
+    model_path_(model_path),
     engine_precision_(engine_precision),
     engine_cache_path_(requested_engine_cache_path.empty() ?
       model_path + ".trt" + std::to_string(NV_TENSORRT_MAJOR) +
@@ -348,11 +350,13 @@ public:
     if (!initLibNvInferPlugins(&logger_, "")) {
       throw std::runtime_error("TensorRT plugin initialization failed");
     }
+    stage("Initializing TensorRT runtime");
     runtime_.reset(nvinfer1::createInferRuntime(logger_));
     if (!runtime_) {
       throw std::runtime_error("TensorRT runtime creation failed");
     }
     load_or_build_engine(workspace_size_bytes);
+    stage("Creating execution context / allocating GPU buffers");
     context_.reset(engine_->createExecutionContext());
     if (!context_) {
       throw std::runtime_error("TensorRT execution context creation failed");
@@ -547,7 +551,9 @@ private:
   }
   void load_or_build_engine(const std::size_t workspace_size_bytes)
   {
+    stage("Checking engine cache");
     if (cache_is_current(engine_cache_path_, model_path_)) {
+      stage("Reading / deserializing cached engine");
       const auto cached_engine = read_binary_file(engine_cache_path_);
       if (!cached_engine.empty()) {
         engine_.reset(runtime_->deserializeCudaEngine(
@@ -570,6 +576,7 @@ private:
       }
     }
 
+    stage("Parsing ONNX / configuring TensorRT builder");
     auto builder = TensorRtUniquePtr<nvinfer1::IBuilder>(
       nvinfer1::createInferBuilder(logger_));
     if (!builder) {
@@ -658,17 +665,20 @@ private:
     std::cerr << "[line_detactor TensorRT] Building " << engine_precision_
               << " engine from "
               << model_path_ << ". First launch can take several minutes.\n";
+    stage("Building TensorRT engine (GPU optimization; may take minutes)");
     auto serialized = TensorRtUniquePtr<nvinfer1::IHostMemory>(
       builder->buildSerializedNetwork(*network, *config));
     if (!serialized) {
       throw std::runtime_error("TensorRT " + engine_precision_ + " engine build failed");
     }
+    stage("Deserializing newly built engine");
     engine_.reset(runtime_->deserializeCudaEngine(
         serialized->data(), serialized->size()));
     if (!engine_) {
       throw std::runtime_error(
               "New TensorRT " + engine_precision_ + " engine deserialization failed");
     }
+    stage("Writing engine cache");
     write_engine_cache(
       engine_cache_path_, serialized->data(), serialized->size());
     std::cerr << "[line_detactor TensorRT] " << engine_precision_
@@ -783,6 +793,8 @@ private:
 #endif
   }
 
+  std::function<void(const std::string &)> progress_;
+  void stage(const std::string & text) {if (progress_) {progress_(text);}}
   std::string model_path_;
   std::string engine_precision_;
   std::string engine_cache_path_;
@@ -838,10 +850,11 @@ TensorRtLaneBackend::TensorRtLaneBackend(
   const float mask_threshold,
   const float overlay_alpha,
   const bool export_labels,
-  const float stop_line_mask_threshold)
+  const float stop_line_mask_threshold,
+  std::function<void(const std::string &)> progress)
 : impl_(std::make_unique<Impl>(
     model_path, engine_cache_path, engine_precision, input_width, input_height,
-    workspace_size_bytes, mask_threshold, overlay_alpha, export_labels, stop_line_mask_threshold))
+    workspace_size_bytes, mask_threshold, overlay_alpha, export_labels, stop_line_mask_threshold, std::move(progress)))
 {
 }
 

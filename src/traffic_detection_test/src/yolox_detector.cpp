@@ -52,7 +52,8 @@ YoloxDetector::YoloxDetector(
   const int input_height,
   const float score_threshold,
   const float nms_threshold,
-  const std::size_t tensorrt_workspace_size_bytes)
+  const std::size_t tensorrt_workspace_size_bytes,
+  std::function<void(const std::string &)> progress)
 : input_width_(input_width),
   input_height_(input_height),
   score_threshold_(score_threshold),
@@ -88,7 +89,7 @@ YoloxDetector::YoloxDetector(
   if (normalized_backend == "TENSORRT") {
     tensorrt_backend_ = std::make_unique<TensorRtYoloxBackend>(
       model_path, engine_cache_path, precision_name, input_width_, input_height_,
-      tensorrt_workspace_size_bytes);
+      tensorrt_workspace_size_bytes, std::move(progress));
     tensorrt_output_.resize(
       static_cast<std::size_t>(tensorrt_backend_->output_row_count()) *
       static_cast<std::size_t>(tensorrt_backend_->output_column_count()));

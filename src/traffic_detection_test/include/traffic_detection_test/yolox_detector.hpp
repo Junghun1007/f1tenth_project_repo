@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -48,7 +49,8 @@ public:
     int input_height,
     float score_threshold,
     float nms_threshold,
-    std::size_t tensorrt_workspace_size_bytes);
+    std::size_t tensorrt_workspace_size_bytes,
+    std::function<void(const std::string &)> progress = {});
   ~YoloxDetector();
 
   YoloxDetector(const YoloxDetector &) = delete;

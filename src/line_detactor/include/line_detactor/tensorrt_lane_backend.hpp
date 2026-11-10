@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <string>
 
 namespace line_detactor
@@ -31,7 +32,8 @@ public:
     float mask_threshold,
     float overlay_alpha,
     bool export_labels = false,
-    float stop_line_mask_threshold = -1.0F);
+    float stop_line_mask_threshold = -1.0F,
+    std::function<void(const std::string &)> progress = {});
   ~TensorRtLaneBackend();
 
   TensorRtLaneBackend(const TensorRtLaneBackend &) = delete;

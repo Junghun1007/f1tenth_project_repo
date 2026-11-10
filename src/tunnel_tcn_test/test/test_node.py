@@ -8,6 +8,7 @@ from unittest.mock import patch
 import unittest
 from collections import deque
 import numpy as np
+from tunnel_tcn_test.loading_status import LoadingStatus
 from tunnel_tcn_test.features import FeatureStream, EventDecoder
 
 
@@ -57,12 +58,12 @@ class NodeTests(unittest.TestCase):
             node = SimpleNamespace(
                 create_publisher=lambda *a: SimpleNamespace(publish=lambda m: reports.append(m.data)),
                 get_logger=lambda: SimpleNamespace(info=lambda m: None, error=errors.append))
-            namespace = dict(self=node, model_path='/model.onnx', cache_dir='/cache',
+            namespace = dict(LoadingStatus=LoadingStatus, self=node, model_path='/model.onnx', cache_dir='/cache',
                 provenance={'onnx_sha256': 'test'}, np=np, String=SimpleNamespace,
                 QoSProfile=lambda **kw: kw,
                 ReliabilityPolicy=SimpleNamespace(RELIABLE='reliable'),
                 DurabilityPolicy=SimpleNamespace(TRANSIENT_LOCAL='latched'),
-                TensorRTBackend=lambda *a: SimpleNamespace(infer=infer, engine_path='/engine'))
+                TensorRTBackend=lambda *a, **kw: SimpleNamespace(infer=infer, engine_path='/engine'))
             if error:
                 with self.assertRaises(error):
                     exec(code, namespace)

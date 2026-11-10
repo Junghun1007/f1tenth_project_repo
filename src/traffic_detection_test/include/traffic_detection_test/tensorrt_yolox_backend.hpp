@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <functional>
 #include <string>
 
 namespace traffic_detection_test
@@ -26,7 +27,8 @@ public:
     const std::string & engine_precision,
     int input_width,
     int input_height,
-    std::size_t workspace_size_bytes);
+    std::size_t workspace_size_bytes,
+    std::function<void(const std::string &)> progress = {});
   ~TensorRtYoloxBackend();
 
   TensorRtYoloxBackend(const TensorRtYoloxBackend &) = delete;

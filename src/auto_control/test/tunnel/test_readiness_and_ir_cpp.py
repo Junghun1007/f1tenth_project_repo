@@ -35,6 +35,7 @@ struct Controller {
   bool enabled_{true},model_startup_check_required_{true},vesc_connected_{true};
   ModelStartupGate model_startup_gate_;
   bool startup_safety_enabled_{false},startup_manual_{false},camera_startup_ready_{false};
+  bool operator_stopped_{false};
   auto_control::StartAuthorization start_authorization_;
   std::string control_mode_{"monitor_only"},avoidance_status_;
   bool avoidance_control_enabled_{false},avoidance_deformation_only_{false};

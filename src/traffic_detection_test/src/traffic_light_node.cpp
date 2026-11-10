@@ -1,3 +1,4 @@
+#include <bev_handoff/model_load_status.hpp>
 #include <atomic>
 #include <bev_handoff/runtime_monitor.hpp>
 #include "bev_handoff/direct_camera_handoff.hpp"
@@ -90,7 +91,11 @@ public:
     status_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
     model_status_pub_ = create_publisher<std_msgs::msg::String>(
       "~/model_status", rclcpp::QoS(1).reliable().transient_local(), status_options);
-    publish_model_status("LOADING | model=" + model_);
+    model_load_status_ = std::make_unique<bev_handoff::ModelLoadStatus>(
+      [publisher = model_status_pub_](const std::string & status) {
+        std_msgs::msg::String message; message.data = status; publisher->publish(message);
+      });
+    model_load_status_->update("LOADING | model=" + model_);
     consumer_ = bev_handoff::registerDirectCameraConsumer(
       [this](std::shared_ptr<const Frame> frame) {
         std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
@@ -108,7 +113,7 @@ public:
           // A publication/shutdown failure must not terminate the shared
           // camera/BEV/lane process through an uncaught worker exception.
           if (rclcpp::ok(get_node_base_interface()->get_context())) {
-            try {publish_model_status(std::string("FAILED | worker stopped: ") + e.what());}
+            try {model_load_status_->update(std::string("FAILED | worker stopped: ") + e.what());}
             catch (const std::exception &) {}  // Context may be shutting down.
             RCLCPP_ERROR(get_logger(), "Traffic worker stopped: %s", e.what());
           }
@@ -220,17 +225,19 @@ private:
     publisher_->publish(preparing);
     try {
       detector = std::make_unique<YoloxDetector>(
-        model_, "TENSORRT", cache_, "int8", 640, 160, score_, nms_, workspace_);
+        model_, "TENSORRT", cache_, "int8", 640, 160, score_, nms_, workspace_,
+        [this](const std::string & stage) {model_load_status_->update("LOADING | " + stage);});
+      model_load_status_->update("LOADING | Trial NV12 inference / CUDA warmup");
       // Exercise the production NV12 -> CUDA -> TensorRT -> output path.
       cv::Mat black_nv12(240, 640, CV_8UC1, cv::Scalar(16));
       black_nv12.rowRange(160, 240).setTo(128);
       static_cast<void>(detector->detect_nv12(black_nv12.data, black_nv12.total(),
         black_nv12.step[0], 640, 160, cv::Rect(0, 0, 640, 160)));
-      publish_model_status("READY | model=" + model_ + " | trial NV12 inference=PASS");
+      model_load_status_->update("READY | model=" + model_ + " | trial NV12 inference=PASS");
       RCLCPP_INFO(get_logger(), "Traffic TensorRT engine ready; awaiting shared color frames.");
     } catch (const std::exception & e) {
       detector.reset();
-      publish_model_status(std::string("FAILED | ") + e.what());
+      model_load_status_->update(std::string("FAILED | ") + e.what());
       RCLCPP_ERROR(get_logger(), "Traffic initialization failed: %s", e.what());
       // Stay alive publishing UNKNOWN; do not disturb the lane pipeline.
     }
@@ -355,6 +362,7 @@ private:
   std::uint64_t consumer_{0};
   rclcpp::Publisher<State>::SharedPtr publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr model_status_pub_;
+  std::unique_ptr<bev_handoff::ModelLoadStatus> model_load_status_;
   std::mutex mutex_;
   std::condition_variable condition_;
   bool stopping_{false};

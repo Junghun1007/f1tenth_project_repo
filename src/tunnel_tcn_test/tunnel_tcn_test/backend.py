@@ -56,7 +56,9 @@ class Cuda:
 
 
 class TensorRTBackend:
-    def __init__(self, model_path, cache_dir, expected_sha256=None):
+    def __init__(self, model_path, cache_dir, expected_sha256=None, progress=None):
+        stage = progress or (lambda text: None)
+        stage("Initializing CUDA / TensorRT runtime")
         import tensorrt as trt
         self.trt = trt
         version = tuple(int(x) for x in trt.__version__.split('.')[:2])
@@ -67,6 +69,7 @@ class TensorRTBackend:
         self.logger = trt.Logger(trt.Logger.WARNING)
         trt.init_libnvinfer_plugins(self.logger, '')
         self.runtime = trt.Runtime(self.logger)
+        stage("Reading ONNX / verifying model hash")
         data = Path(model_path).read_bytes()
         digest = hashlib.sha256(data).hexdigest()
         if expected_sha256 is not None and digest != expected_sha256:
@@ -78,12 +81,15 @@ class TensorRTBackend:
         directory.mkdir(parents=True, exist_ok=True)
         self.engine_path = directory / (identity_hash + '.engine')
         self.engine = None
+        stage("Checking engine cache")
         if self.engine_path.exists():
+            stage("Reading / deserializing cached engine")
             try:
                 self.engine = self.runtime.deserialize_cuda_engine(self.engine_path.read_bytes())
             except Exception:
                 self.engine = None
         if self.engine is None:
+            stage("Parsing ONNX / configuring TensorRT builder")
             builder = trt.Builder(self.logger)
             network = builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH))
             parser = trt.OnnxParser(network, self.logger)
@@ -94,15 +100,19 @@ class TensorRTBackend:
             config.clear_flag(trt.BuilderFlag.FP16)
             config.clear_flag(trt.BuilderFlag.TF32)
             config.profiling_verbosity = trt.ProfilingVerbosity.DETAILED
+            stage("Building TensorRT engine (GPU optimization; may take minutes)")
             plan = builder.build_serialized_network(network, config)
             if plan is None:
                 raise RuntimeError('TensorRT engine build failed; see parser/builder log')
+            stage("Deserializing newly built engine")
             self.engine = self.runtime.deserialize_cuda_engine(plan)
             if self.engine is None:
                 raise RuntimeError('Built engine cannot be deserialized')
+            stage("Writing engine cache")
             temporary = self.engine_path.with_suffix(f'.{os.getpid()}.tmp')
             temporary.write_bytes(bytes(plan))
             temporary.replace(self.engine_path)
+        stage("Creating execution context / allocating GPU buffers")
         self.context = self.engine.create_execution_context()
         if self.context is None or self.engine.num_io_tensors != 2:
             raise RuntimeError('Invalid TensorRT engine I/O')
@@ -125,6 +135,7 @@ class TensorRTBackend:
             inspector.execution_context = self.context
             self.engine_path.with_suffix('.layers.json').write_text(inspector.get_engine_information(trt.LayerInformationFormat.JSON))
             self.engine_path.with_suffix('.metadata.json').write_text(json.dumps(identity, indent=2))
+            stage("Trial inference / CUDA warmup")
             for _ in range(20):
                 self.infer(np.zeros((1, 17, 32), dtype=np.float32))
         except Exception:
