@@ -20,10 +20,9 @@ roi_vfh_test:
     max_age_sec: 0.30
     imu_timeout_sec: 0.25 # IMU capture and receipt freshness; seconds.
     input_resume_stable_sec: 0.50
-    max_sync_sec: 0.10
     deceleration_mps2: 0.4
     response_delay_sec: 0.10
-    lane_memory_enabled: 1.0 # 0.0=off (no stored lane fallback), 1.0=on; editable after Stop.
+    lane_memory_enabled: 1.0 # 0.0=off (no saved lane direction), 1.0=on; editable after Stop.
     hazard_filter_enabled: 1.0
     hazard_confirm_frames: 4.0
     hazard_small_max_cells: 8.0
@@ -32,11 +31,6 @@ roi_vfh_test:
     avoidance_curve_enabled: 1.0
     avoidance_curve_samples: 17.0
     avoidance_length_slack_m: 0.40
-    avoidance_lane_weight: 0.8
+    avoidance_lane_weight: 1.5
     avoidance_steering_weight: 0.1
     avoidance_clearance_weight: 1.0
-    # Continuous, motion-aligned lane evidence. Stored geometry has no expiry.
-    lane_trust_duration_sec: 0.8
-    lane_trust_min_length_m: 0.4
-    lane_trust_max_offset_m: 0.15
-    lane_trust_max_heading_deg: 12.0

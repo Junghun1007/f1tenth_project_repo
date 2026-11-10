@@ -71,8 +71,7 @@ int main(int argc,char** argv) {
       auto& state=sessions[session];
       state.last_use=++request_count;
       c.delay=std::max(c.delay,1/plan_hz);
-      c.lane_trust_duration=trust_seconds;c.lane_trust_length=trust_length;
-      c.lane_trust_offset=trust_offset;c.lane_trust_angle_deg=trust_angle;
+      // Legacy trust fields are consumed for wire compatibility; current lanes have no confidence gate.
       c.validate();
       std::vector<Point> observed;observed.reserve(lane_samples.size());
       for(auto p:lane_samples)observed.push_back({p.x,p.y});

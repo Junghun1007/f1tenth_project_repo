@@ -12,7 +12,7 @@ struct PlannerField {
   double minimum,maximum;
   const char* unit;
 };
-inline constexpr std::size_t planner_field_count=26;
+inline constexpr std::size_t planner_field_count=22;
 inline const std::array<PlannerField,planner_field_count>& plannerFields() {
   static const std::array<PlannerField,planner_field_count> fields{{
     {"nominal_speed_mps",&Config::speed,.05,3,"max speed, m/s; YAML ceiling"},
@@ -25,7 +25,7 @@ inline const std::array<PlannerField,planner_field_count>& plannerFields() {
     {"response_delay_sec",&Config::delay,0,1,"response delay, sec (0..1)"},
     {"histogram_low",&Config::hist_low,0,999,"VFH low (must be < high)"},
     {"histogram_high",&Config::hist_high,.001,1000,"VFH high (must be > low)"},
-    {"lane_memory_enabled",&Config::lane_memory_enabled,0,1,"stored lane: 0=off / 1=on"},
+    {"lane_memory_enabled",&Config::lane_memory_enabled,0,1,"last lane direction: 0=off / 1=on"},
     {"hazard_filter_enabled",&Config::hazard_filter_enabled,0,1,"0=off / 1=on"},
     {"hazard_confirm_frames",&Config::hazard_confirm_frames,1,5,"consecutive depth frames (integer)"},
     {"hazard_small_max_cells",&Config::hazard_small_max_cells,1,50,"small 8-connected component (integer)"},
@@ -36,11 +36,7 @@ inline const std::array<PlannerField,planner_field_count>& plannerFields() {
     {"avoidance_length_slack_m",&Config::avoidance_length_slack_m,0,.5,"length gap for comparing return costs, m"},
     {"avoidance_lane_weight",&Config::avoidance_lane_weight,0,5,"soft lane return weight (0..5)"},
     {"avoidance_steering_weight",&Config::avoidance_steering_weight,0,5,"steering continuity weight (0..5)"},
-    {"avoidance_clearance_weight",&Config::clearance_weight,0,5,"forward-grid clearance preference (0..5)"},
-    {"lane_trust_duration_sec",&Config::lane_trust_duration,.05,3,"continuous lane observation, sec"},
-    {"lane_trust_min_length_m",&Config::lane_trust_length,.15,2,"minimum observed lane length, m"},
-    {"lane_trust_max_offset_m",&Config::lane_trust_offset,.02,.5,"observation position consistency, m"},
-    {"lane_trust_max_heading_deg",&Config::lane_trust_angle_deg,1,45,"observation heading consistency, deg"}
+    {"avoidance_clearance_weight",&Config::clearance_weight,0,5,"forward-grid clearance preference (0..5)"}
   }};
   return fields;
 }

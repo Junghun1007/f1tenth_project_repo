@@ -45,10 +45,9 @@ struct Config {
   double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
   double avoidance_curve_enabled{1},avoidance_curve_samples{17},avoidance_length_slack_m{.40};
-  double avoidance_lane_weight{.8},avoidance_steering_weight{.1};
+  double avoidance_lane_weight{1.5},avoidance_steering_weight{.1};
   double clearance_weight{1.0};
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
-  double lane_trust_duration{.8},lane_trust_length{.4},lane_trust_offset{.15},lane_trust_angle_deg{12};
   void validate() const {
     if(!std::isfinite(lane_memory_enabled) || (lane_memory_enabled!=0 && lane_memory_enabled!=1))
       throw std::invalid_argument("lane_memory_enabled must be 0 or 1");
@@ -57,11 +56,6 @@ struct Config {
       minimum_path_length,uncertainty,max_curvature,lane_lateral_acceleration,avoidance_lateral_acceleration,
       stanley_gain,stanley_softening,stanley_corner_heading,stanley_opposing,geometry_window,steering_weight,control_rate})
       if (!std::isfinite(a) || a<0) throw std::invalid_argument("nonfinite/negative VFH parameter");
-    for(double value:{lane_trust_duration,lane_trust_length,lane_trust_offset,lane_trust_angle_deg})
-      if(!std::isfinite(value))throw std::invalid_argument("nonfinite lane confidence setting");
-    if(lane_trust_duration<.05 || lane_trust_duration>3 || lane_trust_length<.15 || lane_trust_length>2 ||
-      lane_trust_offset<.02 || lane_trust_offset>.5 || lane_trust_angle_deg<1 || lane_trust_angle_deg>45)
-      throw std::invalid_argument("invalid lane confidence settings");
     for(double a:{hazard_filter_enabled,hazard_confirm_frames,hazard_small_max_cells,hazard_match_radius_cells,hazard_max_gap_sec})
       if(!std::isfinite(a))throw std::invalid_argument("nonfinite hazard filter parameter");
     if((hazard_filter_enabled!=0 && hazard_filter_enabled!=1) ||
@@ -148,11 +142,11 @@ inline Candidate followReference(const std::vector<Point>& reference,const Confi
   auto_control::OrderedPath local;local.geometry_window_m=c.geometry_window;
   local.points.resize(reference.size());local.arc_m.assign(reference.size(),0);
   for(std::size_t i=1;i<reference.size();++i)local.arc_m[i]=local.arc_m[i-1]+std::hypot(reference[i].x-reference[i-1].x,reference[i].y-reference[i-1].y);
-  Pose p;p.steer=c.current_steer;out.path.push_back(p);double progress=0;
+  Pose p;p.steer=c.current_steer;out.path.push_back(p);
   const double dt=c.step/c.speed,limit=std::min(c.max_steer,std::atan(c.wheelbase*c.max_curvature));
   for(double distance=c.step;distance<=c.horizon+1e-8;distance+=c.step) {
-    progress=curve.nearest({p.x,p.y},progress);
-    if(curve.length()-progress<c.step*.5)break;
+    // Continue with the last observed tangent beyond a short current fragment.
+    // The complete predicted body sweep is still checked against terrain below.
     const double cs=std::cos(p.yaw),sn=std::sin(p.yaw);
     for(std::size_t i=0;i<reference.size();++i) {
       const double x=reference[i].x-p.x,y=reference[i].y-p.y;

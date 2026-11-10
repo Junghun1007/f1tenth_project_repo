@@ -36,7 +36,7 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
     cv::putText(canvas,"Green: current terrain",{12,320},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
     cv::putText(canvas,"Current terrain only; no obstacle memory",{12,340},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
     cv::putText(canvas,"Gray: assumed free / Red: hazard",{12,360},cv::FONT_HERSHEY_SIMPLEX,.40,{35,35,35},1);
-    cv::putText(canvas,"Blue: lane reference",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
+    cv::putText(canvas,"Blue: current lane / saved direction",{12,382},cv::FONT_HERSHEY_SIMPLEX,.40,{220,90,30},1);
     cv::putText(canvas,"Yellow: selected driving path",{12,402},cv::FONT_HERSHEY_SIMPLEX,.40,{25,130,160},1);
     cv::putText(canvas,cv::format("Hazard ends %zu / short %zu",plan.hazard_ends,plan.short_candidates),
       {12,424},cv::FONT_HERSHEY_SIMPLEX,.38,{35,35,35},1);
@@ -54,8 +54,8 @@ inline cv::Mat renderPreview(const Grid& grid,const std::vector<Point>& lane,
       cv::putText(canvas,cv::format("Extra curves %zu | selected %s",plan.fallback_candidates,plan.used_fallback?"yes":"no"),{12,548},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
     if(lane_reference) {
       cv::putText(canvas,"Lane: "+lane_reference->state,{12,570},cv::FONT_HERSHEY_SIMPLEX,.35,{35,35,35},1);
-      cv::putText(canvas,config.lane_memory_enabled==0?"Lane memory: OFF; current observations only":
-        cv::format("Lane memory: %s, age %.2fs; no departure cap",
+      cv::putText(canvas,config.lane_memory_enabled==0?"Lane direction memory: OFF":
+        cv::format("Direction memory: %s, age %.2fs; no departure cap",
         lane_reference->has_memory?"yes":"no",lane_reference->memory_age),{12,590},cv::FONT_HERSHEY_SIMPLEX,.32,{35,35,35},1);
     }
     if (grid.width>0) {

@@ -7,7 +7,7 @@
     acceleration:.8, lowThreshold:1, highThreshold:2, laneLookahead:.05, referenceDistance:1,
     terrainWidth:1.5, terrainForward:4, terrainCell:.025, planHz:20,
     hazardEnabled:1, hazardFrames:4, hazardSmall:8, hazardRadius:1, hazardGap:.15,
-    extraCurves:1, curveSamples:17, lengthSlack:.40, laneWeight:.8, steeringWeight:.1, laneTrustSeconds:.8, laneTrustLength:.4, laneTrustOffset:.15, laneTrustAngle:12,
+    extraCurves:1, curveSamples:17, lengthSlack:.40, laneWeight:1.5, steeringWeight:.1, laneTrustSeconds:.8, laneTrustLength:.4, laneTrustOffset:.15, laneTrustAngle:12,
     laneVisibleLength:3,
     clearanceWeight:1
   };

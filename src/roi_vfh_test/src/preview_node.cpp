@@ -102,12 +102,11 @@ class Node:public rclcpp::Node {
   std::optional<std::chrono::steady_clock::time_point> healthy_since_,last_recovery_check_;
   std::optional<double> planned_lane_stamp_;
   line_detactor::msg::LaneResult::ConstSharedPtr planned_lane_;
-  double max_age_{.30},max_sync_{.06},plan_ms_{0};
+  double max_age_{.30},plan_ms_{0};
   double lane_receipt_timeout_{.30},erpm_timeout_{.15},imu_timeout_{.25},lane_received_at_{-1e9};
   double planning_rate_{80},status_rate_{2},preview_rate_{30};
   std::optional<std::chrono::steady_clock::time_point> last_preview_at_;
-  int path_minimum_points_{8},max_lane_points_{2000};
-  double path_minimum_x_{.01},path_maximum_x_{2.98},path_maximum_gap_{.15};
+  int max_lane_points_{2000};
   std::string frame_id_{"front_axle_bev"},lane_topic_{"/line_detactor/result"};
   std::deque<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> grids_;
   line_detactor::msg::LaneResult::ConstSharedPtr lane_;
@@ -286,13 +285,9 @@ class Node:public rclcpp::Node {
         now().seconds()-stamp(newest->header.stamp),now().seconds()-imu_at_,imu_issue_.c_str()):"STOP: no fresh terrain";
       return false;
     }
-    // Terrain freshness takes priority over matching an older lane exposure.
-    // An unmatched lane uses the existing lane-memory/VFH policy instead of
-    // making a fresh obstacle map wait for an old inference result.
-    MotionPose paired_lane_pose;
-    const auto paired_lane=lane_input &&
-      std::abs(stamp(match->header.stamp)-stamp(lane_input->header.stamp))<=max_sync_ &&
-      (!need_motion || motion_.at(stamp(lane_input->header.stamp),paired_lane_pose))?lane_input:nullptr;
+    // Use the current usable observation even when inference lags terrain.
+    // Reproject by capture pose when possible; no time-skew/confidence veto.
+    const auto paired_lane=lane_input;
     if (match->header.frame_id!=frame_id_ || (paired_lane && paired_lane->header.frame_id!=match->header.frame_id) ||
       std::abs(match->info.origin.orientation.x)>1e-6 || std::abs(match->info.origin.orientation.y)>1e-6 ||
       std::abs(match->info.origin.orientation.z)>1e-6 || std::abs(match->info.origin.orientation.w-1)>1e-6) {
@@ -309,7 +304,6 @@ class Node:public rclcpp::Node {
       }
       Point q{paired_lane->centerline_bev_height_m-(p.y+.5)*paired_lane->centerline_bev_height_m/paired_lane->source_height,
         paired_lane->centerline_bev_width_m/2-(p.x-paired_lane->padding_left+.5)*paired_lane->centerline_bev_width_m/paired_lane->source_width};
-      if (!points.empty() && std::hypot(q.x-points.back().x,q.y-points.back().y)>path_maximum_gap_) break;
       points.push_back(q);
     }
     if(points.size()<2)points.clear();
@@ -327,11 +321,11 @@ class Node:public rclcpp::Node {
     MotionPose pose;
     if(requested_ && locked_) {
       MotionPose lane_pose;
-      if(!motion_ok_ || !motion_.at(stamp(match->header.stamp),pose) ||
-        (!points.empty() && !motion_.at(stamp(paired_lane->header.stamp),lane_pose))) {
+      if(!motion_ok_ || !motion_.at(stamp(match->header.stamp),pose)) {
         status_="STOP: motion history cannot align sensor captures";return false;
       }
-      for(auto& point:points)point=reproject(point,lane_pose,pose);
+      if(!points.empty() && motion_.at(stamp(paired_lane->header.stamp),lane_pose))
+        for(auto& point:points)point=reproject(point,lane_pose,pose);
     }
     // Message instances can be re-published for the same exposure. Only a
     // changed capture pair (including lane loss/recovery) requires a new plan.
@@ -351,9 +345,8 @@ class Node:public rclcpp::Node {
       working.current_speed=measured_speed_;
       working.current_steer=drive_enabled_ && servo_commanded_ ? drive_command_.steer :
         std::clamp(std::atan(config_.wheelbase*measured_yaw_rate_/std::max(.1,std::abs(measured_speed_))),-config_.max_steer,config_.max_steer);
-      const LaneInputLimits limits{path_minimum_points_,path_minimum_x_,path_maximum_x_,path_maximum_gap_};
       lane_reference_=lane_memory_.resolve(points,pose,working,
-        paired_lane?std::optional<double>(stamp(paired_lane->header.stamp)):std::nullopt,limits);
+        paired_lane?std::optional<double>(stamp(paired_lane->header.stamp)):std::nullopt);
       lane_points_=lane_reference_.points;
       const bool lane_missing=!lane_reference_.trusted;
       if(lane_missing && !lane_reference_.has_memory)working.avoidance_lane_weight=0;
@@ -458,7 +451,7 @@ class Node:public rclcpp::Node {
     message.data=status_+cv::format(" | target v=%.2fm/s steer=%.1fdeg plan=%.2fms candidates=%zu | rear unverified",
       speed.data,steer.data*180/pi,plan_ms_,result_.candidates.size());
     if(drive_enabled_)message.data+=cv::format(" | DRIVE duty=%.3f brake=%.2fA command_steer=%.1fdeg",drive_command_.duty,drive_command_.brake,drive_command_.steer*180/pi);
-    message.data+=cv::format(" | lane_trust=%s lane_memory=%d age=%.2fs longest=%.2fm",
+    message.data+=cv::format(" | lane_source=%s direction_memory=%d age=%.2fs longest=%.2fm",
       lane_reference_.state.c_str(),int(lane_reference_.has_memory),lane_reference_.memory_age,
       result_.longest_candidate);
     message.data+=cv::format(" | hazard raw=%zu confirmed=%zu pending=%zu immediate=%zu filter=%.2fms",hazard_stats_.raw,hazard_stats_.confirmed,hazard_stats_.pending,hazard_stats_.immediate,hazard_filter_ms_);
@@ -574,8 +567,6 @@ public:
     PARAM("avoidance_length_slack_m",avoidance_length_slack_m);PARAM("avoidance_lane_weight",avoidance_lane_weight);
     PARAM("avoidance_steering_weight",avoidance_steering_weight);
     PARAM("avoidance_clearance_weight",clearance_weight);
-    PARAM("lane_trust_duration_sec",lane_trust_duration);PARAM("lane_trust_min_length_m",lane_trust_length);
-    PARAM("lane_trust_max_offset_m",lane_trust_offset);PARAM("lane_trust_max_heading_deg",lane_trust_angle_deg);
     config_.curvature_speed_control=declare_parameter("curvature_speed_control_enabled",true,fixed);
     PARAM("deceleration_mps2",deceleration);PARAM("response_delay_sec",delay);PARAM("reference_distance_m",reference_distance);
 #undef PARAM
@@ -588,22 +579,19 @@ public:
     speed_ceiling_=declare_parameter("speed_ceiling_mps",1.8,fixed);
     if(!std::isfinite(speed_ceiling_) || speed_ceiling_<.05 || speed_ceiling_>3)throw std::invalid_argument("invalid configured speed ceiling");
     validatePlannerEdits(config_,planner_deceleration_ceiling_,speed_ceiling_);controls_.reload(config_);
-    max_age_=declare_parameter("max_age_sec",.30,fixed);max_sync_=declare_parameter("max_sync_sec",.10,fixed);
-    if(!std::isfinite(max_age_) || !std::isfinite(max_sync_) || max_age_<.05 || max_age_>.5 || max_sync_<.001 || max_sync_>.15)throw std::invalid_argument("invalid synchronization limits");
+    max_age_=declare_parameter("max_age_sec",.30,fixed);
+    if(!std::isfinite(max_age_) || max_age_<.05 || max_age_>.5)throw std::invalid_argument("invalid input age limit");
     frame_id_=declare_parameter<std::string>("frame_id","front_axle_bev",fixed);
     lane_topic_=declare_parameter<std::string>("lane_result_topic","/line_detactor/result",fixed);
     lane_receipt_timeout_=declare_parameter("lane_receipt_timeout_sec",.30,fixed);
     erpm_timeout_=declare_parameter("erpm_timeout_sec",.15,fixed);imu_timeout_=declare_parameter("imu_timeout_sec",.25,fixed);
     planning_rate_=declare_parameter("planning_rate_hz",80.,fixed);
     preview_rate_=declare_parameter("preview_fps",30.,fixed);status_rate_=declare_parameter("status_log_rate_hz",2.,fixed);
-    path_minimum_points_=declare_parameter("path_minimum_points",8,fixed);max_lane_points_=declare_parameter("max_lane_points",2000,fixed);
-    path_minimum_x_=declare_parameter("path_minimum_x_m",.01,fixed);path_maximum_x_=declare_parameter("path_maximum_x_m",2.98,fixed);
-    path_maximum_gap_=declare_parameter("path_maximum_gap_m",.15,fixed);
-    for(double v:{lane_receipt_timeout_,erpm_timeout_,imu_timeout_,planning_rate_,preview_rate_,status_rate_,path_minimum_x_,path_maximum_x_,path_maximum_gap_})
+    max_lane_points_=declare_parameter("max_lane_points",2000,fixed);
+    for(double v:{lane_receipt_timeout_,erpm_timeout_,imu_timeout_,planning_rate_,preview_rate_,status_rate_})
       if(!std::isfinite(v) || v<=0)throw std::invalid_argument("invalid source controller input/watchdog settings");
     if(frame_id_.empty() || lane_receipt_timeout_>1 || erpm_timeout_>1 || imu_timeout_>1 || planning_rate_>100 || preview_rate_>60 || status_rate_>20 ||
-      path_minimum_points_<2 || max_lane_points_<path_minimum_points_ || max_lane_points_>2000 ||
-      path_minimum_x_>=path_maximum_x_ || path_maximum_gap_>1)throw std::invalid_argument("source controller input/watchdog limits exceeded");
+      max_lane_points_<2 || max_lane_points_>2000)throw std::invalid_argument("source controller input/watchdog limits exceeded");
     obstacle_slowdown_=declare_parameter("obstacle_slowdown_enabled",true,fixed);
     obstacle_speed_cap_=declare_parameter("obstacle_slowdown_speed_mps",1.,fixed);
     obstacle_clear_sec_=declare_parameter("obstacle_slowdown_clear_sec",1.,fixed);

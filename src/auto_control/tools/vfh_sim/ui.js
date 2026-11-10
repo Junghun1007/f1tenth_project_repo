@@ -37,10 +37,6 @@
     ['extraCurves','추가 곡선(0/1)',0,1,1],['curveSamples','곡선 샘플(홀수)',3,17,2],
     ['lengthSlack','길이 비교 여유(m)',0,.5,.01],['laneWeight','복귀 가중치',0,5,.1],
     ['steeringWeight','조향 연속성 가중치',0,5,.1],
-    ['laneTrustSeconds','차선 연속 확인(s)',.05,3,.05],
-    ['laneTrustLength','신뢰 최소 경로(m)',.15,2,.05],
-    ['laneTrustOffset','관측 위치 일관성(m)',.02,.5,.01],
-    ['laneTrustAngle','관측 방향 일관성(°)',1,45,1],
     ['laneVisibleLength','보이는 차선 길이(m)',.05,3,.05],
     ['clearanceWeight','장애물 여유 가중치',0,5,.1],
     ['terrainCell','terrain 셀 크기(m)',.025,.12,.005]
@@ -340,7 +336,7 @@
     if(sim.done)status+=` · 차선 중심 오차 ${(config.trackLayout==='loop'?M.projectTrack(sim.pose).distance:Math.abs(sim.pose.y)).toFixed(2)}m`;
     if(status!==lastStatus){el('[data-out="status"]').textContent=status;lastStatus=status;}
     el('[data-out="visibility"]').textContent=M.native?`위험 셀 원본 ${sim.result.raw} · 확정 ${sim.result.confirmed} · 대기 ${sim.result.pending} · 기억 ${sim.result.rememberedHazards??0}`:`관측 ${sim.observation.hits.length}점 · 기억 ${sim.planner.memory.size}점`;
-    el('[data-out="limit"]').textContent=M.native?`차선 ${sim.result.laneTrust} · 중앙선 기억 ${sim.result.hasLaneMemory?sim.result.memoryAge.toFixed(1)+'초':'없음'}`:`차선 ${config.laneVisible?'관측':'미관측'} · 차선 경계 밖 ${config.departure.toFixed(2)}m 제한`;
+    el('[data-out="limit"]').textContent=M.native?`차선 ${sim.result.laneTrust} · 차선 방향 기억 ${sim.result.hasLaneMemory?sim.result.memoryAge.toFixed(1)+'초':'없음'}`:`차선 ${config.laneVisible?'관측':'미관측'} · 차선 경계 밖 ${config.departure.toFixed(2)}m 제한`;
     el('[data-out="course-label"]').textContent=config.trackLayout==='loop'?`도면 순환 트랙 · 13×4m · 차선 안쪽 폭 ${config.laneWidth.toFixed(2)}m · 코너 R0.50m · 클릭 추가 / 드래그 이동`:`${config.courseLength}m 코스 · 클릭 배치 / 드래그 이동·콘 배열`;
     el('[data-object="x"]').max=config.trackLayout==='loop'?13:config.courseLength;
     el('[data-object="y"]').min=config.trackLayout==='loop'?0:-1.5;

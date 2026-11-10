@@ -20,54 +20,42 @@ const simulator = window.VFHSim;
 assert.equal(simulator.defaults.lengthSlack, .40);
 assert.equal(simulator.defaults.curveSamples, 17);
 assert.equal(simulator.defaults.steeringWeight, .1);
-assert.equal(simulator.defaults.laneWeight, .8);
-const confirmationFrames = Math.ceil(simulator.defaults.laneTrustSeconds / .05) + 2;
-
+assert.equal(simulator.defaults.laneWeight, 1.5);
 const trial = new simulator.Simulation({}, []);
-assert.equal(trial.result.laneTrust, 'confirming');
-for (let frame = 1; frame <= confirmationFrames; frame++) {
-  trial.time = frame * .05;
-  trial.senseAndPlan();
-}
-assert.equal(trial.result.laneTrust, 'trusted');
+assert.equal(trial.result.laneTrust, 'current');
 assert.equal(trial.result.usedVfh, 0);
-
 trial.c.laneVisible = false;
 trial.time += .05;
 trial.senseAndPlan();
-assert.equal(trial.result.laneTrust, 'missing');
-assert(trial.result.memoryPath.length > 2);
+assert.equal(trial.result.laneTrust, 'direction_memory');
+assert.equal(trial.result.memoryPath.length, 2);
 assert(trial.result.usedVfh);
 assert(trial.result.speed > 0);
-
 trial.time += 60;
 trial.pose.x += .5;
 trial.pose.y += .65;
 trial.senseAndPlan();
 assert(trial.result.hasLaneMemory);
 assert(trial.result.speed > 0);
-assert(trial.result.path.at(-1).y < trial.pose.y);
-assert(trial.result.memoryPath[0][0] < 0);
-
+assert(Math.abs(trial.result.memoryPath[0][0]-trial.pose.x)<1e-9);
+assert(Math.abs(trial.result.memoryPath[0][1]-trial.pose.y)<1e-9);
 trial.pose.y = 0;
 trial.c.laneVisible = true;
 trial.c.laneVisibleLength = .2;
 trial.time += .05;
 trial.senseAndPlan();
-assert.equal(trial.result.laneTrust, 'too short');
-
-trial.c.laneVisibleLength = 3;
-for (let frame = 0; frame < confirmationFrames; frame++) {
-  trial.time += .05;
-  trial.senseAndPlan();
-}
-assert.equal(trial.result.laneTrust, 'trusted');
+assert.equal(trial.result.laneTrust, 'current');
+trial.pose.y=0;
+trial.c.laneVisibleLength=3;
+trial.time+=.05;
+trial.senseAndPlan();
+assert.equal(trial.result.laneTrust, 'current');
 
 const blocked = new simulator.Simulation({laneVisible: false, hazardEnabled: 0}, [
   {id: 'wall', shape: 'box', x: .22, y: 0, w: .14, h: 3}
 ]);
 assert.equal(blocked.result.speed, 0);
-console.log('PASS defaults, trust delay, persistent motion-aligned memory, return from outside lane, short fragments, reacquisition, blocked path');
+console.log('PASS defaults, immediate lane acceptance, direction-only memory, short fragments, reacquisition, blocked path');
 
 for (const scene of ['empty', 'static', 'guidance']) {
   const run = new simulator.Simulation({courseLength: 16}, simulator.presets(scene));

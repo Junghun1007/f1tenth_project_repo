@@ -3,37 +3,27 @@
 using namespace roi_vfh_test;
 void check(bool value,const char* reason){if(!value)throw std::runtime_error(reason);}
 int main() {
-  Config c;
-  std::vector<Point> lane;
-  for(double x=.02;x<2.9;x+=.02)lane.push_back({x,.05*x*x});
-  LaneMemory memory;LaneReference reference;
-  // Repeated use of one exposure is not continuous fresh evidence.
-  for(int i=0;i<25;++i)reference=memory.resolve(lane,MotionPose{i*.05,0,0,0,0},c,0.);
-  check(!reference.trusted && !reference.has_memory,"one exposure became a trusted lane");
-  memory.reset();
-  for(int i=0;i<22;++i)reference=memory.resolve(lane,MotionPose{i*.05,0,0,0,0},c);
-  check(reference.trusted && reference.has_memory,"continuous lane failed confidence gate");
-  const auto original=memory.remembered(MotionPose{1.05,0,0,0,0});
-  const MotionPose moved{100,1,.3,.2,0};
+  Config c;LaneMemory memory;
+  const std::vector<Point> lane{{.1,.02},{.14,.025}};
+  auto reference=memory.resolve(lane,MotionPose{},c,0.);
+  check(reference.trusted && reference.has_memory,"first short lane observation was rejected");
+  const double heading=std::atan2(.005,.04);
+  const MotionPose moved{1,2,.5,.2,0};
   reference=memory.resolve({},moved,c);
-  check(!reference.trusted && reference.has_memory && reference.memory_age>90,"lane memory expired or became an observation");
-  const auto transformed=memory.remembered(moved);
-  const auto expected=reproject(original.front(),MotionPose{1.05,0,0,0,0},moved);
-  check(std::hypot(transformed.front().x-expected.x,transformed.front().y-expected.y)<1e-9,
-    "remembered lane was not motion aligned");
-  memory.reset();reference=memory.resolve({},moved,c);
-  check(!reference.has_memory && reference.points.size()==2,"new session did not use forward preference");
-
-  // Disabling storage must also discard an already remembered lane.
-  for(int i=0;i<22;++i)reference=memory.resolve(lane,MotionPose{i*.05,0,0,0,0},c);
-  check(reference.has_memory,"lane memory setup failed");
-  c.lane_memory_enabled=0;
-  reference=memory.resolve({},MotionPose{2,0,0,0,0},c);
-  check(!reference.has_memory && memory.remembered(MotionPose{}).empty(),"disabled lane storage retained geometry");
-  for(int i=0;i<22;++i)reference=memory.resolve(lane,MotionPose{3+i*.05,0,0,0,0},c);
-  check(reference.trusted && !reference.has_memory,"disabling lane storage disabled current-lane validation");
-  c.lane_memory_enabled=1;
-  reference=memory.resolve({},MotionPose{5,0,0,0,0},c);
-  check(!reference.has_memory,"reenabling lane storage resurrected old geometry");
-  std::cout<<"Shared policy state: confidence, exposure deduplication and optional geometric lane memory\n";
+  check(!reference.trusted && reference.has_memory && reference.points.size()==2,"missing lane did not use direction-only memory");
+  check(reference.points.front().x==0 && reference.points.front().y==0,"memory retained the old lane's lateral position");
+  const auto end=reference.points.back();
+  check(std::abs(wrap(std::atan2(end.y,end.x)-(heading-moved.yaw)))<1e-9,"saved direction was not yaw compensated");
+  const auto translated=memory.resolve({},MotionPose{2,20,50,.2,0},c);
+  check(std::hypot(translated.points.back().x-end.x,translated.points.back().y-end.y)<1e-9,"translation restored old geometry");
+  const std::vector<Point> changed{{.1,-.2},{.6,-.4}};
+  reference=memory.resolve(changed,moved,c);
+  check(reference.trusted && reference.points.front().y==-.2,"large observation change was rejected by a confidence gate");
+  c.lane_memory_enabled=0;reference=memory.resolve({},moved,c);
+  check(!reference.has_memory && memory.remembered(moved).empty(),"disabled direction memory retained data");
+  reference=memory.resolve(lane,moved,c);
+  check(reference.trusted && !reference.has_memory,"memory OFF blocked a current lane");
+  c.lane_memory_enabled=1;reference=memory.resolve({},moved,c);
+  check(!reference.has_memory,"reenabling memory resurrected an old direction");
+  std::cout<<"Current lane preference and direction-only memory checks passed\n";
 }
