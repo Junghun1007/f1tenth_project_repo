@@ -8,6 +8,20 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from .inspection_state import InspectionState
+from .inspection_speed import InspectionSpeed
+
+
+DISPLAY_SCALE = .85
+START = (25, 655, 740, 720)
+STOP = (760, 655, 975, 720)
+TIMINGS = (25, 740, 200, 790)
+PARAMS = (215, 740, 390, 790)
+SPEED = (415, 735, 1175, 790)
+SPEED_LEFT, SPEED_RIGHT, SPEED_Y = 440, 1145, 775
+
+
+def contains(rect, x, y):
+    return rect[0] <= x <= rect[2] and rect[1] <= y <= rect[3]
 
 
 class StartupInspection(Node):
@@ -18,6 +32,14 @@ class StartupInspection(Node):
         self.image = None
         self.image_at = 0.
         self.pending = None
+        self.speed = InspectionSpeed()
+        from std_msgs.msg import Float64
+        from line_detactor.msg import SpeedLimitState
+        self.action_pub = self.create_publisher(String, '/auto/ui/action', 10)
+        self.speed_pub = self.create_publisher(Float64, '/auto/maximum_speed_request', 1)
+        self.speed_sub = self.create_subscription(
+            SpeedLimitState, '/auto/maximum_speed_state', self.speed.observe,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE))
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
         image_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
@@ -51,11 +73,55 @@ class StartupInspection(Node):
         self.image = rows[:, :message.width * 3].reshape(message.height, message.width, 3).copy()
         self.image_at = time.monotonic()
 
+    def on_mouse(self, event, x, y, flags, userdata):
+        import cv2
+        # HighGUI receives coordinates in the displayed (85%) image, not the
+        # logical 1200x860 drawing. Keep drawing and hit targets in one space.
+        x, y = x / DISPLAY_SCALE, y / DISPLAY_SCALE
+        if event == cv2.EVENT_LBUTTONDOWN and contains(SPEED, x, y):
+            if self.speed.fresh(time.monotonic()):
+                self.speed.dragging = True
+                self.speed.select(x, SPEED_LEFT, SPEED_RIGHT)
+        elif event == cv2.EVENT_MOUSEMOVE and self.speed.dragging:
+            if flags & cv2.EVENT_FLAG_LBUTTON:
+                self.speed.select(x, SPEED_LEFT, SPEED_RIGHT)
+            else:
+                self.speed.dragging = False
+                self.speed.released = self.speed.dirty
+        elif event == cv2.EVENT_LBUTTONUP:
+            if self.speed.dragging:
+                self.speed.select(x, SPEED_LEFT, SPEED_RIGHT)
+                self.speed.dragging = False
+                self.speed.released = self.speed.dirty
+                return
+            if contains(START, x, y):
+                self.request_start()
+            elif contains(STOP, x, y):
+                self.request_stop()
+            elif contains(TIMINGS, x, y):
+                self.action_pub.publish(String(data='metrics'))
+                self.state.error = 'Timings window requested.'
+            elif contains(PARAMS, x, y):
+                self.action_pub.publish(String(data='parameters'))
+                self.state.error = 'Parameters window requested.'
+
+    def flush_speed_request(self):
+        from std_msgs.msg import Float64
+        value = self.speed.request(time.monotonic())
+        if value is not None:
+            self.speed_pub.publish(Float64(data=value))
+
     def request_stop(self):
         if self.stop_client.service_is_ready():
-            self.stop_client.call_async(Trigger.Request())
+            self.stop_client.call_async(Trigger.Request()).add_done_callback(self.on_stop_response)
         else:
             self.state.error = 'STOP service unavailable'
+
+    def on_stop_response(self, future):
+        try:
+            self.state.error = future.result().message
+        except Exception as error:
+            self.state.error = f'STOP failed: {error}'
 
     def request_start(self):
         if not self.state.can_start() or self.pending is not None:
@@ -75,7 +141,7 @@ class StartupInspection(Node):
             self.state.error = f'START failed: {error}'
 
 
-def render(state, image=None, image_fresh=False, pending=False, now=None):
+def render(state, image=None, image_fresh=False, pending=False, now=None, speed=None):
     import cv2
     import numpy as np
     now = time.monotonic() if now is None else now
@@ -121,15 +187,34 @@ def render(state, image=None, image_fresh=False, pending=False, now=None):
     text('The controller checks models, measured camera pose, VESC feedback and a fresh valid lane.',22,600,scale=.48)
     text('Automatic duty is blocked until an accepted START request. Manual mode skips this button.',22,625,scale=.48)
     ready = state.can_start(now) and not pending
-    cv2.rectangle(canvas,(25,655),(740,730),(65,155,60) if ready else (65,65,65),-1)
-    label = 'START AUTOMATIC DRIVING' if ready else ('REQUESTING START...' if pending else 'WAITING FOR CHECKS')
-    text(label,70,702,(255,255,255),.85)
-    cv2.rectangle(canvas,(760,655),(975,730),(50,50,190),-1)
-    text('STOP',800,702,(255,255,255),.85)
-    text(state.error,22,768,(100,170,255),.48)
-    text('Click START or press Enter when READY. Q / closing this window never authorizes duty.',22,810,scale=.48)
-    text('Only this inspection window closes after approval; the driving BEV preview remains open.',22,838,scale=.48)
-    return canvas
+    active = state.completed(now)
+    cv2.rectangle(canvas,START[:2],START[2:],(65,155,60) if ready else (65,65,65),-1)
+    label = ('MANUAL CONTROL' if active and state.controller.startswith('MANUAL | ') else
+             'DRIVING / START ACCEPTED' if active else 'START AUTOMATIC DRIVING' if ready else
+             'REQUESTING START...' if pending else 'WAITING FOR CHECKS')
+    text(label,70,698,(255,255,255),.78)
+    for rect, label in ((STOP, 'STOP'), (TIMINGS, 'Timings'), (PARAMS, 'Params')):
+        cv2.rectangle(canvas,rect[:2],rect[2:],(50,50,190) if label=='STOP' else (95,85,65),-1)
+        text(label,rect[0]+20,rect[1]+(43 if label=='STOP' else 33),(255,255,255),.70)
+    speed = speed or dict(bounds=None, selected=None, applied=None, status='CONTROLLER OFFLINE')
+    if speed['bounds'] is not None:
+        minimum, ceiling = speed['bounds']
+        selected, applied = speed['selected'], speed['applied']
+        text(f'MAX SPEED {selected:.2f} m/s | Applied {applied:.2f} | {speed["status"]}',420,754,scale=.45)
+        ratio = (selected-minimum)/(ceiling-minimum) if ceiling > minimum else 0.
+        thumb = round(SPEED_LEFT+ratio*(SPEED_RIGHT-SPEED_LEFT))
+        accent = (100,230,120) if speed['status']=='LIVE' else (80,210,250)
+        cv2.line(canvas,(SPEED_LEFT,SPEED_Y),(SPEED_RIGHT,SPEED_Y),(100,100,100),7)
+        cv2.line(canvas,(SPEED_LEFT,SPEED_Y),(thumb,SPEED_Y),accent,7)
+        cv2.circle(canvas,(thumb,SPEED_Y),9,accent,-1)
+        text(f'{minimum:.2f}',415,800,scale=.36)
+        text(f'{ceiling:.2f} m/s',1100,800,scale=.36)
+    else:
+        text('MAX SPEED: waiting for controller',420,765,scale=.48)
+    text(state.error,22,815,(100,170,255),.43)
+    text('START requires checks. STOP, Timings, Params and speed controls remain available here after START.',22,843,scale=.43)
+    return cv2.resize(canvas, (round(canvas.shape[1]*DISPLAY_SCALE), round(canvas.shape[0]*DISPLAY_SCALE)),
+                      interpolation=cv2.INTER_AREA)
 
 
 def main(args=None):
@@ -137,7 +222,7 @@ def main(args=None):
     node = StartupInspection()
     shown = False
     dismissed = False
-    window = 'Startup inspection - START required'
+    window = 'Safety inspection and driving controls'
     gui = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY') or os.sys.platform=='darwin')
     cv2 = None
     if gui:
@@ -151,24 +236,18 @@ def main(args=None):
     try:
         while rclpy.ok():
             rclpy.spin_once(node, timeout_sec=.03)
+            node.flush_speed_request()
             if not gui:
-                continue
-            if node.state.completed():
-                if shown:
-                    cv2.destroyWindow(window)
-                    cv2.waitKey(1)
-                    shown = False
                 continue
             if dismissed:
                 continue
             if not shown:
                 cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
-                cv2.setMouseCallback(window, lambda event,x,y,flags,data: node.request_start()
-                    if event==cv2.EVENT_LBUTTONUP and 25<=x<=740 and 655<=y<=730 else
-                    node.request_stop() if event==cv2.EVENT_LBUTTONUP and 760<=x<=975 and 655<=y<=730 else None)
+                cv2.setMouseCallback(window, node.on_mouse)
                 shown = True
             cv2.imshow(window, render(node.state,node.image,
-                time.monotonic()-node.image_at<.5,node.pending is not None))
+                time.monotonic()-node.image_at<.5,node.pending is not None,
+                speed=node.speed.view(time.monotonic())))
             key = cv2.waitKey(1)&255
             if key in (10,13):
                 node.request_start()
@@ -176,6 +255,7 @@ def main(args=None):
                 cv2.destroyWindow(window)
                 shown = False
                 dismissed = True
+                node.speed.dragging = node.speed.dirty = node.speed.released = False
     except KeyboardInterrupt:
         pass
     except Exception as error:

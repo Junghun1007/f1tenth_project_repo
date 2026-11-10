@@ -7,9 +7,6 @@
 #include "line_detactor/msg/lane_result.hpp"
 #include "line_detactor/stop_line_distance.hpp"
 #include "line_detactor/bev_theme.hpp"
-#include "line_detactor/speed_limit_panel.hpp"
-#include "line_detactor/msg/speed_limit_state.hpp"
-#include "std_msgs/msg/float64.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "line_detactor/obstacle_overlay.hpp"
 
@@ -175,7 +172,6 @@ public:
       throw;
     }
     monitor_=std::make_unique<bev_handoff::RuntimeMonitor>(node_);
-    ui_action_pub_=node_.create_publisher<std_msgs::msg::String>("/auto/ui/action",rclcpp::QoS(10));
     start_profiling();
 
     const auto image_qos = rclcpp::QoS(rclcpp::KeepLast(1))
@@ -195,18 +191,6 @@ public:
       control_latency_topic_, image_qos,
       std::bind(&Impl::on_control_latency, this, std::placeholders::_1));
     if (preview_enabled_) {
-      speed_limit_request_pub_ = node_.create_publisher<std_msgs::msg::Float64>(
-        "/auto/maximum_speed_request", rclcpp::QoS(1).reliable());
-      speed_limit_state_sub_ = node_.create_subscription<line_detactor::msg::SpeedLimitState>(
-        "/auto/maximum_speed_state", rclcpp::QoS(1).reliable(),
-        [this](const line_detactor::msg::SpeedLimitState::ConstSharedPtr message) {
-          SpeedLimitSnapshot state{message->minimum_speed_mps, message->ceiling_speed_mps,
-            message->applied_speed_mps, message->revision};
-          if (!state.valid()) {return;}
-          std::lock_guard<std::mutex> lock(preview_mutex_);
-          speed_limit_snapshot_ = state;
-          speed_limit_received_at_ = SteadyClock::now();
-        });
       speed_subscription_ = node_.create_subscription<std_msgs::msg::Float32>(
         bev_theme_speed_topic_, image_qos,
         [this](const std_msgs::msg::Float32::ConstSharedPtr message) {
@@ -1351,13 +1335,11 @@ private:
     (void)setpriority(PRIO_PROCESS, 0, 10);
 #endif
     bool window_seen = false;
-    SpeedLimitPanel speed_panel;
     try {
       cv::namedWindow(preview_window_name_, cv::WINDOW_NORMAL);
-      cv::setMouseCallback(preview_window_name_, &SpeedLimitPanel::mouse_callback, &speed_panel);
       cv::resizeWindow(
         preview_window_name_,
-        static_cast<int>((result_width() + std::max(90, result_width()/2)) * preview_scale_),
+        static_cast<int>(result_width() * preview_scale_),
         static_cast<int>((model_input_height_ + kBannerHeight + (obstacle_overlay_enabled_ ? 14 : 0)) * preview_scale_));
       auto period = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
         std::chrono::duration<double>(1.0 / preview_fps_));
@@ -1385,8 +1367,6 @@ private:
         double target_speed = std::numeric_limits<double>::quiet_NaN();
         double duty = std::numeric_limits<double>::quiet_NaN();
         int corner_state = -1;
-        SpeedLimitSnapshot speed_limit;
-        bool speed_limit_fresh = false;
         std::array<std::string,3> tunnel_hud;
         {
           std::unique_lock<std::mutex> lock(preview_mutex_);
@@ -1400,10 +1380,6 @@ private:
             SteadyClock::now()-tunnel_hud_received_at_>std::chrono::seconds(1)) {
             tunnel_hud={"Tunnel: STATUS STALE","TCN avg --FPS","TCN: selector unavailable"};
           }
-          speed_limit = speed_limit_snapshot_;
-          const auto limit_age = SteadyClock::now()-speed_limit_received_at_;
-          speed_limit_fresh = limit_age >= SteadyClock::duration::zero() &&
-            limit_age <= std::chrono::milliseconds(750);
           const auto speed_age = SteadyClock::now() - theme_speed_received_at_;
           if (speed_age >= SteadyClock::duration::zero() &&
             speed_age <= std::chrono::milliseconds(500) && std::isfinite(theme_speed_mps_))
@@ -1427,25 +1403,13 @@ private:
               static_cast<double>(control_latency_sample_count_);
           }
         }
-        const double ui_now = std::chrono::duration<double>(SteadyClock::now().time_since_epoch()).count();
-        speed_panel.update(speed_limit, speed_limit_fresh, ui_now);
-        // No waits or service calls on the GUI/inference threads. Requests are
-        // rate-limited to 10Hz; the controller state confirms actual application.
-        if (const auto request = speed_panel.take_request(ui_now)) {
-          std_msgs::msg::Float64 message;
-          message.data = *request;
-          speed_limit_request_pub_->publish(message);
-        }
-        if(const auto action=speed_panel.take_action();!action.empty()) {
-          std_msgs::msg::String message;message.data=action;ui_action_pub_->publish(message);
-        }
         const auto traffic_signal = bev_handoff::latestTrafficSignalState();
         const auto exposure_hud=camera_exposure_hud(bev_handoff::latestCameraExposure(false),
           bev_handoff::latestCameraExposure(true),bev_handoff::latestRgbExposureControl(),SteadyClock::now());
         const bool show_ir=tunnel_enabled_ && tunnel_selected_ir_.load();
         const bool theme = bev_theme_enable_.load() && !show_ir;
         const std::string hud = cv::format("%.2f/%.2f/%d/%.4f", theme_speed, target_speed, corner_state, duty) +
-          speed_panel.display_key()+tunnel_hud[0]+tunnel_hud[1]+tunnel_hud[2]+exposure_hud[0]+exposure_hud[1];
+          tunnel_hud[0]+tunnel_hud[1]+tunnel_hud[2]+exposure_hud[0]+exposure_hud[1];
         const auto motion_now = SteadyClock::now();
         const double motion_dt = std::clamp(
           std::chrono::duration<double>(motion_now - last_motion_at).count(), 0.0, 0.25);
@@ -1531,10 +1495,9 @@ private:
           draw=true;
         }
         if (draw) {
-          canvas = speed_panel.append(canvas, theme);
           if (canvas.size() != displayed_canvas_size || theme != displayed_theme) {
             // The theme renders at 2x source resolution; preserve the BEV's
-            // original visual size when switching themes and adding the panel.
+            // original visual size when switching themes.
             const double scale = preview_scale_*(theme ? .5 : 1.);
             cv::resizeWindow(preview_window_name_,
               cvRound(canvas.cols*scale), cvRound(canvas.rows*scale));
@@ -1571,7 +1534,6 @@ private:
         "Lane GUI disabled after error; inference/control continue: %s", exception.what());
     }
     try {
-      cv::setMouseCallback(preview_window_name_, nullptr, nullptr);
       cv::destroyWindow(preview_window_name_);
     } catch (const cv::Exception &) {
     }
@@ -1641,7 +1603,6 @@ private:
   std::string preview_target_speed_topic_, preview_corner_state_topic_, preview_duty_topic_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr theme_parameter_callback_;
   bool preview_result_only_enabled_{true};
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr ui_action_pub_;
   std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
   double preview_fps_{30.0};
   double preview_scale_{2.0};
@@ -1660,10 +1621,6 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_subscription_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr target_speed_subscription_, duty_subscription_;
   rclcpp::Subscription<std_msgs::msg::UInt8>::SharedPtr corner_state_subscription_;
-  rclcpp::Publisher<std_msgs::msg::Float64>::SharedPtr speed_limit_request_pub_;
-  rclcpp::Subscription<line_detactor::msg::SpeedLimitState>::SharedPtr speed_limit_state_sub_;
-  SpeedLimitSnapshot speed_limit_snapshot_;
-  SteadyClock::time_point speed_limit_received_at_{};
   std::mutex frame_mutex_;
   FrameRateGate rate_gate_;
   bool tunnel_enabled_{false};

@@ -649,11 +649,13 @@ BEV에 표시한다. 기본 OFF이며 `/auto_obstacles`의 `obstacles.avoidance.
 [실제 적용 실행과 제한](AUTO_CONTROL_OBSTACLES.md)을 확인한다.
 
 
-## BEV 오른쪽 최대 속력 슬라이더
+## 안전점검 창의 최대 속력 슬라이더
 
-BEV 창 오른쪽에 최대 속력 세로 슬라이더가 표시됩니다. 흰색 테마와 기본 검정 화면
-모두 같은 기능을 사용합니다. 화면을 그리는 `line_detactor`와 제어하는 `auto_control`을
-함께 빌드해야 합니다.
+안전점검 창 하단에 최대 속력 가로 슬라이더와 Timings·Params·STOP 버튼을 표시합니다.
+START 승인 후에도 점검 창이 유지됩니다. BEV 프리뷰에서 조작 패널을 분리했으므로
+테마와 BEV 표시 배율에 관계없이 같은 창에서 조작합니다. 점검 창은 1020×731로,
+기존보다 가로·세로 각각 15% 작게 표시하며 클릭 좌표도 같은 배율로 보정합니다.
+변경한 `line_detactor`와 `auto_control`을 함께 빌드해야 합니다.
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -680,7 +682,7 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 
 눈금과 범위는 제어 노드 시작 시 최종 적용된 `minimum_speed_mps`와
 `maximum_speed_mps`를 사용합니다. 중간 값은 0.05 m/s 단위이고 양 끝점은
-설정값 그대로 선택할 수 있습니다. 기본 설정 파일 기준 범위는 0.80–5.00 m/s지만,
+설정값 그대로 선택할 수 있습니다. 기본 설정 파일 기준 범위는 1.00–1.80 m/s지만,
 다른 YAML/launch 인자를 사용하면 그 범위로 표시됩니다. 0은 정지 명령으로
 사용하지 않습니다. 정지와 주행 활성화는 기존 제어를 사용합니다.
 
@@ -703,12 +705,14 @@ ros2 topic echo /auto/maximum_speed_state
 상태 `/auto/maximum_speed_state` (`line_detactor/msg/SpeedLimitState`). 상태는 5Hz와
 요청 처리 직후에 발행합니다. 시작 범위 밖 값과 NaN/Inf 요청은 거절합니다.
 두 토픽은 reliable/volatile, depth 1입니다. 저장된 GUI 요청을 제어 노드 재시작 시
-재발행하지 않습니다. 다른 ROS namespace 구성이 필요하면 두 노드에서 같은 토픽으로 remap합니다.
+재발행하지 않습니다. 다른 ROS namespace 구성이 필요하면 점검 GUI와 제어 노드에서 같은 토픽으로 remap합니다.
 GUI 입력은 [OpenCV HighGUI mouse callback](https://docs.opencv.org/4.13.0/d7/dfc/group__highgui.html)을 사용합니다.
 
-검증: ROS와 무관한 C++ 범위·UI 조작/확인/단절 테스트, 기존 C++ staged brake 테스트,
+이전 슬라이더 구현 검증 기록: ROS와 무관한 C++ 범위·UI 조작/확인/단절 테스트, 기존 C++ staged brake 테스트,
 기존 Python 제어/제동 테스트 20개를 로컬에서 실행했습니다. ROS 2/CUDA가 없는 Mac에서는
 전체 colcon 빌드와 실차 ROS 통신·마우스 동작을 확인하지 못했습니다.
+
+조작 패널 이전과 안전점검 창 15% 축소 변경은 사용자 요청으로 빌드·테스트를 실행하지 않았습니다.
 
 ## 실행 중 도구와 처리 주기
 
@@ -717,14 +721,14 @@ GUI 입력은 [OpenCV HighGUI mouse callback](https://docs.opencv.org/4.13.0/d7/
 회피 worker는 처리 시작 간격으로 상한을 적용하고, 차선 또는 대응 장애물 결과가
 바뀌었을 때만 다시 계획한다. 연산 시간이 길어져도 지난 입력을 몰아서 계산하지 않는다.
 
-BEV 프리뷰 하단의 `Timings`는 별도 연산량 창을 연다. 창이 열려 있을 때만
+안전점검 창 하단의 `Timings`는 별도 연산량 창을 연다. 창이 열려 있을 때만
 새 측정 표본과 평균·p95 통계를 수집한다. 기존 추론 백엔드/제어/프리뷰에서 사용하는
 타이밍은 계속 유지한다. 창을 닫으면 측정이 해제되며, GUI 프로세스가 종료되어도
 2초 heartbeat 만료 후 해제된다. 실제 완료 FPS와 `1000 / 평균 ms` 추정 FPS는 별도 열이다.
 카메라 촬영 행은 수신 빈도만 표시하며 센서 자체의 연산 시간은 측정하지 않는다.
 센서 입력이 없어 측정값이 갱신되지 않으면 STALE로 표시한다.
 
-`Params`는 노드·기능별 숫자 입력 창을 연다. 분류 선택으로 모든 탭에 접근하며
+안전점검 창 하단의 `Params`는 노드·기능별 숫자 입력 창을 연다. 분류 선택으로 모든 탭에 접근하며
 각 탭의 스크롤 영역에서 값을 편집한다. BOOL은 0/1이다. `Apply`는 해당 탭의
 변경분을 노드 단위로 일괄 검증한다. 제어 설정은 기존 전체 검증과 PID/브레이크
 구성 검증을 통과해야 적용되며, 거절된 변경은 기존 값으로 복원된다.
@@ -750,7 +754,7 @@ BEV 입력 전달 상한(publish_fps), 신호등 추론 상한(inference_fps), �
 명시적 덮어쓰기는 기존 우선순위를 따른다. 저장 버튼은 실행 중 설정을 변경하지 않는다.
 별도 창에는 Python Tk(`python3-tk`)와 PyYAML(`python3-yaml`)이 필요하다.
 
-프리뷰 하단 `STOP` 및 시작 점검 창의 START 옆 `STOP`은 `/auto_control/stop`
+안전점검 창의 START 옆 `STOP`은 `/auto_control/stop`
 서비스를 호출한다. 자동 Duty 0, 설정된 `brake_maximum_current_amps` 제동,
 기존 정지 조향 정책을 적용하고 재출발은 START 승인이 필요하다.
 이 버튼은 auto_control의 자동 명령을 정지시키며 별도 수동 제어기의 명령을 제어하지 않는다.
