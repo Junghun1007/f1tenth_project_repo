@@ -25,8 +25,10 @@
 #include <chrono>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <cstring>
+#include <thread>
 namespace roi_vfh_test {
 class Node:public rclcpp::Node {
   Config config_; Planner planner_; Plan result_;
@@ -78,6 +80,21 @@ class Node:public rclcpp::Node {
   MotionPose previous_pose_;bool previous_pose_valid_{false};
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
+  // Only the sensor executor writes this inbox. Planning/GUI and actuator
+  // callbacks use a coherent copy, without blocking sensor integration while
+  // filtering, planning or pumping the window event loop.
+  struct SensorInbox {
+    MotionHistory motion;
+    double imu_received_at{-1e9},imu_at{-1e9},speed_at{-1e9},lane_received_at{-1e9};
+    double speed{0},yaw_rate{0};
+    bool motion_ok{false};
+    std::string imu_issue{"no messages received"};
+    std::deque<nav_msgs::msg::OccupancyGrid::ConstSharedPtr> grids;
+    line_detactor::msg::LaneResult::ConstSharedPtr lane;
+  };
+  std::mutex sensor_mutex_;
+  SensorInbox sensor_inbox_;
+  rclcpp::CallbackGroup::SharedPtr sensor_callbacks_;
   bool gui_{true},requested_{false},locked_{false},window_{false};
   bool visible_supported_{false},autosize_supported_{false};
   bool suspended_{false},input_recoverable_{true},waiting_for_pair_{false};
@@ -114,6 +131,14 @@ class Node:public rclcpp::Node {
   std::chrono::steady_clock::time_point log_started_{std::chrono::steady_clock::now()};
   static double stamp(const builtin_interfaces::msg::Time & t) {return t.sec+t.nanosec*1e-9;}
   bool fresh(const builtin_interfaces::msg::Time & t) {const double age=now().seconds()-stamp(t);return age>=-.02 && age<=max_age_;}
+  void snapshotSensors() {
+    std::lock_guard<std::mutex> lock(sensor_mutex_);
+    motion_=sensor_inbox_.motion;motion_ok_=sensor_inbox_.motion_ok;
+    imu_received_at_=sensor_inbox_.imu_received_at;imu_at_=sensor_inbox_.imu_at;
+    imu_issue_=sensor_inbox_.imu_issue;measured_yaw_rate_=sensor_inbox_.yaw_rate;
+    measured_speed_=sensor_inbox_.speed;speed_at_=sensor_inbox_.speed_at;
+    grids_=sensor_inbox_.grids;lane_=sensor_inbox_.lane;lane_received_at_=sensor_inbox_.lane_received_at;
+  }
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
   void resetHazards() {
     hazard_filter_.reset();hazard_stats_={};terrain_cache_.reset();terrain_cache_input_.reset();
@@ -246,18 +271,28 @@ class Node:public rclcpp::Node {
     const bool lane_fresh=lane_ && now().seconds()-lane_received_at_<=lane_receipt_timeout_ && fresh(lane_->header.stamp);
     const auto lane_input=lane_fresh && lane_->centerline_valid && lane_->centerline_points.size()>=2 &&
       lane_->centerline_points.size()<=static_cast<std::size_t>(max_lane_points_) ? lane_ : nullptr;
-    nav_msgs::msg::OccupancyGrid::ConstSharedPtr match;
-    if(lane_input) {
-      double delta=max_sync_;
-      for (const auto & g:grids_) {
-        const double d=std::abs(stamp(g->header.stamp)-stamp(lane_input->header.stamp));
-        if (fresh(g->header.stamp) && d<=delta) {match=g;delta=d;}
-      }
+    nav_msgs::msg::OccupancyGrid::ConstSharedPtr match,newest;
+    const bool need_motion=requested_ && locked_;
+    for(const auto& g:grids_) {
+      if(!fresh(g->header.stamp))continue;
+      if(!newest || stamp(g->header.stamp)>stamp(newest->header.stamp))newest=g;
+      MotionPose pose;
+      if(need_motion && (!motion_ok_ || !motion_.at(stamp(g->header.stamp),pose)))continue;
+      if(!match || stamp(g->header.stamp)>stamp(match->header.stamp))match=g;
     }
-    const auto paired_lane=match?lane_input:nullptr;
-    if(!match)for(const auto& g:grids_)
-      if(fresh(g->header.stamp) && (!match || stamp(g->header.stamp)>stamp(match->header.stamp)))match=g;
-    if (!match) {waiting_for_pair_=true;status_="STOP: no fresh terrain";return false;}
+    if(!match) {
+      waiting_for_pair_=true;
+      status_=newest?cv::format("STOP: terrain awaits motion alignment (terrain age %.3fs, IMU age %.3fs; %s)",
+        now().seconds()-stamp(newest->header.stamp),now().seconds()-imu_at_,imu_issue_.c_str()):"STOP: no fresh terrain";
+      return false;
+    }
+    // Terrain freshness takes priority over matching an older lane exposure.
+    // An unmatched lane uses the existing lane-memory/VFH policy instead of
+    // making a fresh obstacle map wait for an old inference result.
+    MotionPose paired_lane_pose;
+    const auto paired_lane=lane_input &&
+      std::abs(stamp(match->header.stamp)-stamp(lane_input->header.stamp))<=max_sync_ &&
+      (!need_motion || motion_.at(stamp(lane_input->header.stamp),paired_lane_pose))?lane_input:nullptr;
     if (match->header.frame_id!=frame_id_ || (paired_lane && paired_lane->header.frame_id!=match->header.frame_id) ||
       std::abs(match->info.origin.orientation.x)>1e-6 || std::abs(match->info.origin.orientation.y)>1e-6 ||
       std::abs(match->info.origin.orientation.z)>1e-6 || std::abs(match->info.origin.orientation.w-1)>1e-6) {
@@ -391,6 +426,7 @@ class Node:public rclcpp::Node {
         return cv::format("STOP: IMU capture age %.3fs; %s",clock-imu_at_,imu_issue_.c_str());
       if(!motion_ok_)return "STOP: IMU motion history unavailable; "+imu_issue_;
       if(!last_grid_)return "STOP: no drive plan input";
+      if(motion_generation_!=motion_.generation)return "STOP: motion history reset; waiting for a new plan";
       const double age=clock-stamp(last_grid_->header.stamp),lane_age=planned_lane_stamp_?clock-*planned_lane_stamp_:0.;
       if(age<-.02 || age>drive_max_age_ || lane_age<-.02 || lane_age>drive_max_age_)
         return cv::format("STOP: capture expired terrain %.3fs lane %.3fs (limit %.2fs)",age,lane_age,drive_max_age_);
@@ -401,6 +437,9 @@ class Node:public rclcpp::Node {
     if(!requested_ || !locked_)return false;
     bool recoverable=false;const auto reason=driveGuard(&recoverable);
     if(reason.empty())return true;
+    // Keep the actual missing-input/alignment reason while waiting for a new
+    // plan, rather than replacing it with the consequence of clearing it.
+    if(recoverable && suspended_ && !last_grid_ && reason=="STOP: no drive plan input")return false;
     if(recoverable)pauseForInput(reason);else stop(reason);
     return false;
   }
@@ -424,6 +463,10 @@ class Node:public rclcpp::Node {
       lane_reference_.state.c_str(),int(lane_reference_.has_memory),lane_reference_.memory_age,
       display_.remembered_hazards.size(),result_.longest_candidate);
     message.data+=cv::format(" | hazard raw=%zu confirmed=%zu pending=%zu immediate=%zu filter=%.2fms",hazard_stats_.raw,hazard_stats_.confirmed,hazard_stats_.pending,hazard_stats_.immediate,hazard_filter_ms_);
+    const double clock=now().seconds();
+    message.data+=cv::format(" | input age terrain=%.3fs IMU=%.3fs speed=%.3fs motion_generation=%llu",
+      grids_.empty()?-1.:clock-stamp(grids_.back()->header.stamp),imu_at_<0?-1.:clock-imu_at_,
+      speed_at_<0?-1.:clock-speed_at_,static_cast<unsigned long long>(motion_.generation));
     status_pub_->publish(message);
     if(!drive_enabled_)logDrive(active);
     RCLCPP_INFO_THROTTLE(get_logger(),*get_clock(),static_cast<int64_t>(1000/status_rate_),"%s",message.data.c_str());
@@ -483,6 +526,7 @@ class Node:public rclcpp::Node {
   }
   void tick() {
     try {
+      snapshotSensors();
       syncPlannerParameters();
       const bool ok=inputs();
       if (requested_ && !locked_)publishLock(true);
@@ -495,6 +539,7 @@ class Node:public rclcpp::Node {
         }else if(input_recoverable_)pauseForInput(status_);
         else {const auto reason=status_;stop(reason);}
       }
+      snapshotSensors();
       const bool guarded=checkDriveGuard();
       updateRecovery(ok && guarded && !held);
       if (!requested_)result_=Plan{};
@@ -503,6 +548,7 @@ class Node:public rclcpp::Node {
     try {draw();}catch(const cv::Exception& e){stop("STOP: preview GUI error");publish();gui_=false;RCLCPP_ERROR(get_logger(),"%s",e.what());}
   }
 public:
+  rclcpp::CallbackGroup::SharedPtr sensorCallbacks()const{return sensor_callbacks_;}
   Node():rclcpp::Node("roi_vfh_test") {
     rcl_interfaces::msg::ParameterDescriptor fixed;fixed.read_only=true;
     rcl_interfaces::msg::ParameterDescriptor editable;editable.description="Editable only before Start or after Stop";
@@ -536,7 +582,7 @@ public:
     config_.max_steer=declare_parameter("max_steering_deg",30.,fixed)*pi/180;
     config_.steer_rate=declare_parameter("steering_rate_deg_per_sec",240.,fixed)*pi/180;
     config_.hist_low=declare_parameter("histogram_low",1.,editable);config_.hist_high=declare_parameter("histogram_high",2.,editable);
-    config_.validate();motion_.front_axle_offset=config_.wheelbase;
+    config_.validate();motion_.front_axle_offset=config_.wheelbase;sensor_inbox_.motion.front_axle_offset=config_.wheelbase;
     planner_deceleration_ceiling_=config_.deceleration;
     speed_ceiling_=declare_parameter("speed_ceiling_mps",1.8,fixed);
     if(!std::isfinite(speed_ceiling_) || speed_ceiling_<.05 || speed_ceiling_>3)throw std::invalid_argument("invalid configured speed ceiling");
@@ -632,35 +678,47 @@ public:
         std::copy(message->data.begin(),message->data.end(),roi_timing_.begin());
         roi_timing_received_=std::chrono::steady_clock::now();
       });
-    grid_sub_=create_subscription<nav_msgs::msg::OccupancyGrid>("/roi_lidar/terrain_for_planning",rclcpp::SensorDataQoS().keep_last(16),
-      [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr p){grids_.push_back(p);while(grids_.size()>16)grids_.pop_front();});
+    sensor_callbacks_=create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive,false);
+    rclcpp::SubscriptionOptions sensor_options;sensor_options.callback_group=sensor_callbacks_;
+    grid_sub_=create_subscription<nav_msgs::msg::OccupancyGrid>("/roi_lidar/terrain_for_planning",sensor,
+      [this](nav_msgs::msg::OccupancyGrid::ConstSharedPtr p){
+        std::lock_guard<std::mutex> lock(sensor_mutex_);
+        sensor_inbox_.grids.push_back(p);while(sensor_inbox_.grids.size()>16)sensor_inbox_.grids.pop_front();
+      },sensor_options);
     const auto speed_topic=declare_parameter<std::string>("measured_speed_topic","/vehicle/dynamics/speed_mps",fixed);
     speed_sub_=create_subscription<std_msgs::msg::Float32>(speed_topic,sensor,
       [this](std_msgs::msg::Float32::ConstSharedPtr p){
-        if(!std::isfinite(p->data)){speed_at_=-1e9;motion_.clear();motion_ok_=false;return;}
-        measured_speed_=p->data;speed_at_=now().seconds();
-      });
-    // Keep a bounded capture history across short GUI/planner stalls; grids
-    // still use latest-only QoS. Never refresh an old IMU sample's timestamp.
+        const double received=now().seconds();
+        std::lock_guard<std::mutex> lock(sensor_mutex_);auto& input=sensor_inbox_;
+        if(!std::isfinite(p->data)){input.speed_at=-1e9;input.motion.clear();input.motion_ok=false;return;}
+        input.speed=p->data;input.speed_at=received;
+      },sensor_options);
+    // Integrate IMU independently of the planning/GUI executor. Preserve every
+    // accepted capture time; the inbox never retimestamps a queued sample.
     imu_sub_=create_subscription<sensor_msgs::msg::Imu>("/roi_lidar/imu",rclcpp::SensorDataQoS().keep_last(200),
       [this](sensor_msgs::msg::Imu::ConstSharedPtr p){
-        imu_received_at_=now().seconds();
+        const double received=now().seconds();
+        std::lock_guard<std::mutex> lock(sensor_mutex_);auto& input=sensor_inbox_;
+        input.imu_received_at=received;
         if(p->header.frame_id!=frame_id_ || !std::isfinite(p->angular_velocity.z)) {
-          imu_issue_="invalid frame or yaw rate";motion_.clear();motion_ok_=false;return;
+          input.imu_issue="invalid frame or yaw rate";input.motion.clear();input.motion_ok=false;return;
         }
-        const double capture=stamp(p->header.stamp),age=imu_received_at_-capture;
-        if(age<-.02 || age>max_age_) {imu_issue_="stale/future IMU sample discarded";return;}
-        if(capture<=imu_at_)return; // A duplicate must not erase the integration history.
-        imu_at_=capture;measured_yaw_rate_=p->angular_velocity.z;
-        if(imu_received_at_-speed_at_>erpm_timeout_) {
-          imu_issue_="waiting for fresh VESC speed";motion_.clear();motion_ok_=false;return;
+        const double capture=stamp(p->header.stamp),age=received-capture;
+        if(age<-.02 || age>max_age_) {input.imu_issue="stale/future IMU sample discarded";return;}
+        if(capture<=input.imu_at)return; // A duplicate must not erase the integration history.
+        input.imu_at=capture;input.yaw_rate=p->angular_velocity.z;
+        if(received-input.speed_at>erpm_timeout_) {
+          input.imu_issue="waiting for fresh VESC speed";input.motion.clear();input.motion_ok=false;return;
         }
-        motion_.add(capture,measured_speed_,measured_yaw_rate_);
-        MotionPose pose;motion_ok_=motion_.at(capture,pose);
-        imu_issue_=motion_ok_?"ok":"motion sample rejected (speed/yaw/time)";
-      });
+        input.motion.add(capture,input.speed,input.yaw_rate);
+        MotionPose pose;input.motion_ok=input.motion.at(capture,pose);
+        input.imu_issue=input.motion_ok?"ok":"motion sample rejected (speed/yaw/time)";
+      },sensor_options);
     lane_sub_=create_subscription<line_detactor::msg::LaneResult>(lane_topic_,sensor,
-      [this](line_detactor::msg::LaneResult::ConstSharedPtr p){lane_=p;lane_received_at_=now().seconds();});
+      [this](line_detactor::msg::LaneResult::ConstSharedPtr p){
+        const double received=now().seconds();std::lock_guard<std::mutex> lock(sensor_mutex_);
+        sensor_inbox_.lane=p;sensor_inbox_.lane_received_at=received;
+      },sensor_options);
     lock_sub_=create_subscription<std_msgs::msg::Bool>("/roi_lidar/parameters_locked",latch,
       [this](std_msgs::msg::Bool::ConstSharedPtr p){
         if(requested_ && locked_ && !p->data){stop("STOP: ROI parameter lock lost");publish();return;}
@@ -701,6 +759,7 @@ public:
     timer_=create_wall_timer(std::chrono::duration<double>(1/planning_rate_),[this]{tick();});
     if(drive_enabled_)actuator_timer_=create_wall_timer(std::chrono::duration<double>(1/config_.control_rate),[this]{
       try {
+        snapshotSensors();
         checkDriveGuard();
         applyDrive(active() && bool(last_grid_));
       }catch(const std::exception& e){stop(std::string("STOP: actuator loop ")+e.what());publish();}
@@ -708,4 +767,18 @@ public:
   }
 };
 }
-int main(int argc,char** argv){rclcpp::init(argc,argv);rclcpp::spin(std::make_shared<roi_vfh_test::Node>());if(rclcpp::ok())rclcpp::shutdown();}
+int main(int argc,char** argv){
+  rclcpp::init(argc,argv);
+  auto node=std::make_shared<roi_vfh_test::Node>();
+  rclcpp::executors::SingleThreadedExecutor sensors;
+  sensors.add_callback_group(node->sensorCallbacks(),node->get_node_base_interface());
+  std::thread receiver([&]{
+    try{sensors.spin();}
+    catch(const std::exception& e){
+      RCLCPP_ERROR(node->get_logger(),"Sensor executor failed: %s",e.what());rclcpp::shutdown();
+    }
+  });
+  try{rclcpp::spin(node);} // Keep HighGUI on the original main thread.
+  catch(...){if(rclcpp::ok())rclcpp::shutdown();sensors.cancel();receiver.join();throw;}
+  sensors.cancel();receiver.join();if(rclcpp::ok())rclcpp::shutdown();
+}
