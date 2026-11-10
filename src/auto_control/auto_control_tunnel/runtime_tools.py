@@ -61,7 +61,8 @@ class RuntimeTools(Node):
         self.root = root
         self.ttk = ttk
         self.windows = {}
-        self.clients = {}
+        # Node.clients is a read-only ROS entity iterator; keep our lookup separate.
+        self.parameter_clients = {}
         self.latest = {}
         self.caps = {}
         self.fields = {}
@@ -189,7 +190,7 @@ class RuntimeTools(Node):
             '/auto_obstacles': {'obstacles.avoidance.max_fps': ('avoidance_plan',)},
         }
         for node, stages in requests.items():
-            client = self.clients.setdefault(node, AsyncParameterClient(self, node))
+            client = self.parameter_clients.setdefault(node, AsyncParameterClient(self, node))
             if not client.services_are_ready():
                 continue
             def received(future, stages=stages):
@@ -239,7 +240,7 @@ class RuntimeTools(Node):
         for name in ('/auto_control', '/auto_obstacles', '/camera_driver', '/bev_processor',
                      '/line_detactor', '/traffic_light_detector'):
             client = AsyncParameterClient(self, name)
-            self.clients[name] = client
+            self.parameter_clients[name] = client
             if not client.services_are_ready():
                 self.get_logger().warning(f'Parameter service unavailable: {name}')
                 continue
@@ -286,7 +287,7 @@ class RuntimeTools(Node):
             self.preset_status.set('전체 적용값을 읽는 중…')
             self.root.after(10000, lambda: self.preset_failed(request, '파라미터 읽기 시간 초과'))
             for node in sorted(self.parameter_nodes):
-                client = self.clients[node]
+                client = self.parameter_clients[node]
                 if not client.services_are_ready():
                     raise RuntimeError(f'파라미터 서비스 연결 끊김: {node}')
                 client.list_parameters(depth=0).add_done_callback(
@@ -312,7 +313,7 @@ class RuntimeTools(Node):
             names = list(future.result().result.names)
             if not names:
                 raise ValueError(f'파라미터가 없습니다: {node}')
-            self.clients[node].get_parameters(names).add_done_callback(
+            self.parameter_clients[node].get_parameters(names).add_done_callback(
                 lambda f: self.preset_loaded(request, node, names, f))
         except Exception as error:
             self.preset_failed(request, str(error))
@@ -336,7 +337,7 @@ class RuntimeTools(Node):
             return
         try:
             names = future.result().result.names
-            self.clients[node].get_parameters(names).add_done_callback(
+            self.parameter_clients[node].get_parameters(names).add_done_callback(
                 lambda f: self.loaded(node, names, f))
         except Exception as error:
             self.parameter_loading.discard(node)
@@ -413,7 +414,7 @@ class RuntimeTools(Node):
             request = [Parameter(row[0], row[2], value) for row, value in changed]
             self.pending_nodes.add(node)
             status.set('검증·적용 중…')
-            self.clients[node].set_parameters_atomically(request).add_done_callback(
+            self.parameter_clients[node].set_parameters_atomically(request).add_done_callback(
                 lambda future: self.applied(node, future, changed, status))
         except Exception as error:
             status.set(str(error))
