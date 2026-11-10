@@ -109,7 +109,7 @@ public:
         "/bev_processor/startup_status",state_qos,
         [this](std_msgs::msg::String::ConstSharedPtr message) {
           camera_startup_ready_=message->data.rfind("READY | ",0)==0;
-          if (!camera_startup_ready_) {start_authorization_.revoke();}
+          if (!camera_startup_ready_) {start_authorization_.revoke("Camera pose not ready");}
         });
       startup_mode_sub_=create_subscription<std_msgs::msg::String>(
         declare_parameter<std::string>("startup_drive_mode_topic","/autopilot03/drive/mode"),state_qos,
@@ -117,7 +117,7 @@ public:
           if (message->data!="AUTO" && message->data!="MANUAL" && message->data!="STOPPING") {return;}
           startup_drive_mode_=message->data;
           startup_manual_=message->data=="MANUAL" || message->data=="STOPPING";
-          if (startup_manual_) {start_authorization_.revoke();}
+          if (startup_manual_) {start_authorization_.revoke("Manual mode");}
         });
       startup_start_service_=create_service<std_srvs::srv::Trigger>("~/start",
         [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
@@ -139,7 +139,7 @@ public:
         "/perception/models_ready", rclcpp::QoS(1).reliable().transient_local(),
         [this](std_msgs::msg::Bool::ConstSharedPtr message) {
           model_startup_gate_.observe(message->data, std::chrono::steady_clock::now());
-          if (!message->data) {start_authorization_.revoke();}
+          if (!message->data) {start_authorization_.revoke("Model readiness lost");}
         });
     }
     lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
@@ -424,7 +424,7 @@ private:
     stop_service_=create_service<std_srvs::srv::Trigger>("~/stop",
       [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
-        operator_stopped_=true;start_authorization_.revoke();
+        operator_stopped_=true;start_authorization_.revoke("Operator STOP");
         publish_guard_stop("operator_stop");
         response->success=true;response->message="STOPPED: press START to drive again";
         publish_startup_state();
@@ -1647,8 +1647,11 @@ private:
     const bool erpm_fresh=last_erpm_ns_ && clock>=*last_erpm_ns_ &&
       seconds(clock-*last_erpm_ns_)<=erpm_timeout_sec_;
     const bool models=!model_startup_check_required_ || model_startup_gate_.ready(std::chrono::steady_clock::now());
+    const std::string reason=!enabled_ ? "Automatic control disabled" :
+      !camera_startup_ready_ ? "Camera pose not ready" : !models ? "Model readiness lost" :
+      !vesc_connected_ ? "VESC disconnected" : !erpm_fresh ? "ERPM telemetry expired" : "";
     start_authorization_.observe(enabled_ && camera_startup_ready_ && models && vesc_connected_ && erpm_fresh,
-      startup_manual_ || control_mode_!="drive");
+      startup_manual_ || control_mode_!="drive", reason);
   }
   void publish_startup_state()
   {
@@ -1660,6 +1663,9 @@ private:
     else if (start_authorization_.approved()) {message.data="STARTED | "+reason.value_or("automatic duty permitted");}
     else if (reason) {message.data="WAITING | "+*reason;}
     else {message.data="READY_TO_START | press START to permit automatic duty";}
+    if (!start_authorization_.approved() && !start_authorization_.last_reason().empty()) {
+      message.data+=" | last stop: "+start_authorization_.last_reason();
+    }
     startup_state_pub_->publish(message);
   }
 
@@ -2110,14 +2116,14 @@ private:
   void on_connection_status(const std_msgs::msg::Bool::ConstSharedPtr message)
   {
     vesc_connected_ = message->data;
-    if (!vesc_connected_) {start_authorization_.revoke();}
+    if (!vesc_connected_) {start_authorization_.revoke("VESC disconnected");}
   }
 
   void on_enable(const std_msgs::msg::Bool::ConstSharedPtr message)
   {
     enabled_ = message->data;
     if (!enabled_) {
-      start_authorization_.revoke();
+      start_authorization_.revoke("Automatic control disabled");
       stop_control("disabled");
       publish_commands(0.0, 0.0, latest_servo_position_, "stop");
     }

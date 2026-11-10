@@ -13,11 +13,11 @@ from auto_control_tunnel.parameter_preset import parameter_values, write_preset
 
 def load_runtime_tools():
     modules = {name: ModuleType(name) for name in (
-        'rclpy', 'rclpy.node', 'rclpy.parameter', 'rclpy.parameter_client',
+        'rclpy', 'rclpy.node', 'rclpy.parameter', 'auto_control_tunnel.remote_parameters',
         'rclpy.qos', 'std_msgs', 'std_msgs.msg', 'std_srvs', 'std_srvs.srv')}
     for mod, attrs in {
         'rclpy.node': ['Node'], 'rclpy.parameter': ['Parameter'],
-        'rclpy.parameter_client': ['AsyncParameterClient'],
+        'auto_control_tunnel.remote_parameters': ['RemoteParameters'],
         'rclpy.qos': ['QoSProfile', 'DurabilityPolicy'],
         'std_msgs.msg': ['Bool', 'String'], 'std_srvs.srv': ['Trigger'],
     }.items():

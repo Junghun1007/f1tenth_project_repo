@@ -3,7 +3,8 @@
     port: "/dev/ttyTHS1"      # Jetson UART 장치 경로
     baudrate: 115200          # VESC와 통신할 시리얼 속도
     serial_timeout: 0.02      # 80Hz telemetry 응답 제한; 오류 시 명령 지연을 20ms로 제한
-    write_timeout: 0.02       # UART 정체 시 제어 worker가 오래 멈추지 않도록 20ms로 제한
+    write_timeout: 0.05       # 일시적 스케줄링 지연 여유 50ms; 실패 시 기존 정지/재승인 유지
+    serial_exclusive: true    # Linux UART 독점 사용 및 접근 가능한 /proc 포트 점유 확인
     startup_delay: 0.2        # 포트 연결 후 안정화를 위해 기다리는 시간(초)
     connect_on_startup: true  # 노드 시작 시 VESC 포트를 먼저 열어본다.
     verify_firmware_on_startup: true  # 펌웨어 응답을 받아 실제 VESC인지 확인한다.

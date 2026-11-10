@@ -46,6 +46,10 @@ class StartupInspection(Node):
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE))
         qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                          durability=DurabilityPolicy.TRANSIENT_LOCAL)
+        diagnostics_topic = self.declare_parameter(
+            'connection_diagnostics_topic', '/vesc/connected/diagnostics').value
+        self.link_diagnostics_sub = self.create_subscription(
+            String, diagnostics_topic, lambda message: self.state.update_link(message.data), qos)
         image_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         self.subscriptions_owned = [
             self.create_subscription(String, '/bev_processor/startup_status', self.on_camera, qos),
@@ -220,7 +224,13 @@ def render(state, image=None, image_fresh=False, pending=False, now=None, speed=
     text('Stage changes reflect loader activity; a heartbeat alone cannot prove GPU progress.',525,505,scale=.37)
     text('3. DEPARTURE', 22,535,(255,220,80),.65)
     controller = state.controller if state.controller_fresh(now) else 'WAITING | controller heartbeat unavailable'
-    text(controller,22,567,scale=.53)
+    if 'last stop: VESC disconnected' in controller and state.link_fault:
+        detail = state.link_fault
+        if state.link_recovered:
+            detail += '; UART recovered; START reapproval required'
+        controller = controller.replace('last stop: VESC disconnected', 'last stop: ' + detail)
+    for row, line in enumerate(textwrap.wrap(controller, width=112)[:2]):
+        text(line,22,567+row*18,scale=.48)
     text('The controller checks models, measured camera pose, VESC feedback and a fresh valid lane.',22,600,scale=.48)
     text('Automatic duty is blocked until an accepted START request. Manual mode skips this button.',22,625,scale=.48)
     ready = state.can_start(now) and not pending

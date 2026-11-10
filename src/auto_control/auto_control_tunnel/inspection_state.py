@@ -13,6 +13,8 @@ class InspectionState:
         self.controller = 'WAITING | waiting for controller'
         self.controller_at = None
         self.error = ''
+        self.link_fault = ''
+        self.link_recovered = False
 
     def update_model(self, name, text, now=None):
         if name not in self.models:
@@ -60,6 +62,12 @@ class InspectionState:
             health = 'Monitor alive; engine progress not guaranteed'
         return dict(tag=tag, phase=phase, age=age, elapsed=elapsed,
                     stage_age=stage_age, health=health)
+
+    def update_link(self, text):
+        tag, _, reason = text.partition(' | ')
+        if tag in ('FAULT', 'RECOVERED'):
+            self.link_fault = reason
+            self.link_recovered = tag == 'RECOVERED'
 
     def update_controller(self, text, now=None):
         self.controller = text

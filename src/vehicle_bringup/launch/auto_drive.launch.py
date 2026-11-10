@@ -456,7 +456,8 @@ def _apply_parameter_file_defaults(
     inspection_actions = []
     if measurement != "true":
         from auto_control_tunnel.launch_support import startup_inspection_node
-        inspection_actions.append(startup_inspection_node(tunnel == "true", traffic_enabled == "true"))
+        inspection_actions.append(startup_inspection_node(tunnel == "true", traffic_enabled == "true",
+            '/' + context.launch_configurations['bridge_connection_status_topic'].strip('/') + '/diagnostics'))
         # Tools belong to the inspection controls, not the raw BEV preview.
         # Start them before including BEV's launch, which sets preview_enabled=false.
         inspection_actions.append(Node(

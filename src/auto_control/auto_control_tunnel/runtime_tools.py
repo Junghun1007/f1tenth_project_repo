@@ -10,7 +10,7 @@ from .parameter_preset import parameter_values, write_preset
 import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rclpy.parameter_client import AsyncParameterClient
+from .remote_parameters import RemoteParameters
 from rclpy.qos import QoSProfile, DurabilityPolicy
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
@@ -183,6 +183,11 @@ class RuntimeTools(Node):
         self.ttk.Label(window, text='rgb_capture는 촬영 관측 빈도입니다. 촬영 연산 시간은 호스트에서 측정할 수 없습니다.'
                        '\n추정 FPS = 1000 / 평균 ms이며 실제 완료 FPS와 다릅니다. 기존 제어·추론용 타이밍은 계속 사용됩니다.').pack(pady=8)
 
+    def parameter_client(self, name):
+        if name not in self.parameter_clients:
+            self.parameter_clients[name] = RemoteParameters(self, name)
+        return self.parameter_clients[name]
+
     def read_caps(self):
         requests = {
             '/camera_driver': {'sensor_fps': ('rgb_capture',), 'publish_fps': ('camera_to_bev',)},
@@ -190,7 +195,7 @@ class RuntimeTools(Node):
             '/auto_obstacles': {'obstacles.avoidance.max_fps': ('avoidance_plan',)},
         }
         for node, stages in requests.items():
-            client = self.parameter_clients.setdefault(node, AsyncParameterClient(self, node))
+            client = self.parameter_client(node)
             if not client.services_are_ready():
                 continue
             def received(future, stages=stages):
@@ -239,8 +244,7 @@ class RuntimeTools(Node):
             lambda event: self.tabs.select(self.tab_choices[self.tab_selector.get()]))
         for name in ('/auto_control', '/auto_obstacles', '/camera_driver', '/bev_processor',
                      '/line_detactor', '/traffic_light_detector'):
-            client = AsyncParameterClient(self, name)
-            self.parameter_clients[name] = client
+            client = self.parameter_client(name)
             if not client.services_are_ready():
                 self.get_logger().warning(f'Parameter service unavailable: {name}')
                 continue
@@ -466,19 +470,46 @@ class RuntimeTools(Node):
 
 
 def main(args=None):
-    import tkinter as tk
     rclpy.init(args=args)
-    root = tk.Tk()
-    root.withdraw()
-    node = RuntimeTools(root)
+    root = node = None
     try:
+        try:
+            import tkinter as tk
+            root = tk.Tk()
+            root.withdraw()
+            node = RuntimeTools(root)
+        except Exception as error:
+            if root is not None:
+                root.destroy()
+                root = None
+            message = f'Tools startup failed: {type(error).__name__}: {error}'
+            if isinstance(error, ImportError) and 'tkinter' in str(error):
+                message += '; install python3-tk'
+            # Keep a ROS error responder alive so inspection buttons show the
+            # actual startup failure instead of an unexplained unavailable state.
+            node = Node('auto_runtime_tools')
+            node.get_logger().error(message)
+            def unavailable(request, response):
+                response.success = False
+                response.message = message
+                return response
+            for key in ('metrics', 'parameters'):
+                node.create_service(Trigger, '/auto/runtime_tools/open_' + key, unavailable)
+            rclpy.spin(node)
+            return
         root.after(10, node.tick)
         root.mainloop()
     except KeyboardInterrupt:
         pass
     finally:
-        node.set_metrics(False)
-        node.destroy_node()
-        root.destroy()
+        if isinstance(node, RuntimeTools):
+            try:
+                node.set_metrics(False)
+            except Exception:
+                pass  # ROS may already be shutting down.
+        if node is not None:
+            node.destroy_node()
+        if root is not None:
+            root.destroy()
         if rclpy.ok():
             rclpy.shutdown()

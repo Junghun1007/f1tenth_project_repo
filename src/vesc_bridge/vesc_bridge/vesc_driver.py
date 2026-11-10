@@ -2,10 +2,25 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import sys
+import threading
 import struct
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
+
+
+@dataclass
+class SerialWriteStats:
+    attempts: int = 0
+    failures: int = 0
+    timeouts: int = 0
+    bytes_sent: int = 0
+    duration_sum_sec: float = 0.0
+    duration_max_sec: float = 0.0
+    last_duration_sec: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -61,11 +76,12 @@ class VescDriver:
         port: str = "/dev/ttyTHS1",
         baudrate: int = 115200,
         timeout: float = 0.02,
-        write_timeout: float = 0.02,
+        write_timeout: float = 0.05,
         startup_delay: float = 0.2,
         command_ids: VescCommandIds | None = None,
         scales: VescScales | None = None,
         serial_factory: Callable[..., Any] | None = None,
+        exclusive: bool = True,
     ) -> None:
         self.port = port
         self.baudrate = baudrate
@@ -76,10 +92,45 @@ class VescDriver:
         self.scales = scales or VescScales()
         self._serial_factory = serial_factory
         self._serial: Any | None = None
+        self.exclusive = exclusive
+        self._stats_lock = threading.Lock()
+        self._write_stats = SerialWriteStats()
 
     @property
     def is_open(self) -> bool:
         return self._serial is not None and bool(getattr(self._serial, "is_open", True))
+
+    def write_stats(self) -> SerialWriteStats:
+        with self._stats_lock:
+            return replace(self._write_stats)
+
+    def _check_port_owners(self) -> None:
+        # Inspect only PID/comm/fd paths, never command lines or process contents.
+        # This is diagnostic; kernel exclusivity below closes the subsequent-open race.
+        target = os.path.realpath(self.port)
+        owners = []
+        try:
+            processes = list(Path('/proc').iterdir())
+        except OSError:
+            return
+        for process in processes:
+            if not process.name.isdigit() or int(process.name) == os.getpid():
+                continue
+            try:
+                descriptors = list((process / 'fd').iterdir())
+            except OSError:
+                continue
+            for descriptor in descriptors:
+                try:
+                    if os.path.realpath(descriptor) != target:
+                        continue
+                    name = (process / 'comm').read_text().strip()
+                    owners.append(f'{process.name}({name})')
+                    break
+                except OSError:
+                    continue
+        if owners:
+            raise VescDriverError(f'UART port {self.port} is already open by PID ' + ', '.join(owners))
 
     def open(self) -> None:
         if self.is_open:
@@ -97,13 +148,23 @@ class VescDriver:
             factory = serial.Serial
 
         try:
-            self._serial = factory(
-                port=self.port,
-                baudrate=self.baudrate,
-                timeout=self.timeout,
-                write_timeout=self.write_timeout,
-            )
+            options = dict(port=self.port, baudrate=self.baudrate,
+                           timeout=self.timeout, write_timeout=self.write_timeout)
+            linux_exclusive = self.exclusive and sys.platform.startswith('linux') and self._serial_factory is None
+            if linux_exclusive:
+                self._check_port_owners()
+                options['exclusive'] = True
+            self._serial = factory(**options)
+            if linux_exclusive:
+                import fcntl
+                import termios
+                fcntl.ioctl(self._serial.fileno(), termios.TIOCEXCL)
+                self._check_port_owners()
         except Exception as exc:
+            try:
+                self.close()
+            except Exception:
+                pass
             raise VescDriverError(f"Failed to open VESC port {self.port}: {exc}") from exc
 
         if self.startup_delay > 0.0:
@@ -219,16 +280,33 @@ class VescDriver:
         if self._serial is None:
             raise VescDriverError("VESC serial port is not open.")
 
+        started = time.monotonic()
+        failure = None
+        bytes_written = 0
         try:
             bytes_written = self._serial.write(packet)
             if bytes_written is not None and int(bytes_written) != len(packet):
                 raise VescDriverError(
                     f"Incomplete VESC serial write: {bytes_written}/{len(packet)} bytes"
                 )
-        except VescDriverError:
-            raise
         except Exception as exc:
+            failure = exc
+            if isinstance(exc, VescDriverError):
+                raise
             raise VescDriverError(f"Failed to write VESC packet: {exc}") from exc
+        finally:
+            elapsed = max(0., time.monotonic()-started)
+            with self._stats_lock:
+                stats = self._write_stats
+                stats.attempts += 1
+                stats.failures += int(failure is not None)
+                stats.timeouts += int(failure is not None and 'timeout' in
+                                      (type(failure).__name__ + str(failure)).lower())
+                if failure is None:
+                    stats.bytes_sent += len(packet) if bytes_written is None else int(bytes_written)
+                stats.duration_sum_sec += elapsed
+                stats.duration_max_sec = max(stats.duration_max_sec, elapsed)
+                stats.last_duration_sec = elapsed
 
     def read_payload(self) -> bytes:
         if self._serial is None:

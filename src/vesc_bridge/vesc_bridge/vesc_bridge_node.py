@@ -9,7 +9,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
-from std_msgs.msg import Bool, Float32, Int32
+from std_msgs.msg import Bool, Float32, Int32, String
 
 from vesc_bridge.vesc_driver import (
     VescCommandIds,
@@ -27,7 +27,8 @@ class VescBridgeNode(Node):
         self.declare_parameter("port", "/dev/ttyTHS1")
         self.declare_parameter("baudrate", 115200)
         self.declare_parameter("serial_timeout", 0.02)
-        self.declare_parameter("write_timeout", 0.02)
+        self.declare_parameter("write_timeout", 0.05)
+        self.declare_parameter("serial_exclusive", True)
         self.declare_parameter("startup_delay", 0.2)
         self.declare_parameter("connect_on_startup", True)
         self.declare_parameter("verify_firmware_on_startup", True)
@@ -115,6 +116,7 @@ class VescBridgeNode(Node):
         self._last_command_mode: str | None = None
         self._connection_status: bool | None = None
         self._connection_verified = False
+        self._last_link_fault = ""
         self._telemetry_stats_started_sec = time.monotonic()
         self._telemetry_samples_interval = 0
         self._telemetry_failures_interval = 0
@@ -129,6 +131,8 @@ class VescBridgeNode(Node):
             connection_status_topic,
             connection_qos,
         )
+        self.connection_diagnostics_pub = self.create_publisher(
+            String, connection_status_topic.rstrip('/') + '/diagnostics', connection_qos)
         self.measured_erpm_pub = self.create_publisher(
             Int32,
             measured_erpm_topic,
@@ -141,6 +145,7 @@ class VescBridgeNode(Node):
             timeout=float(self.get_parameter("serial_timeout").value),
             write_timeout=float(self.get_parameter("write_timeout").value),
             startup_delay=float(self.get_parameter("startup_delay").value),
+            exclusive=bool(self.get_parameter("serial_exclusive").value),
             command_ids=VescCommandIds(
                 get_firmware_version=int(
                     self.get_parameter("packet.comm_get_firmware_version").value
@@ -226,7 +231,8 @@ class VescBridgeNode(Node):
             f"measured_erpm_topic={measured_erpm_topic}, "
             f"servo_position_topic={servo_topic}, "
             f"connection_status_topic={connection_status_topic}, "
-            f"telemetry={self.telemetry_rate_hz:.1f}Hz via dedicated UART worker"
+            f"telemetry={self.telemetry_rate_hz:.1f}Hz via dedicated UART worker | "
+            f"write_timeout={self.driver.write_timeout*1000:.0f}ms exclusive={self.driver.exclusive}"
         )
 
     def _try_open_driver(self) -> None:
@@ -249,6 +255,7 @@ class VescBridgeNode(Node):
                 "========================================================"
             )
         except VescDriverError as exc:
+            self._publish_link_fault(str(exc))
             self._connection_verified = False
             self.driver.close()
             self._set_connection_status(False)
@@ -307,6 +314,7 @@ class VescBridgeNode(Node):
             if anchor is None:
                 anchor = self._telemetry_started_sec
             if time.monotonic() - anchor > self.telemetry_timeout_sec:
+                self._publish_link_fault('UART telemetry expired')
                 self._connection_verified = False
                 self._set_connection_status(False)
                 self.get_logger().warn("VESC telemetry expired; connection marked unavailable.")
@@ -324,6 +332,7 @@ class VescBridgeNode(Node):
                 and self._telemetry_is_fresh(self._last_valid_telemetry_sec)
             )
             if not retain_connection:
+                self._publish_link_fault(result.error or 'UART I/O failure', result.operation)
                 self._connection_verified = False
                 self._set_connection_status(False)
             if result.operation == "telemetry":
@@ -392,12 +401,17 @@ class VescBridgeNode(Node):
             target_text = f"brake_current={self._last_brake_current:.2f}A"
         else:
             target_text = f"target_duty={self._last_duty_command:.5f}"
+        writes = self.driver.write_stats()
+        write_average_ms = 1000.*writes.duration_sum_sec/max(1, writes.attempts)
         self.get_logger().info(
             f"VESC | {target_text} | measured_erpm={measured_erpm} | "
             f"telemetry={actual_hz:.1f}/{self.telemetry_rate_hz:.1f}Hz | "
             f"uart_rtt={average_rtt_ms:.2f}/"
             f"{1000.0 * self._telemetry_rtt_max_sec:.2f}ms avg/max | "
-            f"failures={self._telemetry_failures_interval}"
+            f"failures={self._telemetry_failures_interval} | "
+            f"uart_write={write_average_ms:.2f}/{1000.*writes.duration_max_sec:.2f}ms avg/max lifetime | "
+            f"write_attempts/failures/timeouts={writes.attempts}/{writes.failures}/{writes.timeouts} "
+            f"bytes={writes.bytes_sent}"
         )
         self._telemetry_stats_started_sec = now_sec
         self._telemetry_samples_interval = 0
@@ -453,12 +467,32 @@ class VescBridgeNode(Node):
             self._last_erpm_command = 0
             self.io_worker.submit_erpm(0)
 
+    def _publish_link_fault(self, error: str, operation: str = 'startup') -> None:
+        lower = error.lower()
+        reason = ('UART write timeout' if 'write' in lower and 'timeout' in lower else
+                  'UART port already in use' if 'already open' in lower else
+                  'UART telemetry expired' if 'telemetry expired' in lower else
+                  'UART I/O failure')
+        # Preserve the initiating fault through retries until a verified recovery.
+        if not self._last_link_fault or self._connection_verified or self._connection_status is True:
+            self._last_link_fault = reason
+        self.connection_diagnostics_pub.publish(String(data='FAULT | ' + self._last_link_fault))
+        stats = self.driver.write_stats()
+        self.get_logger().warn(
+            f'UART fault | operation={operation} | port={self.driver.port} | '
+            f'last_write={stats.last_duration_sec*1000:.2f}ms | '
+            f'write_failures/timeouts={stats.failures}/{stats.timeouts} | {error}',
+            throttle_duration_sec=1.0)
+
     def _set_connection_status(self, connected: bool) -> None:
         if self._connection_status == connected:
             return
 
         self._connection_status = connected
         self._publish_connection_status()
+        if connected and self._last_link_fault:
+            self.connection_diagnostics_pub.publish(
+                String(data='RECOVERED | ' + self._last_link_fault))
 
     def _publish_connection_status(self) -> None:
         connected = bool(self._connection_status and self.driver.is_open)

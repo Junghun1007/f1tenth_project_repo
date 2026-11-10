@@ -109,3 +109,18 @@ Timings/Params는 점검 창과 함께 시작한 `auto_runtime_tools`의 Trigger
 서비스가 없으면 Tools unavailable, 열기 실패 시 오류 원인, 10초간 응답이 없으면
 시간 초과를 표시한다. Python Tk가 설치되어 있어야 한다(`python3-tk`).
 이 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.
+
+파라미터 도구는 `rcl_interfaces`의 ListParameters/GetParameters/SetParametersAtomically
+서비스를 직접 비동기 호출한다. `rclpy.parameter_client`가 없는 Humble 설치에서도
+모델·제어 파라미터 조회, 일괄 검증·적용과 프리셋 저장을 사용하도록 구성했다.
+Tk import/화면 연결 등 초기화 실패는 도구 서비스의 실패 응답으로 점검 창에 전달한다.
+이 호환성 수정도 빌드·테스트를 실행하지 않았다.
+
+## 재승인 대기 시 마지막 정지 원인
+
+출발 승인 취소 시 카메라 자세, 모델 준비, VESC 연결, ERPM 수명, 수동 전환,
+STOP/disable 중 원인을 보존한다. 통신이 복구되어 READY_TO_START가 된 뒤에도
+last stop 표시를 유지하며 START가 실제 수락되면 지운다. VESC 진단 토픽에서 받은
+UART write timeout 등의 원인과 복구 상태를 함께 표시한다. 연결 장애나 입력 수명
+검사와 실제 승인 취소·정지 정책은 동일하다. 50ms 쓰기 제한과 계측·포트 독점 설정은
+`vehicle_bringup/config/vesc_config.yaml` 및 `vesc_bridge` 문서를 참고한다.
