@@ -44,9 +44,12 @@ Joy와 dynamics는 launch 시작부터 준비하되 수동 명령은 Stop 전에
 
 요청한 기본 옵션은 `vehicle_namespace:=autopilot03`, `vesc_port:=/dev/ttyTHS1`,
 `controller_name_contains:=8BitDo`, `input_mode:=slcan`, `slcan_channel:=/dev/ttyACM0`,
-`slcan_bitrate:=500000`, `can_controller_id:=112`다. Dynamics는 자동·수동 모두 같은 SLCAN
-인스턴스를 사용하고, 모드 전환 정지 확인은 VESC bridge의 UART ERPM을 사용한다.
-UART 속도 환산만 필요하면 `input_mode:=ros_topic`, 수동 전환 없이 기존 직접 출력으로
+`slcan_bitrate:=500000`, `can_controller_id:=112`다. VFH 속도와 모드 전환 정지 확인은
+항상 VESC bridge의 UART ERPM을 사용한다. `roi_vfh_dynamics`가 UART ERPM을 환산해
+`/roi_vfh_test/measured_speed`를 단독 발행한다. CAN 계측은 `roi_vfh_can_dynamics` 한
+인스턴스가 별도로 수행하고 `/autopilot03/vehicle/dynamics/*`로 발행한다. CAN이 끊겨도
+정상 UART 속도를 가리지 않으며, UART 속도가 만료되면 기존 제동 정책을 유지한다.
+UART 속도 환산만 필요하면 `input_mode:=ros_topic`으로 CAN 계측을 끈다. 수동 전환 없이 기존 직접 출력으로
 실행하려면 `manual_handover_enabled:=false`를 지정한다. `drive_enabled:=false`에서는
 수동 전환 노드/Joy를 실행하지 않는다. 수동 서보·Duty 설정은 기존 manual YAML을 사용한다.
 

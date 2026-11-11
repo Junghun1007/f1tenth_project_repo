@@ -196,7 +196,10 @@ def nodes(context):
         input_mode = arg("input_mode").lower()
         if input_mode not in ("ros_topic", "socketcan", "slcan"):
             raise ValueError("input_mode must be ros_topic, socketcan or slcan")
-        dynamics.update({"input_mode": input_mode, "measured_erpm_topic": erpm_topic,
+        # VFH and handover stop confirmation both use the bridge's UART ERPM.
+        # CANable is an independent dynamics instrument: losing CAN frames must
+        # not hide otherwise healthy UART speed from the VFH watchdog.
+        dynamics.update({"input_mode": "ros_topic", "measured_erpm_topic": erpm_topic,
                          "can_interface": arg("can_interface"), "can_controller_id": int(arg("can_controller_id")),
                          "slcan_channel": arg("slcan_channel"), "slcan_bitrate": int(arg("slcan_bitrate")),
                          "commanded_duty_topic": actual_duty_log,
@@ -216,6 +219,21 @@ def nodes(context):
             dynamics[key] = control[key]
         actions.append(Node(package="vehicle_dynamics_monitor", executable="vehicle_dynamics_node",
                             name="roi_vfh_dynamics", output="screen", parameters=[dynamics]))
+        if input_mode != "ros_topic":
+            can_dynamics = dict(dynamics)
+            can_dynamics["input_mode"] = input_mode
+            # Distinct outputs keep stale/valid CAN samples from competing with
+            # the one UART producer of /roi_vfh_test/measured_speed.
+            monitor_prefix = (prefix or "/manual") + "/vehicle/dynamics"
+            base_dynamics = load(Path(get_package_share_directory("vehicle_dynamics_monitor")) /
+                                 "config/vehicle_dynamics.yaml", "/**")
+            for key, value in base_dynamics.items():
+                if key.endswith("_topic") and str(value).startswith("/vehicle/dynamics/"):
+                    can_dynamics[key] = monitor_prefix + "/" + str(value).rsplit("/", 1)[-1]
+            if can_dynamics["speed_topic"] == dynamics["speed_topic"]:
+                raise ValueError("CAN diagnostics speed topic must differ from VFH measured_speed_topic")
+            actions.append(Node(package="vehicle_dynamics_monitor", executable="vehicle_dynamics_node",
+                                name="roi_vfh_can_dynamics", output="screen", parameters=[can_dynamics]))
     elif arg("dynamics_enabled").lower() != "false":
         raise ValueError("dynamics_enabled must be true or false")
     return actions
