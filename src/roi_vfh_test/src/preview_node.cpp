@@ -72,6 +72,12 @@ class Node:public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_,brake_pub_,servo_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_log_pub_,brake_log_pub_,servo_log_pub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_;
+  bool manual_handover_{false},manual_requested_{false};
+  std::string handover_token_,handover_mode_{"WAIT"};
+  std::uint64_t handover_sequence_{0};
+  std::optional<std::chrono::steady_clock::time_point> handover_ack_at_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr handover_request_pub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr handover_ack_sub_;
   MotionHistory motion_;
   std::uint64_t motion_generation_{0};
   double imu_received_at_{-1e9};
@@ -140,6 +146,21 @@ class Node:public rclcpp::Node {
     grids_=sensor_inbox_.grids;lane_=sensor_inbox_.lane;lane_received_at_=sensor_inbox_.lane_received_at;
   }
   void publishLock(bool value) {std_msgs::msg::Bool m;m.data=value;running_pub_->publish(m);}
+  void requestDriveMode(bool manual) {
+    if(!manual_handover_)return;
+    manual_requested_=manual;handover_ack_at_.reset();handover_mode_="WAIT";
+    handover_token_=std::to_string(now().nanoseconds())+"-"+std::to_string(++handover_sequence_);
+    std_msgs::msg::String request;request.data=handover_token_+(manual?"|MANUAL":"|AUTO");
+    handover_request_pub_->publish(request);
+  }
+  bool automaticOutputReady()const {
+    return !manual_handover_ || (!manual_requested_ && handover_mode_=="AUTO" && handover_ack_at_ &&
+      std::chrono::duration<double>(std::chrono::steady_clock::now()-*handover_ack_at_).count()<.35);
+  }
+  void userStop() {
+    stop("STOPPED: parameters unlocked");
+    requestDriveMode(true);
+  }
   void resetHazards() {
     hazard_filter_.reset();hazard_stats_={};terrain_cache_.reset();terrain_cache_input_.reset();
     hazard_motion_generation_=motion_.generation;
@@ -156,9 +177,10 @@ class Node:public rclcpp::Node {
     if(!applyPlannerEdits())return;
     controls_.show(false);
     requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();resetHazards();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();speed_policy_.reset();
-    status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
+    requestDriveMode(false);
+    status_="WAIT: ROI parameter lock / automatic output acknowledgement";publishLock(true);
   }
-  bool active()const {return requested_ && locked_ && !suspended_;}
+  bool active()const {return requested_ && locked_ && !suspended_ && automaticOutputReady();}
   void pauseForInput(const std::string& reason) {
     if(!requested_ || !locked_)return;
     const bool entering=!suspended_;
@@ -194,7 +216,7 @@ class Node:public rclcpp::Node {
   static void mouse(int event,int x,int y,int,void * ptr) {
     if (event!=cv::EVENT_LBUTTONDOWN) return;
     auto & self=*static_cast<Node*>(ptr);
-    if (stopButton().contains(cv::Point(x,y))) {self.stop("STOPPED: parameters unlocked");self.publish();return;}
+    if (stopButton().contains(cv::Point(x,y))) {self.userStop();self.publish();return;}
     if (PlannerControls::toggleButton().contains(cv::Point(x,y))) {self.controls_.toggle();return;}
     if (startButton().contains(cv::Point(x,y)) && !self.requested_) {self.start();return;}
     self.controlAction(self.controls_.click(x,y,self.requested_));
@@ -406,6 +428,7 @@ class Node:public rclcpp::Node {
     if(drive_enabled_ && (count_publishers(duty_pub_->get_topic_name())>1 || count_publishers(brake_pub_->get_topic_name())>1 ||
       count_publishers(servo_pub_->get_topic_name())>1))return "STOP: another actuator publisher (stop auto/manual controller)";
     if(recoverable)*recoverable=true;
+    if(!automaticOutputReady())return "STOP: waiting for AUTO output gate (release controls and stop)";
     if(locked_) {
       const double clock=now().seconds();
       if(clock-speed_at_>erpm_timeout_ || clock<speed_at_-.02 || !std::isfinite(measured_speed_))
@@ -449,6 +472,7 @@ class Node:public rclcpp::Node {
     message.data=status_+cv::format(" | target v=%.2fm/s steer=%.1fdeg plan=%.2fms candidates=%zu | rear unverified",
       speed.data,steer.data*180/pi,plan_ms_,result_.candidates.size());
     if(drive_enabled_)message.data+=cv::format(" | DRIVE duty=%.3f brake=%.2fA command_steer=%.1fdeg",drive_command_.duty,drive_command_.brake,drive_command_.steer*180/pi);
+    if(manual_handover_)message.data+=" | output_gate="+handover_mode_+(manual_requested_?" requested=MANUAL":" requested=AUTO");
     message.data+=cv::format(" | lane_source=%s direction_memory=%d age=%.2fs longest=%.2fm",
       lane_reference_.state.c_str(),int(lane_reference_.has_memory),lane_reference_.memory_age,
       result_.longest_candidate);
@@ -484,6 +508,12 @@ class Node:public rclcpp::Node {
     if(last_preview_at_ && std::chrono::duration<double>(clock-*last_preview_at_).count()<1/preview_rate_)return;
     last_preview_at_=clock;
     auto canvas=renderPreview(display_,lane_points_,result_,config_,requested_,locked_ && !suspended_,status_,plan_ms_,drive_enabled_,drive_command_.duty,drive_command_.brake,&hazard_stats_,&lane_reference_);
+    if(manual_handover_ && !automaticOutputReady()) {
+      cv::rectangle(canvas,{0,52,760,48},{245,245,245},-1);
+      cv::putText(canvas,"OUTPUT GATE: "+handover_mode_+" | VFH commands blocked",{12,70},cv::FONT_HERSHEY_SIMPLEX,.43,{35,35,35},1);
+      cv::putText(canvas,manual_requested_?"Stop -> MANUAL: release RT/LT/RB, center steering; wait for standstill":
+        "Start -> AUTO: release controls; wait for standstill and fresh acknowledgement",{12,92},cv::FONT_HERSHEY_SIMPLEX,.39,{35,35,35},1);
+    }
     const bool roi_fresh=roi_timing_received_ &&
       std::chrono::steady_clock::now()-*roi_timing_received_<std::chrono::seconds(3);
     const std::string roi_line=roi_fresh?
@@ -504,7 +534,7 @@ class Node:public rclcpp::Node {
       if (!window_) {cv::namedWindow("ROI VFH+ test",cv::WINDOW_AUTOSIZE);cv::setMouseCallback("ROI VFH+ test",mouse,this);window_=true;}
       cv::imshow("ROI VFH+ test",canvas);
       const int key=cv::waitKeyEx(1);const bool editing=controls_.editing();
-      if (key==' ' || key=='s' || key=='S'){stop("STOPPED: parameters unlocked");publish();}
+      if (key==' ' || key=='s' || key=='S'){userStop();publish();}
       else if (key=='q' || (key==27 && !editing) || windowClosed()) {
         stop("STOPPED: window closed");publish();
         RCLCPP_INFO(get_logger(),"VFH window closed: stopping and unlocking ROI parameters");
@@ -635,6 +665,22 @@ public:
     const auto brake_topic=declare_parameter<std::string>("brake_current_topic","/vesc/brake_current",fixed);
     const auto servo_topic=declare_parameter<std::string>("servo_position_topic","/vesc/servo_position",fixed);
     const auto connection_topic=declare_parameter<std::string>("vesc_connection_topic","/vesc/connected",fixed);
+    manual_handover_=declare_parameter("manual_handover_enabled",false,fixed) && drive_enabled_;
+    const auto mode_request_topic=declare_parameter<std::string>("manual_mode_request_topic","/roi_vfh_test/drive_mode_request",fixed);
+    const auto mode_ack_topic=declare_parameter<std::string>("manual_mode_ack_topic","/roi_vfh_test/drive_mode_ack",fixed);
+    if(manual_handover_) {
+      handover_request_pub_=create_publisher<std_msgs::msg::String>(mode_request_topic,latch);
+      handover_ack_sub_=create_subscription<std_msgs::msg::String>(mode_ack_topic,latch,
+        [this](std_msgs::msg::String::ConstSharedPtr message) {
+          const auto separator=message->data.find('|');
+          if(separator==std::string::npos || message->data.substr(0,separator)!=handover_token_)return;
+          const auto mode=message->data.substr(separator+1);
+          if(mode!="AUTO" && mode!="MANUAL" && mode!="STOPPING_MANUAL" && mode!="STOPPING_AUTO")return;
+          const bool returning=mode=="AUTO" && handover_mode_!="AUTO";
+          handover_mode_=mode;handover_ack_at_=std::chrono::steady_clock::now();
+          if(returning) {servo_commanded_=false;drive_command_=DriveCommand{};if(drive_)drive_->centerAtStandstill();}
+        });
+    }
     if(drive_enabled_) {
       const auto command=rclcpp::QoS(1).reliable().durability_volatile();
       duty_pub_=create_publisher<std_msgs::msg::Float32>(duty_topic,command);
@@ -741,6 +787,7 @@ public:
       RCLCPP_INFO(get_logger(),"VFH driving CSV: %s",driving_log_->path().c_str());
     }
     publishLock(false);
+    requestDriveMode(false); // Initial state remains stopped; no manual input before Stop.
     RCLCPP_INFO(get_logger(),"Source geometry: width=%.3f front=%.3f rear=%.3f margin=%.3f min_path=%.3f; Stanley lookahead=%.3f, nominal=%.2f ceiling=%.2f",
       config_.width,config_.front,config_.rear,config_.margin,config_.minimum_path_length,config_.lane_lookahead,config_.speed,speed_ceiling_);
     timer_=create_wall_timer(std::chrono::duration<double>(1/planning_rate_),[this]{tick();});

@@ -52,6 +52,7 @@ public:
     pid_(options.kp,options.ki,options.kd,options.integral_limit,-1,1) {
     options_.validate();output_.servo=options_.servo_center;
   }
+  void centerAtStandstill() {output_.steer=0;output_.servo=options_.servo_center;}
   DriveCommand update(bool active,double target,double speed,double steer,double dt,bool avoiding=false) {
     if(!active || !std::isfinite(target) || !std::isfinite(speed) || !std::isfinite(steer) || target<=0) {
       pid_.reset();departure_=true;braking_=true;recovering_=false;previous_speed_valid_=false;coast_time_=0;deceleration_=0;

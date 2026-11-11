@@ -1,6 +1,6 @@
 # roi_vfh_test — 공유 VFH+ 주행 정책
 
-로컬 시뮬레이터에서 사용 중인 VFH+ 계획·차선 신뢰도/기억·근거리 장애물 기억 정책을
+로컬 시뮬레이터에서 사용 중인 VFH+ 계획·차선 방향 기억·위험 셀 연속성 정책을
 ROS 입력과 VESC 제어에 연결한다. 별도의 통로 분류, 입구/미션 판정, 차선 이탈 한도는 없다.
 시뮬레이터 마킹·트랙·장애물 원본 객체 목록은 이 패키지의 입력이 아니다.
 
@@ -20,9 +20,38 @@ ros2 launch roi_vfh_test preview.launch.py
 구동 없이 확인하려면 `drive_enabled:=false`를 지정한다.
 
 ROI 설정창과 VFH 프리뷰가 표시된다. 별도 BEV 창은 열지 않는다.
-Start 전에는 제동 상태이며 설정을 변경할 수 있다. Start는 편집을 적용하고 ROI 잠금
-ACK를 기다린 뒤 실행한다. 출발 후 ROI/VFH 설정은 잠기며 Stop은 제동하고 잠금을 해제한다.
+Start 전에는 제동 상태이며 설정을 변경할 수 있다. Start는 편집을 적용하고 ROI 잠금과
+자동 출력 소유권 ACK를 기다린 뒤 실행한다. 출발 후 ROI/VFH 설정은 잠기며 Stop은 제동하고 잠금을 해제한다.
 창 닫기·Stop은 재출발 의사를 취소하므로 다시 Start가 필요하다.
+
+## Stop / Start 수동 전환
+
+기본 launch는 `manual_drive_with_dynamics.launch.py`와 같은 8BitDo Joy 입력·수동 제어
+프로필·VESC bridge·dynamics 구성 요소를 통합한다. 별도 터미널에서 그 launch를 함께 실행하지 않는다.
+VESC와 SLCAN 포트는 각각 하나만 열고, 자동/수동 출력은 `manual_control/vfh_handover_node`가
+실제 VESC 토픽에 단독 발행한다. VFH는 전용 `/autopilot03/handover/vfh/*` 입력에만 발행한다.
+Joy와 dynamics는 launch 시작부터 준비하되 수동 명령은 Stop 전에는 차단한다.
+
+- **Stop 버튼 또는 S/Space**: VFH 출력을 차단하고 기존 정지 제동 기준(기본 2A)을 적용한다.
+  새로운 UART ERPM이 100 이하로 0.5초 유지되고, RT/LT/RB를 놓고 조향을 중앙에 둔
+  최신 Joy 입력을 확인하면 MANUAL로 전환한다. 이후 기존 RT/LT/조향/RB 조작을 사용한다.
+- **Start**: 수동 출력을 즉시 차단하고 같은 정지·중립 확인을 거쳐 AUTO로 전환한다.
+  요청별 ACK와 10Hz 상태 수명을 확인한 뒤 최신 입력으로 VFH를 실행한다. 전환 중 조작을
+  놓지 않거나 ERPM/Joy가 끊기면 제동을 유지한다. 이전 duty/수동 입력은 재생하지 않는다.
+- **경로 없음·센서 유실 등 자동 정지**: 수동 모드로 전환하지 않는다. 기존 제동·입력 복구 정책을 유지한다.
+- 창 닫기는 전체 launch/프로세스 종료 경로이며 수동 전환 버튼이 아니다. X 버튼 전환은
+  기존 auto_drive 전용이며 이 VFH 전환 노드에서는 사용하지 않는다.
+
+요청한 기본 옵션은 `vehicle_namespace:=autopilot03`, `vesc_port:=/dev/ttyTHS1`,
+`controller_name_contains:=8BitDo`, `input_mode:=slcan`, `slcan_channel:=/dev/ttyACM0`,
+`slcan_bitrate:=500000`, `can_controller_id:=112`다. Dynamics는 자동·수동 모두 같은 SLCAN
+인스턴스를 사용하고, 모드 전환 정지 확인은 VESC bridge의 UART ERPM을 사용한다.
+UART 속도 환산만 필요하면 `input_mode:=ros_topic`, 수동 전환 없이 기존 직접 출력으로
+실행하려면 `manual_handover_enabled:=false`를 지정한다. `drive_enabled:=false`에서는
+수동 전환 노드/Joy를 실행하지 않는다. 수동 서보·Duty 설정은 기존 manual YAML을 사용한다.
+
+수정 적용에는 위 `colcon build --packages-up-to roi_vfh_test`를 사용한다. 신규
+`manual_control/vfh_handover_node`도 함께 설치되어야 한다. 이번 변경에서 ROS 실행·실차 테스트는 수행하지 않았다.
 
 ## 하나의 정책 코어
 
@@ -63,7 +92,7 @@ ACK를 기다린 뒤 실행한다. 출발 후 ROI/VFH 설정은 잠기며 Stop�
 현재 차선 추종의 차체 궤적이 비어 있으면 Stanley로 추종·복귀한다. 짧은 현재 차선의
 끝을 넘어서는 예측은 마지막 접선으로 이어서 수행하고, 전체 예측 궤적의 장애물 충돌을 검사한다.
 장애물이 궤적을 막으면 VFH로 차선 밖 회피를 허용하며, 차선 복귀 가중치를 기본
-0.8에서 1.5로 높였다. 차선 복귀는 선호이며 장애물 충돌 검사를 우회하지 않는다.
+이미지에서 지정한 기본값 1.2를 사용한다. 차선 복귀는 선호이며 장애물 충돌 검사를 우회하지 않는다.
 
 `lane_memory_enabled`는 기본 `1.0`(ON), `0.0`은 OFF다. Stop → VFH parameters
 첫 페이지에서 변경하고 Apply → Start로 적용한다. YAML 또는 Stop 상태의
@@ -89,16 +118,16 @@ ON은 마지막 관측의 **방향각 하나만** 저장한다. 중앙선 전체
 
 | ROS 파라미터 | 기본값 |
 |---|---:|
-| `nominal_speed_mps` | 1.0 |
+| `nominal_speed_mps` | 1.2 |
 | `horizon_m` / `reference_distance_m` | 1.2 / 1.0 |
 | `safety_margin_m` | 0.02 |
 | `sample_step_m` | 0.03 |
 | `lane_lookahead_m` | 0.05 |
 | `avoidance_curve_samples` | 17 |
 | `avoidance_length_slack_m` | 0.40 |
-| `avoidance_lane_weight` | 1.5 |
-| `avoidance_steering_weight` | 0.1 |
-| `avoidance_clearance_weight` | 1.0 |
+| `avoidance_lane_weight` | 1.2 |
+| `avoidance_steering_weight` | 0.2 |
+| `avoidance_clearance_weight` | 0.7 |
 | `deceleration_mps2` / `response_delay_sec` | 0.4 / 0.10 |
 
 위 항목과 차선 기억 ON/OFF·히스토그램/위험 셀 연속성 항목을 총 22개 숫자 입력, 2페이지로 표시한다.

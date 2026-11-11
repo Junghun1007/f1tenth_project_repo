@@ -109,6 +109,44 @@ def nodes(context):
                  "measured_speed_topic": arg("measured_speed_topic")})
     for key in ("duty_topic", "brake_current_topic", "servo_position_topic"):
         test[key] = telemetry_topic(arg(key), control[key], arg("vehicle_namespace"))
+    # A single gate owns the real actuator topics. VFH always sends only to its
+    # private inputs, including braking on perception/plan failures.
+    actuator_topics = {key: test[key] for key in ("duty_topic", "brake_current_topic", "servo_position_topic")}
+    handover = arg("manual_handover_enabled").strip().lower()
+    if handover not in ("true", "false"):
+        raise ValueError("manual_handover_enabled must be true or false")
+    handover_enabled = handover == "true" and drive_mode == "true"
+    test["manual_handover_enabled"] = handover_enabled
+    handover_actions = []
+    namespace = arg("vehicle_namespace").strip("/")
+    prefix = "/" + namespace if namespace else ""
+    actual_duty_log = "/roi_vfh_test/command_duty"
+    if handover_enabled:
+        test["manual_mode_request_topic"] = "/roi_vfh_test/drive_mode_request"
+        test["manual_mode_ack_topic"] = "/roi_vfh_test/drive_mode_ack"
+        gate = {**actuator_topics, "joy_topic": prefix + "/joy",
+                "measured_erpm_topic": erpm_topic, "connection_status_topic": connection_topic,
+                "mode_request_topic": test["manual_mode_request_topic"],
+                "mode_ack_topic": test["manual_mode_ack_topic"],
+                "drive_mode_topic": prefix + "/drive/mode",
+                "current_duty_topic": prefix + "/manual/current_duty",
+                "current_brake_current_topic": prefix + "/manual/current_brake_current",
+                "gear_state_topic": prefix + "/manual/gear",
+                "auto_command_timeout_sec": test["max_age_sec"],
+                "handover_stop_brake_current_amps": control["brake_maximum_current_amps"]}
+        actual_duty_log = gate["current_duty_topic"]
+        for channel in ("duty", "brake_current", "servo_position"):
+            test[channel + "_topic"] = prefix + "/handover/vfh/" + channel
+            gate["auto_" + channel + "_topic"] = test[channel + "_topic"]
+        handover_actions = [
+            IncludeLaunchDescription(PythonLaunchDescriptionSource(str(
+                Path(get_package_share_directory("joy_initializer")) / "launch/joy.launch.py")),
+                launch_arguments={"vehicle_namespace": namespace,
+                                  "device_name_contains": arg("controller_name_contains"),
+                                  "reconnect_interval_sec": "0.2"}.items()),
+            Node(package="manual_control", executable="vfh_handover_node", name="roi_vfh_handover",
+                 namespace=namespace, output="screen", parameters=[str(
+                     Path(get_package_share_directory("vehicle_bringup")) / "config/manual_vesc_config.yaml"), gate])]
     for key in ("maximum_duty", "longitudinal_start_duty", "duty_rise_rate_per_sec", "duty_fall_rate_per_sec",
                 "longitudinal_pid_kp", "longitudinal_pid_ki", "longitudinal_pid_kd", "longitudinal_pid_integral_limit",
                 "longitudinal_feedforward_offset_duty", "longitudinal_feedforward_duty_per_mps",
@@ -133,7 +171,7 @@ def nodes(context):
                       "centerline_bev_width_m": str(bev["y_max_m"]-bev["y_min_m"]),
                       "centerline_bev_height_m": str(bev["x_max_m"]-bev["x_min_m"]),
                       "result_publish_enabled": "true", "result_topic": lane["result_topic"]}
-    actions = [Node(package="roi_lidar", executable="roi_lidar_node", name="roi_lidar",
+    actions = [*handover_actions, Node(package="roi_lidar", executable="roi_lidar_node", name="roi_lidar",
                     output="screen", parameters=[roi]),
                IncludeLaunchDescription(PythonLaunchDescriptionSource(str(Path(get_package_share_directory("line_detactor")) / "launch/line_detactor.launch.py")),
                                         launch_arguments={"params_file": arg("lane_params_file"), **lane_overrides}.items()),
@@ -146,7 +184,7 @@ def nodes(context):
         # Same bridge executable/config as vehicle_bringup/vesc_only.launch.py.
         # Resolve all five topics exactly as the VFH controller and speed monitor
         # do, including explicit overrides and vehicle_namespace.
-        bridge_topics = {key: test[key] for key in ("duty_topic", "brake_current_topic", "servo_position_topic")}
+        bridge_topics = dict(actuator_topics)
         bridge_topics.update({"measured_erpm_topic": erpm_topic,
                               "connection_status_topic": connection_topic,
                               "port": arg("vesc_port")})
@@ -155,7 +193,14 @@ def nodes(context):
                                output="screen", parameters=[arg("vesc_params_file"), bridge_topics]))
     if arg("dynamics_enabled").lower() == "true":
         dynamics = load(Path(get_package_share_directory("vehicle_dynamics_monitor")) / "config/vehicle_dynamics.yaml", "/**")
-        dynamics.update({"input_mode": "ros_topic", "measured_erpm_topic": erpm_topic,
+        input_mode = arg("input_mode").lower()
+        if input_mode not in ("ros_topic", "socketcan", "slcan"):
+            raise ValueError("input_mode must be ros_topic, socketcan or slcan")
+        dynamics.update({"input_mode": input_mode, "measured_erpm_topic": erpm_topic,
+                         "can_interface": arg("can_interface"), "can_controller_id": int(arg("can_controller_id")),
+                         "slcan_channel": arg("slcan_channel"), "slcan_bitrate": int(arg("slcan_bitrate")),
+                         "commanded_duty_topic": actual_duty_log,
+                         "servo_position_topic": actuator_topics["servo_position_topic"],
                          "connection_status_topic": connection_topic,
                          "speed_topic": arg("measured_speed_topic"), "imu_topic": "/roi_lidar/imu",
                          "imu_yaw_axis": "z", "imu_yaw_rate_sign": 1.0,
@@ -189,7 +234,10 @@ def generate_launch_description():
                 "drive_enabled": "", "duty_topic": "", "brake_current_topic": "", "servo_position_topic": "",
                 "vesc_bridge_enabled": "true", "vesc_port": "/dev/ttyTHS1",
                 "vesc_params_file": Path(get_package_share_directory("vehicle_bringup")) / "config/vesc_config.yaml",
-                "dynamics_enabled": "true", "vehicle_namespace": "", "measured_erpm_topic": "",
+                "dynamics_enabled": "true", "vehicle_namespace": "autopilot03", "measured_erpm_topic": "",
+                "manual_handover_enabled": "true", "controller_name_contains": "8BitDo",
+                "input_mode": "slcan", "slcan_channel": "/dev/ttyACM0", "slcan_bitrate": "500000",
+                "can_interface": "can0", "can_controller_id": "112",
                 "imu_rate_hz": "120",
                 "vesc_connection_topic": "", "measured_speed_topic": "/roi_vfh_test/measured_speed"}
     return LaunchDescription([DeclareLaunchArgument(k, default_value=str(v)) for k, v in defaults.items()] + [OpaqueFunction(function=nodes)])

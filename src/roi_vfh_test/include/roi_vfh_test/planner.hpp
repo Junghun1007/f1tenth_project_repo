@@ -31,7 +31,7 @@ struct Grid {
 // Match the preview: mint/gray are traversable; only red occupancy (>=50) blocks.
 inline bool blockedTerrain(int value) {return value>=50;}
 struct Config {
-  double speed{1.},horizon{1.2},step{.03},wheelbase{.33},width{.30},rear{.45},front{.05};
+  double speed{1.2},horizon{1.2},step{.03},wheelbase{.33},width{.30},rear{.45},front{.05};
   double margin{.02},max_steer{30*pi/180},steer_rate{240*pi/180};
   double lane_width{.65},deceleration{.4},delay{.10};
   double current_steer{0},current_speed{.7};
@@ -45,8 +45,8 @@ struct Config {
   double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
   double avoidance_curve_enabled{1},avoidance_curve_samples{17},avoidance_length_slack_m{.40};
-  double avoidance_lane_weight{1.5},avoidance_steering_weight{.1};
-  double clearance_weight{1.0};
+  double avoidance_lane_weight{1.2},avoidance_steering_weight{.2};
+  double clearance_weight{.7};
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
   void validate() const {
     if(!std::isfinite(lane_memory_enabled) || (lane_memory_enabled!=0 && lane_memory_enabled!=1))

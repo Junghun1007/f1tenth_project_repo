@@ -70,7 +70,10 @@ class AutoHandoverNode(ActuatorCommanderNode):
             self._on_connection, state_qos,
         )
         self._publish_mode()
-        self.get_logger().info(
+        self.get_logger().info(self.handover_help())
+
+    def handover_help(self):
+        return (
             f"AUTO active; X (button {self.handover_button}) brakes, then switches "
             "to MANUAL after fresh ERPM confirms a stop and controls are released. "
             "BEV preview remains running."

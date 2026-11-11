@@ -22,6 +22,7 @@ setup(
             "joy_params_converter_node = manual_control.joy_params_converter_node:main",
             "actuator_commander_node = manual_control.actuator_commander_node:main",
             "auto_handover_node = manual_control.auto_handover_node:main",
+            "vfh_handover_node = manual_control.vfh_handover_node:main",
         ],
     },
 )

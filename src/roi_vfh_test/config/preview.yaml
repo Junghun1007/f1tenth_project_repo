@@ -5,7 +5,7 @@ roi_vfh_test:
     preview_fps: 30.0 # launch inherits BEV preview_max_fps; separate from planning.
     drive_enabled: true # Start enables the existing VESC adapter; false is preview-only.
     # Shared native simulator/vehicle planning defaults. No mission classifier or departure cap.
-    nominal_speed_mps: 1.0
+    nominal_speed_mps: 1.2
     horizon_m: 1.2
     sample_step_m: 0.03
     safety_margin_m: 0.02
@@ -31,6 +31,6 @@ roi_vfh_test:
     avoidance_curve_enabled: 1.0
     avoidance_curve_samples: 17.0
     avoidance_length_slack_m: 0.40
-    avoidance_lane_weight: 1.5
-    avoidance_steering_weight: 0.1
-    avoidance_clearance_weight: 1.0
+    avoidance_lane_weight: 1.2
+    avoidance_steering_weight: 0.2
+    avoidance_clearance_weight: 0.7
