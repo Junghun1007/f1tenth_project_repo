@@ -52,7 +52,21 @@ struct Config {
   double avoidance_lane_weight{2.2},avoidance_steering_weight{.1};
   double clearance_weight{.6};
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
+  // Pre-Start control tuning shares the numeric editor with geometric policy.
+  // Duty/current fields are used only by the real VESC adapter, not by rollouts.
+  double target_recovery_acceleration{.8},drive_start_duty{.053},drive_rise{.04},drive_fall{.03};
+  double drive_recovery_rise{.045},drive_recovery_ramp{.20};
+  double drive_brake_max{2},drive_brake_rise{1.5},drive_brake_fall{6},drive_brake_speed_gain{.8};
   void validate() const {
+    for(double value:{target_recovery_acceleration,drive_start_duty,drive_rise,drive_fall,drive_recovery_rise,
+      drive_recovery_ramp,drive_brake_max,drive_brake_rise,drive_brake_fall,drive_brake_speed_gain})
+      if(!std::isfinite(value))throw std::invalid_argument("nonfinite acceleration/brake tuning");
+    if(target_recovery_acceleration<.05 || target_recovery_acceleration>3 || drive_start_duty<0 || drive_start_duty>1 ||
+      drive_rise<.001 || drive_rise>1 || drive_fall<.001 || drive_fall>1 || drive_recovery_rise<.001 || drive_recovery_rise>1 ||
+      drive_recovery_ramp<.01 || drive_recovery_ramp>5 || drive_brake_max<.1 || drive_brake_max>8 ||
+      drive_brake_rise<.1 || drive_brake_rise>64 || drive_brake_fall<.1 || drive_brake_fall>64 ||
+      drive_brake_speed_gain<.01 || drive_brake_speed_gain>10)
+      throw std::invalid_argument("acceleration/brake tuning outside editable bounds");
     for(double value:{hazard_hold_sec,obstacle_memory_enabled,obstacle_memory_sec,obstacle_memory_distance_m,obstacle_memory_clearance_m})
       if(!std::isfinite(value))throw std::invalid_argument("nonfinite obstacle retention parameter");
     if(hazard_hold_sec<0 || hazard_hold_sec>1 || (obstacle_memory_enabled!=0 && obstacle_memory_enabled!=1) ||

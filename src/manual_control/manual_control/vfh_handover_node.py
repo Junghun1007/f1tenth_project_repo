@@ -51,9 +51,20 @@ class VfhHandoverNode(AutoHandoverNode):
         self.servo_pub.publish(Float32(data=self._auto_servo))
 
     def _on_mode_request(self, msg):
-        token, separator, destination = msg.data.partition("|")
-        if not separator or not token or len(token) > 96 or destination not in ("AUTO", "MANUAL"):
+        fields = msg.data.split("|")
+        if len(fields) not in (2, 3):
             return
+        token, destination = fields[:2]
+        if not token or len(token) > 96 or destination not in ("AUTO", "MANUAL"):
+            return
+        if len(fields) == 3:
+            try:
+                current = float(fields[2])
+            except ValueError:
+                return
+            if not math.isfinite(current) or not 0 < current <= self.brake_profile.config.maximum_brake_current_amps:
+                return
+            self._stop_current = current
         if token == self._request_id:
             self._publish_mode()
             return

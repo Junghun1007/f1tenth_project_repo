@@ -65,6 +65,8 @@ class Node:public rclcpp::Node {
   rclcpp::Subscription<std_msgs::msg::Float64MultiArray>::SharedPtr roi_timing_sub_;
   double hazard_filter_ms_{0};
   double planner_deceleration_ceiling_{.5},speed_ceiling_{1.8};
+  double steering_ceiling_{pi/3},steering_rate_ceiling_{20};
+  DriveOptions drive_options_base_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr planner_parameters_callback_;
   bool drive_enabled_{false},vesc_connected_{false},servo_commanded_{false};
   double drive_max_age_{.30};
@@ -133,7 +135,7 @@ class Node:public rclcpp::Node {
   rclcpp::TimerBase::SharedPtr timer_,actuator_timer_;
   std::unique_ptr<auto_control::DrivingLog> driving_log_;
   double driving_log_rate_{30},last_log_at_{-1e9};
-  double obstacle_speed_cap_{1},obstacle_clear_sec_{1},recovery_acceleration_{.8};
+  double obstacle_speed_cap_{1},obstacle_clear_sec_{1};
   bool obstacle_slowdown_{true};
   std::string last_log_state_;
   std::chrono::steady_clock::time_point log_started_{std::chrono::steady_clock::now()};
@@ -152,7 +154,7 @@ class Node:public rclcpp::Node {
     if(!manual_handover_)return;
     manual_requested_=manual;handover_ack_at_.reset();handover_mode_="WAIT";
     handover_token_=std::to_string(now().nanoseconds())+"-"+std::to_string(++handover_sequence_);
-    std_msgs::msg::String request;request.data=handover_token_+(manual?"|MANUAL":"|AUTO");
+    std_msgs::msg::String request;request.data=handover_token_+(manual?"|MANUAL|":"|AUTO|")+std::to_string(config_.drive_brake_max);
     handover_request_pub_->publish(request);
   }
   bool automaticOutputReady()const {
@@ -225,14 +227,17 @@ class Node:public rclcpp::Node {
   }
   Config plannerParameters()const {
     auto result=config_;
-    for(const auto& field:plannerFields())result.*(field.member)=get_parameter(field.name).as_double();
+    for(const auto& field:plannerFields())result.*(field.member)=get_parameter(field.name).as_double()/field.scale;
     return result;
   }
   void syncPlannerParameters() {
     const auto next=plannerParameters();bool changed=false;
     for(const auto& field:plannerFields())if(next.*(field.member)!=config_.*(field.member))changed=true;
     if(!changed)return;
-    validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_);
+    validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
+    auto updated=std::make_unique<DriveController>(tunedDriveOptions(drive_options_base_,next));
+    updated->retainSteering(drive_command_.steer);drive_=std::move(updated);
+    drive_command_=drive_->update(false,0,measured_speed_,0,.001);
     config_=next;resetPolicyState();resetHazards();planner_.reset();result_=Plan{};last_grid_.reset();previous_pose_valid_=false;
     controls_.sync(config_);
   }
@@ -380,7 +385,7 @@ class Node:public rclcpp::Node {
       result_.status="LANE "+lane_reference_.state+" | "+result_.status;
       const double planned_at=now().seconds();
       speed_policy_.apply(result_,lane_missing,planned_at,measured_speed_,obstacle_slowdown_,
-        obstacle_speed_cap_,obstacle_clear_sec_,recovery_acceleration_);
+        obstacle_speed_cap_,obstacle_clear_sec_,config_.target_recovery_acceleration);
       plan_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
       plan_average_.add(plan_ms_);
       last_grid_=match;planned_lane_=paired_lane;planned_lane_stamp_.reset();
@@ -528,7 +533,7 @@ class Node:public rclcpp::Node {
       " | plan "+plan_average_.display();
     cv::putText(canvas,roi_line,{12,603},cv::FONT_HERSHEY_SIMPLEX,.34,{35,35,35},1,cv::LINE_AA);
     cv::putText(canvas,vfh_line,{12,616},cv::FONT_HERSHEY_SIMPLEX,.34,{35,35,35},1,cv::LINE_AA);
-    controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_,speed_ceiling_);
+    controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id=frame_id_;
       msg.width=canvas.cols;msg.height=canvas.rows;msg.encoding="bgr8";msg.step=canvas.cols*3;
@@ -605,15 +610,22 @@ public:
     config_.curvature_speed_control=declare_parameter("curvature_speed_control_enabled",true,fixed);
     PARAM("deceleration_mps2",deceleration);PARAM("response_delay_sec",delay);PARAM("reference_distance_m",reference_distance);
 #undef PARAM
-    config_.stanley_corner_heading=declare_parameter("stanley_corner_heading_threshold_deg",60.,fixed)*pi/180;
-    config_.max_steer=declare_parameter("max_steering_deg",30.,fixed)*pi/180;
-    config_.steer_rate=declare_parameter("steering_rate_deg_per_sec",240.,fixed)*pi/180;
+    config_.stanley_corner_heading=declare_parameter("stanley_corner_heading_threshold_deg",60.,editable)*pi/180;
+    config_.max_steer=declare_parameter("max_steering_deg",30.,editable)*pi/180;
+    config_.steer_rate=declare_parameter("steering_rate_deg_per_sec",240.,editable)*pi/180;
     config_.hist_low=declare_parameter("histogram_low",1.,editable);config_.hist_high=declare_parameter("histogram_high",2.,editable);
     config_.validate();motion_.front_axle_offset=config_.wheelbase;sensor_inbox_.motion.front_axle_offset=config_.wheelbase;
-    planner_deceleration_ceiling_=config_.deceleration;
+    steering_ceiling_=declare_parameter("steering_ceiling_deg",config_.max_steer*180/pi,fixed)*pi/180;
+    steering_rate_ceiling_=declare_parameter("steering_rate_ceiling_deg_per_sec",config_.steer_rate*180/pi,fixed)*pi/180;
+    if(!std::isfinite(steering_ceiling_) || steering_ceiling_<.05 || steering_ceiling_>pi/3 ||
+      !std::isfinite(steering_rate_ceiling_) || steering_rate_ceiling_<.1 || steering_rate_ceiling_>20)
+      throw std::invalid_argument("invalid configured steering ceilings");
+    planner_deceleration_ceiling_=declare_parameter("deceleration_ceiling_mps2",config_.deceleration,fixed);
+    if(!std::isfinite(planner_deceleration_ceiling_) || planner_deceleration_ceiling_<.1 || planner_deceleration_ceiling_>3)
+      throw std::invalid_argument("invalid configured deceleration ceiling");
     speed_ceiling_=declare_parameter("speed_ceiling_mps",1.8,fixed);
     if(!std::isfinite(speed_ceiling_) || speed_ceiling_<.05 || speed_ceiling_>3)throw std::invalid_argument("invalid configured speed ceiling");
-    validatePlannerEdits(config_,planner_deceleration_ceiling_,speed_ceiling_);controls_.reload(config_);
+    validatePlannerEdits(config_,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);controls_.reload(config_);
     max_age_=declare_parameter("max_age_sec",.30,fixed);
     if(!std::isfinite(max_age_) || max_age_<.05 || max_age_>.5)throw std::invalid_argument("invalid input age limit");
     frame_id_=declare_parameter<std::string>("frame_id","front_axle_bev",fixed);
@@ -630,13 +642,17 @@ public:
     obstacle_slowdown_=declare_parameter("obstacle_slowdown_enabled",true,fixed);
     obstacle_speed_cap_=declare_parameter("obstacle_slowdown_speed_mps",1.,fixed);
     obstacle_clear_sec_=declare_parameter("obstacle_slowdown_clear_sec",1.,fixed);
-    recovery_acceleration_=declare_parameter("target_recovery_acceleration_mps2",.8,fixed);
+    config_.target_recovery_acceleration=declare_parameter("target_recovery_acceleration_mps2",config_.target_recovery_acceleration,editable);
     if(!std::isfinite(obstacle_speed_cap_) || obstacle_speed_cap_<=0 || !std::isfinite(obstacle_clear_sec_) || obstacle_clear_sec_<0 ||
-      !std::isfinite(recovery_acceleration_) || recovery_acceleration_<=0)throw std::invalid_argument("invalid source slowdown/recovery settings");
-    DriveOptions drive_options;drive_options.max_steer=config_.max_steer;
+      !std::isfinite(config_.target_recovery_acceleration) || config_.target_recovery_acceleration<=0)throw std::invalid_argument("invalid source slowdown/recovery settings");
+    DriveOptions drive_options;drive_options.max_steer=config_.max_steer;drive_options.servo_angle_range=steering_ceiling_;
     drive_options.steering_weight=config_.steering_weight;drive_options.control_rate=config_.control_rate;
     drive_options.steer_rate=config_.steer_rate;drive_options.planning_deceleration=config_.deceleration;
-#define DRIVE_PARAM(name,field) drive_options.field=declare_parameter("drive." name,drive_options.field,fixed)
+#define DRIVE_PARAM(name,field) do { \
+  const std::string key="drive." name;const auto* tuning=plannerField(key); \
+  drive_options.field=declare_parameter(key,drive_options.field,tuning?editable:fixed); \
+  if(tuning)config_.*(tuning->member)=drive_options.field/tuning->scale; \
+} while(false)
     DRIVE_PARAM("maximum_duty",maximum_duty);DRIVE_PARAM("longitudinal_start_duty",start_duty);
     DRIVE_PARAM("duty_rise_rate_per_sec",rise);DRIVE_PARAM("duty_fall_rate_per_sec",fall);
     DRIVE_PARAM("longitudinal_pid_kp",kp);DRIVE_PARAM("longitudinal_pid_ki",ki);
@@ -660,7 +676,9 @@ public:
     DRIVE_PARAM("obstacle_brake_deceleration_margin_mps2",obstacle_deceleration_margin);
     DRIVE_PARAM("corner_brake_deceleration_margin_mps2",normal_deceleration_margin);
 #undef DRIVE_PARAM
-    drive_=std::make_unique<DriveController>(drive_options);
+    drive_options_base_=drive_options;
+    validatePlannerEdits(config_,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
+    drive_=std::make_unique<DriveController>(tunedDriveOptions(drive_options_base_,config_));controls_.reload(config_);
     drive_max_age_=declare_parameter("drive.max_command_age_sec",.30,fixed);
     if(!std::isfinite(drive_max_age_) || drive_max_age_<.05 || drive_max_age_>.3)throw std::invalid_argument("invalid drive command age");
     resume_stable_sec_=declare_parameter("input_resume_stable_sec",.5,fixed);
@@ -777,12 +795,13 @@ public:
         auto next=plannerParameters();
         for(const auto& parameter:parameters) {
           const auto* field=plannerField(parameter.get_name());
-          if(!field)throw std::invalid_argument("Only VFH planner fields are runtime-editable");
+          if(!field)throw std::invalid_argument("Only VFH tuning fields are runtime-editable");
           if(parameter.get_type()!=rclcpp::ParameterType::PARAMETER_DOUBLE)
             throw std::invalid_argument(parameter.get_name()+": expected a floating-point number");
-          next.*(field->member)=parameter.as_double();
+          next.*(field->member)=parameter.as_double()/field->scale;
         }
-        validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_);result.successful=true;
+        validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
+        tunedDriveOptions(drive_options_base_,next);result.successful=true;
       }catch(const std::exception& e){result.reason=e.what();}
       return result;
     });

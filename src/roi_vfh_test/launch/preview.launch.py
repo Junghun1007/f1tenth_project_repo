@@ -69,25 +69,25 @@ def nodes(context):
                  "speed_ceiling_mps": control["maximum_speed_mps"],
                  "nominal_speed_mps": min(test["nominal_speed_mps"], control["maximum_speed_mps"]),
                  "wheelbase_m": test.get("wheelbase_m", control["avoidance_wheelbase_m"]),
-                 "max_steering_deg": control["maximum_steering_angle_deg"],
-                 "steering_rate_deg_per_sec": control["steering_rate_limit_deg_per_sec"],
+                 "max_steering_deg": test.get("max_steering_deg", control["maximum_steering_angle_deg"]),
+                 "steering_rate_deg_per_sec": test.get("steering_rate_deg_per_sec", control["steering_rate_limit_deg_per_sec"]),
                  "vehicle_width_m": test.get("vehicle_width_m", 0.30),
                  "rear_extent_m": test.get("rear_extent_m", 0.45),
                  "front_overhang_m": test.get("front_overhang_m", 0.05),
                  "safety_margin_m": test["safety_margin_m"],
                  "obstacle_uncertainty_m": test.get("obstacle_uncertainty_m", obstacles["obstacles.avoidance.unknown_extent_m"]),
                  "sample_step_m": test["sample_step_m"],
-                 "max_curvature_per_m": obstacles["obstacles.avoidance.max_curvature_per_m"],
+                 "max_curvature_per_m": test.get("max_curvature_per_m", obstacles["obstacles.avoidance.max_curvature_per_m"]),
                  "lane_lateral_acceleration_mps2": control["maximum_lateral_acceleration_mps2"],
                  "avoidance_lateral_acceleration_mps2": obstacles["obstacles.avoidance.lateral_acceleration_mps2"],
                  "curvature_speed_control_enabled": control["curvature_speed_control_enabled"],
                  "lane_width_m": lane["centerline_lane_width_m"],
                  "lane_lookahead_m": test.get("lane_lookahead_m", control["stanley_heading_lookahead_m"]),
-                 "stanley_gain": control["stanley_gain"],
-                 "stanley_softening_speed_mps": control["stanley_softening_speed_mps"],
-                 "stanley_corner_heading_threshold_deg": control["stanley_corner_heading_threshold_deg"],
-                 "stanley_corner_opposing_correction_ratio": control["stanley_corner_opposing_correction_ratio"],
-                 "steering_current_weight": control["steering_current_weight"],
+                 "stanley_gain": test.get("stanley_gain", control["stanley_gain"]),
+                 "stanley_softening_speed_mps": test.get("stanley_softening_speed_mps", control["stanley_softening_speed_mps"]),
+                 "stanley_corner_heading_threshold_deg": test.get("stanley_corner_heading_threshold_deg", control["stanley_corner_heading_threshold_deg"]),
+                 "stanley_corner_opposing_correction_ratio": test.get("stanley_corner_opposing_correction_ratio", control["stanley_corner_opposing_correction_ratio"]),
+                 "steering_current_weight": test.get("steering_current_weight", control["steering_current_weight"]),
                  "control_rate_hz": control["control_rate_hz"],
                  "planning_rate_hz": obstacles["obstacles.avoidance.max_fps"],
                  "preview_fps": bev["preview_max_fps"],
@@ -100,7 +100,7 @@ def nodes(context):
                  "obstacle_slowdown_enabled": control["obstacle_slowdown_enabled"],
                  "obstacle_slowdown_speed_mps": control["obstacle_slowdown_speed_mps"],
                  "obstacle_slowdown_clear_sec": control["obstacle_slowdown_clear_sec"],
-                 "target_recovery_acceleration_mps2": control["corner_planning_acceleration_mps2"],
+                 "target_recovery_acceleration_mps2": test.get("target_recovery_acceleration_mps2", control["corner_planning_acceleration_mps2"]),
                  "driving_log_enabled": control["driving_log_enabled"],
                  "driving_log_rate_hz": control["driving_log_rate_hz"],
                  "driving_log_directory": control["driving_log_directory"],
@@ -147,6 +147,12 @@ def nodes(context):
             Node(package="manual_control", executable="vfh_handover_node", name="roi_vfh_handover",
                  namespace=namespace, output="screen", parameters=[str(
                      Path(get_package_share_directory("vehicle_bringup")) / "config/manual_vesc_config.yaml"), gate])]
+    test["steering_ceiling_deg"] = control["maximum_steering_angle_deg"]
+    test["steering_rate_ceiling_deg_per_sec"] = control["steering_rate_limit_deg_per_sec"]
+    editable_drive = {"longitudinal_start_duty", "duty_rise_rate_per_sec", "duty_fall_rate_per_sec",
+                      "longitudinal_recovery_duty_rise_per_sec", "longitudinal_recovery_start_ramp_sec",
+                      "brake_maximum_current_amps", "brake_current_rise_amps_per_sec",
+                      "brake_current_fall_amps_per_sec", "longitudinal_brake_speed_gain"}
     for key in ("maximum_duty", "longitudinal_start_duty", "duty_rise_rate_per_sec", "duty_fall_rate_per_sec",
                 "longitudinal_pid_kp", "longitudinal_pid_ki", "longitudinal_pid_kd", "longitudinal_pid_integral_limit",
                 "longitudinal_feedforward_offset_duty", "longitudinal_feedforward_duty_per_mps",
@@ -160,8 +166,13 @@ def nodes(context):
                 "obstacle_brake_entry_margin_mps", "obstacle_brake_exit_margin_mps",
                 "obstacle_coast_probe_sec", "corner_coast_probe_sec",
                 "obstacle_brake_deceleration_margin_mps2", "corner_brake_deceleration_margin_mps2"):
-        test["drive." + key] = control[key]
+        if key in editable_drive:
+            test.setdefault("drive." + key, control[key])
+        else:
+            test["drive." + key] = control[key]
     test["drive.max_command_age_sec"] = test["max_age_sec"]
+    test["deceleration_ceiling_mps2"] = min(control["longitudinal_planning_deceleration_mps2"],
+                                           obstacles["obstacles.avoidance.deceleration_mps2"])
     test["deceleration_mps2"] = min(test["deceleration_mps2"], control["longitudinal_planning_deceleration_mps2"],
                                     obstacles["obstacles.avoidance.deceleration_mps2"])
     # VFH response delay is user-selected; the node still applies measured input age + planning-period floor.

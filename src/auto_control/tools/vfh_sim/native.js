@@ -10,10 +10,10 @@
     const c=referenceValidate(input),rt=profile.runtime;
     if(c.speed>rt.speed_ceiling || c.deceleration>rt.deceleration_ceiling)
       throw Error('실차 YAML의 속도·감속도 상한을 초과했습니다.');
-    if(c.maxSteer>profile.defaults.maxSteer || c.steerRate>profile.defaults.steerRate)
+    if(c.maxSteer>rt.steering_ceiling_deg || c.steerRate>rt.steering_rate_ceiling_deg_per_sec)
       throw Error('실차 YAML의 조향각·조향 변화율 상한을 초과했습니다.');
     if(![0,1].includes(c.laneMemoryEnabled))throw Error('차선 방향 기억은 0 또는 1입니다.');
-    for(const key of ['rgbHz','depthHz','controlHz','imuHz','previewHz','steeringCurrentWeight'])
+    for(const key of ['rgbHz','depthHz','controlHz','imuHz','previewHz'])
       if(c[key]!==profile.defaults[key])throw Error(key+': 실차 기준 고정 설정입니다.');
     return c;
   };
@@ -63,6 +63,7 @@
         c.laneMemoryEnabled,time,l.pose.t,l.pose.x,l.pose.y,l.pose.yaw,this.pendingDepth.length];
       for(const frame of this.pendingDepth)data.push(frame.pose.t,frame.pose.x,frame.pose.y,frame.pose.yaw,frame.hazards.length,...frame.hazards);
       data.push(c.uncertainty,c.hazardHold,c.obstacleMemoryEnabled,c.obstacleMemorySeconds,c.obstacleMemoryDistance,c.obstacleMemoryClearance);
+      data.push(c.targetAcceleration,c.steeringCurrentWeight,c.stanleyGain,c.stanleySoftening,c.maxCurvature,c.cornerHeading*M.DEG,c.cornerOpposing);
       const req=new XMLHttpRequest();req.open('POST','/plan',false);req.send(data.join(' '));
       let result;
       try {result=JSON.parse(req.responseText);}catch {throw Error('로컬 C++ 계획기 응답 실패');}

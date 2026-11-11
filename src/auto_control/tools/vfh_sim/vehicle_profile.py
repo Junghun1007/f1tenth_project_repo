@@ -74,6 +74,7 @@ EDITABLE = {
     'obstacleMemorySeconds': ('obstacle_memory_sec', 'obstacle_memory_sec'),
     'obstacleMemoryDistance': ('obstacle_memory_distance_m', 'obstacle_memory_distance_m'),
     'obstacleMemoryClearance': ('obstacle_memory_clearance_m', 'obstacle_memory_clearance_m'),
+    'targetAcceleration': ('target_recovery_acceleration', 'target_recovery_acceleration_mps2'),
 }
 
 
@@ -96,7 +97,8 @@ def load_profile(params_file=None, reference_dir=None):
     defaults, cpp = {}, {}
     introduced = {'obstacle_uncertainty_m': obstacle['obstacles.avoidance.unknown_extent_m'],
                   'hazard_hold_sec': .30, 'obstacle_memory_enabled': 1., 'obstacle_memory_sec': 2.,
-                  'obstacle_memory_distance_m': 1., 'obstacle_memory_clearance_m': .10}
+                  'obstacle_memory_distance_m': 1., 'obstacle_memory_clearance_m': .10,
+                  'target_recovery_acceleration_mps2': control['corner_planning_acceleration_mps2']}
     for key, (member, parameter) in EDITABLE.items():
         value = preview[parameter] if parameter in preview else introduced[parameter]
         defaults[key] = cpp[member] = float(value)
@@ -113,26 +115,30 @@ def load_profile(params_file=None, reference_dir=None):
     ):
         defaults[key] = cpp[member] = float(preview.get(parameter, fallback))
     defaults['length'] = defaults['frontOverhang'] + defaults['rearExtent']
-    defaults['maxSteer'] = control['maximum_steering_angle_deg']
-    defaults['steerRate'] = control['steering_rate_limit_deg_per_sec']
+    defaults['maxSteer'] = preview.get('max_steering_deg', control['maximum_steering_angle_deg'])
+    defaults['steerRate'] = preview.get('steering_rate_deg_per_sec', control['steering_rate_limit_deg_per_sec'])
     defaults['laneWidth'] = cpp['lane_width'] = lane['centerline_lane_width_m']
     cpp.update(max_steer=math.radians(defaults['maxSteer']), steer_rate=math.radians(defaults['steerRate']),
                uncertainty=cpp['uncertainty'],
-               max_curvature=obstacle['obstacles.avoidance.max_curvature_per_m'],
+               max_curvature=preview.get('max_curvature_per_m', obstacle['obstacles.avoidance.max_curvature_per_m']),
                lane_lateral_acceleration=control['maximum_lateral_acceleration_mps2'],
                avoidance_lateral_acceleration=obstacle['obstacles.avoidance.lateral_acceleration_mps2'],
                curvature_speed_control=control['curvature_speed_control_enabled'],
-               stanley_gain=control['stanley_gain'], stanley_softening=control['stanley_softening_speed_mps'],
-               stanley_corner_heading=math.radians(control['stanley_corner_heading_threshold_deg']),
-               stanley_opposing=control['stanley_corner_opposing_correction_ratio'],
-               steering_weight=control['steering_current_weight'], control_rate=control['control_rate_hz'],
+               stanley_gain=preview.get('stanley_gain', control['stanley_gain']),
+               stanley_softening=preview.get('stanley_softening_speed_mps', control['stanley_softening_speed_mps']),
+               stanley_corner_heading=math.radians(preview.get('stanley_corner_heading_threshold_deg', control['stanley_corner_heading_threshold_deg'])),
+               stanley_opposing=preview.get('stanley_corner_opposing_correction_ratio', control['stanley_corner_opposing_correction_ratio']),
+               steering_weight=preview.get('steering_current_weight', control['steering_current_weight']), control_rate=control['control_rate_hz'],
                minimum_path_length=control['path_minimum_span_m'], geometry_window=control['path_geometry_window_m'])
     rgb_rates = [camera['sensor_fps'], camera['publish_fps']]
     if bev['publish_max_fps'] > 0:
         rgb_rates.append(bev['publish_max_fps'])
     defaults.update(planHz=obstacle['obstacles.avoidance.max_fps'], previewHz=bev['preview_max_fps'], rgbHz=min(rgb_rates),
                     depthHz=depth['obstacles.camera.fps'], controlHz=control['control_rate_hz'],
-                    imuHz=camera['imu_rate_hz'], steeringCurrentWeight=control['steering_current_weight'],
+                    imuHz=camera['imu_rate_hz'], steeringCurrentWeight=cpp['steering_weight'],
+                    stanleyGain=cpp['stanley_gain'], stanleySoftening=cpp['stanley_softening'],
+                    maxCurvature=cpp['max_curvature'], cornerHeading=math.degrees(cpp['stanley_corner_heading']),
+                    cornerOpposing=cpp['stanley_opposing'],
                     terrainWidth=roi['preview.width_m'], terrainForward=roi['preview.forward_m'],
                     terrainCell=roi['terrain.cell_m'], laneVisibleLength=bev['x_max_m'],
                     acceleration=control['corner_planning_acceleration_mps2'],
@@ -142,7 +148,9 @@ def load_profile(params_file=None, reference_dir=None):
                    max_age=preview['max_age_sec'], slowdown=control['obstacle_slowdown_enabled'],
                    slowdown_cap=control['obstacle_slowdown_speed_mps'],
                    clear_sec=control['obstacle_slowdown_clear_sec'],
-                   recovery_acceleration=control['corner_planning_acceleration_mps2'])
+                   recovery_acceleration=defaults['targetAcceleration'],
+                   steering_ceiling_deg=control['maximum_steering_angle_deg'],
+                   steering_rate_ceiling_deg_per_sec=control['steering_rate_limit_deg_per_sec'])
     for group in (defaults,cpp,runtime):
         if any(not isinstance(value,(int,float,bool)) or not math.isfinite(value) for value in group.values()):
             raise ValueError('required vehicle policy values must be finite scalars')

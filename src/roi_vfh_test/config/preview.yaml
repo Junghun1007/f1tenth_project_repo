@@ -40,3 +40,15 @@ roi_vfh_test:
     avoidance_lane_weight: 2.2
     avoidance_steering_weight: 0.1
     avoidance_clearance_weight: 0.6
+
+    # Acceleration/brake/steering GUI defaults come from reference/auto_control_test.yaml.
+    # Optional VFH-only overrides (units and full list: README.md).
+    # target_recovery_acceleration_mps2: 0.8
+    # drive.longitudinal_start_duty: 0.053
+    # drive.duty_rise_rate_per_sec: 0.04
+    # drive.duty_fall_rate_per_sec: 0.03
+    # drive.brake_maximum_current_amps: 2.0
+    # max_steering_deg: 30.0
+    # steering_rate_deg_per_sec: 240.0
+    # steering_current_weight: 0.4
+    # stanley_gain: 1.3

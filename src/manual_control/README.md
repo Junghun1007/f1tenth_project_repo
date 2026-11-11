@@ -79,7 +79,8 @@ battery-regen limits; first powered checks must still be done at low speed.
 
 `vfh_handover_node`는 `roi_vfh_test preview.launch.py`용 양방향 전환 어댑터다.
 기존 수동 프로필과 `HandoverState`의 최신 ERPM·정지 유지·중립 확인을 재사용한다.
-요청은 `id|MANUAL` 또는 `id|AUTO`, ACK는 같은 id와 실제 상태를 전송한다.
+요청은 `id|MANUAL|stop_current` 또는 `id|AUTO|stop_current`, ACK는 같은 id와 실제 상태를 전송한다.
+이전 두 필드 요청도 지원한다. 선택 제동 전류는 수동 프로필의 최대 전류 이하여야 한다.
 실제 actuator 출력은 이 노드 하나만 소유하며 자동 명령은 volatile 전용 입력으로 받는다.
 Stop으로 MANUAL, Start로 AUTO 복귀하며 X는 모드를 바꾸지 않는다.
 기존 `auto_handover_node`의 auto_drive 단방향 X 전환 정책은 유지한다.

@@ -170,13 +170,59 @@ VFH 설정창 2~3페이지에서 수정한다. Start 전/Stop 후에만 Apply �
 | `avoidance_clearance_weight` | 0.6 |
 | `deceleration_mps2` / `response_delay_sec` | 0.4 / 0.01 |
 
-위 항목과 차선 기억 ON/OFF·히스토그램/위험 셀 연속성 항목을 총 28개 숫자 입력, 3페이지로 표시한다.
+위 항목과 차선 기억 ON/OFF·히스토그램/위험 셀 연속성 항목을 총 46개 숫자 입력, 4페이지로 표시한다.
 출발 후 편집은 잠기고 페이지 조회는 가능하다. `lane_departure_m`은 제거했다.
 속도/감속도의 기존 차량 설정 상한은 계속 적용한다.
 
 차체는 폭 0.30m, 축간거리 0.33m, 앞차축→앞끝 0.05m, 앞차축→뒤끝 0.45m다.
 기존 `vehicle_half_length_m=0.25`를 앞차축 뒤쪽 길이로 사용하지 않는다.
 VFH YAML의 lookahead·geometry·margin·step 값은 다른 참고 YAML로 덮어쓰지 않는다.
+
+## 가속·제동·조향 튜닝 (3~4페이지)
+
+Start 전/Stop 후 기존 VFH 설정창에서 수정한다. Apply/Start는 전체 페이지를 함께 적용하고,
+출발 후에는 GUI와 ROS 파라미터 변경이 잠긴다. 처음 값은 참고 `auto_control_test.yaml`에서
+가져오고, 아래 키를 `preview.yaml`에 명시하면 VFH 전용 초기값으로 사용한다.
+화면에서는 긴 `drive.longitudinal_*` 이름을 줄여 표시하며 ROS/YAML 이름은 아래와 같다.
+
+| ROS/YAML 파라미터 | 기본값 | 작용 |
+|---|---:|---|
+| `target_recovery_acceleration_mps2` | 0.8 | 주행 중 목표 속도 회복 상한, m/s² |
+| `drive.longitudinal_start_duty` | 0.053 | 정지 출발 시 Duty. 기존 최대 Duty 이하여야 함 |
+| `drive.duty_rise_rate_per_sec` | 0.040 | 일반 Duty 상승률, Duty/s |
+| `drive.duty_fall_rate_per_sec` | 0.030 | Duty 하강률, Duty/s |
+| `drive.longitudinal_recovery_duty_rise_per_sec` | 0.045 | 제동 후 재가속 Duty 상승률 |
+| `drive.longitudinal_recovery_start_ramp_sec` | 0.20 | 저속 재출발 보조 램프 시간, 초 |
+| `drive.brake_maximum_current_amps` | 2.0 | 자동 제동·Stop 전환의 제동 전류 상한, A (0.1..8) |
+| `drive.brake_current_rise_amps_per_sec` | 1.5 | 일반 제동 전류 상승률, A/s |
+| `drive.brake_current_fall_amps_per_sec` | 6.0 | 일반 제동 전류 해제율, A/s |
+| `drive.longitudinal_brake_speed_gain` | 0.8 | 초과 속도에 따른 제동 전류 계수 |
+| `max_steering_deg` | 30 | 명령 조향각 제한, 도 |
+| `steering_rate_deg_per_sec` | 240 | 명령 조향 변화율 제한, 도/초 |
+| `steering_current_weight` | 0.40 | 새 조향 명령 가중치, 0.01..1. 클수록 빠르게 반응 |
+| `stanley_gain` | 1.3 | 차선 횡오차 보정 계수 |
+| `stanley_softening_speed_mps` | 0.30 | 저속 조향 완화, m/s. 클수록 부드러움 |
+| `max_curvature_per_m` | 2.0 | 예측 궤적 곡률 상한, 1/m. 최대 조향각도 함께 적용 |
+| `stanley_corner_heading_threshold_deg` | 60 | 코너 헤딩 조건 기준각, 도 |
+| `stanley_corner_opposing_correction_ratio` | 0.80 | 코너에서 반대 방향 횡오차 보정 비율 |
+
+`deceleration_mps2`는 기존 첫 페이지에 있으며 이제 **계획 속도 계산과 구동 제동 피드백에 함께**
+적용된다. 편집 상한은 초기 튜닝값 0.4가 아니라 차량/장애물 프로필의 감속도 상한 중 작은 값
+(현재 0.5m/s²)이다. 조향각·변화율 상한도 차량 프로필의 30도·240도/초를 넘지 않는다.
+
+적용 시 정지 상태에서 구동 제어기를 새 설정으로 구성해 PID·제동 이전 상태가 남지 않게 하고,
+가능한 범위에서 기존 정지 조향을 유지한다. 조향의 도↔라디안 변환은 ROS/UI 경계에서만 수행한다.
+서보 좌/중앙/우 보정과 보정 각도 범위는 기존 차량 프로필을 유지한다. 최대 명령 각도를 낮춰도
+서보 전체 범위로 다시 정규화하지 않으므로 실제 명령 각도도 함께 작아진다.
+
+Duty/s는 실제 가속도 m/s²와 다르다. 목표 회복 가속도는 기존 주행 중 회복 제한이며
+최초 출발 Duty 동작을 새 가속 램프로 바꾸지 않는다. Stop/입력 유실은 기존처럼 선택한 정지
+전류로 즉시 제동하며 일반 제동 전류 상승률을 기다리지 않는다. 수동 전환 게이트도 요청별
+선택 전류를 사용하지만 수동 RT/LT 자체의 프로필은 기존 manual YAML을 사용한다.
+
+최대 Duty·PID·서보 보정·안전 정지/재출발 정책은 기존 설정을 유지한다. 이번 변경에서 주행·회귀
+테스트는 수행하지 않았다. 로컬 시뮬레이터는 실제 Duty/전류 대신 기존 가감속 모델을 유지하고,
+목표 회복 가속도와 조향 관련 설정만 공통 코어·차량 모사에 연결한다.
 
 ## ROI·센서·연산 설정
 
@@ -309,7 +355,7 @@ ros2 launch roi_vfh_test preview.launch.py imu_rate_hz:=120
 
 사진 기본값: hazard 4/8/1/0.15, 추가 곡선 ON/17, 길이 여유 0.50m,
 차선/조향/장애물 여유 가중치 2.2/0.1/0.6, 위치 불확실성 0m, 깜빡임 유지 0.30초.
-유지·기억 항목을 포함한 현재 GUI는 총 28개 항목이다.
+유지·기억 항목을 포함한 현재 GUI는 제어 튜닝을 포함해 총 46개 항목이다.
 ROI는 사진의 녹색 테두리를 정규화해 x=0.01, y=0.43, width=0.98, height=0.55로
 설정했다. roi_lidar 일반 YAML과 VFH 전용 ROI YAML에 함께 적용한다.
 이번 변경은 요청에 따라 빌드·테스트 없이 소스 및 Git diff만 검토했다.

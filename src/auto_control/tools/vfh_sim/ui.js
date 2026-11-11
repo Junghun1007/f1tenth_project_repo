@@ -42,8 +42,8 @@
     ['courseLength','코스 길이(m)',4,32,1],
     ['length','차체 전장(m)',.43,1.5,.01],['frontOverhang','앞차축→앞끝(m)',0,.4,.01],
     ['rearExtent','앞차축→뒤끝(m)',.33,1,.01],['width','차체 폭(m)',.1,.8,.01],
-    ['wheelbase','축간거리(m)',.1,1,.01],['maxSteer','최대 조향각(°)',5,M.vehicleProfile.defaults.maxSteer,1],
-    ['steerRate','조향 변화율(°/s)',10,M.vehicleProfile.defaults.steerRate,10],['acceleration','차량 모델 가속도(m/s²)',.1,3,.1],
+    ['wheelbase','축간거리(m)',.1,1,.01],['maxSteer','최대 조향각(°)',5,M.vehicleProfile.runtime.steering_ceiling_deg,1],
+    ['steerRate','조향 변화율(°/s)',10,M.vehicleProfile.runtime.steering_rate_ceiling_deg_per_sec,10],['acceleration','차량 모델 가속도(m/s²)',.1,3,.1],
     ['speed','목표 속도(m/s)',.05,M.vehicleProfile.runtime.speed_ceiling,.05],
     ['planHz','계획 주기(Hz)',5,80,1],['horizon','계획 거리(m)',.3,2.5,.1],
     ['sampleStep','검사 간격(m)',.02,.08,.01],['margin','패딩(m)',0,.2,.01],
@@ -64,7 +64,14 @@
     ['obstacleMemoryEnabled','측면·후미 장애물 기억(0/1)',0,1,1],
     ['obstacleMemorySeconds','장애물 최대 기억 시간(s)',0,5,.1],
     ['obstacleMemoryDistance','차체 주변 기억 거리(m)',.1,2,.05],
-    ['obstacleMemoryClearance','후미 통과 추가 여유(m)',0,.5,.01]
+    ['obstacleMemoryClearance','후미 통과 추가 여유(m)',0,.5,.01],
+    ['targetAcceleration','목표 속도 회복 가속도(m/s²)',.05,3,.05],
+    ['steeringCurrentWeight','조향 현재값 가중치',.01,1,.01],
+    ['stanleyGain','Stanley 횡오차 보정 계수',0,10,.1],
+    ['stanleySoftening','Stanley 저속 완화 속도(m/s)',.01,3,.01],
+    ['maxCurvature','최대 곡률(1/m)',.1,10,.1],
+    ['cornerHeading','코너 헤딩 기준각(°)',0,180,1],
+    ['cornerOpposing','코너 반대 조향 보정 비율',0,.99,.01]
   ].filter(([key])=>!frenet || !['lowThreshold','highThreshold','extraCurves','clearanceWeight'].includes(key)):[
     ['courseLength','코스 길이(m)',4,32,1],
     ['speed','목표 속도(m/s)',.1,3,.1],['range','VFH 전방 거리(m)',.4,3,.1],

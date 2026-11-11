@@ -16,6 +16,7 @@ struct SimulationProfile {
   double speed_ceiling{3},deceleration_ceiling{3},max_age{.30};
   bool slowdown{true};
   double slowdown_cap{1},clear_sec{1},recovery_acceleration{.8};
+  double steering_ceiling_deg{60},steering_rate_ceiling_deg_per_sec{1000};
   std::string fingerprint;
 };
 #if __has_include("simulation_profile.hpp")
@@ -108,6 +109,8 @@ int main(int argc,char** argv) {
         }
         input>>c.uncertainty>>c.hazard_hold_sec>>c.obstacle_memory_enabled>>c.obstacle_memory_sec
           >>c.obstacle_memory_distance_m>>c.obstacle_memory_clearance_m;
+        input>>c.target_recovery_acceleration>>c.steering_weight>>c.stanley_gain>>c.stanley_softening
+          >>c.max_curvature>>c.stanley_corner_heading>>c.stanley_opposing;
       }else depth_frames.push_back({pose,grid});
       if(!input)throw std::invalid_argument("incomplete simulation input");
       input>>std::ws;
@@ -117,6 +120,8 @@ int main(int argc,char** argv) {
       if(now-pose.t<-.02 || now-pose.t>profile.max_age)throw std::invalid_argument("terrain capture expired");
       if(c.speed>profile.speed_ceiling || c.deceleration>profile.deceleration_ceiling)
         throw std::invalid_argument("speed/deceleration exceeds vehicle YAML ceiling");
+      if(c.max_steer*180/pi>profile.steering_ceiling_deg+1e-9 || c.steer_rate*180/pi>profile.steering_rate_ceiling_deg_per_sec+1e-9)
+        throw std::invalid_argument("steering exceeds vehicle YAML ceiling");
       c.delay=std::max(c.delay,std::max(0.,now-pose.t)+1/plan_hz);
       c.validate();grid.validate();
       if(sessions.size()>=8 && !sessions.count(session)) {
@@ -151,7 +156,7 @@ int main(int argc,char** argv) {
           planFrenet(state.filtered->grid,state.reference.points,c,missing);
         state.result.status="LANE "+state.reference.state+" | "+state.result.status;
         state.speed_policy.apply(state.result,missing,now,c.current_speed,profile.slowdown,
-          profile.slowdown_cap,profile.clear_sec,profile.recovery_acceleration);
+          profile.slowdown_cap,profile.clear_sec,c.target_recovery_acceleration);
         state.previous_pose=pose;state.last_depth=pose.t;state.last_lane=usable_lane;
       }
       const auto finish=Clock::now();

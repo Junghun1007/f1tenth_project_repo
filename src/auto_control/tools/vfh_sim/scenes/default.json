@@ -58,7 +58,13 @@
     "obstacleMemoryEnabled": 1.0,
     "obstacleMemorySeconds": 2.0,
     "obstacleMemoryDistance": 1.0,
-    "obstacleMemoryClearance": 0.1
+    "obstacleMemoryClearance": 0.1,
+    "targetAcceleration": 0.8,
+    "stanleyGain": 1.3,
+    "stanleySoftening": 0.3,
+    "maxCurvature": 2.0,
+    "cornerHeading": 59.99999999999999,
+    "cornerOpposing": 0.8
   },
   "obstacles": [
     {
