@@ -86,7 +86,7 @@ C++ 계획·hazard 필터 시간은 worker 내부에서 측정한다. 관측 모
 
 ## 장애물 깜빡임·측면/후미 기억 설정
 
-실차와 같은 `hazard_hold_sec=0.20`, `obstacle_memory_enabled=1`,
+실차와 같은 `hazard_hold_sec=0.30`, `obstacle_memory_enabled=1`,
 `obstacle_memory_sec=2.0`, `obstacle_memory_distance_m=1.0`,
 `obstacle_memory_clearance_m=0.10`을 기본으로 읽는다. 차체 주변 기억 거리는 차체 표면부터다.
 최대 기억시간을 넘으면 통과 전에도 해제되므로 낮은 속도에서는 이 값을 함께 조절한다.

@@ -95,7 +95,7 @@ def load_profile(params_file=None, reference_dir=None):
     roi.update(parameters(ref / 'roi_lidar_test.yaml', 'roi_lidar'))
     defaults, cpp = {}, {}
     introduced = {'obstacle_uncertainty_m': obstacle['obstacles.avoidance.unknown_extent_m'],
-                  'hazard_hold_sec': .20, 'obstacle_memory_enabled': 1., 'obstacle_memory_sec': 2.,
+                  'hazard_hold_sec': .30, 'obstacle_memory_enabled': 1., 'obstacle_memory_sec': 2.,
                   'obstacle_memory_distance_m': 1., 'obstacle_memory_clearance_m': .10}
     for key, (member, parameter) in EDITABLE.items():
         value = preview[parameter] if parameter in preview else introduced[parameter]

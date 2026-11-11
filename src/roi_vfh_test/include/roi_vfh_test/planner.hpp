@@ -37,7 +37,7 @@ struct Config {
   double margin{.02},max_steer{30*pi/180},steer_rate{240*pi/180};
   double lane_width{.65},deceleration{.4},delay{.01};
   double current_steer{0},current_speed{.7};
-  double minimum_path_length{.12},uncertainty{.01},max_curvature{2};
+  double minimum_path_length{.12},uncertainty{0},max_curvature{2};
   double lane_lateral_acceleration{1.6},avoidance_lateral_acceleration{.4};
   double stanley_gain{1.3},stanley_softening{.3},stanley_corner_heading{60*pi/180},stanley_opposing{.8};
   double geometry_window{.16},steering_weight{.4},control_rate{100};
@@ -46,11 +46,11 @@ struct Config {
   double lane_memory_enabled{1};
   double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
-  double hazard_hold_sec{.20},obstacle_memory_enabled{1},obstacle_memory_sec{2.0};
+  double hazard_hold_sec{.30},obstacle_memory_enabled{1},obstacle_memory_sec{2.0};
   double obstacle_memory_distance_m{1.0},obstacle_memory_clearance_m{.10};
-  double avoidance_curve_enabled{1},avoidance_curve_samples{17},avoidance_length_slack_m{.40};
-  double avoidance_lane_weight{1.5},avoidance_steering_weight{.1};
-  double clearance_weight{.5};
+  double avoidance_curve_enabled{1},avoidance_curve_samples{17},avoidance_length_slack_m{.50};
+  double avoidance_lane_weight{2.2},avoidance_steering_weight{.1};
+  double clearance_weight{.6};
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
   void validate() const {
     for(double value:{hazard_hold_sec,obstacle_memory_enabled,obstacle_memory_sec,obstacle_memory_distance_m,obstacle_memory_clearance_m})

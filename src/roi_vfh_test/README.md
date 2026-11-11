@@ -96,7 +96,7 @@ UART 속도 환산만 필요하면 `input_mode:=ros_topic`으로 CAN 계측을 �
 현재 차선 추종의 차체 궤적이 비어 있으면 Stanley로 추종·복귀한다. 짧은 현재 차선의
 끝을 넘어서는 예측은 마지막 접선으로 이어서 수행하고, 전체 예측 궤적의 장애물 충돌을 검사한다.
 장애물이 궤적을 막으면 VFH로 차선 밖 회피를 허용하며, 차선 복귀 가중치를 기본
-1.5를 사용한다. 차선 복귀는 선호이며 장애물 충돌 검사를 우회하지 않는다.
+2.2를 사용한다. 차선 복귀는 선호이며 장애물 충돌 검사를 우회하지 않는다.
 
 `lane_memory_enabled`는 기본 `1.0`(ON), `0.0`은 OFF다. Stop → VFH parameters
 첫 페이지에서 변경하고 Apply → Start로 적용한다. YAML 또는 Stop 상태의
@@ -145,7 +145,7 @@ CSV에는 `hazard_held`, `hazard_remembered`를 기록한다. 후방 전체가 �
 
 | 파라미터 | 기본값 | 설정 범위 |
 |---|---:|---:|
-| `hazard_hold_sec` | 0.20초 | 0..1초 |
+| `hazard_hold_sec` | 0.30초 | 0..1초 |
 | `obstacle_memory_enabled` | 1 | 0/1 |
 | `obstacle_memory_sec` | 2.0초 | 0..5초 |
 | `obstacle_memory_distance_m` | 1.0m | 0.1..2m (현재 차체 표면부터) |
@@ -164,10 +164,10 @@ VFH 설정창 2~3페이지에서 수정한다. Start 전/Stop 후에만 Apply �
 | `sample_step_m` | 0.03 |
 | `lane_lookahead_m` | 0.05 |
 | `avoidance_curve_samples` | 17 |
-| `avoidance_length_slack_m` | 0.40 |
-| `avoidance_lane_weight` | 1.5 |
+| `avoidance_length_slack_m` | 0.50 |
+| `avoidance_lane_weight` | 2.2 |
 | `avoidance_steering_weight` | 0.1 |
-| `avoidance_clearance_weight` | 0.5 |
+| `avoidance_clearance_weight` | 0.6 |
 | `deceleration_mps2` / `response_delay_sec` | 0.4 / 0.01 |
 
 위 항목과 차선 기억 ON/OFF·히스토그램/위험 셀 연속성 항목을 총 28개 숫자 입력, 3페이지로 표시한다.
@@ -303,12 +303,13 @@ ros2 launch roi_vfh_test preview.launch.py imu_rate_hz:=120
 
 ## 2026-11-11 GUI·기본 ROI 갱신
 
-`obstacle_uncertainty_m`을 VFH 설정창에 추가했다. 기본 0.01m, 편집 범위
+`obstacle_uncertainty_m`을 VFH 설정창에 추가했다. 현재 사진 기본값 0m, 편집 범위
 0..0.5m이며 Start 전/Stop 후에만 편집할 수 있다. launch는 preview.yaml의
 값을 우선하고, 키가 없는 이전 파일만 obstacles.avoidance.unknown_extent_m로 보완한다.
 
-사진 기본값: hazard 4/8/1/0.15, 추가 곡선 ON/17, 길이 여유 0.40m,
-차선/조향/장애물 여유 가중치 1.5/0.1/0.5. 유지·기억 항목을 포함한 현재 GUI는 총 28개 항목이다.
+사진 기본값: hazard 4/8/1/0.15, 추가 곡선 ON/17, 길이 여유 0.50m,
+차선/조향/장애물 여유 가중치 2.2/0.1/0.6, 위치 불확실성 0m, 깜빡임 유지 0.30초.
+유지·기억 항목을 포함한 현재 GUI는 총 28개 항목이다.
 ROI는 사진의 녹색 테두리를 정규화해 x=0.01, y=0.43, width=0.98, height=0.55로
 설정했다. roi_lidar 일반 YAML과 VFH 전용 ROI YAML에 함께 적용한다.
 이번 변경은 요청에 따라 빌드·테스트 없이 소스 및 Git diff만 검토했다.
