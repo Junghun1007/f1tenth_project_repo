@@ -35,7 +35,7 @@ inline bool retainedTerrain(int value) {return value==held_hazard || value==reme
 struct Config {
   double speed{1.2},horizon{1.2},step{.03},wheelbase{.33},width{.30},rear{.45},front{.05};
   double margin{.02},max_steer{30*pi/180},steer_rate{240*pi/180};
-  double lane_width{.65},deceleration{.4},delay{.10};
+  double lane_width{.65},deceleration{.4},delay{.01};
   double current_steer{0},current_speed{.7};
   double minimum_path_length{.12},uncertainty{.01},max_curvature{2};
   double lane_lateral_acceleration{1.6},avoidance_lateral_acceleration{.4};

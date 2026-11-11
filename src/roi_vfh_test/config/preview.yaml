@@ -22,7 +22,7 @@ roi_vfh_test:
     imu_timeout_sec: 0.25 # IMU capture and receipt freshness; seconds.
     input_resume_stable_sec: 0.50
     deceleration_mps2: 0.4
-    response_delay_sec: 0.10
+    response_delay_sec: 0.01
     lane_memory_enabled: 1.0 # 0.0=off (no saved lane direction), 1.0=on; editable after Stop.
     hazard_filter_enabled: 1.0
     hazard_confirm_frames: 4.0

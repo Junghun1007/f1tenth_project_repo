@@ -168,7 +168,7 @@ VFH 설정창 2~3페이지에서 수정한다. Start 전/Stop 후에만 Apply �
 | `avoidance_lane_weight` | 1.5 |
 | `avoidance_steering_weight` | 0.1 |
 | `avoidance_clearance_weight` | 0.5 |
-| `deceleration_mps2` / `response_delay_sec` | 0.4 / 0.10 |
+| `deceleration_mps2` / `response_delay_sec` | 0.4 / 0.01 |
 
 위 항목과 차선 기억 ON/OFF·히스토그램/위험 셀 연속성 항목을 총 28개 숫자 입력, 3페이지로 표시한다.
 출발 후 편집은 잠기고 페이지 조회는 가능하다. `lane_departure_m`은 제거했다.
