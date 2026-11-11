@@ -10,7 +10,24 @@
   let jetsonRatio=Number(saved?.privateContent?.jetsonRatio)||baseline?.jetson?.timeRatio||4;
   let lastPerfAt=-Infinity;const renderTimes=[];
   let config={...M.defaults,...M.trackDefaults,trackLayout:'loop',...initial?.config}, objects=initial?.obstacles?JSON.parse(JSON.stringify(initial.obstacles)):M.presets('track'), markers=[], selected=null, sim, running=false, drag=null, lastFrame=0, accumulator=0;
-  let frameRequest=null;
+  let frameRequest=null,lastCanvasFrame=0;
+  if(M.native) {
+    const source=el('[data-out="policy-source"]'),p=M.vehicleProfile;
+    const summary=`실차 YAML 기준 · RGB ${config.rgbHz} / Depth ${config.depthHz} / 계획 ${config.planHz} / 구동 ${config.controlHz} Hz · 정상 입력 · 정책 ${p.fingerprint}`;
+    source.textContent=summary;
+    setInterval(async()=>{
+      try {
+        const response=await fetch('/profile',{cache:'no-store'}),current=await response.json();
+        if(current.restartRequired || current.fingerprint!==p.fingerprint) {
+          stopFrames();
+          source.textContent=current.restartRequired ?
+            '실차 정책 파일이 바뀌었습니다. 배치를 JSON으로 보관한 뒤 시뮬레이터 서버를 재시작하세요.':
+            '시뮬레이터가 갱신됐습니다. 배치를 JSON으로 보관한 뒤 페이지를 새로고침하세요.';
+          source.style.color='var(--destructive)';source.dataset.stale='true';
+        }
+      }catch { /* A stopped server is reported by the next planning request. */ }
+    },3000);
+  }
   let worldMap={scale:1,left:38,top:20,height:240};
   const frenet=M.native && window.simPlanner==="frenet";
   el('[data-act="track-tuning"]').hidden=!M.native || frenet;
@@ -25,13 +42,15 @@
     ['courseLength','코스 길이(m)',4,32,1],
     ['length','차체 전장(m)',.43,1.5,.01],['frontOverhang','앞차축→앞끝(m)',0,.4,.01],
     ['rearExtent','앞차축→뒤끝(m)',.33,1,.01],['width','차체 폭(m)',.1,.8,.01],
-    ['speed','목표 속도(m/s)',.05,1.8,.05],
-    ['planHz','계획 주기(Hz)',5,40,1],['horizon','계획 거리(m)',.3,2.5,.1],
+    ['wheelbase','축간거리(m)',.1,1,.01],['maxSteer','최대 조향각(°)',5,M.vehicleProfile.defaults.maxSteer,1],
+    ['steerRate','조향 변화율(°/s)',10,M.vehicleProfile.defaults.steerRate,10],['acceleration','차량 모델 가속도(m/s²)',.1,3,.1],
+    ['speed','목표 속도(m/s)',.05,M.vehicleProfile.runtime.speed_ceiling,.05],
+    ['planHz','계획 주기(Hz)',5,80,1],['horizon','계획 거리(m)',.3,2.5,.1],
     ['sampleStep','검사 간격(m)',.02,.08,.01],['margin','패딩(m)',0,.2,.01],
     ['laneLookahead','차선 lookahead(m)',.01,.8,.01],
     ['referenceDistance','회피 목표 거리(m)',.3,3,.1],['lowThreshold','히스토그램 하한',0,999,.1],
-    ['highThreshold','히스토그램 상한',.001,1000,.1],['deceleration','계획 감속도(m/s²)',.1,.5,.05],
-    ['responseDelay','입력 반응 지연(s)',0,1,.01],['hazardEnabled','연속성 필터(0/1)',0,1,1],
+    ['highThreshold','히스토그램 상한',.001,1000,.1],['deceleration','계획 감속도(m/s²)',.1,M.vehicleProfile.runtime.deceleration_ceiling,.05],
+    ['responseDelay','입력 반응 지연(s)',0,1,.01],['laneMemoryEnabled','차선 방향 기억(0/1)',0,1,1],['hazardEnabled','연속성 필터(0/1)',0,1,1],
     ['hazardFrames','확인 프레임',1,5,1],['hazardSmall','작은 덩어리 최대 셀',1,50,1],
     ['hazardRadius','대응 반경(셀)',0,2,1],['hazardGap','최대 관측 간격(s)',.02,.5,.01],
     ['extraCurves','추가 곡선(0/1)',0,1,1],['curveSamples','곡선 샘플(홀수)',3,17,2],
@@ -59,7 +78,7 @@
     ['corridorLookahead','통로 추종 전방 주시(m)',.3,1.5,.05]
   ];
   function parseScene(state) {
-    if(!state||!(M.native?[1,2,3,4]:[1,2]).includes(state.version))throw Error('지원하지 않는 장면 버전입니다.');
+    if(!state||!(M.native?[1,2,3,4,5]:[1,2]).includes(state.version))throw Error('지원하지 않는 장면 버전입니다.');
     const migrated={...state.config};
     if(M.native)for(const key of ['corridorEnabled','corridorWeight','corridorMinLength','corridorMaxWidth','departure','laneFadeSeconds','laneFadeDistance'])delete migrated[key];
     if(state.version===1&&migrated.courseLength===8)migrated.courseLength=16;
@@ -93,8 +112,8 @@
   }
   function snapshot() {
     const settings={...config};
-    if(M.native)delete settings.departure;
-    return {version:M.native?4:2,config:settings,obstacles:objects,...(marksEnabled?{markers}: {})};
+    if(M.native)for(const key of ['departure','range','angularStep','memoryTime','memoryDistance','targetWeight','previousWeight','entryReferenceWeight','approachSpeed','corridorLookahead','laneTrustSeconds','laneTrustLength','laneTrustOffset','laneTrustAngle'])delete settings[key];
+    return {version:M.native?5:2,config:settings,obstacles:objects,...(marksEnabled?{markers}: {})};
   }
   function save() {
     const data=snapshot();
@@ -114,6 +133,9 @@
     return planningProfiles.find(p=>Object.entries(p.config).every(([key,value])=>typeof value==='number'?Math.abs(config[key]-value)<1e-9:config[key]===value));
   }
   function profileSettings() {
+    if(M.native && !el('[data-out="policy-source"]').dataset.stale) {
+      el('[data-out="policy-source"]').textContent=`실차 YAML 기준 · RGB ${config.rgbHz} / Depth ${config.depthHz} / 계획 ${config.planHz} / 구동 ${config.controlHz} Hz · 정상 입력 · 정책 ${M.vehicleProfile.fingerprint}`;
+    }
     if(!planningProfiles.length || (M.native && frenet)) {
       el('[data-field="planning-profile"]').closest('.viz-controls').hidden=true;
       el('[data-out="profile-detail"]').textContent='VFH 기본 설정 · '+config.speed.toFixed(2)+'m/s · 계획 '+config.horizon.toFixed(2)+'m · 차선 이탈 한도 없음 · 마킹은 평가 전용';
@@ -150,7 +172,13 @@
       `terrain 폭 ${config.terrainWidth}m · 전방 ${config.terrainForward}m`:'가로 1.2m · 전방 3m';
     profileSettings();
   }
-  function stopFrames() {running=false;if(frameRequest!==null)cancelAnimationFrame(frameRequest);frameRequest=null;lastFrame=0;}
+  function parameterLock() {
+    for(const input of all('[data-param]'))input.disabled=running || (input.dataset.param==='courseLength' && config.trackLayout==='loop');
+    el('[data-act="apply"]').disabled=running;
+    el('[data-act="track-tuning"]').disabled=running;
+    el('[data-field="planning-profile"]').disabled=running;
+  }
+  function stopFrames() {running=false;parameterLock();if(frameRequest!==null)cancelAnimationFrame(frameRequest);frameRequest=null;lastFrame=0;}
   function reset() {stopFrames();el('[data-act="play"]').textContent='주행 시작';sim=new M.Simulation(config,objects, ...(marksEnabled?[markers]:[]));accumulator=0;lastPerfAt=-Infinity;renderTimes.length=0;draw();}
   function objectFields() {
     const o=selectedItem();
@@ -350,7 +378,7 @@
     el('[data-out="error"]').textContent='';
     try {
       if(action==='play'){if(sim.done||sim.collided)reset();if(running){stopFrames();el('[data-act="play"]').textContent='주행 계속';save();}
-        else{running=true;lastFrame=0;el('[data-act="play"]').textContent='일시 정지';frameRequest=requestAnimationFrame(frame);}}
+        else{running=true;parameterLock();lastFrame=0;el('[data-act="play"]').textContent='일시 정지';frameRequest=requestAnimationFrame(frame);}}
       if(action==='step'){stopFrames();el('[data-act="play"]').textContent='주행 계속';for(let i=0;i<10;i++)sim.step();draw();save();}
       if(action==='reset'){reset();save();}
       if(action==='delete'){el('[data-field="preset"]').value='user';objects=objects.filter(o=>o.id!==selected);markers=markers.filter(m=>m.id!==selected);selected=null;reset();save();}
@@ -390,13 +418,6 @@
   });
   el('[data-field="lane-visible"]').addEventListener('change',event=>{
     config.laneVisible=event.target.checked;sim.c.laneVisible=config.laneVisible;
-    sim.senseAndPlan();draw();save();
-  });
-  document.querySelector("#vfh-course-sim").addEventListener('change',event=>{
-    if(!M.native || event.target.dataset.param!=='laneVisibleLength')return;
-    const value=Number(event.target.value);
-    if(!Number.isFinite(value)||value<.05||value>3)return;
-    config.laneVisibleLength=value;sim.c.laneVisibleLength=value;
     sim.senseAndPlan();draw();save();
   });
   el('[data-field="jetson-ratio"]').addEventListener('input',event=>{
@@ -447,7 +468,9 @@
     const delta=lastFrame?Math.min(.08,(time-lastFrame)/1000):0;lastFrame=time;accumulator+=delta;
     try {while(accumulator>=.01&&!sim.done&&!sim.collided){sim.step(.01);accumulator-=.01;}}
     catch(error){stopFrames();el('[data-act="play"]').textContent='주행 계속';fail(error);return;}
-    draw();
+    if(!M.native || time-lastCanvasFrame>=1000/config.previewHz || sim.done || sim.collided) {
+      draw();lastCanvasFrame=time;
+    }
     if(sim.done||sim.collided){stopFrames();el('[data-act="play"]').textContent='다시 주행';save();}
     else if(running)frameRequest=requestAnimationFrame(frame);
   }

@@ -2,6 +2,7 @@
 #include "roi_vfh_test/motion.hpp"
 #include "roi_vfh_test/hazard_filter.hpp"
 #include "roi_vfh_test/policy_state.hpp"
+#include "roi_vfh_test/speed_policy.hpp"
 #include "roi_vfh_test/render.hpp"
 #include "roi_vfh_test/drive.hpp"
 #include "roi_vfh_test/controls.hpp"
@@ -31,7 +32,7 @@
 #include <thread>
 namespace roi_vfh_test {
 class Node:public rclcpp::Node {
-  Config config_; Planner planner_; Plan result_;
+  Config config_; Planner planner_; Plan result_;TargetSpeedPolicy speed_policy_;
   LaneMemory lane_memory_;LaneReference lane_reference_;
   PlannerControls controls_;
   HazardFilter hazard_filter_;HazardStats hazard_stats_;
@@ -123,7 +124,7 @@ class Node:public rclcpp::Node {
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr image_pub_;
   rclcpp::TimerBase::SharedPtr timer_,actuator_timer_;
   std::unique_ptr<auto_control::DrivingLog> driving_log_;
-  double driving_log_rate_{30},last_log_at_{-1e9},last_avoidance_at_{-1e9},last_target_{0},last_plan_at_{-1e9};
+  double driving_log_rate_{30},last_log_at_{-1e9};
   double obstacle_speed_cap_{1},obstacle_clear_sec_{1},recovery_acceleration_{.8};
   bool obstacle_slowdown_{true};
   std::string last_log_state_;
@@ -149,12 +150,12 @@ class Node:public rclcpp::Node {
   }
   void stop(const std::string& reason) {
     controls_.blur();controls_.message("Stopped. ROI and VFH parameters unlocked.");
-    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();resetHazards();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;status_=reason;publishLock(false);applyDrive(false);
+    requested_=false;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();resetHazards();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();speed_policy_.reset();status_=reason;publishLock(false);applyDrive(false);
   }
   void start() {
     if(!applyPlannerEdits())return;
     controls_.show(false);
-    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();resetHazards();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+    requested_=true;locked_=false;suspended_=false;healthy_since_.reset();last_recovery_check_.reset();planned_lane_.reset();resetPolicyState();resetHazards();planner_.reset();previous_pose_valid_=false;result_=Plan{};last_grid_.reset();speed_policy_.reset();
     status_="WAIT: ROI parameter lock acknowledgement";publishLock(true);
   }
   bool active()const {return requested_ && locked_ && !suspended_;}
@@ -165,7 +166,7 @@ class Node:public rclcpp::Node {
       // Keep geometric memories while odometry remains continuous. A changed
       // motion generation clears them before the next plan.
       result_=Plan{};last_grid_.reset();planned_lane_.reset();resetHazards();planner_.reset();previous_pose_valid_=false;
-      last_target_=0;last_plan_at_=-1e9;last_avoidance_at_=-1e9;
+      speed_policy_.reset();
     }
     suspended_=true;healthy_since_.reset();last_recovery_check_.reset();
     status_="WAIT input: "+reason;
@@ -353,11 +354,8 @@ class Node:public rclcpp::Node {
       result_=planner_.plan(display_,lane_points_,working,lane_missing);
       result_.status="LANE "+lane_reference_.state+" | "+result_.status;
       const double planned_at=now().seconds();
-      if(result_.reference_blocked || (result_.used_vfh && !lane_missing))last_avoidance_at_=planned_at;
-      if(obstacle_slowdown_ && planned_at-last_avoidance_at_<=obstacle_clear_sec_)result_.speed=std::min(result_.speed,obstacle_speed_cap_);
-      if(last_target_>0 && std::abs(measured_speed_)>=.05 && planned_at>last_plan_at_)
-        result_.speed=std::min(result_.speed,last_target_+recovery_acceleration_*(planned_at-last_plan_at_));
-      last_target_=result_.speed;last_plan_at_=planned_at;
+      speed_policy_.apply(result_,lane_missing,planned_at,measured_speed_,obstacle_slowdown_,
+        obstacle_speed_cap_,obstacle_clear_sec_,recovery_acceleration_);
       plan_ms_=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
       plan_average_.add(plan_ms_);
       last_grid_=match;planned_lane_=paired_lane;planned_lane_stamp_.reset();

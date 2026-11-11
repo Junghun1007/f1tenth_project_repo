@@ -29,7 +29,7 @@
       c.frontOverhang + c.wheelbase > c.length || c.maxSteer < 5 || c.maxSteer > 45 ||
       c.steerRate <= 0 || c.speed <= 0 || c.speed > 3 || c.acceleration <= 0 || c.deceleration <= 0 ||
       c.range < .4 || c.range > 3 || c.angularStep < .5 || c.angularStep > 10 ||
-      c.planHz < 5 || c.planHz > 40 || c.horizon < .3 || c.horizon > 3 ||
+      c.planHz < 5 || c.planHz > 100 || c.horizon < .3 || c.horizon > 3 ||
       c.margin < 0 || c.margin > .3 || c.laneWidth < .3 || c.departure < 0 ||
       c.sampleStep < .01 || c.sampleStep > .10 || c.lowThreshold < 0 ||
       c.highThreshold <= c.lowThreshold || c.memoryTime <= 0 || c.memoryDistance <= 0 ||
@@ -441,8 +441,8 @@
       const stepStarted=performance.now();
       if(this.time+1e-8>=this.nextPlan)this.senseAndPlan();
       const integrated=performance.now();
-      const p=this.pose,c=this.c,r=this.result;
-      const steeringDelta=c.terrainWidth?(r.speed>0?(1-Math.pow(.6,dt*100))*(r.steer-p.steer):0):r.steer-p.steer;
+      const p=this.pose,c=this.c,r=this.actuation||this.result;
+      const steeringDelta=this.planner.separateActuation?0:c.terrainWidth?(r.speed>0?(1-Math.pow(.6,dt*100))*(r.steer-p.steer):0):r.steer-p.steer;
       p.steer+=clamp(steeringDelta,-c.steerRate*DEG*dt,c.steerRate*DEG*dt);
       p.v+=clamp(r.speed-p.v,-c.deceleration*dt,c.acceleration*dt);
       // Subcentimetre integration checks the swept motion, not only plan points.

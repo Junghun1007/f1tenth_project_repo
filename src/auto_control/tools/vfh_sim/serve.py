@@ -6,14 +6,19 @@ from pathlib import Path
 import subprocess
 import tempfile
 from threading import Lock
+from vehicle_profile import load_profile, fingerprint, write_header
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE.parents[2]
 
 
-def build_planner(binary):
+def build_planner(binary, profile=None):
+    profile=profile or load_profile()
+    profile.setdefault("fingerprint",fingerprint(profile))
+    write_header(Path(binary).parent / "simulation_profile.hpp",profile)
     subprocess.run([
         "c++", "-std=c++17", "-O3", "-DNDEBUG",
+        "-I" + str(Path(binary).parent),
         "-I" + str(SRC / "roi_vfh_test/include"),
         "-I" + str(SRC / "auto_control/include"),
         str(HERE / "native_planner.cpp"),
@@ -22,7 +27,9 @@ def build_planner(binary):
     ], check=True)
 
 
-def page(planner, scene=None):
+def page(planner, scene=None, profile=None):
+    profile=profile or load_profile()
+    profile.setdefault("fingerprint",fingerprint(profile))
     title = "프레넷" if planner == "frenet" else "VFH+"
     fragment = (HERE / "view.html").read_text()
     scripts = {
@@ -44,7 +51,8 @@ def page(planner, scene=None):
             '--viz-series-2:#d04435;--viz-series-3:#dd8a24;--destructive:#af1624}'
             'body{font:15px system-ui;margin:24px}button,input,select{font:inherit}'
             'button{padding:5px 9px}td,th{padding:4px 10px;text-align:left}</style>'
-            f'<h1>{title} 로컬 시뮬레이션</h1><script>window.simPlanner={planner!r};</script>' + fragment + '</html>').encode()
+            f'<h1>{title} 로컬 시뮬레이션</h1><script>window.simPlanner={planner!r};'
+            f'window.VFHSimVehicleProfile={json.dumps(profile,ensure_ascii=True)};</script>' + fragment + '</html>').encode()
 
 
 def main():
@@ -52,12 +60,19 @@ def main():
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--planner", choices=("frenet", "vfh"), default="vfh")
     parser.add_argument("--scene", type=Path, help="Load a saved obstacle/mark scene and its configuration")
+    parser.add_argument("--params-file",type=Path,help="ROI VFH preview YAML (defaults to the real vehicle profile)")
+    parser.add_argument("--reference-dir",type=Path,help="ROI VFH reference YAML directory")
     args = parser.parse_args()
+    profile=load_profile(args.params_file,args.reference_dir)
+    profile["fingerprint"]=fingerprint(profile)
     scene=json.loads(args.scene.read_text(encoding="utf-8")) if args.scene else None
-    document = page(args.planner,scene)
+    if args.scene and args.scene.resolve()==(HERE/"scenes/default.json").resolve():
+        # The bundled layout carries no separate tuning authority.
+        scene["config"].update(profile["defaults"])
+    document = page(args.planner,scene,profile)
     with tempfile.TemporaryDirectory(prefix="vfh-sim-") as temp:
         binary = Path(temp) / "planner"
-        build_planner(binary)
+        build_planner(binary,profile)
         with subprocess.Popen([str(binary), args.planner], stdin=subprocess.PIPE, stdout=subprocess.PIPE) as worker:
             worker_lock = Lock()
 
@@ -66,12 +81,22 @@ def main():
                     self.send_response(status)
                     self.send_header("Content-Type", kind)
                     self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control","no-store")
                     self.end_headers()
                     self.wfile.write(data)
 
                 def do_GET(self):
                     if self.path == "/":
                         self.reply(200, "text/html; charset=utf-8", document)
+                    elif self.path == "/profile":
+                        try:
+                            current=load_profile(args.params_file,args.reference_dir)
+                            restart=fingerprint(current)!=profile["fingerprint"]
+                        except (OSError,ValueError,KeyError):
+                            restart=True
+                        self.reply(200,"application/json",json.dumps({
+                            "fingerprint":profile["fingerprint"],"restartRequired":restart,
+                            "defaults":profile["defaults"]}).encode())
                     else:
                         self.send_error(404)
 
@@ -84,6 +109,9 @@ def main():
                         self.send_error(400)
                         return
                     payload = self.rfile.read(int(size))
+                    if not payload.startswith(("V2 "+profile["fingerprint"]+" ").encode()):
+                        self.reply(409,"application/json",json.dumps({"error":"서버/페이지 정책 버전이 다릅니다. 배치를 JSON으로 보관한 뒤 페이지를 새로고침하세요."},ensure_ascii=False).encode())
+                        return
                     if b"\n" in payload or b"\r" in payload:
                         self.send_error(400)
                         return
@@ -100,7 +128,7 @@ def main():
                     self.reply(200, "application/json", result)
 
                 def log_message(self, format, *args):
-                    if self.path != "/plan":
+                    if self.path not in ("/plan","/profile"):
                         super().log_message(format, *args)
 
             with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
