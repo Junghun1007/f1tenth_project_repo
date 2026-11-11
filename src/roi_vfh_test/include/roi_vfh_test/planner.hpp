@@ -30,6 +30,8 @@ struct Grid {
 };
 // Match the preview: mint/gray are traversable; only red occupancy (>=50) blocks.
 inline bool blockedTerrain(int value) {return value>=50;}
+constexpr std::int8_t held_hazard=70,remembered_hazard=80;
+inline bool retainedTerrain(int value) {return value==held_hazard || value==remembered_hazard;}
 struct Config {
   double speed{1.2},horizon{1.2},step{.03},wheelbase{.33},width{.30},rear{.45},front{.05};
   double margin{.02},max_steer{30*pi/180},steer_rate{240*pi/180};
@@ -44,11 +46,19 @@ struct Config {
   double lane_memory_enabled{1};
   double hazard_filter_enabled{1},hazard_confirm_frames{4},hazard_small_max_cells{8};
   double hazard_match_radius_cells{1},hazard_max_gap_sec{.15};
+  double hazard_hold_sec{.20},obstacle_memory_enabled{1},obstacle_memory_sec{2.0};
+  double obstacle_memory_distance_m{1.0},obstacle_memory_clearance_m{.10};
   double avoidance_curve_enabled{1},avoidance_curve_samples{17},avoidance_length_slack_m{.40};
   double avoidance_lane_weight{1.5},avoidance_steering_weight{.1};
   double clearance_weight{.5};
   double reference_distance{1.0},lane_lookahead{.05},hist_low{1.0},hist_high{2.0};
   void validate() const {
+    for(double value:{hazard_hold_sec,obstacle_memory_enabled,obstacle_memory_sec,obstacle_memory_distance_m,obstacle_memory_clearance_m})
+      if(!std::isfinite(value))throw std::invalid_argument("nonfinite obstacle retention parameter");
+    if(hazard_hold_sec<0 || hazard_hold_sec>1 || (obstacle_memory_enabled!=0 && obstacle_memory_enabled!=1) ||
+      obstacle_memory_sec<0 || obstacle_memory_sec>5 || obstacle_memory_distance_m<.1 || obstacle_memory_distance_m>2 ||
+      obstacle_memory_clearance_m<0 || obstacle_memory_clearance_m>.5)
+      throw std::invalid_argument("obstacle retention: hold 0..1s, memory 0/1, age 0..5s, distance .1..2m, rear clearance 0..0.5m");
     if(!std::isfinite(lane_memory_enabled) || (lane_memory_enabled!=0 && lane_memory_enabled!=1))
       throw std::invalid_argument("lane_memory_enabled must be 0 or 1");
     for (double a:{speed,horizon,step,wheelbase,width,rear,front,margin,max_steer,steer_rate,
@@ -187,8 +197,10 @@ inline Block footprintBlock(const Grid& g,const Config& c,const Pose& p) {
     if(std::abs(dx)>x_radius+cell_half || std::abs(dy)>y_radius+cell_half ||
       std::abs(dx*cs+dy*sn)>longitudinal_half+cell_projection ||
       std::abs(-dx*sn+dy*cs)>half+cell_projection)continue;
-    if(x<0 || (x<=c.front && std::abs(y)<=c.width/2))continue;
     const auto index=std::size_t(v)*g.width+u;
+    // Ignore fresh self-returns only. Retained hazards behind the front axle
+    // remain collision evidence, including when motion uncertainty overlaps us.
+    if(!retainedTerrain(g.cells[index]) && x>=-c.rear && x<=c.front && std::abs(y)<=c.width/2)continue;
     if(blockedTerrain(g.cells[index]))return Block::Hazard;
   }
   return Block::None;
@@ -203,7 +215,7 @@ struct Plan {
   std::string status{"STOP: no feasible route"};
 };
 // VFH+ four-stage histogram reduction, followed by Ackermann rollout verification.
-// The preview explicitly reports that negative-X (rear) terrain is unobserved.
+// Retained observations behind the front axle also enter footprint verification.
 class Planner {
   std::array<bool,61> binary_{};
   double previous_angle_{0},previous_command_{0},binary_rotation_residual_{0};

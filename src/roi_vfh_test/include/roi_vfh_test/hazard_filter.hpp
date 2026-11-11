@@ -5,6 +5,7 @@
 namespace roi_vfh_test {
 struct HazardStats {
   std::size_t raw{},confirmed{},pending{},immediate{};
+  std::size_t held{},remembered{};
   bool enabled{false},motion_ready{false};
 };
 struct HazardResult {Grid grid;HazardStats stats;};

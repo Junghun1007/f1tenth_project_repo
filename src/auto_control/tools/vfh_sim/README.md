@@ -41,11 +41,13 @@ python3 src/auto_control/tools/vfh_sim/serve.py --port 8785 --planner vfh \
 - `planner.hpp`: 차선 직접 추종, VFH+ 히스토그램, 추가 곡선, 차체·패딩 검사, 후보 점수/속도 제한.
 - `policy_state.hpp`: 차선 유실 시 마지막 방향 기억. ON/OFF도 같은 입력으로 전달한다.
 - `hazard_filter.hpp`: 작은 hazard의 연속 관측 확인과 자차 이동 보정.
+- `obstacle_memory.hpp`: 확정 장애물의 깜빡임 유지·근거리 측면/후미 기억 및 해제.
 - `speed_policy.hpp`: 장애물 감속 유지와 목표 속도 회복 제한. ROS와 시뮬레이터가 같은 함수를 호출한다.
 - `auto_control/control_core.cpp`: Stanley 등 공통 제어 기하.
 
 유도 통로를 별도로 분류하거나 차선 이탈 거리를 제한하지 않는다. 회색 미관측 셀과
-격자 바깥은 통과 가능으로 취급하며, 장애물 위치 기억은 현재 실차처럼 사용하지 않는다.
+격자 바깥은 통과 가능으로 취급한다. 확정 관측했던 위험 셀은 실차와 같은 짧은 기억을 사용해
+측면·후미까지 검사한다. 녹색 재관측·후미 통과·최대 수명에 따라 해제하며 자유 영역 지도는 누적하지 않는다.
 차선이 있으면 그 형상을 우선하고, 없으면 마지막 방향 또는 차량 전방을 선호하며 회피한다.
 
 ## 독립된 관측·계획·구동 시계
@@ -81,3 +83,14 @@ python3 src/auto_control/tools/vfh_sim/serve.py --port 8785 --planner vfh \
 C++ 계획·hazard 필터 시간은 worker 내부에서 측정한다. 관측 모사·로컬 요청 시간은 따로
 기록한다. Jetson 배율은 임의 추정이며 실제 기기 측정값이 아니다. 이번 수정에서는 주행
 테스트를 실행하지 않았다. 실행 화면 갱신을 위한 C++ 컴파일과 소스 검토만 수행한다.
+
+## 장애물 깜빡임·측면/후미 기억 설정
+
+실차와 같은 `hazard_hold_sec=0.20`, `obstacle_memory_enabled=1`,
+`obstacle_memory_sec=2.0`, `obstacle_memory_distance_m=1.0`,
+`obstacle_memory_clearance_m=0.10`을 기본으로 읽는다. 차체 주변 기억 거리는 차체 표면부터다.
+최대 기억시간을 넘으면 통과 전에도 해제되므로 낮은 속도에서는 이 값을 함께 조절한다.
+다섯 값과 기존 `obstacle_uncertainty_m`을 출발 전 설정에서 편집하고 주행 중에는 잠근다.
+BEV는 기억 셀과 후미를 포함하는 확장 격자 원점을 표시한다. 주황은 유지·기억 위험,
+빨강은 현재 위험 관측이며 둘 다 충돌 검사 대상이다. 마킹은 계속 평가에만 사용한다.
+수정 후 주행/회귀 테스트는 실행하지 않았다.

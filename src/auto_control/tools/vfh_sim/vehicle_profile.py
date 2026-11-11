@@ -68,6 +68,12 @@ EDITABLE = {
     'laneWeight': ('avoidance_lane_weight', 'avoidance_lane_weight'),
     'steeringWeight': ('avoidance_steering_weight', 'avoidance_steering_weight'),
     'clearanceWeight': ('clearance_weight', 'avoidance_clearance_weight'),
+    'uncertainty': ('uncertainty', 'obstacle_uncertainty_m'),
+    'hazardHold': ('hazard_hold_sec', 'hazard_hold_sec'),
+    'obstacleMemoryEnabled': ('obstacle_memory_enabled', 'obstacle_memory_enabled'),
+    'obstacleMemorySeconds': ('obstacle_memory_sec', 'obstacle_memory_sec'),
+    'obstacleMemoryDistance': ('obstacle_memory_distance_m', 'obstacle_memory_distance_m'),
+    'obstacleMemoryClearance': ('obstacle_memory_clearance_m', 'obstacle_memory_clearance_m'),
 }
 
 
@@ -88,8 +94,12 @@ def load_profile(params_file=None, reference_dir=None):
     roi = parameters(SRC / 'roi_lidar/config/roi_lidar.yaml', 'roi_lidar')
     roi.update(parameters(ref / 'roi_lidar_test.yaml', 'roi_lidar'))
     defaults, cpp = {}, {}
+    introduced = {'obstacle_uncertainty_m': obstacle['obstacles.avoidance.unknown_extent_m'],
+                  'hazard_hold_sec': .20, 'obstacle_memory_enabled': 1., 'obstacle_memory_sec': 2.,
+                  'obstacle_memory_distance_m': 1., 'obstacle_memory_clearance_m': .10}
     for key, (member, parameter) in EDITABLE.items():
-        defaults[key] = cpp[member] = float(preview[parameter])
+        value = preview[parameter] if parameter in preview else introduced[parameter]
+        defaults[key] = cpp[member] = float(value)
     speed_limit = float(control['maximum_speed_mps'])
     deceleration_limit = min(control['longitudinal_planning_deceleration_mps2'],
                              obstacle['obstacles.avoidance.deceleration_mps2'])
@@ -107,7 +117,7 @@ def load_profile(params_file=None, reference_dir=None):
     defaults['steerRate'] = control['steering_rate_limit_deg_per_sec']
     defaults['laneWidth'] = cpp['lane_width'] = lane['centerline_lane_width_m']
     cpp.update(max_steer=math.radians(defaults['maxSteer']), steer_rate=math.radians(defaults['steerRate']),
-               uncertainty=obstacle['obstacles.avoidance.unknown_extent_m'],
+               uncertainty=cpp['uncertainty'],
                max_curvature=obstacle['obstacles.avoidance.max_curvature_per_m'],
                lane_lateral_acceleration=control['maximum_lateral_acceleration_mps2'],
                avoidance_lateral_acceleration=obstacle['obstacles.avoidance.lateral_acceleration_mps2'],

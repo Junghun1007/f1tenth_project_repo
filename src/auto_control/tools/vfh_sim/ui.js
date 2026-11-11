@@ -58,7 +58,13 @@
     ['steeringWeight','조향 연속성 가중치',0,5,.1],
     ['laneVisibleLength','보이는 차선 길이(m)',.05,3,.05],
     ['clearanceWeight','장애물 여유 가중치',0,5,.1],
-    ['terrainCell','terrain 셀 크기(m)',.025,.12,.005]
+    ['terrainCell','terrain 셀 크기(m)',.025,.12,.005],
+    ['uncertainty','장애물 위치 불확실성(m)',0,.5,.01],
+    ['hazardHold','확정 장애물 깜빡임 유지(s)',0,1,.05],
+    ['obstacleMemoryEnabled','측면·후미 장애물 기억(0/1)',0,1,1],
+    ['obstacleMemorySeconds','장애물 최대 기억 시간(s)',0,5,.1],
+    ['obstacleMemoryDistance','차체 주변 기억 거리(m)',.1,2,.05],
+    ['obstacleMemoryClearance','후미 통과 추가 여유(m)',0,.5,.01]
   ].filter(([key])=>!frenet || !['lowThreshold','highThreshold','extraCurves','clearanceWeight'].includes(key)):[
     ['courseLength','코스 길이(m)',4,32,1],
     ['speed','목표 속도(m/s)',.1,3,.1],['range','VFH 전방 거리(m)',.4,3,.1],
@@ -268,13 +274,19 @@
     if(M.native) {
       ctx.fillStyle=pal.neutral;ctx.fillRect(0,0,120,300);
       const g=sim.result.grid, sx=120/(g.height*g.res),sy=300/(g.width*g.res);
-      const toPixel=p=>({x:120-(p.y-g.y0)*sx,y:300-p.x*sy});
+      const toPixel=p=>({x:120-(p.y-g.y0)*sx,y:300-(p.x-g.x0)*sy});
       const pt=p=>toPixel(M.local(p,g.pose));
       ctx.fillStyle=pal.hit;
       for(const index of sim.result.hazards) {
-        const p=toPixel({x:(index%g.width+1)*g.res,y:g.y0+(Math.floor(index/g.width)+1)*g.res});
+        const p=toPixel({x:g.x0+(index%g.width+1)*g.res,y:g.y0+(Math.floor(index/g.width)+1)*g.res});
         ctx.fillRect(p.x,p.y,g.res*sx,g.res*sy);
       }
+      ctx.fillStyle=pal.memory;
+      for(const index of sim.result.retainedHazards||[]) {
+        const p=toPixel({x:g.x0+(index%g.width+1)*g.res,y:g.y0+(Math.floor(index/g.width)+1)*g.res});
+        ctx.fillRect(p.x,p.y,g.res*sx,g.res*sy);
+      }
+      const body=M.corners(sim.pose,config);body.push(body[0]);path(ctx,body,pt,pal.fg,.8);
       path(ctx,sim.result.referencePath,pt,pal.fg,.9,[2,2]);
       path(ctx,sim.result.path,pt,pal.route,1.5);
       return;
@@ -319,7 +331,7 @@
     if(M.native) {
       const stats=sim.performanceStats(), body=el('[data-out="perf-rows"]');
       body.replaceChildren();
-      for(const [key,label] of [['planner',frenet?'C++ 프레넷 계획':'C++ VFH 계획'],['hazard','C++ hazard 확인'],['sensor','브라우저 센서 모사'],['pipeline','센서 + 로컬 왕복 + 계획'],['integration','차량 모사 / 0.01초']]) {
+      for(const [key,label] of [['planner',frenet?'C++ 프레넷 계획':'C++ VFH 계획'],['hazard','C++ hazard 확인·기억'],['sensor','브라우저 센서 모사'],['pipeline','센서 + 로컬 왕복 + 계획'],['integration','차량 모사 / 0.01초']]) {
         const row=document.createElement('tr'),sample=stats[key];
         for(const value of [label,sample.count?`${sample.meanMs.toFixed(3)} / ${sample.p95Ms.toFixed(3)} ms`:'—']) {
           const cell=document.createElement('td');cell.textContent=value;row.append(cell);
@@ -363,7 +375,7 @@
     status+=` · 최대 이탈 ${sim.maxDeparture.toFixed(2)}m`;
     if(sim.done)status+=` · 차선 중심 오차 ${(config.trackLayout==='loop'?M.projectTrack(sim.pose).distance:Math.abs(sim.pose.y)).toFixed(2)}m`;
     if(status!==lastStatus){el('[data-out="status"]').textContent=status;lastStatus=status;}
-    el('[data-out="visibility"]').textContent=M.native?`위험 셀 원본 ${sim.result.raw} · 확정 ${sim.result.confirmed} · 대기 ${sim.result.pending} · 기억 ${sim.result.rememberedHazards??0}`:`관측 ${sim.observation.hits.length}점 · 기억 ${sim.planner.memory.size}점`;
+    el('[data-out="visibility"]').textContent=M.native?`위험 셀 원본 ${sim.result.raw} · 확정 ${sim.result.confirmed} · 대기 ${sim.result.pending} · 깜빡임 유지 ${sim.result.heldHazards??0} · 근거리 기억 ${sim.result.nearBodyHazards??0}`:`관측 ${sim.observation.hits.length}점 · 기억 ${sim.planner.memory.size}점`;
     el('[data-out="limit"]').textContent=M.native?`차선 ${sim.result.laneTrust} · 차선 방향 기억 ${sim.result.hasLaneMemory?sim.result.memoryAge.toFixed(1)+'초':'없음'}`:`차선 ${config.laneVisible?'관측':'미관측'} · 차선 경계 밖 ${config.departure.toFixed(2)}m 제한`;
     el('[data-out="course-label"]').textContent=config.trackLayout==='loop'?`도면 순환 트랙 · 13×4m · 차선 안쪽 폭 ${config.laneWidth.toFixed(2)}m · 코너 R0.50m · 클릭 추가 / 드래그 이동`:`${config.courseLength}m 코스 · 클릭 배치 / 드래그 이동·콘 배열`;
     el('[data-object="x"]').max=config.trackLayout==='loop'?13:config.courseLength;

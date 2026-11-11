@@ -1,4 +1,5 @@
 #include "roi_vfh_test/hazard_filter.hpp"
+#include "roi_vfh_test/obstacle_memory.hpp"
 #include "roi_vfh_test/policy_state.hpp"
 #include "roi_vfh_test/speed_policy.hpp"
 #include "frenet_planner.hpp"
@@ -31,6 +32,7 @@ int main(int argc,char** argv) {
   struct Session {
     Planner planner;
     HazardFilter filter;
+    ObstacleMemory obstacle_memory;
     LaneMemory lane_memory;
     TargetSpeedPolicy speed_policy;
     std::optional<MotionPose> previous_pose;
@@ -104,6 +106,8 @@ int main(int argc,char** argv) {
           frame.grid=grid;std::fill(frame.grid.cells.begin(),frame.grid.cells.end(),-1);
           read_hazards(frame.grid,hazards);depth_frames.push_back(std::move(frame));
         }
+        input>>c.uncertainty>>c.hazard_hold_sec>>c.obstacle_memory_enabled>>c.obstacle_memory_sec
+          >>c.obstacle_memory_distance_m>>c.obstacle_memory_clearance_m;
       }else depth_frames.push_back({pose,grid});
       if(!input)throw std::invalid_argument("incomplete simulation input");
       input>>std::ws;
@@ -131,11 +135,11 @@ int main(int argc,char** argv) {
       std::size_t filtered_frames=0;
       for(const auto& frame:depth_frames) {
         if(frame.pose.t<=state.filter_capture || frame.pose.t>pose.t || now-frame.pose.t>profile.max_age)continue;
-        state.filtered=state.filter.apply(frame.grid,frame.pose.t,frame.pose,c);
+        state.filtered=state.obstacle_memory.apply(state.filter.apply(frame.grid,frame.pose.t,frame.pose,c),frame.pose.t,frame.pose,c);
         state.filter_capture=frame.pose.t;++filtered_frames;
       }
       if(!state.filtered || state.filter_capture!=pose.t) {
-        state.filtered=state.filter.apply(grid,pose.t,pose,c);state.filter_capture=pose.t;++filtered_frames;
+        state.filtered=state.obstacle_memory.apply(state.filter.apply(grid,pose.t,pose,c),pose.t,pose,c);state.filter_capture=pose.t;++filtered_frames;
       }
       const auto after_filter=Clock::now();
       if(replanned) {
@@ -175,13 +179,23 @@ int main(int argc,char** argv) {
         << ",\"checkedCandidates\":" << result.candidates.size() << ",\"referenceBlocked\":" << result.reference_blocked
         << ",\"filterMs\":" << ms(after_filter-start) << ",\"planMs\":" << (replanned?ms(finish-after_filter):0.)
         << ",\"raw\":" << filtered.stats.raw << ",\"confirmed\":" << filtered.stats.confirmed
-        << ",\"pending\":" << filtered.stats.pending << ",\"rememberedHazards\":0,\"path\":[";
+        << ",\"pending\":" << filtered.stats.pending << ",\"heldHazards\":" << filtered.stats.held
+        << ",\"nearBodyHazards\":" << filtered.stats.remembered
+        << ",\"rememberedHazards\":" << filtered.stats.held+filtered.stats.remembered
+        << ",\"grid\":{\"width\":" << filtered.grid.width << ",\"height\":" << filtered.grid.height
+        << ",\"res\":" << filtered.grid.resolution << ",\"x0\":" << filtered.grid.x0 << ",\"y0\":" << filtered.grid.y0
+        << "},\"path\":[";
       for(std::size_t i=0;i<result.path.size();++i)std::cout<<(i?",":"")<<'['<<result.path[i].x<<','<<result.path[i].y<<']';
       std::cout << "],\"histogram\":[";
       for(std::size_t i=0;i<result.histogram.size();++i)std::cout<<(i?",":"")<<'['<<result.histogram[i]<<','<<result.masked[i]<<']';
       std::cout << "],\"hazards\":[";
       bool comma=false;
       for(std::size_t i=0;i<filtered.grid.cells.size();++i)if(blockedTerrain(filtered.grid.cells[i])) {
+        if(comma)std::cout<<',';std::cout<<i;comma=true;
+      }
+      std::cout << "],\"retainedHazards\":[";
+      comma=false;
+      for(std::size_t i=0;i<filtered.grid.cells.size();++i)if(retainedTerrain(filtered.grid.cells[i])) {
         if(comma)std::cout<<',';std::cout<<i;comma=true;
       }
       std::cout << "]}\n" << std::flush;

@@ -62,6 +62,7 @@
         ...l.points.flatMap(p=>[p.x,p.y]),...d.hazards,
         c.laneMemoryEnabled,time,l.pose.t,l.pose.x,l.pose.y,l.pose.yaw,this.pendingDepth.length];
       for(const frame of this.pendingDepth)data.push(frame.pose.t,frame.pose.x,frame.pose.y,frame.pose.yaw,frame.hazards.length,...frame.hazards);
+      data.push(c.uncertainty,c.hazardHold,c.obstacleMemoryEnabled,c.obstacleMemorySeconds,c.obstacleMemoryDistance,c.obstacleMemoryClearance);
       const req=new XMLHttpRequest();req.open('POST','/plan',false);req.send(data.join(' '));
       let result;
       try {result=JSON.parse(req.responseText);}catch {throw Error('로컬 C++ 계획기 응답 실패');}
@@ -76,7 +77,11 @@
       this.cached={...result,path,referencePath:(result.referencePath||result.memoryPath||[]).map(([x,y])=>M.world({x,y},d.pose)),
         active:!!result.usedVfh,points:result.hazards,
         histogram:result.histogram.map(([value,blocked])=>({density:value/peak,blocked})),
-        grid:{width:d.width,height:d.height,res:d.res,y0:d.y0,pose:{...d.pose}}};
+        grid:{...result.grid,pose:{...d.pose}}};
+      this.memory.clear();
+      const g=this.cached.grid;
+      for(const index of result.retainedHazards||[])this.memory.set(index,M.world({
+        x:g.x0+(index%g.width+.5)*g.res,y:g.y0+(Math.floor(index/g.width)+.5)*g.res},g.pose));
       return this.cached;
     }
   }

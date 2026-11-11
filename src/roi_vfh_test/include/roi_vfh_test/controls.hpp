@@ -12,7 +12,7 @@ struct PlannerField {
   double minimum,maximum;
   const char* unit;
 };
-inline constexpr std::size_t planner_field_count=23;
+inline constexpr std::size_t planner_field_count=28;
 inline const std::array<PlannerField,planner_field_count>& plannerFields() {
   static const std::array<PlannerField,planner_field_count> fields{{
     {"nominal_speed_mps",&Config::speed,.05,3,"max speed, m/s; YAML ceiling"},
@@ -37,7 +37,12 @@ inline const std::array<PlannerField,planner_field_count>& plannerFields() {
     {"avoidance_lane_weight",&Config::avoidance_lane_weight,0,5,"soft lane return weight (0..5)"},
     {"avoidance_steering_weight",&Config::avoidance_steering_weight,0,5,"steering continuity weight (0..5)"},
     {"avoidance_clearance_weight",&Config::clearance_weight,0,5,"forward-grid clearance preference (0..5)"},
-    {"obstacle_uncertainty_m",&Config::uncertainty,0,.5,"position uncertainty, m (0..0.5)"}
+    {"obstacle_uncertainty_m",&Config::uncertainty,0,.5,"position uncertainty, m (0..0.5)"},
+    {"hazard_hold_sec",&Config::hazard_hold_sec,0,1,"confirmed flicker hold, sec (0..1)"},
+    {"obstacle_memory_enabled",&Config::obstacle_memory_enabled,0,1,"side/rear memory: 0=off / 1=on"},
+    {"obstacle_memory_sec",&Config::obstacle_memory_sec,0,5,"max time since confirmed, sec (0..5)"},
+    {"obstacle_memory_distance_m",&Config::obstacle_memory_distance_m,.1,2,"retention distance from body, m"},
+    {"obstacle_memory_clearance_m",&Config::obstacle_memory_clearance_m,0,.5,"extra travel past rear end, m"}
   }};
   return fields;
 }
