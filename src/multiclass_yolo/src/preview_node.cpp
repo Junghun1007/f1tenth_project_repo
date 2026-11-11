@@ -1,4 +1,5 @@
 #include "multiclass_yolo/yolox_detector.hpp"
+#include "multiclass_yolo/preview_exit.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "depthai/depthai.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -93,6 +94,16 @@ class Preview : public rclcpp::Node {
       cv::createTrackbar(names_[i], window, nullptr, 100);
       cv::setTrackbarPos(names_[i], window, sliders_[i]);
     }
+    cv::Mat waiting(400, 640, CV_8UC3, cv::Scalar(20,20,20));
+    cv::putText(waiting, "Waiting for camera frames...", {25,190},
+      cv::FONT_HERSHEY_SIMPLEX, .7, {240,240,240}, 1, cv::LINE_AA);
+    cv::imshow(window, waiting);
+    PreviewExit exit_state;
+    std::string exit_reason = "ROS shutdown / stop requested";
+    const auto property = [&window](int id) {
+      try { return cv::getWindowProperty(window, id); }
+      catch (const cv::Exception &) { return -1.; }
+    };
     std::uint64_t previous = 0, outputs = 0, skipped = 0;
     auto last_log = Clock::now();
     while (rclcpp::ok() && !stop_) {
@@ -109,6 +120,7 @@ class Preview : public rclcpp::Node {
       if (std::chrono::duration<double>(Clock::now()-received).count() > timeout_)
         throw std::runtime_error("No camera frame within frame_timeout_sec; check OAK/USB and other camera processes");
       if (frame) {
+        if (previous == 0) RCLCPP_INFO(get_logger(), "First camera frame received; starting inference");
         skipped += count > previous ? count - previous - 1 : 0;
         previous = count;
         std::array<float,4> thresholds;
@@ -156,6 +168,7 @@ class Preview : public rclcpp::Node {
           format_.c_str(), total_ms, conversion_ms, static_cast<unsigned long long>(skipped)),
           {10,55}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
         cv::imshow(window, canvas);
+        if (outputs == 0) RCLCPP_INFO(get_logger(), "First detection frame submitted to preview");
         ++outputs;
         if (Clock::now()-last_log >= 2s) {
           RCLCPP_INFO(get_logger(), "AVG input %.2f / output %.2f FPS; total %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
@@ -165,9 +178,12 @@ class Preview : public rclcpp::Node {
         }
       }
       int key = cv::waitKey(1) & 255;
-      if (key == 27 || key == 'q' || key == 'Q' || cv::getWindowProperty(window, cv::WND_PROP_VISIBLE) < 1) break;
+      const auto reason = exit_state.reason(key, property(cv::WND_PROP_VISIBLE),
+        property(cv::WND_PROP_AUTOSIZE));
+      if (reason) {exit_reason = reason; break;}
       if (!frame) std::this_thread::sleep_for(1ms);
     }
+    RCLCPP_INFO(get_logger(), "Preview stopped: %s", exit_reason.c_str());
     cv::destroyAllWindows();
   }
  private:

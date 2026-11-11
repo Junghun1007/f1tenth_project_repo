@@ -79,7 +79,7 @@ CUDA 색 변환은 기존 프로젝트와 동일한 **BT.601 limited range**를 
 - `convert`: RGB 경로는 추론 전 NV12→RGB 시간, NV12 경로는 추론 후 프리뷰 NV12→BGR 시간
 - `skipped`: 호스트 수신 후 최신 프레임 우선 처리 때문에 검출하지 않은 프레임 수 (장치/USB 드롭 수와 다름)
 - 4개 슬라이더: `con`, `truck`, `sedan`, `traffic_light`. 0–100을 0.00–1.00 점수로 변환하여 다음 추론에 적용
-- Q / ESC / 창 닫기로 종료
+- Q / ESC / 창 닫기로 종료 (창 상태 조회 미지원 백엔드에서는 Q / ESC 또는 Ctrl+C 사용)
 
 슬라이더 값은 현재 실행에만 적용됩니다. 재실행 때 유지하려면 실행 인수 또는 YAML을 수정하세요.
 YAML로 실행하려면 아래처럼 `ros2 run`에 전달합니다 (기본 launch는 launch 인수를 사용합니다).
@@ -116,3 +116,12 @@ ROS 노드 전체 빌드, OAK 실시간 영상, TensorRT/CUDA 실행 및 실제 
 TensorRT 없이 CPU만 빌드할 때는 `-DMULTICLASS_YOLO_TENSORRT=OFF`를 사용하고,
 실행 시 `input_format:=rgb inference_backend:=CPU engine_precision:=fp32`를 지정합니다.
 카메라용 DepthAI SDK는 여전히 필요합니다.
+
+
+### 창이 바로 닫히는 현상
+
+일부 GTK OpenCV는 `WND_PROP_VISIBLE` 조회에 -1(미지원)을 반환한다.
+이를 창 닫힘으로 해석하지 않도록, 처음 실제로 지원된 속성의 변화를 보고 종료한다.
+GTK에서는 `WND_PROP_AUTOSIZE`도 창 존재 확인에 사용하며 WINDOW_NORMAL의 0은 정상이다.
+첫 영상 전에는 대기 화면을 표시하고, 최초 수신·최초 검출 표시·종료 사유를 로그에 남긴다.
+엔진 캐시는 유지되므로 GUI 수정만으로 엔진을 다시 만들 필요는 없다.
