@@ -1,0 +1,41 @@
+{
+  "classes": [
+    "con",
+    "truck",
+    "sedan",
+    "traffic_light"
+  ],
+  "input_shape": [
+    1,
+    3,
+    320,
+    512
+  ],
+  "color": "BGR",
+  "layout": "NCHW",
+  "value_range": [
+    0,
+    255
+  ],
+  "normalization": "none",
+  "resize": "aspect-preserving, top-left, pad=114",
+  "output_shape": [
+    1,
+    3360,
+    9
+  ],
+  "output": "decoded cx,cy,w,h in input pixels; objectness; class probabilities",
+  "nms": "class-aware, outside ONNX",
+  "default_score": 0.25,
+  "default_nms": 0.65,
+  "camera": "OAK-D Pro 1280x800 NV12; convert to BGR before tensor preprocessing",
+  "nv12": "respect plane pitch and source color matrix/range; GPU implementation on Jetson",
+  "variant": "tiny",
+  "checkpoint_sha256": "ab2561a5f2b4d7754e7f40afb4be4e7bd6c82120975c9bc22d05a0f40200b66e",
+  "training_scope": "full_dataset",
+  "source_sha256": "96d5706f973dbd5a51fff243943f060a4c9cff573192d1434cbaee94e5ce835e",
+  "training_images": 668,
+  "final_epoch": 28,
+  "held_out_metrics": null,
+  "checkpoint_policy": "last fixed epoch EMA; no validation or best-AP selection"
+}
