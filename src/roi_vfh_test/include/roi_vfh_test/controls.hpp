@@ -71,11 +71,15 @@ inline const PlannerField* plannerField(const std::string& name) {
   return nullptr;
 }
 inline void validatePlannerEdits(const Config& config,double deceleration_ceiling,double speed_ceiling=3,
-    double steering_ceiling=pi/3,double steering_rate_ceiling=20) {
+    double steering_ceiling=pi/3,double steering_rate_ceiling=20,double maximum_duty=1) {
   for(const auto& f:plannerFields()) {
     const double value=(config.*(f.member))*f.scale;
-    if(!std::isfinite(value) || value<f.minimum || value>f.maximum)
-      throw std::invalid_argument(std::string(f.name)+": outside editable limits");
+    const double maximum=f.member==&Config::drive_start_duty ? maximum_duty : f.maximum;
+    if(!std::isfinite(value) || value<f.minimum || value>maximum) {
+      std::ostringstream error;
+      error<<(f.label?f.label:f.name)<<": enter "<<f.minimum<<".."<<maximum;
+      throw std::invalid_argument(error.str());
+    }
   }
   if(config.hist_low>=config.hist_high)throw std::invalid_argument("histogram_low must be smaller than histogram_high");
   if(config.deceleration>deceleration_ceiling+1e-9)
@@ -156,7 +160,7 @@ public:
     select_all_=false;e.pending=true;return Action::None;
   }
   void draw(cv::Mat& canvas,bool locked,double deceleration_ceiling,double speed_ceiling=3,
-      double steering_ceiling=pi/3,double steering_rate_ceiling=20)const {
+      double steering_ceiling=pi/3,double steering_rate_ceiling=20,double maximum_duty=1)const {
     const auto text=[&](const std::string& value,cv::Point at,double scale,cv::Scalar color){cv::putText(canvas,value,at,cv::FONT_HERSHEY_SIMPLEX,scale,color,1,cv::LINE_AA);};
     cv::rectangle(canvas,toggleButton(),{120,110,75},-1);
     text(open_?"Back to view":"VFH parameters",{378,36},.49,{255,255,255});
@@ -169,7 +173,11 @@ public:
     text("Click/type. Enter/A: Apply all pages. Tab: next. [ / ]: page. Esc: cancel.",{16,146},.40,{60,60,60});
     for(std::size_t i=page_*page_size;i<std::min(edits_.size(),(page_+1)*page_size);++i) {
       const auto& e=edits_[i];const auto& f=plannerFields()[i];const auto box=field(i);const int left=16+int((i%page_size)/6)*374;
-      text(f.label?f.label:f.name,{left,box.y+12},.37,{35,35,35});text(f.unit,{left,box.y+30},.28,{100,100,100});
+      text(f.label?f.label:f.name,{left,box.y+12},.37,{35,35,35});
+      const std::string unit=f.member==&Config::drive_start_duty
+        ? "Duty fraction, 0.." + format(maximum_duty) + " (0.053 = 5.3%)"
+        : f.unit;
+      text(unit,{left,box.y+30},.28,{100,100,100});
       cv::rectangle(canvas,box,locked?cv::Scalar(218,218,218):(e.pending?cv::Scalar(220,245,255):cv::Scalar(255,255,255)),-1);
       cv::rectangle(canvas,box,active_==int(i)?cv::Scalar(220,120,30):cv::Scalar(150,150,150),active_==int(i)?2:1);
       const auto value=e.draft.size()>11?e.draft.substr(e.draft.size()-11):e.draft;

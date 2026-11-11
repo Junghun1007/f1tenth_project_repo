@@ -53,8 +53,9 @@ UART 속도 환산만 필요하면 `input_mode:=ros_topic`으로 CAN 계측을 �
 실행하려면 `manual_handover_enabled:=false`를 지정한다. `drive_enabled:=false`에서는
 수동 전환 노드/Joy를 실행하지 않는다. 수동 서보·Duty 설정은 기존 manual YAML을 사용한다.
 
-수정 적용에는 위 `colcon build --packages-up-to roi_vfh_test`를 사용한다. 신규
-`manual_control/vfh_handover_node`도 함께 설치되어야 한다. 이번 변경에서 ROS 실행·실차 테스트는 수행하지 않았다.
+수정 적용에는 위 `colcon build --packages-up-to roi_vfh_test`를 사용한다.
+기본 제동 전류를 사용하는 모드 요청은 이전 `manual_control` 설치본에서도 인식한다.
+VFH 창에서 제동 전류를 바꾸는 경우 최신 `manual_control` 설치본이 필요하다.
 
 ## 하나의 정책 코어
 

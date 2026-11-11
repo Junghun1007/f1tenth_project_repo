@@ -24,7 +24,8 @@ class VfhHandoverNode(AutoHandoverNode):
         self.declare_parameter("auto_command_timeout_sec", 0.30)
         self.declare_parameter("handover_stop_brake_current_amps", 2.0)
         self._command_timeout = float(self.get_parameter("auto_command_timeout_sec").value)
-        self._stop_current = float(self.get_parameter("handover_stop_brake_current_amps").value)
+        self._default_stop_current = float(self.get_parameter("handover_stop_brake_current_amps").value)
+        self._stop_current = self._default_stop_current
         if not math.isfinite(self._command_timeout) or not .05 <= self._command_timeout <= 1:
             raise ValueError("auto_command_timeout_sec must be in .05..1 seconds")
         if not math.isfinite(self._stop_current) or not 0 < self._stop_current <= self.brake_profile.config.maximum_brake_current_amps:
@@ -57,6 +58,7 @@ class VfhHandoverNode(AutoHandoverNode):
         token, destination = fields[:2]
         if not token or len(token) > 96 or destination not in ("AUTO", "MANUAL"):
             return
+        current = self._default_stop_current
         if len(fields) == 3:
             try:
                 current = float(fields[2])
@@ -64,10 +66,10 @@ class VfhHandoverNode(AutoHandoverNode):
                 return
             if not math.isfinite(current) or not 0 < current <= self.brake_profile.config.maximum_brake_current_amps:
                 return
-            self._stop_current = current
         if token == self._request_id:
             self._publish_mode()
             return
+        self._stop_current = current
         self._request_id, self._destination = token, destination
         if self.handover.mode != destination or destination == "MANUAL":
             # The existing state machine requires fresh post-request standstill

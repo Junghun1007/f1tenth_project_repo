@@ -77,6 +77,7 @@ class Node:public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_log_pub_,brake_log_pub_,servo_log_pub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_;
   bool manual_handover_{false},manual_requested_{false};
+  double handover_default_stop_current_{2.0};
   std::string handover_token_,handover_mode_{"WAIT"};
   std::uint64_t handover_sequence_{0};
   std::optional<std::chrono::steady_clock::time_point> handover_ack_at_;
@@ -154,7 +155,12 @@ class Node:public rclcpp::Node {
     if(!manual_handover_)return;
     manual_requested_=manual;handover_ack_at_.reset();handover_mode_="WAIT";
     handover_token_=std::to_string(now().nanoseconds())+"-"+std::to_string(++handover_sequence_);
-    std_msgs::msg::String request;request.data=handover_token_+(manual?"|MANUAL|":"|AUTO|")+std::to_string(config_.drive_brake_max);
+    std_msgs::msg::String request;
+    request.data=handover_token_+(manual?"|MANUAL":"|AUTO");
+    // Keep the request readable by older installed handover nodes when the
+    // launch already configured the selected stop current on the receiver.
+    if(config_.drive_brake_max!=handover_default_stop_current_)
+      request.data+="|"+std::to_string(config_.drive_brake_max);
     handover_request_pub_->publish(request);
   }
   bool automaticOutputReady()const {
@@ -234,7 +240,8 @@ class Node:public rclcpp::Node {
     const auto next=plannerParameters();bool changed=false;
     for(const auto& field:plannerFields())if(next.*(field.member)!=config_.*(field.member))changed=true;
     if(!changed)return;
-    validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
+    validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,
+      steering_rate_ceiling_,drive_options_base_.maximum_duty);
     auto updated=std::make_unique<DriveController>(tunedDriveOptions(drive_options_base_,next));
     updated->retainSteering(drive_command_.steer);drive_=std::move(updated);
     drive_command_=drive_->update(false,0,measured_speed_,0,.001);
@@ -533,7 +540,8 @@ class Node:public rclcpp::Node {
       " | plan "+plan_average_.display();
     cv::putText(canvas,roi_line,{12,603},cv::FONT_HERSHEY_SIMPLEX,.34,{35,35,35},1,cv::LINE_AA);
     cv::putText(canvas,vfh_line,{12,616},cv::FONT_HERSHEY_SIMPLEX,.34,{35,35,35},1,cv::LINE_AA);
-    controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
+    controls_.sync(config_);controls_.draw(canvas,requested_,planner_deceleration_ceiling_,speed_ceiling_,
+      steering_ceiling_,steering_rate_ceiling_,drive_options_base_.maximum_duty);
     if (image_pub_->get_subscription_count()) {
       sensor_msgs::msg::Image msg;msg.header.stamp=now();msg.header.frame_id=frame_id_;
       msg.width=canvas.cols;msg.height=canvas.rows;msg.encoding="bgr8";msg.step=canvas.cols*3;
@@ -625,7 +633,6 @@ public:
       throw std::invalid_argument("invalid configured deceleration ceiling");
     speed_ceiling_=declare_parameter("speed_ceiling_mps",1.8,fixed);
     if(!std::isfinite(speed_ceiling_) || speed_ceiling_<.05 || speed_ceiling_>3)throw std::invalid_argument("invalid configured speed ceiling");
-    validatePlannerEdits(config_,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);controls_.reload(config_);
     max_age_=declare_parameter("max_age_sec",.30,fixed);
     if(!std::isfinite(max_age_) || max_age_<.05 || max_age_>.5)throw std::invalid_argument("invalid input age limit");
     frame_id_=declare_parameter<std::string>("frame_id","front_axle_bev",fixed);
@@ -677,7 +684,8 @@ public:
     DRIVE_PARAM("corner_brake_deceleration_margin_mps2",normal_deceleration_margin);
 #undef DRIVE_PARAM
     drive_options_base_=drive_options;
-    validatePlannerEdits(config_,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
+    validatePlannerEdits(config_,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,
+      steering_rate_ceiling_,drive_options_base_.maximum_duty);
     drive_=std::make_unique<DriveController>(tunedDriveOptions(drive_options_base_,config_));controls_.reload(config_);
     drive_max_age_=declare_parameter("drive.max_command_age_sec",.30,fixed);
     if(!std::isfinite(drive_max_age_) || drive_max_age_<.05 || drive_max_age_>.3)throw std::invalid_argument("invalid drive command age");
@@ -691,6 +699,7 @@ public:
     const auto servo_topic=declare_parameter<std::string>("servo_position_topic","/vesc/servo_position",fixed);
     const auto connection_topic=declare_parameter<std::string>("vesc_connection_topic","/vesc/connected",fixed);
     manual_handover_=declare_parameter("manual_handover_enabled",false,fixed) && drive_enabled_;
+    handover_default_stop_current_=declare_parameter("handover_stop_brake_current_amps",2.0,fixed);
     const auto mode_request_topic=declare_parameter<std::string>("manual_mode_request_topic","/roi_vfh_test/drive_mode_request",fixed);
     const auto mode_ack_topic=declare_parameter<std::string>("manual_mode_ack_topic","/roi_vfh_test/drive_mode_ack",fixed);
     if(manual_handover_) {
@@ -800,7 +809,8 @@ public:
             throw std::invalid_argument(parameter.get_name()+": expected a floating-point number");
           next.*(field->member)=parameter.as_double()/field->scale;
         }
-        validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,steering_rate_ceiling_);
+        validatePlannerEdits(next,planner_deceleration_ceiling_,speed_ceiling_,steering_ceiling_,
+          steering_rate_ceiling_,drive_options_base_.maximum_duty);
         tunedDriveOptions(drive_options_base_,next);result.successful=true;
       }catch(const std::exception& e){result.reason=e.what();}
       return result;

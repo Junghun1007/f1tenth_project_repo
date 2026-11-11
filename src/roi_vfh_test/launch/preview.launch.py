@@ -124,6 +124,7 @@ def nodes(context):
     if handover_enabled:
         test["manual_mode_request_topic"] = "/roi_vfh_test/drive_mode_request"
         test["manual_mode_ack_topic"] = "/roi_vfh_test/drive_mode_ack"
+        test["handover_stop_brake_current_amps"] = control["brake_maximum_current_amps"]
         gate = {**actuator_topics, "joy_topic": prefix + "/joy",
                 "measured_erpm_topic": erpm_topic, "connection_status_topic": connection_topic,
                 "mode_request_topic": test["manual_mode_request_topic"],
@@ -133,7 +134,7 @@ def nodes(context):
                 "current_brake_current_topic": prefix + "/manual/current_brake_current",
                 "gear_state_topic": prefix + "/manual/gear",
                 "auto_command_timeout_sec": test["max_age_sec"],
-                "handover_stop_brake_current_amps": control["brake_maximum_current_amps"]}
+                "handover_stop_brake_current_amps": test["handover_stop_brake_current_amps"]}
         actual_duty_log = gate["current_duty_topic"]
         for channel in ("duty", "brake_current", "servo_position"):
             test[channel + "_topic"] = prefix + "/handover/vfh/" + channel
