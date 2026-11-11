@@ -42,6 +42,13 @@ bool stop_line_present
 # NaN when unavailable. Consumers must check finiteness, not default to zero.
 float32 stop_line_distance_m
 
+# Actual retained model-supported boundary component arc, longest near-vehicle
+# component over either side. Excludes bridges/inferred centerline/far islands.
+# Valid zero means a processed frame with no eligible observed component.
+# False means unavailable; consumers must not interpret it as lane loss.
+bool observed_lane_length_valid
+float32 observed_lane_length_m
+
 # Yellow center path, derived independently of the internal display masks.
 # Pixels in the padded image, ordered from near vehicle to far along the path.
 # valid only means a geometric path exists, NOT a validated driving command.

@@ -160,6 +160,10 @@ rclcpp_components_register_nodes(
 
 if(BUILD_TESTING)
   enable_testing()
+  add_executable(observed_lane_length_test test/observed_lane_length_test.cpp src/lane_connector.cpp src/processing_profile.cpp)
+  target_include_directories(observed_lane_length_test PRIVATE include ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(observed_lane_length_test ${OpenCV_LIBS} Threads::Threads)
+  add_test(NAME observed_lane_length_test COMMAND observed_lane_length_test)
   add_executable(frame_rate_gate_test test/frame_rate_gate_test.cpp)
   target_include_directories(frame_rate_gate_test PRIVATE include)
   add_test(NAME frame_rate_gate_test COMMAND frame_rate_gate_test)

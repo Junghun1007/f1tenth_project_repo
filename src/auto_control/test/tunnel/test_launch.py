@@ -58,6 +58,34 @@ class LaunchTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.helper().integrated_nodes({}, {}, NS(launch_configurations=dict(tunnel_validation_mode='invalid')))
 
+    def test_ir_length_exit_default_off_and_cli_overrides(self):
+        _, nodes = self.helper().integrated_nodes(
+            dict(preview_enabled=False, result_topic='/rgb'), {}, NS(launch_configurations={}))
+        self.assertIs(nodes[-1]['parameters'][0]['ir_length_exit_enabled'], False)
+        self.assertEqual(nodes[-1]['parameters'][0]['ir_length_exit_ratio'], .15)
+        config = dict(tunnel_ir_length_exit_enabled='true', tunnel_ir_length_exit_ratio='.25',
+                      tunnel_ir_length_exit_confirm_frames='4', tunnel_ir_length_exit_minimum_reference_m='.8')
+        _, nodes = self.helper().integrated_nodes(
+            dict(preview_enabled=False, result_topic='/rgb'), {}, NS(launch_configurations=config))
+        params = nodes[-1]['parameters'][0]
+        self.assertIs(params['ir_length_exit_enabled'], True)
+        self.assertEqual(params['ir_length_exit_ratio'], .25)
+        self.assertEqual(params['ir_length_exit_confirm_frames'], 4)
+        self.assertEqual(params['ir_length_exit_minimum_reference_m'], .8)
+        for key, value in (('tunnel_ir_length_exit_enabled', 'maybe'),
+                           ('tunnel_ir_length_exit_ratio','nan'),
+                           ('tunnel_ir_length_exit_confirm_frames','0')):
+            with self.assertRaises(ValueError):
+                self.helper().integrated_nodes({}, {}, NS(launch_configurations={key:value}))
+        tree = ast.parse((SOURCE/'vehicle_bringup/launch/auto_drive.launch.py').read_text())
+        declared = {n.args[0].value: next(k.value.value for k in n.keywords if k.arg=='default_value')
+                    for n in ast.walk(tree) if isinstance(n,ast.Call) and
+                    isinstance(n.func,ast.Name) and n.func.id=='DeclareLaunchArgument' and
+                    n.args and isinstance(n.args[0],ast.Constant) and
+                    str(n.args[0].value).startswith('tunnel_ir_length_exit_')}
+        self.assertEqual(declared['tunnel_ir_length_exit_enabled'],'false')
+        self.assertEqual(declared['tunnel_ir_length_exit_ratio'],'0.15')
+
     def test_selector_inherits_effective_controller_geometry(self):
         controller = dict(path_minimum_points=12, path_minimum_span_m=.2, path_maximum_x_m=1.8)
         context = NS(launch_configurations=dict(path_minimum_points='16', path_maximum_gap_m='.1'))

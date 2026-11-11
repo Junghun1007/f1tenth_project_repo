@@ -844,6 +844,12 @@ def generate_launch_description():
         [
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument("tunnel_enabled", default_value="false"),
+            DeclareLaunchArgument("tunnel_ir_length_exit_enabled", default_value="false",
+                description="Experimental IR observed-length exit trigger."),
+            DeclareLaunchArgument("tunnel_ir_length_exit_ratio", default_value="0.15",
+                description="Trigger when current/reference observed IR length is at or below this fraction."),
+            DeclareLaunchArgument("tunnel_ir_length_exit_confirm_frames", default_value="3"),
+            DeclareLaunchArgument("tunnel_ir_length_exit_minimum_reference_m", default_value="0.5"),
             DeclareLaunchArgument("tunnel_ir_imu_enabled", default_value="true",
                                   description="Apply capture-time IMU tilt to tunnel IR BEV; false uses fixed measured ground pose."),
             DeclareLaunchArgument("tunnel_validation_mode", default_value="true",

@@ -201,6 +201,74 @@ TCN 이벤트 한 개가 유실되어도 이후 보고에 유지되는 inside/ou
 X 버튼의 AUTO → STOPPING → MANUAL 전환은 기존 방식 그대로다.
 터널 이벤트는 자동주행 활성화나 수동 전환 해제를 요청하지 않는다.
 
+## 실험 옵션: IR 관측 길이 감소로 출구 전환 요청 (기본 OFF)
+
+기존 실행 명령에서 옵션을 생략하면 이전 TCN 정책을 유지한다. ON일 때만 `INSIDE`에서
+IR 검출기의 실제 관측 길이를 비교해 `EXITING`을 요청한다. 비율은 퍼센트 숫자가 아닌
+0~1 사이의 값이다. `0.15`는 기준 최대 길이의 15% 이하(85% 이상 감소)를 뜻한다.
+
+```bash
+# ON: 기존 auto_drive 실행 인수에 추가
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  tunnel_enabled:=true tunnel_ir_length_exit_enabled:=true \
+  tunnel_ir_length_exit_ratio:=0.15
+
+# OFF: 기존 정책 (기본값이므로 enabled 옵션 생략도 동일)
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  tunnel_enabled:=true tunnel_ir_length_exit_enabled:=false
+
+# 비율과 확인 횟수 조정 예시
+ros2 launch vehicle_bringup auto_drive.launch.py \
+  tunnel_enabled:=true tunnel_ir_length_exit_enabled:=true \
+  tunnel_ir_length_exit_ratio:=0.25 tunnel_ir_length_exit_confirm_frames:=3 \
+  tunnel_ir_length_exit_minimum_reference_m:=0.5
+```
+
+ON/OFF와 파라미터는 실행 시작 시 적용하며, 비교할 때 기존 프로세스를 종료하고 재실행한다.
+선택기 노드의 ROS 파라미터 이름은 위 이름에서 `tunnel_`을 뺀
+`ir_length_exit_enabled`, `ir_length_exit_ratio`, `ir_length_exit_confirm_frames`,
+`ir_length_exit_minimum_reference_m`이다. 실행 중 `ros2 param set` 적용은 지원하지 않는다.
+
+관측 길이는 각 프레임의 `observed_paths`에서 차량 가까이 시작하는 실제 모델 지지 차선 조각의
+호 길이를 미터로 계산하고, 좌/우 중 가장 긴 값을 쓴다. 기준 시작 거리에는 기존
+`centerline_max_start_distance_m`(기본 0.65m)을 사용한다. 연결선·외삽 중앙선·멀리 떨어진
+별도 조각은 길이에 포함하지 않는다. 이는 실제 카메라 관측의 정답 길이가 아니라 모델이
+검출한 차선의 길이다. 좌/우 길이의 합이나 생성 중앙선의 전체 길이를 쓰지 않는다.
+
+매 진입 요청 때 최대 길이를 초기화한다. 새롭고 유효한 IR 결과를 기본 3개 모아 그 구간의
+최솟값을 얻고, 이 값의 역대 최대를 기준으로 삼아 한 프레임의 과대 검출을 억제한다.
+기준 길이가 기본 0.5m 이상 확보되어야 활성화한다. 현재 길이가 기준 대비 설정 비율 이하인
+새 IR 결과 기본 3개가 연속하면 전환을 요청한다. 감소 후 기준 길이를 낮추지 않는다.
+실제 처리된 빈 프레임의 유효 길이 0도 포함하며, 메시지 유실·오래된/미래 프레임·잘못된
+스케일·측정 불가를 길이 0으로 간주하지 않는다. 수신 공백이 선택기의 최신성 상한보다 길면
+연속 확인을 초기화한다. 기본 검증 모드에서도 이 실험 판정에는 최신성 검사를 적용한다.
+
+전환 시 `EXITING`, `compute=BOTH`, 기존 IR 프로필을 유지하고 **첫 유효한 새 RGB 경로를
+받으면 그 결과를 즉시 전달하며 OUTSIDE로 전환**한다. IR 경로가 없어져도 RGB를 강제 선택하거나
+보관 경로를 재발행하지 않는다. RGB 준비가 늦으면 기존 경로 유실 정지 조건은 유지된다.
+이 실험 옵션에는 별도 사전 RGB 준비 임계값을 추가하지 않았다.
+
+길이로 전환한 후 TCN의 반복 `inside` 보고가 즉시 IR로 되돌리는 것을 막는다.
+트리거 이후 촬영된 최신 `outside` 보고를 확인하면 재진입을 다시 허용한다. TCN이 계속
+`inside`로 고착되면 자동 재진입도 보류되므로 해당 상황에서는 이 옵션을 끄고 원인을 확인한다.
+
+로그 `[IR LENGTH EXIT]`에 현재 길이, 기준 최대 길이, 비율, 임계값, 연속 횟수와 트리거 여부를
+1초마다, 트리거 발생 시 즉시 남긴다. 상태 전환 사유는 `ir_length_drop`이며, 완료 로그에도
+`trigger=ir_length_drop`이 유지된다.
+
+`LaneResult.msg`에 관측 길이 필드를 추가했으므로 차량 PC에서 메시지 소비자까지 다시 빌드한다.
+워크스페이스 루트에서 전체 빌드를 권장한다.
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+```
+
+로컬에서는 실제 차선 연결기의 관측 조각 길이 C++ 테스트와 기본 OFF/임계값/유실·중복·오래된
+프레임/TCN 역전 방지/다음 터널 초기화/RGB 준비 전 대기 재현을 검증한다.
+Jetson ROS 전체 빌드 및 실차에서 출구 정지가 해결되는지는 별도로 확인해야 한다.
+
 ## 단일 프리뷰와 터널 HUD
 
 RGB 검출기만 GUI 창을 소유하며, IR 검출기는 별도 창을 열지 않는다. 선택된 경로가

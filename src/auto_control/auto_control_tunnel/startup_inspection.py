@@ -9,6 +9,7 @@ from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from .inspection_state import InspectionState
 from .inspection_speed import InspectionSpeed
+from .compute_status import ComputeMonitor, status_lines
 
 
 DISPLAY_SCALE = .85
@@ -61,6 +62,11 @@ class StartupInspection(Node):
             for name in expected]
         self.client = self.create_client(Trigger, '/auto_control/start')
         self.stop_client = self.create_client(Trigger, '/auto_control/stop')
+        self.compute = ComputeMonitor()
+
+    def destroy_node(self):
+        self.compute.close()
+        return super().destroy_node()
 
     def on_camera(self, message):
         self.state.camera = message.data
@@ -84,7 +90,7 @@ class StartupInspection(Node):
     def on_mouse(self, event, x, y, flags, userdata):
         import cv2
         # HighGUI receives coordinates in the displayed (85%) image, not the
-        # logical 1200x860 drawing. Keep drawing and hit targets in one space.
+        # logical 1200x1020 drawing. Keep drawing and hit targets in one space.
         x, y = x / DISPLAY_SCALE, y / DISPLAY_SCALE
         if event == cv2.EVENT_LBUTTONDOWN and contains(SPEED, x, y):
             if self.speed.fresh(time.monotonic()):
@@ -182,11 +188,11 @@ class StartupInspection(Node):
             self.state.error = f'START failed: {error}'
 
 
-def render(state, image=None, image_fresh=False, pending=False, now=None, speed=None):
+def render(state, image=None, image_fresh=False, pending=False, now=None, speed=None, compute=None):
     import cv2
     import numpy as np
     now = time.monotonic() if now is None else now
-    canvas = np.full((860,1200,3), (32,36,40), dtype=np.uint8)
+    canvas = np.full((1020,1200,3), (32,36,40), dtype=np.uint8)
     def text(line, x, y, color=(225,225,225), scale=.55):
         cv2.putText(canvas, line[:112], (x,y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
     text('STARTUP INSPECTION', 22,35, (255,220,80), .9)
@@ -260,6 +266,10 @@ def render(state, image=None, image_fresh=False, pending=False, now=None, speed=
         text('MAX SPEED: waiting for controller',420,765,scale=.48)
     text(state.error,22,815,(100,170,255),.43)
     text('START requires checks. STOP, Timings, Params and speed controls remain available here after START.',22,843,scale=.43)
+    cv2.line(canvas, (20,860), (1180,860), (90,90,90), 1)
+    text('4. COMPUTING STATUS (1 Hz)',22,885,(255,220,80),.60)
+    for index, line in enumerate(compute or status_lines()):
+        text(line,22,912+index*27,scale=.43)
     return cv2.resize(canvas, (round(canvas.shape[1]*DISPLAY_SCALE), round(canvas.shape[0]*DISPLAY_SCALE)),
                       interpolation=cv2.INTER_AREA)
 
@@ -295,7 +305,7 @@ def main(args=None):
                 shown = True
             cv2.imshow(window, render(node.state,node.image,
                 time.monotonic()-node.image_at<.5,node.pending is not None,
-                speed=node.speed.view(time.monotonic())))
+                speed=node.speed.view(time.monotonic()), compute=node.compute.lines()))
             key = cv2.waitKey(1)&255
             if key in (10,13):
                 node.request_start()

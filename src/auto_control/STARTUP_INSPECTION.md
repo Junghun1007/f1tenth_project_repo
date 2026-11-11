@@ -124,3 +124,27 @@ last stop 표시를 유지하며 START가 실제 수락되면 지운다. VESC �
 UART write timeout 등의 원인과 복구 상태를 함께 표시한다. 연결 장애나 입력 수명
 검사와 실제 승인 취소·정지 정책은 동일하다. 50ms 쓰기 제한과 계측·포트 독점 설정은
 `vehicle_bringup/config/vesc_config.yaml` 및 `vesc_bridge` 문서를 참고한다.
+
+
+## 컴퓨팅 상태 표시
+
+안전점검창 하단 `COMPUTING STATUS`에 장치 전체의 CPU/GPU 사용률, 온라인 CPU 코어 수,
+RAM 사용량/총량, Swap 사용량/총량, 루트 파일시스템 여유 공간, CPU/GPU/SoC 온도,
+CPU 정책 중 최고 현재 클럭·GPU 현재 클럭, 1/5/15분 시스템 load average를 표시한다.
+출발 승인 후에도 창을 닫지 않았다면 계속 갱신한다. 기존 버튼/슬라이더 위치는 유지한다.
+
+별도 데몬 스레드에서 1초마다 Linux `/proc`와 Jetson `/sys` 파일을 읽는다.
+추가 Python 패키지·sudo·상시 외부 명령 실행 없이 읽기만 하며 전력/클럭/팬 설정을 바꾸지 않는다.
+CPU 사용률은 이전 표본 이후의 장치 전체 busy 비율(0~100%)이고 첫 표본은 `--`다.
+RAM은 MemTotal−MemAvailable, GPU는 nvgpu load(0~1000)를 %로 변환한다.
+Jetson은 공유 메모리 구조이므로 GPU 전용 VRAM 수치로 RAM 값을 중복 표기하지 않는다.
+온도는 해당 종류 센서의 최고값이며 Tmargin(온도 여유)은 실제 온도에서 제외한다.
+센서가 없거나 권한/커널 차이로 읽지 못하면 `--`를 표시한다. 3초 넘게 갱신이 없으면
+`STALE`을 표시하고 이전 수치는 숨긴다. 이 값은 출발 허가 조건이나 과열/스로틀링 확정 판정이 아니다.
+
+창의 논리 크기는 1200×1020, 실제 표시는 기존과 같은 85%(1020×867)다.
+로컬 가상 proc/sys 파일로 CPU 차분·단위 변환·센서 유실·STALE을 테스트하고 실제 렌더링을 확인했다.
+차량 JetPack에서의 센서 경로와 수치 갱신은 실기기 확인이 필요하다.
+
+구현 참고: [Linux proc 문서](https://www.kernel.org/doc/html/latest/filesystems/proc.html),
+[NVIDIA Jetson 전력·성능 문서](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/PlatformPowerAndPerformance/JetsonOrinNanoSeriesJetsonOrinNxSeriesAndJetsonAgxOrinSeries.html).

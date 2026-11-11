@@ -4,6 +4,7 @@
 
 #include "line_detactor/tensorrt_lane_backend.hpp"
 #include "line_detactor/lane_connector.hpp"
+#include "line_detactor/observed_lane_length.hpp"
 #include "line_detactor/msg/lane_result.hpp"
 #include "line_detactor/stop_line_distance.hpp"
 #include "line_detactor/bev_theme.hpp"
@@ -864,6 +865,11 @@ private:
     message.label_export_nanoseconds = timing.label_export_nanoseconds;
     message.backend_postprocess_nanoseconds = timing.postprocessing_nanoseconds;
     message.lane_geometry_nanoseconds = lane_geometry_nanoseconds;
+    const double observed_length = observed_lane_length(result.observed_paths,
+      input.width, input.height, connection_.padding_px, centerline_.bev_width_m,
+      centerline_.bev_height_m, centerline_.max_start_distance_m);
+    message.observed_lane_length_valid = std::isfinite(observed_length);
+    message.observed_lane_length_m = static_cast<float>(observed_length);
     message.state = result.state;
     message.processing_mode = line_detactor::msg::LaneResult::BORDER_ONLY;
     message.source_width = static_cast<std::uint32_t>(input.width);

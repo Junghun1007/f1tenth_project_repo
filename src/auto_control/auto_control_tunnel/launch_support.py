@@ -1,6 +1,7 @@
 """Optional integration used only by vehicle_bringup tunnel_enabled:=true."""
 import hashlib
 import json
+from .ir_length_exit import IrLengthExit
 from pathlib import Path
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -13,6 +14,14 @@ def integrated_nodes(rgb_detector, controller, context):
     if validation_text not in ('true', 'false'):
         raise ValueError('tunnel_validation_mode must be true or false')
     validation = validation_text == 'true'
+    cfg = context.launch_configurations
+    length_text = str(cfg.get('tunnel_ir_length_exit_enabled', 'false')).lower()
+    if length_text not in ('true', 'false'):
+        raise ValueError('tunnel_ir_length_exit_enabled must be true or false')
+    length = IrLengthExit(length_text == 'true',
+        float(cfg.get('tunnel_ir_length_exit_ratio', '.15')),
+        int(cfg.get('tunnel_ir_length_exit_confirm_frames', '3')),
+        float(cfg.get('tunnel_ir_length_exit_minimum_reference_m', '.5')))
     shares = {p: Path(get_package_share_directory(p)) for p in (
         'ir_camera_driver', 'line_detactor', 'auto_control', 'tunnel_tcn_test')}
     # Perception assets are shared by production and standalone tests. The
@@ -35,7 +44,11 @@ def integrated_nodes(rgb_detector, controller, context):
     age = controller.get('path_capture_maximum_age_sec', .2)
     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)
     selector_parameters = dict(validation_mode=validation, max_age_sec=min(.25, float(rule_age)),
-                               rgb_result_topic=rgb_detector['result_topic'])
+                               rgb_result_topic=rgb_detector['result_topic'],
+                               ir_length_exit_enabled=length.enabled,
+                               ir_length_exit_ratio=length.threshold,
+                               ir_length_exit_confirm_frames=length.confirm_frames,
+                               ir_length_exit_minimum_reference_m=length.minimum_reference)
     # Match the actual controller YAML and resolved CLI geometry overrides.
     for name, fallback, cast in (
         ('path_minimum_points', 8, int), ('path_minimum_span_m', .12, float),

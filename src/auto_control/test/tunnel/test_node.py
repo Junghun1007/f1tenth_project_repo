@@ -6,6 +6,7 @@ from types import ModuleType, SimpleNamespace as NS
 import unittest
 from unittest.mock import patch
 from auto_control_tunnel.selection import LaneSelector
+from auto_control_tunnel.ir_length_exit import IrLengthExit
 from lane_fixture import lane, ns
 
 
@@ -112,6 +113,28 @@ class CallbackTests(unittest.TestCase):
         event_stamp = self.node.policy.last_event_ns
         self.report(state='inside', source_stamp_ns=10_005_000_000)
         self.assertEqual(self.node.policy.last_event_ns, event_stamp)
+
+    def test_length_exit_callback_is_not_reversed_by_retained_tcn_inside(self):
+        self.node.policy = LaneSelector(validation_mode=True,
+            ir_length_exit=IrLengthExit(enabled=True))
+        self.report(state='inside')
+        self.node.on_lane('IR',lane(10.001))
+        for index,length in enumerate((2.,2.,2.,0.,0.,0.)):
+            t=10.02+index*.03
+            self.node.get_clock=lambda t=t: NS(now=lambda: NS(nanoseconds=ns(t+.005)))
+            message=lane(t,valid=length>0)
+            message.observed_lane_length_valid=True
+            message.observed_lane_length_m=length
+            self.node.on_lane('IR',message)
+        self.assertEqual(self.node.policy.state,'EXITING')
+        self.report(state='inside',source_stamp_ns=ns(10.17))
+        self.assertEqual(self.node.policy.state,'EXITING')
+        rgb=lane(10.171)
+        self.node.on_lane('RGB',rgb)
+        self.assertIs(self.outputs[-1],rgb)
+        self.assertEqual(self.node.policy.state,'OUTSIDE')
+        self.report(state='inside',source_stamp_ns=ns(10.172))
+        self.assertEqual(self.node.policy.state,'OUTSIDE')
 
     def test_stale_or_malformed_tcn_does_not_start_motion_or_transition(self):
         for data in ('[]', '{', '{"source_stamp_ns": true}',
