@@ -22,11 +22,11 @@ roi_lidar:
     measurement_roi_preview_enabled: true # Same oak_startup ROI preview; closes after startup measurement.
 
     # Normalized image ROI: top-left X/Y and width/height in [0,1].
-    # Full image initially; drag in the depth/right ROI window to select a rectangle.
-    roi.x: 0.0
-    roi.y: 0.0
-    roi.width: 1.0
-    roi.height: 1.0
+    # Screenshot ROI: near-full width, lower 55% of image. Drag to override at runtime.
+    roi.x: 0.01
+    roi.y: 0.43
+    roi.width: 0.98
+    roi.height: 0.55
     points.pixel_stride: 1
     points.min_depth_m: 0.1
     points.max_depth_m: 20.0

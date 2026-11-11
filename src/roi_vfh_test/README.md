@@ -128,12 +128,12 @@ ON은 마지막 관측의 **방향각 하나만** 저장한다. 중앙선 전체
 | `lane_lookahead_m` | 0.05 |
 | `avoidance_curve_samples` | 17 |
 | `avoidance_length_slack_m` | 0.40 |
-| `avoidance_lane_weight` | 1.2 |
-| `avoidance_steering_weight` | 0.2 |
-| `avoidance_clearance_weight` | 0.7 |
+| `avoidance_lane_weight` | 1.5 |
+| `avoidance_steering_weight` | 0.1 |
+| `avoidance_clearance_weight` | 0.5 |
 | `deceleration_mps2` / `response_delay_sec` | 0.4 / 0.10 |
 
-위 항목과 차선 기억 ON/OFF·히스토그램/위험 셀 연속성 항목을 총 22개 숫자 입력, 2페이지로 표시한다.
+위 항목과 차선 기억 ON/OFF·히스토그램/위험 셀 연속성 항목을 총 23개 숫자 입력, 2페이지로 표시한다.
 출발 후 편집은 잠기고 페이지 조회는 가능하다. `lane_departure_m`은 제거했다.
 속도/감속도의 기존 차량 설정 상한은 계속 적용한다.
 
@@ -263,3 +263,15 @@ ros2 launch roi_vfh_test preview.launch.py imu_rate_hz:=120
 이번 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.
 
 중앙선 추종이 약하게 보이는 코드 경로와 관측의 한계는 [차선 추종 분석](LANE_FOLLOWING_ANALYSIS_KO.md)에 정리했다.
+
+## 2026-11-11 GUI·기본 ROI 갱신
+
+`obstacle_uncertainty_m`을 VFH 설정창에 추가했다. 기본 0.01m, 편집 범위
+0..0.5m이며 Start 전/Stop 후에만 편집할 수 있다. launch는 preview.yaml의
+값을 우선하고, 키가 없는 이전 파일만 obstacles.avoidance.unknown_extent_m로 보완한다.
+
+사진 기본값: hazard 4/8/1/0.15, 추가 곡선 ON/17, 길이 여유 0.40m,
+차선/조향/장애물 여유 가중치 1.5/0.1/0.5. GUI는 총 23개 항목이다.
+ROI는 사진의 녹색 테두리를 정규화해 x=0.01, y=0.43, width=0.98, height=0.55로
+설정했다. roi_lidar 일반 YAML과 VFH 전용 ROI YAML에 함께 적용한다.
+이번 변경은 요청에 따라 빌드·테스트 없이 소스 및 Git diff만 검토했다.

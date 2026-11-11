@@ -75,7 +75,7 @@ def nodes(context):
                  "rear_extent_m": test.get("rear_extent_m", 0.45),
                  "front_overhang_m": test.get("front_overhang_m", 0.05),
                  "safety_margin_m": test["safety_margin_m"],
-                 "obstacle_uncertainty_m": obstacles["obstacles.avoidance.unknown_extent_m"],
+                 "obstacle_uncertainty_m": test.get("obstacle_uncertainty_m", obstacles["obstacles.avoidance.unknown_extent_m"]),
                  "sample_step_m": test["sample_step_m"],
                  "max_curvature_per_m": obstacles["obstacles.avoidance.max_curvature_per_m"],
                  "lane_lateral_acceleration_mps2": control["maximum_lateral_acceleration_mps2"],

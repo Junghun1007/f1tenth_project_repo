@@ -9,6 +9,7 @@ roi_vfh_test:
     horizon_m: 1.2
     sample_step_m: 0.03
     safety_margin_m: 0.02
+    obstacle_uncertainty_m: 0.01 # Extra position uncertainty; editable before Start.
     vehicle_width_m: 0.30
     wheelbase_m: 0.33
     front_overhang_m: 0.05 # Front axle -> front end.
@@ -31,6 +32,6 @@ roi_vfh_test:
     avoidance_curve_enabled: 1.0
     avoidance_curve_samples: 17.0
     avoidance_length_slack_m: 0.40
-    avoidance_lane_weight: 1.2
-    avoidance_steering_weight: 0.2
-    avoidance_clearance_weight: 0.7
+    avoidance_lane_weight: 1.5
+    avoidance_steering_weight: 0.1
+    avoidance_clearance_weight: 0.5

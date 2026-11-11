@@ -12,7 +12,7 @@ struct PlannerField {
   double minimum,maximum;
   const char* unit;
 };
-inline constexpr std::size_t planner_field_count=22;
+inline constexpr std::size_t planner_field_count=23;
 inline const std::array<PlannerField,planner_field_count>& plannerFields() {
   static const std::array<PlannerField,planner_field_count> fields{{
     {"nominal_speed_mps",&Config::speed,.05,3,"max speed, m/s; YAML ceiling"},
@@ -36,7 +36,8 @@ inline const std::array<PlannerField,planner_field_count>& plannerFields() {
     {"avoidance_length_slack_m",&Config::avoidance_length_slack_m,0,.5,"length gap for comparing return costs, m"},
     {"avoidance_lane_weight",&Config::avoidance_lane_weight,0,5,"soft lane return weight (0..5)"},
     {"avoidance_steering_weight",&Config::avoidance_steering_weight,0,5,"steering continuity weight (0..5)"},
-    {"avoidance_clearance_weight",&Config::clearance_weight,0,5,"forward-grid clearance preference (0..5)"}
+    {"avoidance_clearance_weight",&Config::clearance_weight,0,5,"forward-grid clearance preference (0..5)"},
+    {"obstacle_uncertainty_m",&Config::uncertainty,0,.5,"position uncertainty, m (0..0.5)"}
   }};
   return fields;
 }
