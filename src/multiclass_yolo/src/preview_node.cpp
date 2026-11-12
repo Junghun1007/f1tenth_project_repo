@@ -1,6 +1,7 @@
 #include "multiclass_yolo/yolox_detector.hpp"
 #include "multiclass_yolo/preview_exit.hpp"
 #include "preview_panel.hpp"
+#include "preview_measurement.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "depthai/depthai.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -10,10 +11,12 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -22,28 +25,36 @@
 #include <utility>
 #include <vector>
 
-using Clock = std::chrono::steady_clock;
+using Clock = multiclass_yolo::PreviewClock;
 using namespace std::chrono_literals;
 namespace multiclass_yolo {
 class Preview : public rclcpp::Node {
  public:
   Preview() : Node("multiclass_yolo") {
     const auto share = ament_index_cpp::get_package_share_directory("multiclass_yolo");
-    auto model = declare_parameter<std::string>("model_path", share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx");
-    auto backend = declare_parameter<std::string>("inference_backend", "TENSORRT");
-    auto precision = declare_parameter<std::string>("engine_precision", "fp16");
-    // User cache is writable even when ROS install/share is read-only.
-    const char * home = std::getenv("HOME");
-    auto cache = declare_parameter<std::string>("engine_cache_path", "");
-    if (!std::filesystem::is_regular_file(model)) throw std::runtime_error("Model missing: " + model);
-    if (cache.empty()) {
-      const auto modified = std::filesystem::last_write_time(model).time_since_epoch().count();
-      const auto identity = std::filesystem::canonical(model).string() +
-        std::to_string(std::filesystem::file_size(model)) +
-        std::to_string(static_cast<long long>(modified));
-      cache = std::string(home ? home : "/tmp") + "/.cache/multiclass_yolo/" +
-        std::to_string(std::hash<std::string>{}(identity)) + "." + precision + ".engine";
+    const auto default_model = share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx";
+    fp_model_path_ = declare_parameter<std::string>("model_path", default_model);
+    int8_model_path_ = declare_parameter<std::string>("int8_model_path",
+      share + "/models/multiclass_yolox_tiny_512x320_holdout10.int8.qdq.onnx");
+    backend_ = declare_parameter<std::string>("inference_backend", "TENSORRT");
+    precision_ = declare_parameter<std::string>("engine_precision", "fp16");
+    std::transform(backend_.begin(), backend_.end(), backend_.begin(),
+      [](unsigned char c) {return static_cast<char>(std::toupper(c));});
+    std::transform(precision_.begin(), precision_.end(), precision_.begin(),
+      [](unsigned char c) {return static_cast<char>(std::tolower(c));});
+    startup_precision_ = precision_;
+    if (precision_ == "int8" && fp_model_path_ != default_model) {
+      int8_model_path_ = std::exchange(fp_model_path_, default_model);
     }
+    startup_cache_ = declare_parameter<std::string>("engine_cache_path", "");
+    const char * home = std::getenv("HOME");
+    cache_directory_ = std::filesystem::path(home ? home : "/tmp") / ".cache/multiclass_yolo";
+    auto directory = declare_parameter<std::string>("measurement_directory", "");
+    measurement_directory_ = directory.empty() ?
+      cache_directory_ / "measurements" : std::filesystem::absolute(directory);
+    measurement_seconds_ = declare_parameter<int>("measurement_seconds", 15);
+    if (measurement_seconds_ < 1 || measurement_seconds_ > max_measurement_seconds_)
+      throw std::invalid_argument("measurement_seconds must be in [1, 120]");
     format_ = declare_parameter<std::string>("input_format", "nv12");
     width_ = declare_parameter<int>("width", 1280);
     height_ = declare_parameter<int>("height", 800);
@@ -54,7 +65,7 @@ class Preview : public rclcpp::Node {
     undistort_ = declare_parameter<bool>("undistort_enabled", true);
     timeout_ = declare_parameter<double>("frame_timeout_sec", 5.0);
     auto workspace = declare_parameter<int>("tensorrt_workspace_size_mb", 1024);
-    double nms = declare_parameter<double>("nms_threshold", 0.65);
+    nms_ = static_cast<float>(declare_parameter<double>("nms_threshold", 0.65));
     if ((format_ != "rgb" && format_ != "nv12") || width_ <= 0 || height_ <= 0 ||
         width_ % 2 || height_ % 2 || !std::isfinite(fps_) || fps_ <= 0 ||
         !std::isfinite(timeout_) || timeout_ <= 0 || workspace < 1 || workspace > 16384)
@@ -64,12 +75,11 @@ class Preview : public rclcpp::Node {
       if (!std::isfinite(v) || v < 0 || v > 1) throw std::invalid_argument("Thresholds must be in [0,1]");
       thresholds_[i] = static_cast<float>(v);
     }
-    if (!std::filesystem::is_regular_file(model)) throw std::runtime_error("Model missing: " + model);
-    detector_ = std::make_unique<YoloxDetector>(model, backend, cache, precision,
-      512, 320, 0.0f, static_cast<float>(nms), std::size_t(workspace)*1024*1024,
-      [this](const std::string & s) {RCLCPP_INFO(get_logger(), "%s", s.c_str());});
+    workspace_bytes_ = std::size_t(workspace) * 1024 * 1024;
+    detector_ = make_detector(precision_);
     if (format_ == "nv12" && !detector_->supports_nv12_input())
       throw std::invalid_argument("input_format=nv12 requires TensorRT; CPU: use input_format=rgb engine_precision=fp32");
+    warmup_detector(*detector_, roi_height_percent_, thresholds_);
     auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
     camera_id_ = device->getDeviceId();
     for (const auto & camera : device->getConnectedCameraFeatures()) {
@@ -90,6 +100,10 @@ class Preview : public rclcpp::Node {
   ~Preview() override {
     stop_ = true;
     if (capture_.joinable()) capture_.join();
+    if (pending_detector_.valid()) pending_detector_.wait();
+    if (measurement_) {
+      try {finish_measurement("interrupted");} catch (...) {}
+    }
     try { close_camera(); } catch (...) {}
   }
   void run() {
@@ -100,7 +114,7 @@ class Preview : public rclcpp::Node {
       if (event == cv::EVENT_LBUTTONDOWN) static_cast<PreviewPanel *>(data)->click(x, y);
     }, &panel);
     constexpr int video_width = static_cast<int>(1024 * 1.1 + .5);
-    constexpr int video_top = 70;
+    constexpr int video_top = 122;
     const int video_height = std::max(1, static_cast<int>(std::lround(
       static_cast<double>(video_width) * height_ / width_)));
     const int video_left = PreviewPanel::width;
@@ -120,10 +134,16 @@ class Preview : public rclcpp::Node {
     };
     std::uint64_t previous = 0, outputs = 0, skipped = 0, session = 0;
     double displayed_fps = 0;
-    std::string displayed_status;
+    std::string displayed_status, displayed_toolbar;
     auto last_log = Clock::now();
     while (rclcpp::ok() && !stop_) {
       rclcpp::spin_some(get_node_base_interface());
+      if (poll_model_change()) {
+        detections.clear();
+        if (video_enabled_) video.setTo(cv::Scalar(20,20,20));
+        panel.dirty = true;
+      }
+      if (measurement_ && Clock::now() >= measurement_->end) finish_measurement("completed");
       std::shared_ptr<dai::ImgFrame> frame;
       Clock::time_point received, first;
       std::uint64_t count;
@@ -146,12 +166,24 @@ class Preview : public rclcpp::Node {
       }
       if (!changing_fps && std::chrono::duration<double>(Clock::now()-received).count() > timeout_)
         throw std::runtime_error("No camera frame within frame_timeout_sec; check OAK/USB and other camera processes");
+      std::optional<MeasurementFrame> sample;
+      std::optional<Clock::time_point> preview_submitted;
+      Clock::time_point detection_completed;
       if (frame) {
         if (previous == 0) RCLCPP_INFO(get_logger(), "First camera frame received; starting inference");
+        const auto began = Clock::now();
+        if (measurement_ && measurement_->contains(began)) {
+          sample.emplace();
+          sample->started_ms = milliseconds(began - measurement_->start);
+          sample->sequence = frame->getSequenceNum();
+          (*sample)[Stage::queue] = milliseconds(began - received);
+          const auto base = std::max(previous, capture_measurement_->base);
+          if (measurement_->contains(received) && count > base)
+            sample->host_skipped = count - base - 1;
+        }
         skipped += count > previous ? count - previous - 1 : 0;
         previous = count;
         detector_->set_thresholds(thresholds_);
-        const auto began = Clock::now();
         const int roi_percent = roi_height_percent_;
         const int roi_height = std::max(1, static_cast<int>(std::lround(height_ * (roi_percent / 100.0))));
         const cv::Rect roi(0, height_ - roi_height, width_, roi_height);
@@ -160,30 +192,54 @@ class Preview : public rclcpp::Node {
         if (stride < std::size_t(width_) || bytes.size() < stride*std::size_t(height_)*3/2)
           throw std::runtime_error("Invalid NV12 buffer/pitch");
         YoloxDetectionResult result;
-        cv::Mat display;
-        const auto conversion_started = Clock::now();
-        double conversion_ms = 0;
+        cv::Mat display, rgb;
+        cv::Mat y(height_, width_, CV_8UC1, const_cast<std::uint8_t *>(bytes.data()), stride);
+        cv::Mat uv(height_/2, width_/2, CV_8UC2, const_cast<std::uint8_t *>(bytes.data())+stride*height_, stride);
+        double input_color_ms = 0, display_color_ms = 0;
         if (format_ == "nv12") {
           result = detector_->detect_nv12(bytes.data(), bytes.size(), stride, width_, height_, roi);
-          const auto t = Clock::now();
-          cv::Mat y(height_, width_, CV_8UC1, const_cast<std::uint8_t *>(bytes.data()), stride);
-          cv::Mat uv(height_/2, width_/2, CV_8UC2, const_cast<std::uint8_t *>(bytes.data())+stride*height_, stride);
-          cv::cvtColorTwoPlane(y, uv, display, cv::COLOR_YUV2BGR_NV12);
-          conversion_ms = std::chrono::duration<double,std::milli>(Clock::now()-t).count();
         } else {
-          cv::Mat y(height_, width_, CV_8UC1, const_cast<std::uint8_t *>(bytes.data()), stride);
-          cv::Mat uv(height_/2, width_/2, CV_8UC2, const_cast<std::uint8_t *>(bytes.data())+stride*height_, stride);
-          cv::Mat rgb;
+          const auto conversion_started = Clock::now();
           cv::cvtColorTwoPlane(y, uv, rgb, cv::COLOR_YUV2RGB_NV12);
-          conversion_ms = std::chrono::duration<double,std::milli>(Clock::now()-conversion_started).count();
+          input_color_ms = milliseconds(Clock::now() - conversion_started);
           // Model metadata requires BGR: blobFromImage swaps this RGB buffer to BGR.
           result = detector_->detect(rgb, roi, true);
-          cv::cvtColor(rgb, display, cv::COLOR_RGB2BGR);
         }
-        if (roi.y > 0)
-          cv::line(display, {0, roi.y}, {width_ - 1, roi.y}, {0, 220, 255}, 1, cv::LINE_AA);
-        detector_->draw(display, result.detections);
-        const double total_ms = std::chrono::duration<double,std::milli>(Clock::now()-began).count();
+        detection_completed = Clock::now();
+        if (sample) {
+          const auto & timing = result.timing;
+          sample->detections = result.detections.size();
+          (*sample)[Stage::receive_to_result] = milliseconds(detection_completed - received);
+          if (format_ == "rgb") {
+            (*sample)[Stage::input_color] = input_color_ms;
+            (*sample)[Stage::cpu_preprocess] = timing.preprocessing_nanoseconds / 1e6;
+          } else {
+            (*sample)[Stage::cuda_preprocess] = timing.preprocessing_nanoseconds / 1e6;
+          }
+          if (backend_ == "TENSORRT") {
+            (*sample)[Stage::upload] = timing.input_transfer_nanoseconds / 1e6;
+            (*sample)[Stage::download] = timing.output_transfer_nanoseconds / 1e6;
+          }
+          (*sample)[Stage::inference] = timing.forward_nanoseconds / 1e6;
+          (*sample)[Stage::postprocess] = timing.postprocessing_nanoseconds / 1e6;
+        }
+        if (video_enabled_) {
+          const auto display_started = Clock::now();
+          if (format_ == "nv12") cv::cvtColorTwoPlane(y, uv, display, cv::COLOR_YUV2BGR_NV12);
+          else cv::cvtColor(rgb, display, cv::COLOR_RGB2BGR);
+          display_color_ms = milliseconds(Clock::now() - display_started);
+          const auto overlay_started = Clock::now();
+          if (roi.y > 0)
+            cv::line(display, {0, roi.y}, {width_ - 1, roi.y}, {0, 220, 255}, 1, cv::LINE_AA);
+          detector_->draw(display, result.detections);
+          cv::resize(display, video, video.size(), 0, 0, cv::INTER_LINEAR);
+          if (sample) {
+            (*sample)[Stage::display_color] = display_color_ms;
+            (*sample)[Stage::overlay] = milliseconds(Clock::now() - overlay_started);
+          }
+        }
+        const double total_ms = milliseconds(Clock::now() - began);
+        if (sample) (*sample)[Stage::processing] = total_ms;
         // Common epoch: first host receipt, engine build and camera startup excluded.
         const double elapsed = std::chrono::duration<double>(Clock::now()-first).count();
         std::uint64_t current_received;
@@ -194,42 +250,87 @@ class Preview : public rclcpp::Node {
         }
         const double in_fps = elapsed > 0.5 ? double(current_received-1)/elapsed : 0;
         const double out_fps = elapsed > 0.5 ? double(outputs)/elapsed : 0;
-        cv::resize(display, video, video.size(), 0, 0, cv::INTER_LINEAR);
-        canvas(cv::Rect(video_left, 0, video_width, video_top)).setTo(cv::Scalar(20,20,20));
-        cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG output %.2f FPS | target %.6g", in_fps, out_fps, fps),
-          {video_left + 10, 25}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
-        cv::putText(canvas, cv::format("%s | total %.1f ms | convert %.1f ms | skipped %llu | Q/ESC quit",
-          format_.c_str(), total_ms, conversion_ms, static_cast<unsigned long long>(skipped)),
-          {video_left + 10, 53}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
-        detections = std::move(result.detections);
-        detection_thresholds = thresholds_;
+        if (video_enabled_) {
+          canvas(cv::Rect(video_left, 68, video_width, video_top - 68)).setTo(cv::Scalar(20,20,20));
+          cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG detection %.2f FPS | target %.6g", in_fps, out_fps, fps),
+            {video_left + 10, 85}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
+          cv::putText(canvas, cv::format("%s | total %.1f ms | input/display color %.1f/%.1f ms | skipped %llu | Q/ESC quit",
+            format_.c_str(), total_ms, input_color_ms, display_color_ms, static_cast<unsigned long long>(skipped)),
+            {video_left + 10, 109}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
+          detections = std::move(result.detections);
+          detection_thresholds = thresholds_;
+        }
         ++outputs;
         if (Clock::now()-last_log >= 2s) {
           RCLCPP_INFO(get_logger(),
-            "AVG input %.2f / output %.2f FPS; ROI %d%%; total %.2f ms; upload %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
+            "AVG input %.2f / detection %.2f FPS; ROI %d%%; total %.2f ms; upload %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
             in_fps, out_fps, roi_percent, total_ms, result.timing.input_transfer_nanoseconds/1e6,
             result.timing.preprocessing_nanoseconds/1e6, result.timing.forward_nanoseconds/1e6,
             static_cast<unsigned long long>(skipped));
           last_log = Clock::now();
         }
       }
-      if (frame || panel.dirty || fps != displayed_fps || camera_status != displayed_status) {
+      const auto toolbar = toolbar_status();
+      const bool show_frame = frame && video_enabled_;
+      if (show_frame || panel.dirty || fps != displayed_fps ||
+          camera_status != displayed_status || toolbar != displayed_toolbar) {
+        const auto panel_started = Clock::now();
+        panel.draw_toolbar(canvas, precision_, measurement_seconds_, bool(measurement_), video_enabled_, toolbar);
         panel.draw(canvas, fps, roi_height_percent_, names_, thresholds_,
           detection_thresholds, detections, camera_status);
+        const auto before_imshow = Clock::now();
         cv::imshow(window, canvas);
-        if (frame && outputs == 1) RCLCPP_INFO(get_logger(), "First detection frame submitted to preview");
+        const auto after_imshow = Clock::now();
+        if (sample) {
+          (*sample)[Stage::panel] = milliseconds(before_imshow - panel_started);
+          (*sample)[Stage::imshow] = milliseconds(after_imshow - before_imshow);
+          if (show_frame) {
+            preview_submitted = after_imshow;
+            (*sample)[Stage::receive_to_submit] = milliseconds(after_imshow - received);
+          }
+        }
+        if (show_frame && outputs == 1) RCLCPP_INFO(get_logger(), "First detection frame submitted to preview");
         panel.dirty = false;
         displayed_fps = fps;
         displayed_status = camera_status;
+        displayed_toolbar = toolbar;
       }
+      const auto before_wait_key = Clock::now();
       int key = cv::waitKey(1) & 255;
+      if (sample) {
+        (*sample)[Stage::wait_key] = milliseconds(Clock::now() - before_wait_key);
+        measurement_->record(std::move(*sample), detection_completed, preview_submitted);
+      }
       if (panel.handle_key(key)) key = -1;
       if (const auto edit = panel.take_submission()) panel.finish(apply_preview_input(*edit));
+      switch (panel.take_action()) {
+        case PreviewPanel::Action::fp16: request_model("fp16"); break;
+        case PreviewPanel::Action::int8: request_model("int8"); break;
+        case PreviewPanel::Action::measure:
+          if (measurement_) finish_measurement(Clock::now() >= measurement_->end ? "completed" : "stopped");
+          else start_measurement();
+          break;
+        case PreviewPanel::Action::toggle_video:
+          if (measurement_) {
+            toolbar_notice_ = "Stop measurement before changing video mode";
+          } else {
+            video_enabled_ = !video_enabled_;
+            toolbar_notice_.clear();
+            detections.clear();
+            video.setTo(cv::Scalar(20,20,20));
+            canvas(cv::Rect(video_left, 68, video_width, video_top - 68)).setTo(cv::Scalar(20,20,20));
+            if (!video_enabled_) cv::putText(video, "Video paused | Detection running", {20, video.rows / 2},
+              cv::FONT_HERSHEY_SIMPLEX, .7, {240,240,240}, 1, cv::LINE_AA);
+          }
+          break;
+        default: break;
+      }
       const auto reason = exit_state.reason(key, property(cv::WND_PROP_VISIBLE),
         property(cv::WND_PROP_AUTOSIZE));
       if (reason) {exit_reason = reason; break;}
       if (!frame) std::this_thread::sleep_for(1ms);
     }
+    if (measurement_) finish_measurement("interrupted");
     RCLCPP_INFO(get_logger(), "Preview stopped: %s", exit_reason.c_str());
     cv::destroyAllWindows();
   }
@@ -265,7 +366,150 @@ class Preview : public rclcpp::Node {
     }
   }
 
+  const std::string & model_path(const std::string & precision) const {
+    return precision == "int8" ? int8_model_path_ : fp_model_path_;
+  }
+
+  std::unique_ptr<YoloxDetector> make_detector(const std::string & precision) const {
+    const auto & model = model_path(precision);
+    if (!std::filesystem::is_regular_file(model)) throw std::runtime_error("Model missing: " + model);
+    auto cache = precision == startup_precision_ ? startup_cache_ : std::string{};
+    if (cache.empty() && backend_ == "TENSORRT") {
+      const auto modified = std::filesystem::last_write_time(model).time_since_epoch().count();
+      const auto identity = std::filesystem::canonical(model).string() + "|" +
+        std::to_string(std::filesystem::file_size(model)) + "|" +
+        std::to_string(static_cast<long long>(modified)) + "|" + std::to_string(workspace_bytes_);
+      cache = (cache_directory_ / (std::to_string(std::hash<std::string>{}(identity)) +
+        "." + precision + ".engine")).string();
+    }
+    return std::make_unique<YoloxDetector>(model, backend_, cache, precision,
+      512, 320, 0.0f, nms_, workspace_bytes_,
+      [logger = get_logger()](const std::string & status) {RCLCPP_INFO(logger, "%s", status.c_str());});
+  }
+
+  void warmup_detector(YoloxDetector & detector, int roi_percent,
+    const std::array<float, 4> & thresholds) const
+  {
+    detector.set_thresholds(thresholds);
+    const int height = std::max(1, static_cast<int>(std::lround(height_ * (roi_percent / 100.0))));
+    const cv::Rect roi(0, height_ - height, width_, height);
+    if (format_ == "nv12") {
+      const auto stride = static_cast<std::size_t>(width_);
+      std::vector<std::uint8_t> pixels(stride * height_ * 3 / 2, 128);
+      for (int i = 0; i < 3; ++i)
+        detector.detect_nv12(pixels.data(), pixels.size(), stride, width_, height_, roi);
+    } else {
+      const cv::Mat image(height_, width_, CV_8UC3, cv::Scalar(114, 114, 114));
+      for (int i = 0; i < 3; ++i) detector.detect(image, roi, true);
+    }
+  }
+
+  void request_model(const std::string & precision) {
+    if (precision == precision_) return;
+    if (backend_ != "TENSORRT") {
+      toolbar_notice_ = "FP16 and INT8 require TensorRT";
+      return;
+    }
+    if (measurement_ || pending_detector_.valid()) {
+      toolbar_notice_ = "Finish the current measurement or model change first";
+      return;
+    }
+    pending_precision_ = precision;
+    toolbar_notice_ = "Loading " + precision + " engine...";
+    try {
+      pending_detector_ = std::async(std::launch::async,
+        [this, precision, roi_percent = roi_height_percent_, thresholds = thresholds_] {
+          auto candidate = make_detector(precision);
+          warmup_detector(*candidate, roi_percent, thresholds);
+          return candidate;
+        });
+    } catch (const std::exception & error) {
+      toolbar_notice_ = "Cannot start engine load";
+      RCLCPP_WARN(get_logger(), "Cannot start engine load: %s", error.what());
+    }
+  }
+
+  bool poll_model_change() {
+    if (!pending_detector_.valid() || pending_detector_.wait_for(0s) != std::future_status::ready)
+      return false;
+    try {
+      auto next = pending_detector_.get();
+      detector_ = std::move(next);
+      precision_ = pending_precision_;
+      toolbar_notice_ = "Engine ready";
+      return true;
+    } catch (const std::exception & error) {
+      toolbar_notice_ = "Engine load failed. Previous model active.";
+      RCLCPP_WARN(get_logger(), "%s engine load failed: %s", pending_precision_.c_str(), error.what());
+      return false;
+    }
+  }
+
+  void start_measurement() {
+    if (pending_detector_.valid()) {
+      toolbar_notice_ = "Wait for the engine to be ready";
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (requested_fps_ || received_ == 0) {
+        toolbar_notice_ = "Wait for the camera stream";
+        return;
+      }
+      const nlohmann::json settings = {
+        {"model", model_path(precision_)}, {"precision", precision_}, {"backend", backend_},
+        {"input_format", format_}, {"video_enabled", video_enabled_}, {"sensor_fps", fps_},
+        {"frame_width", width_}, {"frame_height", height_}, {"roi_height_percent", roi_height_percent_},
+        {"class_thresholds", {{"con", thresholds_[0]}, {"truck", thresholds_[1]},
+          {"sedan", thresholds_[2]}, {"traffic_light", thresholds_[3]}}},
+        {"nms_threshold", nms_}, {"undistort_enabled", undistort_},
+        {"workspace_bytes", workspace_bytes_}, {"duration_requested_seconds", measurement_seconds_}
+      };
+      measurement_.emplace(Clock::now(), measurement_seconds_, settings);
+      capture_measurement_.emplace(CaptureMeasurement{measurement_->start, measurement_->end, received_, 0, 0, std::nullopt});
+    }
+    toolbar_notice_.clear();
+    RCLCPP_INFO(get_logger(), "Measuring for %d seconds; destination: %s",
+      measurement_seconds_, measurement_directory_.string().c_str());
+  }
+
+  void finish_measurement(const char * reason) {
+    CaptureMeasurement capture;
+    Clock::time_point stop;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      stop = Clock::now();
+      capture = *capture_measurement_;
+      capture_measurement_.reset();
+    }
+    try {
+      const auto directory = measurement_->save(measurement_directory_, stop, capture, reason);
+      toolbar_notice_ = "Saved " + directory.string();
+      RCLCPP_INFO(get_logger(), "Measurement saved: %s", directory.string().c_str());
+    } catch (const std::exception & error) {
+      toolbar_notice_ = "Measurement save failed. See console.";
+      RCLCPP_ERROR(get_logger(), "Measurement save failed: %s", error.what());
+    }
+    measurement_.reset();
+  }
+
+  std::string toolbar_status() const {
+    if (!measurement_) return toolbar_notice_;
+    const int seconds = std::max(0, static_cast<int>(std::ceil(
+      std::chrono::duration<double>(measurement_->end - Clock::now()).count())));
+    return cv::format("Recording (%d s left)", seconds) +
+      (toolbar_notice_.empty() ? "" : " | " + toolbar_notice_);
+  }
+
   std::string apply_preview_input(const PreviewPanel::Edit & edit) {
+    if (measurement_) return "Stop measurement to change settings";
+    if (edit.field == PreviewPanel::duration_field) {
+      if (!edit.value || *edit.value < 1 || *edit.value > max_measurement_seconds_ ||
+          std::trunc(*edit.value) != *edit.value)
+        return "Enter whole seconds from 1 to 120";
+      measurement_seconds_ = static_cast<int>(*edit.value);
+      return {};
+    }
     if (edit.field == PreviewPanel::fps_field) return request_camera_fps(edit.value);
     if (edit.field == PreviewPanel::roi_field) {
       if (!edit.value || *edit.value < 1 || *edit.value > 100 ||
@@ -359,6 +603,7 @@ class Preview : public rclcpp::Node {
         std::lock_guard<std::mutex> lock(mutex_);
         last_frame_ = Clock::now();
         if (received_ == 0) first_frame_ = last_frame_;
+        if (capture_measurement_) capture_measurement_->record(last_frame_, packet->getSequenceNum());
         latest_ = std::move(packet); ++received_;
       }
     } catch (const std::exception & e) {std::lock_guard<std::mutex> lock(mutex_); error_ = e.what();}
@@ -372,6 +617,17 @@ class Preview : public rclcpp::Node {
   static constexpr int sensor_height_ = 800;
   double min_fps_{0}, max_fps_{0};
   std::string camera_id_, format_;
+  std::string backend_, precision_, startup_precision_, pending_precision_, startup_cache_;
+  std::string fp_model_path_, int8_model_path_, toolbar_notice_;
+  std::filesystem::path cache_directory_, measurement_directory_;
+  float nms_{};
+  std::size_t workspace_bytes_{};
+  static constexpr int max_measurement_seconds_ = 120;
+  int measurement_seconds_{15};
+  bool video_enabled_{true};
+  std::optional<PreviewMeasurement> measurement_;
+  std::optional<CaptureMeasurement> capture_measurement_;
+  std::future<std::unique_ptr<YoloxDetector>> pending_detector_;
   std::unique_ptr<YoloxDetector> detector_;
   std::unique_ptr<dai::Pipeline> pipeline_; std::shared_ptr<dai::MessageQueue> queue_;
   std::atomic<bool> stop_{false}; std::thread capture_; std::mutex mutex_;

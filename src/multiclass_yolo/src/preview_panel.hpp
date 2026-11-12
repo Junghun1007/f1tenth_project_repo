@@ -10,6 +10,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace multiclass_yolo {
@@ -21,6 +22,9 @@ class PreviewPanel {
   static constexpr int fps_field = 0;
   static constexpr int roi_field = 1;
   static constexpr int first_threshold_field = 2;
+  static constexpr int duration_field = first_threshold_field + 4;
+
+  enum class Action { none, fp16, int8, measure, toggle_video };
 
   struct Edit {
     int field;
@@ -29,6 +33,13 @@ class PreviewPanel {
 
   void click(int x, int y) {
     const cv::Point position{x, y};
+    for (const auto action : {Action::fp16, Action::int8, Action::measure, Action::toggle_video}) {
+      if (button_rect(action).contains(position)) {
+        finish({});
+        action_ = action;
+        return;
+      }
+    }
     if (page_ > 0 && previous_page_.contains(position)) {
       --page_;
       dirty = true;
@@ -43,7 +54,7 @@ class PreviewPanel {
       submit_ = true;
       return;
     }
-    for (int field = fps_field; field < first_threshold_field + 4; ++field) {
+    for (int field = fps_field; field <= duration_field; ++field) {
       if (input_rect(field).contains(position)) {
         if (active_ != field) begin(field);
         return;
@@ -77,6 +88,21 @@ class PreviewPanel {
     message_.clear();
     dirty = true;
     return true;
+  }
+
+  Action take_action() {return std::exchange(action_, Action::none);}
+
+  void draw_toolbar(cv::Mat & canvas, const std::string & precision, int duration,
+    bool recording, bool video, const std::string & status) const
+  {
+    canvas(cv::Rect(width, 0, canvas.cols - width, 68)).setTo(cv::Scalar(20, 20, 20));
+    button(canvas, Action::fp16, "FP16", precision == "fp16");
+    button(canvas, Action::int8, "INT8", precision == "int8");
+    draw_input(canvas, duration_field, "Duration (s)", duration);
+    button(canvas, Action::measure, recording ? "Stop" : "Measure", recording);
+    button(canvas, Action::toggle_video, video ? "Video on" : "Video off", video);
+    text(canvas, "Active: " + precision, {width + 14, 59}, .53);
+    text(canvas, status, {width + 142, 59}, .51);
   }
 
   std::optional<Edit> take_submission() {
@@ -177,11 +203,29 @@ class PreviewPanel {
   }
 
   static cv::Rect input_rect(int field) {
+    if (field == duration_field) return {width + 268, 12, 90, 28};
     return {145, row_top(field), 111, 28};
   }
 
   static cv::Rect apply_rect(int field) {
+    if (field == duration_field) return {width + 364, 12, 50, 28};
     return {262, row_top(field), 50, 28};
+  }
+
+  static cv::Rect button_rect(Action action) {
+    switch (action) {
+      case Action::fp16: return {width + 14, 12, 72, 28};
+      case Action::int8: return {width + 94, 12, 72, 28};
+      case Action::measure: return {width + 424, 12, 98, 28};
+      case Action::toggle_video: return {width + 532, 12, 102, 28};
+      default: return {};
+    }
+  }
+
+  static void button(cv::Mat & canvas, Action action, const char * label, bool selected) {
+    const auto rect = button_rect(action);
+    cv::rectangle(canvas, rect, selected ? cv::Scalar(92, 77, 35) : cv::Scalar(65, 65, 65), cv::FILLED);
+    text(canvas, label, {rect.x + 9, rect.y + 19}, .51);
   }
 
   static void text(
@@ -195,9 +239,10 @@ class PreviewPanel {
     const auto input = input_rect(field);
     const bool editing = active_ == field;
     const int y = input.y + 19;
-    text(panel, label, {14, y});
+    text(panel, label, {field == duration_field ? width + 181 : 14, y});
     cv::rectangle(panel, input, editing ? cv::Scalar(100, 210, 255) : cv::Scalar(120, 120, 120), 1);
-    text(panel, editing ? value_ + "_" : cv::format("%.6g", value), {input.x + 6, y});
+    cv::Mat input_text = panel(input);
+    text(input_text, editing ? value_ + "_" : cv::format("%.6g", value), {6, 19});
     if (editing) {
       const auto apply = apply_rect(field);
       cv::rectangle(panel, apply, cv::Scalar(65, 65, 65), cv::FILLED);
@@ -210,6 +255,7 @@ class PreviewPanel {
   std::optional<int> active_;
   std::string value_, message_;
   bool submit_{false};
+  Action action_{Action::none};
 };
 
 }  // namespace multiclass_yolo

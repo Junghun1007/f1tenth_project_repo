@@ -3,6 +3,7 @@ multiclass_yolo:
     input_format: nv12
     inference_backend: TENSORRT
     engine_precision: fp16
+    measurement_seconds: 15
     width: 1280
     height: 800
     sensor_fps: 30.0
