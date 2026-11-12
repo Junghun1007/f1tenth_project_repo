@@ -1,6 +1,7 @@
 #include "multiclass_yolo/yolox_detector.hpp"
 #include "multiclass_yolo/preview_exit.hpp"
 #include "preview_panel.hpp"
+#include "preview_bev.hpp"
 #include "preview_measurement.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "depthai/depthai.hpp"
@@ -14,6 +15,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <future>
@@ -29,6 +31,16 @@ using Clock = multiclass_yolo::PreviewClock;
 using namespace std::chrono_literals;
 namespace multiclass_yolo {
 class Preview : public rclcpp::Node {
+  struct CameraChange {
+    double fps;
+    std::optional<point_cloud::Config> stereo;
+    std::optional<oak_startup::OakStartupMeasurementConfig> fit;
+  };
+
+  struct FirstFrames {
+    std::shared_ptr<dai::ImgFrame> rgb, depth;
+  };
+
   struct ModelSelection {
     std::string precision{"fp16"};
     bool roi80{false};
@@ -81,7 +93,7 @@ class Preview : public rclcpp::Node {
     format_ = declare_parameter<std::string>("input_format", "nv12");
     width_ = declare_parameter<int>("width", 1280);
     height_ = declare_parameter<int>("height", 800);
-    fps_ = declare_parameter<double>("sensor_fps", 30.0);
+    fps_ = declare_parameter<double>("sensor_fps", 40.0);
     roi_height_percent_ = declare_parameter<int>("roi_height_percent", 65);
     if (roi_height_percent_ < 1 || roi_height_percent_ > 100)
       throw std::invalid_argument("roi_height_percent must be in [1, 100]");
@@ -94,7 +106,7 @@ class Preview : public rclcpp::Node {
         !std::isfinite(timeout_) || timeout_ <= 0 || workspace < 1 || workspace > 16384)
       throw std::invalid_argument("Invalid input_format/dimensions/FPS/timeout/workspace");
     for (int i=0; i<4; ++i) {
-      double v = declare_parameter<double>(std::string(names_[i])+"_threshold", 0.25);
+      double v = declare_parameter<double>(std::string(names_[i])+"_threshold", 0.70);
       if (!std::isfinite(v) || v < 0 || v > 1) throw std::invalid_argument("Thresholds must be in [0,1]");
       thresholds_[i] = static_cast<float>(v);
     }
@@ -103,7 +115,19 @@ class Preview : public rclcpp::Node {
     if (format_ == "nv12" && !detector_->supports_nv12_input())
       throw std::invalid_argument("input_format=nv12 requires TensorRT; CPU: use input_format=rgb engine_precision=fp32");
     warmup_detector(*detector_, roi_percent_for(active_model_), thresholds_);
-    auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
+    if (declare_parameter<bool>("depth_fusion_enabled", true)) {
+      if (!undistort_) throw std::invalid_argument("BEV fusion requires undistort_enabled=true");
+      bev_settings_.emplace(*this);
+      active_stereo_ = bev_settings_->roi.camera;
+      try {
+        ground_pose_ = measure_ground(bev_settings_->startup);
+      } catch (const std::exception & error) {
+        RCLCPP_WARN(get_logger(), "Ground measurement failed: %s. Use Refit ground to retry.", error.what());
+      }
+    }
+    auto device = ground_pose_ ?
+      std::make_shared<dai::Device>(dai::DeviceInfo(ground_pose_->device_id), dai::UsbSpeed::SUPER) :
+      std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
     camera_id_ = device->getDeviceId();
     for (const auto & camera : device->getConnectedCameraFeatures()) {
       if (camera.socket != dai::CameraBoardSocket::CAM_A) continue;
@@ -116,7 +140,8 @@ class Preview : public rclcpp::Node {
       }
       break;
     }
-    start_camera(fps_, device);
+    start_camera(fps_, device, active_stereo_);
+    active_calibration_ = stream_calibration_;
     last_frame_ = Clock::now();
     capture_ = std::thread([this] { capture_loop(); });
   }
@@ -148,6 +173,7 @@ class Preview : public rclcpp::Node {
     cv::putText(video, "Waiting for camera frames...", {20, video_height / 2},
       cv::FONT_HERSHEY_SIMPLEX, .7, {240,240,240}, 1, cv::LINE_AA);
     std::vector<Detection> detections;
+    std::vector<std::pair<int, int>> depth_counts;
     auto detection_thresholds = thresholds_;
     PreviewExit exit_state;
     std::string exit_reason = "ROS shutdown / stop requested";
@@ -172,6 +198,7 @@ class Preview : public rclcpp::Node {
       rclcpp::spin_some(get_node_base_interface());
       if (poll_model_change()) {
         detections.clear();
+        depth_counts.clear();
         if (video_enabled_) video.setTo(cv::Scalar(20,20,20));
         reset_inference_window();
       }
@@ -192,7 +219,7 @@ class Preview : public rclcpp::Node {
         }
         count = received_; first = first_frame_; received = last_frame_;
         fps = fps_;
-        changing_fps = requested_fps_.has_value();
+        changing_fps = requested_camera_.has_value();
         camera_status = fps_status_;
         if (count != previous) frame = latest_;
       }
@@ -259,15 +286,28 @@ class Preview : public rclcpp::Node {
           if (format_ == "nv12") cv::cvtColorTwoPlane(y, uv, display, cv::COLOR_YUV2BGR_NV12);
           else cv::cvtColor(rgb, display, cv::COLOR_RGB2BGR);
           display_color_ms = milliseconds(Clock::now() - display_started);
+          if (sample) (*sample)[Stage::display_color] = display_color_ms;
+        }
+        if (bev_settings_) {
+          const auto fusion_started = Clock::now();
+          try {
+            auto fused = make_bev(*frame, result.detections, display, session);
+            depth_counts = std::move(fused.points);
+            if (video_enabled_) show_bev(video, fused.image);
+            if (sample && fused.sync_ms) (*sample)[Stage::rgb_depth_skew] = *fused.sync_ms;
+          } catch (const std::exception & error) {
+            depth_counts.clear();
+            if (video_enabled_) show_bev(video, {});
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "BEV fusion: %s", error.what());
+          }
+          if (sample) (*sample)[Stage::depth_fusion] = milliseconds(Clock::now() - fusion_started);
+        } else if (video_enabled_) {
           const auto overlay_started = Clock::now();
           if (roi.y > 0)
             cv::line(display, {0, roi.y}, {width_ - 1, roi.y}, {0, 220, 255}, 1, cv::LINE_AA);
           detector_->draw(display, result.detections);
           cv::resize(display, video, video.size(), 0, 0, cv::INTER_LINEAR);
-          if (sample) {
-            (*sample)[Stage::display_color] = display_color_ms;
-            (*sample)[Stage::overlay] = milliseconds(Clock::now() - overlay_started);
-          }
+          if (sample) (*sample)[Stage::overlay] = milliseconds(Clock::now() - overlay_started);
         }
         const double total_ms = milliseconds(Clock::now() - began);
         if (sample) (*sample)[Stage::processing] = total_ms;
@@ -317,9 +357,9 @@ class Preview : public rclcpp::Node {
         const auto panel_started = Clock::now();
         panel.draw_toolbar(canvas, active_model_.precision, active_model_.roi80,
           measurement_seconds_, bool(measurement_), video_enabled_, toolbar,
-          compute_label, compute_fps);
+          compute_label, compute_fps, bev_settings_.has_value());
         panel.draw(canvas, fps, roi_percent_for(active_model_), active_model_.roi80, names_, thresholds_,
-          detection_thresholds, detections, camera_status);
+          detection_thresholds, detections, camera_status, settings_for(panel), depth_counts);
         const auto before_imshow = Clock::now();
         cv::imshow(window, canvas);
         const auto after_imshow = Clock::now();
@@ -349,6 +389,9 @@ class Preview : public rclcpp::Node {
         case PreviewPanel::Action::fp16: request_model({"fp16", false}); break;
         case PreviewPanel::Action::int8: request_model({"int8", false}); break;
         case PreviewPanel::Action::roi80: request_model({"fp16", true}); break;
+        case PreviewPanel::Action::refit:
+          toolbar_notice_ = request_refit();
+          break;
         case PreviewPanel::Action::measure:
           if (measurement_) finish_measurement(Clock::now() >= measurement_->end ? "completed" : "stopped");
           else start_measurement();
@@ -360,6 +403,7 @@ class Preview : public rclcpp::Node {
             video_enabled_ = !video_enabled_;
             toolbar_notice_.clear();
             detections.clear();
+            depth_counts.clear();
             video.setTo(cv::Scalar(20,20,20));
             canvas(cv::Rect(video_left, 68, video_width, video_top - 68)).setTo(cv::Scalar(20,20,20));
             if (!video_enabled_) cv::putText(video, "Video paused | Detection running", {20, video.rows / 2},
@@ -378,7 +422,113 @@ class Preview : public rclcpp::Node {
     cv::destroyAllWindows();
   }
  private:
-  void start_camera(double fps, const std::shared_ptr<dai::Device> & device) {
+  oak_startup::OakStartupMeasurement measure_ground(oak_startup::OakStartupMeasurementConfig config) {
+    config.device_id = camera_id_;
+    RCLCPP_INFO(get_logger(), "Measuring ground. Keep the vehicle stationary on a flat floor.");
+    auto pose = oak_startup::measureOakStartupExtrinsics(config, [this] {return stop_ || !rclcpp::ok();});
+    RCLCPP_INFO(get_logger(), "Ground: height %.3f m, roll %.2f deg, pitch %.2f deg",
+      pose.height_m, pose.roll_deg, pose.pitch_down_deg);
+    return pose;
+  }
+
+  std::string request_refit() {
+    if (!bev_settings_) return {};
+    if (measurement_) return "Stop measurement before refitting ground";
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (requested_camera_) return "Camera change in progress";
+    requested_camera_ = CameraChange{fps_, active_stereo_, bev_settings_->startup};
+    fps_status_ = "Refitting ground. Keep vehicle still.";
+    return {};
+  }
+
+  std::vector<std::pair<const char *, double>> settings_for(const PreviewPanel & panel) const {
+    std::vector<std::pair<const char *, double>> values;
+    if (!bev_settings_ || !panel.show_settings()) return values;
+    for (const auto & control : bev_controls()) values.emplace_back(control.label, control.read(*bev_settings_));
+    return values;
+  }
+
+  std::string apply_bev_setting(const PreviewPanel::Edit & edit) {
+    const auto field = static_cast<std::size_t>(edit.field - PreviewPanel::first_setting_field);
+    if (!bev_settings_ || field >= bev_controls().size()) return "Unknown setting";
+    const auto & control = bev_controls()[field];
+    if (!edit.value || !std::isfinite(*edit.value) || *edit.value < control.min ||
+        *edit.value > control.max || (control.integer && std::trunc(*edit.value) != *edit.value))
+      return cv::format("Enter %s%.6g to %.6g", control.integer ? "integer " : "", control.min, control.max);
+    if (*edit.value == control.read(*bev_settings_)) return {};
+
+    auto next = *bev_settings_;
+    control.write(next, *edit.value);
+    try {
+      roi_lidar::validate(next.roi);
+      if (next.startup.minimum_depth_m >= next.startup.maximum_depth_m ||
+          next.startup.minimum_height_m >= next.startup.maximum_height_m)
+        return "Fit minimum must be below maximum";
+    } catch (const std::exception & error) {
+      RCLCPP_WARN(get_logger(), "Invalid %s: %s", control.label, error.what());
+      return "Invalid combination. See console.";
+    }
+    if (control.group == SettingGroup::stereo) {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (requested_camera_) return "Camera change in progress";
+      requested_camera_ = CameraChange{fps_, next.roi.camera, std::nullopt};
+      fps_status_ = "Applying stereo settings...";
+    } else {
+      *bev_settings_ = std::move(next);
+      if (control.group == SettingGroup::fit) {
+        toolbar_notice_ = "Fit settings saved. Press Refit ground.";
+      } else {
+        fusion_.reset();
+        toolbar_notice_ = "Ground filter settings applied";
+      }
+    }
+    return {};
+  }
+
+  BevFrame make_bev(dai::ImgFrame & rgb, const std::vector<Detection> & detections,
+    const cv::Mat & display, std::uint64_t session)
+  {
+    std::shared_ptr<dai::ImgFrame> nearest;
+    std::shared_ptr<const dai::CalibrationHandler> calibration;
+    std::optional<oak_startup::OakStartupMeasurement> pose;
+    const auto captured = rgb.getTimestamp(dai::CameraExposureOffset::MIDDLE);
+    auto best = bev_settings_->sync_ms;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      if (session != camera_session_) return {};
+      calibration = active_calibration_;
+      pose = ground_pose_;
+      for (const auto & depth : depth_frames_) {
+        const auto timestamp = depth->getTimestamp(dai::CameraExposureOffset::MIDDLE);
+        const double age = milliseconds(Clock::now() - timestamp);
+        const auto skew = std::abs(milliseconds(captured - timestamp));
+        if (age >= 0 && age <= bev_settings_->roi.max_age * 1000.0 && skew <= best) {
+          nearest = depth;
+          best = skew;
+        }
+      }
+    }
+    if (!calibration || !pose) return {};
+    return fusion_.process(rgb, nearest.get(), *calibration, *pose, *bev_settings_, detections, display);
+  }
+
+  static void show_bev(cv::Mat & video, const cv::Mat & image) {
+    video.setTo(cv::Scalar(20,20,20));
+    if (image.empty()) {
+      cv::putText(video, "Ground unavailable | Press Refit ground", {20, video.rows / 2},
+        cv::FONT_HERSHEY_SIMPLEX, .7, {240,240,240}, 1, cv::LINE_AA);
+      return;
+    }
+    const double scale = std::min(double(video.cols) / image.cols, double(video.rows) / image.rows);
+    const int w = std::clamp(static_cast<int>(std::lround(image.cols * scale)), 1, video.cols);
+    const int h = std::clamp(static_cast<int>(std::lround(image.rows * scale)), 1, video.rows);
+    cv::Mat target = video(cv::Rect((video.cols - w) / 2, (video.rows - h) / 2, w, h));
+    cv::resize(image, target, target.size(), 0, 0, cv::INTER_LINEAR);
+  }
+
+  void start_camera(double fps, const std::shared_ptr<dai::Device> & device,
+    const std::optional<point_cloud::Config> & stereo_config)
+  {
     auto pipeline = std::make_unique<dai::Pipeline>(device);
     pipeline->setXLinkChunkSize(0);
     auto camera = pipeline->create<dai::node::Camera>()->build(
@@ -386,12 +536,36 @@ class Preview : public rclcpp::Node {
     auto output = camera->requestOutput(std::make_pair(std::uint32_t(width_), std::uint32_t(height_)),
       dai::ImgFrame::Type::NV12, dai::ImgResizeMode::CROP, float(fps), undistort_);
     auto queue = output->createOutputQueue(1U, false);
+    std::shared_ptr<dai::MessageQueue> depth_queue;
+    std::shared_ptr<dai::node::StereoDepth> stereo;
+    std::shared_ptr<const dai::CalibrationHandler> calibration;
+    if (stereo_config) {
+      stereo = point_cloud::addStereoDepth(*pipeline, *stereo_config);
+      depth_queue = stereo->depth.createOutputQueue(1U, false);
+      calibration = std::make_shared<dai::CalibrationHandler>(device->getCalibration());
+    }
     pipeline->build();
     auto bridge = output->getXLinkBridge();
     if (!bridge || !bridge->xLinkOut) throw std::runtime_error("Missing XLink bridge");
     bridge->xLinkOut->input.setMaxSize(1);
     bridge->xLinkOut->input.setBlocking(false);
+    if (stereo) {
+      const auto depth_bridge = stereo->depth.getXLinkBridge();
+      if (!depth_bridge || !depth_bridge->xLinkOut) throw std::runtime_error("Missing stereo XLink bridge");
+      depth_bridge->xLinkOut->input.setMaxSize(1);
+      depth_bridge->xLinkOut->input.setBlocking(false);
+    }
     pipeline->start();
+    if (stereo_config) {
+      if (!device->setIrLaserDotProjectorIntensity(static_cast<float>(stereo_config->dot_intensity)) &&
+          stereo_config->dot_intensity > 0)
+        throw std::runtime_error("IR dot is unsupported on this camera");
+      if (!device->setIrFloodLightIntensity(static_cast<float>(stereo_config->flood_intensity)) &&
+          stereo_config->flood_intensity > 0)
+        throw std::runtime_error("IR flood is unsupported on this camera");
+    }
+    depth_queue_ = std::move(depth_queue);
+    stream_calibration_ = std::move(calibration);
     pipeline_ = std::move(pipeline);
     queue_ = std::move(queue);
     RCLCPP_INFO(get_logger(), "CAM_A NV12 %dx%d @ %.6g; path=%s",
@@ -405,6 +579,8 @@ class Preview : public rclcpp::Node {
       pipeline_->stop();
       pipeline_->wait();
       queue_.reset();
+      depth_queue_.reset();
+      stream_calibration_.reset();
       pipeline_.reset();
     }
   }
@@ -507,11 +683,11 @@ class Preview : public rclcpp::Node {
     }
     {
       std::lock_guard<std::mutex> lock(mutex_);
-      if (requested_fps_ || received_ == 0) {
+      if (requested_camera_ || received_ == 0) {
         toolbar_notice_ = "Wait for the camera stream";
         return;
       }
-      const nlohmann::json settings = {
+      nlohmann::json settings = {
         {"model", model_path(active_model_)}, {"model_variant", active_model_.variant()},
         {"precision", active_model_.precision}, {"backend", backend_},
         {"model_input_width", active_model_.width()}, {"model_input_height", active_model_.height()},
@@ -520,9 +696,17 @@ class Preview : public rclcpp::Node {
         {"class_thresholds", {{"con", thresholds_[0]}, {"truck", thresholds_[1]},
           {"sedan", thresholds_[2]}, {"traffic_light", thresholds_[3]}}},
         {"nms_threshold", nms_}, {"undistort_enabled", undistort_},
+        {"depth_fusion_enabled", bev_settings_.has_value()},
         {"workspace_bytes", workspace_bytes_}, {"duration_requested_seconds", measurement_seconds_}
       };
-      measurement_.emplace(Clock::now(), measurement_seconds_, settings);
+      if (bev_settings_) {
+        auto & tuning = settings["bev_tuning"];
+        for (const auto & control : bev_controls()) tuning[control.label] = control.read(*bev_settings_);
+        if (ground_pose_) settings["ground_pose"] = {
+          {"height_m", ground_pose_->height_m}, {"roll_deg", ground_pose_->roll_deg},
+          {"pitch_down_deg", ground_pose_->pitch_down_deg}};
+      }
+      measurement_.emplace(Clock::now(), measurement_seconds_, std::move(settings));
       capture_measurement_.emplace(CaptureMeasurement{measurement_->start, measurement_->end, received_, 0, 0, std::nullopt});
     }
     toolbar_notice_.clear();
@@ -560,6 +744,7 @@ class Preview : public rclcpp::Node {
 
   std::string apply_preview_input(const PreviewPanel::Edit & edit) {
     if (measurement_) return "Stop measurement to change settings";
+    if (edit.field >= PreviewPanel::first_setting_field) return apply_bev_setting(edit);
     if (edit.field == PreviewPanel::duration_field) {
       if (!edit.value || *edit.value < 1 || *edit.value > max_measurement_seconds_ ||
           std::trunc(*edit.value) != *edit.value)
@@ -587,9 +772,9 @@ class Preview : public rclcpp::Node {
     if (!fps || *fps <= 0 || *fps < min_fps_ || *fps > max_fps_)
       return cv::format("Enter %.6g to %.6g FPS", std::max(0.0, min_fps_), max_fps_);
     std::lock_guard<std::mutex> lock(mutex_);
-    if (requested_fps_) return "Camera FPS change in progress";
+    if (requested_camera_) return "Camera change in progress";
     if (*fps != fps_) {
-      requested_fps_ = fps;
+      requested_camera_ = CameraChange{*fps, active_stereo_, std::nullopt};
       fps_status_ = cv::format("Changing to %.6g FPS...", *fps);
     }
     return {};
@@ -604,40 +789,64 @@ class Preview : public rclcpp::Node {
     return packet;
   }
 
-  std::shared_ptr<dai::ImgFrame> reopen_camera(double fps) {
-    close_camera();
-    start_camera(fps, std::make_shared<dai::Device>(dai::DeviceInfo(camera_id_), dai::UsbSpeed::SUPER));
-    const auto started = Clock::now();
-    while (!stop_ && rclcpp::ok()) {
-      if (auto packet = read_camera_frame()) return packet;
-      if (std::chrono::duration<double>(Clock::now() - started).count() > timeout_)
-        throw std::runtime_error("No camera frames at the requested FPS");
-      std::this_thread::sleep_for(1ms);
-    }
-    return nullptr;
+  std::shared_ptr<dai::ImgFrame> read_depth_frame() {
+    auto depth = depth_queue_ ? depth_queue_->tryGet<dai::ImgFrame>() : nullptr;
+    if (depth && depth->getType() != dai::ImgFrame::Type::RAW16)
+      throw std::runtime_error("Expected RAW16 stereo depth");
+    return depth;
   }
 
-  void change_camera_fps(double requested, double previous) {
-    auto applied = requested;
-    std::string status;
-    std::shared_ptr<dai::ImgFrame> packet;
-    try {
-      packet = reopen_camera(requested);
-    } catch (const std::exception & e) {
-      RCLCPP_WARN(get_logger(), "Cannot stream at %.6g FPS: %s; restoring %.6g FPS",
-        requested, e.what(), previous);
-      if (stop_ || !rclcpp::ok()) return;
-      applied = previous;
-      status = "Failed. Previous FPS restored.";
-      packet = reopen_camera(previous);
+  FirstFrames reopen_camera(double fps, const std::optional<point_cloud::Config> & stereo) {
+    close_camera();
+    start_camera(fps, std::make_shared<dai::Device>(dai::DeviceInfo(camera_id_), dai::UsbSpeed::SUPER), stereo);
+    const auto started = Clock::now();
+    FirstFrames frames;
+    while (!stop_ && rclcpp::ok()) {
+      if (auto rgb = read_camera_frame()) frames.rgb = std::move(rgb);
+      if (auto depth = read_depth_frame()) frames.depth = std::move(depth);
+      if (frames.rgb && (!stereo || frames.depth)) return frames;
+      if (std::chrono::duration<double>(Clock::now() - started).count() > timeout_)
+        throw std::runtime_error("No RGB/stereo frames after reconfiguration");
+      std::this_thread::sleep_for(1ms);
     }
-    if (!packet) return;
+    return {};
+  }
+
+  void change_camera(CameraChange change, double previous, const std::optional<point_cloud::Config> & old_stereo) {
+    std::string status;
+    std::optional<oak_startup::OakStartupMeasurement> pose;
+    FirstFrames frames;
+    try {
+      if (change.fit) {
+        close_camera();
+        pose = measure_ground(*change.fit);
+      }
+      if (stop_ || !rclcpp::ok()) return;
+      frames = reopen_camera(change.fps, change.stereo);
+    } catch (const std::exception & error) {
+      RCLCPP_WARN(get_logger(), "Camera change failed: %s. Restoring previous stream.", error.what());
+      if (stop_ || !rclcpp::ok()) return;
+      pose.reset();
+      status = "Failed. Previous stream restored.";
+      change.fps = previous;
+      change.stereo = old_stereo;
+      frames = reopen_camera(previous, old_stereo);
+    }
+    if (!frames.rgb) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    fps_ = applied;
+    fps_ = change.fps;
+    active_stereo_ = std::move(change.stereo);
+    active_calibration_ = stream_calibration_;
+    if (pose) {
+      ground_pose_ = std::move(pose);
+      status = "Ground refit complete";
+    }
     fps_status_ = std::move(status);
-    requested_fps_.reset();
+    requested_camera_.reset();
+    depth_frames_.clear();
+    if (frames.depth) depth_frames_.push_back(std::move(frames.depth));
     last_frame_ = first_frame_ = Clock::now();
-    latest_ = std::move(packet);
+    latest_ = std::move(frames.rgb);
     received_ = 1;
     ++camera_session_;
   }
@@ -645,24 +854,35 @@ class Preview : public rclcpp::Node {
   void capture_loop() {
     try {
       while (!stop_ && rclcpp::ok()) {
-        std::optional<double> requested;
+        std::optional<CameraChange> requested;
+        std::optional<point_cloud::Config> previous_stereo;
         double fps;
         {
           std::lock_guard<std::mutex> lock(mutex_);
-          requested = requested_fps_;
+          if (requested_camera_) {
+            requested = requested_camera_;
+            previous_stereo = active_stereo_;
+          }
           fps = fps_;
         }
         if (requested) {
-          change_camera_fps(*requested, fps);
+          change_camera(std::move(*requested), fps, previous_stereo);
           continue;
         }
         auto packet = read_camera_frame();
-        if (!packet) {std::this_thread::sleep_for(100us); continue;}
+        auto depth = read_depth_frame();
+        if (!packet && !depth) {std::this_thread::sleep_for(100us); continue;}
         std::lock_guard<std::mutex> lock(mutex_);
-        last_frame_ = Clock::now();
-        if (received_ == 0) first_frame_ = last_frame_;
-        if (capture_measurement_) capture_measurement_->record(last_frame_, packet->getSequenceNum());
-        latest_ = std::move(packet); ++received_;
+        if (depth) {
+          depth_frames_.push_back(std::move(depth));
+          if (depth_frames_.size() > 8) depth_frames_.pop_front();
+        }
+        if (packet) {
+          last_frame_ = Clock::now();
+          if (received_ == 0) first_frame_ = last_frame_;
+          if (capture_measurement_) capture_measurement_->record(last_frame_, packet->getSequenceNum());
+          latest_ = std::move(packet); ++received_;
+        }
       }
     } catch (const std::exception & e) {std::lock_guard<std::mutex> lock(mutex_); error_ = e.what();}
   }
@@ -692,7 +912,14 @@ class Preview : public rclcpp::Node {
   std::atomic<bool> stop_{false}; std::thread capture_; std::mutex mutex_;
   std::shared_ptr<dai::ImgFrame> latest_; std::uint64_t received_{0}; std::string error_;
   Clock::time_point first_frame_, last_frame_;
-  std::optional<double> requested_fps_;
+  std::optional<BevSettings> bev_settings_;
+  BevFusion fusion_;
+  std::optional<CameraChange> requested_camera_;
+  std::optional<point_cloud::Config> active_stereo_;
+  std::optional<oak_startup::OakStartupMeasurement> ground_pose_;
+  std::shared_ptr<dai::MessageQueue> depth_queue_;
+  std::deque<std::shared_ptr<dai::ImgFrame>> depth_frames_;
+  std::shared_ptr<const dai::CalibrationHandler> stream_calibration_, active_calibration_;
   std::string fps_status_;
   std::uint64_t camera_session_{0};
 };

@@ -4,6 +4,7 @@
 #include "roi_lidar/filters.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <stdexcept>
 #include <vector>
@@ -73,6 +74,7 @@ struct Scan
   std::vector<point_cloud::Vector3> surface_points;
   std::vector<point_cloud::Vector3> rejected_points; // Isolated returns: unknown evidence, never invented floor.
   std::vector<std::size_t> obstacle_indices;
+  std::vector<int> obstacle_selection_ids; // Populated only when a point selector is supplied.
   GroundPlane ground_plane;
   bool processed{false};
   std::size_t outlier_candidates{0}, outlier_removed{0};
@@ -140,7 +142,10 @@ public:
     }
   }
   std::size_t rayCount() const {return rays_.size();}
-  Scan project(const std::uint8_t * bytes, std::size_t size, std::size_t stride,double below_ground_m=.30) const
+  // Return a nonnegative association ID to keep a sample, or -1 to omit it.
+  using PointSelector = std::function<int(int u, int v, double depth_m)>;
+  Scan project(const std::uint8_t * bytes, std::size_t size, std::size_t stride,
+    double below_ground_m = .30, const PointSelector * select = nullptr) const
   {
     if(!std::isfinite(below_ground_m) || below_ground_m<0 || below_ground_m>.30)throw std::invalid_argument("Invalid below-ground limit");
     if (!bytes || !width_ || stride < static_cast<std::size_t>(width_)*2 ||
@@ -153,6 +158,7 @@ public:
     out.surface_points.reserve(rays_.size());
     struct Location {float range;double angle;};
     std::vector<Location> locations;locations.reserve(rays_.size());
+    std::vector<int> selection_ids;
     const double source_height=o.max_height+(o.ransac.enabled ? o.ransac.max_offset_m+std::tan(o.ransac.max_tilt_deg*radians)*o.ransac.max_range_m : 0);
     struct Sample {int bin; float range, height;};
     std::vector<Sample> samples; samples.reserve(rays_.size());
@@ -162,6 +168,8 @@ public:
       const double depth=raw*0.001;
       if (!raw || depth<o.min_depth || depth>o.max_depth) {continue;}
       ++out.depth_points;
+      const int selected = select ? (*select)(ray.u, ray.v, depth) : 0;
+      if (selected < 0) continue;
       const double z=ray.direction[2]*depth+transform_.translation[2];
       if (z>source_height) {++out.height_removed; continue;}
       const double x=ray.direction[0]*depth+transform_.translation[0];
@@ -173,6 +181,7 @@ public:
       if (angle<o.angle_min || angle>o.angle_max) {continue;}
       out.surface_points.push_back({x,y,z});
       locations.push_back({static_cast<float>(range),angle});
+      if (select) selection_ids.push_back(selected);
     }
     if (o.ransac.enabled) {out.ground_plane=fitGround(out.surface_points,o.ransac);}
     std::vector<std::uint8_t> keep(out.surface_points.size(),1);
@@ -202,6 +211,7 @@ public:
       const auto location=locations[i];const auto index=retained++;
       if(o.ground_enabled && point[2]<=groundMargin(point[0],point[1],o,&out)){++out.ground_removed;continue;}
       out.obstacle_indices.push_back(index);
+      if (select) out.obstacle_selection_ids.push_back(selection_ids[i]);
       const int bin=std::clamp(static_cast<int>(std::lround(
         (location.angle-o.angle_min)*(o.bins-1)/(o.angle_max-o.angle_min))),0,o.bins-1);
       auto & nearest=out.ranges[bin];

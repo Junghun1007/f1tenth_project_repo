@@ -27,14 +27,15 @@ inline double milliseconds(PreviewClock::duration duration) {
 enum class Stage : std::size_t {
   queue, input_color, cpu_preprocess, upload, cuda_preprocess, inference,
   download, postprocess, display_color, overlay, panel, imshow, wait_key,
-  processing, receive_to_result, receive_to_submit, count
+  processing, receive_to_result, receive_to_submit, depth_fusion, rgb_depth_skew, count
 };
 
 struct MeasurementFrame {
   static constexpr std::array<const char *, static_cast<std::size_t>(Stage::count)> columns{{
     "queue_ms", "input_color_ms", "cpu_preprocess_ms", "upload_ms", "cuda_preprocess_ms",
     "inference_ms", "download_ms", "postprocess_ms", "display_color_ms", "overlay_resize_ms",
-    "panel_ms", "imshow_ms", "wait_key_ms", "processing_ms", "receive_to_result_ms", "receive_to_submit_ms"
+    "panel_ms", "imshow_ms", "wait_key_ms", "processing_ms", "receive_to_result_ms", "receive_to_submit_ms",
+    "depth_fusion_ms", "rgb_depth_skew_ms"
   }};
   std::int64_t sequence{};
   std::uint64_t host_skipped{};

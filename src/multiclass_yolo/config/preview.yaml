@@ -6,13 +6,15 @@ multiclass_yolo:
     measurement_seconds: 15
     width: 1280
     height: 800
-    sensor_fps: 30.0
+    sensor_fps: 40.0
+    depth_fusion_enabled: true
+    fusion_sync_ms: 20.0
     roi_height_percent: 65
     undistort_enabled: true
     frame_timeout_sec: 5.0
     tensorrt_workspace_size_mb: 1024
     nms_threshold: 0.65
-    con_threshold: 0.25
-    truck_threshold: 0.25
-    sedan_threshold: 0.25
-    traffic_light_threshold: 0.25
+    con_threshold: 0.70
+    truck_threshold: 0.70
+    sedan_threshold: 0.70
+    traffic_light_threshold: 0.70

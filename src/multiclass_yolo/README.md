@@ -1,6 +1,6 @@
 # multiclass_yolo
 
-OAK CAM_A 영상을 받아 YOLOX 4개 클래스의 검출 결과를 보는 독립 ROS 2 프리뷰 패키지입니다.
+OAK CAM_A와 스테레오 깊이를 함께 받아 YOLOX 4개 클래스의 장애물 점을 카메라 BEV에서 확인하는 독립 ROS 2 프리뷰입니다.
 기존 주행/신호등 패키지는 수정하지 않습니다. 이 노드는 OAK 장치를 직접 열므로 같은 장치를 사용하는
 `camera_driver`, `bev_processor`, `traffic_detection_test` 등은 종료한 후 실행하세요.
 
@@ -31,14 +31,14 @@ SDK를 새로 빌드하거나 교체하지 않습니다. 설치 경로가 다르
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select multiclass_yolo --cmake-args -DCMAKE_BUILD_TYPE=Release
+colcon build --packages-up-to multiclass_yolo --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 ```
 
 ## 실행 및 입력 경로 비교
 
 ```bash
-# NV12 → CUDA fused 전처리 → BGR 텐서 → TensorRT FP16
+# 기본 BEV 프리뷰: NV12 → CUDA 전처리 → TensorRT FP16
 ros2 launch multiclass_yolo preview.launch.py input_format:=nv12
 
 # 같은 NV12 카메라 영상 → CPU RGB 영상 → BGR 텐서 → TensorRT FP16
@@ -72,7 +72,8 @@ CUDA 색 변환은 기존 프로젝트와 동일한 **BT.601 limited range**를 
 
 ## 프리뷰
 
-- 10% 확대된 영상과 클래스명·점수·박스
+- 기본 화면은 차선 없는 카메라 BEV이며, 장애물 점은 클래스별 색으로 표시됩니다.
+- `depth_fusion_enabled:=false`로 시작하면 기존 원본 영상과 검출 박스를 표시합니다.
 - 왼쪽 검출 목록에 현재 프레임의 클래스, 검출 점수, 적용된 클래스 임계값 표시. 목록이 길면 `Prev` / `Next`로 이동
 - `AVG input`: 첫 호스트 수신부터 현재까지의 평균 수신 FPS `(수신 수 - 1) / 경과시간`
 - `AVG detection`: 같은 시점부터 검출을 마친 프레임 수 / 경과시간
@@ -96,12 +97,12 @@ ros2 run multiclass_yolo multiclass_yolo_node --ros-args \
   --params-file src/multiclass_yolo/config/preview.yaml
 ```
 
-카메라 기본값은 CAM_A, 1280×800, 30 FPS, 기존 프로젝트처럼 undistort 활성화입니다.
+카메라 기본값은 CAM_A, 1280×800, 40 FPS, 기존 프로젝트처럼 undistort 활성화입니다.
 1280×800 프레임에서 ROI 65%는 하단 520행입니다. ROI와 클래스별 임계값은 다음 추론부터 적용됩니다.
 시작 ROI는 launch 인수 `roi_height_percent:=65` 또는 YAML의 `roi_height_percent`로 지정합니다.
 100%에서는 전체 프레임을 검출합니다.
 
-프리뷰에는 전체 영상이 나오고 검출 박스는 원본 좌표에 표시됩니다. NV12/CUDA 경로는 ROI에 해당하는
+정합에는 원본 영상 좌표로 복원된 검출 박스를 사용합니다. NV12/CUDA 경로는 ROI에 해당하는
 픽셀을 색차 샘플 경계에 맞춰 GPU로 전송합니다. 카메라 USB 전송과 프리뷰용 색 변환에는 전체 프레임을 사용하며,
 선택한 TensorRT 모델의 입력 크기와 추론 연산량은 고정됩니다. 로그의 `upload`에서 GPU 입력 전송 시간을 비교할 수 있습니다.
 
@@ -114,6 +115,30 @@ FPS 입력 범위는 연결된 카메라의 1280×800 센서 모드를 따릅니
 수신 스레드와 처리/GUI 루프를 분리하고 장치/호스트 큐를 모두 크기 1, non-blocking으로 설정합니다.
 처리가 느리면 오래된 프레임을 쌓지 않고 최신 프레임을 사용합니다. 실제 입력·출력 FPS는 차량 PC에서 측정해야 합니다. 2초마다 평균 FPS와 추론 시간이 로그에 나옵니다.
 입력 FPS는 센서 내부 FPS가 아닌 유효 프레임의 호스트 도착률입니다.
+
+## BEV 정합과 숫자 조절
+
+기본 실행은 CAM_A 40 FPS, 네 클래스 검출 임계값 0.70입니다. VFH 참조 설정으로 400p
+스테레오를 함께 열고, 시작 시 평평한 바닥에서 정지한 차량의 카메라 높이와 자세를 측정합니다.
+정합은 같은 OAK의 RGB·깊이 촬영 시각을 맞춘 뒤, 원본 영상의 검출 박스와 VFH 깊이 ROI를
+모두 통과한 점에 기존 지면·높이·고립점 필터를 적용합니다. 기존 VFH 기본값처럼 지면 위
+1.0 m가 최대 높이이며, 그보다 높은 신호등 점을 보려면 `Max height m`을 조절할 수 있습니다.
+
+BEV는 앞차축 기준 전방 4 m, 좌우 ±0.75 m에 카메라 배경과 네 클래스의 실제 장애물 점을
+표시합니다. 목록의 `Pts in/kept`는 BEV 화면 범위로 자르기 전의 박스 매칭 점과 필터 통과 점 수입니다.
+동기화된 깊이나 지면 보정값이 없으면 점 수를 `--`로 표시합니다.
+
+`Setup`에서 `Prev` / `Next`로 설정 페이지를 이동합니다. 숫자를 입력하고 `Enter` 또는
+`Apply`를 누릅니다.
+
+- 스테레오 FPS·해상도·프리셋·신뢰도·LR 검사·서브픽셀·IR·필터는 스트림을 잠시 다시 열어 적용합니다.
+  프리셋 0/1/2는 기본/밀도 우선/정확도 우선이며, 0/1 토글은 끔/켬입니다.
+- 깊이 범위, 지면 제거, 높이, 고립점, 동기 허용 차이는 다음 처리 프레임부터 적용합니다.
+- `Fit` 항목은 다음 지면 추정에 사용합니다. 차량을 평평한 바닥에 멈춘 뒤 `Refit ground`를 누릅니다.
+
+`frames.csv`의 `depth_fusion_ms`에는 정합과 BEV 렌더링 시간이, `rgb_depth_skew_ms`에는
+짝지어진 프레임의 촬영 시각 차이가 기록됩니다. 순수 모델 속도는 `depth_fusion_enabled:=false`와
+`Video off`로 비교할 수 있습니다.
 
 ## 모델 전환 및 측정
 
