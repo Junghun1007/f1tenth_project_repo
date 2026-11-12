@@ -24,7 +24,7 @@ class Preview : public rclcpp::Node {
  public:
   Preview() : Node("multiclass_yolo") {
     const auto share = ament_index_cpp::get_package_share_directory("multiclass_yolo");
-    auto model = declare_parameter<std::string>("model_path", share + "/models/multiclass_yolox_tiny_512x320_final.onnx");
+    auto model = declare_parameter<std::string>("model_path", share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx");
     auto backend = declare_parameter<std::string>("inference_backend", "TENSORRT");
     auto precision = declare_parameter<std::string>("engine_precision", "fp16");
     // User cache is writable even when ROS install/share is read-only.

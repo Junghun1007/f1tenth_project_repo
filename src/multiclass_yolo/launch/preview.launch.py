@@ -13,7 +13,7 @@ def generate_launch_description():
         "input_format": ("nv12", str),
         "inference_backend": ("TENSORRT", str),
         "engine_precision": ("fp16", str),
-        "model_path": (share + "/models/multiclass_yolox_tiny_512x320_final.onnx", str),
+        "model_path": (share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx", str),
         "width": ("1280", int), "height": ("800", int),
         "sensor_fps": ("30.0", float), "undistort_enabled": ("true", bool),
         "frame_timeout_sec": ("5.0", float),

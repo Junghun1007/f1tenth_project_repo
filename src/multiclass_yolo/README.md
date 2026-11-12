@@ -6,7 +6,8 @@ OAK CAM_A 영상을 받아 YOLOX 4개 클래스의 검출 결과를 보는 독�
 
 ## 모델 계약
 
-동봉 ONNX 및 `.metadata.json`, `.labels.txt`를 그대로 사용합니다.
+기본 모델은 `multiclass_yolox_tiny_512x320_holdout10.onnx`입니다.
+동봉된 `.metadata.json`과 `.labels.txt`에 입력·출력 형식과 클래스 순서가 기록되어 있습니다.
 
 - 입력: FP32 `[1,3,320,512]`, **BGR**, 0–255, 정규화 없음
 - 리사이즈: 종횡비 유지, 좌상단 배치, 오른쪽/아래를 114로 채움
