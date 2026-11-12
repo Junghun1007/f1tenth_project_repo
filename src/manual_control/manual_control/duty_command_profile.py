@@ -45,11 +45,18 @@ class DutyProfileConfig:
             raise ValueError("pedal_deadzone must be between 0 and 1")
 
 
+class GearRequestResult(Enum):
+    CHANGED = "changed"      # 즉시 전환됨
+    PENDING = "pending"      # duty가 0이 되면 전환하도록 예약됨
+    CANCELLED = "cancelled"  # 기존 예약이 취소됨
+
+
 class DutyCommandProfile:
     def __init__(self, config: DutyProfileConfig) -> None:
         self.config = config
         self.gear = Gear.FORWARD
         self.current_duty = 0.0
+        self.pending_gear: Gear | None = None
 
     @property
     def command_duty(self) -> float:
@@ -58,6 +65,10 @@ class DutyCommandProfile:
     def update(self, accelerator: float, dt_sec: float) -> float:
         accelerator = self._pedal_value(accelerator)
         dt_sec = max(0.0, float(dt_sec))
+
+        # 예약된 기어는 duty가 0인 시점에만 적용한다. 전진 duty에서 곧바로
+        # 후진 duty로 넘어가는 일은 없다.
+        self.apply_pending_gear()
 
         if accelerator > 0.0:
             target_duty = self.gear.value * self._gear_limit()
@@ -81,16 +92,43 @@ class DutyCommandProfile:
                 self.config.coast_deceleration_duty_per_sec * dt_sec,
             )
 
+        # 감속이 끝나 duty가 0이 된 같은 주기에 예약을 적용한다.
+        self.apply_pending_gear()
         return self.command_duty
 
     def toggle_gear(self) -> bool:
         if self.current_duty != 0.0:
             return False
 
-        self.gear = (
-            Gear.REVERSE if self.gear is Gear.FORWARD else Gear.FORWARD
-        )
+        self.gear = self._opposite(self.gear)
+        self.pending_gear = None
         return True
+
+    def request_gear_toggle(
+        self, apply_now_allowed: bool = True
+    ) -> GearRequestResult:
+        """RB 입력 처리: 가능하면 즉시 전환하고, 아니면 예약/취소한다."""
+        if self.pending_gear is not None:
+            self.pending_gear = None
+            return GearRequestResult.CANCELLED
+        if apply_now_allowed and self.toggle_gear():
+            return GearRequestResult.CHANGED
+        self.pending_gear = self._opposite(self.gear)
+        return GearRequestResult.PENDING
+
+    def apply_pending_gear(self) -> bool:
+        if self.pending_gear is None or self.current_duty != 0.0:
+            return False
+        self.gear = self.pending_gear
+        self.pending_gear = None
+        return True
+
+    def clear_gear_request(self) -> None:
+        self.pending_gear = None
+
+    @staticmethod
+    def _opposite(gear: Gear) -> Gear:
+        return Gear.REVERSE if gear is Gear.FORWARD else Gear.FORWARD
 
     def reset_speed(self) -> None:
         self.current_duty = 0.0

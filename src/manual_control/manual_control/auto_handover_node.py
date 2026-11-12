@@ -150,6 +150,7 @@ class AutoHandoverNode(ActuatorCommanderNode):
             # Release braking now; only a subsequent Joy frame can command motion.
             self.brake_profile.reset()
             self.duty_profile.reset_speed()
+            self.duty_profile.clear_gear_request()
             self._last_control_time = self.get_clock().now()
             self.brake_current_pub.publish(Float32(data=0.0))
             self.current_brake_current_pub.publish(Float32(data=0.0))

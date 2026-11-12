@@ -30,12 +30,15 @@ Current mapping:
 RT axis 5 (0.0 released, 1.0 pressed) -> acceleration
 LT axis 4 (0.0 released, 1.0 pressed) -> VESC electrical brake current
 left stick X axis 0 -> steering angle
-RB button 10 -> forward/reverse toggle while stopped
+RB button 10 -> forward/reverse toggle (reserved until duty 0 while moving)
 ```
 
 `actuator_commander_node` starts stopped in forward gear. RT increases the
 command duty, LT takes priority and switches the VESC to brake-current mode,
-and RB toggles forward/reverse while stopped. With the configured
+and RB toggles forward/reverse. If RB is pressed while duty is non-zero or
+LT braking is active, the change is reserved and engages automatically in the
+control cycle where command duty reaches 0; pressing RB again cancels the
+reservation. A pedal input timeout or a handover into MANUAL clears it. With the configured
 `immediate_stop_on_accelerator_release: false`,
 releasing RT follows the coast deceleration rate. Current gear and command duty are
 published on `/manual/gear` and `/manual/current_duty`; the ramped electrical

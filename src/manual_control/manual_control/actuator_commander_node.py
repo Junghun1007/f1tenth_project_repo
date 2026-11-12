@@ -16,6 +16,7 @@ from manual_control.brake_current_profile import (
 from manual_control.duty_command_profile import (
     DutyCommandProfile,
     DutyProfileConfig,
+    GearRequestResult,
 )
 
 
@@ -293,23 +294,39 @@ class ActuatorCommanderNode(Node):
         if not gear_toggle_requested:
             return
 
-        if (
+        braking = (
             self._brake >= self.pedal_deadzone or
             self.brake_profile.command_current_amps > 0.0
-        ):
-            self.get_logger().warn(
-                "Gear change rejected while electrical brake is active."
-            )
-        elif self.duty_profile.toggle_gear():
+        )
+        result = self.duty_profile.request_gear_toggle(
+            apply_now_allowed=not braking
+        )
+        if result is GearRequestResult.CHANGED:
             self.get_logger().info(
                 f"Gear changed: {self.duty_profile.gear.name}"
             )
             self._publish_gear_state()
-        else:
-            self.get_logger().warn(
-                "Gear change rejected: release the accelerator and wait for "
-                "duty 0 before pressing RB."
+        elif result is GearRequestResult.PENDING:
+            self.get_logger().info(
+                "Gear change reserved: "
+                f"{self.duty_profile.pending_gear.name} will engage when "
+                "duty reaches 0 (press RB again to cancel)."
             )
+        else:
+            self.get_logger().info(
+                "Gear change reservation cancelled: staying in "
+                f"{self.duty_profile.gear.name}."
+            )
+
+    def _update_duty(self, accelerator: float, dt_sec: float) -> float:
+        gear_before = self.duty_profile.gear
+        command_duty = self.duty_profile.update(accelerator, dt_sec)
+        if self.duty_profile.gear is not gear_before:
+            self.get_logger().info(
+                f"Reserved gear engaged: {self.duty_profile.gear.name}"
+            )
+            self._publish_gear_state()
+        return command_duty
 
     def _normalize_trigger(self, value: float) -> float:
         released = self.joy_trigger_released
@@ -353,9 +370,7 @@ class ActuatorCommanderNode(Node):
                 self.brake_current_pub.publish(Float32(data=0.0))
                 self._brake_mode_active = False
             else:
-                command_duty = self.duty_profile.update(
-                    self._accelerator, dt_sec
-                )
+                command_duty = self._update_duty(self._accelerator, dt_sec)
                 self.duty_pub.publish(Float32(data=command_duty))
 
         if self._input_is_stale(self._last_steering_time, now):
@@ -392,6 +407,8 @@ class ActuatorCommanderNode(Node):
         self._accelerator = 0.0
         self._brake = 0.0
         self.duty_profile.reset_speed()
+        # 컨트롤러가 끊긴 뒤 재연결 시 예전 RB 예약이 적용되지 않게 한다.
+        self.duty_profile.clear_gear_request()
         self.brake_profile.reset()
 
     def _handle_steering_input_timeout(self) -> None:

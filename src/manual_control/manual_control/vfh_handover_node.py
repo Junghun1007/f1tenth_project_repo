@@ -130,6 +130,7 @@ class VfhHandoverNode(AutoHandoverNode):
             return
         self.handover.mode = self._destination
         self.duty_profile.reset_speed()
+        self.duty_profile.clear_gear_request()
         self.brake_profile.reset()
         self._accelerator = self._brake = self._steering = 0.0
         self._last_accelerator_time = self._last_brake_time = self._last_steering_time = None
