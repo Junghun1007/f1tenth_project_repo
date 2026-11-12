@@ -1,6 +1,6 @@
 #include "multiclass_yolo/yolox_detector.hpp"
 #include "multiclass_yolo/preview_exit.hpp"
-#include "fps_input.hpp"
+#include "preview_panel.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "depthai/depthai.hpp"
 #include "rclcpp/rclcpp.hpp"
@@ -19,6 +19,8 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <utility>
+#include <vector>
 
 using Clock = std::chrono::steady_clock;
 using namespace std::chrono_literals;
@@ -60,7 +62,7 @@ class Preview : public rclcpp::Node {
     for (int i=0; i<4; ++i) {
       double v = declare_parameter<double>(std::string(names_[i])+"_threshold", 0.25);
       if (!std::isfinite(v) || v < 0 || v > 1) throw std::invalid_argument("Thresholds must be in [0,1]");
-      sliders_[i] = static_cast<int>(std::lround(v*100));
+      thresholds_[i] = static_cast<float>(v);
     }
     if (!std::filesystem::is_regular_file(model)) throw std::runtime_error("Model missing: " + model);
     detector_ = std::make_unique<YoloxDetector>(model, backend, cache, precision,
@@ -93,22 +95,23 @@ class Preview : public rclcpp::Node {
   void run() {
     const std::string window = "multiclass_yolo";
     cv::namedWindow(window, cv::WINDOW_NORMAL);
-    cv::resizeWindow(window, 1024, 780);
-    for (int i=0; i<4; ++i) {
-      cv::createTrackbar(names_[i], window, nullptr, 100);
-      cv::setTrackbarPos(names_[i], window, sliders_[i]);
-    }
-    const std::string roi_trackbar = "Bottom ROI %";
-    cv::createTrackbar(roi_trackbar, window, nullptr, 100);
-    cv::setTrackbarMin(roi_trackbar, window, 1);
-    cv::setTrackbarPos(roi_trackbar, window, roi_height_percent_);
-    FpsInput fps_input;
+    PreviewPanel panel;
     cv::setMouseCallback(window, [](int event, int x, int y, int, void * data) {
-      if (event == cv::EVENT_LBUTTONDOWN) static_cast<FpsInput *>(data)->click(x, y);
-    }, &fps_input);
-    cv::Mat canvas(400, 640, CV_8UC3, cv::Scalar(20,20,20));
-    cv::putText(canvas, "Waiting for camera frames...", {25,190},
+      if (event == cv::EVENT_LBUTTONDOWN) static_cast<PreviewPanel *>(data)->click(x, y);
+    }, &panel);
+    constexpr int video_width = static_cast<int>(1024 * 1.1 + .5);
+    constexpr int video_top = 70;
+    const int video_height = std::max(1, static_cast<int>(std::lround(
+      static_cast<double>(video_width) * height_ / width_)));
+    const int video_left = PreviewPanel::width;
+    cv::Mat canvas(std::max(PreviewPanel::min_height, video_top + video_height),
+      video_left + video_width, CV_8UC3, cv::Scalar(20,20,20));
+    cv::Mat video = canvas(cv::Rect(video_left, video_top, video_width, video_height));
+    cv::resizeWindow(window, canvas.cols, canvas.rows);
+    cv::putText(video, "Waiting for camera frames...", {20, video_height / 2},
       cv::FONT_HERSHEY_SIMPLEX, .7, {240,240,240}, 1, cv::LINE_AA);
+    std::vector<Detection> detections;
+    auto detection_thresholds = thresholds_;
     PreviewExit exit_state;
     std::string exit_reason = "ROS shutdown / stop requested";
     const auto property = [&window](int id) {
@@ -147,11 +150,9 @@ class Preview : public rclcpp::Node {
         if (previous == 0) RCLCPP_INFO(get_logger(), "First camera frame received; starting inference");
         skipped += count > previous ? count - previous - 1 : 0;
         previous = count;
-        std::array<float,4> thresholds;
-        for (int i=0; i<4; ++i) thresholds[i] = cv::getTrackbarPos(names_[i], window)/100.f;
-        detector_->set_thresholds(thresholds);
+        detector_->set_thresholds(thresholds_);
         const auto began = Clock::now();
-        const int roi_percent = std::max(1, cv::getTrackbarPos(roi_trackbar, window));
+        const int roi_percent = roi_height_percent_;
         const int roi_height = std::max(1, static_cast<int>(std::lround(height_ * (roi_percent / 100.0))));
         const cv::Rect roi(0, height_ - roi_height, width_, roi_height);
         const auto & bytes = frame->getData();
@@ -193,13 +194,15 @@ class Preview : public rclcpp::Node {
         }
         const double in_fps = elapsed > 0.5 ? double(current_received-1)/elapsed : 0;
         const double out_fps = elapsed > 0.5 ? double(outputs)/elapsed : 0;
-        cv::copyMakeBorder(display, canvas, 116, 0, 0, std::max(0, 640 - display.cols),
-          cv::BORDER_CONSTANT, cv::Scalar(20,20,20));
+        cv::resize(display, video, video.size(), 0, 0, cv::INTER_LINEAR);
+        canvas(cv::Rect(video_left, 0, video_width, video_top)).setTo(cv::Scalar(20,20,20));
         cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG output %.2f FPS | target %.6g", in_fps, out_fps, fps),
-          {10,69}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
+          {video_left + 10, 25}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
         cv::putText(canvas, cv::format("%s | total %.1f ms | convert %.1f ms | skipped %llu | Q/ESC quit",
           format_.c_str(), total_ms, conversion_ms, static_cast<unsigned long long>(skipped)),
-          {10,99}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
+          {video_left + 10, 53}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
+        detections = std::move(result.detections);
+        detection_thresholds = thresholds_;
         ++outputs;
         if (Clock::now()-last_log >= 2s) {
           RCLCPP_INFO(get_logger(),
@@ -210,22 +213,18 @@ class Preview : public rclcpp::Node {
           last_log = Clock::now();
         }
       }
-      if (frame || fps_input.dirty || fps != displayed_fps || camera_status != displayed_status) {
-        fps_input.draw(canvas, fps, camera_status);
+      if (frame || panel.dirty || fps != displayed_fps || camera_status != displayed_status) {
+        panel.draw(canvas, fps, roi_height_percent_, names_, thresholds_,
+          detection_thresholds, detections, camera_status);
         cv::imshow(window, canvas);
         if (frame && outputs == 1) RCLCPP_INFO(get_logger(), "First detection frame submitted to preview");
-        fps_input.dirty = false;
+        panel.dirty = false;
         displayed_fps = fps;
         displayed_status = camera_status;
       }
       int key = cv::waitKey(1) & 255;
-      if (fps_input.handle_key(key)) key = -1;
-      if (fps_input.submit) {
-        fps_input.submit = false;
-        fps_input.message = request_camera_fps(fps_input.value());
-        fps_input.dirty = true;
-        if (fps_input.message.empty()) fps_input.finish();
-      }
+      if (panel.handle_key(key)) key = -1;
+      if (const auto edit = panel.take_submission()) panel.finish(apply_preview_input(*edit));
       const auto reason = exit_state.reason(key, property(cv::WND_PROP_VISIBLE),
         property(cv::WND_PROP_AUTOSIZE));
       if (reason) {exit_reason = reason; break;}
@@ -264,6 +263,21 @@ class Preview : public rclcpp::Node {
       queue_.reset();
       pipeline_.reset();
     }
+  }
+
+  std::string apply_preview_input(const PreviewPanel::Edit & edit) {
+    if (edit.field == PreviewPanel::fps_field) return request_camera_fps(edit.value);
+    if (edit.field == PreviewPanel::roi_field) {
+      if (!edit.value || *edit.value < 1 || *edit.value > 100 ||
+          std::trunc(*edit.value) != *edit.value)
+        return "Enter a whole ROI percent from 1 to 100";
+      roi_height_percent_ = static_cast<int>(*edit.value);
+      return {};
+    }
+    if (!edit.value || *edit.value < 0 || *edit.value > 1)
+      return "Enter a threshold from 0 to 1";
+    thresholds_[edit.field - PreviewPanel::first_threshold_field] = static_cast<float>(*edit.value);
+    return {};
   }
 
   std::string request_camera_fps(std::optional<double> fps) {
@@ -350,7 +364,7 @@ class Preview : public rclcpp::Node {
     } catch (const std::exception & e) {std::lock_guard<std::mutex> lock(mutex_); error_ = e.what();}
   }
   const std::array<const char *,4> names_{{"con","truck","sedan","traffic_light"}};
-  std::array<int,4> sliders_{};
+  std::array<float,4> thresholds_{};
   int width_, height_, roi_height_percent_;
   bool undistort_;
   double fps_, timeout_;
