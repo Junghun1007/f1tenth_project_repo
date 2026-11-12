@@ -171,6 +171,11 @@ class ActuatorCommanderNode(Node):
         self._gear_button_was_pressed = False
         self._invalid_joy_layout_reported = False
         self._brake_mode_active = False
+        # 시작/입력 timeout(조이스틱 끊김) 직후에는 RT를 한 번 놓은 것이
+        # 확인될 때까지 가속 입력을 무시한다. 재연결 순간 남아 있던 RT 값으로
+        # 바로 출발하지 않게 한다. LT 제동과 조향은 막지 않는다.
+        self._accelerator_requires_release = True
+        self._accelerator_lock_reported = False
 
         # Manual commands are state values. Intermediate samples may be
         # discarded; every consumer should act on the newest sample only.
@@ -261,8 +266,10 @@ class ActuatorCommanderNode(Node):
 
         self._invalid_joy_layout_reported = False
         now = self.get_clock().now()
-        self._accelerator = self._normalize_trigger(
-            float(msg.axes[self.joy_accelerator_axis])
+        self._accelerator = self._gate_accelerator(
+            self._normalize_trigger(
+                float(msg.axes[self.joy_accelerator_axis])
+            )
         )
         self._brake = self._normalize_trigger(
             float(msg.axes[self.joy_brake_axis])
@@ -317,6 +324,23 @@ class ActuatorCommanderNode(Node):
                 "Gear change reservation cancelled: staying in "
                 f"{self.duty_profile.gear.name}."
             )
+
+    def _gate_accelerator(self, accelerator: float) -> float:
+        if not self._accelerator_requires_release:
+            return accelerator
+        if accelerator < self.pedal_deadzone:
+            if self._accelerator_lock_reported:
+                self.get_logger().info("RT released: accelerator enabled.")
+            self._accelerator_requires_release = False
+            self._accelerator_lock_reported = False
+            return accelerator
+        if not self._accelerator_lock_reported:
+            self.get_logger().warn(
+                "RT is held after startup or joystick input loss. Ignoring RT "
+                "until it is released once."
+            )
+            self._accelerator_lock_reported = True
+        return 0.0
 
     def _update_duty(self, accelerator: float, dt_sec: float) -> float:
         gear_before = self.duty_profile.gear
@@ -410,6 +434,7 @@ class ActuatorCommanderNode(Node):
         # 컨트롤러가 끊긴 뒤 재연결 시 예전 RB 예약이 적용되지 않게 한다.
         self.duty_profile.clear_gear_request()
         self.brake_profile.reset()
+        self._accelerator_requires_release = True
 
     def _handle_steering_input_timeout(self) -> None:
         if not self._steering_input_timed_out:

@@ -15,7 +15,8 @@ database for this model.
 The default name filter accepts any SDL game controller containing `8BitDo`,
 which tolerates BlueZ/SDL naming differences. An empty filter falls back to
 `device_id`. `Opened Bluetooth game controller` is printed once for the
-initial open. A disconnect stops `/joy` publication immediately; the node then
+initial open. A disconnect publishes one frame with all axes/buttons released (RT/LT 0)
+and then stops `/joy` publication; the node then
 waits for BlueZ/SDL to reconnect the controller.
 
 Published SDL-standard layout:

@@ -296,6 +296,18 @@ private:
     publishCurrentState();
   }
 
+  // On disconnect, send one released-pedal frame before going silent so the
+  // last RT/LT value is not kept by subscribers until their input timeout.
+  void publishNeutralState()
+  {
+    if (controller_ == nullptr || joy_message_.axes.empty()) {
+      return;
+    }
+    std::fill(joy_message_.axes.begin(), joy_message_.axes.end(), 0.0F);
+    std::fill(joy_message_.buttons.begin(), joy_message_.buttons.end(), 0);
+    publishCurrentState();
+  }
+
   void closeController()
   {
     if (controller_ != nullptr) {
@@ -315,8 +327,10 @@ private:
     RCLCPP_ERROR(
       get_logger(),
       "Bluetooth game controller disconnected by SDL (instance_id=%d). "
-      "Input publication is stopped until it reconnects.",
+      "Published released pedals; input publication is stopped until it "
+      "reconnects.",
       static_cast<int>(controller_instance_id_));
+    publishNeutralState();
     closeController();
   }
 
@@ -473,8 +487,9 @@ private:
       RCLCPP_ERROR(
         get_logger(),
         "Bluetooth game controller is no longer attached "
-        "(instance_id=%d).",
+        "(instance_id=%d). Published released pedals.",
         static_cast<int>(controller_instance_id_));
+      publishNeutralState();
       closeController();
       return;
     }

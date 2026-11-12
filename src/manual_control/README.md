@@ -50,6 +50,11 @@ frame. The former intermediate converter and four manual input topics are not
 used by `manual_drive.launch.py`. RB changes gear only on its rising edge, so
 holding the button does not repeat the change.
 
+After startup and after any pedal input timeout (for example a Bluetooth
+disconnect), RT is ignored until it has been seen released once, so a trigger
+value still reported as pressed on reconnect cannot start the car. LT braking and
+steering are not locked.
+
 The manual controller runs at 80 Hz. Its configured duty limits and ramps are:
 
 Controller state and VESC command topics use `KEEP_LAST(1)` best-effort QoS.
