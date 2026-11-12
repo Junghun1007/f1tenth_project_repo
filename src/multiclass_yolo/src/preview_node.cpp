@@ -159,12 +159,21 @@ class Preview : public rclcpp::Node {
     double displayed_fps = 0;
     std::string displayed_status, displayed_toolbar;
     auto last_log = Clock::now();
+    const char * compute_label = backend_ == "TENSORRT" ? "TensorRT compute" : "CPU compute";
+    std::uint64_t inference_frames = 0, inference_ns = 0;
+    double compute_fps = 0;
+    const auto reset_inference_window = [&] {
+      inference_frames = inference_ns = 0;
+      compute_fps = 0;
+      last_log = Clock::now();
+      panel.dirty = true;
+    };
     while (rclcpp::ok() && !stop_) {
       rclcpp::spin_some(get_node_base_interface());
       if (poll_model_change()) {
         detections.clear();
         if (video_enabled_) video.setTo(cv::Scalar(20,20,20));
-        panel.dirty = true;
+        reset_inference_window();
       }
       if (measurement_ && Clock::now() >= measurement_->end) finish_measurement("completed");
       std::shared_ptr<dai::ImgFrame> frame;
@@ -179,7 +188,7 @@ class Preview : public rclcpp::Node {
         if (session != camera_session_) {
           session = camera_session_;
           previous = outputs = skipped = 0;
-          last_log = Clock::now();
+          reset_inference_window();
         }
         count = received_; first = first_frame_; received = last_frame_;
         fps = fps_;
@@ -283,13 +292,22 @@ class Preview : public rclcpp::Node {
           detection_thresholds = thresholds_;
         }
         ++outputs;
+        const auto forward_ns = result.timing.forward_nanoseconds;
+        if (forward_ns > 0) {
+          inference_ns += forward_ns;
+          ++inference_frames;
+        }
         if (Clock::now()-last_log >= 2s) {
+          compute_fps = inference_ns > 0 ? 1e9 * inference_frames / inference_ns : 0.0;
           RCLCPP_INFO(get_logger(),
-            "AVG input %.2f / detection %.2f FPS; ROI %d%%; total %.2f ms; upload %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
-            in_fps, out_fps, roi_percent, total_ms, result.timing.input_transfer_nanoseconds/1e6,
-            result.timing.preprocessing_nanoseconds/1e6, result.timing.forward_nanoseconds/1e6,
-            static_cast<unsigned long long>(skipped));
+            "AVG input %.2f / detection %.2f FPS; %s %.2f FPS; ROI %d%%; total %.2f ms; "
+            "upload %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
+            in_fps, out_fps, compute_label, compute_fps, roi_percent, total_ms,
+            result.timing.input_transfer_nanoseconds/1e6, result.timing.preprocessing_nanoseconds/1e6,
+            forward_ns/1e6, static_cast<unsigned long long>(skipped));
+          inference_frames = inference_ns = 0;
           last_log = Clock::now();
+          panel.dirty = true;
         }
       }
       const auto toolbar = toolbar_status();
@@ -298,7 +316,8 @@ class Preview : public rclcpp::Node {
           camera_status != displayed_status || toolbar != displayed_toolbar) {
         const auto panel_started = Clock::now();
         panel.draw_toolbar(canvas, active_model_.precision, active_model_.roi80,
-          measurement_seconds_, bool(measurement_), video_enabled_, toolbar);
+          measurement_seconds_, bool(measurement_), video_enabled_, toolbar,
+          compute_label, compute_fps);
         panel.draw(canvas, fps, roi_percent_for(active_model_), active_model_.roi80, names_, thresholds_,
           detection_thresholds, detections, camera_status);
         const auto before_imshow = Clock::now();

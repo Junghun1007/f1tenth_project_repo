@@ -93,7 +93,8 @@ class PreviewPanel {
   Action take_action() {return std::exchange(action_, Action::none);}
 
   void draw_toolbar(cv::Mat & canvas, const std::string & precision, bool roi80, int duration,
-    bool recording, bool video, const std::string & status) const
+    bool recording, bool video, const std::string & status,
+    const char * compute_label, double compute_fps) const
   {
     canvas(cv::Rect(width, 0, canvas.cols - width, 68)).setTo(cv::Scalar(20, 20, 20));
     button(canvas, Action::fp16, "FP16", !roi80 && precision == "fp16");
@@ -102,6 +103,8 @@ class PreviewPanel {
     draw_input(canvas, duration_field, "Duration (s)", duration);
     button(canvas, Action::measure, recording ? "Stop" : "Measure", recording);
     button(canvas, Action::toggle_video, video ? "Video on" : "Video off", video);
+    const auto compute_rate = compute_fps > 0 ? cv::format("%.2f FPS", compute_fps) : "-- FPS";
+    text(canvas, std::string(compute_label) + " " + compute_rate, {width + 805, 31}, .53);
     text(canvas, "Active: " + precision + (roi80 ? " 448x224" : " 512x320"), {width + 14, 59}, .53);
     text(canvas, status, {width + 235, 59}, .51);
   }
