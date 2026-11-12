@@ -1,6 +1,7 @@
 #pragma once
 
 #include "multiclass_yolo/yolox_detector.hpp"
+#include "preview_colors.hpp"
 
 #include <opencv2/imgproc.hpp>
 
@@ -229,7 +230,9 @@ class PreviewPanel {
     int y = first_row_y;
     for (std::size_t i = first; i < end; ++i, y += row_height) {
       const auto & detection = detections[i];
-      text(panel, names[detection.class_id], {14, y});
+      if (bev_enabled_)
+        cv::circle(panel, {19, y - 5}, 4, obstacle_colors[detection.class_id], cv::FILLED);
+      text(panel, names[detection.class_id], {bev_enabled_ ? 31 : 14, y});
       text(panel, cv::format("%.3f", detection.score), {160, y});
       if (bev_enabled_) {
         text(panel, i < depth_counts.size() ?

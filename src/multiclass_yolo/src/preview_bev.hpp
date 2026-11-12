@@ -1,6 +1,7 @@
 #pragma once
 
 #include "multiclass_yolo/yolox_detector.hpp"
+#include "preview_colors.hpp"
 
 #include <point_cloud/startup_parameters.hpp>
 #include <roi_lidar/config.hpp>
@@ -148,15 +149,18 @@ struct BevFrame {
   cv::Mat image;
   std::vector<std::pair<int, int>> points;
   std::optional<double> sync_ms;
+  std::optional<std::chrono::steady_clock::time_point> filter_completed;
+  bool has_position{false};
 };
 
 class BevFusion {
  public:
   void reset() {rgb_key_.clear(); depth_key_.clear();}
 
+  template<class MakeDisplay>
   BevFrame process(dai::ImgFrame & rgb, dai::ImgFrame * depth, const dai::CalibrationHandler & calibration,
     const oak_startup::OakStartupMeasurement & pose, const BevSettings & settings,
-    const std::vector<Detection> & detections, const cv::Mat & display, bool render)
+    const std::vector<Detection> & detections, bool render, bool camera_background, const MakeDisplay & make_display)
   {
     const auto rgb_k = intrinsics(rgb);
     const auto cam_a_from_rgb = point_cloud::rgbFromFrame(rgb, calibration);
@@ -174,16 +178,18 @@ class BevFusion {
         scan = associate(rgb, *depth, calibration, cam_a_from_rgb, vehicle_from_cam_a,
           rgb_k, config, settings.estimate_ground, detections, out.points);
     }
+    out.filter_completed = std::chrono::steady_clock::now();
+    out.has_position = !scan.obstacle_indices.empty();
     if (!render) return out;
     cv::Mat background;
-    if (!display.empty()) {
+    if (camera_background) {
       const auto key = geometry_key(rgb, rgb_k, vehicle_from_rgb);
       if (key != rgb_key_) {
         background_.configure(rgb.getWidth(), rgb.getHeight(), rgb_k, vehicle_from_rgb,
           config.view, config.preview_size);
         rgb_key_ = key;
       }
-      background = background_.render(display, config.interpolation);
+      background = background_.render(make_display(), config.interpolation);
     }
     const auto status = out.sync_ms ? cv::format("RGB-depth %.1f ms | %zu object points", *out.sync_ms,
       scan.obstacle_indices.size()) : std::string("Waiting for synchronized stereo depth");
@@ -198,7 +204,7 @@ class BevFusion {
       const auto pixel = cv::Point(static_cast<int>(std::lround(layout.center_x - p[1] * layout.scale)),
         static_cast<int>(std::lround(layout.origin_y - p[0] * layout.scale)));
       cv::circle(area, pixel - layout.area.tl(), std::max(3, config.point_radius),
-        cv::Scalar(0, 0, 255), cv::FILLED, cv::LINE_8);
+        obstacle_colors[detections[scan.obstacle_selection_ids[i]].class_id], cv::FILLED, cv::LINE_8);
     }
     return out;
   }

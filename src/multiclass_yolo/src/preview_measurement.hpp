@@ -27,7 +27,8 @@ inline double milliseconds(PreviewClock::duration duration) {
 enum class Stage : std::size_t {
   queue, input_color, cpu_preprocess, upload, cuda_preprocess, inference,
   download, postprocess, display_color, overlay, panel, imshow, wait_key,
-  processing, receive_to_result, receive_to_submit, depth_fusion, rgb_depth_skew, count
+  processing, receive_to_result, receive_to_submit, depth_fusion, rgb_depth_skew, receive_to_position,
+  depth_association, bev_render, count
 };
 
 struct MeasurementFrame {
@@ -35,7 +36,7 @@ struct MeasurementFrame {
     "queue_ms", "input_color_ms", "cpu_preprocess_ms", "upload_ms", "cuda_preprocess_ms",
     "inference_ms", "download_ms", "postprocess_ms", "display_color_ms", "overlay_resize_ms",
     "panel_ms", "imshow_ms", "wait_key_ms", "processing_ms", "receive_to_result_ms", "receive_to_submit_ms",
-    "depth_fusion_ms", "rgb_depth_skew_ms"
+    "depth_fusion_ms", "rgb_depth_skew_ms", "receive_to_position_ms", "depth_association_ms", "bev_render_ms"
   }};
   std::int64_t sequence{};
   std::uint64_t host_skipped{};
@@ -69,9 +70,10 @@ class PreviewMeasurement {
   bool contains(PreviewClock::time_point time) const {return time >= start && time < end;}
 
   void record(MeasurementFrame frame, PreviewClock::time_point result,
-    std::optional<PreviewClock::time_point> submitted)
+    std::optional<PreviewClock::time_point> position, std::optional<PreviewClock::time_point> submitted)
   {
     if (contains(result)) ++completed_;
+    if (position && contains(*position)) ++positions_;
     if (submitted && contains(*submitted)) ++submitted_;
     skipped_ += frame.host_skipped;
     frames_.push_back(std::move(frame));
@@ -126,8 +128,8 @@ class PreviewMeasurement {
     const nlohmann::json summary = {
       {"settings", settings_}, {"end_reason", reason}, {"duration_seconds", seconds},
       {"sampled_frames", frames_.size()}, {"received_frames", capture.received},
-      {"detection_completed_frames", completed_}, {"preview_submitted_frames", submitted_},
-      {"received_fps", fps(capture.received)}, {"detection_fps", fps(completed_)},
+      {"detection_completed_frames", completed_}, {"position_completed_frames", positions_}, {"preview_submitted_frames", submitted_},
+      {"received_fps", fps(capture.received)}, {"detection_fps", fps(completed_)}, {"position_fps", fps(positions_)},
       {"preview_submission_fps", fps(submitted_)}, {"host_skipped_frames", skipped_},
       {"received_sequence_gaps", capture.sequence_gaps}, {"stages_ms", stats}
     };
@@ -143,7 +145,7 @@ class PreviewMeasurement {
  private:
   nlohmann::json settings_;
   std::vector<MeasurementFrame> frames_;
-  std::uint64_t completed_{}, submitted_{}, skipped_{};
+  std::uint64_t completed_{}, positions_{}, submitted_{}, skipped_{};
 };
 
 }  // namespace multiclass_yolo

@@ -31,6 +31,23 @@ using Clock = multiclass_yolo::PreviewClock;
 using namespace std::chrono_literals;
 namespace multiclass_yolo {
 class Preview : public rclcpp::Node {
+  struct AverageRate {
+    std::uint64_t count{};
+    double total_ms{};
+
+    void add(double ms) {
+      if (ms <= 0) return;
+      ++count;
+      total_ms += ms;
+    }
+
+    double fps() const {return total_ms > 0 ? 1000.0 * count / total_ms : 0.0;}
+  };
+
+  static std::string format_fps(double fps) {
+    return fps > 0 ? cv::format("%.1f", fps) : "--";
+  }
+
   struct CameraChange {
     double fps;
     std::optional<point_cloud::Config> stereo;
@@ -164,7 +181,7 @@ class Preview : public rclcpp::Node {
       if (event == cv::EVENT_LBUTTONDOWN) static_cast<PreviewPanel *>(data)->click(x, y);
     }, &panel);
     constexpr int video_width = static_cast<int>(1024 * 1.1 + .5);
-    constexpr int video_top = 122;
+    constexpr int video_top = 147;
     const int video_height = std::max(1, static_cast<int>(std::lround(
       static_cast<double>(video_width) * height_ / width_)));
     const int video_left = PreviewPanel::width;
@@ -188,13 +205,25 @@ class Preview : public rclcpp::Node {
     std::string displayed_status, displayed_toolbar;
     auto last_log = Clock::now();
     const char * compute_label = backend_ == "TENSORRT" ? "TensorRT compute" : "CPU compute";
-    std::uint64_t inference_frames = 0, inference_ns = 0;
+    AverageRate inference_rate, classification_latency, position_latency;
+    AverageRate processing_rate, filter_rate, render_rate, input_color_rate, display_color_rate;
+    std::optional<std::uint64_t> input_baseline;
     double compute_fps = 0;
-    const auto reset_inference_window = [&] {
-      inference_frames = inference_ns = 0;
-      compute_fps = 0;
+    std::string throughput_line, latency_line, stage_line;
+    bool rates_dirty = false;
+    const auto clear_rate_window = [&] {
+      inference_rate = classification_latency = position_latency = {};
+      processing_rate = filter_rate = render_rate = input_color_rate = display_color_rate = {};
       last_log = Clock::now();
-      panel.dirty = true;
+    };
+    const auto reset_inference_window = [&] {
+      clear_rate_window();
+      input_baseline.reset();
+      compute_fps = 0;
+      throughput_line.clear();
+      latency_line.clear();
+      stage_line.clear();
+      rates_dirty = panel.dirty = true;
     };
     while (rclcpp::ok() && !stop_) {
       rclcpp::spin_some(get_node_base_interface());
@@ -206,7 +235,7 @@ class Preview : public rclcpp::Node {
       }
       if (measurement_ && Clock::now() >= measurement_->end) finish_measurement("completed");
       std::shared_ptr<dai::ImgFrame> frame;
-      Clock::time_point received, first;
+      Clock::time_point received;
       std::uint64_t count;
       double fps;
       bool changing_fps;
@@ -219,7 +248,7 @@ class Preview : public rclcpp::Node {
           previous = outputs = skipped = 0;
           reset_inference_window();
         }
-        count = received_; first = first_frame_; received = last_frame_;
+        count = received_; received = last_frame_;
         fps = fps_;
         changing_fps = requested_camera_.has_value();
         camera_status = fps_status_;
@@ -228,7 +257,7 @@ class Preview : public rclcpp::Node {
       if (!changing_fps && std::chrono::duration<double>(Clock::now()-received).count() > timeout_)
         throw std::runtime_error("No camera frame within frame_timeout_sec; check OAK/USB and other camera processes");
       std::optional<MeasurementFrame> sample;
-      std::optional<Clock::time_point> preview_submitted;
+      std::optional<Clock::time_point> preview_submitted, position_completed;
       Clock::time_point detection_completed;
       if (frame) {
         if (previous == 0) RCLCPP_INFO(get_logger(), "First camera frame received; starting inference");
@@ -252,10 +281,11 @@ class Preview : public rclcpp::Node {
         if (stride < std::size_t(width_) || bytes.size() < stride*std::size_t(height_)*3/2)
           throw std::runtime_error("Invalid NV12 buffer/pitch");
         YoloxDetectionResult result;
-        cv::Mat display, rgb;
+        cv::Mat rgb;
         cv::Mat y(height_, width_, CV_8UC1, const_cast<std::uint8_t *>(bytes.data()), stride);
         cv::Mat uv(height_/2, width_/2, CV_8UC2, const_cast<std::uint8_t *>(bytes.data())+stride*height_, stride);
-        double input_color_ms = 0, display_color_ms = 0, fusion_ms = 0;
+        double input_color_ms = 0, display_color_ms = 0;
+        std::optional<Clock::time_point> filter_completed;
         if (format_ == "nv12") {
           result = detector_->detect_nv12(bytes.data(), bytes.size(), stride, width_, height_, roi);
         } else {
@@ -283,17 +313,28 @@ class Preview : public rclcpp::Node {
           (*sample)[Stage::inference] = timing.forward_nanoseconds / 1e6;
           (*sample)[Stage::postprocess] = timing.postprocessing_nanoseconds / 1e6;
         }
-        if (video_enabled_ && (!bev_settings_ || bev_background_)) {
+        const auto make_display = [&] {
+          cv::Mat display;
           const auto display_started = Clock::now();
           if (format_ == "nv12") cv::cvtColorTwoPlane(y, uv, display, cv::COLOR_YUV2BGR_NV12);
           else cv::cvtColor(rgb, display, cv::COLOR_RGB2BGR);
           display_color_ms = milliseconds(Clock::now() - display_started);
           if (sample) (*sample)[Stage::display_color] = display_color_ms;
-        }
+          return display;
+        };
         if (bev_settings_) {
           const auto fusion_started = Clock::now();
           try {
-            auto fused = make_bev(*frame, result.detections, display, session);
+            auto fused = make_bev(*frame, result.detections, session, make_display);
+            filter_completed = fused.filter_completed;
+            if (filter_completed && fused.sync_ms && !result.detections.empty()) {
+              const double filter_ms = milliseconds(*filter_completed - fusion_started);
+              filter_rate.add(filter_ms);
+              if (sample) (*sample)[Stage::depth_association] = filter_ms;
+            }
+            if (fused.has_position) position_completed = filter_completed;
+            if (sample && position_completed)
+              (*sample)[Stage::receive_to_position] = milliseconds(*position_completed - received);
             depth_counts = std::move(fused.points);
             if (video_enabled_) show_bev(video, fused.image);
             if (sample && fused.sync_ms) (*sample)[Stage::rgb_depth_skew] = *fused.sync_ms;
@@ -302,9 +343,16 @@ class Preview : public rclcpp::Node {
             if (video_enabled_) show_bev(video, {});
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "BEV fusion: %s", error.what());
           }
-          fusion_ms = milliseconds(Clock::now() - fusion_started);
-          if (sample) (*sample)[Stage::depth_fusion] = fusion_ms;
+          const auto fusion_finished = Clock::now();
+          if (filter_completed && video_enabled_) {
+            const double render_ms = std::max(0.0, milliseconds(fusion_finished - *filter_completed) - display_color_ms);
+            render_rate.add(render_ms);
+            if (sample) (*sample)[Stage::bev_render] = render_ms;
+          }
+          if (sample) (*sample)[Stage::depth_fusion] =
+            std::max(0.0, milliseconds(fusion_finished - fusion_started) - display_color_ms);
         } else if (video_enabled_) {
+          auto display = make_display();
           const auto overlay_started = Clock::now();
           if (roi.y > 0)
             cv::line(display, {0, roi.y}, {width_ - 1, roi.y}, {0, 220, 255}, 1, cv::LINE_AA);
@@ -314,43 +362,46 @@ class Preview : public rclcpp::Node {
         }
         const double total_ms = milliseconds(Clock::now() - began);
         if (sample) (*sample)[Stage::processing] = total_ms;
-        // Common epoch: first host receipt, engine build and camera startup excluded.
-        const double elapsed = std::chrono::duration<double>(Clock::now()-first).count();
         std::uint64_t current_received;
         {
           std::lock_guard<std::mutex> lock(mutex_);
           if (session != camera_session_) continue;
           current_received = received_;
         }
-        const double in_fps = elapsed > 0.5 ? double(current_received-1)/elapsed : 0;
-        const double out_fps = elapsed > 0.5 ? double(outputs)/elapsed : 0;
+        if (!input_baseline) input_baseline = count - 1;
+        ++outputs;
+        classification_latency.add(milliseconds(detection_completed - received));
+        if (position_completed) position_latency.add(milliseconds(*position_completed - received));
+        inference_rate.add(result.timing.forward_nanoseconds / 1e6);
+        processing_rate.add(total_ms);
+        input_color_rate.add(input_color_ms);
+        display_color_rate.add(display_color_ms);
+
+        const double window_s = std::chrono::duration<double>(Clock::now() - last_log).count();
+        if (window_s >= 2) {
+          const double input_fps = (current_received - *input_baseline) / window_s;
+          const double classification_fps = classification_latency.count / window_s;
+          const double position_fps = position_latency.count / window_s;
+          compute_fps = inference_rate.fps();
+          const std::string position_fps_text = bev_settings_ ? cv::format("%.1f", position_fps) : "--";
+          throughput_line = cv::format("Actual FPS | Input %.1f | Class result %.1f | Obstacle position %s | Target %.6g | Skipped %llu",
+            input_fps, classification_fps, position_fps_text.c_str(),
+            fps, static_cast<unsigned long long>(skipped));
+          latency_line = "Receive-to-result (FPS from mean delay) | Class " + format_fps(classification_latency.fps()) +
+            " | Obstacle position " + format_fps(position_latency.fps());
+          stage_line = "Stage FPS | Processing " + format_fps(processing_rate.fps()) +
+            " | Depth/filter " + format_fps(filter_rate.fps()) + " | BEV render " + format_fps(render_rate.fps()) +
+            " | Input color " + format_fps(input_color_rate.fps()) +
+            " | Display color " + format_fps(display_color_rate.fps());
+          RCLCPP_INFO(get_logger(), "%s; %s; %s; %s %.1f FPS", throughput_line.c_str(),
+            latency_line.c_str(), stage_line.c_str(), compute_label, compute_fps);
+          input_baseline = current_received;
+          clear_rate_window();
+          rates_dirty = panel.dirty = true;
+        }
         if (video_enabled_) {
-          canvas(cv::Rect(video_left, 68, video_width, video_top - 68)).setTo(cv::Scalar(20,20,20));
-          cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG processed %.2f FPS | target %.6g", in_fps, out_fps, fps),
-            {video_left + 10, 85}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
-          cv::putText(canvas, cv::format("%s | total %.1f ms | BEV %.1f ms | input/display color %.1f/%.1f ms | skipped %llu | Q/ESC quit",
-            format_.c_str(), total_ms, fusion_ms, input_color_ms, display_color_ms, static_cast<unsigned long long>(skipped)),
-            {video_left + 10, 109}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
           detections = std::move(result.detections);
           detection_thresholds = thresholds_;
-        }
-        ++outputs;
-        const auto forward_ns = result.timing.forward_nanoseconds;
-        if (forward_ns > 0) {
-          inference_ns += forward_ns;
-          ++inference_frames;
-        }
-        if (Clock::now()-last_log >= 2s) {
-          compute_fps = inference_ns > 0 ? 1e9 * inference_frames / inference_ns : 0.0;
-          RCLCPP_INFO(get_logger(),
-            "AVG input %.2f / detection %.2f FPS; %s %.2f FPS; ROI %d%%; total %.2f ms; "
-            "upload %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
-            in_fps, out_fps, compute_label, compute_fps, roi_percent, total_ms,
-            result.timing.input_transfer_nanoseconds/1e6, result.timing.preprocessing_nanoseconds/1e6,
-            forward_ns/1e6, static_cast<unsigned long long>(skipped));
-          inference_frames = inference_ns = 0;
-          last_log = Clock::now();
-          panel.dirty = true;
         }
       }
       const auto toolbar = toolbar_status();
@@ -358,6 +409,16 @@ class Preview : public rclcpp::Node {
       if (show_frame || panel.dirty || fps != displayed_fps ||
           camera_status != displayed_status || toolbar != displayed_toolbar) {
         const auto panel_started = Clock::now();
+        if (rates_dirty) {
+          canvas(cv::Rect(video_left, 68, video_width, video_top - 68)).setTo(cv::Scalar(20,20,20));
+          cv::putText(canvas, throughput_line, {video_left + 10, 89}, cv::FONT_HERSHEY_SIMPLEX,
+            .53, {255,255,255}, 1, cv::LINE_AA);
+          cv::putText(canvas, latency_line, {video_left + 10, 112}, cv::FONT_HERSHEY_SIMPLEX,
+            .53, {230,230,180}, 1, cv::LINE_AA);
+          cv::putText(canvas, stage_line, {video_left + 10, 135}, cv::FONT_HERSHEY_SIMPLEX,
+            .5, {200,220,200}, 1, cv::LINE_AA);
+          rates_dirty = false;
+        }
         panel.draw_toolbar(canvas, active_model_.precision, active_model_.roi80,
           measurement_seconds_, bool(measurement_), video_enabled_, toolbar,
           compute_label, compute_fps, bev_settings_.has_value(), bev_background_,
@@ -385,7 +446,7 @@ class Preview : public rclcpp::Node {
       int key = cv::waitKey(1) & 255;
       if (sample) {
         (*sample)[Stage::wait_key] = milliseconds(Clock::now() - before_wait_key);
-        measurement_->record(std::move(*sample), detection_completed, preview_submitted);
+        measurement_->record(std::move(*sample), detection_completed, position_completed, preview_submitted);
       }
       if (panel.handle_key(key)) key = -1;
       if (const auto edit = panel.take_submission()) panel.finish(apply_preview_input(*edit));
@@ -511,8 +572,9 @@ class Preview : public rclcpp::Node {
     return {};
   }
 
+  template<class MakeDisplay>
   BevFrame make_bev(dai::ImgFrame & rgb, const std::vector<Detection> & detections,
-    const cv::Mat & display, std::uint64_t session)
+    std::uint64_t session, const MakeDisplay & make_display)
   {
     std::shared_ptr<dai::ImgFrame> nearest;
     std::shared_ptr<const dai::CalibrationHandler> calibration;
@@ -536,7 +598,7 @@ class Preview : public rclcpp::Node {
     }
     if (!pose && !bev_settings_->estimate_ground) pose = bev_settings_->fixed_pose;
     if (!calibration || !pose) return {};
-    return fusion_.process(rgb, nearest.get(), *calibration, *pose, *bev_settings_, detections, display, video_enabled_);
+    return fusion_.process(rgb, nearest.get(), *calibration, *pose, *bev_settings_, detections, video_enabled_, bev_background_, make_display);
   }
 
   static void show_bev(cv::Mat & video, const cv::Mat & image) {
@@ -875,7 +937,7 @@ class Preview : public rclcpp::Node {
     requested_camera_.reset();
     depth_frames_.clear();
     if (frames.depth) depth_frames_.push_back(std::move(frames.depth));
-    last_frame_ = first_frame_ = Clock::now();
+    last_frame_ = Clock::now();
     latest_ = std::move(frames.rgb);
     received_ = 1;
     ++camera_session_;
@@ -909,7 +971,6 @@ class Preview : public rclcpp::Node {
         }
         if (packet) {
           last_frame_ = Clock::now();
-          if (received_ == 0) first_frame_ = last_frame_;
           if (capture_measurement_) capture_measurement_->record(last_frame_, packet->getSequenceNum());
           latest_ = std::move(packet); ++received_;
         }
@@ -942,7 +1003,7 @@ class Preview : public rclcpp::Node {
   std::unique_ptr<dai::Pipeline> pipeline_; std::shared_ptr<dai::MessageQueue> queue_;
   std::atomic<bool> stop_{false}; std::thread capture_; std::mutex mutex_;
   std::shared_ptr<dai::ImgFrame> latest_; std::uint64_t received_{0}; std::string error_;
-  Clock::time_point first_frame_, last_frame_;
+  Clock::time_point last_frame_;
   std::optional<BevSettings> bev_settings_;
   BevFusion fusion_;
   std::optional<CameraChange> requested_camera_;
