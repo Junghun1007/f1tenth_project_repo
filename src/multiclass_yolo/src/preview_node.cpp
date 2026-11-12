@@ -29,6 +29,19 @@ using Clock = multiclass_yolo::PreviewClock;
 using namespace std::chrono_literals;
 namespace multiclass_yolo {
 class Preview : public rclcpp::Node {
+  struct ModelSelection {
+    std::string precision{"fp16"};
+    bool roi80{false};
+
+    bool operator==(const ModelSelection & other) const {
+      return precision == other.precision && roi80 == other.roi80;
+    }
+
+    int width() const {return roi80 ? 448 : 512;}
+    int height() const {return roi80 ? 224 : 320;}
+    const char * variant() const {return roi80 ? "roi80_448x224" : "holdout10";}
+  };
+
  public:
   Preview() : Node("multiclass_yolo") {
     const auto share = ament_index_cpp::get_package_share_directory("multiclass_yolo");
@@ -36,14 +49,24 @@ class Preview : public rclcpp::Node {
     fp_model_path_ = declare_parameter<std::string>("model_path", default_model);
     int8_model_path_ = declare_parameter<std::string>("int8_model_path",
       share + "/models/multiclass_yolox_tiny_512x320_holdout10.int8.qdq.onnx");
+    roi80_model_path_ = share + "/models/roi80_448x224.onnx";
+    const auto variant = declare_parameter<std::string>("model_variant", "holdout10");
+    if (variant != "holdout10" && variant != "roi80_448x224")
+      throw std::invalid_argument("model_variant must be holdout10 or roi80_448x224");
+    active_model_.roi80 = variant == "roi80_448x224";
     backend_ = declare_parameter<std::string>("inference_backend", "TENSORRT");
-    precision_ = declare_parameter<std::string>("engine_precision", "fp16");
+    active_model_.precision = declare_parameter<std::string>("engine_precision", "fp16");
     std::transform(backend_.begin(), backend_.end(), backend_.begin(),
       [](unsigned char c) {return static_cast<char>(std::toupper(c));});
-    std::transform(precision_.begin(), precision_.end(), precision_.begin(),
+    std::transform(active_model_.precision.begin(), active_model_.precision.end(), active_model_.precision.begin(),
       [](unsigned char c) {return static_cast<char>(std::tolower(c));});
-    startup_precision_ = precision_;
-    if (precision_ == "int8" && fp_model_path_ != default_model) {
+    startup_model_ = active_model_;
+    if (active_model_.roi80) {
+      if (active_model_.precision == "int8")
+        throw std::invalid_argument("roi80_448x224 requires fp16 or fp32 precision");
+      if (fp_model_path_ != default_model)
+        roi80_model_path_ = std::exchange(fp_model_path_, default_model);
+    } else if (active_model_.precision == "int8" && fp_model_path_ != default_model) {
       int8_model_path_ = std::exchange(fp_model_path_, default_model);
     }
     startup_cache_ = declare_parameter<std::string>("engine_cache_path", "");
@@ -76,10 +99,10 @@ class Preview : public rclcpp::Node {
       thresholds_[i] = static_cast<float>(v);
     }
     workspace_bytes_ = std::size_t(workspace) * 1024 * 1024;
-    detector_ = make_detector(precision_);
+    detector_ = make_detector(active_model_);
     if (format_ == "nv12" && !detector_->supports_nv12_input())
       throw std::invalid_argument("input_format=nv12 requires TensorRT; CPU: use input_format=rgb engine_precision=fp32");
-    warmup_detector(*detector_, roi_height_percent_, thresholds_);
+    warmup_detector(*detector_, roi_percent_for(active_model_), thresholds_);
     auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
     camera_id_ = device->getDeviceId();
     for (const auto & camera : device->getConnectedCameraFeatures()) {
@@ -184,9 +207,8 @@ class Preview : public rclcpp::Node {
         skipped += count > previous ? count - previous - 1 : 0;
         previous = count;
         detector_->set_thresholds(thresholds_);
-        const int roi_percent = roi_height_percent_;
-        const int roi_height = std::max(1, static_cast<int>(std::lround(height_ * (roi_percent / 100.0))));
-        const cv::Rect roi(0, height_ - roi_height, width_, roi_height);
+        const int roi_percent = roi_percent_for(active_model_);
+        const cv::Rect roi = frame_roi(roi_percent);
         const auto & bytes = frame->getData();
         const std::size_t stride = frame->getStride() > 0 ? frame->getStride() : width_;
         if (stride < std::size_t(width_) || bytes.size() < stride*std::size_t(height_)*3/2)
@@ -275,8 +297,9 @@ class Preview : public rclcpp::Node {
       if (show_frame || panel.dirty || fps != displayed_fps ||
           camera_status != displayed_status || toolbar != displayed_toolbar) {
         const auto panel_started = Clock::now();
-        panel.draw_toolbar(canvas, precision_, measurement_seconds_, bool(measurement_), video_enabled_, toolbar);
-        panel.draw(canvas, fps, roi_height_percent_, names_, thresholds_,
+        panel.draw_toolbar(canvas, active_model_.precision, active_model_.roi80,
+          measurement_seconds_, bool(measurement_), video_enabled_, toolbar);
+        panel.draw(canvas, fps, roi_percent_for(active_model_), active_model_.roi80, names_, thresholds_,
           detection_thresholds, detections, camera_status);
         const auto before_imshow = Clock::now();
         cv::imshow(window, canvas);
@@ -304,8 +327,9 @@ class Preview : public rclcpp::Node {
       if (panel.handle_key(key)) key = -1;
       if (const auto edit = panel.take_submission()) panel.finish(apply_preview_input(*edit));
       switch (panel.take_action()) {
-        case PreviewPanel::Action::fp16: request_model("fp16"); break;
-        case PreviewPanel::Action::int8: request_model("int8"); break;
+        case PreviewPanel::Action::fp16: request_model({"fp16", false}); break;
+        case PreviewPanel::Action::int8: request_model({"int8", false}); break;
+        case PreviewPanel::Action::roi80: request_model({"fp16", true}); break;
         case PreviewPanel::Action::measure:
           if (measurement_) finish_measurement(Clock::now() >= measurement_->end ? "completed" : "stopped");
           else start_measurement();
@@ -351,7 +375,7 @@ class Preview : public rclcpp::Node {
     pipeline->start();
     pipeline_ = std::move(pipeline);
     queue_ = std::move(queue);
-    RCLCPP_INFO(get_logger(), "CAM_A NV12 %dx%d @ %.6g; path=%s; tensor=BGR FP32 [1,3,320,512]",
+    RCLCPP_INFO(get_logger(), "CAM_A NV12 %dx%d @ %.6g; path=%s",
       width_, height_, fps, format_.c_str());
     if (device->getUsbSpeed() == dai::UsbSpeed::HIGH)
       RCLCPP_WARN(get_logger(), "USB2 connection detected; measure actual FPS on this connection");
@@ -366,14 +390,25 @@ class Preview : public rclcpp::Node {
     }
   }
 
-  const std::string & model_path(const std::string & precision) const {
-    return precision == "int8" ? int8_model_path_ : fp_model_path_;
+  int roi_percent_for(const ModelSelection & selection) const {
+    return selection.roi80 ? 80 : roi_height_percent_;
   }
 
-  std::unique_ptr<YoloxDetector> make_detector(const std::string & precision) const {
-    const auto & model = model_path(precision);
+  cv::Rect frame_roi(int percent) const {
+    const int height = std::max(1, static_cast<int>(std::lround(height_ * (percent / 100.0))));
+    return {0, height_ - height, width_, height};
+  }
+
+  const std::string & model_path(const ModelSelection & selection) const {
+    if (selection.roi80) return roi80_model_path_;
+    return selection.precision == "int8" ? int8_model_path_ : fp_model_path_;
+  }
+
+  std::unique_ptr<YoloxDetector> make_detector(const ModelSelection & selection) const {
+    const auto & model = model_path(selection);
+    const auto & precision = selection.precision;
     if (!std::filesystem::is_regular_file(model)) throw std::runtime_error("Model missing: " + model);
-    auto cache = precision == startup_precision_ ? startup_cache_ : std::string{};
+    auto cache = selection == startup_model_ ? startup_cache_ : std::string{};
     if (cache.empty() && backend_ == "TENSORRT") {
       const auto modified = std::filesystem::last_write_time(model).time_since_epoch().count();
       const auto identity = std::filesystem::canonical(model).string() + "|" +
@@ -383,16 +418,16 @@ class Preview : public rclcpp::Node {
         "." + precision + ".engine")).string();
     }
     return std::make_unique<YoloxDetector>(model, backend_, cache, precision,
-      512, 320, 0.0f, nms_, workspace_bytes_,
-      [logger = get_logger()](const std::string & status) {RCLCPP_INFO(logger, "%s", status.c_str());});
+      selection.width(), selection.height(), 0.0f, nms_, workspace_bytes_,
+      [logger = get_logger()](const std::string & status) {RCLCPP_INFO(logger, "%s", status.c_str());},
+      selection.roi80 ? 100 : 0);
   }
 
   void warmup_detector(YoloxDetector & detector, int roi_percent,
     const std::array<float, 4> & thresholds) const
   {
     detector.set_thresholds(thresholds);
-    const int height = std::max(1, static_cast<int>(std::lround(height_ * (roi_percent / 100.0))));
-    const cv::Rect roi(0, height_ - height, width_, height);
+    const auto roi = frame_roi(roi_percent);
     if (format_ == "nv12") {
       const auto stride = static_cast<std::size_t>(width_);
       std::vector<std::uint8_t> pixels(stride * height_ * 3 / 2, 128);
@@ -404,22 +439,22 @@ class Preview : public rclcpp::Node {
     }
   }
 
-  void request_model(const std::string & precision) {
-    if (precision == precision_) return;
+  void request_model(ModelSelection selection) {
+    if (selection == active_model_) return;
     if (backend_ != "TENSORRT") {
-      toolbar_notice_ = "FP16 and INT8 require TensorRT";
+      toolbar_notice_ = "Model buttons require TensorRT";
       return;
     }
     if (measurement_ || pending_detector_.valid()) {
       toolbar_notice_ = "Finish the current measurement or model change first";
       return;
     }
-    pending_precision_ = precision;
-    toolbar_notice_ = "Loading " + precision + " engine...";
+    pending_model_ = selection;
+    toolbar_notice_ = std::string("Loading ") + selection.variant() + " " + selection.precision + " engine...";
     try {
       pending_detector_ = std::async(std::launch::async,
-        [this, precision, roi_percent = roi_height_percent_, thresholds = thresholds_] {
-          auto candidate = make_detector(precision);
+        [this, selection, roi_percent = roi_percent_for(selection), thresholds = thresholds_] {
+          auto candidate = make_detector(selection);
           warmup_detector(*candidate, roi_percent, thresholds);
           return candidate;
         });
@@ -435,12 +470,13 @@ class Preview : public rclcpp::Node {
     try {
       auto next = pending_detector_.get();
       detector_ = std::move(next);
-      precision_ = pending_precision_;
+      active_model_ = pending_model_;
       toolbar_notice_ = "Engine ready";
       return true;
     } catch (const std::exception & error) {
       toolbar_notice_ = "Engine load failed. Previous model active.";
-      RCLCPP_WARN(get_logger(), "%s engine load failed: %s", pending_precision_.c_str(), error.what());
+      RCLCPP_WARN(get_logger(), "%s %s engine load failed: %s",
+        pending_model_.variant(), pending_model_.precision.c_str(), error.what());
       return false;
     }
   }
@@ -457,9 +493,11 @@ class Preview : public rclcpp::Node {
         return;
       }
       const nlohmann::json settings = {
-        {"model", model_path(precision_)}, {"precision", precision_}, {"backend", backend_},
+        {"model", model_path(active_model_)}, {"model_variant", active_model_.variant()},
+        {"precision", active_model_.precision}, {"backend", backend_},
+        {"model_input_width", active_model_.width()}, {"model_input_height", active_model_.height()},
         {"input_format", format_}, {"video_enabled", video_enabled_}, {"sensor_fps", fps_},
-        {"frame_width", width_}, {"frame_height", height_}, {"roi_height_percent", roi_height_percent_},
+        {"frame_width", width_}, {"frame_height", height_}, {"roi_height_percent", roi_percent_for(active_model_)},
         {"class_thresholds", {{"con", thresholds_[0]}, {"truck", thresholds_[1]},
           {"sedan", thresholds_[2]}, {"traffic_light", thresholds_[3]}}},
         {"nms_threshold", nms_}, {"undistort_enabled", undistort_},
@@ -512,6 +550,7 @@ class Preview : public rclcpp::Node {
     }
     if (edit.field == PreviewPanel::fps_field) return request_camera_fps(edit.value);
     if (edit.field == PreviewPanel::roi_field) {
+      if (active_model_.roi80) return "448x224 uses a fixed bottom 80% ROI";
       if (!edit.value || *edit.value < 1 || *edit.value > 100 ||
           std::trunc(*edit.value) != *edit.value)
         return "Enter a whole ROI percent from 1 to 100";
@@ -617,8 +656,9 @@ class Preview : public rclcpp::Node {
   static constexpr int sensor_height_ = 800;
   double min_fps_{0}, max_fps_{0};
   std::string camera_id_, format_;
-  std::string backend_, precision_, startup_precision_, pending_precision_, startup_cache_;
-  std::string fp_model_path_, int8_model_path_, toolbar_notice_;
+  std::string backend_, startup_cache_;
+  ModelSelection active_model_, startup_model_, pending_model_;
+  std::string fp_model_path_, int8_model_path_, roi80_model_path_, toolbar_notice_;
   std::filesystem::path cache_directory_, measurement_directory_;
   float nms_{};
   std::size_t workspace_bytes_{};

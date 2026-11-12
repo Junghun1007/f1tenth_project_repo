@@ -7,7 +7,8 @@
 namespace multiclass_yolo {
 inline std::vector<Detection> decode_detections(
   const float * rows, int count, int columns, float ratio, int width, int height,
-  int origin_x, int origin_y, const std::array<float, 4> & thresholds, float nms)
+  int origin_x, int origin_y, const std::array<float, 4> & thresholds, float nms,
+  std::size_t max_detections = 0)
 {
   if (!rows || count <= 0 || columns != 9 || !std::isfinite(ratio) || ratio <= 0 ||
       width <= 0 || height <= 0) throw std::invalid_argument("Expected decoded [1,N,9]");
@@ -38,7 +39,9 @@ inline std::vector<Detection> decode_detections(
       float union_area = c.box.area() + k.box.area() - intersection;
       if (union_area > 0 && intersection / union_area > nms) { suppressed = true; break; }
     }
-    if (!suppressed) kept.push_back(c);
+    if (suppressed) continue;
+    kept.push_back(c);
+    if (max_detections && kept.size() == max_detections) break;
   }
   return kept;
 }

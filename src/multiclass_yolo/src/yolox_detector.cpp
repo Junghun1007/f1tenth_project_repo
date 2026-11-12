@@ -1,5 +1,6 @@
 #include "multiclass_yolo/yolox_detector.hpp"
 #include "multiclass_yolo/postprocess.hpp"
+#include "yolox_geometry.hpp"
 
 #include "multiclass_yolo/tensorrt_yolox_backend.hpp"
 
@@ -54,10 +55,12 @@ YoloxDetector::YoloxDetector(
   const float score_threshold,
   const float nms_threshold,
   const std::size_t tensorrt_workspace_size_bytes,
-  std::function<void(const std::string &)> progress)
+  std::function<void(const std::string &)> progress,
+  const std::size_t max_detections)
 : input_width_(input_width),
   input_height_(input_height),
-  nms_threshold_(nms_threshold)
+  nms_threshold_(nms_threshold),
+  max_detections_(max_detections)
 {
   if (input_width_ <= 0 || input_height_ <= 0) {
     throw std::invalid_argument("model input dimensions must be positive");
@@ -209,11 +212,13 @@ YoloxDetectionResult YoloxDetector::detect(
       column_count = output.cols;
     } else {
       throw std::runtime_error(
-              "unexpected YOLOX output rank; expected [1, 3360, 9]");
+              "unexpected YOLOX output rank; expected [1, N, 9] or [N, 9]");
     }
-    if (row_count != 3360 || column_count != 9 || output.type() != CV_32F) {
+    const auto expected_rows = yolox_output_rows(input_width_, input_height_);
+    if (row_count != expected_rows || column_count != 9 || output.type() != CV_32F) {
       throw std::runtime_error(
-              "unexpected YOLOX output; expected FP32 [1, 3360, 9]");
+              "unexpected YOLOX output; expected FP32 with " +
+              std::to_string(expected_rows) + " rows and 9 columns");
     }
     if (!output.isContinuous()) {
       output = output.clone();
@@ -291,7 +296,8 @@ YoloxDetectionResult YoloxDetector::decode_output(
   YoloxDetectionResult result;
   result.timing = timing;
   result.detections = decode_detections(rows, row_count, column_count, ratio,
-    image_width, image_height, image_origin_x, image_origin_y, thresholds_, nms_threshold_);
+    image_width, image_height, image_origin_x, image_origin_y, thresholds_, nms_threshold_,
+    max_detections_);
   const auto postprocessing_finished_at = std::chrono::steady_clock::now();
   result.timing.postprocessing_nanoseconds = elapsed_nanoseconds(
     postprocessing_started_at, postprocessing_finished_at);

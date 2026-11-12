@@ -12,6 +12,7 @@ def generate_launch_description():
         "engine_cache_path": ("", str),
         "input_format": ("nv12", str),
         "inference_backend": ("TENSORRT", str),
+        "model_variant": ("holdout10", str),
         "engine_precision": ("fp16", str),
         "model_path": (share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx", str),
         "int8_model_path": (share + "/models/multiclass_yolox_tiny_512x320_holdout10.int8.qdq.onnx", str),

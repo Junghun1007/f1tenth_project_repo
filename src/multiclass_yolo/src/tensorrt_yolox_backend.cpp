@@ -1,6 +1,7 @@
 #include "multiclass_yolo/tensorrt_yolox_backend.hpp"
 
 #include "cuda_yolox_preprocessor.hpp"
+#include "yolox_geometry.hpp"
 
 #include <NvInfer.h>
 #include <NvInferPlugin.h>
@@ -734,13 +735,14 @@ private:
     }
 
     output_element_count_ = dimensions_volume(output_dimensions);
+    const auto expected_rows = yolox_output_rows(input_width, input_height);
     if (output_dimensions.nbDims != 3 || output_dimensions.d[0] != 1 ||
-      output_dimensions.d[1] != 3360 || output_dimensions.d[2] != 9 || output_element_count_ % 9U != 0U)
+      output_dimensions.d[1] != expected_rows || output_dimensions.d[2] != 9 || output_element_count_ % 9U != 0U)
     {
       throw std::runtime_error(
               "unexpected TensorRT output shape " +
               dimensions_string(output_dimensions) +
-              "; expected FP32 [1,3360,9]");
+              "; expected FP32 [1," + std::to_string(expected_rows) + ",9]");
     }
     output_row_count_ = output_dimensions.d[1];
     output_column_count_ = output_dimensions.d[2];

@@ -52,7 +52,8 @@ public:
     float score_threshold,
     float nms_threshold,
     std::size_t tensorrt_workspace_size_bytes,
-    std::function<void(const std::string &)> progress = {});
+    std::function<void(const std::string &)> progress = {},
+    std::size_t max_detections = 0);
   ~YoloxDetector();
 
   YoloxDetector(const YoloxDetector &) = delete;
@@ -94,6 +95,7 @@ private:
   int input_height_;
   std::array<float, 4> thresholds_;
   float nms_threshold_;
+  std::size_t max_detections_;
   std::string backend_name_;
 };
 

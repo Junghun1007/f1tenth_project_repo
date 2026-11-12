@@ -24,7 +24,7 @@ class PreviewPanel {
   static constexpr int first_threshold_field = 2;
   static constexpr int duration_field = first_threshold_field + 4;
 
-  enum class Action { none, fp16, int8, measure, toggle_video };
+  enum class Action { none, fp16, int8, roi80, measure, toggle_video };
 
   struct Edit {
     int field;
@@ -33,7 +33,7 @@ class PreviewPanel {
 
   void click(int x, int y) {
     const cv::Point position{x, y};
-    for (const auto action : {Action::fp16, Action::int8, Action::measure, Action::toggle_video}) {
+    for (const auto action : {Action::fp16, Action::int8, Action::roi80, Action::measure, Action::toggle_video}) {
       if (button_rect(action).contains(position)) {
         finish({});
         action_ = action;
@@ -92,17 +92,18 @@ class PreviewPanel {
 
   Action take_action() {return std::exchange(action_, Action::none);}
 
-  void draw_toolbar(cv::Mat & canvas, const std::string & precision, int duration,
+  void draw_toolbar(cv::Mat & canvas, const std::string & precision, bool roi80, int duration,
     bool recording, bool video, const std::string & status) const
   {
     canvas(cv::Rect(width, 0, canvas.cols - width, 68)).setTo(cv::Scalar(20, 20, 20));
-    button(canvas, Action::fp16, "FP16", precision == "fp16");
-    button(canvas, Action::int8, "INT8", precision == "int8");
+    button(canvas, Action::fp16, "FP16", !roi80 && precision == "fp16");
+    button(canvas, Action::int8, "INT8", !roi80 && precision == "int8");
+    button(canvas, Action::roi80, "448x224 FP16", roi80 && precision == "fp16");
     draw_input(canvas, duration_field, "Duration (s)", duration);
     button(canvas, Action::measure, recording ? "Stop" : "Measure", recording);
     button(canvas, Action::toggle_video, video ? "Video on" : "Video off", video);
-    text(canvas, "Active: " + precision, {width + 14, 59}, .53);
-    text(canvas, status, {width + 142, 59}, .51);
+    text(canvas, "Active: " + precision + (roi80 ? " 448x224" : " 512x320"), {width + 14, 59}, .53);
+    text(canvas, status, {width + 235, 59}, .51);
   }
 
   std::optional<Edit> take_submission() {
@@ -123,7 +124,7 @@ class PreviewPanel {
   }
 
   void draw(
-    cv::Mat & canvas, double fps, int roi_percent,
+    cv::Mat & canvas, double fps, int roi_percent, bool roi_fixed,
     const std::array<const char *, 4> & names,
     const std::array<float, 4> & thresholds,
     const std::array<float, 4> & detection_thresholds,
@@ -133,7 +134,7 @@ class PreviewPanel {
     cv::Mat panel = canvas.colRange(0, width);
     panel.setTo(cv::Scalar(28, 26, 24));
     draw_input(panel, fps_field, "Camera FPS", fps);
-    draw_input(panel, roi_field, "Bottom ROI %", roi_percent);
+    draw_input(panel, roi_field, roi_fixed ? "ROI % (fixed)" : "Bottom ROI %", roi_percent);
     text(panel, "Detection thresholds", {14, 100}, .58);
     for (std::size_t i = 0; i < names.size(); ++i)
       draw_input(panel, first_threshold_field + static_cast<int>(i), names[i], thresholds[i]);
@@ -203,12 +204,12 @@ class PreviewPanel {
   }
 
   static cv::Rect input_rect(int field) {
-    if (field == duration_field) return {width + 268, 12, 90, 28};
+    if (field == duration_field) return {width + 420, 12, 90, 28};
     return {145, row_top(field), 111, 28};
   }
 
   static cv::Rect apply_rect(int field) {
-    if (field == duration_field) return {width + 364, 12, 50, 28};
+    if (field == duration_field) return {width + 516, 12, 50, 28};
     return {262, row_top(field), 50, 28};
   }
 
@@ -216,8 +217,9 @@ class PreviewPanel {
     switch (action) {
       case Action::fp16: return {width + 14, 12, 72, 28};
       case Action::int8: return {width + 94, 12, 72, 28};
-      case Action::measure: return {width + 424, 12, 98, 28};
-      case Action::toggle_video: return {width + 532, 12, 102, 28};
+      case Action::roi80: return {width + 174, 12, 143, 28};
+      case Action::measure: return {width + 576, 12, 98, 28};
+      case Action::toggle_video: return {width + 684, 12, 102, 28};
       default: return {};
     }
   }
@@ -239,7 +241,7 @@ class PreviewPanel {
     const auto input = input_rect(field);
     const bool editing = active_ == field;
     const int y = input.y + 19;
-    text(panel, label, {field == duration_field ? width + 181 : 14, y});
+    text(panel, label, {field == duration_field ? width + 333 : 14, y});
     cv::rectangle(panel, input, editing ? cv::Scalar(100, 210, 255) : cv::Scalar(120, 120, 120), 1);
     cv::Mat input_text = panel(input);
     text(input_text, editing ? value_ + "_" : cv::format("%.6g", value), {6, 19});
