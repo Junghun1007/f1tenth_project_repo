@@ -119,10 +119,12 @@ class Preview : public rclcpp::Node {
       if (!undistort_) throw std::invalid_argument("BEV fusion requires undistort_enabled=true");
       bev_settings_.emplace(*this);
       active_stereo_ = bev_settings_->roi.camera;
-      try {
-        ground_pose_ = measure_ground(bev_settings_->startup);
-      } catch (const std::exception & error) {
-        RCLCPP_WARN(get_logger(), "Ground measurement failed: %s. Use Refit ground to retry.", error.what());
+      if (bev_settings_->estimate_ground) {
+        try {
+          ground_pose_ = measure_ground(bev_settings_->startup);
+        } catch (const std::exception & error) {
+          RCLCPP_WARN(get_logger(), "Ground measurement failed: %s. Use Refit ground to retry.", error.what());
+        }
       }
     }
     auto device = ground_pose_ ?
@@ -253,7 +255,7 @@ class Preview : public rclcpp::Node {
         cv::Mat display, rgb;
         cv::Mat y(height_, width_, CV_8UC1, const_cast<std::uint8_t *>(bytes.data()), stride);
         cv::Mat uv(height_/2, width_/2, CV_8UC2, const_cast<std::uint8_t *>(bytes.data())+stride*height_, stride);
-        double input_color_ms = 0, display_color_ms = 0;
+        double input_color_ms = 0, display_color_ms = 0, fusion_ms = 0;
         if (format_ == "nv12") {
           result = detector_->detect_nv12(bytes.data(), bytes.size(), stride, width_, height_, roi);
         } else {
@@ -281,7 +283,7 @@ class Preview : public rclcpp::Node {
           (*sample)[Stage::inference] = timing.forward_nanoseconds / 1e6;
           (*sample)[Stage::postprocess] = timing.postprocessing_nanoseconds / 1e6;
         }
-        if (video_enabled_) {
+        if (video_enabled_ && (!bev_settings_ || bev_background_)) {
           const auto display_started = Clock::now();
           if (format_ == "nv12") cv::cvtColorTwoPlane(y, uv, display, cv::COLOR_YUV2BGR_NV12);
           else cv::cvtColor(rgb, display, cv::COLOR_RGB2BGR);
@@ -300,7 +302,8 @@ class Preview : public rclcpp::Node {
             if (video_enabled_) show_bev(video, {});
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "BEV fusion: %s", error.what());
           }
-          if (sample) (*sample)[Stage::depth_fusion] = milliseconds(Clock::now() - fusion_started);
+          fusion_ms = milliseconds(Clock::now() - fusion_started);
+          if (sample) (*sample)[Stage::depth_fusion] = fusion_ms;
         } else if (video_enabled_) {
           const auto overlay_started = Clock::now();
           if (roi.y > 0)
@@ -323,10 +326,10 @@ class Preview : public rclcpp::Node {
         const double out_fps = elapsed > 0.5 ? double(outputs)/elapsed : 0;
         if (video_enabled_) {
           canvas(cv::Rect(video_left, 68, video_width, video_top - 68)).setTo(cv::Scalar(20,20,20));
-          cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG detection %.2f FPS | target %.6g", in_fps, out_fps, fps),
+          cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG processed %.2f FPS | target %.6g", in_fps, out_fps, fps),
             {video_left + 10, 85}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
-          cv::putText(canvas, cv::format("%s | total %.1f ms | input/display color %.1f/%.1f ms | skipped %llu | Q/ESC quit",
-            format_.c_str(), total_ms, input_color_ms, display_color_ms, static_cast<unsigned long long>(skipped)),
+          cv::putText(canvas, cv::format("%s | total %.1f ms | BEV %.1f ms | input/display color %.1f/%.1f ms | skipped %llu | Q/ESC quit",
+            format_.c_str(), total_ms, fusion_ms, input_color_ms, display_color_ms, static_cast<unsigned long long>(skipped)),
             {video_left + 10, 109}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
           detections = std::move(result.detections);
           detection_thresholds = thresholds_;
@@ -357,7 +360,8 @@ class Preview : public rclcpp::Node {
         const auto panel_started = Clock::now();
         panel.draw_toolbar(canvas, active_model_.precision, active_model_.roi80,
           measurement_seconds_, bool(measurement_), video_enabled_, toolbar,
-          compute_label, compute_fps, bev_settings_.has_value());
+          compute_label, compute_fps, bev_settings_.has_value(), bev_background_,
+          bev_settings_ && bev_settings_->estimate_ground);
         panel.draw(canvas, fps, roi_percent_for(active_model_), active_model_.roi80, names_, thresholds_,
           detection_thresholds, detections, camera_status, settings_for(panel), depth_counts);
         const auto before_imshow = Clock::now();
@@ -389,12 +393,22 @@ class Preview : public rclcpp::Node {
         case PreviewPanel::Action::fp16: request_model({"fp16", false}); break;
         case PreviewPanel::Action::int8: request_model({"int8", false}); break;
         case PreviewPanel::Action::roi80: request_model({"fp16", true}); break;
+        case PreviewPanel::Action::toggle_ground:
+          toolbar_notice_ = toggle_ground_estimation();
+          break;
         case PreviewPanel::Action::refit:
           toolbar_notice_ = request_refit();
           break;
         case PreviewPanel::Action::measure:
           if (measurement_) finish_measurement(Clock::now() >= measurement_->end ? "completed" : "stopped");
           else start_measurement();
+          break;
+        case PreviewPanel::Action::toggle_background:
+          if (measurement_) toolbar_notice_ = "Stop measurement before changing the BEV background";
+          else {
+            bev_background_ = !bev_background_;
+            toolbar_notice_ = bev_background_ ? "BEV camera background" : "Obstacle points on metric grid";
+          }
           break;
         case PreviewPanel::Action::toggle_video:
           if (measurement_) {
@@ -431,8 +445,20 @@ class Preview : public rclcpp::Node {
     return pose;
   }
 
+  std::string toggle_ground_estimation() {
+    if (!bev_settings_) return {};
+    if (measurement_) return "Stop measurement before changing ground estimation";
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (requested_camera_) return "Camera change in progress";
+    bev_settings_->estimate_ground = !bev_settings_->estimate_ground;
+    fusion_.reset();
+    if (bev_settings_->estimate_ground) return "Ground estimation enabled. Press Refit ground to measure.";
+    return ground_pose_ ? "Ground estimation off. Using last fit." : "Ground estimation off. Using fixed mount.";
+  }
+
   std::string request_refit() {
     if (!bev_settings_) return {};
+    if (!bev_settings_->estimate_ground) return "Enable ground estimation before refitting";
     if (measurement_) return "Stop measurement before refitting ground";
     std::lock_guard<std::mutex> lock(mutex_);
     if (requested_camera_) return "Camera change in progress";
@@ -508,8 +534,9 @@ class Preview : public rclcpp::Node {
         }
       }
     }
+    if (!pose && !bev_settings_->estimate_ground) pose = bev_settings_->fixed_pose;
     if (!calibration || !pose) return {};
-    return fusion_.process(rgb, nearest.get(), *calibration, *pose, *bev_settings_, detections, display);
+    return fusion_.process(rgb, nearest.get(), *calibration, *pose, *bev_settings_, detections, display, video_enabled_);
   }
 
   static void show_bev(cv::Mat & video, const cv::Mat & image) {
@@ -696,15 +723,18 @@ class Preview : public rclcpp::Node {
         {"class_thresholds", {{"con", thresholds_[0]}, {"truck", thresholds_[1]},
           {"sedan", thresholds_[2]}, {"traffic_light", thresholds_[3]}}},
         {"nms_threshold", nms_}, {"undistort_enabled", undistort_},
-        {"depth_fusion_enabled", bev_settings_.has_value()},
+        {"depth_fusion_enabled", bev_settings_.has_value()}, {"bev_background", bev_background_},
         {"workspace_bytes", workspace_bytes_}, {"duration_requested_seconds", measurement_seconds_}
       };
       if (bev_settings_) {
         auto & tuning = settings["bev_tuning"];
         for (const auto & control : bev_controls()) tuning[control.label] = control.read(*bev_settings_);
-        if (ground_pose_) settings["ground_pose"] = {
-          {"height_m", ground_pose_->height_m}, {"roll_deg", ground_pose_->roll_deg},
-          {"pitch_down_deg", ground_pose_->pitch_down_deg}};
+        settings["ground_estimation_enabled"] = bev_settings_->estimate_ground;
+        const auto * pose = ground_pose_ ? &*ground_pose_ :
+          (bev_settings_->estimate_ground ? nullptr : &bev_settings_->fixed_pose);
+        if (pose) settings["ground_pose"] = {
+          {"height_m", pose->height_m}, {"roll_deg", pose->roll_deg},
+          {"pitch_down_deg", pose->pitch_down_deg}};
       }
       measurement_.emplace(Clock::now(), measurement_seconds_, std::move(settings));
       capture_measurement_.emplace(CaptureMeasurement{measurement_->start, measurement_->end, received_, 0, 0, std::nullopt});
@@ -904,6 +934,7 @@ class Preview : public rclcpp::Node {
   static constexpr int max_measurement_seconds_ = 120;
   int measurement_seconds_{15};
   bool video_enabled_{true};
+  bool bev_background_{true};
   std::optional<PreviewMeasurement> measurement_;
   std::optional<CaptureMeasurement> capture_measurement_;
   std::future<std::unique_ptr<YoloxDetector>> pending_detector_;

@@ -25,7 +25,7 @@ class PreviewPanel {
   static constexpr int duration_field = first_threshold_field + 4;
   static constexpr int first_setting_field = duration_field + 1;
 
-  enum class Action { none, fp16, int8, roi80, measure, toggle_video, setup, refit };
+  enum class Action { none, fp16, int8, roi80, measure, toggle_video, setup, refit, toggle_background, toggle_ground };
 
   struct Edit {
     int field;
@@ -42,6 +42,16 @@ class PreviewPanel {
       page_count_ = 1;
       visible_first_ = visible_last_ = first_setting_field;
       finish({});
+      return;
+    }
+    if (bev_enabled_ && button_rect(Action::toggle_background).contains(position)) {
+      finish({});
+      action_ = Action::toggle_background;
+      return;
+    }
+    if (bev_enabled_ && button_rect(Action::toggle_ground).contains(position)) {
+      finish({});
+      action_ = Action::toggle_ground;
       return;
     }
     if (bev_enabled_ && button_rect(Action::refit).contains(position)) {
@@ -117,7 +127,7 @@ class PreviewPanel {
 
   void draw_toolbar(cv::Mat & canvas, const std::string & precision, bool roi80, int duration,
     bool recording, bool video, const std::string & status,
-    const char * compute_label, double compute_fps, bool bev_enabled)
+    const char * compute_label, double compute_fps, bool bev_enabled, bool bev_background, bool estimate_ground)
   {
     bev_enabled_ = bev_enabled;
     canvas(cv::Rect(width, 0, canvas.cols - width, 68)).setTo(cv::Scalar(20, 20, 20));
@@ -131,10 +141,12 @@ class PreviewPanel {
     if (bev_enabled_) {
       button(canvas, Action::setup, setup_ ? "Detections" : "Setup", setup_);
       button(canvas, Action::refit, "Refit ground", false);
+      button(canvas, Action::toggle_ground, estimate_ground ? "Ground fit on" : "Ground fit off", estimate_ground);
+      button(canvas, Action::toggle_background, bev_background ? "BEV image" : "Points only", bev_background);
     }
     text(canvas, std::string(compute_label) + " " + compute_rate, {width + 850, 59}, .48);
     text(canvas, "Active: " + precision + (roi80 ? " 448x224" : " 512x320"), {width + 14, 59}, .53);
-    cv::Mat status_area = canvas(cv::Rect(width + 235, 42, 605, 26));
+    cv::Mat status_area = canvas(cv::Rect(width + 235, 42, bev_enabled_ ? 465 : 605, 26));
     text(status_area, status, {0, 17}, .51);
   }
 
@@ -282,6 +294,8 @@ class PreviewPanel {
       case Action::toggle_video: return {width + 684, 12, 102, 28};
       case Action::setup: return {width + 796, 12, 94, 28};
       case Action::refit: return {width + 900, 12, 120, 28};
+      case Action::toggle_ground: return {width + 710, 42, 130, 24};
+      case Action::toggle_background: return {width + 1028, 12, 96, 28};
       default: return {};
     }
   }

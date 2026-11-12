@@ -25,6 +25,8 @@ struct BevSettings {
   oak_startup::OakStartupMeasurementConfig startup;
   double camera_x{-0.09}, camera_y{0}, camera_yaw{0};
   double sync_ms{20};
+  bool estimate_ground{true};
+  oak_startup::OakStartupMeasurement fixed_pose;
 
   explicit BevSettings(rclcpp::Node & node) {
     roi.camera.fps = 40;
@@ -51,6 +53,11 @@ struct BevSettings {
     camera_y = node.declare_parameter<double>("bev.camera_y_m", camera_y);
     camera_yaw = node.declare_parameter<double>("bev.camera_yaw_deg", camera_yaw);
     sync_ms = node.declare_parameter<double>("fusion_sync_ms", sync_ms);
+    estimate_ground = node.declare_parameter<bool>("ground_estimation_enabled", true);
+    fixed_pose.height_m = node.declare_parameter<double>("fixed_camera_height_m", .20);
+    fixed_pose.roll_deg = node.declare_parameter<double>("fixed_camera_roll_deg", 0.0);
+    fixed_pose.pitch_down_deg = node.declare_parameter<double>("fixed_camera_pitch_down_deg", 14.0);
+    vehicle_from_camera(fixed_pose);
     roi_lidar::validate(roi);
     if (!std::isfinite(sync_ms) || sync_ms < 1 || sync_ms > 100)
       throw std::invalid_argument("fusion_sync_ms must be in [1, 100]");
@@ -149,7 +156,7 @@ class BevFusion {
 
   BevFrame process(dai::ImgFrame & rgb, dai::ImgFrame * depth, const dai::CalibrationHandler & calibration,
     const oak_startup::OakStartupMeasurement & pose, const BevSettings & settings,
-    const std::vector<Detection> & detections, const cv::Mat & display)
+    const std::vector<Detection> & detections, const cv::Mat & display, bool render)
   {
     const auto rgb_k = intrinsics(rgb);
     const auto cam_a_from_rgb = point_cloud::rgbFromFrame(rgb, calibration);
@@ -165,16 +172,19 @@ class BevFusion {
         depth->getTimestamp(dai::CameraExposureOffset::MIDDLE)).count());
       if (!detections.empty())
         scan = associate(rgb, *depth, calibration, cam_a_from_rgb, vehicle_from_cam_a,
-          rgb_k, config, detections, out.points);
+          rgb_k, config, settings.estimate_ground, detections, out.points);
     }
-    if (display.empty()) return out;
-    const auto key = geometry_key(rgb, rgb_k, vehicle_from_rgb);
-    if (key != rgb_key_) {
-      background_.configure(rgb.getWidth(), rgb.getHeight(), rgb_k, vehicle_from_rgb,
-        config.view, config.preview_size);
-      rgb_key_ = key;
+    if (!render) return out;
+    cv::Mat background;
+    if (!display.empty()) {
+      const auto key = geometry_key(rgb, rgb_k, vehicle_from_rgb);
+      if (key != rgb_key_) {
+        background_.configure(rgb.getWidth(), rgb.getHeight(), rgb_k, vehicle_from_rgb,
+          config.view, config.preview_size);
+        rgb_key_ = key;
+      }
+      background = background_.render(display, config.interpolation);
     }
-    const auto background = background_.render(display, config.interpolation);
     const auto status = out.sync_ms ? cv::format("RGB-depth %.1f ms | %zu object points", *out.sync_ms,
       scan.obstacle_indices.size()) : std::string("Waiting for synchronized stereo depth");
     const roi_lidar::Clusters no_clusters;
@@ -182,15 +192,13 @@ class BevFusion {
       status, background, &no_clusters);
     const auto layout = roi_lidar::mapLayout(config.view, config.preview_size);
     cv::Mat area = out.image(layout.area);
-    const std::array<cv::Scalar, 4> colors{{{0,160,255}, {255,160,0}, {80,220,80}, {220,80,220}}};
     for (std::size_t i = 0; i < scan.obstacle_indices.size(); ++i) {
       const auto & p = scan.surface_points[scan.obstacle_indices[i]];
       if (!roi_lidar::insideView(p[0], p[1], config.view)) continue;
       const auto pixel = cv::Point(static_cast<int>(std::lround(layout.center_x - p[1] * layout.scale)),
         static_cast<int>(std::lround(layout.origin_y - p[0] * layout.scale)));
-      const int id = scan.obstacle_selection_ids[i];
-      cv::circle(area, pixel - layout.area.tl(), config.point_radius,
-        colors[detections[id].class_id], cv::FILLED, cv::LINE_8);
+      cv::circle(area, pixel - layout.area.tl(), std::max(3, config.point_radius),
+        cv::Scalar(0, 0, 255), cv::FILLED, cv::LINE_8);
     }
     return out;
   }
@@ -228,7 +236,7 @@ class BevFusion {
   roi_lidar::Scan associate(dai::ImgFrame & rgb, dai::ImgFrame & depth,
     const dai::CalibrationHandler & calibration, const point_cloud::RigidTransform & cam_a_from_rgb,
     const point_cloud::RigidTransform & vehicle_from_cam_a, const point_cloud::Intrinsics & rgb_k,
-    const roi_lidar::Config & config, const std::vector<Detection> & detections,
+    const roi_lidar::Config & config, bool estimate_ground, const std::vector<Detection> & detections,
     std::vector<std::pair<int, int>> & counts)
   {
     const auto depth_k = intrinsics(depth);
@@ -237,7 +245,9 @@ class BevFusion {
     const auto vehicle_from_depth = point_cloud::compose(vehicle_from_cam_a, cam_a_from_depth);
     const auto key = geometry_key(depth, depth_k, vehicle_from_depth);
     if (key != depth_key_) {
-      projector_.configure(depth.getWidth(), depth.getHeight(), depth_k, vehicle_from_depth, config.scan);
+      auto scan_options = config.scan;
+      if (!estimate_ground) scan_options.ransac.enabled = false;
+      projector_.configure(depth.getWidth(), depth.getHeight(), depth_k, vehicle_from_depth, scan_options);
       depth_key_ = key;
     }
     mask_.create(rgb.getHeight(), rgb.getWidth(), CV_32SC1);
