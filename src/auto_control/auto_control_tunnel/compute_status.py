@@ -156,6 +156,22 @@ class ComputeMonitor:
         with self.lock:
             return status_lines(self.values, None if self.sampled_at is None else now - self.sampled_at)
 
+    def gauges(self, now=None):
+        """(label, value text, 0..1 or None) for the inspection bars; None hides them."""
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            values, sampled_at = self.values, self.sampled_at
+        if sampled_at is None or not 0 <= now - sampled_at <= 3:
+            return None
+        def percent(key):
+            v = values.get(key)
+            return ('--', None) if v is None else (f'{v:.0f}%', v / 100)
+        used, total = values.get('ram_used_gib'), values.get('ram_total_gib')
+        ram = ('--', None) if used is None or not total else (f'{used:.2f}/{total:.2f} GiB', used / total)
+        temp = values.get('soc_temp_c')
+        soc = ('--', None) if temp is None else (f'{temp:.0f} C', temp / 100)
+        return [('CPU', *percent('cpu_pct')), ('GPU', *percent('gpu_pct')), ('RAM', *ram), ('SoC temp', *soc)]
+
     def close(self):
         self.stop.set()
         self.thread.join(timeout=.2)

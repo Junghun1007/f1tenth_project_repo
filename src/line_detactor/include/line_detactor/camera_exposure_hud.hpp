@@ -37,13 +37,14 @@ inline std::array<std::string,2> camera_exposure_hud(
 
 inline void append_camera_exposure_hud(cv::Mat & canvas, const std::array<std::string,2> & lines)
 {
-  cv::Mat footer=cv::Mat::zeros(28,canvas.cols,CV_8UC3);
+  // Daylight theme: dark text on white, matching the driving HUD banner.
+  cv::Mat footer(28,canvas.cols,CV_8UC3,cv::Scalar(255,255,255));
   for (int i=0;i<2;++i) {
     int baseline=0;
     const auto extent=cv::getTextSize(lines[i],cv::FONT_HERSHEY_SIMPLEX,.28,1,&baseline);
     const double font=std::min(.28,.28*(footer.cols-6)/std::max(1,extent.width));
     cv::putText(footer,lines[i],cv::Point(3,12+14*i),cv::FONT_HERSHEY_SIMPLEX,font,
-      cv::Scalar(220,220,255),1,cv::LINE_AA);
+      cv::Scalar(26,24,20),1,cv::LINE_AA);
   }
   cv::Mat combined; cv::vconcat(canvas,footer,combined); canvas=std::move(combined);
 }

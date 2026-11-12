@@ -97,8 +97,8 @@ class InspectionTests(unittest.TestCase):
         ready=module.render(state,image,True,False,now=10)
         blocked=module.render(state,image,True,False,now=12)
         self.assertEqual(ready.shape,(867,1020,3))
-        self.assertEqual(tuple(ready[round(665*.85),round(30*.85)]),(65,155,60))
-        self.assertEqual(tuple(blocked[round(665*.85),round(30*.85)]),(65,65,65))
+        self.assertEqual(tuple(ready[round(665*.85),round(30*.85)]),(63,129,18))
+        self.assertEqual(tuple(blocked[round(665*.85),round(30*.85)]),(168,176,170))
         self.assertTrue(np.any(ready[70:340,30:490]))
 
     def test_actual_controller_checks_and_final_output_gate(self):

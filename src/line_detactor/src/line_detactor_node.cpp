@@ -983,8 +983,12 @@ private:
     const std::array<std::string,2> & exposure_hud = std::array<std::string,2>()) const
   {
     const int banner_base_height=kBannerHeight+(tunnel_enabled_ ? 56 : 0);
-    cv::Mat banner = cv::Mat::zeros(
-      banner_base_height+(obstacle_overlay_enabled_ ? 14 : 0)+(avoidance_status.empty()?0:28), overlay.cols, CV_8UC3);
+    // Daylight theme (BGR): white banner with dark text stays readable outdoors.
+    const cv::Scalar ink(26,24,20), dim(100,96,86), accent(184,79,28), good(60,122,15),
+      caution(0,94,168), alert(29,38,194), idle(168,176,170), rule(193,201,196);
+    cv::Mat banner(
+      banner_base_height+(obstacle_overlay_enabled_ ? 14 : 0)+(avoidance_status.empty()?0:28), overlay.cols, CV_8UC3,
+      cv::Scalar(255,255,255));
     const double inference_fps = average_inference_milliseconds > 0.0 ?
       1000.0 / average_inference_milliseconds : 0.0;
     const double postprocess_fps = average_postprocess_milliseconds > 0.0 ?
@@ -993,36 +997,39 @@ private:
       1000.0 / average_control_milliseconds : 0.0;
     std::vector<std::pair<std::string, cv::Scalar>> lines{
       {cv::format("infer avg %.2fms %.1fFPS", average_inference_milliseconds, inference_fps),
-        cv::Scalar(0, 255, 255)},
+        ink},
       {connection_.enabled ?
         cv::format("post avg %.2fms %.1fFPS", average_postprocess_milliseconds, postprocess_fps) :
-        "post OFF", cv::Scalar(0, 255, 0)},
+        "post OFF", ink},
       {std::isfinite(average_control_milliseconds) ?
         cv::format("control avg %.2fms %.1fFPS", average_control_milliseconds, control_fps) :
-        "control -- ms -- FPS", cv::Scalar(255, 200, 0)},
-      {cv::format("preview %.1f FPS", preview_fps), cv::Scalar(255, 255, 255)},
+        "control -- ms -- FPS", ink},
+      {cv::format("preview %.1f FPS", preview_fps), dim},
       {std::isfinite(stop_line_distance_m) ?
         cv::format("stop %.2f m (front axle)", stop_line_distance_m) :
-        "stop -- m", cv::Scalar(0, 255, 0)},
+        "stop -- m", std::isfinite(stop_line_distance_m) ? good : dim},
       {traffic_signal == 1 ? "Traffic: RED" :
         traffic_signal == 2 ? "Traffic: GREEN" : "Traffic: UNKNOWN",
-        traffic_signal == 1 ? cv::Scalar(0, 0, 255) :
-        traffic_signal == 2 ? cv::Scalar(0, 255, 0) : cv::Scalar(180, 180, 180)},
+        cv::Scalar(255, 255, 255)},
       {std::isfinite(target_speed) ? cv::format("Target: %.2f m/s", target_speed) :
-        "Target: -- m/s", cv::Scalar(0, 255, 255)},
+        "Target: -- m/s", accent},
       {std::isfinite(current_speed) ? cv::format("Speed: %.2f m/s", current_speed) :
-        "Speed: -- m/s", cv::Scalar(255, 255, 255)},
+        "Speed: -- m/s", ink},
       {std::isfinite(duty) ? cv::format("Duty: %.4f", duty) :
-        "Duty: --", cv::Scalar(255, 255, 255)},
+        "Duty: --", ink},
       {corner_state == 2 ? "Corner: TURNING" : corner_state == 1 ? "Corner: APPROACH" :
         corner_state == 0 ? "Corner: NO" : corner_state == 3 ? "Corner: STOP" : "Corner: --",
-        corner_state == 2 ? cv::Scalar(0, 165, 255) : cv::Scalar(180, 220, 180)}};
+        corner_state == 2 ? caution : dim}};
     if (tunnel_enabled_) {
-      lines.insert(lines.begin()+6,std::make_pair(tunnel_hud[1],cv::Scalar(255,220,120)));
-      lines.insert(lines.begin()+7,std::make_pair(tunnel_hud[2],cv::Scalar(180,220,180)));
-      lines.insert(lines.begin()+8,std::make_pair(exposure_hud[0],cv::Scalar(255,220,180)));
-      lines.insert(lines.begin()+9,std::make_pair(exposure_hud[1],cv::Scalar(200,200,255)));
+      lines.insert(lines.begin()+6,std::make_pair(tunnel_hud[1],ink));
+      lines.insert(lines.begin()+7,std::make_pair(tunnel_hud[2],dim));
+      lines.insert(lines.begin()+8,std::make_pair(exposure_hud[0],ink));
+      lines.insert(lines.begin()+9,std::make_pair(exposure_hud[1],ink));
     }
+    // The traffic row is a filled label so the signal state reads at a glance.
+    cv::rectangle(banner, cv::Rect(0, 5 * 14 + 2, banner.cols, 13),
+      traffic_signal == 1 ? alert : traffic_signal == 2 ? good : idle, cv::FILLED);
+    cv::line(banner, {0, 0}, {banner.cols - 1, 0}, rule, 1);
     for (std::size_t index = 0; index < lines.size(); ++index) {
       const std::string text=lines[index].first+(
         tunnel_enabled_ && index==5 ? " | "+tunnel_hud[0] : "");
@@ -1037,13 +1044,13 @@ private:
     }
     if (obstacle_overlay_enabled_) {
       cv::putText(banner,obstacle_status,{3,banner_base_height+10},cv::FONT_HERSHEY_SIMPLEX,.28,
-        cv::Scalar(255,180,70),1,cv::LINE_AA);
+        accent,1,cv::LINE_AA);
     }
     if (!avoidance_status.empty()) {
       const int top=banner_base_height+(obstacle_overlay_enabled_?14:0);
-      cv::putText(banner,avoidance_status,{3,top+10},cv::FONT_HERSHEY_SIMPLEX,.21,cv::Scalar(255,255,0),1,cv::LINE_AA);
+      cv::putText(banner,avoidance_status,{3,top+10},cv::FONT_HERSHEY_SIMPLEX,.21,ink,1,cv::LINE_AA);
       cv::putText(banner,bev_handoff::avoidanceControlRequested()?"CONTROL PATH REQUESTED":"PREVIEW ONLY - no control",
-        {3,top+24},cv::FONT_HERSHEY_SIMPLEX,.25,cv::Scalar(255,255,0),1,cv::LINE_AA);
+        {3,top+24},cv::FONT_HERSHEY_SIMPLEX,.25,bev_handoff::avoidanceControlRequested()?alert:dim,1,cv::LINE_AA);
     }
     cv::Mat canvas;
     cv::vconcat(overlay, banner, canvas);

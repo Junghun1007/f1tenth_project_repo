@@ -188,88 +188,143 @@ class StartupInspection(Node):
             self.state.error = f'START failed: {error}'
 
 
-def render(state, image=None, image_fresh=False, pending=False, now=None, speed=None, compute=None):
+# Daylight theme, BGR. Light ground with dark text stays readable outdoors.
+THEME = dict(
+    bg=(236,240,238), panel=(255,255,255), border=(193,201,196), text=(26,24,20), dim=(100,96,86),
+    accent=(184,79,28), ok=(60,122,15), warn=(0,94,168), bad=(29,38,194), start=(63,129,18),
+    idle=(168,176,170), stop=(29,38,194), tool=(221,228,224), track=(218,225,221), error=(26,67,168),
+    on_fill=(255,255,255))
+
+
+def render(state, image=None, image_fresh=False, pending=False, now=None, speed=None, compute=None, gauges=None):
     import cv2
     import numpy as np
-    now = time.monotonic() if now is None else now
-    canvas = np.full((1020,1200,3), (32,36,40), dtype=np.uint8)
-    def text(line, x, y, color=(225,225,225), scale=.55):
-        cv2.putText(canvas, line[:112], (x,y), cv2.FONT_HERSHEY_SIMPLEX, scale, color, 1, cv2.LINE_AA)
-    text('STARTUP INSPECTION', 22,35, (255,220,80), .9)
-    if image is not None:
-        canvas[60:360,20:500] = cv2.resize(image, (480,300))
-        text('Live measurement view' if image_fresh else 'Last measurement view (frozen)', 25,385)
-    else:
-        text('Waiting for camera measurement view...', 35,210)
-    passed = state.camera.startswith('READY | ')
-    color = (100,230,120) if passed else ((70,80,250) if state.camera.startswith('FAILED') else (80,210,250))
-    text('1. CAMERA ATTITUDE: ' + ('PASS' if passed else 'MEASURING / WAITING'), 22,415,color)
     import textwrap
+    now = time.monotonic() if now is None else now
+    t = THEME
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    canvas = np.full((1020,1200,3), t['bg'], dtype=np.uint8)
+    def text(line, x, y, color=t['text'], scale=.55, thickness=1):
+        cv2.putText(canvas, line[:112], (x,y), font, scale, color, thickness, cv2.LINE_AA)
+    def centered(line, rect, color, scale, thickness=1):
+        (width, height), _ = cv2.getTextSize(line, font, scale, thickness)
+        text(line, (rect[0]+rect[2]-width)//2, (rect[1]+rect[3]+height)//2, color, scale, thickness)
+    def pill(line, right, top, color):
+        (width, height), _ = cv2.getTextSize(line, font, .45, 1)
+        cv2.rectangle(canvas, (right-width-16,top), (right,top+22), color, -1)
+        text(line, right-width-8, top+11+height//2, t['on_fill'], .45)
+    def card(rect, number, title):
+        cv2.rectangle(canvas, rect[:2], rect[2:], t['panel'], -1)
+        cv2.rectangle(canvas, rect[:2], rect[2:], t['border'], 1)
+        cv2.line(canvas, (rect[0],rect[1]+38), (rect[2],rect[1]+38), t['border'], 1)
+        text(number, rect[0]+14, rect[1]+26, t['accent'], .6, 2)
+        text(title, rect[0]+36, rect[1]+26, scale=.6, thickness=2)
+    def status_color(good, failed):
+        return t['ok'] if good else t['bad'] if failed else t['warn']
+
+    text('STARTUP INSPECTION', 22,38, scale=.9, thickness=2)
+
+    card((20,56,510,514), '1', 'CAMERA ATTITUDE')
+    passed = state.camera.startswith('READY | ')
+    camera_failed = state.camera.startswith('FAILED')
+    color = status_color(passed, camera_failed)
+    pill('PASS' if passed else 'FAILED' if camera_failed else 'MEASURING', 498, 64, color)
+    if image is not None:
+        canvas[100:400,25:505] = cv2.resize(image, (480,300))
+        text('Live measurement view' if image_fresh else 'Last measurement view (frozen)', 30,422, t['dim'], .45)
+    else:
+        cv2.rectangle(canvas, (25,100), (505,400), t['track'], -1)
+        text('Waiting for camera measurement view...', 95,255, t['dim'])
     detail = state.camera.split(' | ',1)[-1]
     for row, line in enumerate(textwrap.wrap(detail, width=53)[:4]):
-        text(line,22,445+row*20,color,.41)
+        text(line,30,446+row*19,color if not passed else t['text'],.41)
+
+    card((525,56,1180,514), '2', 'INFERENCE MODELS')
     ready_count = sum(value.startswith('READY | ') for value in state.models.values())
-    text(f'2. INFERENCE MODELS ({ready_count}/{len(state.models)} READY)',525,65,(255,220,80),.65)
+    pill(f'{ready_count}/{len(state.models)} READY', 1168, 64,
+         t['ok'] if state.models and ready_count == len(state.models) else t['warn'])
     for index, name in enumerate(state.models):
         info = state.model_info(name, now)
         tag = info['tag']
-        y = 95 + index * 100
-        color = (100,230,120) if tag=='READY' else ((70,80,250) if tag=='FAILED' or
-            'STALE' in info['health'] else (80,210,250))
-        text(f'{name}: {tag}',525,y,color,.54)
+        y = 118 + index * 98
+        color = status_color(tag=='READY', tag=='FAILED' or 'STALE' in info['health'])
+        text(name,540,y,scale=.54,thickness=2)
+        pill(tag, 1166, y-17, color)
         phase = info['phase']
         if tag == 'READY':
             phase = 'Engine loaded; trial inference PASS'
         elif phase.startswith('model='):
             phase = 'Opening model: ' + os.path.basename(phase[6:])
         for row, line in enumerate(textwrap.wrap(phase, width=77)[:2]):
-            text(line,525,y+20+row*17,color,.40)
+            text(line,540,y+19+row*16,scale=.40)
         text(f"Total {info['elapsed']:.0f}s | Stage {info['stage_age']:.0f}s | Last report {info['age']:.1f}s ago",
-             525,y+57,scale=.40)
-        text(info['health'],525,y+77,color,.40)
-    text('Stage changes reflect loader activity; a heartbeat alone cannot prove GPU progress.',525,505,scale=.37)
-    text('3. DEPARTURE', 22,535,(255,220,80),.65)
+             540,y+52,t['dim'],.40)
+        text(info['health'],540,y+68,color,.40)
+        cv2.rectangle(canvas,(540,y+76),(1166,y+79),color if tag=='READY' else t['track'],-1)
+    text('Stage changes reflect loader activity; a heartbeat alone cannot prove GPU progress.',540,507,t['dim'],.37)
+
+    card((20,526,1180,844), '3', 'DEPARTURE')
     controller = state.controller if state.controller_fresh(now) else 'WAITING | controller heartbeat unavailable'
     if 'last stop: VESC disconnected' in controller and state.link_fault:
         detail = state.link_fault
         if state.link_recovered:
             detail += '; UART recovered; START reapproval required'
         controller = controller.replace('last stop: VESC disconnected', 'last stop: ' + detail)
-    for row, line in enumerate(textwrap.wrap(controller, width=112)[:2]):
-        text(line,22,567+row*18,scale=.48)
-    text('The controller checks models, measured camera pose, VESC feedback and a fresh valid lane.',22,600,scale=.48)
-    text('Automatic duty is blocked until an accepted START request. Manual mode skips this button.',22,625,scale=.48)
     ready = state.can_start(now) and not pending
     active = state.completed(now)
-    cv2.rectangle(canvas,START[:2],START[2:],(65,155,60) if ready else (65,65,65),-1)
+    pill(controller.split(' | ',1)[0][:24], 1168, 534, t['ok'] if ready or active else t['warn'])
+    for row, line in enumerate(textwrap.wrap(controller, width=112)[:2]):
+        text(line,34,586+row*18,scale=.48)
+    text('The controller checks models, measured camera pose, VESC feedback and a fresh valid lane.',34,622,t['dim'],.43)
+    text('Automatic duty is blocked until an accepted START request. Manual mode skips this button.',34,640,t['dim'],.43)
+    cv2.rectangle(canvas,START[:2],START[2:],t['start'] if ready else t['idle'],-1)
     label = ('MANUAL CONTROL' if active and state.controller.startswith('MANUAL | ') else
              'DRIVING / START ACCEPTED' if active else 'START AUTOMATIC DRIVING' if ready else
              'REQUESTING START...' if pending else 'WAITING FOR CHECKS')
-    text(label,70,698,(255,255,255),.78)
-    for rect, label in ((STOP, 'STOP'), (TIMINGS, 'Timings'), (PARAMS, 'Params')):
-        cv2.rectangle(canvas,rect[:2],rect[2:],(50,50,190) if label=='STOP' else (95,85,65),-1)
-        text(label,rect[0]+20,rect[1]+(43 if label=='STOP' else 33),(255,255,255),.70)
+    centered(label,START,t['on_fill'],.78,2)
+    cv2.rectangle(canvas,STOP[:2],STOP[2:],t['stop'],-1)
+    centered('STOP',STOP,t['on_fill'],.78,2)
+    for rect, label in ((TIMINGS, 'Timings'), (PARAMS, 'Params')):
+        cv2.rectangle(canvas,rect[:2],rect[2:],t['tool'],-1)
+        cv2.rectangle(canvas,rect[:2],rect[2:],t['border'],1)
+        centered(label,rect,t['text'],.62)
     speed = speed or dict(bounds=None, selected=None, applied=None, status='CONTROLLER OFFLINE')
     if speed['bounds'] is not None:
         minimum, ceiling = speed['bounds']
         selected, applied = speed['selected'], speed['applied']
-        text(f'MAX SPEED {selected:.2f} m/s | Applied {applied:.2f} | {speed["status"]}',420,754,scale=.45)
+        text(f'MAX SPEED {selected:.2f} m/s | Applied {applied:.2f}',SPEED_LEFT,756,scale=.45)
+        pill(speed['status'][:24], SPEED_RIGHT, 739, t['ok'] if speed['status']=='LIVE' else t['warn'])
         ratio = (selected-minimum)/(ceiling-minimum) if ceiling > minimum else 0.
         thumb = round(SPEED_LEFT+ratio*(SPEED_RIGHT-SPEED_LEFT))
-        accent = (100,230,120) if speed['status']=='LIVE' else (80,210,250)
-        cv2.line(canvas,(SPEED_LEFT,SPEED_Y),(SPEED_RIGHT,SPEED_Y),(100,100,100),7)
-        cv2.line(canvas,(SPEED_LEFT,SPEED_Y),(thumb,SPEED_Y),accent,7)
-        cv2.circle(canvas,(thumb,SPEED_Y),9,accent,-1)
-        text(f'{minimum:.2f}',415,800,scale=.36)
-        text(f'{ceiling:.2f} m/s',1100,800,scale=.36)
+        cv2.line(canvas,(SPEED_LEFT,SPEED_Y),(SPEED_RIGHT,SPEED_Y),t['track'],7)
+        cv2.line(canvas,(SPEED_LEFT,SPEED_Y),(thumb,SPEED_Y),t['accent'],7)
+        cv2.circle(canvas,(thumb,SPEED_Y),9,t['accent'],-1)
+        text(f'{minimum:.2f}',SPEED_LEFT,802,t['dim'],.36)
+        text(f'{ceiling:.2f} m/s',1085,802,t['dim'],.36)
     else:
-        text('MAX SPEED: waiting for controller',420,765,scale=.48)
-    text(state.error,22,815,(100,170,255),.43)
-    text('START requires checks. STOP, Timings, Params and speed controls remain available here after START.',22,843,scale=.43)
-    cv2.line(canvas, (20,860), (1180,860), (90,90,90), 1)
-    text('4. COMPUTING STATUS (1 Hz)',22,885,(255,220,80),.60)
-    for index, line in enumerate(compute or status_lines()):
-        text(line,22,912+index*27,scale=.43)
+        text('MAX SPEED: waiting for controller',SPEED_LEFT,770,t['dim'],.48)
+    text(state.error,34,820,t['error'],.43)
+    text('START requires checks. STOP, Timings, Params and speed controls remain available here after START.',34,838,t['dim'],.40)
+
+    card((20,856,1180,1010), '4', 'COMPUTING STATUS (1 Hz)')
+    lines = tuple(compute or status_lines())
+    tag = lines[0].rsplit(' | ',1)[-1]
+    pill(tag[:24], 1168, 864, t['ok'] if tag.startswith('LIVE') else t['warn'])
+    if gauges:
+        for index, (label, value, ratio) in enumerate(gauges[:4]):
+            x = 34 + index * 288
+            (width, _), _ = cv2.getTextSize(value, font, .45, 1)
+            text(label,x,916,t['dim'],.42)
+            text(value,x+262-width,916,scale=.45)
+            cv2.rectangle(canvas,(x,924),(x+262,931),t['track'],-1)
+            if ratio is not None:
+                filled = round(262*min(max(ratio,0.),1.))
+                cv2.rectangle(canvas,(x,924),(x+filled,931),t['warn'] if ratio >= .85 else t['accent'],-1)
+        for index, line in enumerate(lines[1:]):
+            text(line,34,955+index*20,t['text'] if index < 2 else t['dim'],.40)
+    else:
+        for index, line in enumerate(lines):
+            text(line,34,915+index*24,scale=.43)
     return cv2.resize(canvas, (round(canvas.shape[1]*DISPLAY_SCALE), round(canvas.shape[0]*DISPLAY_SCALE)),
                       interpolation=cv2.INTER_AREA)
 
@@ -305,7 +360,8 @@ def main(args=None):
                 shown = True
             cv2.imshow(window, render(node.state,node.image,
                 time.monotonic()-node.image_at<.5,node.pending is not None,
-                speed=node.speed.view(time.monotonic()), compute=node.compute.lines()))
+                speed=node.speed.view(time.monotonic()), compute=node.compute.lines(),
+                gauges=node.compute.gauges()))
             key = cv2.waitKey(1)&255
             if key in (10,13):
                 node.request_start()
