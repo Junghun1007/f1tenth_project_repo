@@ -1,10 +1,12 @@
 #include "multiclass_yolo/yolox_detector.hpp"
 #include "multiclass_yolo/preview_exit.hpp"
+#include "fps_input.hpp"
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "depthai/depthai.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -14,6 +16,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 
@@ -32,9 +35,10 @@ class Preview : public rclcpp::Node {
     auto cache = declare_parameter<std::string>("engine_cache_path", "");
     if (!std::filesystem::is_regular_file(model)) throw std::runtime_error("Model missing: " + model);
     if (cache.empty()) {
+      const auto modified = std::filesystem::last_write_time(model).time_since_epoch().count();
       const auto identity = std::filesystem::canonical(model).string() +
         std::to_string(std::filesystem::file_size(model)) +
-        std::to_string(std::filesystem::last_write_time(model).time_since_epoch().count());
+        std::to_string(static_cast<long long>(modified));
       cache = std::string(home ? home : "/tmp") + "/.cache/multiclass_yolo/" +
         std::to_string(std::hash<std::string>{}(identity)) + "." + precision + ".engine";
     }
@@ -42,7 +46,10 @@ class Preview : public rclcpp::Node {
     width_ = declare_parameter<int>("width", 1280);
     height_ = declare_parameter<int>("height", 800);
     fps_ = declare_parameter<double>("sensor_fps", 30.0);
-    bool undistort = declare_parameter<bool>("undistort_enabled", true);
+    roi_height_percent_ = declare_parameter<int>("roi_height_percent", 65);
+    if (roi_height_percent_ < 1 || roi_height_percent_ > 100)
+      throw std::invalid_argument("roi_height_percent must be in [1, 100]");
+    undistort_ = declare_parameter<bool>("undistort_enabled", true);
     timeout_ = declare_parameter<double>("frame_timeout_sec", 5.0);
     auto workspace = declare_parameter<int>("tensorrt_workspace_size_mb", 1024);
     double nms = declare_parameter<double>("nms_threshold", 0.65);
@@ -62,29 +69,26 @@ class Preview : public rclcpp::Node {
     if (format_ == "nv12" && !detector_->supports_nv12_input())
       throw std::invalid_argument("input_format=nv12 requires TensorRT; CPU: use input_format=rgb engine_precision=fp32");
     auto device = std::make_shared<dai::Device>(dai::UsbSpeed::SUPER);
-    pipeline_ = std::make_unique<dai::Pipeline>(device);
-    pipeline_->setXLinkChunkSize(0);
-    auto camera = pipeline_->create<dai::node::Camera>()->build(
-      dai::CameraBoardSocket::CAM_A, std::make_pair(1280U, 800U), float(fps_));
-    auto output = camera->requestOutput(std::make_pair(std::uint32_t(width_), std::uint32_t(height_)),
-      dai::ImgFrame::Type::NV12, dai::ImgResizeMode::CROP, float(fps_), undistort);
-    queue_ = output->createOutputQueue(1U, false);
-    pipeline_->build();
-    auto bridge = output->getXLinkBridge();
-    if (!bridge || !bridge->xLinkOut) throw std::runtime_error("Missing XLink bridge");
-    bridge->xLinkOut->input.setMaxSize(1);
-    bridge->xLinkOut->input.setBlocking(false);
-    pipeline_->start();
-    RCLCPP_INFO(get_logger(), "CAM_A NV12 %dx%d @ %.1f; path=%s; tensor=BGR FP32 [1,3,320,512]", width_, height_, fps_, format_.c_str());
-    if (device->getUsbSpeed() == dai::UsbSpeed::HIGH)
-      RCLCPP_WARN(get_logger(), "USB2 connection detected; 30 FPS must be measured on this connection");
+    camera_id_ = device->getDeviceId();
+    for (const auto & camera : device->getConnectedCameraFeatures()) {
+      if (camera.socket != dai::CameraBoardSocket::CAM_A) continue;
+      for (const auto & config : camera.configs) {
+        if (config.width == sensor_width_ && config.height == sensor_height_) {
+          min_fps_ = config.minFps;
+          max_fps_ = config.maxFps;
+          break;
+        }
+      }
+      break;
+    }
+    start_camera(fps_, device);
     last_frame_ = Clock::now();
     capture_ = std::thread([this] { capture_loop(); });
   }
   ~Preview() override {
     stop_ = true;
     if (capture_.joinable()) capture_.join();
-    if (pipeline_) {try { pipeline_->stop(); pipeline_->wait(); } catch (...) {}}
+    try { close_camera(); } catch (...) {}
   }
   void run() {
     const std::string window = "multiclass_yolo";
@@ -94,30 +98,50 @@ class Preview : public rclcpp::Node {
       cv::createTrackbar(names_[i], window, nullptr, 100);
       cv::setTrackbarPos(names_[i], window, sliders_[i]);
     }
-    cv::Mat waiting(400, 640, CV_8UC3, cv::Scalar(20,20,20));
-    cv::putText(waiting, "Waiting for camera frames...", {25,190},
+    const std::string roi_trackbar = "Bottom ROI %";
+    cv::createTrackbar(roi_trackbar, window, nullptr, 100);
+    cv::setTrackbarMin(roi_trackbar, window, 1);
+    cv::setTrackbarPos(roi_trackbar, window, roi_height_percent_);
+    FpsInput fps_input;
+    cv::setMouseCallback(window, [](int event, int x, int y, int, void * data) {
+      if (event == cv::EVENT_LBUTTONDOWN) static_cast<FpsInput *>(data)->click(x, y);
+    }, &fps_input);
+    cv::Mat canvas(400, 640, CV_8UC3, cv::Scalar(20,20,20));
+    cv::putText(canvas, "Waiting for camera frames...", {25,190},
       cv::FONT_HERSHEY_SIMPLEX, .7, {240,240,240}, 1, cv::LINE_AA);
-    cv::imshow(window, waiting);
     PreviewExit exit_state;
     std::string exit_reason = "ROS shutdown / stop requested";
     const auto property = [&window](int id) {
       try { return cv::getWindowProperty(window, id); }
       catch (const cv::Exception &) { return -1.; }
     };
-    std::uint64_t previous = 0, outputs = 0, skipped = 0;
+    std::uint64_t previous = 0, outputs = 0, skipped = 0, session = 0;
+    double displayed_fps = 0;
+    std::string displayed_status;
     auto last_log = Clock::now();
     while (rclcpp::ok() && !stop_) {
       rclcpp::spin_some(get_node_base_interface());
       std::shared_ptr<dai::ImgFrame> frame;
       Clock::time_point received, first;
       std::uint64_t count;
+      double fps;
+      bool changing_fps;
+      std::string camera_status;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         if (!error_.empty()) throw std::runtime_error(error_);
+        if (session != camera_session_) {
+          session = camera_session_;
+          previous = outputs = skipped = 0;
+          last_log = Clock::now();
+        }
         count = received_; first = first_frame_; received = last_frame_;
+        fps = fps_;
+        changing_fps = requested_fps_.has_value();
+        camera_status = fps_status_;
         if (count != previous) frame = latest_;
       }
-      if (std::chrono::duration<double>(Clock::now()-received).count() > timeout_)
+      if (!changing_fps && std::chrono::duration<double>(Clock::now()-received).count() > timeout_)
         throw std::runtime_error("No camera frame within frame_timeout_sec; check OAK/USB and other camera processes");
       if (frame) {
         if (previous == 0) RCLCPP_INFO(get_logger(), "First camera frame received; starting inference");
@@ -127,6 +151,9 @@ class Preview : public rclcpp::Node {
         for (int i=0; i<4; ++i) thresholds[i] = cv::getTrackbarPos(names_[i], window)/100.f;
         detector_->set_thresholds(thresholds);
         const auto began = Clock::now();
+        const int roi_percent = std::max(1, cv::getTrackbarPos(roi_trackbar, window));
+        const int roi_height = std::max(1, static_cast<int>(std::lround(height_ * (roi_percent / 100.0))));
+        const cv::Rect roi(0, height_ - roi_height, width_, roi_height);
         const auto & bytes = frame->getData();
         const std::size_t stride = frame->getStride() > 0 ? frame->getStride() : width_;
         if (stride < std::size_t(width_) || bytes.size() < stride*std::size_t(height_)*3/2)
@@ -136,7 +163,7 @@ class Preview : public rclcpp::Node {
         const auto conversion_started = Clock::now();
         double conversion_ms = 0;
         if (format_ == "nv12") {
-          result = detector_->detect_nv12(bytes.data(), bytes.size(), stride, width_, height_, cv::Rect(0,0,width_,height_));
+          result = detector_->detect_nv12(bytes.data(), bytes.size(), stride, width_, height_, roi);
           const auto t = Clock::now();
           cv::Mat y(height_, width_, CV_8UC1, const_cast<std::uint8_t *>(bytes.data()), stride);
           cv::Mat uv(height_/2, width_/2, CV_8UC2, const_cast<std::uint8_t *>(bytes.data())+stride*height_, stride);
@@ -149,35 +176,56 @@ class Preview : public rclcpp::Node {
           cv::cvtColorTwoPlane(y, uv, rgb, cv::COLOR_YUV2RGB_NV12);
           conversion_ms = std::chrono::duration<double,std::milli>(Clock::now()-conversion_started).count();
           // Model metadata requires BGR: blobFromImage swaps this RGB buffer to BGR.
-          result = detector_->detect(rgb, true);
+          result = detector_->detect(rgb, roi, true);
           cv::cvtColor(rgb, display, cv::COLOR_RGB2BGR);
         }
+        if (roi.y > 0)
+          cv::line(display, {0, roi.y}, {width_ - 1, roi.y}, {0, 220, 255}, 1, cv::LINE_AA);
         detector_->draw(display, result.detections);
         const double total_ms = std::chrono::duration<double,std::milli>(Clock::now()-began).count();
         // Common epoch: first host receipt, engine build and camera startup excluded.
         const double elapsed = std::chrono::duration<double>(Clock::now()-first).count();
         std::uint64_t current_received;
-        {std::lock_guard<std::mutex> lock(mutex_); current_received = received_;}
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          if (session != camera_session_) continue;
+          current_received = received_;
+        }
         const double in_fps = elapsed > 0.5 ? double(current_received-1)/elapsed : 0;
         const double out_fps = elapsed > 0.5 ? double(outputs)/elapsed : 0;
-        cv::Mat canvas;
-        cv::copyMakeBorder(display, canvas, 72, 0, 0, 0, cv::BORDER_CONSTANT, cv::Scalar(20,20,20));
-        cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG output %.2f FPS | target %.0f", in_fps, out_fps, fps_),
-          {10,25}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
+        cv::copyMakeBorder(display, canvas, 116, 0, 0, std::max(0, 640 - display.cols),
+          cv::BORDER_CONSTANT, cv::Scalar(20,20,20));
+        cv::putText(canvas, cv::format("AVG input %.2f FPS | AVG output %.2f FPS | target %.6g", in_fps, out_fps, fps),
+          {10,69}, cv::FONT_HERSHEY_SIMPLEX, .65, {255,255,255}, 1, cv::LINE_AA);
         cv::putText(canvas, cv::format("%s | total %.1f ms | convert %.1f ms | skipped %llu | Q/ESC quit",
           format_.c_str(), total_ms, conversion_ms, static_cast<unsigned long long>(skipped)),
-          {10,55}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
-        cv::imshow(window, canvas);
-        if (outputs == 0) RCLCPP_INFO(get_logger(), "First detection frame submitted to preview");
+          {10,99}, cv::FONT_HERSHEY_SIMPLEX, .5, {200,220,200}, 1, cv::LINE_AA);
         ++outputs;
         if (Clock::now()-last_log >= 2s) {
-          RCLCPP_INFO(get_logger(), "AVG input %.2f / output %.2f FPS; total %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
-            in_fps, out_fps, total_ms, result.timing.preprocessing_nanoseconds/1e6,
-            result.timing.forward_nanoseconds/1e6, static_cast<unsigned long long>(skipped));
+          RCLCPP_INFO(get_logger(),
+            "AVG input %.2f / output %.2f FPS; ROI %d%%; total %.2f ms; upload %.2f ms; preprocess %.2f ms; execute %.2f ms; skipped %llu",
+            in_fps, out_fps, roi_percent, total_ms, result.timing.input_transfer_nanoseconds/1e6,
+            result.timing.preprocessing_nanoseconds/1e6, result.timing.forward_nanoseconds/1e6,
+            static_cast<unsigned long long>(skipped));
           last_log = Clock::now();
         }
       }
+      if (frame || fps_input.dirty || fps != displayed_fps || camera_status != displayed_status) {
+        fps_input.draw(canvas, fps, camera_status);
+        cv::imshow(window, canvas);
+        if (frame && outputs == 1) RCLCPP_INFO(get_logger(), "First detection frame submitted to preview");
+        fps_input.dirty = false;
+        displayed_fps = fps;
+        displayed_status = camera_status;
+      }
       int key = cv::waitKey(1) & 255;
+      if (fps_input.handle_key(key)) key = -1;
+      if (fps_input.submit) {
+        fps_input.submit = false;
+        fps_input.message = request_camera_fps(fps_input.value());
+        fps_input.dirty = true;
+        if (fps_input.message.empty()) fps_input.finish();
+      }
       const auto reason = exit_state.reason(key, property(cv::WND_PROP_VISIBLE),
         property(cv::WND_PROP_AUTOSIZE));
       if (reason) {exit_reason = reason; break;}
@@ -187,14 +235,113 @@ class Preview : public rclcpp::Node {
     cv::destroyAllWindows();
   }
  private:
+  void start_camera(double fps, const std::shared_ptr<dai::Device> & device) {
+    auto pipeline = std::make_unique<dai::Pipeline>(device);
+    pipeline->setXLinkChunkSize(0);
+    auto camera = pipeline->create<dai::node::Camera>()->build(
+      dai::CameraBoardSocket::CAM_A, std::make_pair(std::uint32_t(sensor_width_), std::uint32_t(sensor_height_)), float(fps));
+    auto output = camera->requestOutput(std::make_pair(std::uint32_t(width_), std::uint32_t(height_)),
+      dai::ImgFrame::Type::NV12, dai::ImgResizeMode::CROP, float(fps), undistort_);
+    auto queue = output->createOutputQueue(1U, false);
+    pipeline->build();
+    auto bridge = output->getXLinkBridge();
+    if (!bridge || !bridge->xLinkOut) throw std::runtime_error("Missing XLink bridge");
+    bridge->xLinkOut->input.setMaxSize(1);
+    bridge->xLinkOut->input.setBlocking(false);
+    pipeline->start();
+    pipeline_ = std::move(pipeline);
+    queue_ = std::move(queue);
+    RCLCPP_INFO(get_logger(), "CAM_A NV12 %dx%d @ %.6g; path=%s; tensor=BGR FP32 [1,3,320,512]",
+      width_, height_, fps, format_.c_str());
+    if (device->getUsbSpeed() == dai::UsbSpeed::HIGH)
+      RCLCPP_WARN(get_logger(), "USB2 connection detected; measure actual FPS on this connection");
+  }
+
+  void close_camera() {
+    if (pipeline_) {
+      pipeline_->stop();
+      pipeline_->wait();
+      queue_.reset();
+      pipeline_.reset();
+    }
+  }
+
+  std::string request_camera_fps(std::optional<double> fps) {
+    if (max_fps_ <= 0) return "FPS range unavailable";
+    if (!fps || *fps <= 0 || *fps < min_fps_ || *fps > max_fps_)
+      return cv::format("Enter %.6g to %.6g FPS", std::max(0.0, min_fps_), max_fps_);
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (requested_fps_) return "Camera FPS change in progress";
+    if (*fps != fps_) {
+      requested_fps_ = fps;
+      fps_status_ = cv::format("Changing to %.6g FPS...", *fps);
+    }
+    return {};
+  }
+
+  std::shared_ptr<dai::ImgFrame> read_camera_frame() {
+    if (!pipeline_->isRunning()) throw std::runtime_error("OAK pipeline stopped");
+    auto packet = queue_->tryGet<dai::ImgFrame>();
+    if (packet && (packet->getType() != dai::ImgFrame::Type::NV12 ||
+      int(packet->getWidth()) != width_ || int(packet->getHeight()) != height_))
+      throw std::runtime_error("Unexpected OAK frame type or dimensions");
+    return packet;
+  }
+
+  std::shared_ptr<dai::ImgFrame> reopen_camera(double fps) {
+    close_camera();
+    start_camera(fps, std::make_shared<dai::Device>(dai::DeviceInfo(camera_id_), dai::UsbSpeed::SUPER));
+    const auto started = Clock::now();
+    while (!stop_ && rclcpp::ok()) {
+      if (auto packet = read_camera_frame()) return packet;
+      if (std::chrono::duration<double>(Clock::now() - started).count() > timeout_)
+        throw std::runtime_error("No camera frames at the requested FPS");
+      std::this_thread::sleep_for(1ms);
+    }
+    return nullptr;
+  }
+
+  void change_camera_fps(double requested, double previous) {
+    auto applied = requested;
+    std::string status;
+    std::shared_ptr<dai::ImgFrame> packet;
+    try {
+      packet = reopen_camera(requested);
+    } catch (const std::exception & e) {
+      RCLCPP_WARN(get_logger(), "Cannot stream at %.6g FPS: %s; restoring %.6g FPS",
+        requested, e.what(), previous);
+      if (stop_ || !rclcpp::ok()) return;
+      applied = previous;
+      status = "Failed. Previous FPS restored.";
+      packet = reopen_camera(previous);
+    }
+    if (!packet) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    fps_ = applied;
+    fps_status_ = std::move(status);
+    requested_fps_.reset();
+    last_frame_ = first_frame_ = Clock::now();
+    latest_ = std::move(packet);
+    received_ = 1;
+    ++camera_session_;
+  }
+
   void capture_loop() {
     try {
       while (!stop_ && rclcpp::ok()) {
-        if (!pipeline_->isRunning()) throw std::runtime_error("OAK pipeline stopped");
-        auto packet = queue_->tryGet<dai::ImgFrame>();
+        std::optional<double> requested;
+        double fps;
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          requested = requested_fps_;
+          fps = fps_;
+        }
+        if (requested) {
+          change_camera_fps(*requested, fps);
+          continue;
+        }
+        auto packet = read_camera_frame();
         if (!packet) {std::this_thread::sleep_for(100us); continue;}
-        if (packet->getType() != dai::ImgFrame::Type::NV12 || int(packet->getWidth()) != width_ || int(packet->getHeight()) != height_)
-          throw std::runtime_error("Unexpected OAK frame type or dimensions");
         std::lock_guard<std::mutex> lock(mutex_);
         last_frame_ = Clock::now();
         if (received_ == 0) first_frame_ = last_frame_;
@@ -204,12 +351,21 @@ class Preview : public rclcpp::Node {
   }
   const std::array<const char *,4> names_{{"con","truck","sedan","traffic_light"}};
   std::array<int,4> sliders_{};
-  int width_, height_; double fps_, timeout_; std::string format_;
+  int width_, height_, roi_height_percent_;
+  bool undistort_;
+  double fps_, timeout_;
+  static constexpr int sensor_width_ = 1280;
+  static constexpr int sensor_height_ = 800;
+  double min_fps_{0}, max_fps_{0};
+  std::string camera_id_, format_;
   std::unique_ptr<YoloxDetector> detector_;
   std::unique_ptr<dai::Pipeline> pipeline_; std::shared_ptr<dai::MessageQueue> queue_;
   std::atomic<bool> stop_{false}; std::thread capture_; std::mutex mutex_;
   std::shared_ptr<dai::ImgFrame> latest_; std::uint64_t received_{0}; std::string error_;
   Clock::time_point first_frame_, last_frame_;
+  std::optional<double> requested_fps_;
+  std::string fps_status_;
+  std::uint64_t camera_session_{0};
 };
 }
 int main(int argc, char ** argv) {

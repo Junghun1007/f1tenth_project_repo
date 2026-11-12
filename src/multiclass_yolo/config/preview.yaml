@@ -6,6 +6,7 @@ multiclass_yolo:
     width: 1280
     height: 800
     sensor_fps: 30.0
+    roi_height_percent: 65
     undistort_enabled: true
     frame_timeout_sec: 5.0
     tensorrt_workspace_size_mb: 1024

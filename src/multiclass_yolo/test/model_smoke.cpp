@@ -24,5 +24,22 @@ int main(int argc, char ** argv) {
       cv::norm(a.detections[i].box.tl()-b.detections[i].box.tl())>1e-5)
      throw std::runtime_error("RGB/BGR parity failed");
  }
- std::cout << "ONNX finite [1,3360,9]; CPU inference and RGB/BGR parity passed; boxes=" << a.detections.size() << '\n';
+
+ // Compare full-frame ROI detection with an explicitly cropped model input.
+ const cv::Rect roi(0, 280, 1280, 520);
+ const auto local = d.detect(bgr(roi));
+ const auto mapped = d.detect(rgb, roi, true);
+ if (local.detections.empty() || local.detections.size() != mapped.detections.size())
+   throw std::runtime_error("Expected matching detections for the cropped input");
+ for (std::size_t i = 0; i < local.detections.size(); ++i) {
+   const auto & expected = local.detections[i];
+   const auto & actual = mapped.detections[i];
+   const cv::Point2f origin(roi.x, roi.y);
+   if (expected.class_id != actual.class_id || std::abs(expected.score - actual.score) > 1e-6 ||
+       cv::norm(expected.box.tl() + origin - actual.box.tl()) > 1e-4 ||
+       cv::norm(expected.box.br() + origin - actual.box.br()) > 1e-4 ||
+       actual.box.y < roi.y || actual.box.br().y > bgr.rows + 1e-4)
+     throw std::runtime_error("ROI boxes must map to the original image and stay inside the ROI");
+ }
+ std::cout << "ONNX finite [1,3360,9]; CPU inference, RGB/BGR parity, and ROI mapping passed; boxes=" << a.detections.size() << '\n';
 }

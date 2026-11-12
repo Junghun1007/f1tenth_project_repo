@@ -16,6 +16,7 @@ def generate_launch_description():
         "model_path": (share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx", str),
         "width": ("1280", int), "height": ("800", int),
         "sensor_fps": ("30.0", float), "undistort_enabled": ("true", bool),
+        "roi_height_percent": ("65", int),
         "frame_timeout_sec": ("5.0", float),
         "tensorrt_workspace_size_mb": ("1024", int),
         "nms_threshold": ("0.65", float),

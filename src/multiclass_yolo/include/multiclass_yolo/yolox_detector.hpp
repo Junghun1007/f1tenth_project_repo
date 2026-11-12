@@ -59,6 +59,8 @@ public:
   YoloxDetector & operator=(const YoloxDetector &) = delete;
 
   YoloxDetectionResult detect(const cv::Mat & bgr_image, bool rgb = false);
+  // Detect within the ROI and return boxes in full-image coordinates.
+  YoloxDetectionResult detect(const cv::Mat & bgr_image, const cv::Rect & roi, bool rgb = false);
   YoloxDetectionResult detect_nv12(
     const std::uint8_t * nv12,
     std::size_t data_size,

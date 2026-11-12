@@ -117,6 +117,12 @@ YoloxDetector::~YoloxDetector() = default;
 YoloxDetectionResult YoloxDetector::detect(
   const cv::Mat & bgr_image, const bool rgb)
 {
+  return detect(bgr_image, cv::Rect(0, 0, bgr_image.cols, bgr_image.rows), rgb);
+}
+
+YoloxDetectionResult YoloxDetector::detect(
+  const cv::Mat & bgr_image, const cv::Rect & roi, const bool rgb)
+{
   if (bgr_image.empty()) {
     throw std::invalid_argument("cannot run detection on an empty image");
   }
@@ -124,21 +130,28 @@ YoloxDetectionResult YoloxDetector::detect(
     throw std::invalid_argument("YOLOX input must be an 8-bit three-channel image");
   }
 
+  if (
+    roi.x < 0 || roi.y < 0 || roi.width <= 0 || roi.height <= 0 ||
+    roi.x > bgr_image.cols - roi.width || roi.y > bgr_image.rows - roi.height)
+  {
+    throw std::invalid_argument("inference ROI is outside the image");
+  }
+
   YoloxStageTiming stage_timing;
   const auto preprocessing_started_at = std::chrono::steady_clock::now();
   const float ratio = std::min(
     static_cast<float>(input_height_) /
-    static_cast<float>(bgr_image.rows),
+    static_cast<float>(roi.height),
     static_cast<float>(input_width_) /
-    static_cast<float>(bgr_image.cols));
+    static_cast<float>(roi.width));
   const int resized_width = std::max(
-    1, static_cast<int>(static_cast<float>(bgr_image.cols) * ratio));
+    1, static_cast<int>(static_cast<float>(roi.width) * ratio));
   const int resized_height = std::max(
-    1, static_cast<int>(static_cast<float>(bgr_image.rows) * ratio));
+    1, static_cast<int>(static_cast<float>(roi.height) * ratio));
 
   cv::Mat resized;
   cv::resize(
-    bgr_image, resized, cv::Size(resized_width, resized_height),
+    bgr_image(roi), resized, cv::Size(resized_width, resized_height),
     0.0, 0.0, cv::INTER_LINEAR);
 
   // Bundled metadata: BGR 0..255 FP32, top-left letterbox, pad=114.
@@ -209,8 +222,8 @@ YoloxDetectionResult YoloxDetector::detect(
   }
 
   return decode_output(
-    rows, row_count, column_count, ratio, bgr_image.cols, bgr_image.rows,
-    0, 0, stage_timing);
+    rows, row_count, column_count, ratio, roi.width, roi.height,
+    roi.x, roi.y, stage_timing);
 }
 
 YoloxDetectionResult YoloxDetector::detect_nv12(
