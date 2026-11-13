@@ -161,6 +161,71 @@ export function display(value, digits, ageMs){
   return (value == null || !Number.isFinite(value) || ageMs > 500) ? '--' : value.toFixed(digits);
 }
 
+export function laneFresh(lane, elapsedMs = 0){
+  return lane?.valid === true && Number.isFinite(lane.age_ms) && lane.age_ms >= 0 &&
+    lane.age_ms + Math.max(0, elapsedMs) <= 500;
+}
+
+// 브라우저 표시 전용 필터. ROS 경로와 제어값은 변경하지 않는다.
+// 3점 공간 평활화는 최대 1.5cm, 시간 평활화(tau=65ms)의 위치 지연은 최대 3cm.
+const LANE_FILTER = {spatialM:0.015, lagM:0.03, tauMs:65, resetM:0.12, gapMs:250};
+const distance = (a,b) => Math.hypot(a[0]-b[0], a[1]-b[1]);
+function limitedMix(current, target, weight, maxM){
+  const delta = distance(current, target);
+  const k = delta > 0 ? Math.min(weight, maxM/delta) : 0;
+  return current.map((v,i) => v + (target[i]-v)*k);
+}
+export function smoothLaneSpatial(points){
+  return points.map((p,i) => {
+    if (i === 0 || i === points.length-1) return [...p];
+    const target = p.map((v,j) => (points[i-1][j] + 2*v + points[i+1][j])/4);
+    return limitedMix(p, target, 1, LANE_FILTER.spatialM);
+  });
+}
+function arcLengths(points){
+  const arc = [0];
+  for (let i=1; i<points.length; i++) arc.push(arc[i-1] + distance(points[i-1], points[i]));
+  return arc;
+}
+// 누적 거리로 대응점을 찾는다. 점 개수·간격 변화와 x가 되돌아가는 급커브도 처리한다.
+function alignLane(previous, current){
+  const oldArc = arcLengths(previous), arc = arcLengths(current);
+  let j = 0;
+  return current.map((p,i) => {
+    const s = arc[i];
+    if (s > oldArc.at(-1)) return p;  // 새로 보인 구간에는 이전 경로를 외삽하지 않는다.
+    while (j < previous.length-2 && oldArc[j+1] < s) j++;
+    const span = oldArc[j+1]-oldArc[j], k = span > 0 ? (s-oldArc[j])/span : 0;
+    return previous[j].map((v,n) => v + (previous[j+1][n]-v)*k);
+  });
+}
+export class PreviewLaneFilter {
+  constructor(){ this.clear(); }
+  clear(){ this.points = []; this.sampleMs = null; this.key = null; }
+  update(lane, sampleMs){
+    const raw = lane?.points;
+    if (!laneFresh(lane) || !Number.isFinite(sampleMs) || !Array.isArray(raw) || raw.length < 2 ||
+        !raw.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isFinite))){
+      this.clear(); return [];
+    }
+    const key = `${lane.source}/${lane.state}/${lane.lane_width_m}`;
+    const current = smoothLaneSpatial(raw), dt = sampleMs-this.sampleMs;
+    const continuous = this.points.length >= 2 && key === this.key && dt >= 0 && dt <= LANE_FILTER.gapMs;
+    // 같은 관측을 SSE로 재전송해도 중복 필터링하지 않는다(시각 반올림 오차 2ms 허용).
+    if (continuous && dt <= 2) return this.points;
+    let result = current;
+    if (continuous && distance(this.points[0], current[0]) < LANE_FILTER.resetM){
+      const aligned = alignLane(this.points, current);
+      if (current.every((p,i) => distance(p, aligned[i]) < LANE_FILTER.resetM)){
+        const historyWeight = Math.exp(-dt/LANE_FILTER.tauMs);
+        result = current.map((p,i) => limitedMix(p, aligned[i], historyWeight, LANE_FILTER.lagM));
+      }
+    }
+    this.points = result; this.sampleMs = sampleMs; this.key = key;
+    return result;
+  }
+}
+
 // 터널 명암: ENTERING/INSIDE → 어두움(1), EXITING/OUTSIDE → 밝음(0). 상태 없음(null)이면 현재 유지.
 export function tunnelTarget(state, current){
   if (state === 'ENTERING' || state === 'INSIDE') return 1;
@@ -188,6 +253,8 @@ const $ = (id) => document.getElementById(id);
 const cv = $('bev'), ctx = cv.getContext('2d');
 const VIEW = {x0:-0.35, x1:3.0, y:0.9};      // 차량 뒤 0.35m ~ 전방 3.0m, 좌우 ±0.9m
 let frame = null, frameAt = 0, drawn = 0, drawFps = 0, lastFpsT = performance.now();
+const laneFilter = new PreviewLaneFilter();
+let previewPoints = [];
 let odo = 0;   // 조명 스크롤용: 단말에서 speed_mps 적분
 let dark = 0, lastDarkT = performance.now(), pal = palette(0);
 
@@ -215,8 +282,9 @@ function draw(){
     ctx.beginPath(); ctx.moveTo(u1,v); ctx.lineTo(u2,v); ctx.stroke();
     ctx.fillText(`${m.toFixed(1)}m`, u2 - 34*d, v - 3*d);
   }
-  const lane = frame?.lane, fresh = lane && lane.age_ms <= 500;
-  const pts = fresh ? lane.points : [];
+  const lane = frame?.lane, fresh = laneFresh(lane, performance.now()-frameAt);
+  if (!fresh){ laneFilter.clear(); previewPoints = []; }
+  const pts = fresh ? previewPoints : [];
   $('nopath').style.display = pts.length < 2 ? 'block' : 'none';
   if (pts.length >= 2){
     const {left, right} = laneEdges(pts, lane.lane_width_m);
@@ -343,7 +411,7 @@ function loop(now){
   if (frame) draw();
   drawn++;
   if (now - lastFpsT >= 1000){ drawFps = drawn*1000/(now-lastFpsT); drawn = 0; lastFpsT = now; }
-  if (frame) $('badge').textContent = `preview ${drawFps.toFixed(1)} FPS · data ${frame.lane.age_ms==null?'--':frame.lane.age_ms.toFixed(0)} ms · seq ${frame.seq}`;
+  if (frame) $('badge').textContent = `preview ${drawFps.toFixed(1)} FPS · data ${frame.lane.age_ms==null?'--':frame.lane.age_ms.toFixed(0)} ms · seq ${frame.seq} · 표시 필터`;
 }
 requestAnimationFrame(loop);
 
@@ -351,6 +419,7 @@ requestAnimationFrame(loop);
 let lastFrameAt = 0, linkOk = false;
 function setLost(lost){
   $('lost').style.display = lost ? 'flex' : 'none';
+  if (lost){ laneFilter.clear(); previewPoints = []; }
   if (lost && frame) $('lostStop').textContent = frame.startup.started && frame.link.loss_stop_sec > 0
     ? `주행 중이었다면 Jetson이 ${frame.link.loss_stop_sec.toFixed(1)}s 후 STOP을 보냅니다 · 재연결 후 START 필요` : '';
 }
@@ -358,7 +427,9 @@ function connect(){
   const source = new EventSource('/events');
   source.onmessage = (event) => {
     try { frame = JSON.parse(event.data); } catch { return; }
-    lastFrameAt = performance.now(); linkOk = true; setLost(false); updatePanel(frame);
+    frameAt = performance.now();
+    previewPoints = laneFilter.update(frame.lane, frame.t*1000-frame.lane.age_ms);
+    lastFrameAt = frameAt; linkOk = true; setLost(false); updatePanel(frame);
     if (frame.startup.message) $('reply').textContent = frame.startup.message;
   };
   source.onerror = () => { linkOk = false; setLost(true); };   // EventSource reconnects by itself

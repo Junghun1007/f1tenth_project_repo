@@ -17,6 +17,16 @@ RGB/IR 터널 전환도 이 패키지가 소유한다. 별도 ROS 패키지나 �
 기존 실행에 `tunnel_enabled:=true`를 추가한다.
 자세한 빌드·전환·유실 처리는 [터널 주행 문서](AUTO_CONTROL_TUNNEL.md)를 참고한다.
 
+원격 프리뷰(`remote_preview_enabled:=true`)의 중앙선과 도로 가장자리에는
+브라우저 표시 전용 필터를 적용한다. 기존 최대 24개 좌표에 3점 공간 평활화와
+시간 평활화(시정수 65ms)를 수행하므로 젯슨의 프레임당 필터 연산과 전송량은 추가되지 않는다.
+공간 보정은 최대 1.5cm, 시간 필터의 추가 위치 지연은 최대 3cm로 제한한다.
+12cm 이상의 경로 변화, RGB/IR·차선 지지 상태·도로 폭 변경, 250ms 초과 관측 공백에는
+시간 필터 이력을 초기화한다. 무효 차선·연결 끊김에도 이력을 지우고, 데이터가 500ms를
+넘으면 선을 숨긴다. 화면에 `표시 필터`를 표기하며, CTE·조향 수치와 실제 제어 경로는
+원래 값을 유지한다. 필터 상수는 `auto_control_tunnel/web/remote_preview.html`의
+`LANE_FILTER`에 있다. 설치된 웹페이지는 `auto_control` 재빌드 후 브라우저 새로고침으로 반영한다.
+
 ```bash
 ros2 launch vehicle_bringup auto_drive.launch.py \
   tunnel_enabled:=true auto_enabled:=false speed_mps:=1.0
