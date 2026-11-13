@@ -1,5 +1,6 @@
 """Exercise actual subscription construction against Humble's QoS constraint."""
 from pathlib import Path
+import json
 import shutil
 import subprocess
 import tempfile
@@ -30,6 +31,7 @@ struct Bool {using ConstSharedPtr=std::shared_ptr<const Bool>; bool data;};
 struct String {using ConstSharedPtr=std::shared_ptr<const String>; std::string data;};
 }}
 namespace rclcpp {
+inline std::string last_message;
 enum class IntraProcessSetting {NodeDefault, Disable};
 struct SubscriptionOptions {IntraProcessSetting use_intra_process_comm=IntraProcessSetting::NodeDefault;};
 struct QoS {
@@ -40,7 +42,9 @@ struct QoS {
 };
 template<class T> struct Publisher {
   using SharedPtr=std::shared_ptr<Publisher<T>>;
-  void publish(const T&) {}
+  void publish(const T& message) {
+    if constexpr(std::is_same_v<T,std_msgs::msg::String>) last_message=message.data;
+  }
 };
 template<class T> struct Subscription {using SharedPtr=std::shared_ptr<Subscription<T>>;};
 struct Node {
@@ -66,6 +70,7 @@ struct Node {
         code = r'''
 #include <bev_handoff/runtime_monitor.hpp>
 #include <cassert>
+#include <iostream>
 struct IrHarness : rclcpp::Node {
   using Clock=std::chrono::steady_clock;
   bool inside_=false;
@@ -83,6 +88,11 @@ int main() {
   assert(monitor.enabled());
   node.enable(std::make_shared<std_msgs::msg::Bool>(std_msgs::msg::Bool{false}));
   assert(!monitor.enabled());
+  node.enable(std::make_shared<std_msgs::msg::Bool>(std_msgs::msg::Bool{true}));
+  for(int i=0;i<4096;++i) monitor.sample("timing",i%2 ? 15. : 5.);
+  std::cout<<rclcpp::last_message<<"\n";
+  for(int i=0;i<4096;++i) monitor.sample("event",0.);
+  std::cout<<rclcpp::last_message<<"\n";
   IrHarness ir;
   ir.mode(std::make_shared<std_msgs::msg::String>(std_msgs::msg::String{"IR"}));
   assert(ir.inside_);
@@ -105,7 +115,15 @@ int main() {
             subprocess.run([compiler, '-std=c++17', '-Wall', '-Wextra', '-Werror',
                             '-I' + str(root), '-I' + str(SOURCE / 'bev_handoff/include'),
                             str(root / 'check.cpp'), '-o', str(executable)], check=True)
-            subprocess.run([str(executable)], check=True)
+            result = subprocess.run([str(executable)], check=True, capture_output=True, text=True)
+            timing, event = [json.loads(line) for line in result.stdout.splitlines()]
+            self.assertEqual(timing['sample_count'], 4096)
+            self.assertEqual(timing['mean_ms'], 10)
+            self.assertEqual(timing['p95_ms'], 15)
+            self.assertEqual(timing['max_ms'], 15)
+            self.assertAlmostEqual(timing['mean_reciprocal_fps'], 133.333, places=3)
+            self.assertIsNone(event['mean_reciprocal_fps'])
+            self.assertEqual(event['reciprocal_samples'], 0)
 
 
 if __name__ == '__main__':

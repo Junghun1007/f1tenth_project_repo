@@ -50,14 +50,26 @@ public:
     s.ms.push_back(ms);s.age_sum+=std::max(0.,age_ms);
     const double seconds=std::chrono::duration<double>(now-s.start).count();
     if(seconds<1. && s.ms.size()<4096)return;
-    double total=0;for(double v:s.ms)total+=v;
+    double total=0, inverse_total=0;
+    std::size_t inverse_count=0;
+    for(double v:s.ms) {
+      total+=v;
+      if(v>0) {inverse_total+=1000./v; ++inverse_count;}
+    }
     const double count=s.ms.size(),mean=total/count;
     std::sort(s.ms.begin(),s.ms.end());
     std::ostringstream out;
     out<<"{\"node\":\""<<node_<<"\",\"stage\":\""<<stage
       <<"\",\"fps\":"<<(count-1)/std::max(.001,seconds)
       <<",\"mean_ms\":"<<mean<<",\"p95_ms\":"<<s.ms[std::min(s.ms.size()-1,std::size_t(std::ceil(count*.95)-1))]
-      <<",\"age_ms\":"<<s.age_sum/count<<"}";
+      <<",\"max_ms\":"<<s.ms.back()
+      <<",\"sample_count\":"<<s.ms.size()
+      <<",\"window_sec\":"<<seconds
+      <<",\"reciprocal_samples\":"<<inverse_count
+      <<",\"mean_reciprocal_fps\":";
+    if(inverse_count) out<<inverse_total/static_cast<double>(inverse_count);
+    else out<<"null";
+    out<<",\"age_ms\":"<<s.age_sum/count<<"}";
     std_msgs::msg::String message;message.data=out.str();publisher_->publish(message);s={};
   }
 };

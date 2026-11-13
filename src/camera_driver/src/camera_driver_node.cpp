@@ -389,7 +389,11 @@ public:
           perf_started_at_ = now;
           std_msgs::msg::String message;
           message.data = "{\"capture\":" + capture_meter_.drain(elapsed) +
-            ",\"stabilize\":" + stabilize_meter_.drain(elapsed) + "}";
+            ",\"stabilize\":" + stabilize_meter_.drain(elapsed) +
+            ",\"received_total\":" + std::to_string(received_total_.load()) +
+            ",\"sequence_gaps_total\":" + std::to_string(device_drops_total_.load()) +
+            ",\"invalid_frames_total\":" + std::to_string(invalid_frames_total_.load()) +
+            ",\"stabilization_drops_total\":" + std::to_string(stabilization_output_drops_total_.load()) + "}";
           perf_publisher_->publish(message);
         });
       capture_thread_ = std::thread(&Impl::capture_loop, this);
@@ -1699,6 +1703,7 @@ private:
         auto packet=ir_queue_->tryGet<dai::ImgFrame>();
         if (packet) {
           ++received;
+          monitor_->sample("ir_received",0.);
           last_exposure_us=packet->getExposureTime().count(); last_iso=packet->getSensitivity();
           bev_handoff::publishCameraExposure(true,std::make_shared<bev_handoff::CameraExposureObservation>(
             bev_handoff::CameraExposureObservation{last_exposure_us,last_iso,
@@ -1742,6 +1747,7 @@ private:
         frame->header.frame_id="front_axle_bev"; frame->tunnel_profile=applied;
         bev_handoff::publishDirectIr(std::move(frame));
         ++published;
+        monitor_->sample("ir_published",0.);
       } catch (const std::exception & e) {
         bev_handoff::publishDirectIr(nullptr);
         pending.clear();
@@ -1763,6 +1769,7 @@ private:
         if (!pipeline_->isRunning()) {break;}
         auto packet=depth_queue_->tryGet<dai::ImgFrame>();
         if (!packet) {std::this_thread::sleep_for(1ms); continue;}
+        monitor_->sample("depth_received",0.);
         if (tunnel_enabled_ && (!tunnel_profile_ready_.load() || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
           std::chrono::duration_cast<std::chrono::nanoseconds>(
             packet->getTimestamp(dai::CameraExposureOffset::MIDDLE).time_since_epoch()).count()<depth_resume_ns_.load())) {
@@ -1787,6 +1794,7 @@ private:
         frame->header.stamp=ros_timestamp_for(captured); frame->header.frame_id=frame_id_;
         frame->captured_at=captured;
         bev_handoff::publishDirectDepth(std::move(frame));
+        monitor_->sample("depth_accepted",0.,age*1000.);
       } catch (const std::exception & e) {
         bev_handoff::publishDirectDepth(nullptr);
         RCLCPP_ERROR_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,"Depth input: %s",e.what());
@@ -1886,7 +1894,11 @@ private:
           frame_available_.notify_all();
         }
 
-        if(monitor_->enabled())monitor_->sample("rgb_capture",0.);
+        if(monitor_->enabled()) {
+          monitor_->sample("rgb_capture",0.);
+          monitor_->sample("rgb_sensor_to_host",std::chrono::duration<double,std::milli>(
+            received_at-sensor_timestamp).count());
+        }
         if (bev_handoff::hasDirectCameraConsumer()) {
           if (packet->getType() == dai::ImgFrame::Type::NV12) {
             const auto & data = packet->getData();
@@ -2535,6 +2547,8 @@ private:
           bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"camera_to_bev");
           const auto stabilization_started_at =
             std::chrono::steady_clock::now();
+          monitor_->sample("rgb_host_wait",std::chrono::duration<double,std::milli>(
+            stabilization_started_at-snapshot->received_timestamp).count());
           const auto transform = stabilizationTransform(
             *snapshot->packet,
             snapshot->sensor_timestamp,

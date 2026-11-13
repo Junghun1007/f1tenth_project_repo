@@ -40,6 +40,8 @@ def integrated_nodes(rgb_detector, controller, context):
               preview_enabled=False, bev_theme_enable=False,
               shared_ir_preview_output_enabled=rgb_detector['preview_enabled'],
               preview_result_only_enabled=rgb_detector.get('preview_result_only_enabled', True))
+    if int(cfg.get('benchmark_run', '0')):
+        ir['profiling_enabled'] = False
     rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 80.0})
     age = controller.get('path_capture_maximum_age_sec', .2)
     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)

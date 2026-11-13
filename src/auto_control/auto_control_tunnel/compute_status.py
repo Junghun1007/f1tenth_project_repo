@@ -10,6 +10,7 @@ class SystemProbe:
     def __init__(self, proc='/proc', sys='/sys', disk='/'):
         self.proc, self.sys, self.disk = Path(proc), Path(sys), disk
         self.previous_cpu = None
+        self.previous_cores = {}
 
     @staticmethod
     def read(path):
@@ -43,6 +44,26 @@ class SystemProbe:
             result['cpu_cores'] = sum(line.split()[0][3:].isdigit() for line in stat if line)
         except (IndexError, ValueError):
             self.previous_cpu = None
+        cores = {}
+        current_cores = {}
+        for line in stat:
+            fields = line.split()
+            if not fields or not fields[0].startswith('cpu') or not fields[0][3:].isdigit():
+                continue
+            try:
+                values = [int(v) for v in fields[1:9]]
+                total, idle = sum(values), values[3] + (values[4] if len(values) > 4 else 0)
+                previous = self.previous_cores.get(fields[0])
+                if previous and total > previous[0]:
+                    usage = 100 * (1 - (idle - previous[1]) / (total - previous[0]))
+                    if 0 <= usage <= 100:
+                        cores[fields[0]] = usage
+                current_cores[fields[0]] = (total, idle)
+            except (ValueError, IndexError):
+                continue
+        self.previous_cores = current_cores
+        if cores:
+            result['cpu_core_pct'] = cores
         mem = {}
         for line in self.read(self.proc / 'meminfo').splitlines():
             try:

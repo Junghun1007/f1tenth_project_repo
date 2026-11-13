@@ -146,6 +146,14 @@ def _apply_parameter_file_defaults(
     line_detactor_config,
     bev_launch,
 ):
+    benchmark_run = int(LaunchConfiguration("benchmark_run").perform(context))
+    if benchmark_run not in range(5):
+        raise RuntimeError("benchmark_run must be 0 (normal) or 1..4")
+    if benchmark_run:
+        from auto_control_tunnel.track_benchmark_data import benchmark_overrides
+        context.launch_configurations.update(benchmark_overrides(benchmark_run))
+        if LaunchConfiguration("manual_test").perform(context).lower() == "true":
+            raise RuntimeError("Track benchmark records automatic driving; use manual_test:=false")
     bev_defaults = _merged_parameters(
         bev_config,
         LaunchConfiguration("bev_params_file").perform(context),
@@ -198,6 +206,12 @@ def _apply_parameter_file_defaults(
     apply_avoidance = apply_avoidance.lower() == "true"
     if apply_avoidance and obstacles_enabled != "true":
         raise RuntimeError("avoidance_control_enabled requires obstacles_enabled:=true")
+    if benchmark_run:
+        controller_defaults["obstacle_slowdown_enabled"] = obstacles_enabled == "true"
+    context.launch_configurations["effective_obstacle_slowdown_enabled"] = str(
+        controller_defaults.get("obstacle_slowdown_enabled", True)).lower()
+    context.launch_configurations["effective_driving_log_enabled"] = str(
+        controller_defaults.get("driving_log_enabled", False) if not benchmark_run else False).lower()
     slowdown_enabled = controller_defaults.get("obstacle_slowdown_enabled", True)
     if not isinstance(slowdown_enabled, bool):
         raise RuntimeError("obstacle_slowdown_enabled must be a YAML boolean")
@@ -347,8 +361,8 @@ def _apply_parameter_file_defaults(
     # START approval stays mandatory in both local and remote modes.
     context.launch_configurations["startup_inspection_active"] = "true"
     context.launch_configurations["startup_drive_mode_topic"] = prefix + "/drive/mode"
-    context.launch_configurations["startup_preview_image_enabled"] = "false" if remote == "true" else "true"
-    if remote == "true":
+    context.launch_configurations["startup_preview_image_enabled"] = "false" if remote == "true" or benchmark_run else "true"
+    if remote == "true" or benchmark_run:
         # SSH/headless: no Jetson-side windows or image topics; the browser draws the preview.
         detector["preview_enabled"] = False
         detector["preview_result_only_enabled"] = True
@@ -373,7 +387,7 @@ def _apply_parameter_file_defaults(
     if profiling_directory != _PARAMETER_FILE_DEFAULT:
         detector["profiling_directory"] = profiling_directory
     result_only = LaunchConfiguration("preview_result_only_enabled").perform(context)
-    if remote == "true":
+    if remote == "true" or benchmark_run:
         result_only = _PARAMETER_FILE_DEFAULT
     if result_only != _PARAMETER_FILE_DEFAULT:
         if result_only.lower() not in ("true", "false"):
@@ -461,7 +475,7 @@ def _apply_parameter_file_defaults(
             LaunchConfiguration("remote_preview_params_file").perform(context),
             float(detector.get("centerline_lane_width_m", 0.65)),
             connection_topic, connection_topic + '/diagnostics'))
-    else:
+    elif not benchmark_run:
         from auto_control_tunnel.launch_support import startup_inspection_node
         inspection_actions.append(startup_inspection_node(tunnel == "true", traffic_enabled == "true",
             '/' + context.launch_configurations['bridge_connection_status_topic'].strip('/') + '/diagnostics'))
@@ -470,6 +484,22 @@ def _apply_parameter_file_defaults(
         inspection_actions.append(Node(
             package="auto_control", executable="runtime_tools", name="auto_runtime_tools",
             output="screen"))
+    if benchmark_run:
+        traffic_config = _ros_parameters(
+            LaunchConfiguration("traffic_light_params_file").perform(context), "traffic_light_detector")
+        ir_config = _ros_parameters(os.path.join(get_package_share_directory("auto_control"),
+                                               "config", "tunnel_ir.yaml"), "line_detactor")
+        inspection_actions.append(Node(
+            package="auto_control", executable="track_benchmark", name="track_benchmark",
+            output="screen", parameters=[{
+                "run": benchmark_run,
+                "directory": LaunchConfiguration("benchmark_directory").perform(context),
+                "rgb_result_topic": str(detector["result_topic"]),
+                "ir_result_topic": str(ir_config["result_topic"]),
+                "traffic_topic": str(traffic_config.get("state_topic", "/traffic_light/state")),
+                "detector_latency_topic": str(controller_defaults.get(
+                    "input_to_control_decision_topic", "/auto/detector_input_to_control_decision_ms")),
+            }]))
     return [LogInfo(msg=(
         "[ML auto drive] launch=" + os.path.realpath(__file__) +
         " | BEV=" + LaunchConfiguration("bev_params_file").perform(context) +
@@ -754,6 +784,8 @@ def generate_launch_description():
 
     controller_overrides.update({
         "model_startup_check_required": True,
+        "obstacle_slowdown_enabled": ParameterValue(LaunchConfiguration("effective_obstacle_slowdown_enabled"), value_type=bool),
+        "driving_log_enabled": ParameterValue(LaunchConfiguration("effective_driving_log_enabled"), value_type=bool),
         "startup_safety_enabled": ParameterValue(LaunchConfiguration("startup_inspection_active"),value_type=bool),
         "startup_drive_mode_topic": LaunchConfiguration("startup_drive_mode_topic"),
         "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
@@ -809,6 +841,9 @@ def generate_launch_description():
     )
     return LaunchDescription(
         [
+            DeclareLaunchArgument("benchmark_run", default_value="0",
+                description="0: normal; 1: lane; 2: +obstacles; 3: +traffic; 4: +tunnel. Headless 60s capture after START."),
+            DeclareLaunchArgument("benchmark_directory", default_value="~/.ros/auto_control/benchmarks"),
             DeclareLaunchArgument("vesc_port", default_value="/dev/ttyTHS1"),
             DeclareLaunchArgument("tunnel_enabled", default_value="false"),
             DeclareLaunchArgument("tunnel_ir_length_exit_enabled", default_value="false",

@@ -49,6 +49,15 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(processes[0]['parameters'][-1]['initial_state'], 'outside')
         self.assertFalse(processes[0]['parameters'][-1]['preview_enabled'])
 
+    def test_benchmark_disables_ir_profile_and_preview(self):
+        components, _ = self.helper().integrated_nodes(
+            dict(preview_enabled=False, result_topic='/rgb'), {},
+            NS(launch_configurations={'benchmark_run': '4'}))
+        ir = components[1]['parameters'][0]
+        self.assertFalse(ir['profiling_enabled'])
+        self.assertFalse(ir['preview_enabled'])
+        self.assertFalse(ir['shared_ir_preview_output_enabled'])
+
     def test_validation_mode_is_default_and_guarded_mode_is_selectable(self):
         for flag, expected in ((None, True), ('true', True), ('false', False)):
             config = {} if flag is None else dict(tunnel_validation_mode=flag)
@@ -60,13 +69,13 @@ class LaunchTests(unittest.TestCase):
             self.helper().integrated_nodes({}, {}, NS(launch_configurations=dict(tunnel_validation_mode='invalid')))
 
     def test_ir_length_exit_default_off_and_cli_overrides(self):
-        _, nodes = self.helper().integrated_nodes(
+        nodes, _ = self.helper().integrated_nodes(
             dict(preview_enabled=False, result_topic='/rgb'), {}, NS(launch_configurations={}))
         self.assertIs(nodes[-1]['parameters'][0]['ir_length_exit_enabled'], False)
         self.assertEqual(nodes[-1]['parameters'][0]['ir_length_exit_ratio'], .15)
         config = dict(tunnel_ir_length_exit_enabled='true', tunnel_ir_length_exit_ratio='.25',
                       tunnel_ir_length_exit_confirm_frames='4', tunnel_ir_length_exit_minimum_reference_m='.8')
-        _, nodes = self.helper().integrated_nodes(
+        nodes, _ = self.helper().integrated_nodes(
             dict(preview_enabled=False, result_topic='/rgb'), {}, NS(launch_configurations=config))
         params = nodes[-1]['parameters'][0]
         self.assertIs(params['ir_length_exit_enabled'], True)
@@ -90,9 +99,9 @@ class LaunchTests(unittest.TestCase):
     def test_selector_inherits_effective_controller_geometry(self):
         controller = dict(path_minimum_points=12, path_minimum_span_m=.2, path_maximum_x_m=1.8)
         context = NS(launch_configurations=dict(path_minimum_points='16', path_maximum_gap_m='.1'))
-        _, processes = self.helper().integrated_nodes(
+        components, _ = self.helper().integrated_nodes(
             dict(preview_enabled=False, result_topic='/line_detactor/result'), controller, context)
-        parameters = processes[-1]['parameters'][-1]
+        parameters = components[-1]['parameters'][-1]
         self.assertEqual(parameters['path_minimum_points'], 16)
         self.assertEqual(parameters['path_minimum_span_m'], .2)
         self.assertEqual(parameters['path_maximum_x_m'], 1.8)

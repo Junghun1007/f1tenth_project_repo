@@ -365,7 +365,11 @@ public:
         perf_started_at_ = now;
         std_msgs::msg::String message;
         message.data = "{\"input\":" + bev_input_meter_.drain(elapsed) +
-          ",\"bev\":" + bev_stage_meter_.drain(elapsed) + "}";
+          ",\"bev\":" + bev_stage_meter_.drain(elapsed) +
+          ",\"received_total\":" + std::to_string(received_total_.load()) +
+          ",\"processed_total\":" + std::to_string(processed_total_.load()) +
+          ",\"direct_delivered_total\":" + std::to_string(direct_delivered_total_.load()) +
+          ",\"processing_errors_total\":" + std::to_string(processing_error_total_.load()) + "}";
         perf_publisher_->publish(message);
       });
     const auto startup_processor = std::atomic_load_explicit(
@@ -1134,6 +1138,8 @@ private:
       try {
         bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"bev_transform");
         const auto started_at = SteadyClock::now();
+        monitor_->sample("bev_input_wait",std::chrono::duration<double,std::milli>(
+          started_at-input_received_at).count());
         auto output = std::make_shared<BevFrame>();
         const auto processor = std::atomic_load_explicit(
           &gpu_processor_, std::memory_order_acquire);

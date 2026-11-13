@@ -34,9 +34,10 @@ class ComputeTests(unittest.TestCase):
             self.assertEqual(a['gpu_temp_c'],49)
             self.assertEqual(a['cpu_cores'],2)
             # Guest time changes must not be double-counted as CPU work.
-            put('proc/stat','cpu 120 0 60 860 60 0 0 0 99 0\ncpu0 1 2 3 4\ncpu1 1 2 3 4\n')
+            put('proc/stat','cpu 120 0 60 860 60 0 0 0 99 0\ncpu0 11 2 3 4\ncpu1 1 2 3 14\n')
             b=p.sample()
             self.assertAlmostEqual(b['cpu_pct'],30)
+            self.assertEqual(b['cpu_core_pct'], {'cpu0': 100.0, 'cpu1': 0.0})
             (root/'sys/devices/gpu.0/load').unlink()
             self.assertNotIn('gpu_pct',p.sample())
             put('proc/stat','cpu 1 0 0 0 0 0 0 0')
