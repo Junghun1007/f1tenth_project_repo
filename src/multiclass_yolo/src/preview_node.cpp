@@ -193,6 +193,7 @@ class Preview : public rclcpp::Node {
       cv::FONT_HERSHEY_SIMPLEX, .7, {240,240,240}, 1, cv::LINE_AA);
     std::vector<Detection> detections;
     std::vector<std::pair<int, int>> depth_counts;
+    std::vector<ObjectEstimate> objects;
     auto detection_thresholds = thresholds_;
     PreviewExit exit_state;
     std::string exit_reason = "ROS shutdown / stop requested";
@@ -230,6 +231,7 @@ class Preview : public rclcpp::Node {
       if (poll_model_change()) {
         detections.clear();
         depth_counts.clear();
+        objects.clear();
         if (video_enabled_) video.setTo(cv::Scalar(20,20,20));
         reset_inference_window();
       }
@@ -336,10 +338,12 @@ class Preview : public rclcpp::Node {
             if (sample && position_completed)
               (*sample)[Stage::receive_to_position] = milliseconds(*position_completed - received);
             depth_counts = std::move(fused.points);
+            objects = std::move(fused.objects);
             if (video_enabled_) show_bev(video, fused.image);
             if (sample && fused.sync_ms) (*sample)[Stage::rgb_depth_skew] = *fused.sync_ms;
           } catch (const std::exception & error) {
             depth_counts.clear();
+            objects.clear();
             if (video_enabled_) show_bev(video, {});
             RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000, "BEV fusion: %s", error.what());
           }
@@ -424,7 +428,7 @@ class Preview : public rclcpp::Node {
           compute_label, compute_fps, bev_settings_.has_value(), bev_background_,
           bev_settings_ && bev_settings_->estimate_ground);
         panel.draw(canvas, fps, roi_percent_for(active_model_), active_model_.roi80, names_, thresholds_,
-          detection_thresholds, detections, camera_status, settings_for(panel), depth_counts);
+          detection_thresholds, detections, camera_status, settings_for(panel), depth_counts, objects);
         const auto before_imshow = Clock::now();
         cv::imshow(window, canvas);
         const auto after_imshow = Clock::now();
@@ -479,6 +483,7 @@ class Preview : public rclcpp::Node {
             toolbar_notice_.clear();
             detections.clear();
             depth_counts.clear();
+            objects.clear();
             video.setTo(cv::Scalar(20,20,20));
             canvas(cv::Rect(video_left, 68, video_width, video_top - 68)).setTo(cv::Scalar(20,20,20));
             if (!video_enabled_) cv::putText(video, "Video paused | Detection running", {20, video.rows / 2},
@@ -564,6 +569,9 @@ class Preview : public rclcpp::Node {
       *bev_settings_ = std::move(next);
       if (control.group == SettingGroup::fit) {
         toolbar_notice_ = "Fit settings saved. Press Refit ground.";
+      } else if (control.group == SettingGroup::object) {
+        // Read per frame; no projector or camera state depends on these.
+        toolbar_notice_ = "Object size/position settings applied";
       } else {
         fusion_.reset();
         toolbar_notice_ = "Ground filter settings applied";

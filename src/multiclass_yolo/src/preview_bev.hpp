@@ -1,5 +1,6 @@
 #pragma once
 
+#include "multiclass_yolo/object_localization.hpp"
 #include "multiclass_yolo/yolox_detector.hpp"
 #include "preview_colors.hpp"
 
@@ -28,6 +29,20 @@ struct BevSettings {
   double sync_ms{20};
   bool estimate_ground{true};
   oak_startup::OakStartupMeasurement fixed_pose;
+  // Top-view class sizes. Sedan = own vehicle; truck = own vehicle scaled; cone is square.
+  double vehicle_length{.50}, vehicle_width{.30}, truck_scale{1.2}, cone_size{.13};
+  // Centre share of each box whose points are preferred; box edges carry background.
+  double core_fraction{.60};
+  LocalizationOptions localization;
+
+  Footprint footprint(int class_id) const {
+    switch (class_id) {
+      case 0: return {cone_size, cone_size};
+      case 1: return {vehicle_length * truck_scale, vehicle_width * truck_scale};
+      case 2: return {vehicle_length, vehicle_width};
+      default: return {};  // traffic light: position only
+    }
+  }
 
   explicit BevSettings(rclcpp::Node & node) {
     roi.camera.fps = 40;
@@ -59,6 +74,15 @@ struct BevSettings {
     fixed_pose.roll_deg = node.declare_parameter<double>("fixed_camera_roll_deg", 0.0);
     fixed_pose.pitch_down_deg = node.declare_parameter<double>("fixed_camera_pitch_down_deg", 14.0);
     vehicle_from_camera(fixed_pose);
+    vehicle_length = node.declare_parameter<double>("object.vehicle_length_m", vehicle_length);
+    vehicle_width = node.declare_parameter<double>("object.vehicle_width_m", vehicle_width);
+    truck_scale = node.declare_parameter<double>("object.truck_scale", truck_scale);
+    cone_size = node.declare_parameter<double>("object.cone_size_m", cone_size);
+    core_fraction = node.declare_parameter<double>("object.box_core_fraction", core_fraction);
+    for (const double v : {vehicle_length, vehicle_width, truck_scale, cone_size})
+      if (!std::isfinite(v) || v <= 0 || v > 5) throw std::invalid_argument("object sizes must be in (0, 5]");
+    if (!std::isfinite(core_fraction) || core_fraction < .2 || core_fraction > 1)
+      throw std::invalid_argument("object.box_core_fraction must be in [0.2, 1]");
     roi_lidar::validate(roi);
     if (!std::isfinite(sync_ms) || sync_ms < 1 || sync_ms > 100)
       throw std::invalid_argument("fusion_sync_ms must be in [1, 100]");
@@ -70,7 +94,7 @@ struct BevSettings {
   }
 };
 
-enum class SettingGroup { stereo, ground, fit };
+enum class SettingGroup { stereo, ground, object, fit };
 
 struct BevControl {
   const char * label;
@@ -123,6 +147,16 @@ inline const std::vector<BevControl> & bev_controls() {
     BEV_CONTROL("Outlier filter 0/1", ground, roi.scan.outlier.enabled, 0, 1),
     BEV_CONTROL("Outlier radius m", ground, roi.scan.outlier.radius_m, .01, 1),
     BEV_CONTROL("Outlier neighbors", ground, roi.scan.outlier.min_neighbors, 1, 100),
+    BEV_CONTROL("Vehicle length m", object, vehicle_length, .05, 5),
+    BEV_CONTROL("Vehicle width m", object, vehicle_width, .05, 5),
+    BEV_CONTROL("Truck scale", object, truck_scale, .5, 3),
+    BEV_CONTROL("Cone size m", object, cone_size, .02, 1),
+    BEV_CONTROL("Box core share", object, core_fraction, .2, 1),
+    BEV_CONTROL("Range window m", object, localization.window_base_m, .01, 1),
+    BEV_CONTROL("Window per m", object, localization.window_per_m, 0, .5),
+    BEV_CONTROL("Min object points", object, localization.min_points, 1, 1000),
+    BEV_CONTROL("Min point share", object, localization.min_fraction, 0, 1),
+    BEV_CONTROL("Near percentile", object, localization.near_percentile, 0, 1),
     BEV_CONTROL("Fit ROI width px", fit, startup.roi_width, 1, 1280),
     BEV_CONTROL("Fit ROI height px", fit, startup.roi_height, 1, 800),
     BEV_CONTROL("Fit ROI Y offset", fit, startup.roi_vertical_offset_px, -800, 800),
@@ -148,6 +182,7 @@ inline const std::vector<BevControl> & bev_controls() {
 struct BevFrame {
   cv::Mat image;
   std::vector<std::pair<int, int>> points;
+  std::vector<ObjectEstimate> objects;  // one per detection, in detection order
   std::optional<double> sync_ms;
   std::optional<std::chrono::steady_clock::time_point> filter_completed;
   bool has_position{false};
@@ -174,12 +209,15 @@ class BevFusion {
       out.sync_ms = std::abs(std::chrono::duration<double, std::milli>(
         rgb.getTimestamp(dai::CameraExposureOffset::MIDDLE) -
         depth->getTimestamp(dai::CameraExposureOffset::MIDDLE)).count());
-      if (!detections.empty())
+      if (!detections.empty()) {
         scan = associate(rgb, *depth, calibration, cam_a_from_rgb, vehicle_from_cam_a,
-          rgb_k, config, settings.estimate_ground, detections, out.points);
+          rgb_k, config, settings.estimate_ground, settings.core_fraction, detections, out.points);
+        out.objects = estimate(scan, detections, rgb_k, vehicle_from_rgb, settings);
+      }
     }
     out.filter_completed = std::chrono::steady_clock::now();
-    out.has_position = !scan.obstacle_indices.empty();
+    out.has_position = std::any_of(out.objects.begin(), out.objects.end(),
+      [](const ObjectEstimate & object) {return object.valid;});
     if (!render) return out;
     cv::Mat background;
     if (camera_background) {
@@ -198,13 +236,33 @@ class BevFusion {
       status, background, &no_clusters);
     const auto layout = roi_lidar::mapLayout(config.view, config.preview_size);
     cv::Mat area = out.image(layout.area);
+    const auto pixel = [&layout](double x, double y) {
+      return cv::Point(static_cast<int>(std::lround(layout.center_x - y * layout.scale)),
+        static_cast<int>(std::lround(layout.origin_y - x * layout.scale))) - layout.area.tl();
+    };
+    const double origin_x = vehicle_from_rgb.translation[0], origin_y = vehicle_from_rgb.translation[1];
     for (std::size_t i = 0; i < scan.obstacle_indices.size(); ++i) {
       const auto & p = scan.surface_points[scan.obstacle_indices[i]];
       if (!roi_lidar::insideView(p[0], p[1], config.view)) continue;
-      const auto pixel = cv::Point(static_cast<int>(std::lround(layout.center_x - p[1] * layout.scale)),
-        static_cast<int>(std::lround(layout.origin_y - p[0] * layout.scale)));
-      cv::circle(area, pixel - layout.area.tl(), std::max(3, config.point_radius),
-        obstacle_colors[detections[scan.obstacle_selection_ids[i]].class_id], cv::FILLED, cv::LINE_8);
+      const auto id = static_cast<std::size_t>(scan.obstacle_selection_ids[i] >> 1);
+      // Points outside the selected range peak are background inside the box: grey.
+      const auto & object = out.objects[id];
+      const double range = std::hypot(p[0] - origin_x, p[1] - origin_y);
+      const bool selected = object.valid && range >= object.cluster_min && range <= object.cluster_max;
+      cv::circle(area, pixel(p[0], p[1]), std::max(3, config.point_radius),
+        selected ? obstacle_colors[detections[id].class_id] : cv::Scalar(150, 150, 150), cv::FILLED, cv::LINE_8);
+    }
+    for (std::size_t id = 0; id < out.objects.size(); ++id) {
+      const auto & object = out.objects[id];
+      if (!object.valid) continue;
+      const auto & color = obstacle_colors[detections[id].class_id];
+      if (object.footprint.length > 0) {
+        std::vector<cv::Point> outline;
+        for (const auto & corner : object.corners) outline.push_back(pixel(corner.x, corner.y));
+        cv::polylines(area, outline, true, color, 2, cv::LINE_AA);
+      }
+      // Measured front face: white ring so it reads on any class colour.
+      cv::circle(area, pixel(object.front_x, object.front_y), 5, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
     }
     return out;
   }
@@ -242,8 +300,8 @@ class BevFusion {
   roi_lidar::Scan associate(dai::ImgFrame & rgb, dai::ImgFrame & depth,
     const dai::CalibrationHandler & calibration, const point_cloud::RigidTransform & cam_a_from_rgb,
     const point_cloud::RigidTransform & vehicle_from_cam_a, const point_cloud::Intrinsics & rgb_k,
-    const roi_lidar::Config & config, bool estimate_ground, const std::vector<Detection> & detections,
-    std::vector<std::pair<int, int>> & counts)
+    const roi_lidar::Config & config, bool estimate_ground, double core_fraction,
+    const std::vector<Detection> & detections, std::vector<std::pair<int, int>> & counts)
   {
     const auto depth_k = intrinsics(depth);
     const auto cam_a_from_depth = point_cloud::rgbFromFrame(depth, calibration);
@@ -259,13 +317,21 @@ class BevFusion {
     mask_.create(rgb.getHeight(), rgb.getWidth(), CV_32SC1);
     mask_.setTo(cv::Scalar(-1));
     // The detector returns boxes in score order. The highest score owns overlaps.
-    for (std::size_t i = detections.size(); i > 0; --i) {
-      const auto & box = detections[i - 1].box;
+    // Mask value = detection index * 2, plus 1 inside the box's centre share.
+    const auto paint = [this](const cv::Rect2f & box, int value) {
       const int x0 = std::clamp(static_cast<int>(std::ceil(box.x)), 0, mask_.cols);
       const int y0 = std::clamp(static_cast<int>(std::ceil(box.y)), 0, mask_.rows);
       const int x1 = std::clamp(static_cast<int>(std::ceil(box.x + box.width)), x0, mask_.cols);
       const int y1 = std::clamp(static_cast<int>(std::ceil(box.y + box.height)), y0, mask_.rows);
-      if (x1 > x0 && y1 > y0) mask_(cv::Rect(x0, y0, x1 - x0, y1 - y0)).setTo(cv::Scalar(static_cast<int>(i - 1)));
+      if (x1 > x0 && y1 > y0) mask_(cv::Rect(x0, y0, x1 - x0, y1 - y0)).setTo(cv::Scalar(value));
+    };
+    for (std::size_t i = detections.size(); i > 0; --i) {
+      const auto & box = detections[i - 1].box;
+      const int value = static_cast<int>(i - 1) * 2;
+      paint(box, value);
+      const float inset_x = box.width * static_cast<float>(1 - core_fraction) / 2;
+      const float inset_y = box.height * static_cast<float>(1 - core_fraction) / 2;
+      paint({box.x + inset_x, box.y + inset_y, box.width - 2 * inset_x, box.height - 2 * inset_y}, value + 1);
     }
     const roi_lidar::Projector::PointSelector select = [&](int u, int v, double z) {
       auto p = point_cloud::rotate(rgb_from_depth.rotation,
@@ -275,15 +341,42 @@ class BevFusion {
       const double x = rgb_k.fx * p[0] / p[2] + rgb_k.cx;
       const double y = rgb_k.fy * p[1] / p[2] + rgb_k.cy;
       if (!(x >= 0 && x < mask_.cols && y >= 0 && y < mask_.rows)) return -1;
-      const int id = mask_.at<int>(static_cast<int>(y), static_cast<int>(x));
-      if (id >= 0) ++counts[id].first;
-      return id;
+      const int value = mask_.at<int>(static_cast<int>(y), static_cast<int>(x));
+      if (value >= 0) ++counts[value >> 1].first;
+      return value;
     };
     const auto & bytes = depth.getData();
     const auto stride = depth.getStride() ? depth.getStride() : depth.getWidth() * 2U;
     auto scan = projector_.project(bytes.data(), bytes.size(), stride, config.terrain.below_ground_m, &select);
-    for (int id : scan.obstacle_selection_ids) ++counts[id].second;
+    for (int value : scan.obstacle_selection_ids) ++counts[value >> 1].second;
     return scan;
+  }
+
+  // One position and class footprint per detection from its ground-filtered points.
+  static std::vector<ObjectEstimate> estimate(const roi_lidar::Scan & scan,
+    const std::vector<Detection> & detections, const point_cloud::Intrinsics & rgb_k,
+    const point_cloud::RigidTransform & vehicle_from_rgb, const BevSettings & settings)
+  {
+    std::vector<std::vector<ObjectPoint>> core(detections.size()), all(detections.size());
+    for (std::size_t i = 0; i < scan.obstacle_indices.size(); ++i) {
+      const auto & p = scan.surface_points[scan.obstacle_indices[i]];
+      const int value = scan.obstacle_selection_ids[i];
+      const auto id = static_cast<std::size_t>(value >> 1);
+      all[id].push_back({p[0], p[1]});
+      if (value & 1) core[id].push_back({p[0], p[1]});
+    }
+    std::vector<ObjectEstimate> objects(detections.size());
+    for (std::size_t id = 0; id < detections.size(); ++id) {
+      const auto & box = detections[id].box;
+      // Direction comes from the box centre ray: stable even with few depth points.
+      const auto ray = point_cloud::rotate(vehicle_from_rgb.rotation,
+        {(box.x + box.width / 2 - rgb_k.cx) / rgb_k.fx, (box.y + box.height / 2 - rgb_k.cy) / rgb_k.fy, 1.0});
+      // Small or distant boxes leave too few centre points; then use the whole box.
+      const auto & points = core[id].size() >= settings.localization.min_points ? core[id] : all[id];
+      objects[id] = localize(points, vehicle_from_rgb.translation[0], vehicle_from_rgb.translation[1],
+        std::atan2(ray[1], ray[0]), settings.footprint(detections[id].class_id), settings.localization);
+    }
+    return objects;
   }
 
   roi_lidar::Projector projector_;

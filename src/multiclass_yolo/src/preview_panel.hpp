@@ -1,5 +1,6 @@
 #pragma once
 
+#include "multiclass_yolo/object_localization.hpp"
 #include "multiclass_yolo/yolox_detector.hpp"
 #include "preview_colors.hpp"
 
@@ -176,7 +177,8 @@ class PreviewPanel {
     const std::vector<Detection> & detections,
     const std::string & camera_status,
     const std::vector<std::pair<const char *, double>> & settings,
-    const std::vector<std::pair<int, int>> & depth_counts)
+    const std::vector<std::pair<int, int>> & depth_counts,
+    const std::vector<ObjectEstimate> & objects = {})
   {
     cv::Mat panel = canvas.colRange(0, width);
     panel.setTo(cv::Scalar(28, 26, 24));
@@ -213,8 +215,8 @@ class PreviewPanel {
     visible_first_ = visible_last_ = first_setting_field;
     text(panel, cv::format("Detections (%zu)", detections.size()), {14, 306}, .62);
     text(panel, "Class", {14, 333});
-    text(panel, "Score", {160, 333});
-    text(panel, bev_enabled_ ? "Pts in/kept" : "Threshold", {230, 333});
+    text(panel, "Score", {bev_enabled_ ? 150 : 160, 333});
+    text(panel, bev_enabled_ ? "X,Y m | pts" : "Threshold", {bev_enabled_ ? 205 : 230, 333});
     constexpr int first_row_y = 360;
     constexpr int row_height = 24;
     const auto capacity = static_cast<std::size_t>((panel.rows - 44 - first_row_y) / row_height + 1);
@@ -233,10 +235,13 @@ class PreviewPanel {
       if (bev_enabled_)
         cv::circle(panel, {19, y - 5}, 4, obstacle_colors[detection.class_id], cv::FILLED);
       text(panel, names[detection.class_id], {bev_enabled_ ? 31 : 14, y});
-      text(panel, cv::format("%.3f", detection.score), {160, y});
+      text(panel, cv::format("%.3f", detection.score), {bev_enabled_ ? 150 : 160, y});
       if (bev_enabled_) {
-        text(panel, i < depth_counts.size() ?
-          cv::format("%d/%d", depth_counts[i].first, depth_counts[i].second) : "--", {230, y});
+        // Footprint centre when located; otherwise the point counts explain why not.
+        text(panel, i < objects.size() && objects[i].valid ?
+          cv::format("%.2f,%.2f", objects[i].center_x, objects[i].center_y) :
+          i < depth_counts.size() ?
+          cv::format("%d/%d pts", depth_counts[i].first, depth_counts[i].second) : "--", {205, y});
       } else {
         text(panel, cv::format("%.6g", detection_thresholds[detection.class_id]), {230, y});
       }
