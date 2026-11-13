@@ -5,7 +5,7 @@ auto_control:
     # 로 언제든 duty 0으로 전환할 수 있다. 조향은 기본적으로 마지막 값을 유지한다.
     enabled: true
     stop_steering_hold_enabled: true     # 목표 0 + 실제 속도 <0.05m/s에서 조향 유지, 재출발 시 해제
-    # 실제 주행 기록. performance_measurement_enabled와 달리 주행 모드를 변경하지 않음.
+    # 실제 주행 기록. 주행 모드를 변경하지 않음.
     # 기본 꺼짐: 중앙선 전체를 행마다 기록하므로 필요할 때만 true로 켠다.
     driving_log_enabled: false
     driving_log_rate_hz: 30.0            # 일반 기록 상한(Hz). 제어/신호/조향 유지 상태 변경 시 추가 기록
@@ -217,14 +217,3 @@ auto_control:
     erpm_direction_sign: 1.0
     speed_scale_correction: 1.0
 
-    # auto_drive performance mode overrides control_mode to monitor_only,
-    # starts after the first valid centerline reaches servo-position calculation,
-    # records a new JSON file, then shuts the complete launch down.
-    performance_measurement_enabled: false
-    performance_measurement_duration_sec: 30.0
-    performance_measurement_startup_timeout_sec: 300.0
-    performance_measurement_power_sample_interval_sec: 0.1
-    performance_measurement_log_directory: "performance_logs"
-    # auto_drive fills these from the selected line_detactor YAML.
-    performance_measurement_engine_precision: "unknown"
-    performance_measurement_model_path: ""

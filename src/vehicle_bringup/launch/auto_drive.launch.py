@@ -93,7 +93,6 @@ def _configure_handover(context, controller_defaults, namespace):
     if enabled not in ("true", "false"):
         raise RuntimeError("manual_handover_enabled must be true or false")
     if (enabled != "true" or config["manual_test"].lower() == "true"
-            or config["performance_measurement_enabled"].lower() == "true"
             or config["auto_control_mode"] != "drive"):
         return []
     prefix = f"/{namespace}" if namespace else ""
@@ -244,7 +243,6 @@ def _apply_parameter_file_defaults(
         context.launch_configurations["auto_control_mode"] = "monitor_only"
         context.launch_configurations["auto_enabled"] = "true"
         context.launch_configurations["traffic_stop_enabled"] = "false"
-        context.launch_configurations["performance_measurement_enabled"] = "false"
         context.launch_configurations["dataset_collection_enabled"] = "false"
         context.launch_configurations["preview_result_only_enabled"] = "true"
     ns = LaunchConfiguration("vehicle_namespace").perform(context).strip("/")
@@ -343,17 +341,18 @@ def _apply_parameter_file_defaults(
     if preview not in ("true", "false"):
         raise RuntimeError("preview_enabled must be true or false")
     detector["preview_enabled"] = preview == "true"
-    measurement = LaunchConfiguration(
-        "performance_measurement_enabled"
-    ).perform(context).lower()
-    if measurement not in ("true", "false"):
-        raise RuntimeError("performance_measurement_enabled must be true or false")
-    context.launch_configurations["startup_inspection_active"] = "false" if measurement=="true" else "true"
+    remote = LaunchConfiguration("remote_preview_enabled").perform(context).lower()
+    if remote not in ("true", "false"):
+        raise RuntimeError("remote_preview_enabled must be true or false")
+    # START approval stays mandatory in both local and remote modes.
+    context.launch_configurations["startup_inspection_active"] = "true"
     context.launch_configurations["startup_drive_mode_topic"] = prefix + "/drive/mode"
-    if measurement == "true":
-        # GUI work would contaminate engine comparisons and is unnecessary for
-        # the fixed-duration, self-terminating measurement.
+    context.launch_configurations["startup_preview_image_enabled"] = "false" if remote == "true" else "true"
+    if remote == "true":
+        # SSH/headless: no Jetson-side windows or image topics; the browser draws the preview.
         detector["preview_enabled"] = False
+        detector["preview_result_only_enabled"] = True
+        detector["bev_theme_enable"] = False
         preview = "false"
     for name, value_type in _DETECTOR_POSTPROCESS_OVERRIDES.items():
         value = LaunchConfiguration(name).perform(context)
@@ -374,6 +373,8 @@ def _apply_parameter_file_defaults(
     if profiling_directory != _PARAMETER_FILE_DEFAULT:
         detector["profiling_directory"] = profiling_directory
     result_only = LaunchConfiguration("preview_result_only_enabled").perform(context)
+    if remote == "true":
+        result_only = _PARAMETER_FILE_DEFAULT
     if result_only != _PARAMETER_FILE_DEFAULT:
         if result_only.lower() not in ("true", "false"):
             raise RuntimeError("preview_result_only_enabled must be true or false")
@@ -401,8 +402,6 @@ def _apply_parameter_file_defaults(
     if tunnel not in ("true", "false"):
         raise RuntimeError("tunnel_enabled must be true or false")
     if tunnel == "true":
-        if measurement == "true":
-            raise RuntimeError("Tunnel switching is not supported in performance measurement mode")
         if not (width == 120 and height == 300 and math.isclose(x_max, 3.0) and
                 math.isclose(y_max, .6) and math.isclose(mpp, .01) and
                 bev_defaults["output_frame_id"] == "front_axle_bev"):
@@ -454,7 +453,15 @@ def _apply_parameter_file_defaults(
     from auto_control_tunnel.launch_support import model_check_node
     startup_check = model_check_node(tunnel == "true", traffic_enabled == "true")
     inspection_actions = []
-    if measurement != "true":
+    connection_topic = '/' + context.launch_configurations['bridge_connection_status_topic'].strip('/')
+    if remote == "true":
+        from auto_control_tunnel.launch_support import remote_preview_node
+        inspection_actions.append(remote_preview_node(
+            tunnel == "true", traffic_enabled == "true",
+            LaunchConfiguration("remote_preview_params_file").perform(context),
+            float(detector.get("centerline_lane_width_m", 0.65)),
+            connection_topic, connection_topic + '/diagnostics'))
+    else:
         from auto_control_tunnel.launch_support import startup_inspection_node
         inspection_actions.append(startup_inspection_node(tunnel == "true", traffic_enabled == "true",
             '/' + context.launch_configurations['bridge_connection_status_topic'].strip('/') + '/diagnostics'))
@@ -472,7 +479,7 @@ def _apply_parameter_file_defaults(
             "fast_scnn_stop_line_120x300_batch_1.onnx"))) +
         " | pipeline=direct CUDA BEV -> " + str(detector["result_topic"]) +
         " -> auto_control | ML preview=" + preview + " | raw BEV preview=false"
-        " | performance measurement=" + measurement +
+        " | remote_preview=" + remote +
         " | traffic observation=" + traffic_enabled + " | traffic stop=" + context.launch_configurations["traffic_stop_enabled"] +
         " | obstacles=" + obstacles_enabled + " | obstacle_yaml=" + obstacle_file +
         " | avoidance_preview=" + str(avoidance) + " | avoidance_control=" + str(apply_avoidance) +
@@ -506,9 +513,6 @@ def generate_launch_description():
     vesc_port = LaunchConfiguration("vesc_port")
     bev_params_file = LaunchConfiguration("bev_params_file")
     auto_control_params_file = LaunchConfiguration("auto_control_params_file")
-    performance_measurement_enabled = LaunchConfiguration(
-        "performance_measurement_enabled"
-    )
     bev_argument_fallbacks = [
         ("dataset_collection_enabled", "false"),
         ("dataset_collection_root_directory", "datasets"),
@@ -743,7 +747,7 @@ def generate_launch_description():
             "direct_host_copy_enabled": LaunchConfiguration(
                 "direct_host_copy_enabled"
             ),
-            "performance_measurement_enabled": performance_measurement_enabled,
+            "startup_preview_image_enabled": LaunchConfiguration("startup_preview_image_enabled"),
             **bev_overrides,
         }.items(),
     )
@@ -762,30 +766,6 @@ def generate_launch_description():
         "bev_x_max_m": ParameterValue(LaunchConfiguration("ml_bev_x_max_m"), value_type=float),
         "bev_y_max_m": ParameterValue(LaunchConfiguration("ml_bev_y_max_m"), value_type=float),
         "bev_meter_per_pixel": ParameterValue(LaunchConfiguration("ml_bev_meter_per_pixel"), value_type=float),
-        "performance_measurement_enabled": ParameterValue(
-            performance_measurement_enabled, value_type=bool
-        ),
-        "performance_measurement_duration_sec": ParameterValue(
-            LaunchConfiguration("performance_measurement_duration_sec"),
-            value_type=float,
-        ),
-        "performance_measurement_startup_timeout_sec": ParameterValue(
-            LaunchConfiguration("performance_measurement_startup_timeout_sec"),
-            value_type=float,
-        ),
-        "performance_measurement_power_sample_interval_sec": ParameterValue(
-            LaunchConfiguration("performance_measurement_power_sample_interval_sec"),
-            value_type=float,
-        ),
-        "performance_measurement_log_directory": LaunchConfiguration(
-            "performance_measurement_log_directory"
-        ),
-        "performance_measurement_engine_precision": LaunchConfiguration(
-            "ml_engine_precision"
-        ),
-        "performance_measurement_model_path": LaunchConfiguration(
-            "ml_model_path"
-        ),
     })
     auto_control_node = Node(
         package="auto_control",
@@ -797,19 +777,6 @@ def generate_launch_description():
             auto_control_params_file,
             controller_overrides,
         ],
-    )
-    performance_shutdown_handler = RegisterEventHandler(
-        OnProcessExit(
-            target_action=auto_control_node,
-            on_exit=[
-                EmitEvent(
-                    event=Shutdown(
-                        reason="auto-drive performance measurement completed"
-                    )
-                )
-            ],
-        ),
-        condition=IfCondition(performance_measurement_enabled),
     )
 
     vesc_bridge_node = Node(
@@ -907,29 +874,12 @@ def generate_launch_description():
             DeclareLaunchArgument("slcan_bitrate", default_value="500000"),
             DeclareLaunchArgument("can_controller_id", default_value="0"),
             DeclareLaunchArgument(
-                "performance_measurement_enabled",
-                default_value="false",
-                description=(
-                    "Measure after the first valid ML centerline, write JSON, "
-                    "and shut down; forces monitor_only and disables previews"
-                ),
-            ),
+                "remote_preview_enabled", default_value="false",
+                description="SSH/headless mode: no Jetson previews; browser preview at http://<jetson-ip>:8765"),
             DeclareLaunchArgument(
-                "performance_measurement_duration_sec",
-                default_value="30.0",
-            ),
-            DeclareLaunchArgument(
-                "performance_measurement_startup_timeout_sec",
-                default_value="300.0",
-            ),
-            DeclareLaunchArgument(
-                "performance_measurement_power_sample_interval_sec",
-                default_value="0.1",
-            ),
-            DeclareLaunchArgument(
-                "performance_measurement_log_directory",
-                default_value=os.path.join(os.getcwd(), "performance_logs"),
-            ),
+                "remote_preview_params_file",
+                default_value=os.path.join(get_package_share_directory("auto_control"), "config", "remote_preview.yaml"),
+                description="remote_preview node YAML (port, frame rate, lane width, link-loss STOP)"),
             DeclareLaunchArgument(
                 "bev_params_file",
                 default_value=bev_config,
@@ -972,7 +922,6 @@ def generate_launch_description():
             ),
             vesc_bridge_node,
             dynamics_node,
-            performance_shutdown_handler,
             auto_control_node,
         ]
     )

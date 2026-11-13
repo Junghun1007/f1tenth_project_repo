@@ -116,7 +116,11 @@ public:
     startup_status_publisher_=create_publisher<std_msgs::msg::String>(
       "~/startup_status",rclcpp::QoS(1).reliable().transient_local(),startup_options);
     const bool startup_inspection=declare_parameter<bool>("startup_inspection_enabled",false);
-    if (startup_inspection && !performance_measurement_enabled_) {
+    // remote_preview mode keeps the startup status text but publishes no camera image.
+    const bool startup_preview_image=declare_parameter<bool>("startup_preview_image_enabled",true);
+    pipeline_fps_publisher_=create_publisher<std_msgs::msg::String>(
+      "~/pipeline_fps",rclcpp::QoS(1).reliable().transient_local(),startup_options);
+    if (startup_inspection && startup_preview_image) {
       startup_image_publisher_=create_publisher<sensor_msgs::msg::Image>(
         "~/startup_preview",rclcpp::SensorDataQoS().keep_last(1),startup_options);
       startup_measurement_config_.roi_preview_enabled=false;
@@ -136,13 +140,7 @@ public:
     }
     publishStartupStatus("MEASURING | keep stationary; checking camera attitude and ground");
 
-    if (performance_measurement_enabled_) {
-      startup_measurement_config_.roi_preview_enabled = false;
-      RCLCPP_INFO(
-        get_logger(),
-        "Performance measurement mode enabled: all GUI previews are off; "
-        "stabilized-input and BEV-ready pipeline metrics will be reported.");
-    } else if (
+    if (
       startup_measurement_config_.roi_preview_enabled &&
       !graphicalDisplayAvailable())
     {
@@ -459,7 +457,7 @@ private:
     rcl_interfaces::msg::ParameterDescriptor obstacle_descriptor;
     obstacle_descriptor.read_only=true;
     declare_parameter<bool>("obstacles.share_reference",false,obstacle_descriptor);
-    declare_parameter<bool>("performance_measurement_enabled", false);
+    declare_parameter<bool>("perf_log_enabled", false);
 
     declare_parameter<std::string>("input_topic", "/camera/bev_input");
     declare_parameter<std::string>("output_topic", "/camera/image_bev");
@@ -585,8 +583,7 @@ private:
   {
     configuration_version_ = static_cast<int>(
       get_parameter("configuration_version").as_int());
-    performance_measurement_enabled_ =
-      get_parameter("performance_measurement_enabled").as_bool();
+    perf_log_enabled_ = get_parameter("perf_log_enabled").as_bool();
 
     input_topic_ = get_parameter("input_topic").as_string();
     output_topic_ = get_parameter("output_topic").as_string();
@@ -631,9 +628,6 @@ private:
       get_parameter("dataset_collection_target_count").as_int();
     dataset_collection_stop_auto_on_complete_ =
       get_parameter("dataset_collection_stop_auto_on_complete").as_bool();
-    if (performance_measurement_enabled_) {
-      preview_enabled_ = false;
-    }
 
     camera_model_.fx = get_parameter("fx").as_double();
     camera_model_.fy = get_parameter("fy").as_double();
@@ -1782,7 +1776,7 @@ private:
     std::atomic<std::uint64_t> & latency_ns_sum,
     std::atomic<std::uint64_t> & latency_ns_max)
   {
-    if (!performance_measurement_enabled_) {
+    if (!perf_log_enabled_) {
       return;
     }
 
@@ -1809,7 +1803,7 @@ private:
     std::atomic<std::uint64_t> & latency_ns_sum,
     std::atomic<std::uint64_t> & latency_ns_max)
   {
-    if (!performance_measurement_enabled_) {
+    if (!perf_log_enabled_) {
       return;
     }
 
@@ -1907,7 +1901,17 @@ private:
       static_cast<double>(bev_stage_latency_ns) /
       static_cast<double>(bev_stage_latency_samples) / 1.0e6 :
       0.0;
-    if (performance_measurement_enabled_) {
+    if (elapsed_sec > 0.0) {
+      std::ostringstream fps;
+      fps << std::fixed << std::setprecision(2)
+          << "{\"input_fps\":" << static_cast<double>(received) / elapsed_sec
+          << ",\"stabilized_fps\":" << static_cast<double>(accepted) / elapsed_sec
+          << ",\"bev_ready_fps\":" << static_cast<double>(bev_ready) / elapsed_sec
+          << ",\"processed_fps\":" << static_cast<double>(processed) / elapsed_sec << "}";
+      std_msgs::msg::String message; message.data=fps.str();
+      pipeline_fps_publisher_->publish(message);
+    }
+    if (perf_log_enabled_) {
       RCLCPP_INFO(
         get_logger(),
         "[PERF][PIPELINE] stabilized_fps=%.1f bev_ready_fps=%.1f "
@@ -2023,7 +2027,7 @@ private:
   }
 
   int configuration_version_{0};
-  bool performance_measurement_enabled_{false};
+  bool perf_log_enabled_{false};
   std::string input_topic_;
   std::string output_topic_;
   std::string output_frame_id_;
@@ -2088,6 +2092,7 @@ private:
     std_msgs::msg::String message; message.data=text; startup_status_publisher_->publish(message);
   }
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr startup_status_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pipeline_fps_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr startup_image_publisher_;
   SteadyClock::time_point last_startup_preview_{};
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;

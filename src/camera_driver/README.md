@@ -283,7 +283,7 @@ ros2 topic info /camera/image_rect --verbose
 
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
-| `performance_measurement_enabled` | `false` | GUI 프리뷰 강제 비활성화 및 연산 FPS 로그 |
+| `perf_log_enabled` | `false` | 캡처·안정화 FPS와 지연 상세 로그 |
 | `sensor_fps` | `80.0` | OAK 센서/출력 요청 FPS |
 | `camera_socket` | `CAM_A` | RGB `CAM_A`는 NV12, stereo `CAM_B/C`는 GRAY8 전송 |
 | `width`, `height` | `1280`, `800` | OAK 입력 및 기본 출력 해상도 |

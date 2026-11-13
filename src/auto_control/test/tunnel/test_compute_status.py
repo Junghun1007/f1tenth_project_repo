@@ -66,3 +66,29 @@ class ComputeTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class PowerTests(unittest.TestCase):
+    def tree(self, d, files):
+        root = Path(d)
+        for name, value in files.items():
+            p = root / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(value)
+        return SystemProbe(proc=root / 'proc', sys=root / 'sys', disk=d)
+
+    def test_ina3221_board_input_rail_power(self):
+        hw = 'sys/bus/i2c/drivers/ina3221/1-0040/hwmon/hwmon3/'
+        with tempfile.TemporaryDirectory() as d:
+            probe = self.tree(d, {hw + 'in1_label': 'VDD_IN\n', hw + 'in1_input': '5000',
+                                  hw + 'curr1_input': '1400', hw + 'in2_label': 'VDD_CPU_GPU_CV',
+                                  hw + 'in2_input': '5000', hw + 'curr2_input': '400'})
+            self.assertAlmostEqual(probe.sample()['power_w'], 7.0)
+
+    def test_iio_power_rail_in_milliwatts(self):
+        io = 'sys/bus/i2c/drivers/ina3221x/1-0040/iio:device0/'
+        with tempfile.TemporaryDirectory() as d:
+            probe = self.tree(d, {io + 'rail_name_0': 'POM_5V_IN', io + 'in_power0_input': '6500'})
+            self.assertAlmostEqual(probe.sample()['power_w'], 6.5)
+
+    def test_absent_sensor_omits_power(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertNotIn('power_w', self.tree(d, {'proc/stat': ''}).sample())

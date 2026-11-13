@@ -13,7 +13,6 @@
 #include "auto_control/msg/avoidance_plan.hpp"
 #include <rcl_interfaces/msg/parameter_descriptor.hpp>
 #include "auto_control/driving_log.hpp"
-#include "auto_control/performance_measurement.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -50,12 +49,6 @@ std::optional<std::int64_t> stamp_nanoseconds(const builtin_interfaces::msg::Tim
 {
   if (stamp.sec == 0 && stamp.nanosec == 0U) {return std::nullopt;}
   return static_cast<std::int64_t>(stamp.sec) * 1000000000LL + stamp.nanosec;
-}
-std::optional<double> latency_ms(
-  const std::optional<std::int64_t> & started, const std::optional<std::int64_t> & finished)
-{
-  if (!started || !finished || *finished < *started) {return std::nullopt;}
-  return (*finished - *started) / 1.0e6;
 }
 }  // namespace
 
@@ -263,22 +256,6 @@ public:
       std::chrono::duration<double>(1.0 / status_log_rate_hz_),
       std::bind(&AutoControlNode::log_status, this));
 
-    if (performance_measurement_enabled_) {
-      enabled_ = true;
-      control_mode_ = "monitor_only";
-      measurement_ = std::make_unique<PerformanceMeasurement>(
-        performance_measurement_duration_sec_, performance_measurement_startup_timeout_sec_,
-        performance_measurement_log_directory_, performance_measurement_engine_precision_,
-        performance_measurement_model_path_);
-      performance_timer_ = create_wall_timer(
-        std::chrono::duration<double>(performance_measurement_power_sample_interval_sec_),
-        std::bind(&AutoControlNode::on_performance_timer, this));
-      RCLCPP_WARN(get_logger(),
-        "Performance measurement enabled: C++ monitor_only safety mode, duration=%.1fs "
-        "after the first valid centerline, startup timeout=%.1fs, power=%s",
-        performance_measurement_duration_sec_, performance_measurement_startup_timeout_sec_,
-        measurement_->power_description().c_str());
-    }
     install_runtime_controls();
     if (driving_log_enabled_) {start_driving_log();}
     if (enabled_ && control_mode_ == "drive" && startup_safety_enabled_) {
@@ -335,18 +312,6 @@ public:
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr runtime_parameter_callback_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr stop_service_;
 
-  ~AutoControlNode() override
-  {
-    if (measurement_ && !performance_finished_) {
-      performance_finished_ = true;
-      try {
-        const auto path = measurement_->write("interrupted");
-        RCLCPP_WARN(get_logger(), "Interrupted performance measurement written to %s", path.c_str());
-      } catch (const std::exception & exception) {
-        RCLCPP_ERROR(get_logger(), "Failed to write interrupted measurement: %s", exception.what());
-      }
-    }
-  }
 
 private:
   static const std::vector<std::string>& runtime_parameter_names() {
@@ -649,18 +614,6 @@ private:
     differential_ring_teeth_ = parameter("differential_ring_teeth", 37);
     erpm_direction_sign_ = parameter("erpm_direction_sign", 1.0);
     speed_scale_correction_ = parameter("speed_scale_correction", 1.0);
-    performance_measurement_enabled_ = parameter("performance_measurement_enabled", false);
-    performance_measurement_duration_sec_ = parameter("performance_measurement_duration_sec", 30.0);
-    performance_measurement_startup_timeout_sec_ = parameter(
-      "performance_measurement_startup_timeout_sec", 300.0);
-    performance_measurement_power_sample_interval_sec_ = parameter(
-      "performance_measurement_power_sample_interval_sec", 0.1);
-    performance_measurement_log_directory_ = parameter<std::string>(
-      "performance_measurement_log_directory", "performance_logs");
-    performance_measurement_engine_precision_ = parameter<std::string>(
-      "performance_measurement_engine_precision", "unknown");
-    performance_measurement_model_path_ = parameter<std::string>(
-      "performance_measurement_model_path", "");
   }
 
   void validate_parameters() const
@@ -740,9 +693,7 @@ private:
         steering_rate_limit_rad_per_sec_, minimum_speed_mps_,
         maximum_lateral_acceleration_mps2_, duty_rise_rate_per_sec_,
         duty_fall_rate_per_sec_, speed_filter_time_constant_sec_, wheel_diameter_m_,
-        speed_scale_correction_, performance_measurement_duration_sec_,
-        performance_measurement_startup_timeout_sec_,
-        performance_measurement_power_sample_interval_sec_}))
+        speed_scale_correction_}))
     {throw std::invalid_argument("positive auto-control parameter is not positive");}
     if (!finite_positive({corner_planning_acceleration_mps2_, corner_planning_response_sec_,
       corner_brake_entry_margin_mps_, corner_brake_exit_margin_mps_,
@@ -782,9 +733,6 @@ private:
     if (std::min({motor_pole_pairs_, motor_pinion_teeth_, spur_gear_teeth_,
         differential_pinion_teeth_, differential_ring_teeth_}) <= 0)
     {throw std::invalid_argument("motor and gear parameters must be positive");}
-    if (performance_measurement_log_directory_.empty()) {
-      throw std::invalid_argument("performance measurement log directory must not be empty");
-    }
     if (input_to_control_decision_topic_.empty()) {
       throw std::invalid_argument("input_to_control_decision_topic must not be empty");
     }
@@ -793,7 +741,6 @@ private:
   void on_lane_result(
     const line_detactor::msg::LaneResult::ConstSharedPtr message, const char * lane_source)
   {
-    const auto callback_started = PerformanceMeasurement::SteadyClock::now();
     const auto received_ros = now();
     ++lane_result_count_;
     latest_lane_sequence_ = message->detector_sequence;
@@ -860,12 +807,6 @@ private:
     }
     std::int64_t decision_finished_ros_ns = 0;
     const bool servo_calculated = update_control_from_path(decision_finished_ros_ns);
-    const auto callback_finished = PerformanceMeasurement::SteadyClock::now();
-    if (performance_measurement_enabled_) {
-      record_performance_frame(
-        *message, received_ros.nanoseconds(), callback_started, callback_finished,
-        path_.has_value(), servo_calculated);
-    }
     if (servo_calculated) {
       const auto detector_input_ns = stamp_nanoseconds(message->detector_input_received_stamp);
       if (detector_input_ns && decision_finished_ros_ns >= *detector_input_ns) {
@@ -2160,88 +2101,6 @@ private:
     }
   }
 
-  void record_performance_frame(
-    const line_detactor::msg::LaneResult & message,
-    std::int64_t callback_received_ros_ns,
-    PerformanceMeasurement::SteadyClock::time_point callback_started,
-    PerformanceMeasurement::SteadyClock::time_point callback_finished,
-    bool valid_centerline, bool servo_position_calculated)
-  {
-    if (!measurement_ || performance_finished_) {return;}
-    if (!measurement_->active()) {
-      if (!valid_centerline || !servo_position_calculated) {return;}
-      measurement_->start(callback_started);
-      RCLCPP_INFO(get_logger(),
-        "First valid ML centerline reached C++ servo-position calculation; "
-        "starting %.1fs performance measurement.", performance_measurement_duration_sec_);
-    }
-    const std::int64_t callback_finished_ros_ns = now().nanoseconds();
-    const auto source_ns = stamp_nanoseconds(message.header.stamp);
-    const auto detector_input_ns = stamp_nanoseconds(message.detector_input_received_stamp);
-    const auto result_ready_ns = stamp_nanoseconds(message.detector_result_ready_stamp);
-    const double detector_compute = message.detector_total_compute_nanoseconds / 1.0e6;
-    const double control_compute = std::chrono::duration<double, std::milli>(
-      callback_finished - callback_started).count();
-    PerformanceFrame frame;
-    frame.measurement_elapsed_sec = measurement_->elapsed_sec(callback_finished);
-    frame.detector_sequence = message.detector_sequence;
-    frame.actual_engine_precision = message.engine_precision;
-    frame.valid_centerline = valid_centerline;
-    frame.servo_position_calculated = servo_position_calculated;
-    frame.centerline_point_count = message.centerline_points.size();
-    frame.steering_angle_rad = steering_angle_rad_;
-    frame.servo_position = latest_servo_position_;
-    frame.h2d_preprocess_ms = message.h2d_preprocess_nanoseconds / 1.0e6;
-    frame.pure_inference_ms = message.pure_inference_nanoseconds / 1.0e6;
-    frame.label_export_ms = message.label_export_nanoseconds / 1.0e6;
-    frame.backend_postprocess_ms = message.backend_postprocess_nanoseconds / 1.0e6;
-    frame.lane_geometry_ms = message.lane_geometry_nanoseconds / 1.0e6;
-    frame.result_message_build_ms = message.result_message_build_nanoseconds / 1.0e6;
-    frame.lane_postprocess_total_ms =
-      (message.label_export_nanoseconds + message.backend_postprocess_nanoseconds +
-      message.lane_geometry_nanoseconds + message.result_message_build_nanoseconds) / 1.0e6;
-    frame.detector_queue_ms = message.detector_queue_nanoseconds / 1.0e6;
-    frame.detector_total_compute_ms = detector_compute;
-    frame.lane_result_transport_ms = latency_ms(result_ready_ns, callback_received_ros_ns);
-    frame.source_to_detector_input_ms = latency_ms(source_ns, detector_input_ns);
-    frame.auto_control_compute_ms = control_compute;
-    frame.compute_only_total_ms = detector_compute + control_compute;
-    frame.detector_input_to_control_complete_ms = latency_ms(
-      detector_input_ns, callback_finished_ros_ns);
-    frame.source_capture_to_control_complete_ms = latency_ms(
-      source_ns, callback_finished_ros_ns);
-    measurement_->add_frame(std::move(frame));
-  }
-
-  void on_performance_timer()
-  {
-    if (!measurement_ || performance_finished_) {return;}
-    if (measurement_->startup_timed_out()) {finish_performance("startup_timeout"); return;}
-    if (!measurement_->active()) {return;}
-    measurement_->sample_power();
-    if (measurement_->due_to_finish()) {finish_performance("complete");}
-  }
-
-  void finish_performance(const std::string & status)
-  {
-    if (!measurement_ || performance_finished_) {return;}
-    performance_finished_ = true;
-    try {
-      const auto path = measurement_->write(status);
-      RCLCPP_INFO(get_logger(), "PERFORMANCE_MEASUREMENT_COMPLETE status=%s file=%s frames=%zu",
-        status.c_str(), path.c_str(), measurement_->frame_count());
-    } catch (const std::exception & exception) {
-      RCLCPP_ERROR(get_logger(), "Failed to write performance measurement: %s", exception.what());
-    }
-    enabled_ = false;
-    stop_control("shutdown");
-    publish_commands(0.0, 0.0, latest_servo_position_, "stop");
-    watchdog_timer_->cancel();
-    status_timer_->cancel();
-    performance_timer_->cancel();
-    rclcpp::shutdown();
-  }
-
   void start_driving_log()
   {
     try {
@@ -2470,7 +2329,6 @@ private:
   bool enabled_{true};
   bool electrical_brake_enabled_{true};
   bool steering_servo_inverted_{true};
-  bool performance_measurement_enabled_{false};
   std::string control_mode_, enable_topic_, lane_result_topic_, lane_result_frame_id_;
   std::string measured_erpm_topic_, connection_status_topic_, duty_topic_;
   std::string dynamics_duty_topic_, dynamics_motor_current_topic_;
@@ -2480,8 +2338,6 @@ private:
   std::string curvature_topic_, steering_angle_topic_, cross_track_error_topic_;
   std::string heading_error_topic_, raw_steering_angle_topic_, command_servo_position_topic_;
   std::string input_to_control_decision_topic_;
-  std::string performance_measurement_log_directory_, performance_measurement_engine_precision_;
-  std::string performance_measurement_model_path_;
   double control_rate_hz_, status_log_rate_hz_, path_timeout_sec_, path_hold_timeout_sec_;
   double path_capture_maximum_age_sec_, erpm_timeout_sec_, bev_x_max_m_, bev_y_max_m_;
   double bev_meter_per_pixel_, path_minimum_x_m_, path_maximum_x_m_, path_minimum_span_m_;
@@ -2498,8 +2354,6 @@ private:
   double brake_maximum_current_amps_, brake_current_gain_amps_per_mps_;
   double brake_current_rise_amps_per_sec_, brake_current_fall_amps_per_sec_;
   double wheel_diameter_m_, erpm_direction_sign_, speed_scale_correction_;
-  double performance_measurement_duration_sec_, performance_measurement_startup_timeout_sec_;
-  double performance_measurement_power_sample_interval_sec_;
   int path_minimum_points_, motor_pole_pairs_, motor_pinion_teeth_, spur_gear_teeth_;
   int differential_pinion_teeth_, differential_ring_teeth_;
 
@@ -2547,8 +2401,6 @@ private:
   rclcpp::TimerBase::SharedPtr speed_limit_state_timer_;
   std::unique_ptr<SpeedPid> speed_pid_;
   std::unique_ptr<AutomaticBrakeProfile> brake_profile_;
-  std::unique_ptr<PerformanceMeasurement> measurement_;
-  bool performance_finished_{false};
 
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_, brake_pub_, servo_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr command_duty_pub_, command_brake_pub_;
@@ -2575,7 +2427,7 @@ private:
   ModelStartupGate model_startup_gate_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr model_ready_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connection_sub_, enable_sub_;
-  rclcpp::TimerBase::SharedPtr watchdog_timer_, status_timer_, performance_timer_;
+  rclcpp::TimerBase::SharedPtr watchdog_timer_, status_timer_;
 };
 
 }  // namespace auto_control

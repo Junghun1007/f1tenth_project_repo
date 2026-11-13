@@ -106,9 +106,6 @@ def generate_launch_description():
         camera_share, "config", "camera_config.yaml"
     )
     bev_params = os.path.join(bev_share, "config", "bev_config.yaml")
-    performance_measurement_enabled = LaunchConfiguration(
-        "performance_measurement_enabled"
-    )
     imu_stabilization_enabled = LaunchConfiguration(
         "imu_stabilization_enabled"
     )
@@ -144,10 +141,6 @@ def generate_launch_description():
     camera_publish_enabled = LaunchConfiguration("camera_publish_enabled")
     camera_publish_fps = LaunchConfiguration("camera_publish_fps")
     bev_interpolation = LaunchConfiguration("bev_interpolation")
-    performance_measurement_parameter = ParameterValue(
-        performance_measurement_enabled,
-        value_type=bool,
-    )
     imu_stabilization_parameter = ParameterValue(
         imu_stabilization_enabled,
         value_type=bool,
@@ -203,11 +196,6 @@ def generate_launch_description():
         ("dataset_collection_stop_auto_on_complete", "true", bool),
     ]
     launch_parameter_defaults = [
-        (
-            "performance_measurement_enabled",
-            "performance_measurement_enabled",
-            "false",
-        ),
         ("bev_input_bottom_fraction", "input_bottom_fraction", "0.70"),
         ("preview_enabled", "preview_enabled", "true"),
         ("bev_interpolation", "bev_interpolation", "bilinear"),
@@ -255,13 +243,8 @@ def generate_launch_description():
             DeclareLaunchArgument("perception_params_file", default_value=LaunchConfiguration("bev_params_file"),
                                   description="Optional shared obstacle parameters; default reuses the selected BEV YAML"),
             DeclareLaunchArgument(
-                "performance_measurement_enabled",
-                default_value=_PARAMETER_FILE_DEFAULT,
-                description=(
-                    "Disable GUI previews and print stabilized/BEV pipeline "
-                    "performance measurements."
-                ),
-            ),
+                "startup_preview_image_enabled", default_value="true",
+                description="false: publish startup status text only (remote_preview mode)"),
             DeclareLaunchArgument(
                 "imu_stabilization_enabled",
                 default_value="true",
@@ -399,9 +382,8 @@ def generate_launch_description():
                                     "'", LaunchConfiguration("obstacles_enabled"), "' == 'true' or '",
                                     LaunchConfiguration("tunnel_enabled"), "' == 'true'"]), value_type=bool),
                                 "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),
-                                "performance_measurement_enabled": (
-                                    performance_measurement_parameter
-                                ),
+                                "startup_preview_image_enabled": ParameterValue(
+                                    LaunchConfiguration("startup_preview_image_enabled"), value_type=bool),
                                 "preview_enabled": ParameterValue(
                                     preview_enabled,
                                     value_type=bool,
@@ -496,9 +478,6 @@ def generate_launch_description():
                                     "imu_stabilization_external_reference_required"
                                 ): True,
                                 "output_crop_top_px": 0,
-                                "performance_measurement_enabled": (
-                                    performance_measurement_parameter
-                                ),
                             },
                         ],
                         extra_arguments=[

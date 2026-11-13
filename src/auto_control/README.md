@@ -556,8 +556,7 @@ driving_log_directory: "driving_logs"
 stop_steering_hold_enabled: true
 ```
 
-이 기록 기능은 실제 drive 모드에서 동작한다. `performance_measurement_enabled`는
-monitor_only로 바꾸는 별도 기능이므로 실제 주행 기록을 위해 켜지 않는다.
+이 기록 기능은 실제 drive 모드에서 동작한다.
 실행 위치의 `driving_logs/drive_<시작시각 ns>.csv`와 같은 이름의 `.parameters.txt`에
 각각 주행 상태와 실제 적용된 auto_control 파라미터를 저장한다. 시작 로그의
 `Driving CSV:`에 절대 경로가 표시된다. 분석할 때 두 파일을 함께 전달한다.

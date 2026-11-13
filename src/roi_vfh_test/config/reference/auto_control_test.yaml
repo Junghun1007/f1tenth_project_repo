@@ -371,20 +371,6 @@ auto_control:
     driving_log_directory: "driving_logs"
     # 콘솔 상태 로그 출력 빈도(Hz).
     status_log_rate_hz: 2.0
-    # 성능 측정 모드. 출력 없는 monitor_only로 전환하며 auto_drive에서는 프리뷰도 끔.
-    performance_measurement_enabled: false
-    # 측정 시작 후 기록할 시간(s).
-    performance_measurement_duration_sec: 30.0
-    # 측정 시작 조건을 기다리는 최대 시간(s).
-    performance_measurement_startup_timeout_sec: 300.0
-    # 측정 모드에서 전력 정보를 읽는 간격(s).
-    performance_measurement_power_sample_interval_sec: 0.1
-    # 성능 JSON 저장 폴더.
-    performance_measurement_log_directory: "performance_logs"
-    # 기록용 엔진 정밀도 표기. auto_drive가 모델 설정에서 채움; 엔진을 변경하는 값이 아님.
-    performance_measurement_engine_precision: "unknown"
-    # 기록용 모델 경로. auto_drive가 채움; 모델을 로드할 경로 설정이 아님.
-    performance_measurement_model_path: ""
 
     # ======================================================================
     # 16. 구버전 제어 및 호환용 — 현재 구동/제동에 미사용

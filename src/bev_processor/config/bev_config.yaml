@@ -5,7 +5,6 @@ bev_processor:
 
     # true면 GUI 프리뷰를 강제로 끄고 흔들림 보정 입력부터 BEV 발행까지의
     # FPS·지연·CUDA 처리 시간을 상태 로그 주기마다 출력한다.
-    performance_measurement_enabled: false
 
     # camera_driver가 하단 crop NV12와 같은 프레임의 보정 행렬을 함께 보낸다.
     # CUDA가 이 보정과 고정 BEV LUT를 한 번의 sampling으로 합성한다.

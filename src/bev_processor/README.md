@@ -136,15 +136,9 @@ nudge 강도는 `0.0~1.0`, anchor 최대 변화율은 `deg/s` 단위로 실행�
 CUDA 컴파일러를 자동으로 찾지 못하면 빌드 인자에
 `-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`를 추가한다.
 
-GUI 없이 성능을 확인하려면 다음과 같이 실행한다.
-
-```bash
-ros2 launch bev_processor bev_processor.launch.py \
-  performance_measurement_enabled:=true
-```
-
-`performance_measurement_enabled`가 true이면 이 launch의 카메라와 BEV GUI가
-꺼지고 CUDA 변환 FPS·지연·처리 시간을 기록한다.
+BEV 노드는 `status_log_interval_sec`마다 `/bev_processor/pipeline_fps`(JSON 문자열)로
+입력·안정화·BEV 준비·처리 FPS를 발행한다. 상세 지연 로그는 `perf_log_enabled: true`로 켠다.
+GUI 없이 실행하려면 `preview_enabled:=false`를 쓴다.
 
 ## BEV 보간과 프리뷰
 
@@ -191,8 +185,7 @@ output_height = round((x_max_m - x_min_m) / meter_per_pixel)
 세로로 이동한다. 양수는 아래쪽, 음수는 위쪽이며 기본값 `80`은
 ROI를 80px 아래로 내린다. `measurement_roi_preview_enabled:=true`이면
 시작 depth 측정 동안 회색 depth 영상에 ROI를 1px 빨간색 테두리로
-표시하고, 측정이 끝나면 창을 자동으로 닫는다. 그래픽 화면이 없거나
-`performance_measurement_enabled:=true`인 경우에는 프리뷰를 끄고 측정을
+표시하고, 측정이 끝나면 창을 자동으로 닫는다. 그래픽 화면이 없으면 프리뷰를 끄고 측정을
 계속한다.
 
 측정 후 사용한 지면 법선은 `/camera/startup_ground_normal`에

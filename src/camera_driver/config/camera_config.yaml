@@ -3,7 +3,6 @@ camera_driver:
     enabled: true
     # true면 SSH 터미널 연산 측정을 위해 GUI 프리뷰를 강제로 끄고
     # 캡처/흔들림 보정 출력 FPS를 상태 로그에 출력한다.
-    performance_measurement_enabled: false
 
     # CAM_A는 RGB NV12, 스테레오 CAM_B/C는 native GRAY8로 전송한다.
     # GRAY8은 호스트에서 neutral UV를 붙여 기존 NV12 ROS/BEV API에 맞춘다.

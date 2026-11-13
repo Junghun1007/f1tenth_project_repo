@@ -308,12 +308,6 @@ public:
       return;
     }
 
-    if (performance_measurement_enabled_) {
-      RCLCPP_INFO(
-        node_.get_logger(),
-        "Performance measurement mode enabled: camera GUI preview is off; "
-        "capture and stabilized-output FPS will be reported.");
-    }
 
     if (preview_enabled_ && !graphical_display_available()) {
       preview_enabled_ = false;
@@ -454,8 +448,7 @@ private:
   void read_parameters()
   {
     enabled_ = node_.declare_parameter<bool>("enabled", true);
-    performance_measurement_enabled_ = node_.declare_parameter<bool>(
-      "performance_measurement_enabled", false);
+    perf_log_enabled_ = node_.declare_parameter<bool>("perf_log_enabled", false);
     camera_socket_name_ =
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
     width_ = node_.declare_parameter<int>("width", 1280);
@@ -699,9 +692,6 @@ private:
         1.0 / (kTwoPi * high_frequency_vibration_cutoff_hz_);
     }
 
-    if (performance_measurement_enabled_) {
-      preview_enabled_ = false;
-    }
 
     require_positive(width_, "width");
     require_positive(height_, "height");
@@ -1829,7 +1819,7 @@ private:
           if (last_tcn_frame_==std::chrono::steady_clock::time_point{}) {last_tcn_frame_=sensor_timestamp;}
           else {last_tcn_frame_+=33333333ns; if (sensor_timestamp-last_tcn_frame_>33333333ns) {last_tcn_frame_=sensor_timestamp;}}
         }
-        if (performance_measurement_enabled_) {
+        if (perf_log_enabled_) {
           record_steady_latency(
             received_at - sensor_timestamp,
             sensor_to_host_samples_interval_,
@@ -2569,7 +2559,7 @@ private:
               output_available;
           }
 
-          if (output_available && performance_measurement_enabled_) {
+          if (output_available && perf_log_enabled_) {
             const auto stabilization_finished_at =
               std::chrono::steady_clock::now();
             const auto stabilization_ns = static_cast<std::uint64_t>(
@@ -3020,7 +3010,7 @@ private:
             progress.last_rejection_reason.c_str());
         }
       }
-      if (performance_measurement_enabled_) {
+      if (perf_log_enabled_) {
         RCLCPP_INFO(
           node_.get_logger(),
           "[PERF][CAMERA] capture_fps=%.1f stabilized_fps=%.1f "
@@ -3151,7 +3141,7 @@ private:
             imu_stabilizer_->onlineTiltBiasUpdateCount()));
       }
     } else {
-      if (performance_measurement_enabled_) {
+      if (perf_log_enabled_) {
         RCLCPP_INFO(
           node_.get_logger(),
           "[PERF][CAMERA] capture_fps=%.1f output_fps=%.1f "
@@ -3246,7 +3236,7 @@ private:
   CameraDriverNode & node_;
 
   bool enabled_{true};
-  bool performance_measurement_enabled_{false};
+  bool perf_log_enabled_{false};
   std::string camera_socket_name_;
   int width_{1280};
   int height_{800};

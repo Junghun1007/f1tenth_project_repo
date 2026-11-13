@@ -35,7 +35,7 @@ class HandoverLaunchTest(unittest.TestCase):
     def context(self, **overrides):
         values = {
             "manual_handover_enabled": "true", "manual_test": "false",
-            "performance_measurement_enabled": "false", "auto_control_mode": "drive",
+            "auto_control_mode": "drive",
             "controller_name_contains": "8BitDo",
             **{f"effective_{name}_topic": f"/test_vehicle/vesc/{name}" for name in (
                 "duty", "brake_current", "servo_position", "measured_erpm", "connection_status")},
@@ -65,7 +65,7 @@ class HandoverLaunchTest(unittest.TestCase):
     def test_passive_modes_and_existing_manual_test_do_not_start_another_controller(self):
         for overrides in (
             {"manual_handover_enabled": "false"}, {"manual_test": "true"},
-            {"performance_measurement_enabled": "true"}, {"auto_control_mode": "monitor_only"},
+            {"auto_control_mode": "monitor_only"},
             {"auto_control_mode": "steering_only"},
         ):
             with self.subTest(overrides=overrides):

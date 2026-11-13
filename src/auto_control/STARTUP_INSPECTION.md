@@ -45,7 +45,7 @@ manual_test:=true는 기존처럼 자동 제어기를 monitor_only로 실행하�
 duty 경로를 변경하지 않는다. X 버튼으로 수동 전환할 때는 기존 STOPPING 제동·정지 확인을
 거쳐 MANUAL로 진입한다. 수동 상태에서는 시작 버튼 단계를 통과 처리하며 카메라/모델
 표시도 통과하면 MANUAL 상태를 표시하고 조작 창을 유지한다. 별도의 manual_drive.launch.py는 점검 창을 시작하지 않는다.
-성능 측정 모드는 기존처럼 자동 출력이 억제되며 점검 GUI를 열지 않는다.
+`remote_preview_enabled:=true`(SSH 실행)는 점검 창 대신 브라우저 프리뷰가 같은 점검 단계와 START/STOP을 제공한다. START 승인 조건은 같다. `REMOTE_PREVIEW_KO.md` 참고.
 
 ## 반영과 빌드
 

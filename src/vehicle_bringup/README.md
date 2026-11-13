@@ -258,46 +258,12 @@ Invalid/stale path or ERPM and VESC disconnect send duty zero and centered steer
 Stop-line detection alone does not command stopping. Never run manual and auto launches together.
 Dataset capture now saves only `origin_bev`; removed rule-based labels are not generated.
 
-## Auto-drive performance measurement
+## Remote preview (performance test) mode
 
-`performance_measurement_enabled:=true` turns the integrated launch into a
-fixed-duration benchmark. It forces `auto_control` to `monitor_only`, so the
-same centerline, Stanley steering, and servo-position calculation runs without
-publishing duty, brake, or servo actuator commands. It also disables BEV and ML
-previews so GUI rendering does not contaminate engine comparisons. The ordinary
-driving behavior is unchanged when the argument is `false` (the default).
-The controller calculation and benchmark recorder run in C++/`rclcpp`.
-
-The measurement starts only after the first valid ML centerline completes the
-servo-position calculation. It then records 30 seconds by default and shuts down
-the complete launch. If no valid centerline arrives within 300 seconds, it writes
-a `startup_timeout` log and shuts down instead. Run it with the same YAML files
-used for driving:
-
-```bash
-ros2 launch vehicle_bringup auto_drive.launch.py \
-  auto_control_params_file:=/absolute/path/auto_control_test.yaml \
-  bev_params_file:=/absolute/path/bev_config_test.yaml \
-  line_detactor_params_file:=/absolute/path/line_detactor_test.yaml \
-  performance_measurement_enabled:=true \
-  performance_measurement_duration_sec:=30.0 \
-  performance_measurement_log_directory:=/absolute/path/performance_logs \
-  input_mode:=slcan \
-  slcan_channel:=/dev/ttyACM0 \
-  slcan_bitrate:=500000 \
-  can_controller_id:=112
-```
-
-Every run creates a new JSON file. The engine precision and local start time are
-part of both its title and filename, for example:
-
-```text
-auto_drive_benchmark_int8_20260911_113430_123456+0900.json
-```
-
-If no log directory is supplied, `performance_logs` under the directory from
-which `ros2 launch` was invoked is used. Each JSON contains every frame sample,
-every power sample, and aggregate count/average/minimum/p50/p95/maximum values.
+`remote_preview_enabled:=true` keeps normal driving but turns off every Jetson-side
+preview window and image topic. A browser on an iPad/MacBook renders the preview
+from numeric telemetry served by `auto_control remote_preview` on port 8765.
+See `src/auto_control/REMOTE_PREVIEW_KO.md`.
 The main measurements are:
 
 - pure TensorRT inference and H2D/GPU preprocessing

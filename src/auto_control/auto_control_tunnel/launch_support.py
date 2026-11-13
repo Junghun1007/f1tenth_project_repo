@@ -98,3 +98,36 @@ def startup_inspection_node(tunnel_enabled, traffic_enabled,
     return Node(package='auto_control', executable='startup_inspection',
                 name='startup_inspection', output='screen', parameters=[{'expected_nodes': expected,
                     'connection_diagnostics_topic': connection_diagnostics_topic}])
+
+
+def remote_preview_parameters(params_file, detector_lane_width_m=0.65):
+    """Load remote_preview ros__parameters from a YAML file (node key `remote_preview` or `/**`)."""
+    import yaml
+    with open(params_file, encoding='utf-8') as stream:
+        data = yaml.safe_load(stream) or {}
+    section = {}
+    for key in ('remote_preview', '/remote_preview', '/**'):
+        if isinstance(data.get(key), dict):
+            section = dict(data[key].get('ros__parameters') or {})
+            break
+    if float(section.get('lane_width_m', 0.0) or 0.0) <= 0.0:
+        section['lane_width_m'] = float(detector_lane_width_m)
+    return section
+
+
+def remote_preview_node(tunnel_enabled, traffic_enabled, params_file, detector_lane_width_m=0.65,
+                        connection_status_topic='/vesc/connected',
+                        connection_diagnostics_topic='/vesc/connected/diagnostics'):
+    expected = ['line_detactor']
+    if tunnel_enabled:
+        expected += ['ir_line_detactor', 'tunnel_tcn_test']
+    if traffic_enabled:
+        expected += ['traffic_light_detector']
+    lane_topics = (['/tunnel/lane_result/rgb', '/tunnel/lane_result/ir'] if tunnel_enabled
+                   else ['/line_detactor/result'])
+    parameters = remote_preview_parameters(params_file, detector_lane_width_m)
+    parameters.update({'expected_nodes': expected, 'lane_topics': lane_topics,
+                       'connection_status_topic': connection_status_topic,
+                       'connection_diagnostics_topic': connection_diagnostics_topic})
+    return Node(package='auto_control', executable='remote_preview', name='remote_preview',
+                output='screen', parameters=[parameters])

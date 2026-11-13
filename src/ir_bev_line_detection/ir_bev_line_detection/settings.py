@@ -45,7 +45,7 @@ def build_parameters(shares, config_path, speed):
         minimum_speed_mps=speed, maximum_speed_mps=speed,
         bev_x_max_m=3., bev_y_max_m=.6, bev_meter_per_pixel=.01,
         lane_result_topic=detector['result_topic'], lane_result_frame_id='front_axle_bev',
-        longitudinal_pid_enabled=True, performance_measurement_enabled=False,
+        longitudinal_pid_enabled=True,
         traffic_stop_enabled=False, avoidance_control_enabled=False,
         obstacle_slowdown_enabled=False,
     )

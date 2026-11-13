@@ -103,7 +103,35 @@ class SystemProbe:
             result['disk_free_gib'] = shutil.disk_usage(self.disk).free / 1024**3
         except OSError:
             pass
+        power = self.power_w()
+        if power is not None:
+            result['power_w'] = power
         return result
+
+    # Board input rail priority (ported from the removed C++ performance measurement).
+    POWER_RAILS = {'VDD_IN': 0, '5V_IN': 1, 'POM_5V_IN': 2, 'VIN_SYS_5V0': 3}
+
+    def power_w(self):
+        candidates = []
+        for device in self.sys.glob('bus/i2c/drivers/ina3221*/*'):
+            for label in device.glob('hwmon/hwmon*/in*_label'):
+                rank = self.POWER_RAILS.get(self.read(label))
+                channel = label.name[2:-len('_label')]
+                if rank is None or not channel.isdigit():
+                    continue
+                volt = self.number(label.parent / f'in{channel}_input')
+                curr = self.number(label.parent / f'curr{channel}_input')
+                if volt is not None and curr is not None:
+                    candidates.append((rank, volt * curr / 1e6))  # mV * mA -> W
+            for label in device.glob('iio:device*/rail_name_*'):
+                rank = self.POWER_RAILS.get(self.read(label))
+                channel = label.name[len('rail_name_'):]
+                if rank is None or not channel.isdigit():
+                    continue
+                milliwatt = self.number(label.parent / f'in_power{channel}_input')
+                if milliwatt is not None:
+                    candidates.append((rank, milliwatt / 1000))
+        return min(candidates)[1] if candidates else None
 
 
 def status_lines(values=None, age=None):
