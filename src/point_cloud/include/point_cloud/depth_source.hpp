@@ -24,7 +24,7 @@ struct Config
   double flood_intensity{0.0};
   int confidence{200};
   bool lr_check{true};
-  double bottom_fraction{1.0};
+  double bottom_fraction{1.0};  // Legacy compatibility; stereo matching always uses the full frame.
   int lr_threshold{10};
   bool subpixel{false};
   int subpixel_bits{3};

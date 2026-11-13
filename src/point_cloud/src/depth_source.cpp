@@ -140,23 +140,8 @@ while True:
     left_output=&gate->outputs["left_out"];
     right_output=&gate->outputs["right_out"];
   }
-  const auto crop_height=static_cast<std::uint32_t>(std::lround(size.second*c.bottom_fraction));
-  if (crop_height<2) {throw std::invalid_argument("Stereo ROI height must be at least two pixels");}
-  if (crop_height!=size.second) {
-    const auto crop=[&](dai::Node::Output * input) {
-      auto manip=pipeline.create<dai::node::ImageManip>();
-      manip->initialConfig->addCrop(0,size.second-crop_height,size.first,crop_height);
-      manip->initialConfig->setFrameType(dai::ImgFrame::Type::GRAY8);
-      manip->setMaxOutputFrameSize(size.first*crop_height);
-      input->link(manip->inputImage);
-      return &manip->out;
-    };
-    left_output=crop(left_output);
-    right_output=crop(right_output);
-  }
   auto stereo = pipeline.create<dai::node::StereoDepth>();
   stereo->build(*left_output,*right_output,preset(c.mode));
-  if (crop_height!=size.second) {stereo->setInputResolution(size.first,crop_height);}
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
   stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
   stereo->initialConfig->setConfidenceThreshold(c.confidence);

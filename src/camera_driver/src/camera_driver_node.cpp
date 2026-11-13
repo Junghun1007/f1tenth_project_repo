@@ -1256,7 +1256,11 @@ private:
       depth_config_.subpixel=node_.declare_parameter<bool>("obstacles.depth.subpixel",true,descriptor);
       depth_config_.subpixel_bits=node_.declare_parameter<int>("obstacles.depth.subpixel_fractional_bits",3,descriptor);
       depth_config_.median=node_.declare_parameter<std::string>("obstacles.depth.median_filter","off",descriptor);
-      depth_config_.bottom_fraction=node_.declare_parameter<double>("obstacles.depth.bottom_fraction",0.7,descriptor);
+      const auto legacy_bottom_fraction=node_.declare_parameter<double>("obstacles.depth.bottom_fraction",1.0,descriptor);
+      depth_config_.bottom_fraction=1.0;
+      if (legacy_bottom_fraction!=1.0) {
+        RCLCPP_WARN(node_.get_logger(), "obstacles.depth.bottom_fraction is ignored: stereo matching uses the full frame");
+      }
       point_cloud::validate(depth_config_);
     }
     tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
