@@ -325,7 +325,7 @@ function updatePanel(f){
   const S = f.system, pc=(x)=>x==null?'--':x.toFixed(0)+' %', tc=(x)=>x==null?'--':x.toFixed(1)+' °C';
   rows('sysA', [['CPU',pc(S.cpu_pct)],['GPU',pc(S.gpu_pct)],['CPU temp',tc(S.cpu_temp_c)],['GPU temp',tc(S.gpu_temp_c)]]);
   rows('sysB', [['Power',S.power_w==null?'--':S.power_w.toFixed(1)+' W'],['VESC',v.vesc_connected?'connected':'--'],
-    ['Data age',l.age_ms==null?'--':l.age_ms.toFixed(0)+' ms'],['Clients',String(f.link.clients)]]);
+    ['Data age',l.age_ms==null?'--':l.age_ms.toFixed(0)+' ms'],['Clients',String(f.link.clients)],['Metrics', S.error ?? '']]);
 }
 
 const DRAW_INTERVAL_MS = 1000/30;   // 20~30FPS 요구: 120Hz 화면에서도 30FPS 상한

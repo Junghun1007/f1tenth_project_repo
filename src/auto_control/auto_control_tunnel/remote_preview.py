@@ -67,6 +67,7 @@ class RemotePreview(Node):
         self.state = InspectionState(expected)
         self.watchdog = LinkWatchdog(loss_stop_sec)
         self.compute = ComputeMonitor()
+        self.last_compute_error = None
         self.seq = 0
 
         sensor = qos_profile_sensor_data
@@ -197,6 +198,10 @@ class RemotePreview(Node):
             self.message = ''
         with self.compute.lock:
             system = dict(self.compute.values) if self.compute.sampled_at and now - self.compute.sampled_at < 3 else {}
+        error = system.get('error')
+        if error and error != self.last_compute_error:
+            self.get_logger().warning(f'System metrics: {error}')
+        self.last_compute_error = error
         with self.lock:
             perf = {key: value for key, (value, at) in self.perf.items() if now - at < PERF_STALE_SEC}
             camera, bev = perf.get('camera', {}), perf.get('bev', {})

@@ -389,11 +389,7 @@ public:
           perf_started_at_ = now;
           std_msgs::msg::String message;
           message.data = "{\"capture\":" + capture_meter_.drain(elapsed) +
-            ",\"stabilize\":" + stabilize_meter_.drain(elapsed) +
-            ",\"received_total\":" + std::to_string(received_total_.load()) +
-            ",\"sequence_gaps_total\":" + std::to_string(device_drops_total_.load()) +
-            ",\"invalid_frames_total\":" + std::to_string(invalid_frames_total_.load()) +
-            ",\"stabilization_drops_total\":" + std::to_string(stabilization_output_drops_total_.load()) + "}";
+            ",\"stabilize\":" + stabilize_meter_.drain(elapsed) + "}";
           perf_publisher_->publish(message);
         });
       capture_thread_ = std::thread(&Impl::capture_loop, this);
@@ -471,7 +467,7 @@ private:
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
     width_ = node_.declare_parameter<int>("width", 1280);
     height_ = node_.declare_parameter<int>("height", 800);
-    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 70.0);
+    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 80.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
     undistort_enabled_ =
@@ -659,7 +655,7 @@ private:
     publish_enabled_ =
       node_.declare_parameter<bool>("publish_enabled", false);
     publish_fps_ =
-      node_.declare_parameter<double>("publish_fps", 70.0);
+      node_.declare_parameter<double>("publish_fps", 80.0);
     fused_bev_output_enabled_ =
       node_.declare_parameter<bool>("fused_bev_output_enabled", false);
     fused_bev_topic_ = node_.declare_parameter<std::string>(
@@ -1246,7 +1242,7 @@ private:
         throw std::invalid_argument("Obstacle depth requires CAM_A and fused BEV output");
       }
       depth_config_.resolution=node_.declare_parameter<std::string>("obstacles.camera.resolution","400p",descriptor);
-      depth_config_.fps=node_.declare_parameter<double>("obstacles.camera.fps",30.0,descriptor);
+      depth_config_.fps=node_.declare_parameter<double>("obstacles.camera.fps",60.0,descriptor);
       depth_config_.mode=node_.declare_parameter<std::string>("obstacles.depth.mode","high_density",descriptor);
       depth_config_.dot_intensity=node_.declare_parameter<double>("obstacles.depth.ir_dot_projector_intensity",0.7,descriptor);
       depth_config_.flood_intensity=node_.declare_parameter<double>("obstacles.depth.ir_flood_light_intensity",0.0,descriptor);
@@ -1256,11 +1252,6 @@ private:
       depth_config_.subpixel=node_.declare_parameter<bool>("obstacles.depth.subpixel",true,descriptor);
       depth_config_.subpixel_bits=node_.declare_parameter<int>("obstacles.depth.subpixel_fractional_bits",3,descriptor);
       depth_config_.median=node_.declare_parameter<std::string>("obstacles.depth.median_filter","off",descriptor);
-      const auto legacy_bottom_fraction=node_.declare_parameter<double>("obstacles.depth.bottom_fraction",1.0,descriptor);
-      depth_config_.bottom_fraction=1.0;
-      if (legacy_bottom_fraction!=1.0) {
-        RCLCPP_WARN(node_.get_logger(), "obstacles.depth.bottom_fraction is ignored: stereo matching uses the full frame");
-      }
       point_cloud::validate(depth_config_);
     }
     tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
@@ -1300,11 +1291,11 @@ private:
           else if (message->data=="INSIDE") {rgb_tunnel_phase_.store(RgbTunnelPhase::inside);}
           else if (message->data=="EXITING") {rgb_tunnel_phase_.store(RgbTunnelPhase::exiting);}
         },tunnel_options);
-      // RGB remains 70 FPS. Stereo/IR use 30 FPS so the verified 30ms
+      // RGB remains 80 FPS. Stereo/IR use 30 FPS so the verified 30ms
       // tunnel exposure fits within a sensor frame without rebuilding OAK.
       depth_config_.fps=30.0;
-      sensor_fps_=70.0;
-      publish_fps_=70.0;
+      sensor_fps_=80.0;
+      publish_fps_=80.0;
     }
     const auto shared_device_id=(depth_enabled_ || tunnel_enabled_) ? bev_handoff::obstacleDeviceId() : std::string{};
     if ((depth_enabled_ || tunnel_enabled_) && shared_device_id.empty()) {
@@ -1320,8 +1311,7 @@ private:
     std::shared_ptr<dai::node::StereoDepth> stereo;
     if (depth_enabled_) {
       pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
-      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr,
-        tunnel_enabled_ ? &depth_gate_control_ : nullptr);
+      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr);
       depth_queue_=stereo->depth.createOutputQueue(1,false);
       bev_handoff::publishDirectDepth(nullptr);
     }
@@ -1333,31 +1323,7 @@ private:
           dai::CameraBoardSocket::CAM_B,std::make_pair(1280,800),30.0F);
       }
       ir_output=tunnel_cameras_.left->requestOutput(
-        std::make_pair(1280,800),dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,false);
-      auto ir_gate=pipeline_->create<dai::node::Script>();
-      ir_gate->setScript(R"PY(
-active = False
-while True:
-    control = node.io['control'].tryGet()
-    if control is not None:
-        active = bool(control.getData()[0])
-    frame = node.io['image'].get()
-    if active:
-        node.io['out'].send(frame)
-)PY");
-      ir_output->link(ir_gate->inputs["image"]);
-      for (const auto * name:{"image","control"}) {
-        ir_gate->inputs[name].setMaxSize(1);
-        ir_gate->inputs[name].setBlocking(false);
-      }
-      ir_gate_control_=ir_gate->inputs["control"].createInputQueue();
-      // Apply IR lens correction only to frames admitted by the device-side gate.
-      auto ir_rectify=pipeline_->create<dai::node::ImageManip>();
-      ir_rectify->initialConfig->setUndistort(true);
-      ir_rectify->initialConfig->setFrameType(dai::ImgFrame::Type::GRAY8);
-      ir_rectify->setMaxOutputFrameSize(1280*800);
-      ir_gate->outputs["out"].link(ir_rectify->inputImage);
-      ir_output=&ir_rectify->out;
+        std::make_pair(1280,800),dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,true);
       ir_queue_=ir_output->createOutputQueue(1,false);
       ir_controls_.push_back(tunnel_cameras_.left->inputControl.createInputQueue());
       if (tunnel_cameras_.right) {
@@ -1667,7 +1633,6 @@ while True:
   {
     bool applied=false;
     bool dirty=true;
-    std::optional<RgbTunnelPhase> routed_phase;
     auto changed_at=std::chrono::steady_clock::time_point{};
     auto last=std::chrono::steady_clock::time_point{};
     auto retry_at=last;
@@ -1684,23 +1649,6 @@ while True:
     while (!stop_requested_.load()) {
       try {
         const bool requested=tunnel_requested_.load();
-        const auto phase=rgb_tunnel_phase_.load();
-        const bool ir_active=phase!=RgbTunnelPhase::outside;
-        const bool depth_active=depth_enabled_ && phase!=RgbTunnelPhase::inside;
-        if (!routed_phase || *routed_phase!=phase) {
-          const auto send_gate=[](const auto & queue,bool active) {
-            if (!queue) {return;}
-            auto control=std::make_shared<dai::Buffer>();
-            control->setData(std::vector<std::uint8_t>{static_cast<std::uint8_t>(active)});
-            queue->send(control);
-          };
-          send_gate(depth_gate_control_,depth_active);
-          send_gate(ir_gate_control_,ir_active);
-          if (!ir_active) {pending.clear(); bev_handoff::publishDirectIr(nullptr);}
-          if (!depth_active) {bev_handoff::publishDirectDepth(nullptr); bev_handoff::clearObstacles();}
-          routed_phase=phase;
-          RCLCPP_INFO(node_.get_logger(),"OAK routes: depth=%s IR=%s",depth_active ? "ON" : "OFF",ir_active ? "ON" : "OFF");
-        }
         const auto now=std::chrono::steady_clock::now();
         if (now-report_started>=2s) {
           if (requested) {
@@ -1748,16 +1696,9 @@ while True:
           bev_handoff::clearObstacles();
           RCLCPP_INFO(node_.get_logger(),"Camera profile=%s",applied ? "IR 30ms ISO800 dot0 flood0.5" : "OUTSIDE auto exposure/depth lights restored");
         }
-        if (!ir_active) {
-          // Flush frames already in flight when returning to RGB-only operation.
-          ir_queue_->tryGet<dai::ImgFrame>();
-          std::this_thread::sleep_for(1ms);
-          continue;
-        }
         auto packet=ir_queue_->tryGet<dai::ImgFrame>();
         if (packet) {
           ++received;
-          monitor_->sample("ir_received",0.);
           last_exposure_us=packet->getExposureTime().count(); last_iso=packet->getSensitivity();
           bev_handoff::publishCameraExposure(true,std::make_shared<bev_handoff::CameraExposureObservation>(
             bev_handoff::CameraExposureObservation{last_exposure_us,last_iso,
@@ -1801,7 +1742,6 @@ while True:
         frame->header.frame_id="front_axle_bev"; frame->tunnel_profile=applied;
         bev_handoff::publishDirectIr(std::move(frame));
         ++published;
-        monitor_->sample("ir_published",0.);
       } catch (const std::exception & e) {
         bev_handoff::publishDirectIr(nullptr);
         pending.clear();
@@ -1823,8 +1763,7 @@ while True:
         if (!pipeline_->isRunning()) {break;}
         auto packet=depth_queue_->tryGet<dai::ImgFrame>();
         if (!packet) {std::this_thread::sleep_for(1ms); continue;}
-        monitor_->sample("depth_received",0.);
-        if (tunnel_enabled_ && (rgb_tunnel_phase_.load()==RgbTunnelPhase::inside || !tunnel_profile_ready_.load() || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
+        if (tunnel_enabled_ && (!tunnel_profile_ready_.load() || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
           std::chrono::duration_cast<std::chrono::nanoseconds>(
             packet->getTimestamp(dai::CameraExposureOffset::MIDDLE).time_since_epoch()).count()<depth_resume_ns_.load())) {
           bev_handoff::publishDirectDepth(nullptr);
@@ -1848,7 +1787,6 @@ while True:
         frame->header.stamp=ros_timestamp_for(captured); frame->header.frame_id=frame_id_;
         frame->captured_at=captured;
         bev_handoff::publishDirectDepth(std::move(frame));
-        monitor_->sample("depth_accepted",0.,age*1000.);
       } catch (const std::exception & e) {
         bev_handoff::publishDirectDepth(nullptr);
         RCLCPP_ERROR_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,"Depth input: %s",e.what());
@@ -1948,11 +1886,7 @@ while True:
           frame_available_.notify_all();
         }
 
-        if(monitor_->enabled()) {
-          monitor_->sample("rgb_capture",0.);
-          monitor_->sample("rgb_sensor_to_host",std::chrono::duration<double,std::milli>(
-            received_at-sensor_timestamp).count());
-        }
+        if(monitor_->enabled())monitor_->sample("rgb_capture",0.);
         if (bev_handoff::hasDirectCameraConsumer()) {
           if (packet->getType() == dai::ImgFrame::Type::NV12) {
             const auto & data = packet->getData();
@@ -2601,8 +2535,6 @@ while True:
           bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"camera_to_bev");
           const auto stabilization_started_at =
             std::chrono::steady_clock::now();
-          monitor_->sample("rgb_host_wait",std::chrono::duration<double,std::milli>(
-            stabilization_started_at-snapshot->received_timestamp).count());
           const auto transform = stabilizationTransform(
             *snapshot->packet,
             snapshot->sensor_timestamp,
@@ -3327,7 +3259,7 @@ while True:
   std::string camera_socket_name_;
   int width_{1280};
   int height_{800};
-  double sensor_fps_{70.0};
+  double sensor_fps_{80.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
   int queue_size_{8};
@@ -3368,7 +3300,7 @@ while True:
   int output_crop_top_px_{0};
   bool publish_enabled_{false};
   std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
-  std::atomic<double> publish_fps_{70.0};
+  std::atomic<double> publish_fps_{80.0};
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr runtime_fps_callback_;
   bool fused_bev_output_enabled_{false};
   std::string fused_bev_topic_{"/camera/bev_input"};
@@ -3420,7 +3352,6 @@ while True:
   bev_handoff::StageMeter capture_meter_, stabilize_meter_;
   bool depth_enabled_{false};
   point_cloud::Config depth_config_;
-  std::shared_ptr<dai::InputQueue> depth_gate_control_,ir_gate_control_;
   std::shared_ptr<dai::CalibrationHandler> depth_calibration_;
   std::shared_ptr<dai::MessageQueue> depth_queue_;
   std::thread depth_thread_;

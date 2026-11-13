@@ -198,10 +198,6 @@ def _apply_parameter_file_defaults(
     apply_avoidance = apply_avoidance.lower() == "true"
     if apply_avoidance and obstacles_enabled != "true":
         raise RuntimeError("avoidance_control_enabled requires obstacles_enabled:=true")
-    context.launch_configurations["effective_obstacle_slowdown_enabled"] = str(
-        controller_defaults.get("obstacle_slowdown_enabled", True)).lower()
-    context.launch_configurations["effective_driving_log_enabled"] = str(
-        controller_defaults.get("driving_log_enabled", False)).lower()
     slowdown_enabled = controller_defaults.get("obstacle_slowdown_enabled", True)
     if not isinstance(slowdown_enabled, bool):
         raise RuntimeError("obstacle_slowdown_enabled must be a YAML boolean")
@@ -758,8 +754,6 @@ def generate_launch_description():
 
     controller_overrides.update({
         "model_startup_check_required": True,
-        "obstacle_slowdown_enabled": ParameterValue(LaunchConfiguration("effective_obstacle_slowdown_enabled"), value_type=bool),
-        "driving_log_enabled": ParameterValue(LaunchConfiguration("effective_driving_log_enabled"), value_type=bool),
         "startup_safety_enabled": ParameterValue(LaunchConfiguration("startup_inspection_active"),value_type=bool),
         "startup_drive_mode_topic": LaunchConfiguration("startup_drive_mode_topic"),
         "tunnel.enabled": ParameterValue(LaunchConfiguration("tunnel_enabled"), value_type=bool),

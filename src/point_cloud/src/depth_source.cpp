@@ -44,9 +44,6 @@ void validate(const Config & c)
     throw std::invalid_argument("Invalid shared RGB size or IMU rate/queue/batch");
   validateGround(c.ground);
   validateBev(c.bev);
-  if (!std::isfinite(c.bottom_fraction) || c.bottom_fraction <= 0 || c.bottom_fraction > 1) {
-    throw std::invalid_argument("depth.bottom_fraction must be in (0,1]");
-  }
   resolutionSize(c.resolution);
   preset(c.mode);
   median(c.median);
@@ -85,8 +82,7 @@ void validate(const Config & c)
 }
 
 std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
-  dai::Pipeline & pipeline, const Config & c, StereoCameras * cameras,
-  std::shared_ptr<dai::InputQueue> * gate_control)
+  dai::Pipeline & pipeline, const Config & c, StereoCameras * cameras)
 {
   validate(c);
   const auto size = resolutionSize(c.resolution);
@@ -97,51 +93,8 @@ std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
   left->build(dai::CameraBoardSocket::CAM_B, sensor_size, static_cast<float>(c.fps));
   right->build(dai::CameraBoardSocket::CAM_C, sensor_size, static_cast<float>(c.fps));
   if (cameras) {*cameras = {left, right};}
-  auto * left_output=left->requestOutput(size);
-  auto * right_output=right->requestOutput(size);
-  if (gate_control) {
-    auto gate=pipeline.create<dai::node::Script>();
-    gate->setScript(R"PY(
-active = True
-left = None
-right = None
-while True:
-    control = node.io['control'].tryGet()
-    if control is not None:
-        active = bool(control.getData()[0])
-        left = None
-        right = None
-    if left is None:
-        left = node.io['left'].get()
-    if right is None:
-        right = node.io['right'].get()
-    if not active:
-        left = None
-        right = None
-        continue
-    if left.getSequenceNum() < right.getSequenceNum():
-        left = None
-        continue
-    if right.getSequenceNum() < left.getSequenceNum():
-        right = None
-        continue
-    node.io['left_out'].send(left)
-    node.io['right_out'].send(right)
-    left = None
-    right = None
-)PY");
-    left_output->link(gate->inputs["left"]);
-    right_output->link(gate->inputs["right"]);
-    for (const auto * name:{"left","right","control"}) {
-      gate->inputs[name].setMaxSize(1);
-      gate->inputs[name].setBlocking(false);
-    }
-    *gate_control=gate->inputs["control"].createInputQueue();
-    left_output=&gate->outputs["left_out"];
-    right_output=&gate->outputs["right_out"];
-  }
   auto stereo = pipeline.create<dai::node::StereoDepth>();
-  stereo->build(*left_output,*right_output,preset(c.mode));
+  stereo->build(*left->requestOutput(size), *right->requestOutput(size), preset(c.mode));
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
   stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
   stereo->initialConfig->setConfidenceThreshold(c.confidence);

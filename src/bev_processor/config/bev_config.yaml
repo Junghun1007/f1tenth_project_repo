@@ -14,7 +14,7 @@ bev_processor:
     # Latched startup ground normal shared with camera_driver.
     startup_ground_reference_topic: "/camera/startup_ground_normal"
     startup_ground_reference_frame_id: "camera_optical_frame"
-    expected_input_fps: 70.0
+    expected_input_fps: 80.0
     # 0.70이면 1280x800의 하단 560행. 통합 launch에서 카메라와 같이 바뀐다.
     input_bottom_fraction: 0.70
 

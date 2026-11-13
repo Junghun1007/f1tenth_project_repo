@@ -28,7 +28,7 @@ class LaunchTests(unittest.TestCase):
         rgb = dict(preview_enabled=False, result_topic='/custom/rgb_result')
         context = NS(launch_configurations=dict(path_minimum_points='12'))
         components, processes = self.helper().integrated_nodes(rgb, {}, context)
-        self.assertEqual(rgb['inference_max_fps'], 70.)
+        self.assertEqual(rgb['inference_max_fps'], 80.)
         self.assertTrue(rgb['tunnel.enabled'])
         self.assertEqual([c['plugin'] for c in components],
                          ['ir_camera_driver::SharedIrBevNode', 'line_detactor::LineDetactorNode',
@@ -60,13 +60,13 @@ class LaunchTests(unittest.TestCase):
             self.helper().integrated_nodes({}, {}, NS(launch_configurations=dict(tunnel_validation_mode='invalid')))
 
     def test_ir_length_exit_default_off_and_cli_overrides(self):
-        nodes, _ = self.helper().integrated_nodes(
+        _, nodes = self.helper().integrated_nodes(
             dict(preview_enabled=False, result_topic='/rgb'), {}, NS(launch_configurations={}))
         self.assertIs(nodes[-1]['parameters'][0]['ir_length_exit_enabled'], False)
         self.assertEqual(nodes[-1]['parameters'][0]['ir_length_exit_ratio'], .15)
         config = dict(tunnel_ir_length_exit_enabled='true', tunnel_ir_length_exit_ratio='.25',
                       tunnel_ir_length_exit_confirm_frames='4', tunnel_ir_length_exit_minimum_reference_m='.8')
-        nodes, _ = self.helper().integrated_nodes(
+        _, nodes = self.helper().integrated_nodes(
             dict(preview_enabled=False, result_topic='/rgb'), {}, NS(launch_configurations=config))
         params = nodes[-1]['parameters'][0]
         self.assertIs(params['ir_length_exit_enabled'], True)
@@ -90,9 +90,9 @@ class LaunchTests(unittest.TestCase):
     def test_selector_inherits_effective_controller_geometry(self):
         controller = dict(path_minimum_points=12, path_minimum_span_m=.2, path_maximum_x_m=1.8)
         context = NS(launch_configurations=dict(path_minimum_points='16', path_maximum_gap_m='.1'))
-        components, _ = self.helper().integrated_nodes(
+        _, processes = self.helper().integrated_nodes(
             dict(preview_enabled=False, result_topic='/line_detactor/result'), controller, context)
-        parameters = components[-1]['parameters'][-1]
+        parameters = processes[-1]['parameters'][-1]
         self.assertEqual(parameters['path_minimum_points'], 16)
         self.assertEqual(parameters['path_minimum_span_m'], .2)
         self.assertEqual(parameters['path_maximum_x_m'], 1.8)

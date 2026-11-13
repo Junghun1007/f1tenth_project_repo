@@ -233,7 +233,7 @@ public:
         "/tunnel/compute_source",rclcpp::QoS(1).reliable().transient_local(),
         [this](std_msgs::msg::String::ConstSharedPtr message) {
           if (message->data=="IR") {inference_max_fps_.store(5.0);}
-          else if (message->data=="RGB" || message->data=="BOTH") {inference_max_fps_.store(70.0);}
+          else if (message->data=="RGB" || message->data=="BOTH") {inference_max_fps_.store(80.0);}
         },tunnel_options);
       if (preview_enabled_) {
         tunnel_selected_sub_=node_.create_subscription<std_msgs::msg::String>(

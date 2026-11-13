@@ -6,7 +6,7 @@ camera_driver:
 
     # CAM_A는 RGB NV12, 스테레오 CAM_B/C는 native GRAY8로 전송한다.
     # GRAY8은 호스트에서 neutral UV를 붙여 기존 NV12 ROS/BEV API에 맞춘다.
-    sensor_fps: 70.0
+    sensor_fps: 80.0
     width: 1280
     height: 800
 
@@ -135,7 +135,7 @@ camera_driver:
 
     # Disabled by default while measuring direct camera performance.
     publish_enabled: false
-    publish_fps: 70.0
+    publish_fps: 80.0
 
     # 통합 BEV launch에서만 켠다. 전체 영상을 CPU warp하지 않고, 원본
     # rectified NV12의 아래쪽만 보정 행렬과 함께 CUDA BEV 단계로 전달한다.

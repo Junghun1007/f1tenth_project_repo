@@ -365,11 +365,7 @@ public:
         perf_started_at_ = now;
         std_msgs::msg::String message;
         message.data = "{\"input\":" + bev_input_meter_.drain(elapsed) +
-          ",\"bev\":" + bev_stage_meter_.drain(elapsed) +
-          ",\"received_total\":" + std::to_string(received_total_.load()) +
-          ",\"processed_total\":" + std::to_string(processed_total_.load()) +
-          ",\"direct_delivered_total\":" + std::to_string(direct_delivered_total_.load()) +
-          ",\"processing_errors_total\":" + std::to_string(processing_error_total_.load()) + "}";
+          ",\"bev\":" + bev_stage_meter_.drain(elapsed) + "}";
         perf_publisher_->publish(message);
       });
     const auto startup_processor = std::atomic_load_explicit(
@@ -482,7 +478,7 @@ private:
       "startup_ground_reference_topic", "/camera/startup_ground_normal");
     declare_parameter<std::string>(
       "startup_ground_reference_frame_id", "camera_optical_frame");
-    declare_parameter<double>("expected_input_fps", 70.0);
+    declare_parameter<double>("expected_input_fps", 80.0);
     declare_parameter<double>("input_bottom_fraction", 0.70);
 
     declare_parameter<bool>("publish_enabled", true);
@@ -1138,8 +1134,6 @@ private:
       try {
         bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"bev_transform");
         const auto started_at = SteadyClock::now();
-        monitor_->sample("bev_input_wait",std::chrono::duration<double,std::milli>(
-          started_at-input_received_at).count());
         auto output = std::make_shared<BevFrame>();
         const auto processor = std::atomic_load_explicit(
           &gpu_processor_, std::memory_order_acquire);
@@ -2047,7 +2041,7 @@ private:
   std::string startup_ground_reference_topic_;
   std::string startup_ground_reference_frame_id_;
   std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
-  double expected_input_fps_{70.0};
+  double expected_input_fps_{80.0};
   double input_bottom_fraction_{0.70};
   int input_crop_width_{1280};
   int input_crop_height_{560};

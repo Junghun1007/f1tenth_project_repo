@@ -716,8 +716,8 @@ GUI 입력은 [OpenCV HighGUI mouse callback](https://docs.opencv.org/4.13.0/d7/
 
 ## 실행 중 도구와 처리 주기
 
-일반 auto_drive는 RGB 촬영 및 카메라→BEV 전달 상한 70 FPS, 신호등 추론
-20 FPS, 장애물 depth 30 FPS를 사용한다. 회피 계획 상한은 80 Hz다.
+일반 auto_drive는 RGB 촬영 및 카메라→BEV 전달 상한 80 FPS, 신호등 추론
+20 FPS, 장애물 depth 40 FPS를 사용한다. 회피 계획 상한은 80 Hz다.
 회피 worker는 처리 시작 간격으로 상한을 적용하고, 차선 또는 대응 장애물 결과가
 바뀌었을 때만 다시 계획한다. 연산 시간이 길어져도 지난 입력을 몰아서 계산하지 않는다.
 
@@ -758,14 +758,3 @@ BEV 입력 전달 상한(publish_fps), 신호등 추론 상한(inference_fps), �
 서비스를 호출한다. 자동 Duty 0, 설정된 `brake_maximum_current_amps` 제동,
 기존 정지 조향 정책을 적용하고 재출발은 START 승인이 필요하다.
 이 버튼은 auto_control의 자동 명령을 정지시키며 별도 수동 제어기의 명령을 제어하지 않는다.
-
-
-### 카메라 처리 경로
-
-장애물 스테레오는 기본 640×400·30 FPS이며 좌우 검사는 기본 ON이다. 스테레오 매칭은 전체 640×400 영상을 사용한다. `obstacles.depth.bottom_fraction`은 호환을 위해 남겨 두지만 크롭에 사용하지 않는다. 기존 YAML에서 0.7을 지정해도 전체 영상을 사용한다. `auto_obstacles`의 ROI는 깊이 계산 후 장애물 검출에 적용한다.
-
-터널 기능 활성화 시 IR 모델은 시작 때 준비한다. OUTSIDE에서는 IR 영상 전송·차선 추론을 중단하고 장애물 깊이를 사용한다. INSIDE에서는 깊이 매칭 입력을 중단하고 IR 차선 입력을 사용한다. ENTERING·EXITING에서만 두 입력 경로를 연다. 기존 노출·프레임 유효성 검사를 적용하므로 전환 중 깊이 결과가 일시적으로 거부될 수 있다. IR 영상 보정은 장치 내부 게이트 뒤에서 수행한다. RGB는 70 FPS 촬영을 유지하며 터널 내부 RGB BEV·추론의 5 FPS 복귀 대기는 유지한다.
-
-단일 OAK 세션과 센서 모드는 전환 중 유지한다. 모노 센서의 촬영·기본 ISP 출력 비용은 남지만, 대기 중인 IR의 보정·USB 전송과 터널 내부의 깊이 매칭을 차단한다. IR 모델의 첫 실제 입력에 필요한 BEV 투영 초기화는 진입 시 수행한다.
-
-파라미터 탐색용 `tools/stereo_rgb_sweep`와 `benchmark_run` 60초 실험 모드는 제거했다. 일반 `driving_log_enabled` 주행 로그와 기존 runtime tools는 일반 실행 설정으로 사용한다.

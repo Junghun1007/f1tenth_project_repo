@@ -11,6 +11,8 @@ class SystemProbe:
         self.proc, self.sys, self.disk = Path(proc), Path(sys), disk
         self.previous_cpu = None
         self.previous_cores = {}
+        self.partial = {}
+        self.errors = []
 
     @staticmethod
     def read(path):
@@ -26,8 +28,19 @@ class SystemProbe:
         except ValueError:
             return None
 
+    def paths(self, pattern, root=None):
+        found = []
+        try:
+            for path in (root or self.sys).glob(pattern):
+                found.append(path)
+        except (OSError, RuntimeError) as error:
+            self.errors.append(f'{pattern}: {error}')
+        return found
+
     def sample(self):
         result = {}
+        self.partial = result
+        self.errors = []
         # guest/guest_nice are already included in user/nice, so use first 8 fields.
         stat = self.read(self.proc / 'stat').splitlines()
         try:
@@ -83,7 +96,7 @@ class SystemProbe:
                 result['load'] = load
         except ValueError:
             pass
-        cpu_freq = [self.number(p) for p in self.sys.glob('devices/system/cpu/cpufreq/policy*/scaling_cur_freq')]
+        cpu_freq = [self.number(p) for p in self.paths('devices/system/cpu/cpufreq/policy*/scaling_cur_freq')]
         cpu_freq = [v for v in cpu_freq if v is not None and v > 0]
         if cpu_freq:
             result['cpu_mhz'] = max(cpu_freq) / 1000
@@ -92,9 +105,17 @@ class SystemProbe:
             'devices/gpu.0', 'devices/platform/gpu.0', 'devices/platform/17000000.gpu',
             'devices/platform/17000000.ga10b', 'devices/platform/bus@0/17000000.gpu',
             'devices/platform/host1x/gpu.0', 'devices/57000000.gpu')]
-        devfreq = [p for p in self.sys.glob('class/devfreq/*')
-                   if any(s in str(p.resolve()).lower() for s in ('gpu', 'ga10b', 'gv11b'))]
-        gpu_paths += [p / 'device' for p in devfreq]
+        devfreq = []
+        for path in self.paths('class/devfreq/*'):
+            try:
+                identity = str(path.resolve()).lower()
+            except (OSError, RuntimeError) as error:
+                self.errors.append(f'{path}: {error}')
+                identity = path.name.lower()
+            if any(name in identity for name in ('gpu', 'ga10b', 'gv11b')):
+                devfreq.append(path)
+        gpu_paths += devfreq + [p / 'device' for p in devfreq]
+        gpu_paths += self.paths('devices/platform/*gpu*') + self.paths('devices/platform/bus@0/*gpu*')
         for path in gpu_paths:
             value = self.number(path / 'load')
             if value is not None and 0 <= value <= 1000:
@@ -106,7 +127,7 @@ class SystemProbe:
                 result['gpu_mhz'] = value / 1e6
                 break
         temperatures = {'cpu': [], 'gpu': [], 'soc': []}
-        for path in self.sys.glob('class/thermal/thermal_zone*'):
+        for path in self.paths('class/thermal/thermal_zone*'):
             kind = self.read(path / 'type').lower()
             value = self.number(path / 'temp')
             if value is None or not -40000 <= value <= 150000:
@@ -124,9 +145,16 @@ class SystemProbe:
             result['disk_free_gib'] = shutil.disk_usage(self.disk).free / 1024**3
         except OSError:
             pass
-        power = self.power_w()
-        if power is not None:
-            result['power_w'] = power
+        try:
+            power = self.power_w()
+            if power is not None:
+                result['power_w'] = power
+        except (OSError, RuntimeError, ValueError) as error:
+            self.errors.append(f'power: {error}')
+        if self.errors:
+            result['error'] = '; '.join(self.errors)
+        if 'cpu_pct' not in result and self.previous_cpu is None:
+            result['error'] = result.get('error', '') + ' CPU counters unavailable at /proc/stat.'
         return result
 
     # Board input rail priority (ported from the removed C++ performance measurement).
@@ -134,8 +162,8 @@ class SystemProbe:
 
     def power_w(self):
         candidates = []
-        for device in self.sys.glob('bus/i2c/drivers/ina3221*/*'):
-            for label in device.glob('hwmon/hwmon*/in*_label'):
+        for device in self.paths('bus/i2c/drivers/ina3221*/*'):
+            for label in self.paths('hwmon/hwmon*/in*_label', device):
                 rank = self.POWER_RAILS.get(self.read(label))
                 channel = label.name[2:-len('_label')]
                 if rank is None or not channel.isdigit():
@@ -144,7 +172,7 @@ class SystemProbe:
                 curr = self.number(label.parent / f'curr{channel}_input')
                 if volt is not None and curr is not None:
                     candidates.append((rank, volt * curr / 1e6))  # mV * mA -> W
-            for label in device.glob('iio:device*/rail_name_*'):
+            for label in self.paths('iio:device*/rail_name_*', device):
                 rank = self.POWER_RAILS.get(self.read(label))
                 channel = label.name[len('rail_name_'):]
                 if rank is None or not channel.isdigit():
@@ -193,9 +221,10 @@ class ComputeMonitor:
         while not self.stop.is_set():
             try:
                 values = self.probe.sample()
-            except Exception:
-                # Lost metrics must never terminate inspection or approve START.
-                values = {}
+            except Exception as error:
+                # Keep CPU/RAM already read if an optional device sensor fails.
+                values = dict(self.probe.partial)
+                values['error'] = f'{type(error).__name__}: {error}' 
             with self.lock:
                 self.values, self.sampled_at = values, time.monotonic()
             self.stop.wait(1.)

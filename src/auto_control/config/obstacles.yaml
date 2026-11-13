@@ -7,8 +7,7 @@ camera_driver:
     # CAM_A RGB는 camera_config.yaml 설정 유지. 같은 OAK의 CAM_B/C로 depth 생성.
     obstacles.depth.enabled: true
     obstacles.camera.resolution: "400p" # 400p / 480p / 720p / 800p
-    obstacles.camera.fps: 30.0          # 요청 FPS. RGB/Depth 동시 실행 실측 FPS는 로그 확인.
-    obstacles.depth.bottom_fraction: 1.0 # 호환용 설정: 스테레오 매칭은 항상 전체 영상 사용
+    obstacles.camera.fps: 40.0          # 요청 FPS. RGB/Depth 동시 실행 실측 FPS는 로그 확인.
     obstacles.depth.mode: "high_density" # default / high_density / high_accuracy
     obstacles.depth.ir_dot_projector_intensity: 0.7 # 지원하지 않는 장치는 0.0
     obstacles.depth.ir_flood_light_intensity: 0.0

@@ -153,8 +153,9 @@ def build_frame(seq, now, snap):
         'traffic': {'state': _fresh(traffic, now), 'age_ms': _age_ms([traffic], now)},
         'tunnel': {'state': _fresh(tunnel.get('state'), now, TUNNEL_STALE_SEC),
                    'lines': _fresh(tunnel.get('lines'), now, TUNNEL_STALE_SEC)},
-        'system': {key: _r(snap.get('system', {}).get(key), 1)
+        'system': {**{key: _r(snap.get('system', {}).get(key), 1)
                    for key in ('cpu_pct', 'gpu_pct', 'cpu_temp_c', 'gpu_temp_c', 'power_w')},
+                   'error': snap.get('system', {}).get('error')},
         'startup': snap.get('startup', {'camera': '', 'models': {}, 'controller': '',
                                         'can_start': False, 'started': False, 'message': ''}),
         'link': snap.get('link', {'clients': 0, 'heartbeat_age_ms': None, 'loss_stop_sec': 0.0}),
