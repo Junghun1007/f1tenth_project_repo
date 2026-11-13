@@ -57,6 +57,8 @@ namespace
 
 constexpr std::uint32_t kFullSensorWidth = 1280U;
 constexpr std::uint32_t kFullSensorHeight = 800U;
+// Host RGB rate while the tunnel state is INSIDE (sensor rate is unchanged).
+constexpr int kTunnelRgbInsideFps = 30;
 constexpr double kTwoPi =
   2.0 * 3.141592653589793238462643383279502884;
 
@@ -1311,7 +1313,8 @@ private:
     std::shared_ptr<dai::node::StereoDepth> stereo;
     if (depth_enabled_) {
       pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
-      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr);
+      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr,
+        tunnel_enabled_ ? &depth_gate_control_ : nullptr);
       depth_queue_=stereo->depth.createOutputQueue(1,false);
       bev_handoff::publishDirectDepth(nullptr);
     }
@@ -1324,6 +1327,26 @@ private:
       }
       ir_output=tunnel_cameras_.left->requestOutput(
         std::make_pair(1280,800),dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,true);
+      // Outside the tunnel the lane IR stream is unused: stop it on the device
+      // so 1280x800 frames are not sent over USB only to be discarded.
+      auto ir_gate=pipeline_->create<dai::node::Script>();
+      ir_gate->setScript(R"PY(
+active = False
+while True:
+    control = node.io['control'].tryGet()
+    if control is not None:
+        active = bool(control.getData()[0])
+    frame = node.io['image'].get()
+    if active:
+        node.io['out'].send(frame)
+)PY");
+      ir_output->link(ir_gate->inputs["image"]);
+      for (const auto * name:{"image","control"}) {
+        ir_gate->inputs[name].setMaxSize(1);
+        ir_gate->inputs[name].setBlocking(false);
+      }
+      ir_gate_control_=ir_gate->inputs["control"].createInputQueue();
+      ir_output=&ir_gate->outputs["out"];
       ir_queue_=ir_output->createOutputQueue(1,false);
       ir_controls_.push_back(tunnel_cameras_.left->inputControl.createInputQueue());
       if (tunnel_cameras_.right) {
@@ -1351,6 +1374,39 @@ private:
       resize_mode_,
       static_cast<float>(sensor_fps_),
       undistort_enabled_);
+    if (tunnel_enabled_) {
+      // INSIDE only needs RGB for TCN exit detection (and 5 FPS RGB lane standby).
+      // Keep the sensor rate (and its exposure behaviour) unchanged and forward
+      // ~30 FPS to the host instead; every frame passes otherwise.
+      const int sensor_rate=static_cast<int>(std::lround(sensor_fps_));
+      auto rgb_gate=pipeline_->create<dai::node::Script>();
+      rgb_gate->setScript(
+        "sensor = " + std::to_string(sensor_rate) + "\n"
+        "target = " + std::to_string(kTunnelRgbInsideFps) + "\n" R"PY(
+decimate = False
+last_slot = None
+while True:
+    control = node.io['control'].tryGet()
+    if control is not None:
+        decimate = bool(control.getData()[0])
+        last_slot = None
+    frame = node.io['in'].get()
+    if not decimate:
+        node.io['out'].send(frame)
+        continue
+    slot = (frame.getSequenceNum() * target) // sensor
+    if slot != last_slot:
+        last_slot = slot
+        node.io['out'].send(frame)
+)PY");
+      output->link(rgb_gate->inputs["in"]);
+      rgb_gate->inputs["in"].setMaxSize(2);
+      rgb_gate->inputs["in"].setBlocking(false);
+      rgb_gate->inputs["control"].setMaxSize(1);
+      rgb_gate->inputs["control"].setBlocking(false);
+      rgb_gate_control_=rgb_gate->inputs["control"].createInputQueue();
+      output=&rgb_gate->outputs["out"];
+    }
 
     output_queue_ = output->createOutputQueue(
       static_cast<unsigned int>(queue_size_), queue_blocking_);
@@ -1632,6 +1688,7 @@ private:
   void ir_loop()
   {
     bool applied=false;
+    std::optional<RgbTunnelPhase> routed_phase;
     bool dirty=true;
     auto changed_at=std::chrono::steady_clock::time_point{};
     auto last=std::chrono::steady_clock::time_point{};
@@ -1649,6 +1706,30 @@ private:
     while (!stop_requested_.load()) {
       try {
         const bool requested=tunnel_requested_.load();
+        const auto phase=rgb_tunnel_phase_.load();
+        // OUTSIDE: no lane IR. INSIDE: no obstacle stereo, RGB ~30 FPS for TCN.
+        // ENTERING/EXITING keep every stream so either lane source is available.
+        const bool ir_active=phase!=RgbTunnelPhase::outside;
+        const bool depth_active=phase!=RgbTunnelPhase::inside;
+        const bool rgb_decimate=phase==RgbTunnelPhase::inside;
+        if (!routed_phase || *routed_phase!=phase) {
+          const auto send_gate=[](const auto & queue,bool active) {
+            if (!queue) {return;}
+            auto control=std::make_shared<dai::Buffer>();
+            control->setData(std::vector<std::uint8_t>{static_cast<std::uint8_t>(active)});
+            queue->send(control);
+          };
+          send_gate(ir_gate_control_,ir_active);
+          send_gate(depth_gate_control_,depth_active);
+          send_gate(rgb_gate_control_,rgb_decimate);
+          rgb_decimated_.store(rgb_decimate);
+          if (!ir_active) {pending.clear(); bev_handoff::publishDirectIr(nullptr);}
+          if (!depth_active) {bev_handoff::publishDirectDepth(nullptr); bev_handoff::clearObstacles();}
+          routed_phase=phase;
+          RCLCPP_INFO(node_.get_logger(),"OAK routes: IR=%s depth=%s RGB=%s",
+            ir_active ? "ON" : "OFF",depth_enabled_ ? (depth_active ? "ON" : "OFF") : "disabled",
+            rgb_decimate ? "30 FPS" : "full");
+        }
         const auto now=std::chrono::steady_clock::now();
         if (now-report_started>=2s) {
           if (requested) {
@@ -1695,6 +1776,12 @@ private:
           bev_handoff::publishDirectDepth(nullptr);
           bev_handoff::clearObstacles();
           RCLCPP_INFO(node_.get_logger(),"Camera profile=%s",applied ? "IR 30ms ISO800 dot0 flood0.5" : "OUTSIDE auto exposure/depth lights restored");
+        }
+        if (!ir_active) {
+          // Drain anything sent before the device gate closed.
+          ir_queue_->tryGet<dai::ImgFrame>();
+          std::this_thread::sleep_for(1ms);
+          continue;
         }
         auto packet=ir_queue_->tryGet<dai::ImgFrame>();
         if (packet) {
@@ -1817,8 +1904,12 @@ private:
           dai::CameraExposureOffset::MIDDLE);
         bev_handoff::publishCameraExposure(false,std::make_shared<bev_handoff::CameraExposureObservation>(
           bev_handoff::CameraExposureObservation{static_cast<long>(packet->getExposureTime().count()),static_cast<int>(packet->getSensitivity()),sensor_timestamp}));
+        // INSIDE frames arrive already decimated to ~30 FPS on the device; pass
+        // them all (the 33.3ms grid would drop some of the uneven 2/3-frame gaps).
+        const bool tcn_decimated=rgb_decimated_.load();
         if (tunnel_enabled_ && packet->getType()==dai::ImgFrame::Type::NV12 &&
-          (last_tcn_frame_==std::chrono::steady_clock::time_point{} || sensor_timestamp>=last_tcn_frame_+33333333ns)) {
+          (last_tcn_frame_==std::chrono::steady_clock::time_point{} ||
+          (tcn_decimated ? sensor_timestamp>=last_tcn_frame_+25ms : sensor_timestamp>=last_tcn_frame_+33333333ns))) {
           // Publish raw, unstabilized luminance at approximately 30Hz for the
           // existing TCN feature history. Keep source capture stamps and padding.
           auto message=std::make_unique<sensor_msgs::msg::Image>();
@@ -1830,7 +1921,7 @@ private:
           message->data.assign(frame_bytes.begin(),frame_bytes.end());
           tcn_publisher_->publish(std::move(message));
           // Advance a source-time grid rather than quantizing 80Hz to 26.7Hz.
-          if (last_tcn_frame_==std::chrono::steady_clock::time_point{}) {last_tcn_frame_=sensor_timestamp;}
+          if (last_tcn_frame_==std::chrono::steady_clock::time_point{} || tcn_decimated) {last_tcn_frame_=sensor_timestamp;}
           else {last_tcn_frame_+=33333333ns; if (sensor_timestamp-last_tcn_frame_>33333333ns) {last_tcn_frame_=sensor_timestamp;}}
         }
         capture_meter_.add();
@@ -3191,7 +3282,7 @@ private:
         startup_timeout_sec_);
     }
 
-    if (capture_count > 0 && capture_hz < sensor_fps_ * 0.90) {
+    if (capture_count > 0 && !rgb_decimated_.load() && capture_hz < sensor_fps_ * 0.90) {
       RCLCPP_WARN_THROTTLE(
         node_.get_logger(), *node_.get_clock(), 10000,
         "Low capture FPS: %.1f/%.1f",
@@ -3334,6 +3425,9 @@ private:
   std::thread rgb_exposure_thread_;
   double tunnel_ir_imu_max_age_sec_{0.05},tunnel_ir_imu_wait_sec_{0.10};
   std::atomic<bool> tunnel_requested_{false};
+  // Device-side routing per tunnel phase (see tunnel loop).
+  std::shared_ptr<dai::InputQueue> depth_gate_control_,ir_gate_control_,rgb_gate_control_;
+  std::atomic<bool> rgb_decimated_{false};
   std::atomic<bool> tunnel_profile_applied_{false};
   std::atomic<bool> tunnel_profile_ready_{false};
   std::atomic<std::int64_t> depth_resume_ns_{0};

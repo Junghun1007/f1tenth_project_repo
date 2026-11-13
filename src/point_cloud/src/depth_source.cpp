@@ -82,7 +82,8 @@ void validate(const Config & c)
 }
 
 std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
-  dai::Pipeline & pipeline, const Config & c, StereoCameras * cameras)
+  dai::Pipeline & pipeline, const Config & c, StereoCameras * cameras,
+  std::shared_ptr<dai::InputQueue> * gate_control)
 {
   validate(c);
   const auto size = resolutionSize(c.resolution);
@@ -93,8 +94,35 @@ std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
   left->build(dai::CameraBoardSocket::CAM_B, sensor_size, static_cast<float>(c.fps));
   right->build(dai::CameraBoardSocket::CAM_C, sensor_size, static_cast<float>(c.fps));
   if (cameras) {*cameras = {left, right};}
+  auto * left_output = left->requestOutput(size);
+  auto * right_output = right->requestOutput(size);
+  if (gate_control) {
+    // Both sensors run at the same rate; StereoDepth still pairs by sequence.
+    auto gate = pipeline.create<dai::node::Script>();
+    gate->setScript(R"PY(
+active = True
+while True:
+    control = node.io['control'].tryGet()
+    if control is not None:
+        active = bool(control.getData()[0])
+    left = node.io['left'].get()
+    right = node.io['right'].get()
+    if active:
+        node.io['left_out'].send(left)
+        node.io['right_out'].send(right)
+)PY");
+    left_output->link(gate->inputs["left"]);
+    right_output->link(gate->inputs["right"]);
+    for (const auto * name : {"left", "right", "control"}) {
+      gate->inputs[name].setMaxSize(1);
+      gate->inputs[name].setBlocking(false);
+    }
+    *gate_control = gate->inputs["control"].createInputQueue();
+    left_output = &gate->outputs["left_out"];
+    right_output = &gate->outputs["right_out"];
+  }
   auto stereo = pipeline.create<dai::node::StereoDepth>();
-  stereo->build(*left->requestOutput(size), *right->requestOutput(size), preset(c.mode));
+  stereo->build(*left_output, *right_output, preset(c.mode));
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
   stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
   stereo->initialConfig->setConfidenceThreshold(c.confidence);

@@ -49,8 +49,11 @@ struct StereoCameras
 {
   std::shared_ptr<dai::node::Camera> left, right;
 };
+// With gate_control, a device Script forwards stereo inputs only while the last
+// control byte was nonzero (initially open), so StereoDepth can idle in a tunnel.
 std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
-  dai::Pipeline & pipeline, const Config & config, StereoCameras * cameras = nullptr);
+  dai::Pipeline & pipeline, const Config & config, StereoCameras * cameras = nullptr,
+  std::shared_ptr<dai::InputQueue> * gate_control = nullptr);
 RigidTransform rgbFromFrame(dai::ImgFrame & frame, const dai::CalibrationHandler & calibration);
 
 // Owns one device session. Closing/reopening also reapplies both IR intensities.
