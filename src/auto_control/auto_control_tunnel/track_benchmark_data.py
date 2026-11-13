@@ -106,7 +106,7 @@ def write_capture(directory, snapshot, parameters, parameter_errors):
         'Lane rows are received detector results; centerline_valid is recorded separately.',
         'camera/BEV stage durations include waiting; runtime timers measure their named scopes.',
         'Missing system fields mean unavailable, not zero.',
-        'The recorder never sends vehicle start or stop commands.',
+        'At the 60-second deadline the recorder requests auto_control STOP and retries until accepted; file saving runs independently.',
     ]
     temporary = directory / 'manifest.json.tmp'
     temporary.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')

@@ -13,6 +13,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.qos import QoSProfile, DurabilityPolicy, qos_profile_sensor_data
 from rcl_interfaces.msg import Log, ParameterEvent
 from std_msgs.msg import Bool, Float32, String
+from std_srvs.srv import Trigger
 from line_detactor.msg import LaneResult
 from traffic_detection_test.msg import TrafficLightState
 
@@ -46,6 +47,11 @@ class TrackBenchmark(Node):
         self.writer = None
         self.write_error = None
         self.saved = False
+        self.stop_required = False
+        self.stop_accepted = False
+        self.stop_future = None
+        self.last_stop_attempt = float('-inf')
+        self.stop_client = self.create_client(Trigger, '/auto_control/stop')
         self.last_state = None
         self.last_system = None
         self.last_heartbeat = 0.0
@@ -105,7 +111,7 @@ class TrackBenchmark(Node):
         if state == 'STARTED' and self.capture.start(time.monotonic()):
             self.initial_states = dict(self.context_states)
             self.enable_pub.publish(Bool(data=True))
-            self.get_logger().info('Recording 60 seconds. Recording completion leaves driving active.')
+            self.get_logger().info('Recording 60 seconds. Automatic STOP is requested when the capture ends.')
         self.record('startup_state', {'value': message.data})
 
     def on_context(self, topic, message):
@@ -201,11 +207,47 @@ class TrackBenchmark(Node):
             self.parameter_errors[name] = str(error)
         self.pending.pop(name, None)
 
+    def request_stop(self, now):
+        if not self.stop_required or self.stop_accepted:
+            return
+        if self.stop_future is not None:
+            if self.stop_future.done():
+                try:
+                    response = self.stop_future.result()
+                    if response.success:
+                        self.stop_accepted = True
+                        self.get_logger().info('Automatic STOP accepted by auto_control.')
+                    else:
+                        self.get_logger().error(f'Automatic STOP rejected: {response.message}; retrying.')
+                except Exception as error:
+                    self.get_logger().error(f'Automatic STOP failed: {error}; retrying.')
+                self.stop_future = None
+            elif now - self.last_stop_attempt >= 2.0:
+                self.stop_future.cancel()
+                self.stop_future = None
+                self.get_logger().error('Automatic STOP response timed out; retrying.')
+            else:
+                return
+            self.last_stop_attempt = now
+        if self.stop_accepted or now - self.last_stop_attempt < 1.0:
+            return
+        self.last_stop_attempt = now
+        if not self.stop_client.service_is_ready():
+            self.get_logger().error('Automatic STOP service unavailable; retrying. Use the controller STOP if needed.')
+            return
+        try:
+            self.stop_future = self.stop_client.call_async(Trigger.Request())
+        except Exception as error:
+            self.get_logger().error(f'Automatic STOP request failed: {error}; retrying.')
+
     def tick(self):
         now = time.monotonic()
         if self.capture.due(now):
+            self.stop_required = True
+            self.request_stop(now)
             self.finish('duration_complete')
         if self.capture.finished:
+            self.request_stop(now)
             if self.writer and not self.writer.is_alive() and not self.saved:
                 self.saved = True
                 if self.write_error:

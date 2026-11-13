@@ -1,6 +1,6 @@
 # 트랙 주행 성능 기록
 
-`auto_drive.launch.py`의 `benchmark_run`으로 네 회차를 선택한다. 각 회차는 기존 START가 승인된 시점부터 연속 60초를 기록한다. 신호 대기·차선 유실·터널 전환·수동 전환 시간도 그 60초에 포함된다. 60초가 끝나면 기록만 종료하며 차량은 계속 기존 제어에 따라 움직인다. 같은 실행에서 START를 다시 눌러도 기록을 재시작하지 않는다. 다음 회차는 launch를 재시작한다.
+`auto_drive.launch.py`의 `benchmark_run`으로 네 회차를 선택한다. 각 회차는 기존 START가 승인된 시점부터 연속 60초를 기록한다. 신호 대기·차선 유실·터널 전환·수동 전환 시간도 그 60초에 포함된다. 60초가 끝나면 기록을 종료하고 기존 `/auto_control/stop` 서비스를 자동 호출한다. 정지 요청은 파일 저장보다 먼저 보내므로 저장 지연이나 실패와 관계없이 실행된다. 같은 실행에서 START를 다시 눌러도 기록을 재시작하지 않는다. 다음 회차는 launch를 재시작한다.
 
 | 회차 | 차선·코너 주행 | 장애물 검출·회피·감속 | 신호등 인식·정지 | 터널 |
 |---|---|---|---|---|
@@ -49,13 +49,13 @@ ros2 launch vehicle_bringup auto_drive.launch.py benchmark_run:=4
 ros2 service call /auto_control/start std_srvs/srv/Trigger '{}'
 ```
 
-응답이 성공하고 `Recording 60 seconds`가 표시되면 기록이 시작된다. `Capture saved` 메시지와 해당 폴더의 `manifest.json`이 저장 완료를 나타낸다. 주행 정지는 기존 조종기 또는 STOP 서비스를 사용한다.
+응답이 성공하고 `Recording 60 seconds`가 표시되면 기록이 시작된다. `Capture saved` 메시지와 해당 폴더의 `manifest.json`이 저장 완료를 나타낸다. `Automatic STOP accepted by auto_control` 메시지는 제어기가 정지 요청을 수락했음을 뜻한다. 실제 차량 정지를 확인한 후 Ctrl+C로 launch를 종료한다. 서비스 연결 실패·응답 시간 초과·거절 시 오류를 출력하고 재시도한다. 필요하면 기존 조종기 또는 아래 STOP 명령을 사용할 수 있다.
 
 ```bash
 ros2 service call /auto_control/stop std_srvs/srv/Trigger '{}'
 ```
 
-기록 중 STOP을 눌러도 최초 START부터 60초 측정은 계속된다. launch를 Ctrl+C로 종료하면 그때까지의 기록을 `interrupted`로 저장한다. 프로세스를 강제 종료하거나 전원이 끊기면 메모리에 모으던 기록을 잃을 수 있다. 최대 100,000건을 메모리에 수집하고, 완료 시 별도 저장 스레드에서 파일을 작성한다. 초과 건수는 manifest의 `dropped_events`에 남긴다. 기록기 자체는 START·STOP·구동 명령을 발행하지 않는다.
+기록 중 STOP을 눌러도 최초 START부터 60초 측정은 계속된다. launch를 Ctrl+C로 종료하면 그때까지의 기록을 `interrupted`로 저장한다. 프로세스를 강제 종료하거나 전원이 끊기면 메모리에 모으던 기록을 잃을 수 있다. 최대 100,000건을 메모리에 수집하고, 완료 시 별도 저장 스레드에서 파일을 작성한다. 초과 건수는 manifest의 `dropped_events`에 남긴다. 기록기는 60초 완료 시 기존 STOP 서비스를 호출하며, START는 사용자가 실행한다.
 
 ## 결과 파일
 

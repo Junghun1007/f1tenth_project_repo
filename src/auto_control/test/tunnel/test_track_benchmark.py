@@ -71,8 +71,9 @@ class TrackCaptureTests(unittest.TestCase):
 
 
 class RecorderLifecycleTests(unittest.TestCase):
-    def test_real_recorder_callbacks_start_on_approval_and_finish_without_drive_commands(self):
+    def test_real_recorder_starts_on_approval_and_requests_stop_at_deadline(self):
         import ast
+        from concurrent.futures import Future
         from contextlib import nullcontext
         from types import SimpleNamespace
         import copy
@@ -87,9 +88,19 @@ class RecorderLifecycleTests(unittest.TestCase):
                 self.publishers = {}
                 self.topics = []
                 self.messages = []
+                self.stop_requests = []
 
             def declare_parameter(self, name, default):
                 return SimpleNamespace(value=directory if name == 'directory' else default)
+
+            def create_client(self, kind, topic):
+                assert topic == '/auto_control/stop'
+                def call(request):
+                    self.stop_requests.append(request)
+                    future = Future()
+                    future.set_result(SimpleNamespace(success=True))
+                    return future
+                return SimpleNamespace(service_is_ready=lambda: True, call_async=call)
 
             def create_publisher(self, kind, topic, qos):
                 messages = []
@@ -127,7 +138,7 @@ class RecorderLifecycleTests(unittest.TestCase):
         tree = ast.parse(source.read_text())
         tree.body = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))]
         clock = [100.0]
-        namespace = dict(Node=FakeNode, ComputeMonitor=FakeCompute, TrackCapture=TrackCapture,
+        namespace = dict(Trigger=SimpleNamespace(Request=lambda: object()), Node=FakeNode, ComputeMonitor=FakeCompute, TrackCapture=TrackCapture,
                          SCENARIOS=SCENARIOS, write_capture=write_capture, Path=Path, datetime=datetime,
                          time=SimpleNamespace(monotonic=lambda: clock[0]), copy=copy, json=json,
                          math=math, threading=threading, QoSProfile=lambda **kw: kw,
@@ -149,8 +160,14 @@ class RecorderLifecycleTests(unittest.TestCase):
             clock[0] = 110
             node.on_startup(SimpleNamespace(data='STARTED | automatic duty permitted'))
             self.assertEqual(node.capture.started, 100)
+            self.assertEqual(node.stop_requests, [])
             clock[0] = 160
             node.tick()
+            self.assertEqual(len(node.stop_requests), 1)
+            self.assertTrue(node.stop_accepted)
+            clock[0] = 161
+            node.tick()
+            self.assertEqual(len(node.stop_requests), 1)
             node.close()
             self.assertEqual(list(node.publishers), ['/auto/runtime_metrics/enabled'])
             self.assertFalse(node.publishers['/auto/runtime_metrics/enabled'][-1].data)
@@ -159,6 +176,65 @@ class RecorderLifecycleTests(unittest.TestCase):
             self.assertEqual(manifest['finish_reason'], 'duration_complete')
             self.assertEqual(manifest['initial_states'], {'/tunnel/state': 'OUTSIDE'})
             self.assertEqual(manifest['event_counts']['vehicle'], 1)
+            def failed_save(*args):
+                raise OSError('disk full')
+            namespace['write_capture'] = failed_save
+            clock[0] = 200
+            failed_node = namespace['TrackBenchmark']()
+            failed_node.on_startup(SimpleNamespace(data='STARTED | permitted'))
+            clock[0] = 260
+            failed_node.tick()
+            failed_node.writer.join()
+            self.assertTrue(failed_node.stop_accepted)
+            self.assertEqual(len(failed_node.stop_requests), 1)
+            self.assertEqual(failed_node.write_error, 'disk full')
+            failed_node.tick()
+            self.assertTrue(any('Capture save failed' in message for message in failed_node.messages))
+
+
+
+class StopRetryTests(unittest.TestCase):
+    def test_unavailable_timeout_rejection_and_success(self):
+        import ast
+        from concurrent.futures import Future
+        from types import SimpleNamespace, MethodType
+        path = Path(__file__).resolve().parents[2] / 'auto_control_tunnel/track_benchmark.py'
+        tree = ast.parse(path.read_text())
+        cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
+        function = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'request_stop')
+        namespace = {'Trigger': SimpleNamespace(Request=lambda: object())}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), 'exec'), namespace)
+        requests, messages = [], []
+        ready = [False]
+        def call(request):
+            future = Future()
+            requests.append(future)
+            return future
+        node = SimpleNamespace(stop_required=True, stop_accepted=False, stop_future=None,
+            last_stop_attempt=float('-inf'),
+            stop_client=SimpleNamespace(service_is_ready=lambda: ready[0], call_async=call),
+            get_logger=lambda: SimpleNamespace(info=messages.append, error=messages.append))
+        tick = MethodType(namespace['request_stop'], node)
+        tick(0)
+        self.assertEqual(requests, [])
+        ready[0] = True
+        tick(1)
+        tick(2)
+        self.assertEqual(len(requests), 1)
+        tick(3)
+        self.assertTrue(requests[0].cancelled())
+        tick(4)
+        requests[1].set_result(SimpleNamespace(success=False, message='temporary failure'))
+        tick(4.1)
+        self.assertFalse(node.stop_accepted)
+        tick(5.2)
+        requests[2].set_result(SimpleNamespace(success=True))
+        tick(5.3)
+        self.assertTrue(node.stop_accepted)
+        tick(10)
+        self.assertEqual(len(requests), 3)
+        self.assertTrue(any('unavailable' in message for message in messages))
+        self.assertTrue(any('timed out' in message for message in messages))
 
 
 if __name__ == '__main__':
