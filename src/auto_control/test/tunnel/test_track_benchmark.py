@@ -83,6 +83,10 @@ class RecorderLifecycleTests(unittest.TestCase):
         from auto_control_tunnel.track_benchmark_data import SCENARIOS
 
         class FakeNode:
+            @property
+            def clients(self):
+                return iter(())  # rclpy.Node exposes a read-only service client iterator.
+
             def __init__(self, name):
                 self.name = name
                 self.publishers = {}

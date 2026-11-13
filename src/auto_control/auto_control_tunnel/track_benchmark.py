@@ -93,7 +93,7 @@ class TrackBenchmark(Node):
             names.append('/traffic_light_detector')
         if SCENARIOS[run]['tunnel']:
             names += ['/ir_line_detactor', '/shared_ir_bev', '/tunnel_lane_selector', '/tunnel_tcn_test']
-        self.clients = {name: RemoteParameters(self, name) for name in names}
+        self.parameter_clients = {name: RemoteParameters(self, name) for name in names}
         self.timer = self.create_timer(0.1, self.tick)
         self.get_logger().info(f'Run {run} armed. Output: {self.directory}. Waiting for accepted START.')
 
@@ -163,7 +163,7 @@ class TrackBenchmark(Node):
         self.record('rosout', data)
 
     def on_parameters_changed(self, message):
-        if message.node not in self.clients:
+        if message.node not in self.parameter_clients:
             return
         values = message.new_parameters + message.changed_parameters
         try:
@@ -174,7 +174,7 @@ class TrackBenchmark(Node):
             self.record('parameter_error', dict(node=message.node, error=str(error)))
 
     def read_parameters(self, now):
-        for name, client in self.clients.items():
+        for name, client in self.parameter_clients.items():
             if name in self.parameters:
                 continue
             if name in self.pending:
@@ -193,7 +193,7 @@ class TrackBenchmark(Node):
     def parameters_listed(self, name, future):
         try:
             names = list(future.result().result.names)
-            self.clients[name].get_parameters(names).add_done_callback(
+            self.parameter_clients[name].get_parameters(names).add_done_callback(
                 lambda result: self.parameters_received(name, names, result))
         except Exception as error:
             self.parameter_errors[name] = str(error)
@@ -277,7 +277,7 @@ class TrackBenchmark(Node):
             return
         snapshot['startup_messages'] = self.startup_messages
         snapshot['initial_states'] = self.initial_states
-        for name in self.clients:
+        for name in self.parameter_clients:
             if name not in self.parameters:
                 self.parameter_errors.setdefault(name, 'No parameter response before capture ended')
         parameters = copy.deepcopy(self.parameters)
