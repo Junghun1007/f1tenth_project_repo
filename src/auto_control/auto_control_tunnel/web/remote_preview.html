@@ -123,8 +123,8 @@ table.stages tr.total td{font-weight:600;color:var(--ink)}
     </div>
 
     <div class="card sec">
-      <h3>단계별 처리 (1s 평균)</h3>
-      <table class="stages"><thead><tr><td>구간</td><td class="v">평균</td><td class="v">최대</td><td class="v">Hz</td></tr></thead>
+      <h3>단계별 연산 시간</h3>
+      <table class="stages"><thead><tr><td>구간</td><td class="v">연산 ms</td><td class="v">FPS (1000/ms)</td></tr></thead>
         <tbody id="stages"></tbody></table>
       <div class="stagefoot" id="stagefoot"></div>
     </div>
@@ -316,9 +316,12 @@ function updatePanel(f){
   $('start').disabled = !s.can_start;
 
   const msTxt = (x)=>x==null?'--':x.toFixed(2), hz = (x)=>x==null?'--':x.toFixed(1), cell = (t)=>`<td class="v${t==='--'?' stale':''}">${t}</td>`;
-  $('stages').innerHTML = f.stages.map(r=>`<tr><td>${r.label}</td>${cell(msTxt(r.ms))}${cell(msTxt(r.max_ms))}${cell(hz(r.hz))}</tr>`).join('')
-    + `<tr class="total"><td>합계 1a~4 (ms)</td>${cell(msTxt(f.pipeline_total_ms))}<td></td><td></td></tr>`;
-  $('stagefoot').textContent = `preview ${drawFps.toFixed(1)} FPS · frame seq ${f.seq} · 단위 ms`;
+  // FPS here is the compute-time reciprocal (1000 / ms), like the old BEV HUD, not the arrival rate.
+  const fpsTxt = (x)=>x==null||x<=0?'--':(1000/x).toFixed(1);
+  $('stages').innerHTML = f.stages.filter(r=>r.key!=='capture')
+    .map(r=>`<tr><td>${r.label}</td>${cell(msTxt(r.ms))}${cell(fpsTxt(r.ms))}</tr>`).join('')
+    + `<tr class="total"><td>합계 1a~4</td>${cell(msTxt(f.pipeline_total_ms))}${cell(fpsTxt(f.pipeline_total_ms))}</tr>`;
+  $('stagefoot').textContent = `preview ${drawFps.toFixed(1)} FPS · frame seq ${f.seq} · ms는 최근 1초 평균`;
   const S = f.system, pc=(x)=>x==null?'--':x.toFixed(0)+' %', tc=(x)=>x==null?'--':x.toFixed(1)+' °C';
   rows('sysA', [['CPU',pc(S.cpu_pct)],['GPU',pc(S.gpu_pct)],['CPU temp',tc(S.cpu_temp_c)],['GPU temp',tc(S.gpu_temp_c)]]);
   rows('sysB', [['Power',S.power_w==null?'--':S.power_w.toFixed(1)+' W'],['VESC',v.vesc_connected?'connected':'--'],
