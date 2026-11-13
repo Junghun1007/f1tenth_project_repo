@@ -13,7 +13,7 @@ camera_driver:
     obstacles.depth.ir_dot_projector_intensity: 0.7 # 지원하지 않는 장치는 0.0
     obstacles.depth.ir_flood_light_intensity: 0.0
     obstacles.depth.confidence_threshold: 200
-    obstacles.depth.left_right_check: false
+    obstacles.depth.left_right_check: true
     obstacles.depth.left_right_threshold: 10
     obstacles.depth.subpixel: false
     obstacles.depth.subpixel_fractional_bits: 3

@@ -23,7 +23,7 @@ struct Config
   double dot_intensity{0.5};
   double flood_intensity{0.0};
   int confidence{200};
-  bool lr_check{false};
+  bool lr_check{true};
   double bottom_fraction{1.0};
   int lr_threshold{10};
   bool subpixel{false};

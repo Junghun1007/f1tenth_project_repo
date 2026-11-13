@@ -1251,7 +1251,7 @@ private:
       depth_config_.dot_intensity=node_.declare_parameter<double>("obstacles.depth.ir_dot_projector_intensity",0.7,descriptor);
       depth_config_.flood_intensity=node_.declare_parameter<double>("obstacles.depth.ir_flood_light_intensity",0.0,descriptor);
       depth_config_.confidence=node_.declare_parameter<int>("obstacles.depth.confidence_threshold",200,descriptor);
-      depth_config_.lr_check=node_.declare_parameter<bool>("obstacles.depth.left_right_check",false,descriptor);
+      depth_config_.lr_check=node_.declare_parameter<bool>("obstacles.depth.left_right_check",true,descriptor);
       depth_config_.lr_threshold=node_.declare_parameter<int>("obstacles.depth.left_right_threshold",10,descriptor);
       depth_config_.subpixel=node_.declare_parameter<bool>("obstacles.depth.subpixel",true,descriptor);
       depth_config_.subpixel_bits=node_.declare_parameter<int>("obstacles.depth.subpixel_fractional_bits",3,descriptor);
