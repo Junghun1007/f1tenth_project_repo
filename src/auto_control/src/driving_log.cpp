@@ -33,13 +33,14 @@ DrivingLog::DrivingLog(const std::string & directory, const std::string & header
   const auto base = root / ("drive_" + std::to_string(stamp));
   path_ = base.string() + ".csv";
   std::ofstream metadata(base.string() + ".parameters.txt");
-  metadata << "Driving log schema: 8\nEffective controller parameters at startup\n"
+  metadata << "Driving log schema: 9\nEffective controller parameters at startup\n"
            << parameters;
   metadata.close();
   if (!metadata) {throw std::runtime_error("cannot write driving log parameters");}
   output_.open(path_);
   output_.imbue(std::locale::classic());
-  output_ << std::setprecision(17) << header << '\n';
+  // 9 significant digits cover every logged float-derived quantity.
+  output_ << std::setprecision(9) << header << '\n';
   output_.flush();
   if (!output_) {throw std::runtime_error("cannot open driving CSV: " + path_);}
   writer_ = std::thread(&DrivingLog::run, this);
@@ -93,12 +94,15 @@ void DrivingLog::run()
         }
         output_ << ",\"";
         bool first = true;
+        // 0.1 mm is far below the 1 cm BEV pixel; full precision only made
+        // each row several times larger.
+        output_ << std::fixed << std::setprecision(4);
         for (const auto & point : frame.path) {
           if (!first) {output_ << ';';}
           first = false;
           output_ << point.x << ':' << point.y;
         }
-        output_ << "\"\n";
+        output_ << std::defaultfloat << std::setprecision(9) << "\"\n";
       }
       output_.flush();
       if (!output_) {failed_ = true; return;}

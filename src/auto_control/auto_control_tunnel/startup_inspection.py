@@ -334,6 +334,7 @@ def main(args=None):
     node = StartupInspection()
     shown = False
     dismissed = False
+    last_render = 0.
     window = 'Safety inspection and driving controls'
     gui = bool(os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY') or os.sys.platform=='darwin')
     cv2 = None
@@ -358,10 +359,15 @@ def main(args=None):
                 cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
                 cv2.setMouseCallback(window, node.on_mouse)
                 shown = True
-            cv2.imshow(window, render(node.state,node.image,
-                time.monotonic()-node.image_at<.5,node.pending is not None,
-                speed=node.speed.view(time.monotonic()), compute=node.compute.lines(),
-                gauges=node.compute.gauges()))
+            # Redrawing the whole panel dominated this process. 10 Hz is
+            # enough for status; follow the speed slider at full rate.
+            now = time.monotonic()
+            if now - last_render >= (.03 if node.speed.dragging else .1):
+                last_render = now
+                cv2.imshow(window, render(node.state,node.image,
+                    now-node.image_at<.5,node.pending is not None,
+                    speed=node.speed.view(now), compute=node.compute.lines(),
+                    gauges=node.compute.gauges()))
             key = cv2.waitKey(1)&255
             if key in (10,13):
                 node.request_start()

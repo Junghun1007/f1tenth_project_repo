@@ -180,8 +180,10 @@ TCN ENTRY는 `OUTSIDE → ENTERING → INSIDE`, EXIT는
 돌아간다. 반복되는 같은 inside/outside 보고는 준비를 다시 시작하지 않는다.
 
 카메라마다 노출·전송 지연이 다르므로 출구의 유효 RGB 촬영 시각이 마지막 IR보다
-앞설 수 있다. 원본 헤더·점·지지점·정지선·성능 시각을 유지하고, 선택기는 결과에
-`lane_source=RGB/IR` 식별자만 붙인다. C++ 제어기는 카메라별로 중복·역순을 검사하며
+앞설 수 있다. 선택기는 검출기 출력 바이트를 수정 없이 카메라별 토픽
+`/tunnel/lane_result/rgb`, `/tunnel/lane_result/ir`로 전달한다(촬영 시각만 읽고,
+목표 경로 검증·IR 길이 탈출에 필요할 때만 전체를 해석). 제어기는 토픽으로 카메라를
+구분하므로 `lane_source` 필드는 쓰지 않는다. C++ 제어기는 카메라별로 중복·역순을 검사하며
 실제 헤더 나이 검사는 계속 적용한다. 일반/독립 실행은 기존 단일 스트림 검사를 쓴다.
 기본 검증 모드의 IR 헤더는 기존처럼 BEV 발행 시각이므로 촬영→BEV 변환 지연을
 포함하지 않는다. 전환 준비 중 목표 소스에는 검증 모드에서도 헤더 최신성을 검사한다.
@@ -397,7 +399,7 @@ IR 전용 launch와 마찬가지로 실제 속도는 기존 ERPM 피드백으로
 ros2 topic pub --once /auto/enabled std_msgs/msg/Bool 'data: true'
 ros2 topic echo /tunnel/state
 ros2 topic echo /tunnel/selected_source
-ros2 topic hz /tunnel/lane_result
+ros2 topic hz /tunnel/lane_result/rgb   # 터널 안에서는 /tunnel/lane_result/ir
 ```
 
 기존 인자 `camera_params_file`, `bev_params_file`, `line_detactor_params_file`,

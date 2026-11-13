@@ -142,10 +142,21 @@ public:
           if (!message->data) {start_authorization_.revoke("Model readiness lost");}
         });
     }
-    lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
-      lane_result_topic_, sensor_qos,
-      std::bind(&AutoControlNode::on_lane_result, this, std::placeholders::_1));
     tunnel_enabled_=declare_parameter<bool>("tunnel.enabled",false);
+    if (tunnel_enabled_) {
+      // The selector forwards each camera's unmodified detector output on its
+      // own topic. The camera identity is the topic, not a rewritten field.
+      lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
+        lane_result_topic_ + "/rgb", sensor_qos,
+        [this](line_detactor::msg::LaneResult::ConstSharedPtr message) {on_lane_result(message, "RGB");});
+      tunnel_ir_lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
+        lane_result_topic_ + "/ir", sensor_qos,
+        [this](line_detactor::msg::LaneResult::ConstSharedPtr message) {on_lane_result(message, "IR");});
+    } else {
+      lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(
+        lane_result_topic_, sensor_qos,
+        [this](line_detactor::msg::LaneResult::ConstSharedPtr message) {on_lane_result(message, "");});
+    }
     if (tunnel_enabled_) {
       outside_avoidance_=avoidance_control_enabled_;
       outside_slowdown_=obstacle_slowdown_enabled_;
@@ -779,7 +790,8 @@ private:
     }
   }
 
-  void on_lane_result(const line_detactor::msg::LaneResult::ConstSharedPtr message)
+  void on_lane_result(
+    const line_detactor::msg::LaneResult::ConstSharedPtr message, const char * lane_source)
   {
     const auto callback_started = PerformanceMeasurement::SteadyClock::now();
     const auto received_ros = now();
@@ -803,10 +815,7 @@ private:
       if (age < -0.05 || age > path_capture_maximum_age_sec_) {
         throw std::invalid_argument("source capture timestamp is stale or in the future");
       }
-      if (tunnel_enabled_ && message->lane_source!="RGB" && message->lane_source!="IR") {
-        throw std::invalid_argument("missing or invalid tunnel lane source");
-      }
-      if (!lane_capture_order_.accept(*capture_ns, tunnel_enabled_ ? message->lane_source : "")) {
+      if (!lane_capture_order_.accept(*capture_ns, lane_source)) {
         throw std::invalid_argument("duplicate or out-of-order lane result");
       }
       if (traffic_stop_enabled_ && message->header.frame_id == lane_result_frame_id_) {
@@ -898,25 +907,24 @@ private:
     return true;
   }
 
+  // A plan only updates the stored avoidance/slowdown state. The command is
+  // recomputed by the next lane result (and the watchdog), so each plan does
+  // not add a second full control + publish + log cycle. Guard stops stay
+  // immediate.
   void on_avoidance_plan(const auto_control::msg::AvoidancePlan::ConstSharedPtr message)
   {
     const auto received=now().nanoseconds();
-    const bool slowdown_started=observe_obstacle_slowdown(*message,received);
-    if (!avoidance_control_enabled_) {
-      if (slowdown_started) {std::int64_t finished=0; update_control_from_path(finished);}
-      return;
-    }
+    observe_obstacle_slowdown(*message,received);
+    if (!avoidance_control_enabled_) {return;}
     const auto steady=std::chrono::steady_clock::now();
     const auto source=stamp_nanoseconds(message->header.stamp),depth=stamp_nanoseconds(message->depth_stamp);
     auto reject=[&](const std::string & reason) {
       avoidance_path_.reset(); avoidance_follow_centerline_=false;
       avoidance_confirmations_=0;
       avoidance_status_=reason;
-      if (avoidance_deformation_only_) {
-        // Drop only the optional deformation. Normal lane/traffic/vehicle
-        // control remains responsible for whether the vehicle can drive.
-        std::int64_t finished=0; update_control_from_path(finished);
-      } else {publish_guard_stop("avoidance_"+reason);}
+      // Deformation mode drops only the optional deformation. Normal
+      // lane/traffic/vehicle control remains responsible for driving.
+      if (!avoidance_deformation_only_) {publish_guard_stop("avoidance_"+reason);}
     };
     if (message->deformation_only!=avoidance_deformation_only_) {reject("planner_mode_mismatch"); return;}
     if (!message->control_ready || !message->valid) {reject(message->status.empty()?"unavailable":message->status); return;}
@@ -933,7 +941,7 @@ private:
       avoidance_path_.reset(); avoidance_follow_centerline_=true;
       avoidance_lane_ns_=source; avoidance_depth_ns_=depth; avoidance_received_at_=steady;
       avoidance_confirmations_=3; avoidance_status_="CENTERLINE";
-      std::int64_t finished=0; update_control_from_path(finished); return;
+      return;
     }
     if (!std::isfinite(message->max_curvature_per_m) || message->max_curvature_per_m<0 ||
       (!avoidance_deformation_only_ && message->max_curvature_per_m>std::tan(maximum_steering_angle_rad_)/avoidance_wheelbase_) ||
@@ -970,7 +978,6 @@ private:
     avoidance_lane_ns_=source; avoidance_depth_ns_=depth; avoidance_received_at_=steady;
     avoidance_path_=std::move(candidate); avoidance_follow_centerline_=false;
     avoidance_status_=avoidance_confirmations_<3?"confirming":message->status;
-    std::int64_t finished=0; update_control_from_path(finished);
   }
 
   void validate_and_build_path(const line_detactor::msg::LaneResult & message)
@@ -2000,12 +2007,25 @@ private:
   void publish_diagnostic(
     const rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr & publisher, double value)
   {
-    if (publisher->get_subscription_count() == 0U &&
-      publisher->get_intra_process_subscription_count() == 0U)
-    {
-      return;
-    }
+    if (!diagnostic_subscribed(*publisher)) {return;}
     publish_float(publisher, value);
+  }
+
+  // Subscriber counts are middleware queries; refresh them once per second
+  // instead of for every diagnostic topic in every control cycle.
+  bool diagnostic_subscribed(const rclcpp::PublisherBase & publisher)
+  {
+    const auto checked = std::chrono::steady_clock::now();
+    if (checked - diagnostic_subscriptions_checked_at_ >= std::chrono::seconds(1)) {
+      diagnostic_subscriptions_.clear();
+      diagnostic_subscriptions_checked_at_ = checked;
+    }
+    const auto found = diagnostic_subscriptions_.find(&publisher);
+    if (found != diagnostic_subscriptions_.end()) {return found->second;}
+    const bool subscribed = publisher.get_subscription_count() > 0U ||
+      publisher.get_intra_process_subscription_count() > 0U;
+    diagnostic_subscriptions_.emplace(&publisher, subscribed);
+    return subscribed;
   }
 
   void publish_commands(
@@ -2038,9 +2058,7 @@ private:
     publish_diagnostic(command_brake_pub_, brake_current);
     publish_diagnostic(target_speed_pub_, latest_target_speed_mps_);
     publish_diagnostic(current_speed_pub_, current_speed_mps_);
-    if (corner_state_pub_->get_subscription_count() > 0U ||
-      corner_state_pub_->get_intra_process_subscription_count() > 0U)
-    {
+    if (diagnostic_subscribed(*corner_state_pub_)) {
       // Controller estimate: 0=straight, 1=approach, 2=turning, 3=stopped/inhibited.
       // A speed profile alone may describe a future corner; turning uses the
       // near-path/steering exit latch, including its confirmation interval.
@@ -2540,7 +2558,9 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr cross_track_pub_, heading_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr raw_steering_pub_, command_servo_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr input_to_control_decision_pub_;
-  rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_;
+  rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_, tunnel_ir_lane_sub_;
+  std::map<const rclcpp::PublisherBase *, bool> diagnostic_subscriptions_;
+  std::chrono::steady_clock::time_point diagnostic_subscriptions_checked_at_{};
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_duty_sub_;
   rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr dynamics_motor_current_sub_;

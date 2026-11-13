@@ -24,6 +24,9 @@ class PathRules:
 
 
 def stamp_ns(message):
+    capture_ns = getattr(message, 'capture_ns', None)  # RawLane: no decode needed
+    if capture_ns is not None:
+        return capture_ns
     return message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
 
 

@@ -3,6 +3,7 @@
 #include <point_cloud/bev_crop.hpp>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
@@ -71,8 +72,14 @@ inline Scan emptyScan(const Options & o)
 }
 class Projector
 {
-  struct Ray {int u,v; point_cloud::Vector3 direction;};
+  // Compact per-ray table: RAW16 pixel index within its row plus the
+  // normalized image-plane direction (z is always 1).
+  struct Ray {std::uint32_t row, byte; float x, y;};
+  struct Sample {int bin; float range, height;};
   std::vector<Ray> rays_;
+  // Per-frame scratch, reused so a frame does not allocate ray-sized buffers.
+  mutable std::vector<Sample> samples_;
+  mutable std::vector<int> support_;
   point_cloud::RigidTransform transform_;
   Options options_;
   int width_{0}, height_{0};
@@ -101,7 +108,8 @@ public:
       rays_.reserve(static_cast<std::size_t>(columns)*rows);
       for (int v=roi.y;v<roi.y+roi.height;v+=o.pixel_stride) {
         for (int u=roi.x;u<roi.x+roi.width;u+=o.pixel_stride) {
-          rays_.push_back({u,v,{(u-k.cx)/k.fx,(v-k.cy)/k.fy,1.0}});
+          rays_.push_back({static_cast<std::uint32_t>(v),static_cast<std::uint32_t>(u)*2U,
+            static_cast<float>((u-k.cx)/k.fx),static_cast<float>((v-k.cy)/k.fy)});
         }
       }
       ray_key_=key;
@@ -119,36 +127,40 @@ public:
     }
     const auto & o=options_;
     auto out=emptyScan(o);
-    struct Sample {int bin; float range, height;};
-    std::vector<Sample> samples; samples.reserve(rays_.size());
+    auto & samples=samples_; samples.clear();
+    if (samples.capacity()<rays_.size()) {samples.reserve(rays_.size());}
+    const double bin_scale=(o.bins-1)/(o.angle_max-o.angle_min);
     for (const auto & ray : rays_) {
-      const auto offset=static_cast<std::size_t>(ray.v)*stride+ray.u*2;
+      const auto offset=static_cast<std::size_t>(ray.row)*stride+ray.byte;
       const auto raw=static_cast<std::uint16_t>(bytes[offset] | (bytes[offset+1]<<8));
       const double depth=raw*0.001;
       if (!raw || depth<o.min_depth || depth>o.max_depth) {continue;}
       ++out.depth_points;
       // Rotate only valid depth samples, with the same operation order as before.
-      const auto direction=point_cloud::rotate(transform_.rotation,ray.direction);
+      const auto direction=point_cloud::rotate(transform_.rotation,
+        point_cloud::Vector3{static_cast<double>(ray.x),static_cast<double>(ray.y),1.0});
       const double z=direction[2]*depth+transform_.translation[2];
       if (z>o.max_height) {++out.height_removed; continue;}
       const double x=direction[0]*depth+transform_.translation[0];
       const double y=direction[1]*depth+transform_.translation[1];
       if (x<=0) {continue;}
-      const double range=std::hypot(x,y);
+      // The floor margin is never below ground_distance, so most floor pixels
+      // are rejected here without computing their range.
+      if (o.ground_enabled && z<=o.ground_distance) {++out.ground_removed; continue;}
+      const double range=std::sqrt(x*x+y*y);
       const double floor_margin=std::min(o.ground_max_distance,
         o.ground_distance+o.ground_distance_per_meter*range);
       if (o.ground_enabled && z<=floor_margin) {++out.ground_removed; continue;}
       if (range<o.min_range || range>o.max_range) {continue;}
       const double angle=std::atan2(y,x)/radians;
       if (angle<o.angle_min || angle>o.angle_max) {continue;}
-      const int bin=std::clamp(static_cast<int>(std::lround(
-        (angle-o.angle_min)*(o.bins-1)/(o.angle_max-o.angle_min))),0,o.bins-1);
+      const int bin=std::clamp(static_cast<int>(std::lround((angle-o.angle_min)*bin_scale)),0,o.bins-1);
       auto & nearest=out.ranges[bin];
       if (!std::isfinite(nearest) || range<nearest) {nearest=range;}
       samples.push_back({bin,static_cast<float>(range),static_cast<float>(z)});
       ++out.accepted_points;
     }
-    std::vector<int> support(o.bins,0);
+    auto & support=support_; support.assign(o.bins,0);
     for (const auto & sample : samples) {
       if (sample.range-out.ranges[sample.bin]<=o.support_distance) {
         ++support[sample.bin];

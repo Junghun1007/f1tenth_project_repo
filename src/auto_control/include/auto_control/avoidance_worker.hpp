@@ -223,9 +223,12 @@ private:
         previous_lane=lane_capture;previous_depth=depth_capture;
         bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"avoidance_plan");
         const auto planning_started=Clock::now();
-        const bool lane_obstacle_detected=avoidance::hasInLaneObstacle(*lane,*obstacles);
         auto result=std::make_shared<bev_handoff::AvoidancePreview>(planner_->plan(
           *lane,*obstacles,double(obstacles->header.stamp.sec)+obstacles->header.stamp.nanosec*1e-9));
+        // Deformation planning already projected every cluster onto the lane;
+        // repeat that search only when the plan did not evaluate membership.
+        const bool lane_obstacle_detected=planner_->laneObstacle() ?
+          *planner_->laneObstacle() : avoidance::hasInLaneObstacle(*lane,*obstacles);
         result->display_delta_sec=std::min(max_age_,1/max_fps_+max_sync_);
         const auto finished=Clock::now();
         if (std::chrono::duration<double>(finished-lane->received_at).count()>max_age_ ||

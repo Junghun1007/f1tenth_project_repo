@@ -1,6 +1,7 @@
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <deque>
 #include <mutex>
 namespace bev_handoff
@@ -10,6 +11,9 @@ namespace
 std::shared_ptr<const DirectDepthFrame> depth;
 std::shared_ptr<const DirectIrFrame> ir;
 std::mutex mutex;
+std::mutex depth_mutex;
+std::condition_variable depth_changed;
+std::uint64_t depth_revision=0;
 std::shared_ptr<const ObstacleReference> reference;
 std::deque<std::shared_ptr<const ObstacleFrame>> history;
 double seconds(const std_msgs::msg::Header & h)
@@ -22,7 +26,19 @@ std::shared_ptr<const ObstacleReference> obstacleReference()
 std::string obstacleDeviceId()
 {std::lock_guard<std::mutex> lock(mutex); return reference ? reference->device_id : std::string{};}
 void publishDirectDepth(std::shared_ptr<const DirectDepthFrame> frame)
-{std::atomic_store(&depth,std::move(frame));}
+{
+  std::atomic_store(&depth,std::move(frame));
+  {std::lock_guard<std::mutex> lock(depth_mutex); ++depth_revision;}
+  depth_changed.notify_all();
+}
+std::shared_ptr<const DirectDepthFrame> waitDirectDepth(
+  std::uint64_t & revision,std::chrono::steady_clock::duration timeout)
+{
+  std::unique_lock<std::mutex> lock(depth_mutex);
+  depth_changed.wait_for(lock,timeout,[&revision]() {return depth_revision!=revision;});
+  revision=depth_revision;
+  return std::atomic_load(&depth);
+}
 void publishDirectIr(std::shared_ptr<const DirectIrFrame> frame)
 {std::atomic_store(&ir,std::move(frame));}
 std::shared_ptr<const DirectIrFrame> latestDirectIr()

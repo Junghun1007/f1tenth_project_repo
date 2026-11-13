@@ -448,7 +448,9 @@ class RuntimeTools(Node):
         finally:
             # A Tk/ROS callback error must not silently stop all future requests.
             if rclpy.ok():
-                self.root.after(10, self.tick)
+                # Fast polling only while a tool window is in use; the idle
+                # process otherwise just waits for an open request.
+                self.root.after(10 if self.windows else 50, self.tick)
 
     def poll(self):
         rclpy.spin_once(self, timeout_sec=0)
@@ -457,6 +459,11 @@ class RuntimeTools(Node):
             if now - self.last_heartbeat > .5:
                 self.set_metrics(True)
                 self.last_heartbeat = now
+            # Rewriting every table row is the expensive part; 4 Hz is ample
+            # for 1 Hz statistics.
+            if now - getattr(self, 'last_table_refresh', 0.) < .25:
+                return
+            self.last_table_refresh = now
             for (node, stage), (at, row) in self.latest.items():
                 key = node + ':' + stage
                 mean = row['mean_ms']

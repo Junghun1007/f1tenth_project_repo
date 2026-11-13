@@ -12,12 +12,13 @@ from lane_fixture import lane, ns
 
 def load_node():
     modules = {name: ModuleType(name) for name in (
-        'rclpy', 'rclpy.node', 'rclpy.qos', 'std_msgs', 'std_msgs.msg',
+        'rclpy', 'rclpy.node', 'rclpy.qos', 'rclpy.serialization', 'std_msgs', 'std_msgs.msg',
         'line_detactor', 'line_detactor.msg')}
     modules['rclpy.node'].Node = object
     for name in ('QoSProfile', 'ReliabilityPolicy', 'DurabilityPolicy'):
         setattr(modules['rclpy.qos'], name, object)
     modules['std_msgs.msg'].String = NS
+    modules['rclpy.serialization'].deserialize_message = lambda raw, _type: None
     modules['line_detactor.msg'].LaneResult = object
     path = Path(__file__).resolve().parents[2] / 'auto_control_tunnel/node.py'
     spec = importlib.util.spec_from_file_location('auto_control_tunnel._node_test', path)
@@ -40,7 +41,7 @@ class CallbackTests(unittest.TestCase):
         n.get_logger = lambda: NS(warning=lambda _: None, info=lambda _: None)
         n.publish_status = lambda: None
         self.outputs = []
-        n.output = NS(publish=self.outputs.append)
+        n.output = {source: NS(publish=self.outputs.append) for source in ('RGB', 'IR')}
 
     def report(self, **overrides):
         report = dict(source_stamp_ns=10_000_000_000, status='LIVE', state='outside', event=None)
@@ -53,6 +54,17 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(self.outputs, [self.message])
         self.assertFalse(self.outputs[0].centerline_valid)
         self.assertEqual(self.outputs[0].header.stamp.sec, 10)
+
+    def test_raw_lane_is_forwarded_as_original_bytes_without_decoding(self):
+        import struct
+        decoded = []
+        self.module.deserialize_message = lambda raw, _type: decoded.append(raw) or self.message
+        data = b'\x00\x01\x00\x00' + struct.pack('<iI', 10, 5) + b'payload'
+        self.report()
+        self.node.on_raw_lane('RGB', data)
+        self.assertEqual(self.outputs, [data])
+        self.assertEqual(decoded, [])
+        self.assertEqual(self.node.policy.last_input_ns['RGB'], 10_000_000_005)
 
     def test_warmup_and_tcn_silence_withhold_lane_results(self):
         self.node.on_lane('RGB', self.message)

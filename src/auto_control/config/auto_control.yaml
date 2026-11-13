@@ -6,7 +6,8 @@ auto_control:
     enabled: true
     stop_steering_hold_enabled: true     # 목표 0 + 실제 속도 <0.05m/s에서 조향 유지, 재출발 시 해제
     # 실제 주행 기록. performance_measurement_enabled와 달리 주행 모드를 변경하지 않음.
-    driving_log_enabled: true
+    # 기본 꺼짐: 중앙선 전체를 행마다 기록하므로 필요할 때만 true로 켠다.
+    driving_log_enabled: false
     driving_log_rate_hz: 30.0            # 일반 기록 상한(Hz). 제어/신호/조향 유지 상태 변경 시 추가 기록
     driving_log_directory: "driving_logs" # 실행 위치 기준. 절대 경로도 가능
     # 개발 기능: false이면 신호등이 조향/속도/제동에 영향을 주지 않음. 재시작 시 적용.

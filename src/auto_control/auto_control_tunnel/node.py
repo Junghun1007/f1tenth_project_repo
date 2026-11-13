@@ -3,12 +3,14 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
+from rclpy.serialization import deserialize_message
 from std_msgs.msg import String
 from line_detactor.msg import LaneResult
 from .selection import LaneSelector
 from .ir_length_exit import IrLengthExit
 from .path_validation import PathRules
 from .telemetry import TunnelPreviewTelemetry
+from .raw_lane import RawLane
 
 
 class TunnelLaneSelector(Node):
@@ -35,7 +37,10 @@ class TunnelLaneSelector(Node):
         sensor = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         status = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self.output = self.create_publisher(LaneResult, '/tunnel/lane_result', sensor)
+        # One output per camera: the controller learns the source from the
+        # topic, so detector bytes are forwarded unmodified (no decode/encode).
+        self.output = {source: self.create_publisher(
+            LaneResult, '/tunnel/lane_result/' + source.lower(), sensor) for source in ('RGB', 'IR')}
         self.status = {key: self.create_publisher(String, '/tunnel/' + key, status)
                        for key in ('state', 'target_source', 'selected_source', 'compute_source')}
         self.preview = TunnelPreviewTelemetry()
@@ -44,9 +49,9 @@ class TunnelLaneSelector(Node):
         self.subscriptions_owned = [
             self.create_subscription(String, '/tunnel_tcn/result', self.on_event, sensor),
             self.create_subscription(LaneResult, param('rgb_result_topic', '/line_detactor/result'),
-                                     lambda msg: self.on_lane('RGB', msg), sensor),
+                                     lambda data: self.on_raw_lane('RGB', data), sensor, raw=True),
             self.create_subscription(LaneResult, '/ir_bev_line_detection/result',
-                                     lambda msg: self.on_lane('IR', msg), sensor)]
+                                     lambda data: self.on_raw_lane('IR', data), sensor, raw=True)]
         self.published = None
         self.last_tcn_received = None
         self.tcn_live = False
@@ -99,6 +104,14 @@ class TunnelLaneSelector(Node):
         except (ValueError, TypeError, KeyError, AttributeError):
             self.get_logger().warning('Ignoring malformed TCN result')
 
+    def on_raw_lane(self, source, data):
+        try:
+            message = RawLane(data, lambda raw: deserialize_message(raw, LaneResult))
+        except Exception:
+            self.get_logger().warning('Ignoring undecodable lane result')
+            return
+        self.on_lane(source, message)
+
     def on_lane(self, source, message):
         # Validation follows the last selected source independently of TCN
         # health, like running that detector/controller alone. TCN only switches.
@@ -119,7 +132,9 @@ class TunnelLaneSelector(Node):
                 f'low_frames={monitor.below_count}/{monitor.confirm_frames} triggered={triggered}')
         self.publish_status()
         if result is not None:
-            self.output.publish(result)
+            # RawLane forwards the detector's own bytes; plain messages (tests,
+            # non-raw transports) are published as they are.
+            self.output[source].publish(getattr(result, 'raw', result))
 
 
 def main(args=None):

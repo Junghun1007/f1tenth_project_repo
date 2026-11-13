@@ -103,10 +103,20 @@ void ObstacleWorker::run()
     geometry_msgs::msg::PoseArray empty; empty.header.stamp=node_.now(); empty.header.frame_id=frame_id_;
     publisher_->publish(empty); cleared=true;
   };
+  std::uint64_t depth_revision=0;
+  bool retry_sync=false;
   while (!stop_ && rclcpp::ok()) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
     try {
-      const auto depth=bev_handoff::latestDirectDepth();
+      // Sleep until the camera publishes the next depth frame. The timeout only
+      // bounds stale-result clearing and shutdown; it is not a polling period.
+      std::shared_ptr<const bev_handoff::DirectDepthFrame> depth;
+      if (retry_sync) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        depth=bev_handoff::latestDirectDepth();
+        retry_sync=false;
+      } else {
+        depth=bev_handoff::waitDirectDepth(depth_revision,std::chrono::milliseconds(20));
+      }
       const auto now=Clock::now();
       const double age=depth ? std::chrono::duration<double>(now-depth->captured_at).count() : max_age_+1;
       if (!depth || age<0 || age>max_age_) {
@@ -125,7 +135,7 @@ void ObstacleWorker::run()
         }
       }
       // Retry the latest depth while waiting for nearby RGB geometry; no queue growth.
-      if (!match) {++rejected_sync; continue;}
+      if (!match) {++rejected_sync; retry_sync=true; continue;}
       last_capture=depth->captured_at;
       bev_handoff::RuntimeSample runtime_sample(monitor_.get(),"obstacle_detection");
       const auto started=Clock::now();

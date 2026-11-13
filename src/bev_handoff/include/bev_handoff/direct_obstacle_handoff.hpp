@@ -55,6 +55,11 @@ std::shared_ptr<const ObstacleReference> obstacleReference();
 std::string obstacleDeviceId();
 void publishDirectDepth(std::shared_ptr<const DirectDepthFrame> frame);
 std::shared_ptr<const DirectDepthFrame> latestDirectDepth();
+// Blocks until a publishDirectDepth() newer than `revision` (start at 0) or the
+// timeout, then returns the latest frame (possibly null/unchanged) and updates
+// `revision`. Lets consumers sleep between depth frames instead of polling.
+std::shared_ptr<const DirectDepthFrame> waitDirectDepth(
+  std::uint64_t & revision, std::chrono::steady_clock::duration timeout);
 struct ObstacleCluster
 {
   std::vector<cv::Point2f> surface_xy;

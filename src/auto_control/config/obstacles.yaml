@@ -31,7 +31,9 @@ auto_obstacles:
     obstacles.roi.height: 1.0
     obstacles.points.pixel_stride: 2 # 1이면 작은 장애물 표본 증가, CPU 비용 증가
     obstacles.points.min_depth_m: 0.1
-    obstacles.points.max_depth_m: 20.0
+    # range.max_m + 약 1m 여유. 이 값 밖 픽셀은 좌표 변환 전에 버림(검출 결과 동일).
+    # range.max_m을 키우면 이 값도 함께 키울 것.
+    obstacles.points.max_depth_m: 3.0
     # BEV가 시작할 때 측정한 평면 및 RGB에 실제 적용한 보정으로 지면 높이 계산.
     obstacles.ground.enabled: true
     obstacles.ground.distance_m: 0.05

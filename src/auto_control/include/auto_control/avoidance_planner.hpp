@@ -178,10 +178,14 @@ class Planner
 public:
   explicit Planner(Options options):o_(options) {validate(o_);}
   void reset() {targets_.clear(); clear_since_=0;}
+  // Lane membership found by the latest plan()'s own centerline projection.
+  // Empty when that plan did not evaluate it (checked mode / no reference path).
+  const std::optional<bool> & laneObstacle() const {return lane_obstacle_;}
   bev_handoff::AvoidancePreview plan(const bev_handoff::PlanningLane & lane,
     const bev_handoff::ObstacleFrame & obstacles,double stamp)
   {
     bev_handoff::AvoidancePreview out;
+    lane_obstacle_.reset();
     out.header=lane.header; out.lane_received_at=lane.received_at;
     out.depth_captured_at=obstacles.captured_at;
     out.x_max=lane.x_max; out.y_max=lane.y_max; out.meter_per_pixel=lane.meter_per_pixel;
@@ -522,8 +526,9 @@ private:
   // curvature feasibility, clear confirmation, or departure decision.
   bev_handoff::AvoidancePreview deform(const bev_handoff::PlanningLane & lane,
     const bev_handoff::ObstacleFrame & obstacles,bev_handoff::AvoidancePreview out,
-    const std::vector<double> & arc,const std::vector<cv::Point2d> & normals) const
+    const std::vector<double> & arc,const std::vector<cv::Point2d> & normals)
   {
+    lane_obstacle_=false;
     std::vector<std::pair<cv::Point2d,cv::Point2d>> edges;
     for (const auto & line:lane.boundaries) {
       for (std::size_t i=1;i<line.size();++i) {
@@ -575,6 +580,7 @@ private:
       if (!std::isfinite(best) || outside_horizon) {continue;}
       const auto corridor=bounds(projection,normal);
       if (lateral<=corridor.first || lateral>=corridor.second) {continue;}
+      lane_obstacle_=true;
       const double half=o_.obstacle_size/2;
       out.assumed_boxes.push_back({center.x-half,center.x+half,center.y-half,center.y+half});
       // Explicit margin affects the requested shape only. No hidden motion,
@@ -660,5 +666,6 @@ private:
   Options o_;
   std::vector<Target> targets_;
   double clear_since_{0};
+  std::optional<bool> lane_obstacle_;
 };
 }  // namespace auto_control::avoidance
