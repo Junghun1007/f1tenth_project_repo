@@ -66,14 +66,16 @@ def integrated_nodes(rgb_detector, controller, context):
                                                           'model_input_topic': ir['input_topic']}]),
         ComposableNode(package='line_detactor', plugin='line_detactor::LineDetactorNode',
                        name='ir_line_detactor', parameters=[ir],
+                       extra_arguments=[{'use_intra_process_comms': True}]),
+        # C++ selector in the detector container: RGB/IR results arrive intra-process.
+        ComposableNode(package='auto_control', plugin='auto_control::TunnelLaneSelector',
+                       name='tunnel_lane_selector', parameters=[selector_parameters],
                        extra_arguments=[{'use_intra_process_comms': True}])]
     processes = [
         Node(package='tunnel_tcn_test', executable='tunnel_tcn_node', name='tunnel_tcn_test',
              output='screen', parameters=[str(shares['tunnel_tcn_test'] / 'config/tunnel_tcn.yaml'),
                                           {'image_topic': '/tunnel/rgb_raw', 'initial_state': 'outside',
-                                           'preview_enabled': False}]),
-        Node(package='auto_control', executable='tunnel_lane_selector', name='tunnel_lane_selector',
-             output='screen', parameters=[selector_parameters])]
+                                           'preview_enabled': False}])]
     return components, processes
 
 
@@ -123,11 +125,8 @@ def remote_preview_node(tunnel_enabled, traffic_enabled, params_file, detector_l
         expected += ['ir_line_detactor', 'tunnel_tcn_test']
     if traffic_enabled:
         expected += ['traffic_light_detector']
-    lane_topics = (['/tunnel/lane_result/rgb', '/tunnel/lane_result/ir'] if tunnel_enabled
-                   else ['/line_detactor/result'])
     parameters = remote_preview_parameters(params_file, detector_lane_width_m)
-    parameters.update({'expected_nodes': expected, 'lane_topics': lane_topics,
-                       'connection_status_topic': connection_status_topic,
+    parameters.update({'expected_nodes': expected,
                        'connection_diagnostics_topic': connection_diagnostics_topic})
     return Node(package='auto_control', executable='remote_preview', name='remote_preview',
                 output='screen', parameters=[parameters])

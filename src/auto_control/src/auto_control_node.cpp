@@ -1,4 +1,7 @@
 #include <bev_handoff/runtime_monitor.hpp>
+#include <bev_handoff/stage_meter.hpp>
+#include <iomanip>
+#include <sstream>
 #include <map>
 #include <set>
 #include "auto_control/control_core.hpp"
@@ -95,6 +98,13 @@ public:
     // Remote preview stage 4: lane result ready (postprocess done) -> steering decision.
     result_to_control_decision_pub_ = create_publisher<std_msgs::msg::Float32>(
       "/perf/lane_result_to_control_ms", command_qos);
+    // One 30 Hz JSON summary for the remote preview, built only while someone subscribes,
+    // so the Python bridge does not subscribe to every diagnostic topic and LaneResult.
+    preview_snapshot_pub_ = create_publisher<std_msgs::msg::String>(
+      "/auto/preview_snapshot", rclcpp::QoS(1).best_effort());
+    preview_meters_drained_at_ = std::chrono::steady_clock::now();
+    preview_snapshot_timer_ = create_wall_timer(
+      std::chrono::milliseconds(33), std::bind(&AutoControlNode::publish_preview_snapshot, this));
     model_startup_check_required_ = declare_parameter<bool>("model_startup_check_required", false);
     startup_safety_enabled_=declare_parameter<bool>("startup_safety_enabled",false);
     if (startup_safety_enabled_) {
@@ -746,6 +756,15 @@ private:
   {
     const auto received_ros = now();
     ++lane_result_count_;
+    latest_lane_state_ = message->state;
+    latest_lane_source_ = lane_source;
+    // Remote preview stages 2 (BEV -> inference) and 3 (inference -> centerline result).
+    preview_infer_meter_.add(std::chrono::nanoseconds(static_cast<std::int64_t>(
+      message->detector_queue_nanoseconds + message->h2d_preprocess_nanoseconds +
+      message->pure_inference_nanoseconds)));
+    preview_post_meter_.add(std::chrono::nanoseconds(static_cast<std::int64_t>(
+      message->label_export_nanoseconds + message->backend_postprocess_nanoseconds +
+      message->lane_geometry_nanoseconds + message->result_message_build_nanoseconds)));
     latest_lane_sequence_ = message->detector_sequence;
     latest_stop_line_present_ = message->stop_line_present;
     latest_stop_line_raw_m_ = message->stop_line_distance_m;
@@ -821,6 +840,7 @@ private:
       if (result_ready_ns && decision_finished_ros_ns >= *result_ready_ns) {
         publish_float(result_to_control_decision_pub_,
           static_cast<double>(decision_finished_ros_ns - *result_ready_ns) / 1.0e6);
+        preview_control_meter_.add(std::chrono::nanoseconds(decision_finished_ros_ns - *result_ready_ns));
       }
     }
   }
@@ -2001,6 +2021,8 @@ private:
       throw std::invalid_argument("unsupported passive motor mode: " + motor_mode);
     }
     last_motor_mode_ = motor_mode;
+    latest_duty_command_ = duty;
+    latest_brake_command_ = brake_current;
     latest_servo_position_ = servo_position;
     if (control_mode_ != "monitor_only") {publish_float(servo_pub_, servo_position);}
     publish_diagnostic(command_duty_pub_, duty);
@@ -2024,6 +2046,64 @@ private:
     publish_diagnostic(raw_steering_pub_, latest_raw_steering_angle_rad_);
     publish_diagnostic(command_servo_pub_, latest_servo_position_);
     record_driving_log();
+  }
+
+  static std::string json_number(double value, int digits = 4)
+  {
+    if (!std::isfinite(value)) {return "null";}
+    std::ostringstream out;
+    out << std::fixed << std::setprecision(digits) << value;
+    return out.str();
+  }
+
+  void publish_preview_snapshot()
+  {
+    if (!diagnostic_subscribed(*preview_snapshot_pub_)) {return;}
+    const auto steady = std::chrono::steady_clock::now();
+    const double drained = std::chrono::duration<double>(steady - preview_meters_drained_at_).count();
+    if (drained >= 1.0) {
+      preview_stages_json_ = "{\"infer\":" + preview_infer_meter_.drain(drained) +
+        ",\"post\":" + preview_post_meter_.drain(drained) +
+        ",\"control\":" + preview_control_meter_.drain(drained) + "}";
+      preview_meters_drained_at_ = steady;
+    }
+    const std::int64_t now_ns = now().nanoseconds();
+    const unsigned corner = longitudinal_phase_ == "guard_stop" || latest_target_speed_mps_ <= 0.0 ||
+      std::abs(current_speed_mps_) < 0.05 ? 3U :
+      turn_recovery_hold_ ? 2U : corner_profile_active_ ? 1U : 0U;
+    std::ostringstream out;
+    out << "{\"speed\":" << json_number(current_speed_mps_)
+        << ",\"target\":" << json_number(latest_target_speed_mps_)
+        << ",\"duty\":" << json_number(latest_duty_command_)
+        << ",\"brake\":" << json_number(latest_brake_command_)
+        << ",\"servo\":" << json_number(latest_servo_position_)
+        << ",\"steer\":" << json_number(steering_angle_rad_)
+        << ",\"raw_steer\":" << json_number(latest_raw_steering_angle_rad_)
+        << ",\"cte\":" << json_number(latest_cross_track_error_m_)
+        << ",\"heading\":" << json_number(latest_heading_error_rad_)
+        << ",\"curv\":" << json_number(latest_curvature_per_m_)
+        << ",\"corner\":" << corner
+        << ",\"vesc\":" << (vesc_connected_ ? "true" : "false")
+        << ",\"lane\":{\"age_ms\":" << (last_path_received_ns_ ?
+          json_number(static_cast<double>(now_ns - *last_path_received_ns_) / 1.0e6, 1) : "null")
+        << ",\"state\":" << static_cast<unsigned>(latest_lane_state_)
+        << ",\"source\":\"" << (latest_lane_source_.empty() ? "RGB" : latest_lane_source_) << "\""
+        << ",\"stop_m\":" << json_number(latest_stop_line_raw_m_, 3)
+        << ",\"points\":[";
+    if (path_) {
+      const auto & points = path_->points;
+      const std::size_t count = points.size();
+      const std::size_t shown = std::min<std::size_t>(count, 24U);
+      for (std::size_t i = 0; i < shown; ++i) {
+        const std::size_t index = shown > 1U ? i * (count - 1U) / (shown - 1U) : 0U;
+        out << (i ? "," : "") << "[" << json_number(points[index].x, 3) << ","
+            << json_number(points[index].y, 3) << "]";
+      }
+    }
+    out << "]},\"stages\":" << preview_stages_json_ << "}";
+    std_msgs::msg::String message;
+    message.data = out.str();
+    preview_snapshot_pub_->publish(message);
   }
 
   void on_measured_erpm(const std_msgs::msg::Int32::ConstSharedPtr message)
@@ -2419,6 +2499,14 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr raw_steering_pub_, command_servo_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr input_to_control_decision_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr result_to_control_decision_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr preview_snapshot_pub_;
+  rclcpp::TimerBase::SharedPtr preview_snapshot_timer_;
+  std::chrono::steady_clock::time_point preview_meters_drained_at_{};
+  bev_handoff::StageMeter preview_infer_meter_, preview_post_meter_, preview_control_meter_;
+  std::string preview_stages_json_{"{}"};
+  std::string latest_lane_source_;
+  std::uint8_t latest_lane_state_{0U};
+  double latest_duty_command_{0.0}, latest_brake_command_{0.0};
   rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_, tunnel_ir_lane_sub_;
   std::map<const rclcpp::PublisherBase *, bool> diagnostic_subscriptions_;
   std::chrono::steady_clock::time_point diagnostic_subscriptions_checked_at_{};

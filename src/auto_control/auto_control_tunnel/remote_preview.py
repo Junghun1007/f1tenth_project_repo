@@ -11,22 +11,20 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from std_msgs.msg import Bool, Float32, String, UInt8
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 from .compute_status import ComputeMonitor
 from .inspection_state import InspectionState
-from .remote_frame import RateWindow, build_frame, centerline_metric, tunnel_state
+from .remote_frame import RateWindow, build_frame, tunnel_state
 from .remote_http import RemoteServer
 from .remote_link import LinkWatchdog
 
-VEHICLE_TOPICS = {
-    'speed_mps': ('/auto/current_speed', Float32), 'target_speed_mps': ('/auto/target_speed', Float32),
-    'duty': ('/auto/current_duty', Float32), 'brake_current_a': ('/auto/current_brake_current', Float32),
-    'servo': ('/auto/current_servo_position', Float32), 'steering_rad': ('/auto/steering_angle_rad', Float32),
-    'raw_steering_rad': ('/auto/raw_steering_angle_rad', Float32),
-    'cte_m': ('/auto/cross_track_error_m', Float32), 'heading_rad': ('/auto/heading_error_rad', Float32),
-    'curvature': ('/auto/path_curvature', Float32), 'corner_state': ('/auto/corner_state', UInt8),
+# /auto/preview_snapshot key -> frame vehicle key (built by the C++ controller at 30 Hz).
+SNAPSHOT_VEHICLE = {
+    'speed': 'speed_mps', 'target': 'target_speed_mps', 'duty': 'duty', 'brake': 'brake_current_a',
+    'servo': 'servo', 'steer': 'steering_rad', 'raw_steer': 'raw_steering_rad', 'cte': 'cte_m',
+    'heading': 'heading_rad', 'curv': 'curvature', 'corner': 'corner_state', 'vesc': 'vesc_connected',
 }
 TRAFFIC_NAMES = {0: 'UNKNOWN', 1: 'RED', 2: 'GREEN'}
 PERF_STALE_SEC = 2.5  # /perf/* stage reports arrive every 1 s
@@ -52,9 +50,7 @@ class RemotePreview(Node):
         self.lane_width_m = float(p('lane_width_m', 0.65))
         self.frame_rate_hz = float(p('frame_rate_hz', 30.0))
         loss_stop_sec = float(p('link_loss_stop_sec', 1.0))
-        lane_topics = list(p('lane_topics', ['/line_detactor/result']))
         expected = list(p('expected_nodes', ['line_detactor']))
-        connection_topic = str(p('connection_status_topic', '/vesc/connected'))
         diagnostics_topic = str(p('connection_diagnostics_topic', '/vesc/connected/diagnostics'))
         traffic_topic = str(p('traffic_state_topic', '/traffic_light/state'))
         if not 1.0 <= self.frame_rate_hz <= 60.0 or self.lane_width_m <= 0:
@@ -64,7 +60,8 @@ class RemotePreview(Node):
         self.vehicle, self.lane = {}, {}
         self.traffic = self.tunnel_state = self.tunnel_lines = None
         self.perf = {}  # 'camera'/'bev' -> (parsed JSON, received_at)
-        self.rates = {key: RateWindow() for key in ('infer', 'post', 'control', 'tcn', 'traffic')}
+        self.rates = {key: RateWindow() for key in ('tcn', 'traffic')}
+        self.snapshot_stages = ({}, 0.0)
         self.last_traffic_generation = None
         self.message = ''
         self.state = InspectionState(expected)
@@ -75,17 +72,12 @@ class RemotePreview(Node):
         sensor = qos_profile_sensor_data
         latched = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                              durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        from line_detactor.msg import LaneResult
-        subs = [self.create_subscription(kind, topic, lambda m, k=key: self.on_vehicle(k, m.data), sensor)
-                for key, (topic, kind) in VEHICLE_TOPICS.items()]
-        subs.append(self.create_subscription(
-            Bool, connection_topic, lambda m: self.on_vehicle('vesc_connected', bool(m.data)), sensor))
-        subs += [self.create_subscription(LaneResult, topic, self.on_lane, sensor) for topic in lane_topics]
+        # Vehicle, lane path and stages 2-4 arrive as one controller summary (no per-topic Python load).
+        subs = [self.create_subscription(String, '/auto/preview_snapshot', self.on_snapshot, sensor)]
         perf = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
         subs += [
             self.create_subscription(String, '/perf/camera_stage', lambda m: self.on_perf('camera', m), perf),
             self.create_subscription(String, '/perf/bev_stage', lambda m: self.on_perf('bev', m), perf),
-            self.create_subscription(Float32, '/perf/lane_result_to_control_ms', self.on_control_ms, sensor),
             self.create_subscription(String, '/tunnel_tcn/result', self.on_tcn, sensor),
             self.create_subscription(String, '/tunnel/preview_status', self.on_tunnel, latched),
         ]
@@ -114,38 +106,26 @@ class RemotePreview(Node):
         self.get_logger().info(
             f'Remote preview on http://<jetson-ip>:{self.server.port} ({self.frame_rate_hz:.0f} Hz, '
             f'lane width {self.lane_width_m:.2f} m, link-loss STOP '
-            f'{"off" if loss_stop_sec <= 0 else f"{loss_stop_sec:.1f}s"}, lanes {lane_topics})')
+            f'{"off" if loss_stop_sec <= 0 else f"{loss_stop_sec:.1f}s"})')
 
     # ---- ROS callbacks: store numbers only ----
-    def on_vehicle(self, key, value):
-        with self.lock:
-            self.vehicle[key] = (value, time.monotonic())
-
-    def on_lane(self, message):
+    def on_snapshot(self, message):
         now = time.monotonic()
-        points = []
-        if message.centerline_valid:
-            points = centerline_metric([(q.x, q.y) for q in message.centerline_points],
-                                       message.source_width, message.source_height, message.padding_left,
-                                       message.centerline_bev_width_m, message.centerline_bev_height_m)
-        stop = message.stop_line_distance_m
+        try:
+            data = json.loads(message.data)
+        except ValueError:
+            return
+        lane = data.get('lane') or {}
+        age_ms = lane.get('age_ms')
+        lane_at = now - age_ms / 1000.0 if isinstance(age_ms, (int, float)) else now - 10.0
+        points = lane.get('points') or []
+        stop = lane.get('stop_m')
         with self.lock:
-            self.lane = {'points': (points, now), 'valid': (bool(points), now), 'state': (int(message.state), now),
-                         'source': (message.lane_source or 'RGB', now),
-                         'stop_line_m': (stop if stop == stop else None, now)}
-            # Stage 2: BEV handed to the detector -> inference output (queue + H2D/preprocess + inference).
-            self.rates['infer'].add(now, (message.detector_queue_nanoseconds +
-                                          message.h2d_preprocess_nanoseconds +
-                                          message.pure_inference_nanoseconds) / 1e6)
-            # Stage 3: inference output -> centerline result built.
-            self.rates['post'].add(now, (message.label_export_nanoseconds +
-                                         message.backend_postprocess_nanoseconds +
-                                         message.lane_geometry_nanoseconds +
-                                         message.result_message_build_nanoseconds) / 1e6)
-
-    def on_control_ms(self, message):
-        with self.lock:
-            self.rates['control'].add(time.monotonic(), float(message.data))
+            self.vehicle = {key: (data.get(name), now) for name, key in SNAPSHOT_VEHICLE.items()}
+            self.lane = {'points': (points, lane_at), 'valid': (len(points) >= 2, lane_at),
+                         'state': (lane.get('state'), lane_at), 'source': (lane.get('source') or 'RGB', lane_at),
+                         'stop_line_m': (stop if isinstance(stop, (int, float)) and stop >= 0 else None, lane_at)}
+            self.snapshot_stages = (data.get('stages') or {}, now)
 
     def on_perf(self, key, message):
         try:
@@ -221,6 +201,9 @@ class RemotePreview(Node):
             perf = {key: value for key, (value, at) in self.perf.items() if now - at < PERF_STALE_SEC}
             camera, bev = perf.get('camera', {}), perf.get('bev', {})
             stages = {key: rate.stats(now) for key, rate in self.rates.items()}
+            controller, at = self.snapshot_stages
+            if now - at < PERF_STALE_SEC:
+                stages.update({key: self._perf_stage(controller.get(key)) for key in ('infer', 'post', 'control')})
             stages.update({
                 'capture': self._perf_stage(camera.get('capture')),
                 'stabilize': self._perf_stage(camera.get('stabilize')),

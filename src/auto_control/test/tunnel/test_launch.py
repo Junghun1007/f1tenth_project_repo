@@ -31,7 +31,8 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(rgb['inference_max_fps'], 80.)
         self.assertTrue(rgb['tunnel.enabled'])
         self.assertEqual([c['plugin'] for c in components],
-                         ['ir_camera_driver::SharedIrBevNode', 'line_detactor::LineDetactorNode'])
+                         ['ir_camera_driver::SharedIrBevNode', 'line_detactor::LineDetactorNode',
+                          'auto_control::TunnelLaneSelector'])
         self.assertEqual(components[0]['parameters'][0], dict(
             validation_mode=True, standby_fps=0., active_fps=30., model_input_topic='/ir_bev_line_detection/image_bgr'))
         ir = components[1]['parameters'][0]
@@ -40,11 +41,11 @@ class LaunchTests(unittest.TestCase):
         self.assertIn('ir_stereo_bev_120x300.onnx', ir['model_path'])
         self.assertFalse(ir['preview_enabled'])
         self.assertFalse(ir['shared_ir_preview_output_enabled'])
-        self.assertEqual([p['executable'] for p in processes],
-                         ['tunnel_tcn_node', 'tunnel_lane_selector'])
-        self.assertEqual(processes[-1]['package'], 'auto_control')
-        self.assertEqual(processes[-1]['parameters'][-1]['path_minimum_points'], 12)
-        self.assertEqual(processes[-1]['parameters'][-1]['rgb_result_topic'], '/custom/rgb_result')
+        self.assertEqual([p['executable'] for p in processes], ['tunnel_tcn_node'])
+        selector = components[-1]
+        self.assertEqual(selector['package'], 'auto_control')
+        self.assertEqual(selector['parameters'][-1]['path_minimum_points'], 12)
+        self.assertEqual(selector['parameters'][-1]['rgb_result_topic'], '/custom/rgb_result')
         self.assertEqual(processes[0]['parameters'][-1]['initial_state'], 'outside')
         self.assertFalse(processes[0]['parameters'][-1]['preview_enabled'])
 
@@ -54,7 +55,7 @@ class LaunchTests(unittest.TestCase):
             components, processes = self.helper().integrated_nodes(
                 dict(preview_enabled=False, result_topic='/line_detactor/result'), {}, NS(launch_configurations=config))
             self.assertIs(components[0]['parameters'][0]['validation_mode'], expected)
-            self.assertIs(processes[-1]['parameters'][-1]['validation_mode'], expected)
+            self.assertIs(components[-1]['parameters'][-1]['validation_mode'], expected)
         with self.assertRaises(ValueError):
             self.helper().integrated_nodes({}, {}, NS(launch_configurations=dict(tunnel_validation_mode='invalid')))
 

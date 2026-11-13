@@ -7,7 +7,8 @@
 as `line_detactor/msg/LaneResult`. It writes to the VESC duty, brake-current,
 and servo topics used by manual driving. Do not run manual and auto driving together.
 Stanley/PID and actuator calculations run in C++/`rclcpp`. Optional tunnel
-lane selection is performed by this package's Python `tunnel_lane_selector`;
+lane selection is performed by this package's C++ `auto_control::TunnelLaneSelector` component
+(loaded into the detector container; the Python `auto_control_tunnel/node.py` is kept as the reference implementation);
 its implementation module is installed as `auto_control_tunnel`.
 The package's older Python files remain only as implementation
 reference and are not installed by the `ament_cmake` build.

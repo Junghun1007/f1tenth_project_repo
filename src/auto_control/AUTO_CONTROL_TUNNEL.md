@@ -1,7 +1,7 @@
 # auto_control 터널 주행 통합
 
 터널 밖 RGB 차선 주행 → TCN ENTRY → 터널 IR 차선 주행 → TCN EXIT → RGB 복귀를
-`auto_control`이 관리한다. 상태·경로 선택기는 이 패키지의 `tunnel_lane_selector`이며,
+`auto_control`이 관리한다. 상태·경로 선택기는 이 패키지의 C++ 컴포넌트 `auto_control::TunnelLaneSelector`(검출기와 같은 컨테이너에서 intra-process로 차선 결과 수신, 기존 Python 구현은 참고용으로 유지)이며,
 별도 ROS 패키지나 전용 launch 없이 기존 `vehicle_bringup auto_drive.launch.py`에서
 `tunnel_enabled:=true`로 활성화한다. 하나의 카메라 세션·자동제어기·VESC 경로를 사용한다. 항상 터널 밖에서 시작한다.
 기존 `tunnel_tcn_test`, `ir_bev_line_detection`의 독립 launch는 그대로 사용할 수 있다.

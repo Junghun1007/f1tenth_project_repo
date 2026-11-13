@@ -61,6 +61,13 @@ target_link_libraries(auto_obstacle_component point_cloud::point_cloud_depth_sou
 rclcpp_components_register_nodes(auto_obstacle_component "auto_control::ObstacleDetectorNode")
 install(TARGETS auto_obstacle_component LIBRARY DESTINATION lib)
 
+# C++ tunnel lane selector, loaded into the detector container (intra-process LaneResult).
+add_library(auto_tunnel_selector_component SHARED src/tunnel_lane_selector.cpp)
+target_include_directories(auto_tunnel_selector_component PRIVATE include)
+ament_target_dependencies(auto_tunnel_selector_component rclcpp rclcpp_components std_msgs line_detactor)
+rclcpp_components_register_nodes(auto_tunnel_selector_component "auto_control::TunnelLaneSelector")
+install(TARGETS auto_tunnel_selector_component LIBRARY DESTINATION lib)
+
 
 add_executable(auto_control_node
   src/auto_control_node.cpp

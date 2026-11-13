@@ -50,8 +50,9 @@ remote_preview:
 
 ## Jetson 부하
 
-remote_preview는 영상·GPU를 쓰지 않는 Python 노드 하나다. 숫자 토픽 구독, 30Hz JSON 송신,
-1Hz 시스템 지표 읽기만 하므로 보통 CPU 한 코어의 몇 %를 쓴다.
+remote_preview는 영상·GPU를 쓰지 않는 Python 노드 하나다. 차량 수치·경로·단계 2~4는 C++ 컨트롤러가
+30Hz 요약 메시지(`/auto/preview_snapshot`, 구독자가 있을 때만 생성) 하나로 보내므로 Python은 이것과
+저빈도 상태 토픽만 받는다. 중앙선 경로는 컨트롤러가 실제로 채택한 경로다.
 `top -p $(pgrep -f remote_preview)`로 확인할 수 있다.
 단계별 측정(`/perf/*`)은 프레임당 시간 기록 한 번과 1초에 한 번 발행하는 것이 전부다.
 
@@ -72,9 +73,9 @@ remote_preview는 영상·GPU를 쓰지 않는 Python 노드 하나다. 숫자 �
   | 카메라 수신 | Jetson이 OAK 프레임을 받은 횟수(Hz만) | `/perf/camera_stage` |
   | 1a | Jetson 수신 → IMU 안정화 출력 | `/perf/camera_stage` (camera_driver) |
   | 1b | BEV 입력 수신 → BEV 완료 | `/perf/bev_stage` (bev_processor) |
-  | 2 | BEV 검출기 입력 → 차선 추론 출력 (대기+H2D/전처리+추론) | LaneResult 시간 필드 |
-  | 3 | 추론 출력 → 중앙선 결과 생성 (라벨/후처리/기하/메시지) | LaneResult 시간 필드 |
-  | 4 | 중앙선 결과 → 조향 결정 (프로세스 간 전달 + 경로·가감속·코너 판단, 장애물 결과 반영) | `/perf/lane_result_to_control_ms` (auto_control) |
+  | 2 | BEV 검출기 입력 → 차선 추론 출력 (대기+H2D/전처리+추론) | `/auto/preview_snapshot` (auto_control이 LaneResult 시간 필드로 집계) |
+  | 3 | 추론 출력 → 중앙선 결과 생성 (라벨/후처리/기하/메시지) | `/auto/preview_snapshot` |
+  | 4 | 중앙선 결과 → 조향 결정 (프로세스 간 전달 + 경로·가감속·코너 판단, 장애물 결과 반영) | `/auto/preview_snapshot` (auto_control) |
   | 5 | TCN 추론 1회(ms)와 실제 추론 Hz(기본 10Hz) | `/tunnel_tcn/result` |
   | 신호등 | 추론 ms와 결과 Hz | `/traffic_light/state` |
   - 합계 1a~4는 각 구간 평균의 합이다. 구간 사이의 전달 대기와 OAK→Jetson 전송은 포함하지 않는다.
