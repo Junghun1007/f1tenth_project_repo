@@ -105,6 +105,7 @@ STAGES = (
     ('bev', '1b BEV 입력→완료'),
     ('infer', '2 BEV→차선 추론'),
     ('post', '3 추론→중앙선 후처리'),
+    ('valid_lane', '유효 차선 수신'),
     ('control', '4 후처리→조향 결정'),
     ('tcn', '5 TCN 추론'),
     ('traffic', '신호등 추론'),

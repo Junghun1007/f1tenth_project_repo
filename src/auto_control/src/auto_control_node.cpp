@@ -809,6 +809,7 @@ private:
       if (path_) {
         path_capture_ns_ = capture_ns;
         last_valid_path_received_ns_ = received_ros.nanoseconds();
+        preview_valid_lane_meter_.add();
       }
     } catch (const std::exception & exception) {
       path_.reset();
@@ -837,11 +838,13 @@ private:
         publish_float(input_to_control_decision_pub_, total_milliseconds);
       }
       const auto result_ready_ns = stamp_nanoseconds(message->detector_result_ready_stamp);
+      std::chrono::nanoseconds decision_latency{-1};
       if (result_ready_ns && decision_finished_ros_ns >= *result_ready_ns) {
         publish_float(result_to_control_decision_pub_,
           static_cast<double>(decision_finished_ros_ns - *result_ready_ns) / 1.0e6);
-        preview_control_meter_.add(std::chrono::nanoseconds(decision_finished_ros_ns - *result_ready_ns));
+        decision_latency=std::chrono::nanoseconds(decision_finished_ros_ns - *result_ready_ns);
       }
+      preview_control_meter_.add(decision_latency);
     }
   }
 
@@ -2064,7 +2067,8 @@ private:
     if (drained >= 1.0) {
       preview_stages_json_ = "{\"infer\":" + preview_infer_meter_.drain(drained) +
         ",\"post\":" + preview_post_meter_.drain(drained) +
-        ",\"control\":" + preview_control_meter_.drain(drained) + "}";
+        ",\"control\":" + preview_control_meter_.drain(drained) +
+        ",\"valid_lane\":" + preview_valid_lane_meter_.drain(drained) + "}";
       preview_meters_drained_at_ = steady;
     }
     const std::int64_t now_ns = now().nanoseconds();
@@ -2502,7 +2506,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr preview_snapshot_pub_;
   rclcpp::TimerBase::SharedPtr preview_snapshot_timer_;
   std::chrono::steady_clock::time_point preview_meters_drained_at_{};
-  bev_handoff::StageMeter preview_infer_meter_, preview_post_meter_, preview_control_meter_;
+  bev_handoff::StageMeter preview_infer_meter_, preview_post_meter_, preview_control_meter_, preview_valid_lane_meter_;
   std::string preview_stages_json_{"{}"};
   std::string latest_lane_source_;
   std::uint8_t latest_lane_state_{0U};

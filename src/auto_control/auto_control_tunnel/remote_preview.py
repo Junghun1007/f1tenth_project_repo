@@ -203,7 +203,7 @@ class RemotePreview(Node):
             stages = {key: rate.stats(now) for key, rate in self.rates.items()}
             controller, at = self.snapshot_stages
             if now - at < PERF_STALE_SEC:
-                stages.update({key: self._perf_stage(controller.get(key)) for key in ('infer', 'post', 'control')})
+                stages.update({key: self._perf_stage(controller.get(key)) for key in ('infer', 'post', 'control', 'valid_lane')})
             stages.update({
                 'capture': self._perf_stage(camera.get('capture')),
                 'stabilize': self._perf_stage(camera.get('stabilize')),
