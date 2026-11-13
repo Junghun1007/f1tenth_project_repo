@@ -23,7 +23,8 @@ struct Config
   double dot_intensity{0.5};
   double flood_intensity{0.0};
   int confidence{200};
-  bool lr_check{true};
+  bool lr_check{false};
+  double bottom_fraction{1.0};
   int lr_threshold{10};
   bool subpixel{false};
   int subpixel_bits{3};
@@ -50,7 +51,8 @@ struct StereoCameras
   std::shared_ptr<dai::node::Camera> left, right;
 };
 std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
-  dai::Pipeline & pipeline, const Config & config, StereoCameras * cameras = nullptr);
+  dai::Pipeline & pipeline, const Config & config, StereoCameras * cameras = nullptr,
+  std::shared_ptr<dai::InputQueue> * gate_control = nullptr);
 RigidTransform rgbFromFrame(dai::ImgFrame & frame, const dai::CalibrationHandler & calibration);
 
 // Owns one device session. Closing/reopening also reapplies both IR intensities.

@@ -28,7 +28,7 @@ class LaunchTests(unittest.TestCase):
         rgb = dict(preview_enabled=False, result_topic='/custom/rgb_result')
         context = NS(launch_configurations=dict(path_minimum_points='12'))
         components, processes = self.helper().integrated_nodes(rgb, {}, context)
-        self.assertEqual(rgb['inference_max_fps'], 80.)
+        self.assertEqual(rgb['inference_max_fps'], 70.)
         self.assertTrue(rgb['tunnel.enabled'])
         self.assertEqual([c['plugin'] for c in components],
                          ['ir_camera_driver::SharedIrBevNode', 'line_detactor::LineDetactorNode',
@@ -48,15 +48,6 @@ class LaunchTests(unittest.TestCase):
         self.assertEqual(selector['parameters'][-1]['rgb_result_topic'], '/custom/rgb_result')
         self.assertEqual(processes[0]['parameters'][-1]['initial_state'], 'outside')
         self.assertFalse(processes[0]['parameters'][-1]['preview_enabled'])
-
-    def test_benchmark_disables_ir_profile_and_preview(self):
-        components, _ = self.helper().integrated_nodes(
-            dict(preview_enabled=False, result_topic='/rgb'), {},
-            NS(launch_configurations={'benchmark_run': '4'}))
-        ir = components[1]['parameters'][0]
-        self.assertFalse(ir['profiling_enabled'])
-        self.assertFalse(ir['preview_enabled'])
-        self.assertFalse(ir['shared_ir_preview_output_enabled'])
 
     def test_validation_mode_is_default_and_guarded_mode_is_selectable(self):
         for flag, expected in ((None, True), ('true', True), ('false', False)):

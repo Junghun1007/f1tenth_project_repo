@@ -99,13 +99,12 @@ target_link_libraries(auto_control_node
 install(TARGETS auto_control_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
-install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check scripts/startup_inspection scripts/runtime_tools scripts/remote_preview scripts/track_benchmark DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check scripts/startup_inspection scripts/runtime_tools scripts/remote_preview DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY auto_control_tunnel/web/ DESTINATION share/${PROJECT_NAME}/web)
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
 install(FILES
   README.md
-  TRACK_BENCHMARK_KO.md
   AUTO_CONTROL_PARAMETER_TUNING_KO.txt
   AUTO_CONTROL_OBSTACLES.md
   AUTO_CONTROL_TUNNEL.md

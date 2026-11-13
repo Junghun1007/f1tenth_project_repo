@@ -482,7 +482,7 @@ private:
       "startup_ground_reference_topic", "/camera/startup_ground_normal");
     declare_parameter<std::string>(
       "startup_ground_reference_frame_id", "camera_optical_frame");
-    declare_parameter<double>("expected_input_fps", 80.0);
+    declare_parameter<double>("expected_input_fps", 70.0);
     declare_parameter<double>("input_bottom_fraction", 0.70);
 
     declare_parameter<bool>("publish_enabled", true);
@@ -2047,7 +2047,7 @@ private:
   std::string startup_ground_reference_topic_;
   std::string startup_ground_reference_frame_id_;
   std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
-  double expected_input_fps_{80.0};
+  double expected_input_fps_{70.0};
   double input_bottom_fraction_{0.70};
   int input_crop_width_{1280};
   int input_crop_height_{560};
