@@ -467,7 +467,7 @@ private:
       node_.declare_parameter<std::string>("camera_socket", "CAM_A");
     width_ = node_.declare_parameter<int>("width", 1280);
     height_ = node_.declare_parameter<int>("height", 800);
-    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 80.0);
+    sensor_fps_ = node_.declare_parameter<double>("sensor_fps", 70.0);
     resize_mode_name_ =
       node_.declare_parameter<std::string>("resize_mode", "CROP");
     undistort_enabled_ =
@@ -655,7 +655,7 @@ private:
     publish_enabled_ =
       node_.declare_parameter<bool>("publish_enabled", false);
     publish_fps_ =
-      node_.declare_parameter<double>("publish_fps", 80.0);
+      node_.declare_parameter<double>("publish_fps", 70.0);
     fused_bev_output_enabled_ =
       node_.declare_parameter<bool>("fused_bev_output_enabled", false);
     fused_bev_topic_ = node_.declare_parameter<std::string>(
@@ -1242,7 +1242,7 @@ private:
         throw std::invalid_argument("Obstacle depth requires CAM_A and fused BEV output");
       }
       depth_config_.resolution=node_.declare_parameter<std::string>("obstacles.camera.resolution","400p",descriptor);
-      depth_config_.fps=node_.declare_parameter<double>("obstacles.camera.fps",60.0,descriptor);
+      depth_config_.fps=node_.declare_parameter<double>("obstacles.camera.fps",30.0,descriptor);
       depth_config_.mode=node_.declare_parameter<std::string>("obstacles.depth.mode","high_density",descriptor);
       depth_config_.dot_intensity=node_.declare_parameter<double>("obstacles.depth.ir_dot_projector_intensity",0.7,descriptor);
       depth_config_.flood_intensity=node_.declare_parameter<double>("obstacles.depth.ir_flood_light_intensity",0.0,descriptor);
@@ -1291,11 +1291,11 @@ private:
           else if (message->data=="INSIDE") {rgb_tunnel_phase_.store(RgbTunnelPhase::inside);}
           else if (message->data=="EXITING") {rgb_tunnel_phase_.store(RgbTunnelPhase::exiting);}
         },tunnel_options);
-      // RGB remains 80 FPS. Stereo/IR use 30 FPS so the verified 30ms
+      // RGB remains 70 FPS. Stereo/IR use 30 FPS so the verified 30ms
       // tunnel exposure fits within a sensor frame without rebuilding OAK.
       depth_config_.fps=30.0;
-      sensor_fps_=80.0;
-      publish_fps_=80.0;
+      sensor_fps_=70.0;
+      publish_fps_=70.0;
     }
     const auto shared_device_id=(depth_enabled_ || tunnel_enabled_) ? bev_handoff::obstacleDeviceId() : std::string{};
     if ((depth_enabled_ || tunnel_enabled_) && shared_device_id.empty()) {
@@ -3259,7 +3259,7 @@ private:
   std::string camera_socket_name_;
   int width_{1280};
   int height_{800};
-  double sensor_fps_{80.0};
+  double sensor_fps_{70.0};
   std::string resize_mode_name_;
   bool undistort_enabled_{true};
   int queue_size_{8};
@@ -3300,7 +3300,7 @@ private:
   int output_crop_top_px_{0};
   bool publish_enabled_{false};
   std::unique_ptr<bev_handoff::RuntimeMonitor> monitor_;
-  std::atomic<double> publish_fps_{80.0};
+  std::atomic<double> publish_fps_{70.0};
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr runtime_fps_callback_;
   bool fused_bev_output_enabled_{false};
   std::string fused_bev_topic_{"/camera/bev_input"};

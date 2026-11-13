@@ -716,8 +716,8 @@ GUI 입력은 [OpenCV HighGUI mouse callback](https://docs.opencv.org/4.13.0/d7/
 
 ## 실행 중 도구와 처리 주기
 
-일반 auto_drive는 RGB 촬영 및 카메라→BEV 전달 상한 80 FPS, 신호등 추론
-20 FPS, 장애물 depth 40 FPS를 사용한다. 회피 계획 상한은 80 Hz다.
+일반 auto_drive는 RGB 촬영 및 카메라→BEV 전달 상한 70 FPS, 신호등 추론
+20 FPS, 장애물 depth 30 FPS를 사용한다. 회피 계획 상한은 80 Hz다.
 회피 worker는 처리 시작 간격으로 상한을 적용하고, 차선 또는 대응 장애물 결과가
 바뀌었을 때만 다시 계획한다. 연산 시간이 길어져도 지난 입력을 몰아서 계산하지 않는다.
 

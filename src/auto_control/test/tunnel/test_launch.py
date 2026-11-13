@@ -28,7 +28,7 @@ class LaunchTests(unittest.TestCase):
         rgb = dict(preview_enabled=False, result_topic='/custom/rgb_result')
         context = NS(launch_configurations=dict(path_minimum_points='12'))
         components, processes = self.helper().integrated_nodes(rgb, {}, context)
-        self.assertEqual(rgb['inference_max_fps'], 80.)
+        self.assertEqual(rgb['inference_max_fps'], 70.)
         self.assertTrue(rgb['tunnel.enabled'])
         self.assertEqual([c['plugin'] for c in components],
                          ['ir_camera_driver::SharedIrBevNode', 'line_detactor::LineDetactorNode',
