@@ -136,8 +136,8 @@ nudge 강도는 `0.0~1.0`, anchor 최대 변화율은 `deg/s` 단위로 실행�
 CUDA 컴파일러를 자동으로 찾지 못하면 빌드 인자에
 `-DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc`를 추가한다.
 
-BEV 노드는 `status_log_interval_sec`마다 `/bev_processor/pipeline_fps`(JSON 문자열)로
-입력·안정화·BEV 준비·처리 FPS를 발행한다. 상세 지연 로그는 `perf_log_enabled: true`로 켠다.
+BEV 노드는 1초마다 `/perf/bev_stage`(JSON 문자열)로 BEV 입력 Hz와
+BEV 입력 수신→BEV 준비 완료 구간의 Hz·평균·최대 ms를 발행한다. 상세 지연 로그는 `perf_log_enabled: true`로 켠다.
 GUI 없이 실행하려면 `preview_enabled:=false`를 쓴다.
 
 ## BEV 보간과 프리뷰

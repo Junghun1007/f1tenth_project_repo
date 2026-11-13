@@ -59,6 +59,14 @@ class RateWindow:
         values = [v for _, v in self.events if v is not None]
         return sum(values) / len(values) if values else None
 
+    def max(self, now):
+        self._trim(now)
+        values = [v for _, v in self.events if v is not None]
+        return max(values) if values else None
+
+    def stats(self, now):
+        return {'hz': self.fps(now), 'ms': self.mean(now), 'max_ms': self.max(now)}
+
     def age_ms(self, now):
         return None if not self.events else (now - self.events[-1][0]) * 1000.0
 
@@ -90,7 +98,30 @@ def _age_ms(entries, now):
 VEHICLE_KEYS = ('speed_mps', 'target_speed_mps', 'duty', 'brake_current_a', 'servo', 'steering_rad',
                 'raw_steering_rad', 'corner_state', 'cte_m', 'heading_rad', 'curvature',
                 'vesc_connected')
-FPS_KEYS = ('camera', 'bev', 'lane', 'inference_ms', 'postprocess_ms', 'control_ms', 'traffic', 'tcn')
+# Remote preview stage table, in pipeline order. (key, label)
+STAGES = (
+    ('capture', '카메라 수신'),
+    ('stabilize', '1a 수신→안정화'),
+    ('bev', '1b BEV 입력→완료'),
+    ('infer', '2 BEV→차선 추론'),
+    ('post', '3 추론→중앙선 후처리'),
+    ('control', '4 후처리→조향 결정'),
+    ('tcn', '5 TCN 추론'),
+    ('traffic', '신호등 추론'),
+)
+PIPELINE_KEYS = ('stabilize', 'bev', 'infer', 'post', 'control')
+
+
+def stage_rows(stages):
+    """stages: {key: {'hz','ms','max_ms'}} (already freshness-filtered) -> ordered rows + total."""
+    rows = []
+    for key, label in STAGES:
+        value = stages.get(key) or {}
+        rows.append({'key': key, 'label': label, 'hz': _r(value.get('hz'), 1),
+                     'ms': _r(value.get('ms'), 2), 'max_ms': _r(value.get('max_ms'), 2)})
+    parts = [row['ms'] for row in rows if row['key'] in PIPELINE_KEYS]
+    total = _r(sum(parts), 2) if all(v is not None for v in parts) else None
+    return rows, total
 
 
 def build_frame(seq, now, snap):
@@ -110,14 +141,14 @@ def build_frame(seq, now, snap):
         'lane_width_m': snap.get('lane_width_m', 0.65),
         'age_ms': _age_ms([lane_in.get('points')], now),
     }
-    fps_in = snap.get('fps', {})
+    rows, total = stage_rows(snap.get('stages', {}))
     traffic = snap.get('traffic')
     tunnel = snap.get('tunnel', {})
     return {
         'v': 1, 'seq': seq, 't': round(now, 3),
         'vehicle': vehicle,
         'lane': lane,
-        'fps': {key: _r(fps_in.get(key), 2) for key in FPS_KEYS},
+        'stages': rows, 'pipeline_total_ms': total,
         'traffic': {'state': _fresh(traffic, now), 'age_ms': _age_ms([traffic], now)},
         'tunnel': {'state': _fresh(tunnel.get('state'), now, TUNNEL_STALE_SEC),
                    'lines': _fresh(tunnel.get('lines'), now, TUNNEL_STALE_SEC)},

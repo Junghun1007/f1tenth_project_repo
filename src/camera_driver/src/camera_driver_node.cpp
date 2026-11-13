@@ -45,6 +45,7 @@
 #include "sensor_msgs/msg/joy.hpp"
 #include "std_msgs/msg/int32.hpp"
 #include "std_msgs/msg/string.hpp"
+#include "bev_handoff/stage_meter.hpp"
 
 namespace camera_driver
 {
@@ -378,6 +379,19 @@ public:
         std::chrono::duration<double>(status_log_interval_sec_);
       status_timer_ = node_.create_wall_timer(
         status_period, std::bind(&Impl::report_status, this));
+      // Remote preview stage 1a (host receipt -> IMU-stabilized output), 1 s windows.
+      perf_publisher_ = node_.create_publisher<std_msgs::msg::String>(
+        "/perf/camera_stage", rclcpp::QoS(1).reliable());
+      perf_started_at_ = std::chrono::steady_clock::now();
+      perf_timer_ = node_.create_wall_timer(std::chrono::seconds(1), [this]() {
+          const auto now = std::chrono::steady_clock::now();
+          const double elapsed = std::chrono::duration<double>(now - perf_started_at_).count();
+          perf_started_at_ = now;
+          std_msgs::msg::String message;
+          message.data = "{\"capture\":" + capture_meter_.drain(elapsed) +
+            ",\"stabilize\":" + stabilize_meter_.drain(elapsed) + "}";
+          perf_publisher_->publish(message);
+        });
       capture_thread_ = std::thread(&Impl::capture_loop, this);
       if (depth_enabled_) {depth_thread_=std::thread(&Impl::depth_loop,this);}
       if (tunnel_enabled_) {ir_thread_=std::thread(&Impl::ir_loop,this);}
@@ -1819,6 +1833,7 @@ private:
           if (last_tcn_frame_==std::chrono::steady_clock::time_point{}) {last_tcn_frame_=sensor_timestamp;}
           else {last_tcn_frame_+=33333333ns; if (sensor_timestamp-last_tcn_frame_>33333333ns) {last_tcn_frame_=sensor_timestamp;}}
         }
+        capture_meter_.add();
         if (perf_log_enabled_) {
           record_steady_latency(
             received_at - sensor_timestamp,
@@ -2559,6 +2574,10 @@ private:
               output_available;
           }
 
+          if (output_available) {
+            stabilize_meter_.add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - snapshot->received_timestamp));
+          }
           if (output_available && perf_log_enabled_) {
             const auto stabilization_finished_at =
               std::chrono::steady_clock::now();
@@ -3327,6 +3346,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_state_sub_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr tcn_publisher_;
   std::chrono::steady_clock::time_point last_tcn_frame_{};
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr perf_publisher_;
+  rclcpp::TimerBase::SharedPtr perf_timer_;
+  std::chrono::steady_clock::time_point perf_started_at_{};
+  bev_handoff::StageMeter capture_meter_, stabilize_meter_;
   bool depth_enabled_{false};
   point_cloud::Config depth_config_;
   std::shared_ptr<dai::CalibrationHandler> depth_calibration_;

@@ -1,4 +1,5 @@
 #include <bev_handoff/runtime_monitor.hpp>
+#include <bev_handoff/stage_meter.hpp>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -118,8 +119,9 @@ public:
     const bool startup_inspection=declare_parameter<bool>("startup_inspection_enabled",false);
     // remote_preview mode keeps the startup status text but publishes no camera image.
     const bool startup_preview_image=declare_parameter<bool>("startup_preview_image_enabled",true);
-    pipeline_fps_publisher_=create_publisher<std_msgs::msg::String>(
-      "~/pipeline_fps",rclcpp::QoS(1).reliable().transient_local(),startup_options);
+    // Remote preview stage 1b (BEV input received -> BEV ready), 1 s windows.
+    perf_publisher_=create_publisher<std_msgs::msg::String>(
+      "/perf/bev_stage",rclcpp::QoS(1).reliable(),startup_options);
     if (startup_inspection && startup_preview_image) {
       startup_image_publisher_=create_publisher<sensor_msgs::msg::Image>(
         "~/startup_preview",rclcpp::SensorDataQoS().keep_last(1),startup_options);
@@ -356,6 +358,16 @@ public:
     status_timer_ = create_wall_timer(
       std::chrono::duration<double>(status_log_interval_sec_),
       std::bind(&BevProcessorNode::logStatus, this));
+    perf_started_at_ = SteadyClock::now();
+    perf_timer_ = create_wall_timer(std::chrono::seconds(1), [this]() {
+        const auto now = SteadyClock::now();
+        const double elapsed = std::chrono::duration<double>(now - perf_started_at_).count();
+        perf_started_at_ = now;
+        std_msgs::msg::String message;
+        message.data = "{\"input\":" + bev_input_meter_.drain(elapsed) +
+          ",\"bev\":" + bev_stage_meter_.drain(elapsed) + "}";
+        perf_publisher_->publish(message);
+      });
     const auto startup_processor = std::atomic_load_explicit(
       &gpu_processor_, std::memory_order_acquire);
     RCLCPP_INFO(
@@ -1010,6 +1022,7 @@ private:
     last_tunnel_rgb_input_=now;
     received_total_.fetch_add(1U, std::memory_order_relaxed);
     received_interval_.fetch_add(1U, std::memory_order_relaxed);
+    bev_input_meter_.add();
 
     const bool dimensions_valid =
       static_cast<int>(message->source_width) == camera_model_.image_width &&
@@ -1220,6 +1233,8 @@ private:
               bev_ready_latency_samples_interval_,
               bev_ready_latency_ns_interval_,
               bev_ready_latency_ns_max_interval_);
+            bev_stage_meter_.add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+              delivered_at - direct_frame->bev_input_received_at));
             recordSteadyLatency(
               delivered_at - direct_frame->bev_input_received_at,
               bev_stage_latency_samples_interval_,
@@ -1273,6 +1288,8 @@ private:
         }
         const auto published_at = SteadyClock::now();
         if (!direct_output_enabled_) {
+          bev_stage_meter_.add(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            published_at - frame->bev_input_received_at));
           recordPipelineLatency(
             frame->header,
             bev_ready_latency_samples_interval_,
@@ -1901,16 +1918,6 @@ private:
       static_cast<double>(bev_stage_latency_ns) /
       static_cast<double>(bev_stage_latency_samples) / 1.0e6 :
       0.0;
-    if (elapsed_sec > 0.0) {
-      std::ostringstream fps;
-      fps << std::fixed << std::setprecision(2)
-          << "{\"input_fps\":" << static_cast<double>(received) / elapsed_sec
-          << ",\"stabilized_fps\":" << static_cast<double>(accepted) / elapsed_sec
-          << ",\"bev_ready_fps\":" << static_cast<double>(bev_ready) / elapsed_sec
-          << ",\"processed_fps\":" << static_cast<double>(processed) / elapsed_sec << "}";
-      std_msgs::msg::String message; message.data=fps.str();
-      pipeline_fps_publisher_->publish(message);
-    }
     if (perf_log_enabled_) {
       RCLCPP_INFO(
         get_logger(),
@@ -2092,7 +2099,10 @@ private:
     std_msgs::msg::String message; message.data=text; startup_status_publisher_->publish(message);
   }
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr startup_status_publisher_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pipeline_fps_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr perf_publisher_;
+  rclcpp::TimerBase::SharedPtr perf_timer_;
+  SteadyClock::time_point perf_started_at_{};
+  bev_handoff::StageMeter bev_input_meter_, bev_stage_meter_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr startup_image_publisher_;
   SteadyClock::time_point last_startup_preview_{};
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr output_publisher_;

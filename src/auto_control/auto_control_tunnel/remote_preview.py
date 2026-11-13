@@ -29,7 +29,7 @@ VEHICLE_TOPICS = {
     'curvature': ('/auto/path_curvature', Float32), 'corner_state': ('/auto/corner_state', UInt8),
 }
 TRAFFIC_NAMES = {0: 'UNKNOWN', 1: 'RED', 2: 'GREEN'}
-PIPELINE_STALE_SEC = 12.0  # bev_processor reports every status_log_interval_sec (5s default)
+PERF_STALE_SEC = 2.5  # /perf/* stage reports arrive every 1 s
 
 
 def html_path():
@@ -62,10 +62,10 @@ class RemotePreview(Node):
 
         self.lock = threading.Lock()
         self.vehicle, self.lane = {}, {}
-        self.traffic = self.tunnel_state = self.tunnel_lines = self.pipeline = None
-        self.rates = {key: RateWindow() for key in ('lane', 'inference', 'postprocess', 'control', 'traffic')}
+        self.traffic = self.tunnel_state = self.tunnel_lines = None
+        self.perf = {}  # 'camera'/'bev' -> (parsed JSON, received_at)
+        self.rates = {key: RateWindow() for key in ('infer', 'post', 'control', 'tcn', 'traffic')}
         self.last_traffic_generation = None
-        self.tcn_fps = None
         self.message = ''
         self.state = InspectionState(expected)
         self.watchdog = LinkWatchdog(loss_stop_sec)
@@ -81,10 +81,14 @@ class RemotePreview(Node):
         subs.append(self.create_subscription(
             Bool, connection_topic, lambda m: self.on_vehicle('vesc_connected', bool(m.data)), sensor))
         subs += [self.create_subscription(LaneResult, topic, self.on_lane, sensor) for topic in lane_topics]
-        subs.append(self.create_subscription(
-            Float32, '/auto/detector_input_to_control_decision_ms', self.on_control_ms, sensor))
-        subs.append(self.create_subscription(String, '/bev_processor/pipeline_fps', self.on_pipeline, latched))
-        subs.append(self.create_subscription(String, '/tunnel/preview_status', self.on_tunnel, latched))
+        perf = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE)
+        subs += [
+            self.create_subscription(String, '/perf/camera_stage', lambda m: self.on_perf('camera', m), perf),
+            self.create_subscription(String, '/perf/bev_stage', lambda m: self.on_perf('bev', m), perf),
+            self.create_subscription(Float32, '/perf/lane_result_to_control_ms', self.on_control_ms, sensor),
+            self.create_subscription(String, '/tunnel_tcn/result', self.on_tcn, sensor),
+            self.create_subscription(String, '/tunnel/preview_status', self.on_tunnel, latched),
+        ]
         try:
             from traffic_detection_test.msg import TrafficLightState
             subs.append(self.create_subscription(TrafficLightState, traffic_topic, self.on_traffic, sensor))
@@ -129,37 +133,44 @@ class RemotePreview(Node):
             self.lane = {'points': (points, now), 'valid': (bool(points), now), 'state': (int(message.state), now),
                          'source': (message.lane_source or 'RGB', now),
                          'stop_line_m': (stop if stop == stop else None, now)}
-            self.rates['lane'].add(now)
-            self.rates['inference'].add(now, message.pure_inference_nanoseconds / 1e6)
-            self.rates['postprocess'].add(now, (message.label_export_nanoseconds +
-                                                message.backend_postprocess_nanoseconds +
-                                                message.lane_geometry_nanoseconds) / 1e6)
+            # Stage 2: BEV handed to the detector -> inference output (queue + H2D/preprocess + inference).
+            self.rates['infer'].add(now, (message.detector_queue_nanoseconds +
+                                          message.h2d_preprocess_nanoseconds +
+                                          message.pure_inference_nanoseconds) / 1e6)
+            # Stage 3: inference output -> centerline result built.
+            self.rates['post'].add(now, (message.label_export_nanoseconds +
+                                         message.backend_postprocess_nanoseconds +
+                                         message.lane_geometry_nanoseconds +
+                                         message.result_message_build_nanoseconds) / 1e6)
 
     def on_control_ms(self, message):
         with self.lock:
             self.rates['control'].add(time.monotonic(), float(message.data))
 
-    def on_pipeline(self, message):
+    def on_perf(self, key, message):
         try:
             values = json.loads(message.data)
         except ValueError:
             return
         with self.lock:
-            self.pipeline = (values, time.monotonic())
+            self.perf[key] = (values, time.monotonic())
+
+    def on_tcn(self, message):
+        try:
+            report = json.loads(message.data)
+        except ValueError:
+            return
+        if not str(report.get('status', '')).startswith(('LIVE', 'WARMUP')):
+            return
+        value = report.get('inference_wall_ms')
+        with self.lock:
+            self.rates['tcn'].add(time.monotonic(), float(value) if isinstance(value, (int, float)) else None)
 
     def on_tunnel(self, message):
         now = time.monotonic()
-        lines = message.data.split('\n')[:3]
-        tcn = None
-        if len(lines) > 1 and 'avg ' in lines[1]:
-            try:
-                tcn = float(lines[1].split('avg ', 1)[1].split('FPS', 1)[0])
-            except ValueError:
-                tcn = None
         with self.lock:
             self.tunnel_state = (tunnel_state(message.data), now)
-            self.tunnel_lines = (lines, now)
-            self.tcn_fps = (tcn, now)
+            self.tunnel_lines = (message.data.split('\n')[:3], now)
 
     def on_traffic(self, message):
         now = time.monotonic()
@@ -167,7 +178,7 @@ class RemotePreview(Node):
             self.traffic = (TRAFFIC_NAMES.get(int(message.state), 'UNKNOWN'), now)
             if message.source_generation != self.last_traffic_generation:
                 self.last_traffic_generation = message.source_generation
-                self.rates['traffic'].add(now)
+                self.rates['traffic'].add(now, float(message.inference_ms))
 
     # ---- RemoteBackend (called from HTTP threads) ----
     def heartbeat(self):
@@ -207,15 +218,17 @@ class RemotePreview(Node):
         with self.compute.lock:
             system = dict(self.compute.values) if self.compute.sampled_at and now - self.compute.sampled_at < 3 else {}
         with self.lock:
-            pipeline = self.pipeline[0] if self.pipeline and now - self.pipeline[1] < PIPELINE_STALE_SEC else {}
-            tcn = self.tcn_fps[0] if self.tcn_fps and now - self.tcn_fps[1] < 1.0 else None
+            perf = {key: value for key, (value, at) in self.perf.items() if now - at < PERF_STALE_SEC}
+            camera, bev = perf.get('camera', {}), perf.get('bev', {})
+            stages = {key: rate.stats(now) for key, rate in self.rates.items()}
+            stages.update({
+                'capture': self._perf_stage(camera.get('capture')),
+                'stabilize': self._perf_stage(camera.get('stabilize')),
+                'bev': self._perf_stage(bev.get('bev')),
+            })
             snap = {
                 'vehicle': dict(self.vehicle), 'lane': dict(self.lane), 'lane_width_m': self.lane_width_m,
-                'fps': {'camera': pipeline.get('stabilized_fps'), 'bev': pipeline.get('bev_ready_fps'),
-                        'lane': self.rates['lane'].fps(now), 'inference_ms': self.rates['inference'].mean(now),
-                        'postprocess_ms': self.rates['postprocess'].mean(now),
-                        'control_ms': self.rates['control'].mean(now), 'traffic': self.rates['traffic'].fps(now),
-                        'tcn': tcn},
+                'stages': stages,
                 'traffic': self.traffic,
                 'tunnel': {'state': self.tunnel_state, 'lines': self.tunnel_lines},
             }
@@ -228,6 +241,12 @@ class RemotePreview(Node):
                         'loss_stop_sec': self.watchdog.timeout_sec}
         self.seq += 1
         self.server.broadcast(build_frame(self.seq, now, snap))
+
+    @staticmethod
+    def _perf_stage(value):
+        if not isinstance(value, dict):
+            return {}
+        return {'hz': value.get('hz'), 'ms': value.get('avg_ms'), 'max_ms': value.get('max_ms')}
 
     def destroy_node(self):
         self.server.close()

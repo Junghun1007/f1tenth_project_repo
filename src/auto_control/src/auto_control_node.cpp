@@ -92,6 +92,9 @@ public:
     command_servo_pub_ = create_publisher<std_msgs::msg::Float32>(command_servo_position_topic_, command_qos);
     input_to_control_decision_pub_ = create_publisher<std_msgs::msg::Float32>(
       input_to_control_decision_topic_, command_qos);
+    // Remote preview stage 4: lane result ready (postprocess done) -> steering decision.
+    result_to_control_decision_pub_ = create_publisher<std_msgs::msg::Float32>(
+      "/perf/lane_result_to_control_ms", command_qos);
     model_startup_check_required_ = declare_parameter<bool>("model_startup_check_required", false);
     startup_safety_enabled_=declare_parameter<bool>("startup_safety_enabled",false);
     if (startup_safety_enabled_) {
@@ -813,6 +816,11 @@ private:
         const double total_milliseconds =
           static_cast<double>(decision_finished_ros_ns - *detector_input_ns) / 1.0e6;
         publish_float(input_to_control_decision_pub_, total_milliseconds);
+      }
+      const auto result_ready_ns = stamp_nanoseconds(message->detector_result_ready_stamp);
+      if (result_ready_ns && decision_finished_ros_ns >= *result_ready_ns) {
+        publish_float(result_to_control_decision_pub_,
+          static_cast<double>(decision_finished_ros_ns - *result_ready_ns) / 1.0e6);
       }
     }
   }
@@ -2410,6 +2418,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr cross_track_pub_, heading_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr raw_steering_pub_, command_servo_pub_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr input_to_control_decision_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr result_to_control_decision_pub_;
   rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_, tunnel_ir_lane_sub_;
   std::map<const rclcpp::PublisherBase *, bool> diagnostic_subscriptions_;
   std::chrono::steady_clock::time_point diagnostic_subscriptions_checked_at_{};

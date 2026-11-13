@@ -48,6 +48,13 @@ remote_preview:
 단말을 한 번도 연결하지 않고 출발하면 이 보호는 동작하지 않는다.
 여러 단말이 동시에 접속할 수 있다. 그중 하나라도 heartbeat를 보내고 있으면 STOP하지 않는다.
 
+## Jetson 부하
+
+remote_preview는 영상·GPU를 쓰지 않는 Python 노드 하나다. 숫자 토픽 구독, 30Hz JSON 송신,
+1Hz 시스템 지표 읽기만 하므로 보통 CPU 한 코어의 몇 %를 쓴다.
+`top -p $(pgrep -f remote_preview)`로 확인할 수 있다.
+단계별 측정(`/perf/*`)은 프레임당 시간 기록 한 번과 1초에 한 번 발행하는 것이 전부다.
+
 ## 보안
 
 인증이 없다. 같은 Wi-Fi에 있는 누구나 접속해 START/STOP을 누를 수 있다.
@@ -59,7 +66,18 @@ remote_preview:
 - 차량 정보: 속도, 목표 속도, duty, 서보, 조향, CTE, 차선 상태/소스, 정지선 거리, 신호등
 - 중앙선 경로: Jetson이 미터 좌표로 바꿔 최대 24점으로 보내고, 단말이 도로 폭을 가정해 도로를 그림
 - 터널 상태: ENTERING/INSIDE이면 1초에 걸쳐 어두워지고, EXITING/OUTSIDE이면 1초에 걸쳐 밝아짐
-- 기능별 평균: Camera/BEV FPS(`/bev_processor/pipeline_fps`, 5초 평균), Lane/Traffic/TCN FPS,
-  추론·후처리 ms, 입력→제어 결정 ms(1초 평균), 프리뷰 FPS(단말)
+- 단계별 처리(1초 평균, 평균 ms / 최대 ms / 실제 Hz):
+  | 구간 | 시작 → 끝 | 출처 |
+  |---|---|---|
+  | 카메라 수신 | Jetson이 OAK 프레임을 받은 횟수(Hz만) | `/perf/camera_stage` |
+  | 1a | Jetson 수신 → IMU 안정화 출력 | `/perf/camera_stage` (camera_driver) |
+  | 1b | BEV 입력 수신 → BEV 완료 | `/perf/bev_stage` (bev_processor) |
+  | 2 | BEV 검출기 입력 → 차선 추론 출력 (대기+H2D/전처리+추론) | LaneResult 시간 필드 |
+  | 3 | 추론 출력 → 중앙선 결과 생성 (라벨/후처리/기하/메시지) | LaneResult 시간 필드 |
+  | 4 | 중앙선 결과 → 조향 결정 (프로세스 간 전달 + 경로·가감속·코너 판단, 장애물 결과 반영) | `/perf/lane_result_to_control_ms` (auto_control) |
+  | 5 | TCN 추론 1회(ms)와 실제 추론 Hz(기본 10Hz) | `/tunnel_tcn/result` |
+  | 신호등 | 추론 ms와 결과 Hz | `/traffic_light/state` |
+  - 합계 1a~4는 각 구간 평균의 합이다. 구간 사이의 전달 대기와 OAK→Jetson 전송은 포함하지 않는다.
+  - Hz는 실제로 처리된 횟수이고, 평균 ms를 1000으로 나눈 환산 FPS가 아니다.
 - 시스템: CPU/GPU %, 온도, 보드 입력 전력(INA3221)
 - 장애물: 아직 표시하지 않음(프레임에 `obstacles` 키를 추가할 예정)

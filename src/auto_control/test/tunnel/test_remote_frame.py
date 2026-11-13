@@ -1,6 +1,6 @@
 import unittest
 
-from auto_control_tunnel.remote_frame import RateWindow, build_frame, centerline_metric, tunnel_state
+from auto_control_tunnel.remote_frame import RateWindow, build_frame, centerline_metric, stage_rows, tunnel_state
 
 
 class CenterlineTests(unittest.TestCase):
@@ -33,6 +33,27 @@ class RateTests(unittest.TestCase):
         self.assertAlmostEqual(window.age_ms(1.0), 100.0)
         self.assertIsNone(window.fps(2.95))
 
+    def test_rate_window_max(self):
+        window = RateWindow()
+        for i, value in enumerate((1.0, 5.0, 2.0)):
+            window.add(i * 0.1, value)
+        self.assertEqual(window.max(0.2), 5.0)
+
+
+class StageTests(unittest.TestCase):
+    def test_stage_rows_order_and_pipeline_total(self):
+        stages = {key: {'hz': 30.0, 'ms': 1.0, 'max_ms': 2.0}
+                  for key in ('stabilize', 'bev', 'infer', 'post', 'control')}
+        rows, total = stage_rows(stages)
+        self.assertEqual([r['key'] for r in rows][:6],
+                         ['capture', 'stabilize', 'bev', 'infer', 'post', 'control'])
+        self.assertEqual(total, 5.0)
+        self.assertIsNone(rows[0]['ms'])
+
+    def test_missing_stage_gives_no_total(self):
+        rows, total = stage_rows({'bev': {'hz': 30.0, 'ms': 1.0}})
+        self.assertIsNone(total)
+
 
 class FrameTests(unittest.TestCase):
     def test_build_frame_marks_stale_values_none(self):
@@ -41,7 +62,7 @@ class FrameTests(unittest.TestCase):
         self.assertIsNone(frame['vehicle']['speed_mps'])
         frame = build_frame(2, now, {'vehicle': {'speed_mps': (1.2, now - 0.1)}})
         self.assertEqual(frame['vehicle']['speed_mps'], 1.2)
-        for key in ('v', 'seq', 't', 'vehicle', 'lane', 'fps', 'traffic', 'tunnel', 'system',
+        for key in ('v', 'seq', 't', 'vehicle', 'lane', 'stages', 'pipeline_total_ms', 'traffic', 'tunnel', 'system',
                     'startup', 'link'):
             self.assertIn(key, frame)
         self.assertEqual(frame['lane']['points'], [])

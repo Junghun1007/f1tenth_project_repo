@@ -157,7 +157,7 @@ ros2 launch bev_processor bev_processor.launch.py \
 4. 기존 1초 폐기 + 4초 초점 고정 자세 측정
 5. 안정화된 NV12를 고정 LUT로 `/camera/image_bev`에 발행
 
-GUI 없이 실행(BEV FPS는 /bev_processor/pipeline_fps 토픽으로 확인):
+GUI 없이 실행(BEV 단계 시간은 /perf/bev_stage 토픽으로 확인):
 
 ros2 launch bev_processor bev_processor.launch.py preview_enabled:=false
 

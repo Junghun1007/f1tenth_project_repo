@@ -65,6 +65,9 @@ table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 td{padding:3px 0;font-size:12px;border-top:1px solid var(--line)}
 tr:first-child td{border-top:0}
 td:first-child{color:var(--muted)} td.v{text-align:right;font-family:var(--mono)}
+table.stages thead td{font-size:11px;color:var(--muted);border-top:0;padding-bottom:4px}
+table.stages tr.total td{font-weight:600;color:var(--ink)}
+.stagefoot{margin-top:6px;font-size:11px;color:var(--muted);font-family:var(--mono)}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
 /* link lost overlay */
 .lost{position:fixed;inset:0;background:#263140cc;color:#fff;display:none;align-items:center;justify-content:center;
@@ -120,11 +123,10 @@ td:first-child{color:var(--muted)} td.v{text-align:right;font-family:var(--mono)
     </div>
 
     <div class="card sec">
-      <h3>기능별 평균 (1s)</h3>
-      <div class="grid2">
-        <table id="fpsA"></table>
-        <table id="fpsB"></table>
-      </div>
+      <h3>단계별 처리 (1s 평균)</h3>
+      <table class="stages"><thead><tr><td>구간</td><td class="v">평균</td><td class="v">최대</td><td class="v">Hz</td></tr></thead>
+        <tbody id="stages"></tbody></table>
+      <div class="stagefoot" id="stagefoot"></div>
     </div>
 
     <div class="card sec">
@@ -313,10 +315,10 @@ function updatePanel(f){
   $('ctrl').textContent = s.controller;
   $('start').disabled = !s.can_start;
 
-  const F = f.fps, fps = (x)=>x==null?'--':x.toFixed(1), ms2 = (x)=>x==null?'--':x.toFixed(2)+' ms';
-  rows('fpsA', [['Camera',fps(F.camera)],['BEV',fps(F.bev)],['Lane',fps(F.lane)],['Traffic',fps(F.traffic)],['TCN',fps(F.tcn)]]);
-  rows('fpsB', [['Inference',ms2(F.inference_ms)],['Postproc',ms2(F.postprocess_ms)],['In→Ctrl',ms2(F.control_ms)],
-    ['Preview',drawFps.toFixed(1)],['Frame seq',String(f.seq)]]);
+  const msTxt = (x)=>x==null?'--':x.toFixed(2), hz = (x)=>x==null?'--':x.toFixed(1), cell = (t)=>`<td class="v${t==='--'?' stale':''}">${t}</td>`;
+  $('stages').innerHTML = f.stages.map(r=>`<tr><td>${r.label}</td>${cell(msTxt(r.ms))}${cell(msTxt(r.max_ms))}${cell(hz(r.hz))}</tr>`).join('')
+    + `<tr class="total"><td>합계 1a~4 (ms)</td>${cell(msTxt(f.pipeline_total_ms))}<td></td><td></td></tr>`;
+  $('stagefoot').textContent = `preview ${drawFps.toFixed(1)} FPS · frame seq ${f.seq} · 단위 ms`;
   const S = f.system, pc=(x)=>x==null?'--':x.toFixed(0)+' %', tc=(x)=>x==null?'--':x.toFixed(1)+' °C';
   rows('sysA', [['CPU',pc(S.cpu_pct)],['GPU',pc(S.gpu_pct)],['CPU temp',tc(S.cpu_temp_c)],['GPU temp',tc(S.gpu_temp_c)]]);
   rows('sysB', [['Power',S.power_w==null?'--':S.power_w.toFixed(1)+' W'],['VESC',v.vesc_connected?'connected':'--'],
