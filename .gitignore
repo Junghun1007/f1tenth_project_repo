@@ -10,3 +10,4 @@ msg_gen/
 srv_gen/
 __pycache__/
 *.pyc
+captures/
