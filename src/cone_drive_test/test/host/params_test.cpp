@@ -78,7 +78,7 @@ TEST(stage_stats_window) {
   CHECK(rows.size() == 1);
   CHECK(rows[0].stage == "lane_infer");
   CHECK_NEAR(rows[0].avg_ms, 10.0, 1e-6);
-  CHECK_NEAR(rows[0].fps, 100.0, 1e-3);
+  CHECK_NEAR(rows[0].fps, 30.0, 1e-3);   // 1초에 30번 처리 (1000/10ms=100이 아님)
 }
 
 TEST(system_monitor_reads_fake_proc) {

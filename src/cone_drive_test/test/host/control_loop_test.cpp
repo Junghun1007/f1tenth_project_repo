@@ -250,3 +250,57 @@ TEST(speed_read_does_not_wait_for_planning) {   // IMU 스레드의 정지 판�
   CHECK(worst < 0.3);
   CHECK_NEAR(r.loop->speed(), 0.5, 0.1);
 }
+
+static void see_cone(Rig & r, Vec2 at, int frames) {
+  for (int k = 0; k < frames; ++k) {
+    r.step(0.0);
+    DetectionFrame d;
+    d.capture_time = r.t - 0.005;
+    ConeObservation c; c.center = at; c.score = 0.9f;
+    d.cones.push_back(c);
+    r.loop->on_detections(d);
+  }
+  r.step(0.0);
+}
+
+static void drive_blind(Rig & r, int frames) {   // 1 m/s 전진, 콘 검출 없음
+  for (int k = 0; k < frames; ++k) {
+    r.t += 0.025;
+    r.loop->on_speed(1.0, r.t);
+    r.loop->on_yaw_rate(0.0, r.t);
+    r.loop->on_heartbeat("web", r.t);
+    r.loop->on_lane(lane_at(r.t - 0.005), r.t);
+  }
+}
+
+TEST(visible_only_mode_locks_path_when_cone_leaves_view) {   // 모드 2: 사각지대 콘은 계획에 안 넣고 경로 고정
+  Rig r(DriveMode::Detect);
+  CHECK(r.params.apply({{"memory.mode", 2.0}}).first);
+  r.loop->apply_settings(settings_from(r.params));
+  see_cone(r, {0.8, 0.22}, 3);
+  auto tf = r.loop->telemetry(true, r.t);
+  CHECK(tf.plan_mode != "center");
+  CHECK(tf.lock_m == 0.0);
+  drive_blind(r, 22);   // 약 0.45 m 전진 → 콘이 사각지대(s < 0.45)로
+  tf = r.loop->telemetry(true, r.t);
+  CHECK(tf.lock_m > 0.3);
+  CHECK(tf.plan_mode != "center");
+  drive_blind(r, 50);   // 뒷범퍼가 지나면 고정 해제 → 중앙선
+  tf = r.loop->telemetry(true, r.t);
+  CHECK(tf.lock_m == 0.0);
+  CHECK(tf.plan_mode == "center");
+}
+
+TEST(no_memory_mode_forgets_unseen_cone) {   // 모드 3: 안 보이면 바로 잊는다
+  Rig r(DriveMode::Detect);
+  CHECK(r.params.apply({{"memory.mode", 3.0}}).first);
+  r.loop->apply_settings(settings_from(r.params));
+  see_cone(r, {1.2, 0.22}, 2);
+  auto tf = r.loop->telemetry(true, r.t);
+  CHECK(tf.memory.size() == 1);
+  CHECK(tf.plan_mode != "center");
+  drive_blind(r, 16);   // 0.4 s 검출 없음
+  tf = r.loop->telemetry(true, r.t);
+  CHECK(tf.memory.empty());
+  CHECK(tf.plan_mode == "center");
+}

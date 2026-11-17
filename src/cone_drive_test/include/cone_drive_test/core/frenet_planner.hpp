@@ -17,6 +17,7 @@ struct PlannerParams {
   double free_hard_clearance{0.005}, free_soft_clearance{0.10};
   double w_obstacle{4000}, w_lane{400}, w_lane_linear{40}, lane_quad_cap{0.06}, w_lane_linear_free{4};
   double lane_tolerance{0.03}, lane_return_distance{0.8};
+  double free_max_excess{1.0};    // 차선 밖 회피에서 차체가 차선 밖으로 나갈 최대 거리 (m). 1.0 = 시뮬레이터와 같음(사실상 제한 없음), 실차 기본은 settings 0.10
   double w_offset{20}, w_slope{1}, w_curvature{0.08}, max_curvature{3.5};
   double rollout_sec{1.5}, rollout_retry_margin{0.03}, backward_extension{0.8};
   double cone_half{0.065};
@@ -38,10 +39,12 @@ struct ControlParams {   // 롤아웃이 흉내 내는 실제 제어기 설정
 
 struct DesiredOffset { std::vector<double> s, l; };   // s 오름차순. 비어 있으면 0
 struct FrenetPath { std::vector<double> s, l; };
+// 고정 구간: s ≤ end_s에서는 l이 이 경로(±tol)를 따라야 한다 (화면을 벗어난 콘 옆을 지나는 동안 재계획 금지)
+struct LanePin { std::vector<double> s, l; double end_s{0}; double tol{0.03}; };
 
 std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rear_sl, const std::vector<Vec2> & cones_sl,
                                     double s_end, double margin_extra, bool lane_hard, bool relaxed,
-                                    const DesiredOffset & l_des);
+                                    const DesiredOffset & l_des, const LanePin * pin = nullptr);
 
 struct RolloutResult { bool ok{true}; double min_gap{1e9}; };
 RolloutResult rollout_ok(const PlannerParams & p, const ControlParams & c, const std::vector<Vec2> & path_local,

@@ -22,7 +22,7 @@ std::vector<StageStats::Row> StageStats::snapshot(double now) const {
     double sum = 0;
     for (const auto & s : q) sum += s.ms;
     const double avg = sum / double(q.size());
-    rows.push_back({name, avg, avg > 1e-9 ? 1000.0 / avg : 0.0});
+    rows.push_back({name, avg, double(q.size()) / window_});   // 실제 처리 횟수/초 (1000/ms가 아님: 지연 단계에선 의미 없음)
   }
   return rows;
 }

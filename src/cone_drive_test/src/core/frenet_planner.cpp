@@ -13,7 +13,7 @@ int arange_count(double start, double stop, double step) { return std::max(0, in
 
 std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rear_sl, const std::vector<Vec2> & cones_sl,
                                     double s_end, double margin_extra, bool lane_hard, bool relaxed,
-                                    const DesiredOffset & l_des) {
+                                    const DesiredOffset & l_des, const LanePin * pin) {
   const double ds = lane_hard ? p.ds_lane : p.ds, dl = lane_hard ? p.dl_lane : p.dl, l_max = lane_hard ? p.l_max_lane : p.l_max;
   const int ns = arange_count(0.0, s_end + 1e-9, ds);
   if (ns < 4) return std::nullopt;
@@ -34,6 +34,8 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
   const double cur_excess = std::max(0.0, std::max(std::abs(l0), std::abs(rear_sl.y)) + hw - p.lane_half);
   const double w_lin = lane_hard ? p.w_lane_linear : p.w_lane_linear_free;
   const int n_sub = 4;
+  const bool pinned = pin && pin->s.size() >= 2 && pin->end_s > 0;
+  const double pin_off0 = pinned ? std::abs(l0 - interp(0.0, pin->s, pin->l)) : 0.0;   // 지금 고정 경로에서 벗어난 만큼은 0.5 m에 걸쳐 허용
 
   std::vector<double> cost(nl, kInf), next_cost(nl), total(std::size_t(nl) * nl), lr(std::size_t(nl) * nl), node(std::size_t(nl) * nl);
   std::vector<int> back(std::size_t(ns) * nl, 0);
@@ -47,6 +49,9 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
     for (const auto & c : cones_sl) if (c.x >= ss[i] - 0.8 && c.x <= ss[i] + 0.4) sel.push_back(c);
     double ld = 0.0;
     if (!l_des.s.empty()) ld = interp(ss[i], l_des.s, l_des.l);
+    const bool pin_here = pinned && ss[i] <= pin->end_s;
+    const double pin_l = pin_here ? interp(ss[i], pin->s, pin->l) : 0.0;
+    const double pin_tol = pin_here ? pin->tol + pin_off0 * std::max(0.0, 1.0 - ss[i] / 0.5) : 0.0;
     for (int a = 0; a < nl; ++a) {   // pred
       const double prev_l = L[a];
       const double pprev = i >= 2 ? L[back[std::size_t(i - 1) * nl + a]] : l0 + hist_slope * (-ds);
@@ -60,6 +65,7 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
         }
         const std::size_t idx = std::size_t(a) * nl + b;
         lr[idx] = r;
+        if (pin_here && std::abs(new_l - pin_l) > pin_tol) { node[idx] = kInf; continue; }
         // 결과가 어차피 무한 비용인 쌍은 계산 생략 (기울기 한계 초과, 도달 불가능한 이전 노드). 최적 경로는 그대로
         if (cost[a] >= kInf || std::abs(new_l - prev_l) > 1.2 * ds) { node[idx] = kInf; continue; }
         const double curv = (new_l - 2 * prev_l + pprev) / (ds * ds);
@@ -85,10 +91,9 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
         const double excess = std::max(0.0, edge - p.lane_half);
         const double q = std::min(excess, p.lane_quad_cap);
         nd += p.w_lane * q * q + w_lin * excess;
-        if (lane_hard) {
-          const double tol = p.lane_tolerance + cur_excess * std::max(0.0, 1.0 - ss[i] / p.lane_return_distance);
-          if (excess > tol) nd = kInf;
-        }
+        // 차선 안 모드는 lane_tolerance, 차선 밖 모드도 free_max_excess까지만 (이미 나가 있으면 복귀 거리에 걸쳐 허용)
+        const double tol = (lane_hard ? p.lane_tolerance : p.free_max_excess) + cur_excess * std::max(0.0, 1.0 - ss[i] / p.lane_return_distance);
+        if (excess > tol) nd = kInf;
         nd += p.w_offset * (new_l - ld) * (new_l - ld) * ds;
         const double slope = (new_l - prev_l) / ds;
         nd += p.w_slope * slope * slope * ds;

@@ -8,7 +8,7 @@ const $ = (id) => document.getElementById(id);
 // 표시 범위 (m): BEV 영상은 x 0~3 m, y ±0.6 m (120×300, 1 px = 1 cm). 아래 0.5 m는 차량 표시용 여백
 const BEV = { xMax: 3.0, xMin: -0.5, yHalf: 0.6, imageXMin: 0.0, pxPerM: 200 };
 const STAGE_LABEL = {
-  receive: "영상 수신", stabilize_bev: "안정화+BEV", lane_infer: "차선 추론", lane_post: "중앙선",
+  receive: "영상 지연(촬영→처리)", stabilize_bev: "안정화+BEV", lane_infer: "차선 추론", lane_post: "중앙선",
   yolo_pre: "YOLO 전처리", yolo_infer: "YOLO 추론", yolo_post: "YOLO 후처리", box_depth: "Depth 정합",
   memory_plan: "기억+회피계획", control: "제어", web: "웹 전송",
 };
@@ -183,7 +183,7 @@ function render() {
   const plan = f.plan || {};
   const planMs = (f.stages.find((s) => s.name === "memory_plan") || {}).ms;
   kv($("avoid"), [["계획", PLAN_LABEL[plan.mode] || plan.mode || "-"], ["롤아웃", plan.mode === "center" ? "-" : plan.rollout_ok ? "OK" : "FAIL → 감속"],
-    ["관측 콘", f.detections.length], ["기억 콘", f.memory.length], ["기억 방식", f.memory_mode === 1 ? "차선 기준 단기" : "월드"], ["계획 시간", planMs !== undefined ? planMs.toFixed(1) + " ms" : "-"]]);
+    ["관측 콘", f.detections.length], ["기억 콘", f.memory.length], ["기억 방식", f.memory_mode === 2 ? (f.lock_m > 0 ? `보이는 콘 · 고정 ${f.lock_m.toFixed(2)} m` : "보이는 콘") : f.memory_mode === 3 ? "기억 없음" : f.memory_mode === 1 ? "차선 기준 단기" : "월드"], ["계획 시간", planMs !== undefined ? planMs.toFixed(1) + " ms" : "-"]]);
   $("stages").querySelector("tbody").innerHTML = f.stages.map((s) =>
     `<tr><td>${STAGE_LABEL[s.name] || s.name}</td><td>${s.ms.toFixed(1)}</td><td>${s.fps.toFixed(0)}</td></tr>`).join("");
   const u = f.usage;

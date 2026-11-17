@@ -18,7 +18,8 @@ const char * plan_mode_name(PlanMode m) {
 }
 
 PlanResult AvoidancePlanner::plan(const LaneObservation & lane, const std::vector<Vec2> & cones_world, const Pose2 & pose,
-                                  double speed, double steer) {
+                                  double speed, double steer, const LanePin * pin,
+                                  const std::vector<Vec2> * blind_world) {
   const auto t0 = std::chrono::steady_clock::now();
   PlanResult out;
   const auto & ref = lane.center.size() >= 4 ? lane.center : lane.path;
@@ -53,6 +54,8 @@ PlanResult AvoidancePlanner::plan(const LaneObservation & lane, const std::vecto
     if (c.x > -0.6 && c.x < 3.0 && std::abs(c.y) < 1.0) out.obstacle_active = true;
   bool near = false;
   for (const auto & c : cones_sl) near |= c.x > -0.6 && c.x < s_end + 0.3;
+  const bool pin_active = pin && pin->s.size() >= 2 && pin->end_s > 0;
+  if (pin_active) { near = true; out.obstacle_active = true; }   // 화면 밖 콘 옆을 지나는 중: 중앙선 추종으로 바꾸지 않음
 
   bool have = false;
   if (!near) {
@@ -64,24 +67,35 @@ PlanResult AvoidancePlanner::plan(const LaneObservation & lane, const std::vecto
     struct Tier { bool lane_hard, relaxed; PlanMode mode; };
     const Tier tiers[] = {{true, false, PlanMode::Lane}, {true, true, PlanMode::LaneRelaxed}, {false, false, PlanMode::Free}};
     const double v_roll = std::max(speed, c_.obstacle_speed);   // 곧 도달할 장애물 구간 속도까지 가정
-    for (const auto & tier : tiers) {
-      std::optional<std::pair<std::vector<Vec2>, bool>> found;
-      for (double extra : {0.0, p_.rollout_retry_margin}) {
-        const auto ls = frenet_dp(p_, l0, rear_sl, cones_sl, s_end, extra, tier.lane_hard, tier.relaxed, l_des);
-        if (!ls) break;
-        std::vector<Vec2> path;
-        path.reserve(ls->s.size());
-        for (std::size_t i = 0; i < ls->s.size(); ++i) path.push_back(from_frenet(ls->s[i], ls->l[i], f));
-        const bool ok = rollout_ok(p_, c_, path, mem_local, v_roll, steer).ok;
-        if (!found || ok) found = std::make_pair(std::move(path), ok);
-        if (ok) break;   // 충돌 예상이면 여유를 늘려 한 번 더
+    std::vector<const LanePin *> pins{pin_active ? pin : nullptr};
+    if (pin_active) pins.push_back(nullptr);   // 고정을 지킬 수 없으면(새로 보인 콘과 충돌) 고정 없이 다시
+    std::vector<Vec2> all_sl = cones_sl, all_local = mem_local;
+    if (blind_world)
+      for (const auto & w : *blind_world) { all_local.push_back(to_local(w, pose)); all_sl.push_back(project_sl(all_local.back(), f)); }
+    for (const LanePin * use_pin : pins) {
+      const auto & csl = use_pin || !pin_active ? cones_sl : all_sl;
+      const auto & cloc = use_pin || !pin_active ? mem_local : all_local;
+      for (const auto & tier : tiers) {
+        std::optional<std::pair<std::vector<Vec2>, bool>> found;
+        for (double extra : {0.0, p_.rollout_retry_margin}) {
+          const auto ls = frenet_dp(p_, l0, rear_sl, csl, s_end, extra, tier.lane_hard, tier.relaxed, l_des, use_pin);
+          if (!ls) break;
+          std::vector<Vec2> path;
+          path.reserve(ls->s.size());
+          for (std::size_t i = 0; i < ls->s.size(); ++i) path.push_back(from_frenet(ls->s[i], ls->l[i], f));
+          const bool ok = rollout_ok(p_, c_, path, cloc, v_roll, steer).ok;
+          if (!found || ok) found = std::make_pair(std::move(path), ok);
+          if (ok) break;   // 충돌 예상이면 여유를 늘려 한 번 더
+        }
+        if (!found) continue;
+        out.path_local = std::move(found->first);
+        out.rollout_ok = found->second;
+        out.mode = tier.mode;
+        out.pinned = use_pin != nullptr;
+        have = true;
+        break;
       }
-      if (!found) continue;
-      out.path_local = std::move(found->first);
-      out.rollout_ok = found->second;
-      out.mode = tier.mode;
-      have = true;
-      break;
+      if (have) break;
     }
   }
   if (!have) {

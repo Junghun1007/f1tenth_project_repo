@@ -34,6 +34,7 @@ struct TelemetryFrame {
   std::vector<DetectionInfo> detections;
   std::vector<MemoryInfo> memory;
   int memory_mode{0};
+  double lock_m{0};   // 모드 2: 남은 경로 고정 거리 (m)
   std::vector<StageStats::Row> stages;
   SystemUsage usage;
   std::uint64_t params_version{0};

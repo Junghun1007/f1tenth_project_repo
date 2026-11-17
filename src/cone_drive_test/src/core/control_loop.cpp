@@ -23,6 +23,8 @@ void ControlLoop::apply_settings(const Settings & s) {
     memory_.clear();
     lane_mem_.clear();
     lane_mem_view_.clear();
+    lock_.clear();
+    latest_sl_.clear();
     last_lane_dist_ = -1;
     planner_.reset();
   }
@@ -82,17 +84,23 @@ double ControlLoop::odom_distance() const { std::lock_guard<std::mutex> lo(odom_
 
 std::optional<double> ControlLoop::odom_distance_at(double t) const { std::lock_guard<std::mutex> lo(odom_m_); return odom_.distance_at(t); }
 
-std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane) {
+std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane, std::vector<Vec2> * blind_world, double * blind_end) {
   const auto & ref = lane_.center.size() >= 4 ? lane_.center : lane_.path;
   std::vector<Vec2> world;
   lane_mem_view_.clear();
+  lane_f_valid_ = false;
   if (ref.size() < 4) return world;
   auto f = frenet_frame(extend_backward(smooth_center(ref), s_.planner.backward_extension));
   const Vec2 origin = project_sl({0.0, 0.0}, f);
   for (auto & a : f.arc) a -= origin.x;
   // 1) 지난 차선 프레임 이후 바퀴로 간 거리만큼 앞뒤 위치를 당긴다 (자이로 미사용)
   const double d_now = odom_distance_at(lane_.capture_time).value_or(odom_distance());
-  if (last_lane_dist_ >= 0) lane_mem_.advance(d_now - last_lane_dist_);
+  if (last_lane_dist_ >= 0) {
+    const double ds = d_now - last_lane_dist_;
+    lane_mem_.advance(ds);
+    lock_.advance(ds);
+    if (ds > 0) for (auto & q : latest_sl_) q.x -= ds;
+  }
   last_lane_dist_ = d_now;
   // 2) 새 검출: 촬영 후 간 거리만큼 앞쪽 좌표를 빼고 현재 차선 기준 (s,l)로
   if (pending_det_) {
@@ -112,15 +120,35 @@ std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane) {
           sl.push_back(project_sl({c.center.x - shift, c.center.y}, f));
           ranges.push_back(std::hypot(c.center.x - rc_.camera.camera_x, c.center.y));
         }
+        latest_sl_ = sl;
+        latest_det_t_ = det.capture_time;
         lane_mem_.update(sl, ranges);
       }
     }
+  }
+  lane_f_ = f;
+  lane_f_valid_ = true;
+  if (s_.memory_mode == 3) {   // 기억 없음: 마지막 검출 프레임에 보인 콘만 (0.3 s 넘게 검출이 없으면 콘 없음)
+    if (lane_.capture_time - latest_det_t_ > 0.3) latest_sl_.clear();
+    std::uint32_t id = 1;
+    for (const auto & q : latest_sl_) {
+      const Vec2 local = from_frenet(q.x, q.y, f);
+      lane_mem_view_.push_back({local.x, local.y, true, id++});
+      world.push_back(to_world(local, pose_lane));
+    }
+    return world;
   }
   // 3) 계획용: (s,l) → 차선 촬영 시점 차량 좌표 → 월드
   for (const auto & tr : lane_mem_.tracks()) {
     const Vec2 local = from_frenet(tr.s, tr.l, f);
     lane_mem_view_.push_back({local.x, local.y, lane_mem_.confirmed(tr), tr.id});
-    if (lane_mem_.confirmed(tr)) world.push_back(to_world(local, pose_lane));
+    if (!lane_mem_.confirmed(tr)) continue;
+    if (blind_world && tr.s < s_.lane_memory.visible_s_min) {   // 화면을 벗어난 콘: 계획에 넣지 않고 경로 고정 길이만 정함
+      blind_world->push_back(to_world(local, pose_lane));
+      if (blind_end) *blind_end = std::max(*blind_end, tr.s + rc_.wheelbase + 0.12 + s_.lane_memory.delete_behind);
+      continue;
+    }
+    world.push_back(to_world(local, pose_lane));
   }
   return world;
 }
@@ -186,8 +214,18 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
   bool have_path = false;
   if (lane_.valid) {
     const auto pose_lane = odom_pose_at(lane_.capture_time).value_or(odom_pose());
-    const auto cones = s_.memory_mode == 1 ? lane_memory_cones(pose_lane) : memory_.confirmed_world();
-    plan_ = planner_.plan(lane_, cones, pose_lane, speed_, steer_.angle());
+    const bool commit = s_.memory_mode == 2;
+    std::vector<Vec2> blind;
+    double blind_end = -1;
+    const auto cones = s_.memory_mode >= 1 ? lane_memory_cones(pose_lane, commit ? &blind : nullptr, &blind_end) : memory_.confirmed_world();
+    if (commit) lock_.refresh(blind_end);
+    plan_ = planner_.plan(lane_, cones, pose_lane, speed_, steer_.angle(), commit ? lock_.pin() : nullptr, commit ? &blind : nullptr);
+    if (commit && lane_f_valid_) {   // 다음 고정에 쓸 이번 경로 (s, l)
+      std::vector<Vec2> sl;
+      sl.reserve(plan_.path_local.size());
+      for (const auto & q : plan_.path_local) sl.push_back(project_sl(q, lane_f_));
+      lock_.set_last_plan(std::move(sl));
+    }
     plan_pose_ = pose_lane;
     // 계획 자세 → 현재 자세로 옮겨 제어
     const Pose2 now_pose = odom_pose();
@@ -277,7 +315,7 @@ DriveState ControlLoop::state() const { std::lock_guard<std::mutex> l(m_); retur
 
 bool ControlLoop::cones_nearby() const {
   std::lock_guard<std::mutex> l(m_);
-  if (s_.memory_mode == 1) {
+  if (s_.memory_mode >= 1) {
     for (const auto & m : lane_mem_view_) if (m.x > -0.6 && m.x < 3.5 && std::abs(m.y) < 1.0) return true;
     return !last_det_.cones.empty();
   }
@@ -318,7 +356,7 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   for (const auto & c : last_det_.cones)
     f.detections.push_back({kNames[std::clamp(c.class_id, 0, 3)], c.score, c.center.x, c.center.y, c.length, c.width, c.bearing});
   const Pose2 p = odom_pose();
-  if (s_.memory_mode == 1) {
+  if (s_.memory_mode >= 1) {
     f.memory = lane_mem_view_;   // 차선 촬영 시점 기준 (지연이 작아 그대로 표시)
   } else {
     for (const auto & tr : memory_.tracks()) {
@@ -327,6 +365,7 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
     }
   }
   f.memory_mode = s_.memory_mode;
+  f.lock_m = lock_.remaining();
   f.stages = stats_.snapshot(now_sec());
   return f;
 }

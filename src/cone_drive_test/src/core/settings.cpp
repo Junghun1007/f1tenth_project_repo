@@ -31,7 +31,7 @@ void register_params(ParamRegistry & r) {
   o("콘 기억", "memory.confirm_hits", "확정 관측 횟수", "", 1, 20, 3);
   o("콘 기억", "memory.miss_delete", "놓침 삭제 횟수", "", 1, 50, 4);
   o("콘 기억", "memory.delete_behind", "뒤 삭제 거리", "m", 0, 1, 0.10);
-  o("콘 기억", "memory.mode", "기억 방식 (0=월드, 1=차선 기준 단기)", "", 0, 1, 0);
+  o("콘 기억", "memory.mode", "기억 방식 (0=월드, 1=차선 기준 단기, 2=보이는 콘+화면 밖 고정, 3=기억 없음)", "", 0, 3, 0);
   o("콘 기억", "memory.lane_confirm_hits", "[차선 기준] 사용 전 관측 횟수", "", 1, 10, 2);
   o("콘 기억", "memory.lane_miss_delete", "[차선 기준] 보이는 구간 놓침 삭제", "", 1, 20, 3);
   o("콘 기억", "memory.lane_match_radius", "[차선 기준] 같은 콘 판정 거리", "m", 0.02, 0.4, 0.12);
@@ -42,6 +42,7 @@ void register_params(ParamRegistry & r) {
   o("회피 계획", "plan.free_hard_clearance", "차선 밖 최소 여유", "m", 0, 0.2, 0.005);
   o("회피 계획", "plan.free_soft_clearance", "차선 밖 권장 여유", "m", 0, 0.3, 0.10);
   o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈", "m", 0, 0.1, 0.03);
+  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 0.10);
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 0.8);
   o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
   o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
@@ -108,6 +109,7 @@ Settings settings_from(const ParamRegistry & r) {
   p.free_hard_clearance = g("plan.free_hard_clearance");
   p.free_soft_clearance = g("plan.free_soft_clearance");
   p.lane_tolerance = g("plan.lane_tolerance");
+  p.free_max_excess = g("plan.free_max_excess");
   p.lane_return_distance = g("plan.lane_return_distance");
   p.rollout_sec = g("plan.rollout_sec");
   p.rollout_retry_margin = g("plan.rollout_retry_margin");

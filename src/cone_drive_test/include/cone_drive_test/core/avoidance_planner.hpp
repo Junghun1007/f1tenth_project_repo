@@ -17,6 +17,7 @@ struct PlanResult {
   bool obstacle_active{false};     // 근처(s −0.6~3.0, |l|<1)에 기억 콘이 있음
   double speed_cap{std::numeric_limits<double>::infinity()};   // 롤아웃 실패 시 rollout_fail_speed
   double compute_ms{0};
+  bool pinned{false};             // 고정 구간을 지킨 경로
 };
 
 class AvoidancePlanner {
@@ -24,8 +25,9 @@ public:
   AvoidancePlanner(const PlannerParams & p, const ControlParams & c) : p_(p), c_(c) {}
   void set_params(const PlannerParams & p, const ControlParams & c) { p_ = p; c_ = c; }
   // lane: 그 자세에서의 차선 관측, cones_world: 확정 기억 콘(odom), pose: lane 촬영 시점 odom 자세
+  // pin: 고정 구간 (기억 방식 2). 고정을 지키는 경로가 없으면 고정 없이, 화면 밖 콘(blind_world)까지 넣고 다시 계획한다
   PlanResult plan(const LaneObservation & lane, const std::vector<Vec2> & cones_world, const Pose2 & pose,
-                  double speed, double steer);
+                  double speed, double steer, const LanePin * pin = nullptr, const std::vector<Vec2> * blind_world = nullptr);
   void reset() { last_path_world_.clear(); }
 
 private:

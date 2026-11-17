@@ -11,6 +11,7 @@
 #include "cone_drive_test/core/lane_memory.hpp"
 #include "cone_drive_test/core/path_utils.hpp"
 #include "cone_drive_test/core/odometry.hpp"
+#include "cone_drive_test/core/path_lock.hpp"
 #include "cone_drive_test/core/settings.hpp"
 #include "cone_drive_test/core/telemetry.hpp"
 
@@ -83,8 +84,9 @@ private:
   std::optional<Pose2> odom_pose_at(double t) const;
   double odom_distance() const;
   std::optional<double> odom_distance_at(double t) const;
-  // memory.mode = 1: 차선 기준 단기 기억 갱신 → 계획에 쓸 콘(월드 좌표, pose_lane 기준)
-  std::vector<Vec2> lane_memory_cones(const Pose2 & pose_lane);
+  // memory.mode = 1, 2: 차선 기준 단기 기억 갱신 → 계획에 쓸 콘(월드 좌표, pose_lane 기준).
+  // blind_world가 있으면(모드 2) 사각지대 콘은 계획용에서 빼서 따로 담고, blind_end에 경로 고정 끝(s)을 넣는다
+  std::vector<Vec2> lane_memory_cones(const Pose2 & pose_lane, std::vector<Vec2> * blind_world = nullptr, double * blind_end = nullptr);
   StepOutput control_step(double now, bool have_path);
   void integrate_detections();
   RuntimeConfig rc_;
@@ -96,6 +98,11 @@ private:
   LaneConeMemory lane_mem_;
   double last_lane_dist_{-1};
   std::vector<MemoryInfo> lane_mem_view_;   // 화면용 (차량 좌표)
+  PathLock lock_;                           // 모드 2: 화면 밖 콘 옆 경로 고정
+  FrenetFrame lane_f_;                      // 이번 차선 프레임의 (s, l) 기준 (lane_memory_cones가 갱신)
+  bool lane_f_valid_{false};
+  std::vector<Vec2> latest_sl_;             // 모드 3: 가장 최근 검출 프레임의 콘 (s, l) — 기억 없음
+  double latest_det_t_{-1};
   AvoidancePlanner planner_;
   Odometry odom_;
   LongitudinalController lon_;
