@@ -1,0 +1,147 @@
+#include "cone_drive_test/core/settings.hpp"
+#include <cmath>
+
+namespace cone_drive_test {
+
+void register_params(ParamRegistry & r) {
+  auto o = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
+    r.add({name, "obstacle", sec, label, unit, lo, hi, v, live});
+  };
+  auto d = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
+    r.add({name, "driving", sec, label, unit, lo, hi, v, live});
+  };
+  o("YOLO 검출", "yolo.con_threshold", "콘 임계값", "", 0, 1, 0.70);
+  o("YOLO 검출", "yolo.truck_threshold", "트럭 임계값", "", 0, 1, 0.70);
+  o("YOLO 검출", "yolo.sedan_threshold", "세단 임계값", "", 0, 1, 0.70);
+  o("YOLO 검출", "yolo.traffic_light_threshold", "신호등 임계값", "", 0, 1, 0.70);
+  o("YOLO 검출", "yolo.nms_threshold", "NMS IoU", "", 0.05, 0.95, 0.65);
+  o("YOLO 검출", "yolo.roi_height_percent", "하단 ROI", "%", 1, 100, 65);
+  o("YOLO 검출", "yolo.max_fps", "검출 FPS 상한", "fps", 1, 60, 40);
+  o("위치 추정", "object.box_core_fraction", "박스 가운데 비율", "", 0.2, 1, 0.6);
+  o("위치 추정", "object.min_points", "최소 점 수", "", 1, 200, 6);
+  o("위치 추정", "object.min_point_share", "최소 점 비율", "", 0, 1, 0.10);
+  o("위치 추정", "object.window_base_m", "거리 창", "m", 0.01, 0.3, 0.05);
+  o("위치 추정", "object.window_per_m", "거리 창 증가", "/m", 0, 0.2, 0.03);
+  o("위치 추정", "object.min_height_m", "지면 제거 높이", "m", 0, 0.3, 0.03);
+  o("위치 추정", "object.max_height_m", "최대 높이", "m", 0.05, 1.5, 1.0);
+  o("위치 추정", "object.cone_size_m", "콘 크기", "m", 0.05, 0.5, 0.13);
+  o("콘 기억", "memory.gate_radial_max", "거리 방향 게이트", "m", 0.02, 0.5, 0.17);
+  o("콘 기억", "memory.gate_lateral", "옆 방향 게이트", "m", 0.01, 0.3, 0.06);
+  o("콘 기억", "memory.merge_distance", "병합 거리", "m", 0.01, 0.3, 0.10);
+  o("콘 기억", "memory.confirm_hits", "확정 관측 횟수", "", 1, 20, 3);
+  o("콘 기억", "memory.miss_delete", "놓침 삭제 횟수", "", 1, 50, 4);
+  o("콘 기억", "memory.delete_behind", "뒤 삭제 거리", "m", 0, 1, 0.10);
+  o("콘 기억", "memory.mode", "기억 방식 (0=월드, 1=차선 기준 단기)", "", 0, 1, 0);
+  o("콘 기억", "memory.lane_confirm_hits", "[차선 기준] 사용 전 관측 횟수", "", 1, 10, 2);
+  o("콘 기억", "memory.lane_miss_delete", "[차선 기준] 보이는 구간 놓침 삭제", "", 1, 20, 3);
+  o("콘 기억", "memory.lane_match_radius", "[차선 기준] 같은 콘 판정 거리", "m", 0.02, 0.4, 0.12);
+  o("콘 기억", "memory.lane_visible_s_min", "[차선 기준] 사각지대 경계 (앞차축 앞)", "m", 0.1, 1.5, 0.45);
+  o("회피 계획", "plan.hard_clearance", "차선 안 최소 여유", "m", 0, 0.2, 0.015);
+  o("회피 계획", "plan.soft_clearance", "차선 안 권장 여유", "m", 0, 0.3, 0.06);
+  o("회피 계획", "plan.relaxed_soft_clearance", "차선 안(여유 0) 권장 여유", "m", 0, 0.3, 0.04);
+  o("회피 계획", "plan.free_hard_clearance", "차선 밖 최소 여유", "m", 0, 0.2, 0.005);
+  o("회피 계획", "plan.free_soft_clearance", "차선 밖 권장 여유", "m", 0, 0.3, 0.10);
+  o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈", "m", 0, 0.1, 0.03);
+  o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 0.8);
+  o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
+  o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
+  o("회피 계획", "plan.s_max", "계획 거리", "m", 1, 3.5, 3.0);
+  d("속도", "drive.maximum_speed_mps", "최대 속도", "m/s", 0, 3, 1.8);
+  d("속도", "drive.minimum_speed_mps", "최소 속도(코너)", "m/s", 0, 2, 1.0);
+  d("속도", "drive.obstacle_speed_mps", "장애물 구간 속도", "m/s", 0, 2, 1.0);
+  d("속도", "drive.rollout_fail_speed_mps", "롤아웃 실패 시 속도", "m/s", 0, 2, 0.5);
+  d("속도", "drive.maximum_lateral_accel", "최대 횡가속", "m/s²", 0.2, 5, 1.6);
+  d("속도", "drive.planning_decel", "계획 감속도", "m/s²", 0.1, 3, 0.5);
+  d("속도", "drive.obstacle_decel", "장애물 감속도", "m/s²", 0.05, 3, 0.35);
+  d("속도", "drive.obstacle_accel", "장애물 해제 가속도", "m/s²", 0.05, 3, 0.35);
+  d("조향 (Stanley)", "drive.stanley_gain", "Stanley gain", "", 0.1, 5, 1.3);
+  d("조향 (Stanley)", "drive.stanley_softening", "softening 속도", "m/s", 0, 2, 0.3);
+  d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.05);
+  d("조향 (Stanley)", "drive.steering_current_weight", "조향 필터 현재 비중", "", 0.05, 1, 0.4);
+  d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 240);
+  d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
+  d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
+  d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
+  d("출력", "drive.maximum_duty", "최대 duty", "", 0, 0.5, 0.12);
+  d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.053);
+  d("출력", "drive.brake_maximum_current", "최대 제동 전류", "A", 0, 10, 2.0);
+  d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
+  r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
+  r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
+  r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
+  r.add_order_constraint("lane.corner_entry_full_offset_m", "lane.corner_entry_distance_m");
+  r.add_order_constraint("object.min_height_m", "object.max_height_m");
+}
+
+Settings settings_from(const ParamRegistry & r) {
+  Settings s;
+  auto g = [&](const char * n) { return r.get(n); };
+  s.yolo_thresholds = {float(g("yolo.con_threshold")), float(g("yolo.truck_threshold")), float(g("yolo.sedan_threshold")),
+                       float(g("yolo.traffic_light_threshold"))};
+  s.nms_threshold = g("yolo.nms_threshold");
+  s.roi_height_percent = g("yolo.roi_height_percent");
+  s.yolo_max_fps = g("yolo.max_fps");
+  s.cone_size_m = g("object.cone_size_m");
+  s.box.box_core_fraction = g("object.box_core_fraction");
+  s.box.loc.min_points = std::size_t(std::lround(g("object.min_points")));
+  s.box.loc.min_fraction = g("object.min_point_share");
+  s.box.loc.window_base_m = g("object.window_base_m");
+  s.box.loc.window_per_m = g("object.window_per_m");
+  s.box.min_height_m = g("object.min_height_m");
+  s.box.max_height_m = g("object.max_height_m");
+  s.memory.gate_radial_max = g("memory.gate_radial_max");
+  s.memory.gate_lateral = g("memory.gate_lateral");
+  s.memory.merge_distance = g("memory.merge_distance");
+  s.memory.confirm_hits = int(std::lround(g("memory.confirm_hits")));
+  s.memory.miss_delete = int(std::lround(g("memory.miss_delete")));
+  s.memory.delete_behind = g("memory.delete_behind");
+  s.memory_mode = int(std::lround(g("memory.mode")));
+  s.lane_memory.confirm_hits = int(std::lround(g("memory.lane_confirm_hits")));
+  s.lane_memory.miss_delete = int(std::lround(g("memory.lane_miss_delete")));
+  s.lane_memory.match_radius = g("memory.lane_match_radius");
+  s.lane_memory.visible_s_min = g("memory.lane_visible_s_min");
+  s.lane_memory.delete_behind = s.memory.delete_behind;
+  auto & p = s.planner;
+  p.hard_clearance = g("plan.hard_clearance");
+  p.soft_clearance = g("plan.soft_clearance");
+  p.relaxed_soft_clearance = g("plan.relaxed_soft_clearance");
+  p.free_hard_clearance = g("plan.free_hard_clearance");
+  p.free_soft_clearance = g("plan.free_soft_clearance");
+  p.lane_tolerance = g("plan.lane_tolerance");
+  p.lane_return_distance = g("plan.lane_return_distance");
+  p.rollout_sec = g("plan.rollout_sec");
+  p.rollout_retry_margin = g("plan.rollout_retry_margin");
+  p.s_max = g("plan.s_max");
+  p.cone_half = s.cone_size_m / 2;
+  s.maximum_lateral_accel = g("drive.maximum_lateral_accel");
+  s.planning_decel = g("drive.planning_decel");
+  s.stanley_gain = g("drive.stanley_gain");
+  s.stanley_softening = g("drive.stanley_softening");
+  s.heading_lookahead_m = g("drive.heading_lookahead_m");
+  s.steering_current_weight = g("drive.steering_current_weight");
+  s.steering_rate_rad_s = g("drive.steering_rate_deg_s") * 3.14159265358979323846 / 180.0;
+  auto & c = s.control;
+  c.stanley_gain = s.stanley_gain;
+  c.softening_speed = s.stanley_softening;
+  c.heading_lookahead = s.heading_lookahead_m;
+  c.steering_current_weight = s.steering_current_weight;
+  c.max_speed = g("drive.maximum_speed_mps");
+  c.obstacle_speed = g("drive.obstacle_speed_mps");
+  c.rollout_fail_speed = g("drive.rollout_fail_speed_mps");
+  auto & l = s.lon;
+  l.maximum_speed_mps = g("drive.maximum_speed_mps");
+  l.minimum_speed_mps = g("drive.minimum_speed_mps");
+  l.obstacle_speed_mps = g("drive.obstacle_speed_mps");
+  l.obstacle_planning_deceleration_mps2 = g("drive.obstacle_decel");
+  l.obstacle_planning_acceleration_mps2 = g("drive.obstacle_accel");
+  l.maximum_duty = g("drive.maximum_duty");
+  l.longitudinal_start_duty = std::min(g("drive.start_duty"), l.maximum_duty);
+  l.brake_maximum_current_amps = g("drive.brake_maximum_current");
+  s.corner_outward_offset_m = g("lane.corner_outward_offset_m");
+  s.corner_entry_distance_m = g("lane.corner_entry_distance_m");
+  s.corner_entry_full_offset_m = g("lane.corner_entry_full_offset_m");
+  s.link_loss_stop_sec = g("web.link_loss_stop_sec");
+  return s;
+}
+
+}  // namespace cone_drive_test
