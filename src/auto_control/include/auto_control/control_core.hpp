@@ -90,6 +90,28 @@ double staged_brake_current(
   double speed_error_mps, double missing_deceleration_mps2,
   double speed_gain, double deceleration_gain, double maximum_current_amps);
 
+// Duty-only longitudinal mode helpers. Duty acts as a speed command, so
+// reducing it below the present speed's duty regenerates without brake current.
+
+// Running duty needed to hold a speed. The offset fades to zero near standstill.
+double duty_feedforward(
+  double speed_mps, double offset_duty, double duty_per_mps,
+  double fade_speed_mps, double maximum_duty);
+
+// Stop-line speed limit as a function of distance to the aim point. The final
+// coast segment (length release_speed^2 / (2 coast_decel)) is entered at
+// release_speed; before it, duty deceleration follows planning_decel with the
+// given response delay. The coast segment never exceeds the entry speed.
+double duty_only_stop_speed_limit(
+  double remaining_m, double planning_deceleration_mps2,
+  double coast_deceleration_mps2, double release_speed_mps, double response_sec);
+
+// True when releasing the motor now lets the car coast to the aim point.
+// Never releases above maximum_release_speed_mps, where coasting is too weak.
+bool duty_only_coast_release(
+  double remaining_m, double speed_mps, double coast_deceleration_mps2,
+  double release_delay_sec, double maximum_release_speed_mps);
+
 class SpeedPid
 {
 public:

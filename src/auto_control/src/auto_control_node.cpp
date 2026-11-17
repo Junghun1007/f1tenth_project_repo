@@ -70,6 +70,10 @@ public:
       minimum_duty_, maximum_duty_);
     longitudinal_pid_ = std::make_unique<SpeedPid>(
       longitudinal_kp_, longitudinal_ki_, longitudinal_kd_, longitudinal_integral_limit_, -1.0, 1.0);
+    duty_only_pid_ = std::make_unique<SpeedPid>(
+      duty_only_kp_, duty_only_ki_, duty_only_kd_, duty_only_integral_limit_,
+      0.0, duty_only_maximum_duty_);
+    active_longitudinal_mode_ = requested_longitudinal_mode_;
     brake_profile_ = std::make_unique<AutomaticBrakeProfile>(BrakeConfig{
       brake_entry_speed_error_mps_, brake_exit_speed_error_mps_,
       brake_minimum_vehicle_speed_mps_, brake_minimum_current_amps_,
@@ -284,9 +288,9 @@ public:
     } else {
       RCLCPP_INFO(get_logger(), "Automatic control starts disabled.");
     }
-    RCLCPP_INFO(get_logger(), "Speed control: PID=%s, staged=%s, corner slowdown=%s, gains=%.3f/%.3f/%.3f",
+    RCLCPP_INFO(get_logger(), "Speed control: PID=%s, longitudinal mode=%s, corner slowdown=%s, gains=%.3f/%.3f/%.3f",
       longitudinal_pid_enabled_ ? "on" : "off (red stop still uses PID)",
-      staged_control_enabled_ ? "on" : "off",
+      longitudinal_mode_name(active_longitudinal_mode_),
       curvature_speed_control_enabled_ ? "on" : "off", longitudinal_kp_, longitudinal_ki_, longitudinal_kd_);
     RCLCPP_INFO(get_logger(), "Staged brake gains: speed=%.3f, missing deceleration=%.3f",
       longitudinal_brake_speed_gain_, longitudinal_brake_decel_gain_);
@@ -362,7 +366,18 @@ private:
       "traffic_stop_enabled", "traffic_stop_line_confirm_frames", "traffic_stop_line_current_weight",
       "traffic_stop_line_match_tolerance_m", "traffic_stop_line_timeout_sec", "traffic_stop_margin_m",
       "traffic_stop_position_tolerance_m", "traffic_stop_range_max_m", "traffic_terminal_tracking_distance_m",
-      "traffic_terminal_tracking_timeout_sec"};
+      "traffic_terminal_tracking_timeout_sec",
+      "longitudinal_control_mode",
+      "duty_only_pid_kp", "duty_only_pid_ki", "duty_only_pid_kd", "duty_only_pid_integral_limit",
+      "duty_only_feedforward_offset_duty", "duty_only_feedforward_duty_per_mps",
+      "duty_only_feedforward_fade_speed_mps", "duty_only_maximum_duty", "duty_only_start_duty",
+      "duty_only_duty_rise_rate_per_sec", "duty_only_duty_fall_rate_per_sec",
+      "duty_only_planning_deceleration_mps2", "duty_only_obstacle_planning_deceleration_mps2",
+      "duty_only_response_sec", "duty_only_coast_deceleration_mps2", "duty_only_coast_release_speed_mps",
+      "duty_only_coast_release_delay_sec", "duty_only_hold_current_amps",
+      "duty_only_emergency_deceleration_mps2", "duty_only_emergency_overspeed_mps",
+      "duty_only_emergency_brake_current_amps", "duty_only_emergency_brake_rise_amps_per_sec",
+      "duty_only_emergency_brake_fall_amps_per_sec"};
     return names;
   }
   void install_runtime_controls() {
@@ -393,12 +408,15 @@ private:
             speed_pid_integral_limit_,minimum_duty_,maximum_duty_);
           auto next_longitudinal_pid=std::make_unique<SpeedPid>(longitudinal_kp_,longitudinal_ki_,
             longitudinal_kd_,longitudinal_integral_limit_,-1.,1.);
+          auto next_duty_only_pid=std::make_unique<SpeedPid>(duty_only_kp_,duty_only_ki_,
+            duty_only_kd_,duty_only_integral_limit_,0.,duty_only_maximum_duty_);
           auto next_brake_profile=std::make_unique<AutomaticBrakeProfile>(BrakeConfig{
             brake_entry_speed_error_mps_,brake_exit_speed_error_mps_,brake_minimum_vehicle_speed_mps_,
             brake_minimum_current_amps_,brake_maximum_current_amps_,brake_current_gain_amps_per_mps_,
             brake_current_rise_amps_per_sec_,brake_current_fall_amps_per_sec_});
           speed_pid_=std::move(next_speed_pid);
           longitudinal_pid_=std::move(next_longitudinal_pid);
+          duty_only_pid_=std::move(next_duty_only_pid);
           brake_profile_=std::move(next_brake_profile);
         }catch(const std::exception& e) {
           staged_parameters_.clear();declare_and_read_parameters();
@@ -494,7 +512,35 @@ private:
     parameter("traffic_brake_max_current_amps", 2.5);
     traffic_hold_current_ = parameter("traffic_hold_current_amps", 0.7);
     longitudinal_pid_enabled_ = parameter("longitudinal_pid_enabled", true);
-    staged_control_enabled_ = parameter("longitudinal_staged_control_enabled", true);
+    // Compatibility only: older presets may still carry this switch.
+    // longitudinal_control_mode is authoritative (0 legacy, 1 staged, 2 duty-only).
+    parameter("longitudinal_staged_control_enabled", true);
+    requested_longitudinal_mode_ = parameter("longitudinal_control_mode", 1);
+    // Duty-only mode has its own complete parameter set so that tuning it can
+    // never change the staged or legacy controllers.
+    duty_only_kp_ = parameter("duty_only_pid_kp", 0.06);
+    duty_only_ki_ = parameter("duty_only_pid_ki", 0.03);
+    duty_only_kd_ = parameter("duty_only_pid_kd", 0.0);
+    duty_only_integral_limit_ = parameter("duty_only_pid_integral_limit", 1.0);
+    duty_only_ff_offset_ = parameter("duty_only_feedforward_offset_duty", 0.01);
+    duty_only_ff_slope_ = parameter("duty_only_feedforward_duty_per_mps", 0.05);
+    duty_only_ff_fade_speed_ = parameter("duty_only_feedforward_fade_speed_mps", 0.10);
+    duty_only_maximum_duty_ = parameter("duty_only_maximum_duty", 0.12);
+    duty_only_start_duty_ = parameter("duty_only_start_duty", 0.053);
+    duty_only_rise_rate_ = parameter("duty_only_duty_rise_rate_per_sec", 0.04);
+    duty_only_fall_rate_ = parameter("duty_only_duty_fall_rate_per_sec", 0.06);
+    duty_only_planning_decel_ = parameter("duty_only_planning_deceleration_mps2", 0.40);
+    duty_only_obstacle_decel_ = parameter("duty_only_obstacle_planning_deceleration_mps2", 0.35);
+    duty_only_response_sec_ = parameter("duty_only_response_sec", 0.10);
+    duty_only_coast_decel_ = parameter("duty_only_coast_deceleration_mps2", 0.50);
+    duty_only_coast_release_speed_ = parameter("duty_only_coast_release_speed_mps", 0.35);
+    duty_only_coast_release_delay_ = parameter("duty_only_coast_release_delay_sec", 0.03);
+    duty_only_hold_current_ = parameter("duty_only_hold_current_amps", 0.0);
+    duty_only_emergency_decel_ = parameter("duty_only_emergency_deceleration_mps2", 1.2);
+    duty_only_emergency_overspeed_ = parameter("duty_only_emergency_overspeed_mps", 0.5);
+    duty_only_emergency_current_ = parameter("duty_only_emergency_brake_current_amps", 2.0);
+    duty_only_emergency_rise_ = parameter("duty_only_emergency_brake_rise_amps_per_sec", 8.0);
+    duty_only_emergency_fall_ = parameter("duty_only_emergency_brake_fall_amps_per_sec", 8.0);
     longitudinal_start_duty_ = parameter("longitudinal_start_duty", 0.05);
     drive_ff_offset_ = parameter("longitudinal_feedforward_offset_duty", 0.015);
     drive_ff_slope_ = parameter("longitudinal_feedforward_duty_per_mps", 0.055);
@@ -686,6 +732,27 @@ private:
       drive_ff_offset_ < 0 || drive_ff_offset_ > maximum_duty_ || drive_ff_slope_ < 0 ||
       traffic_coast_probe_sec_ < 0)
     {throw std::invalid_argument("invalid staged longitudinal control parameters");}
+    if (requested_longitudinal_mode_ < kLegacyMode || requested_longitudinal_mode_ > kDutyOnlyMode) {
+      throw std::invalid_argument("longitudinal_control_mode must be 0 (legacy), 1 (staged) or 2 (duty_only)");
+    }
+    if (!finite_positive({duty_only_ff_fade_speed_, duty_only_maximum_duty_, duty_only_rise_rate_,
+        duty_only_fall_rate_, duty_only_planning_decel_, duty_only_obstacle_decel_,
+        duty_only_coast_decel_, duty_only_emergency_current_, duty_only_emergency_rise_,
+        duty_only_emergency_fall_}) ||
+      !finite({duty_only_kp_, duty_only_ki_, duty_only_kd_, duty_only_integral_limit_,
+        duty_only_ff_offset_, duty_only_ff_slope_, duty_only_start_duty_, duty_only_response_sec_,
+        duty_only_coast_release_speed_, duty_only_coast_release_delay_, duty_only_hold_current_,
+        duty_only_emergency_decel_, duty_only_emergency_overspeed_}) ||
+      duty_only_kp_ < 0 || duty_only_ki_ < 0 || duty_only_kd_ < 0 || duty_only_integral_limit_ < 0 ||
+      duty_only_maximum_duty_ > 1.0 || duty_only_ff_offset_ < 0 || duty_only_ff_slope_ < 0 ||
+      duty_only_ff_offset_ > duty_only_maximum_duty_ ||
+      duty_only_start_duty_ < 0 || duty_only_start_duty_ > duty_only_maximum_duty_ ||
+      duty_only_response_sec_ < 0 || duty_only_coast_release_speed_ < 0 ||
+      duty_only_coast_release_delay_ < 0 || duty_only_hold_current_ < 0 ||
+      duty_only_hold_current_ > 10.0 || duty_only_emergency_current_ > 10.0 ||
+      duty_only_emergency_decel_ < 0 || duty_only_emergency_overspeed_ < 0)
+    {throw std::invalid_argument(
+        "invalid duty_only parameters (rates/decels positive, duties within [0, duty_only_maximum_duty <= 1], currents <= 10A)");}
     if (!std::isfinite(longitudinal_start_duty_) || longitudinal_start_duty_ < 0.0 ||
       longitudinal_start_duty_ > maximum_duty_)
     {throw std::invalid_argument("longitudinal_start_duty must be between 0 and maximum_duty");}
@@ -1116,7 +1183,8 @@ private:
     }
     if (!stop_line_fresh(now_ns) || *stop_remaining_ + traffic_margin_ <= 0.0) {return;}
     const double speed = std::max(0.0, current_speed_mps_);
-    traffic_predicted_stop_distance_m_ = speed * traffic_response_time_ +
+    traffic_predicted_stop_distance_m_ = speed * (active_longitudinal_mode_ == kDutyOnlyMode ?
+      duty_only_response_sec_ : traffic_response_time_) +
       speed * speed / (2.0 * effective_planning_deceleration(now_ns));
     // stop_remaining_ is to the buffered target; add the margin back to
     // compare predicted BUMPER position with the physical stop line.
@@ -1189,12 +1257,15 @@ private:
     // This is the shared feasible service-deceleration profile for traffic
     // stops and corners. Duty-only coast deceleration is measured separately
     // and decides whether the electrical brake is needed to meet this profile.
-    return planning_deceleration_mps2_;
+    // Duty-only mode plans with its own (usually weaker) regenerative capability.
+    return active_longitudinal_mode_ == kDutyOnlyMode ?
+      duty_only_planning_decel_ : planning_deceleration_mps2_;
   }
 
   double traffic_brake_delay(double current) const
   {
-    if (!staged_control_enabled_) {return traffic_response_time_;}
+    if (active_longitudinal_mode_ == kDutyOnlyMode) {return duty_only_response_sec_;}
+    if (active_longitudinal_mode_ != kStagedMode) {return traffic_response_time_;}
     // Reference current is a planning estimate from existing gains, not an
     // identified current-to-deceleration model. Half the linear ramp accounts
     // for partial braking while current builds. Do not assume the urgent ramp
@@ -1218,19 +1289,30 @@ private:
   double traffic_speed_limit(std::int64_t now_ns)
   {
     advance_stop_distance(now_ns);
-    terminal_tracking_active_ = staged_control_enabled_ && stop_remaining_ && stop_line_seen_ns_ &&
+    terminal_tracking_active_ = active_longitudinal_mode_ != kLegacyMode && stop_remaining_ && stop_line_seen_ns_ &&
       last_observed_remaining_ >= -traffic_arrival_tolerance_ &&
       last_observed_remaining_ <= traffic_terminal_distance_ &&
       now_ns >= *stop_line_seen_ns_ &&
       seconds(now_ns - *stop_line_seen_ns_) <= traffic_terminal_timeout_ &&
       last_erpm_ns_ && now_ns >= *last_erpm_ns_ && seconds(now_ns - *last_erpm_ns_) <= erpm_timeout_sec_;
+    if (active_longitudinal_mode_ == kDutyOnlyMode && traffic_holding_ && stop_remaining_ &&
+      stop_line_fresh(now_ns) && *stop_remaining_ + traffic_margin_ > traffic_stop_range_max_m_)
+    {
+      // Duty-only coasting stopped short of the accepted range: creep forward
+      // again under the reapproach cap and release once more near the aim point.
+      traffic_holding_ = traffic_range_stop_committed_ = false;
+      traffic_reapproach_ = true;
+      RCLCPP_INFO(get_logger(), "Duty-only stop short of range (%.3fm to line): reapproach",
+        *stop_remaining_ + traffic_margin_);
+    }
     if (traffic_holding_) {traffic_phase_ = "position_hold"; return 0.0;}
     // Once braking into the accepted bumper-to-line range has begun, neither
     // observation jitter nor an input outage may cause another forward request.
     // Keep this latch through guard stops; a valid GREEN releases it.
     if (traffic_range_stop_committed_) {
       if (std::abs(current_speed_mps_) < 0.05) {traffic_holding_ = true;}
-      traffic_phase_ = traffic_holding_ ? "position_hold" : "range_braking";
+      traffic_phase_ = traffic_holding_ ? "position_hold" :
+        active_longitudinal_mode_ == kDutyOnlyMode ? "coast_stop" : "range_braking";
       return 0.0;
     }
     if (!stop_line_fresh(now_ns) && !terminal_tracking_active_)
@@ -1238,6 +1320,25 @@ private:
       traffic_reapproach_ = true;
       traffic_phase_ = "temporary_stop_line_unavailable";
       return 0.0;
+    }
+    if (active_longitudinal_mode_ == kDutyOnlyMode) {
+      // Aim at the same point as the staged profile. Duty regeneration follows
+      // the planning deceleration down to the release speed, then the motor is
+      // released so that coasting ends at the aim point. No step to zero target.
+      const double aim = *stop_remaining_ - traffic_arrival_tolerance_;
+      const double speed = std::max(0.0, current_speed_mps_);
+      if (duty_only_coast_release(aim, speed, duty_only_coast_decel_, duty_only_coast_release_delay_,
+          duty_only_coast_release_speed_ + kCoastReleaseSpeedTolerance))
+      {
+        traffic_range_stop_committed_ = true;
+        traffic_holding_ = std::abs(current_speed_mps_) < 0.05;
+        traffic_phase_ = traffic_holding_ ? "position_hold" : "coast_stop";
+        return 0.0;
+      }
+      const double limit = duty_only_stop_speed_limit(aim, effective_planning_deceleration(now_ns),
+        duty_only_coast_decel_, duty_only_coast_release_speed_, duty_only_response_sec_);
+      traffic_phase_ = traffic_reapproach_ ? "slow_reapproach" : "approach";
+      return traffic_reapproach_ ? std::min(limit, traffic_reapproach_speed_) : limit;
     }
     // stop_remaining_ is measured from the nominal buffered target. Add its
     // margin back to compare with the physical line from the FRONT BUMPER.
@@ -1255,7 +1356,10 @@ private:
 
   std::string longitudinal_motor(double target, double dt, bool traffic_stop)
   {
-    if (!staged_control_enabled_) {
+    if (active_longitudinal_mode_ == kDutyOnlyMode) {
+      return duty_only_longitudinal_motor(target, dt, traffic_stop);
+    }
+    if (active_longitudinal_mode_ == kLegacyMode) {
       longitudinal_phase_ = "legacy_pid";
       return legacy_longitudinal_motor(target, dt, traffic_stop);
     }
@@ -1547,6 +1651,156 @@ private:
     return "duty";
   }
 
+  // Mode 2: duty alone tracks the planned speed. Lowering duty below the
+  // present speed's duty regenerates inside the VESC, so ordinary slowdowns
+  // (corner, obstacle, stop line) never switch actuator modes. Brake current is
+  // used only for an optional standstill hold and for emergencies.
+  std::string duty_only_longitudinal_motor(double target, double dt, bool traffic_stop)
+  {
+    speed_pid_->reset();
+    brake_profile_->reset();
+    longitudinal_pid_->reset();
+    service_brake_requested_ = traction_recovery_ = false;
+    coast_probe_elapsed_ = 0.0;
+    predicted_release_speed_ = kUnavailable;
+    const double speed = std::max(0.0, current_speed_mps_);
+    const double overspeed = speed - target;
+    const bool zero_target = target <= 0.0;
+    if (zero_target != longitudinal_zero_target_) {duty_only_pid_->reset();}
+    longitudinal_zero_target_ = zero_target;
+    const bool coast_stop = traffic_stop && traffic_range_stop_committed_;
+
+    // Required deceleration is diagnostic and feeds the emergency check only.
+    required_deceleration_mps2_ = kUnavailable;
+    if (traffic_stop && stop_remaining_ && !coast_stop && !traffic_holding_) {
+      const double usable = *stop_remaining_ - traffic_arrival_tolerance_ -
+        speed * duty_only_response_sec_;
+      required_deceleration_mps2_ = speed * speed / (2.0 * std::max(0.01, usable));
+    } else if (!traffic_stop && corner_profile_active_) {
+      required_deceleration_mps2_ = corner_required_deceleration_mps2_;
+    } else if (obstacle_profile_active_) {
+      required_deceleration_mps2_ = obstacle_plan_deceleration_;
+    }
+    latest_brake_delay_sec_ = duty_only_response_sec_;
+
+    // Emergency assist: only when duty regeneration clearly cannot keep up,
+    // or the bumper is past the physical line while still moving.
+    const bool emergency_enabled = duty_only_emergency_decel_ > 0.0 ||
+      duty_only_emergency_overspeed_ > 0.0;
+    const bool past_line = traffic_stop && stop_remaining_ &&
+      *stop_remaining_ + traffic_margin_ < 0.0;
+    const auto emergency_condition = [&](double scale) {
+        const bool decel = duty_only_emergency_decel_ > 0.0 &&
+          std::isfinite(required_deceleration_mps2_) &&
+          required_deceleration_mps2_ >= scale * duty_only_emergency_decel_;
+        const bool fast = duty_only_emergency_overspeed_ > 0.0 && !coast_stop &&
+          overspeed >= scale * duty_only_emergency_overspeed_;
+        return decel || fast || past_line;
+      };
+    if (!emergency_enabled || speed < 0.05) {
+      duty_only_emergency_active_ = false;
+    } else if (duty_only_emergency_active_) {
+      duty_only_emergency_active_ = emergency_condition(kEmergencyReleaseRatio);
+    } else {
+      duty_only_emergency_active_ = emergency_condition(1.0);
+    }
+
+    double requested = duty_only_emergency_active_ ? duty_only_emergency_current_ : 0.0;
+    const bool hold = traffic_stop && zero_target && std::abs(current_speed_mps_) < 0.05 &&
+      duty_only_hold_current_ > 0.0;
+    if (hold) {requested = std::max(requested, duty_only_hold_current_);}
+    requested_brake_current_ = requested;
+    if (requested > 0.0 || brake_mode_active_) {
+      departure_pending_ = true;
+      duty_only_pid_->reset();
+      command_duty_ = 0.0;
+      latest_brake_rise_ = duty_only_emergency_rise_;
+      command_brake_current_ = move_toward(command_brake_current_, requested,
+        (requested > command_brake_current_ ? duty_only_emergency_rise_ : duty_only_emergency_fall_) * dt);
+      if (command_brake_current_ > 1.0e-6) {
+        brake_mode_active_ = true;
+        longitudinal_phase_ = duty_only_emergency_active_ ? "duty_only_emergency_brake" :
+          hold ? "duty_only_hold" : "duty_only_brake_release";
+        return "brake";
+      }
+      command_brake_current_ = 0.0;
+      if (brake_mode_active_) {
+        // The bridge needs a separate zero-current cycle before any duty.
+        brake_mode_active_ = false;
+        longitudinal_phase_ = "duty_only_brake_release";
+        return "brake_release";
+      }
+    }
+
+    if (zero_target) {
+      // Motor released (duty 0): coast to the aim point or to standstill.
+      command_duty_ = command_brake_current_ = 0.0;
+      duty_only_pid_->reset();
+      departure_pending_ = true;
+      latest_feedforward_duty_ = latest_desired_duty_ = 0.0;
+      longitudinal_phase_ = coast_stop ? "duty_only_coast_stop" : "duty_only_zero_target";
+      return "duty";
+    }
+
+    latest_feedforward_duty_ = duty_feedforward(target, duty_only_ff_offset_, duty_only_ff_slope_,
+      duty_only_ff_fade_speed_, duty_only_maximum_duty_);
+    const double desired = duty_only_pid_->update(
+      target, current_speed_mps_, latest_feedforward_duty_, dt);
+    latest_pid_effort_ = desired;
+    latest_desired_duty_ = desired;
+    const double previous_duty = command_duty_;
+    const bool start_drive = departure_pending_ && duty_only_start_duty_ > 0.0 &&
+      std::abs(current_speed_mps_) < 0.05 && command_duty_ <= 1.0e-6 && desired > 0.0;
+    bool matched = false;
+    if (start_drive) {
+      command_duty_ = std::min(duty_only_start_duty_, desired);
+    } else {
+      if (speed >= 0.05 && desired > command_duty_) {
+        // Rolling after a coast or brake release: resume at the duty that
+        // matches the present speed instead of ramping up from zero, so there
+        // is neither a dead coast phase nor a regenerative jerk.
+        const double matching = std::min(desired, duty_feedforward(speed, duty_only_ff_offset_,
+          duty_only_ff_slope_, duty_only_ff_fade_speed_, duty_only_maximum_duty_));
+        if (matching > command_duty_) {command_duty_ = matching; matched = true;}
+      }
+      command_duty_ = move_toward(command_duty_, desired,
+        (desired > command_duty_ ? duty_only_rise_rate_ : duty_only_fall_rate_) * dt);
+    }
+    duty_only_pid_->apply_output_limit(desired, command_duty_);
+    if (start_drive || speed >= 0.10) {departure_pending_ = false;}
+    longitudinal_phase_ = start_drive ? "duty_only_start" : matched ? "duty_only_resume" :
+      command_duty_ < previous_duty - 1.0e-9 ? "duty_only_decelerate" : "duty_only_track";
+    return "duty";
+  }
+
+  void apply_requested_longitudinal_mode()
+  {
+    if (active_longitudinal_mode_ == requested_longitudinal_mode_) {return;}
+    // Switch only at standstill so that no controller inherits another's
+    // integrator, brake latch or duty ramp while the car is moving.
+    if (std::abs(current_speed_mps_) >= 0.05) {return;}
+    RCLCPP_WARN(get_logger(), "Longitudinal mode %s -> %s at standstill",
+      longitudinal_mode_name(active_longitudinal_mode_),
+      longitudinal_mode_name(requested_longitudinal_mode_));
+    active_longitudinal_mode_ = requested_longitudinal_mode_;
+    speed_pid_->reset();
+    longitudinal_pid_->reset();
+    duty_only_pid_->reset();
+    brake_profile_->reset();
+    service_brake_requested_ = traction_recovery_ = duty_only_emergency_active_ = false;
+    coast_probe_elapsed_ = 0.0;
+    coast_deceleration_seen_ns_.reset();
+    departure_pending_ = true;
+    // A brake still applied (e.g. standstill hold) is released by the new
+    // mode through its own brake_release cycle.
+  }
+
+  static const char * longitudinal_mode_name(int mode)
+  {
+    return mode == kLegacyMode ? "legacy" : mode == kStagedMode ? "staged" :
+      mode == kDutyOnlyMode ? "duty_only" : "unknown";
+  }
+
   void publish_guard_stop(const std::string & reason)
   {
     // A missing lane must not release a red-light brake. Retain the latest
@@ -1656,6 +1910,7 @@ private:
     const double dt = clamp(seconds(now_ns - last_control_ns_), 1.0e-6,
       std::min({path_timeout_sec_, path_capture_maximum_age_sec_, erpm_timeout_sec_}));
     last_control_ns_ = now_ns;
+    apply_requested_longitudinal_mode();
     latest_pid_effort_ = latest_desired_duty_ = kUnavailable;
     latest_feedforward_duty_ = required_deceleration_mps2_ = kUnavailable;
     latest_brake_delay_sec_ = latest_brake_rise_ = kUnavailable;
@@ -1710,7 +1965,9 @@ private:
     const bool obstacle_recovering = obstacle_requested_speed_ > previous_obstacle_speed;
     if (!obstacle_recovering || !turn_recovery_hold_) {
       *obstacle_planned_speed_ = move_toward(previous_obstacle_speed, obstacle_requested_speed_,
-        (obstacle_recovering ? obstacle_planning_acceleration_ : obstacle_planning_deceleration_) * dt);
+        (obstacle_recovering ? obstacle_planning_acceleration_ :
+        (active_longitudinal_mode_ == kDutyOnlyMode ? duty_only_obstacle_decel_ :
+        obstacle_planning_deceleration_)) * dt);
     }
     obstacle_plan_deceleration_ = std::max(0.0,
       (previous_obstacle_speed - *obstacle_planned_speed_) / dt);
@@ -1879,8 +2136,8 @@ private:
       longitudinal_phase_ = "suppressed";
       service_brake_requested_ = traction_recovery_ = false;
       coast_probe_elapsed_ = 0.0;
-    } else if (longitudinal_pid_enabled_ || traffic_stop || obstacle_profile_active_ ||
-      corner_braking_allowed_) {
+    } else if (active_longitudinal_mode_ == kDutyOnlyMode || longitudinal_pid_enabled_ ||
+      traffic_stop || obstacle_profile_active_ || corner_braking_allowed_) {
       motor_mode = longitudinal_motor(target_speed, dt, traffic_stop);
     } else {
       longitudinal_phase_ = "legacy_speed_pid";
@@ -1961,6 +2218,8 @@ private:
     latest_direction_guard_used_ = false;
     speed_pid_->reset();
     longitudinal_pid_->reset();
+    duty_only_pid_->reset();
+    duty_only_emergency_active_ = false;
     brake_profile_->reset();
     if (reason != last_stop_reason_) {
       RCLCPP_WARN(get_logger(), "Automatic drive stop condition: %s.", reason.c_str());
@@ -2159,6 +2418,12 @@ private:
           coast_deceleration_mps2_ = std::max(0.0, measured_deceleration_mps2_);
           coast_deceleration_seen_ns_ = now_ns;
         }
+        // Duty-only tuning aid: deceleration while the motor is released for a
+        // stop-line coast. Compare with duty_only_coast_deceleration_mps2.
+        if (brake_settled && longitudinal_phase_ == "duty_only_coast_stop" &&
+          last_motor_mode_ == "duty" && command_duty_ == 0.0 && command_brake_current_ == 0.0 &&
+          current_speed_mps_ > 0.10)
+        {duty_only_measured_coast_decel_ = measured_deceleration_mps2_;}
       }
     }
     last_erpm_ns_ = now_ns;
@@ -2220,7 +2485,8 @@ private:
         "corner_upper_speed_mps,corner_required_deceleration_mps2,planning_deceleration_mps2,"
         "can_duty,can_motor_current_a,obstacle_requested_speed_mps,obstacle_planned_speed_mps,"
         "obstacle_profile_active,obstacle_plan_deceleration_mps2,turn_recovery_hold,predicted_release_speed_mps,"
-        "runtime_maximum_speed_mps,centerline_xy_m",
+        "runtime_maximum_speed_mps,longitudinal_control_mode,requested_longitudinal_control_mode,"
+        "duty_only_emergency_brake,duty_only_measured_coast_deceleration_mps2,centerline_xy_m",
         parameters);
       driving_log_started_ = std::chrono::steady_clock::now();
       RCLCPP_INFO(get_logger(), "Driving CSV: %s (%.1f Hz + state changes; parameters beside CSV)",
@@ -2296,7 +2562,9 @@ private:
       seconds(ns - *dynamics_motor_current_seen_ns_) <= 0.20 ? dynamics_motor_current_ : kUnavailable,
       obstacle_requested_speed_, obstacle_planned_speed_.value_or(kUnavailable),
       double(obstacle_profile_active_), obstacle_plan_deceleration_, double(turn_recovery_hold_),
-      predicted_release_speed_, maximum_speed_mps_};
+      predicted_release_speed_, maximum_speed_mps_, double(active_longitudinal_mode_),
+      double(requested_longitudinal_mode_), double(duty_only_emergency_active_),
+      duty_only_measured_coast_decel_};
     if (path_) {frame.path = path_->points;}
     driving_log_->enqueue(std::move(frame));
   }
@@ -2388,7 +2656,27 @@ private:
   double corner_lower_speed_mps_{0.0}, corner_nominal_speed_mps_{0.0};
   double corner_upper_speed_mps_{0.0}, corner_required_deceleration_mps2_{0.0};
   double latest_planning_deceleration_mps2_{kUnavailable};
-  bool staged_control_enabled_{true}, service_brake_requested_{false}, traction_recovery_{false};
+  static constexpr int kLegacyMode = 0;
+  static constexpr int kStagedMode = 1;
+  static constexpr int kDutyOnlyMode = 2;
+  // Coast release is accepted slightly above the planned release speed.
+  static constexpr double kCoastReleaseSpeedTolerance = 0.05;
+  // Emergency brake holds until its trigger falls below this fraction.
+  static constexpr double kEmergencyReleaseRatio = 0.7;
+  int requested_longitudinal_mode_{kStagedMode}, active_longitudinal_mode_{kStagedMode};
+  bool service_brake_requested_{false}, traction_recovery_{false};
+  std::unique_ptr<SpeedPid> duty_only_pid_;
+  double duty_only_kp_{0.06}, duty_only_ki_{0.03}, duty_only_kd_{0.0}, duty_only_integral_limit_{1.0};
+  double duty_only_ff_offset_{0.01}, duty_only_ff_slope_{0.05}, duty_only_ff_fade_speed_{0.10};
+  double duty_only_maximum_duty_{0.12}, duty_only_start_duty_{0.053};
+  double duty_only_rise_rate_{0.04}, duty_only_fall_rate_{0.06};
+  double duty_only_planning_decel_{0.40}, duty_only_obstacle_decel_{0.35}, duty_only_response_sec_{0.10};
+  double duty_only_coast_decel_{0.50}, duty_only_coast_release_speed_{0.35};
+  double duty_only_coast_release_delay_{0.03}, duty_only_hold_current_{0.0};
+  double duty_only_emergency_decel_{1.2}, duty_only_emergency_overspeed_{0.5};
+  double duty_only_emergency_current_{2.0}, duty_only_emergency_rise_{8.0}, duty_only_emergency_fall_{8.0};
+  bool duty_only_emergency_active_{false};
+  double duty_only_measured_coast_decel_{kUnavailable};
   bool departure_pending_{true};
   double longitudinal_start_duty_;
   bool terminal_tracking_active_{false};
