@@ -4,6 +4,7 @@
   ros__parameters:
     # ---- 재시작해야 바뀌는 값 ----
     camera.fps: 70.0                  # 차선은 매 프레임, YOLO는 yolo.max_fps(40)로 골라서 처리
+    camera.depth_fps: 30.0            # 스테레오 깊이 FPS (RGB와 같이 70으로 돌리면 장치가 못 따라가 전체가 ~26 FPS로 떨어짐)
     camera.x_m: -0.09                # 앞차축 기준 카메라 위치 (bev_config.yaml)
     camera.y_m: 0.0
     camera.yaw_deg: 0.0

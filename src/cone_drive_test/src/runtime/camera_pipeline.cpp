@@ -1,6 +1,7 @@
 #include "cone_drive_test/runtime/camera_pipeline.hpp"
 #include "cone_drive_test/copied/bev_geometry.hpp"
 #include <depthai/depthai.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cmath>
@@ -62,8 +63,11 @@ void CameraPipeline::open(const OakStartupMeasurement & pose, double camera_yaw_
                                          dai::ImgFrame::Type::NV12, dai::ImgResizeMode::CROP, fps, c_.undistort);
   rgb_q_ = rgb_out->createOutputQueue(1U, false);
   // 스테레오 깊이: CAM_A(RGB)에 정렬해 박스 픽셀과 바로 대응 (multiclass_yolo는 점을 RGB로 투영했음)
-  auto left = pipeline_->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_B, std::make_pair(640U, 400U), fps);
-  auto right = pipeline_->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_C, std::make_pair(640U, 400U), fps);
+  // 깊이는 RGB보다 낮은 FPS로 따로 돌린다: RGB 70 + 스테레오 70 + CAM_A 정렬은 장치 처리량을 넘겨 전체가 ~26 FPS로 떨어졌다
+  // (multiclass_yolo도 스테레오 40 FPS). 검출 프레임은 시각이 가장 가까운 깊이와 짝짓는다
+  const float depth_fps = float(std::min(c_.depth_fps, c_.fps));
+  auto left = pipeline_->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_B, std::make_pair(640U, 400U), depth_fps);
+  auto right = pipeline_->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_C, std::make_pair(640U, 400U), depth_fps);
   auto stereo = pipeline_->create<dai::node::StereoDepth>();
   stereo->build(*left->requestOutput(std::make_pair(640U, 400U)), *right->requestOutput(std::make_pair(640U, 400U)), preset(c_.stereo_preset));
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
@@ -156,6 +160,7 @@ void CameraPipeline::frame_loop() {
     while (auto d = depth_q_->tryGet<dai::ImgFrame>()) {
       std::lock_guard<std::mutex> l(depth_mutex_);
       depths_.emplace_back(seconds(d->getTimestamp(dai::CameraExposureOffset::MIDDLE)), d);
+      if (stats) stats->record("cam_depth", depths_.back().first, depths_.back().first);   // FPS 칸 = 실제 깊이 수신율
       if (depths_.size() > 6) depths_.pop_front();
     }
     if (!rgb || rgb->getType() != dai::ImgFrame::Type::NV12) continue;   // 깊이만 온 경우
@@ -174,6 +179,7 @@ void CameraPipeline::frame_loop() {
     frame->rgb = rgb;
     frame->t = seconds(rgb->getTimestamp(dai::CameraExposureOffset::MIDDLE));
     frame->seq = ++seq_;
+    if (stats) stats->record("cam_rgb", frame->t, frame->t);   // FPS 칸 = 실제 카메라 수신율
     frame->depth = nearest_depth(frame->t, c_.depth_sync_ms / 1000.0);   // 이미 와 있으면 사용, 없으면 검출 워커가 다시 찾음
     if (!c_.stabilization_enabled || !stabilizer_) {
       stab_stats_.count(StabilizationReason::Disabled, 0.0);

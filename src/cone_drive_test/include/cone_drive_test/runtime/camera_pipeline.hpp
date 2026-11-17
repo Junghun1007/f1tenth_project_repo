@@ -13,6 +13,7 @@
 #include "cone_drive_test/copied/imu_image_stabilizer.hpp"
 #include "cone_drive_test/copied/oak_startup_measurement.hpp"
 #include "cone_drive_test/core/stabilization.hpp"
+#include "cone_drive_test/core/stage_stats.hpp"
 #include "cone_drive_test/runtime/latest.hpp"
 
 namespace dai { class Device; class Pipeline; class MessageQueue; class ImgFrame; }
@@ -22,7 +23,8 @@ namespace cone_drive_test {
 struct CameraConfig {
   std::string device_id;
   int width{1280}, height{800};
-  double fps{70.0};   // 기존 camera_driver/bev_processor와 같음 (차선은 매 프레임, YOLO는 yolo.max_fps)
+  double fps{70.0};
+  double depth_fps{30.0};   // 스테레오 깊이 FPS (RGB와 따로)   // 기존 camera_driver/bev_processor와 같음 (차선은 매 프레임, YOLO는 yolo.max_fps)
   bool undistort{true};
   // 원본(확대 없는) 1280×800 rectified CAM_A 내부 파라미터. bev_config.yaml의 fx/fy(701.75)는 camera_driver의 1.25배 고정 확대가
   // 들어간 값이라 원본 영상에 쓰면 BEV·깊이 투영이 1.25배 어긋난다 → drive_node가 camera.fx / camera.fixed_view_zoom으로 넣는다
@@ -32,8 +34,8 @@ struct CameraConfig {
   int stereo_confidence{200};
   double dot_intensity{0.5};
   double imu_rate_hz{400.0};
-  double depth_sync_ms{20.0};
-  double depth_wait_ms{30.0};   // 검출 후 깊이가 아직 안 왔으면 기다리는 최대 시간
+  double depth_sync_ms{25.0};  // 30 FPS 깊이면 가장 가까운 깊이는 항상 ±17 ms 안
+  double depth_wait_ms{20.0};   // 검출 후 깊이가 아직 안 왔으면 기다리는 최대 시간
   double maximum_imu_pair_skew_sec{0.003};
   bool stabilization_enabled{true};
 };
@@ -60,7 +62,8 @@ public:
   const Latest<CameraFrame> & frames() const { return frames_; }
   const CameraConfig & config() const { return c_; }
   std::function<void(double yaw_rate_vehicle, double t)> on_yaw_rate;   // IMU 스레드에서 호출
-  std::function<std::optional<bool>()> stationary_hint;                   // ERPM 기반 정지 여부 (camera_driver와 같이 안정화에 전달)
+  std::function<std::optional<bool>()> stationary_hint;
+  StageStats * stats{nullptr};   // 카메라 실제 수신 FPS 기록 (선택)                   // ERPM 기반 정지 여부 (camera_driver와 같이 안정화에 전달)
   StabilizationStats & stabilization_stats() { return stab_stats_; }
   std::string device_id() const;
   // 촬영 시각 t에 가장 가까운 깊이 (tolerance 안). 깊이는 같은 시각의 RGB보다 늦게 도착하므로 검출 후에 찾는다

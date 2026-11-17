@@ -8,6 +8,7 @@ const $ = (id) => document.getElementById(id);
 // 표시 범위 (m): BEV 영상은 x 0~3 m, y ±0.6 m (120×300, 1 px = 1 cm). 아래 0.5 m는 차량 표시용 여백
 const BEV = { xMax: 3.0, xMin: -0.5, yHalf: 0.6, imageXMin: 0.0, pxPerM: 200 };
 const STAGE_LABEL = {
+  cam_rgb: "카메라 RGB 수신", cam_depth: "카메라 Depth 수신",
   receive: "영상 지연(촬영→처리)", stabilize_bev: "안정화+BEV", lane_infer: "차선 추론", lane_post: "중앙선",
   yolo_pre: "YOLO 전처리", yolo_infer: "YOLO 추론", yolo_post: "YOLO 후처리", box_depth: "Depth 정합",
   memory_plan: "기억+회피계획", control: "제어", web: "웹 전송",

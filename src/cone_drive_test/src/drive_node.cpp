@@ -48,6 +48,7 @@ public:
 
     cam_cfg_.device_id = declare_parameter<std::string>("camera.device_id", "");
     cam_cfg_.fps = declare_parameter<double>("camera.fps", 70.0);
+    cam_cfg_.depth_fps = declare_parameter<double>("camera.depth_fps", 30.0);
     // camera.fx/fy는 bev_config.yaml 값(1.25배 고정 확대 포함) 그대로 받고, 원본 영상 기준으로 되돌려 쓴다 (cx/cy는 확대 중심이라 그대로)
     const double fixed_view_zoom = declare_parameter<double>("camera.fixed_view_zoom", 1.25);
     cam_cfg_.fx = declare_parameter<double>("camera.fx", 701.751174926) / fixed_view_zoom;
@@ -126,6 +127,7 @@ public:
     stab.maximum_frame_imu_age_sec = declare_parameter<double>("stabilization.maximum_frame_imu_age_sec", 0.012);
     stab.maximum_frame_imu_prediction_sec = declare_parameter<double>("stabilization.maximum_prediction_sec", 0.015);
     camera_ = std::make_unique<cdt::CameraPipeline>(cam_cfg_, stab);
+    camera_->stats = &loop_->stats();
     camera_->on_yaw_rate = [this](double w, double t) { loop_->on_yaw_rate(w, t); };
     camera_->stationary_hint = [this]() -> std::optional<bool> {   // ERPM 속도로 정지 여부 (camera_driver는 ERPM 100 이하 1 s)
       const double v = loop_->speed();
