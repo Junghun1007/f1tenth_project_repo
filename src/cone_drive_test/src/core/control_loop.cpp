@@ -50,6 +50,7 @@ void ControlLoop::apply_settings(const Settings & s) {
   sp.rate_limit_rad_s = s.steering_rate_rad_s;
   steer_.set_params(sp);
   sm_.set_link_loss_stop_sec(s.link_loss_stop_sec);
+  rc_.lane_timeout_sec = s.lane_timeout_sec;
 }
 
 void ControlLoop::on_erpm(int erpm, double t) {

@@ -67,6 +67,7 @@ void register_params(ParamRegistry & r) {
   d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.053);
   d("출력", "drive.brake_maximum_current", "최대 제동 전류", "A", 0, 10, 2.0);
   d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
+  d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (그동안 직전 경로로 주행)", "s", 0.05, 3, 0.5);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
   r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
@@ -143,6 +144,7 @@ Settings settings_from(const ParamRegistry & r) {
   s.corner_entry_distance_m = g("lane.corner_entry_distance_m");
   s.corner_entry_full_offset_m = g("lane.corner_entry_full_offset_m");
   s.link_loss_stop_sec = g("web.link_loss_stop_sec");
+  s.lane_timeout_sec = g("drive.lane_timeout_sec");
   return s;
 }
 
