@@ -42,12 +42,12 @@ void register_params(ParamRegistry & r) {
   o("회피 계획", "plan.free_hard_clearance", "차선 밖 최소 여유", "m", 0, 0.2, 0.005);
   o("회피 계획", "plan.free_soft_clearance", "차선 밖 권장 여유", "m", 0, 0.3, 0.10);
   o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈", "m", 0, 0.1, 0.03);
-  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 0.10);
+  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 1.0);
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 0.8);
   o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
   o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
   o("회피 계획", "plan.s_max", "계획 거리", "m", 1, 3.5, 3.0);
-  d("속도", "drive.maximum_speed_mps", "최대 속도", "m/s", 0, 3, 1.8);
+  d("속도", "drive.maximum_speed_mps", "최대 속도", "m/s", 0, 3, 1.5);
   d("속도", "drive.minimum_speed_mps", "최소 속도(코너)", "m/s", 0, 2, 1.0);
   d("속도", "drive.obstacle_speed_mps", "장애물 구간 속도", "m/s", 0, 2, 1.0);
   d("속도", "drive.rollout_fail_speed_mps", "롤아웃 실패 시 속도", "m/s", 0, 2, 0.5);
@@ -67,7 +67,7 @@ void register_params(ParamRegistry & r) {
   d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.053);
   d("출력", "drive.brake_maximum_current", "최대 제동 전류", "A", 0, 10, 2.0);
   d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
-  d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (그동안 직전 경로로 주행)", "s", 0.05, 3, 0.5);
+  d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 10, 0.0);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
   r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");

@@ -177,7 +177,7 @@ Readiness ControlLoop::readiness(double now) const {
   r.yolo_model_ready = models_[1].status == "READY";
   r.vesc_connected = vesc_connected_;
   r.erpm_fresh = now - last_erpm_t_ <= rc_.erpm_timeout_sec;
-  r.lane_fresh = lane_.valid && now - last_lane_t_ <= rc_.lane_timeout_sec;
+  r.lane_fresh = lane_.valid && (rc_.lane_timeout_sec <= 0 || now - last_lane_t_ <= rc_.lane_timeout_sec);   // 0 = 제한 없음
   r.client_alive = sm_.client_alive(now);
   return r;
 }
@@ -237,7 +237,7 @@ StepOutput ControlLoop::tick(double now) {
   std::lock_guard<std::mutex> l(m_);
   // 차선 결과가 잠깐 늦어도(lane_timeout 안) 마지막 계획 경로를 현재 자세로 옮겨 계속 추종한다. 그 이상은 상태기계가 정지
   bool have_path = false;
-  if (lane_.valid && now - last_lane_t_ <= rc_.lane_timeout_sec && !plan_.path_local.empty()) {
+  if (lane_.valid && (rc_.lane_timeout_sec <= 0 || now - last_lane_t_ <= rc_.lane_timeout_sec) && !plan_.path_local.empty()) {
     const Pose2 now_pose = odom_pose();
     control_path_.clear();
     for (const auto & q : plan_.path_local) control_path_.push_back(to_local(to_world(q, plan_pose_), now_pose));

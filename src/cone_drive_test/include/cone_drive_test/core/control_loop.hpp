@@ -24,7 +24,7 @@ struct RuntimeConfig {   // 재시작해야 바뀌는 값 (ROS 파라미터)
   double erpm_direction_sign{1.0}, speed_scale_correction{1.0};
   SteeringParams steering;   // servo 매핑, 최대 조향각
   CameraGeometry camera;     // 보여야 할 콘 판정
-  double lane_timeout_sec{0.25}, erpm_timeout_sec{0.2};
+  double lane_timeout_sec{0.0}, erpm_timeout_sec{0.2};   // lane_timeout 0 = 제한 없음
   double path_min_span_m{0.3}, path_max_gap_m{0.25}, geometry_window_m{0.12};
   double handover_request_period_sec{0.2};
 };

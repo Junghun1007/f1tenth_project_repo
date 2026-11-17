@@ -31,7 +31,7 @@ struct Settings {
   double steering_current_weight{0.4}, steering_rate_rad_s{240.0 * 3.14159265358979323846 / 180.0};
   double corner_outward_offset_m{0.08}, corner_entry_distance_m{2.2}, corner_entry_full_offset_m{0.6};
   double link_loss_stop_sec{1.0};
-  double lane_timeout_sec{0.5};   // 차선 결과가 이만큼 안 오면 정지 (그동안은 직전 경로를 현재 자세로 옮겨 추종)
+  double lane_timeout_sec{0.0};   // 차선 결과가 이만큼 안 오면 정지 (0 = 제한 없음). 그동안은 직전 경로를 현재 자세로 옮겨 추종
 };
 
 void register_params(ParamRegistry & registry);       // 기본값 = 시뮬레이터 config.py / auto_control.yaml / multiclass_yolo

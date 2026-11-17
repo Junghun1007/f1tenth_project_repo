@@ -61,7 +61,7 @@
     memory.confirm_hits: 3.0            # 확정 관측 횟수
     memory.miss_delete: 4.0             # 놓침 삭제 횟수
     memory.delete_behind: 0.10          # 뒤 삭제 거리 (m)
-    memory.mode: 0.0                    # 기억 방식 (0=월드: 오도메트리 위치·방향, 1=차선 기준 단기: 이동 거리만, 2=보이는 콘으로만 계획+화면 밖 콘 옆은 경로 고정, 3=기억 없음: 지금 보이는 콘만)
+    memory.mode: 3.0                    # 기억 방식 (0=월드: 오도메트리 위치·방향, 1=차선 기준 단기: 이동 거리만, 2=보이는 콘으로만 계획+화면 밖 콘 옆은 경로 고정, 3=기억 없음: 지금 보이는 콘만)
     memory.lane_confirm_hits: 2.0       # [차선 기준] 사용 전 관측 횟수
     memory.lane_miss_delete: 3.0        # [차선 기준] 보이는 구간에서 안 보이면 삭제
     memory.lane_match_radius: 0.12      # [차선 기준] 같은 콘 판정 거리 (m)
@@ -73,13 +73,13 @@
     plan.free_hard_clearance: 0.005     # 차선 밖 최소 여유 (m)
     plan.free_soft_clearance: 0.10      # 차선 밖 권장 여유 (m)
     plan.lane_tolerance: 0.03           # 차선 안 허용 이탈 (m)
-    plan.free_max_excess: 0.10          # 차선 밖 회피에서도 차체가 차선 밖으로 나갈 최대 거리 (m)
+    plan.free_max_excess: 1.0           # 차선 밖 회피에서도 차체가 차선 밖으로 나갈 최대 거리 (m). 1.0 = 사실상 제한 없음
     plan.lane_return_distance: 0.8      # 차선 복귀 거리 (m)
     plan.rollout_sec: 1.5               # 롤아웃 시간 (s)
     plan.rollout_retry_margin: 0.03     # 재계획 여유 (m)
     plan.s_max: 3.0                     # 계획 거리 (m)
     # 속도
-    drive.maximum_speed_mps: 1.8        # 최대 속도 (m/s)
+    drive.maximum_speed_mps: 1.5        # 최대 속도 (m/s)
     drive.minimum_speed_mps: 1.0        # 최소 속도(코너) (m/s)
     drive.obstacle_speed_mps: 1.0       # 장애물 구간 속도 (m/s)
     drive.rollout_fail_speed_mps: 0.5   # 롤아웃 실패 시 속도 (m/s)
@@ -103,4 +103,4 @@
     drive.brake_maximum_current: 2.0    # 최대 제동 전류 (A)
     # 안전
     web.link_loss_stop_sec: 1.0         # 연결 끊김 정지 시간 (s)
-    drive.lane_timeout_sec: 0.5         # 차선 끊김 허용 시간 (s). 넘으면 'lane input stale'로 정지, 그동안은 직전 경로로 주행
+    drive.lane_timeout_sec: 0.0         # 차선 끊김 허용 시간 (s). 0 = 제한 없음 (끊긴 동안 직전 경로로 주행). 넘으면 'lane input stale'로 정지
