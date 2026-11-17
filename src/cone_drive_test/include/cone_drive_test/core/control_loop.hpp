@@ -17,6 +17,8 @@
 
 namespace cone_drive_test {
 
+std::vector<ConeObservation> obstacle_cells(const std::vector<ConeObservation> & obs, double cone_size, bool vehicles);
+
 struct RuntimeConfig {   // 재시작해야 바뀌는 값 (ROS 파라미터)
   double wheelbase{0.33};
   double wheel_diameter_m{0.1095};

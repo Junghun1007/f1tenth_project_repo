@@ -185,6 +185,7 @@ private:
       lc.centerline.corner_outward_offset_m = s.corner_outward_offset_m;
       lc.centerline.corner_entry_distance_m = s.corner_entry_distance_m;
       lc.centerline.corner_entry_full_offset_distance_m = s.corner_entry_full_offset_m;
+      lc.side_tracking = s.lane_side_tracking;
       lane_->set_post_config(lc);
     }
   }

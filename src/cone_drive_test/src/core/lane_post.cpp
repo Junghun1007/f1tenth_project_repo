@@ -29,6 +29,11 @@ void LanePostprocessor::set_config(const LanePostConfig & c) {
   c_ = c;
   reference_ = c.centerline;
   reference_.corner_outer_enabled = false;
+  LaneSideTrackerConfig tc;
+  tc.meter_per_pixel = c.meter_per_pixel;
+  tc.lane_width_m = c.centerline.lane_width_m;
+  tc.width_tolerance_m = c.centerline.width_tolerance_m;
+  tracker_ = LaneSideTracker(tc);
 }
 
 Vec2 LanePostprocessor::pixel_to_vehicle(const cv::Point2f & p) const {
@@ -39,7 +44,12 @@ Vec2 LanePostprocessor::pixel_to_vehicle(const cv::Point2f & p) const {
 LaneObservation LanePostprocessor::process(const cv::Mat & labels, double t, bool want_reference) const {
   LaneObservation out;
   out.capture_time = t;
-  const auto conn = connect_lane_fragments(labels, c_.connection, false, nullptr, false);
+  auto conn = connect_lane_fragments(labels, c_.connection, false, nullptr, false);
+  if (c_.side_tracking) {   // 모델 라벨 대신 직전 프레임·차선 폭 기준으로 좌우 재판정
+    const auto fix = tracker_.apply(conn.observed_paths, labels.rows, t);
+    out.side_relabeled = fix.relabeled;
+    out.side_dropped = fix.dropped;
+  }
   const auto center = generate_centerline(conn.labels, conn.observed_paths, labels.cols, c_.connection.padding_px,
                                           c_.centerline, false, nullptr);
   for (const auto & p : center.points) out.path.push_back(pixel_to_vehicle(p));

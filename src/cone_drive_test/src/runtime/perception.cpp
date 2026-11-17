@@ -82,6 +82,8 @@ void LaneWorker::loop_() {
       const cv::Mat labels(300, 120, CV_8UC1, const_cast<std::uint8_t *>(backend_->label_data()));
       lane = post_->process(labels, frame->t, ctl_.cones_nearby());
       stats.record("lane_post", t2, now_sec());
+      for (int k = 0; k < lane.side_relabeled; ++k) stats.record("lane_side_fix", t2, t2);   // 진단: 좌우 교정 (회/s)
+      for (int k = 0; k < lane.side_dropped; ++k) stats.record("lane_side_drop", t2, t2);    // 진단: 짝 틀린 조각 제외 (회/s)
     }
     if (want_jpeg && result.download_bgr) {   // 켜져 있을 때만 GPU→CPU 다운로드
       const cv::Mat bgr = result.download_bgr();

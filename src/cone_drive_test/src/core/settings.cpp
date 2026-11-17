@@ -42,6 +42,7 @@ void register_params(ParamRegistry & r) {
   o("회피 계획", "plan.free_hard_clearance", "차선 밖 최소 여유", "m", 0, 0.2, 0.005);
   o("회피 계획", "plan.free_soft_clearance", "차선 밖 권장 여유", "m", 0, 0.3, 0.10);
   o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈", "m", 0, 0.1, 0.03);
+  o("회피 계획", "plan.avoid_vehicles", "차량(트럭·세단)도 회피 (0=끔, 1=켬)", "", 0, 1, 1);
   o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 1.0);
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 0.8);
   o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
@@ -60,6 +61,7 @@ void register_params(ParamRegistry & r) {
   d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.05);
   d("조향 (Stanley)", "drive.steering_current_weight", "조향 필터 현재 비중", "", 0.05, 1, 0.4);
   d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 240);
+  d("차선", "lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 1);
   d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
   d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
   d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
@@ -67,7 +69,7 @@ void register_params(ParamRegistry & r) {
   d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.053);
   d("출력", "drive.brake_maximum_current", "최대 제동 전류", "A", 0, 10, 2.0);
   d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
-  d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 10, 0.0);
+  d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 60, 20.0);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
   r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
@@ -145,6 +147,8 @@ Settings settings_from(const ParamRegistry & r) {
   s.corner_entry_full_offset_m = g("lane.corner_entry_full_offset_m");
   s.link_loss_stop_sec = g("web.link_loss_stop_sec");
   s.lane_timeout_sec = g("drive.lane_timeout_sec");
+  s.lane_side_tracking = g("lane.side_tracking") >= 0.5;
+  s.avoid_vehicles = g("plan.avoid_vehicles") >= 0.5;
   return s;
 }
 

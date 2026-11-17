@@ -4,6 +4,7 @@
 #include <opencv2/core.hpp>
 #include "cone_drive_test/copied/centerline.hpp"
 #include "cone_drive_test/copied/lane_connector.hpp"
+#include "cone_drive_test/core/lane_side_tracker.hpp"
 #include "cone_drive_test/core/types.hpp"
 
 namespace cone_drive_test {
@@ -12,6 +13,7 @@ struct LanePostConfig {
   LaneConnectionConfig connection;
   CenterlineConfig centerline;
   double x_max_m{3.0}, y_max_m{0.6}, meter_per_pixel{0.01};
+  bool side_tracking{true};   // 차선 좌우 판정 고정 (lane.side_tracking)
   LanePostConfig();   // line_detactor.yaml 값으로 초기화
 };
 
@@ -26,6 +28,7 @@ public:
 private:
   LanePostConfig c_;
   CenterlineConfig reference_;
+  mutable LaneSideTracker tracker_;   // 차선 스레드 전용
 };
 
 }  // namespace cone_drive_test

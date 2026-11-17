@@ -10,6 +10,26 @@ namespace {
 constexpr double kRad2Deg = 180.0 / 3.14159265358979323846;
 }
 
+// 계획에 넣을 장애물 칸: 콘은 그대로, 차량(트럭·세단)은 크기만큼 콘 크기 이하 간격의 정사각형 칸으로 채운다
+// (차량 방향은 박스로 부정확하므로 차량 좌표 축에 정렬 = 차선 위에 서 있다고 가정). 계획기·롤아웃은 칸을 콘처럼 다룬다
+std::vector<ConeObservation> obstacle_cells(const std::vector<ConeObservation> & obs, double cone, bool vehicles) {
+  std::vector<ConeObservation> out;
+  for (const auto & c : obs) {
+    if (c.class_id == 0) { out.push_back(c); continue; }
+    if (!vehicles || (c.class_id != 1 && c.class_id != 2) || !(c.length > cone) || !(c.width > cone)) continue;
+    const int nx = int(std::ceil((c.length - cone) / cone - 1e-9)) + 1, ny = int(std::ceil((c.width - cone) / cone - 1e-9)) + 1;
+    for (int i = 0; i < nx; ++i)
+      for (int j = 0; j < ny; ++j) {
+        ConeObservation q = c;
+        q.class_id = 0;
+        q.center.x = c.center.x - (c.length - cone) / 2 + (nx > 1 ? i * (c.length - cone) / (nx - 1) : (c.length - cone) / 2);
+        q.center.y = c.center.y - (c.width - cone) / 2 + (ny > 1 ? j * (c.width - cone) / (ny - 1) : (c.width - cone) / 2);
+        out.push_back(q);
+      }
+  }
+  return out;
+}
+
 ControlLoop::ControlLoop(DriveMode mode, const RuntimeConfig & rc)
   : rc_(rc), sm_(mode, 1.0), memory_(MemoryParams{}), planner_(PlannerParams{}, ControlParams{}), odom_(rc.wheelbase), lon_(LongitudinalParams{}), steer_(rc.steering) {
   models_[0] = {"차선 (Fast-SCNN)", "WAITING", "", "", 0};
@@ -116,8 +136,7 @@ std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane, std::v
         const double shift = d_now - *d_cap;
         std::vector<Vec2> sl;
         std::vector<double> ranges;
-        for (const auto & c : det.cones) {
-          if (c.class_id != 0) continue;
+        for (const auto & c : obstacle_cells(det.cones, s_.cone_size_m, s_.avoid_vehicles)) {
           sl.push_back(project_sl({c.center.x - shift, c.center.y}, f));
           ranges.push_back(std::hypot(c.center.x - rc_.camera.camera_x, c.center.y));
         }
@@ -190,8 +209,7 @@ void ControlLoop::integrate_detections() {
   if (!pose) { ++dropped_; return; }   // 오도메트리 이력 밖(너무 오래됨·미래) → 위치를 믿을 수 없음
   if (!f.depth_valid) return;          // 깊이 없는 프레임은 관측으로 치지 않음 (기억 콘을 놓침으로 세지 않음)
   last_det_ = f;
-  std::vector<ConeObservation> cones;
-  for (const auto & c : f.cones) if (c.class_id == 0) cones.push_back(c);
+  const auto cones = obstacle_cells(f.cones, s_.cone_size_m, s_.avoid_vehicles);
   const auto cam = rc_.camera;
   const double cone = s_.cone_size_m;
   memory_.update(*pose, f.capture_time, cones, [cam, cone](const std::vector<Vec2> & centers, const Pose2 & p) {
