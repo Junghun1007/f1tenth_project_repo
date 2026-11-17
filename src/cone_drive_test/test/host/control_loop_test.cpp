@@ -112,9 +112,9 @@ TEST(cone_in_lane_triggers_avoidance_plan) {
 
 TEST(params_apply_reaches_controllers) {
   Rig r(DriveMode::Drive);
-  CHECK(r.params.apply({{"drive.maximum_speed_mps", 1.2}}).first);
+  CHECK(r.params.apply({{"drive.maximum_speed_mps", 1.4}}).first);
   r.loop->apply_settings(settings_from(r.params));
-  CHECK_NEAR(r.loop->settings().lon.maximum_speed_mps, 1.2, 1e-12);
+  CHECK_NEAR(r.loop->settings().lon.maximum_speed_mps, 1.4, 1e-12);
 }
 
 TEST(registry_has_both_groups_and_ordering) {
