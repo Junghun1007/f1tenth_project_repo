@@ -103,6 +103,11 @@
     drive.maximum_duty: 0.12            # 최대 duty
     drive.start_duty: 0.053             # 정지 출발 duty
     drive.brake_maximum_current: 2.0    # 최대 제동 전류 (A)
+    drive.brake_speed_gain: 0.8         # 제동 전류 = 최대 전류 × min(1, 이 값 × 속도 초과 m/s + 감속 부족 비율)
+    drive.brake_deceleration_gain: 0.5  # 장애물 접근 시 감속 부족(m/s²) → 제동 비율
+    drive.brake_current_rise_aps: 1.5   # 제동 전류 상승 속도 (A/s). 낮추면 제동이 부드럽게 걸림
+    drive.brake_entry_speed_error_mps: 0.3   # 일반 주행: 목표보다 이만큼 빠르면 제동 시작
+    drive.brake_exit_speed_error_mps: 0.1    # 일반 주행: 이 아래로 내려오면 제동 해제
     # 안전
     # 차량 추종 (ACC): 경로에 걸친 트럭·세단은 회피 대신 뒤따른다 (끄면 plan.avoid_vehicles 규칙)
     acc.enabled: 1.0                    # 0=끔, 1=켬

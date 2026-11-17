@@ -67,7 +67,12 @@ void register_params(ParamRegistry & r) {
   d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
   d("출력", "drive.maximum_duty", "최대 duty", "", 0, 0.5, 0.12);
   d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.053);
-  d("출력", "drive.brake_maximum_current", "최대 제동 전류", "A", 0, 10, 2.0);
+  d("제동", "drive.brake_maximum_current", "최대 제동 전류", "A", 0, 10, 2.0);
+  d("제동", "drive.brake_speed_gain", "속도 초과 → 제동 비율 (전류 = 최대 × 이 값 × 초과 m/s)", "/(m/s)", 0, 5, 0.8);
+  d("제동", "drive.brake_deceleration_gain", "장애물 감속 부족 → 제동 비율", "/(m/s²)", 0, 5, 0.5);
+  d("제동", "drive.brake_current_rise_aps", "제동 전류 상승 속도", "A/s", 0.1, 30, 1.5);
+  d("제동", "drive.brake_entry_speed_error_mps", "제동 시작 속도 초과 (일반 주행)", "m/s", 0.02, 1.5, 0.3);
+  d("제동", "drive.brake_exit_speed_error_mps", "제동 해제 속도 초과 (일반 주행)", "m/s", 0, 1.0, 0.1);
   d("차량 추종 (ACC)", "acc.enabled", "차량 추종 (0=끔, 1=켬: 경로에 걸친 차량은 회피 대신 뒤따름)", "", 0, 1, 1);
   d("차량 추종 (ACC)", "acc.stop_gap_m", "정지 거리 (앞차가 서 있을 때)", "m", 0.05, 1.5, 0.25);
   d("차량 추종 (ACC)", "acc.resume_gap_m", "재출발·최소 유지 거리", "m", 0.1, 2.0, 0.40);
@@ -81,6 +86,7 @@ void register_params(ParamRegistry & r) {
   d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 60, 20.0);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
   r.add_order_constraint("acc.stop_gap_m", "acc.resume_gap_m");
+  r.add_order_constraint("drive.brake_exit_speed_error_mps", "drive.brake_entry_speed_error_mps");
   r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
   r.add_order_constraint("lane.corner_entry_full_offset_m", "lane.corner_entry_distance_m");
@@ -152,6 +158,11 @@ Settings settings_from(const ParamRegistry & r) {
   l.maximum_duty = g("drive.maximum_duty");
   l.longitudinal_start_duty = std::min(g("drive.start_duty"), l.maximum_duty);
   l.brake_maximum_current_amps = g("drive.brake_maximum_current");
+  l.brake_speed_gain = g("drive.brake_speed_gain");
+  l.brake_deceleration_gain = g("drive.brake_deceleration_gain");
+  l.brake_current_rise_amps_per_sec = g("drive.brake_current_rise_aps");
+  l.brake_entry_speed_error_mps = g("drive.brake_entry_speed_error_mps");
+  l.brake_exit_speed_error_mps = g("drive.brake_exit_speed_error_mps");
   s.corner_outward_offset_m = g("lane.corner_outward_offset_m");
   s.corner_entry_distance_m = g("lane.corner_entry_distance_m");
   s.corner_entry_full_offset_m = g("lane.corner_entry_full_offset_m");
