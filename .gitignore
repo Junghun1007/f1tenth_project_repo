@@ -11,3 +11,4 @@ srv_gen/
 __pycache__/
 *.pyc
 captures/
+.superpowers/

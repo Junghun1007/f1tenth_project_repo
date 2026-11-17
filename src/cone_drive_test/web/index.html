@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cone Drive Test</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">cone_drive_test</div>
+  <div class="seg" id="modeSeg" role="group" aria-label="모드">
+    <button data-mode="detect">검출 테스트</button>
+    <button data-mode="drive">추적 주행</button>
+  </div>
+  <div class="state" id="stateBadge">BOOT</div>
+  <div class="reason" id="reason"></div>
+  <div class="spacer"></div>
+  <button class="btn go" id="btnStart">주행 시작</button>
+  <button class="btn stop" id="btnStop">정지</button>
+  <button class="btn" id="btnRefit">Refit</button>
+  <span class="sep"></span>
+  <label class="tog main-tog"><input type="checkbox" id="togPreview" checked> 프리뷰</label>
+  <label class="tog"><input type="checkbox" id="togBev"> BEV 원본</label>
+  <label class="tog"><input type="checkbox" id="togCam"> 카메라</label>
+  <button class="btn" id="btnParams">파라미터</button>
+  <span class="link" id="link">연결 끊김</span>
+</header>
+
+<div class="off" id="offNote" hidden>
+  <b>프리뷰 꺼짐</b> — Jetson은 오버레이 좌표·단계 통계·영상을 만들지 않고, 상태만 초당 2회 보냅니다.
+  시작·정지·Refit과 연결 감시는 그대로 동작합니다.
+  <div class="mini" id="mini"></div>
+</div>
+<main class="main" id="main">
+  <section class="panel bevpanel">
+    <h2>BEV <small>앞차축 기준 0~3 m · ±0.6 m</small></h2>
+    <div class="bevwrap" id="bevWrap">
+      <img id="bevImg" alt="" class="offscreen">
+      <canvas id="bev"></canvas>
+    </div>
+    <div class="legend">
+      <span><i class="l-left"></i>왼쪽 차선</span><span><i class="l-right"></i>오른쪽 차선</span>
+      <span><i class="l-center"></i>중앙선</span><span><i class="l-plan"></i>회피 경로 (점선=FAIL)</span>
+      <span><i class="l-det"></i>관측 콘</span><span><i class="l-mem"></i>기억 콘</span>
+    </div>
+  </section>
+
+  <section class="panel campanel" id="camPanel" hidden>
+    <h2>카메라 <small>YOLO 박스 · ROI</small></h2>
+    <img id="camImg" alt="">
+    <table class="dets" id="detTable"><thead><tr><th>클래스</th><th>점수</th><th>X m</th><th>Y m</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="side">
+   <div class="col">
+    <div class="panel" id="inspect">
+      <h2>출발 전 점검</h2>
+      <div class="checks" id="checks"></div>
+      <div class="models" id="models"></div>
+    </div>
+    <div class="panel">
+      <h2>차량</h2>
+      <div class="kv" id="vehicle"></div>
+    </div>
+    <div class="panel">
+      <h2>회피</h2>
+      <div class="kv" id="avoid"></div>
+    </div>
+    <div class="panel">
+      <h2>시스템</h2>
+      <div id="usage"></div>
+    </div>
+   </div>
+   <div class="col">
+    <div class="panel">
+      <h2>단계별 연산 <small>최근 1초 평균</small></h2>
+      <table class="stages" id="stages"><thead><tr><th>단계</th><th>ms</th><th>FPS</th></tr></thead><tbody></tbody></table>
+    </div>
+   </div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head">
+    <div class="tabs" id="tabs">
+      <button data-group="obstacle" class="on">장애물</button>
+      <button data-group="driving">주행</button>
+    </div>
+    <button class="btn" id="btnClose">닫기</button>
+  </div>
+  <div class="plist" id="plist"></div>
+  <div class="drawer-foot">
+    <span id="pmsg"></span>
+    <button class="btn" id="btnReset">되돌리기</button>
+    <button class="btn" id="btnSave">YAML 저장</button>
+    <button class="btn go" id="btnApply">적용</button>
+  </div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>
