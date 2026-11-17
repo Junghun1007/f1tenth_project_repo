@@ -304,3 +304,35 @@ TEST(no_memory_mode_forgets_unseen_cone) {   // 모드 3: 안 보이면 바로 �
   tf = r.loop->telemetry(true, r.t);
   CHECK(tf.plan_mode == "center");
 }
+
+TEST(steering_holds_while_stopped_behind_lead) {   // 앞차 뒤 정지 중엔 차선 흔들림을 따라 조향하지 않음
+  Rig r(DriveMode::Drive);
+  r.step();
+  CHECK(r.loop->request_start(r.t).first);
+  r.step();
+  r.loop->on_handover_mode("AUTO", r.t);
+  for (int k = 0; k < 3; ++k) {   // 정지 거리에 서 있는 앞차
+    r.step(0.0);
+    DetectionFrame d;
+    d.capture_time = r.t - 0.005;
+    ConeObservation car; car.class_id = 2; car.length = 0.5; car.width = 0.3; car.center = {0.30 + 0.25, 0.0}; car.score = 0.9f;
+    d.cones.push_back(car);
+    r.loop->on_detections(d);
+  }
+  r.step(0.0);
+  CHECK(r.loop->telemetry(true, r.t).lead.holding);
+  double first = -1, worst = 0;
+  for (int k = 0; k < 40; ++k) {   // 차선이 좌우로 4 cm씩 흔들림
+    r.t += 0.025;
+    r.loop->on_speed(0.0, r.t);
+    r.loop->on_yaw_rate(0.0, r.t);
+    r.loop->on_heartbeat("web", r.t);
+    auto lane = lane_at(r.t - 0.005);
+    const double off = (k % 2 ? 0.04 : -0.04);
+    for (auto & p : lane.path) p.y += off;
+    const auto out = r.loop->on_lane(lane, r.t);
+    if (first < 0) first = out.servo;
+    worst = std::max(worst, std::abs(out.servo - first));
+  }
+  CHECK(worst < 1e-6);
+}

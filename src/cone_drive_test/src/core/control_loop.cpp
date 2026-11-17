@@ -318,7 +318,10 @@ StepOutput ControlLoop::control_step(double now, bool have_path) {
     const auto st = stanley_control(*path, speed_, s_.stanley_gain, s_.stanley_softening, s_.heading_lookahead_m,
                                     rc_.steering.max_steer_rad, rc_.steering.corner_heading_threshold_rad, 0.8);
     cte_ = st.cross_track_error_m;
-    steer_.update(st.steering_angle_rad, dt, st.heading_error_rad, stop ? 0.0 : plan_target, speed_);
+    // 정지 시 조향 유지는 '목표 속도 0'일 때만 걸린다 → 차량 추종·롤아웃 상한까지 반영한 실제 목표를 넘긴다
+    // (곡률 계획 속도만 넘기면 앞차 뒤에 서 있어도 목표>0이라 차선 인식 흔들림을 그대로 따라 조향이 떨린다)
+    const double cap_now = s_.lead.enabled ? std::min(plan_.speed_cap, lead_.state().cap) : plan_.speed_cap;
+    steer_.update(st.steering_angle_rad, dt, st.heading_error_rad, stop ? 0.0 : std::min(plan_target, cap_now), speed_);
   }
   const double cap = s_.lead.enabled ? std::min(plan_.speed_cap, lead_.state().cap) : plan_.speed_cap;   // 차량 추종 상한
   const auto cmd = lon_.update(dt, path ? plan_target : 0.0, plan_.obstacle_active, cap, stop || !path);
