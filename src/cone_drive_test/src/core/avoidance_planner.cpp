@@ -50,10 +50,15 @@ PlanResult AvoidancePlanner::plan(const LaneObservation & lane, const std::vecto
   DesiredOffset l_des;
   for (auto i : order) { l_des.s.push_back(dsl[i].x); l_des.l.push_back(dsl[i].y); }
 
-  for (const auto & c : cones_sl)
-    if (c.x > -0.6 && c.x < 3.0 && std::abs(c.y) < 1.0) out.obstacle_active = true;
+  // 차선 안 경로에 영향을 줄 수 있는 콘만 회피 계획을 켠다: 차선 안 경로의 차체 끝(차선 반폭 + 허용 이탈)에서
+  // 권장 여유보다 멀리 있는 콘(도로 밖 콘)은 비용이 0이라 계획해도 중앙선과 같은 결과 → 중앙선을 그대로 쓴다
+  const double reach = p_.lane_half + p_.lane_tolerance + p_.soft_clearance + p_.cone_half + 0.02;
   bool near = false;
-  for (const auto & c : cones_sl) near |= c.x > -0.6 && c.x < s_end + 0.3;
+  for (const auto & c : cones_sl) {
+    if (c.x <= -0.6 || c.x >= s_end + 0.3 || std::abs(c.y) > reach) continue;
+    near = true;
+    if (c.x < 3.0) out.obstacle_active = true;
+  }
   const bool pin_active = pin && pin->s.size() >= 2 && pin->end_s > 0;
   if (pin_active) { near = true; out.obstacle_active = true; }   // 화면 밖 콘 옆을 지나는 중: 중앙선 추종으로 바꾸지 않음
 

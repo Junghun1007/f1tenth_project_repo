@@ -97,3 +97,12 @@ TEST(path_lock_refresh_and_release) {
   CHECK(!lock.active());
   CHECK(lock.pin() == nullptr);
 }
+
+TEST(cones_outside_the_road_do_not_trigger_avoidance) {   // 도로 밖(차선선에서 30 cm 바깥) 콘 → 중앙선 그대로
+  AvoidancePlanner pl{PlannerParams{}, ControlParams{}};
+  const auto r = pl.plan(straight_lane(), {{0.8, 0.65}, {1.2, -0.70}}, {0, 0, 0}, 1.0, 0.0);
+  CHECK(r.mode == PlanMode::Center);
+  CHECK(!r.obstacle_active);
+  const auto r2 = pl.plan(straight_lane(), {{0.8, 0.40}}, {0, 0, 0}, 1.0, 0.0);   // 차선선 바로 옆 콘은 계속 고려
+  CHECK(r2.mode != PlanMode::Center);
+}
