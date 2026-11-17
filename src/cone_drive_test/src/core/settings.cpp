@@ -68,9 +68,19 @@ void register_params(ParamRegistry & r) {
   d("출력", "drive.maximum_duty", "최대 duty", "", 0, 0.5, 0.12);
   d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.053);
   d("출력", "drive.brake_maximum_current", "최대 제동 전류", "A", 0, 10, 2.0);
+  d("차량 추종 (ACC)", "acc.enabled", "차량 추종 (0=끔, 1=켬: 경로에 걸친 차량은 회피 대신 뒤따름)", "", 0, 1, 1);
+  d("차량 추종 (ACC)", "acc.stop_gap_m", "정지 거리 (앞차가 서 있을 때)", "m", 0.05, 1.5, 0.25);
+  d("차량 추종 (ACC)", "acc.resume_gap_m", "재출발·최소 유지 거리", "m", 0.1, 2.0, 0.40);
+  d("차량 추종 (ACC)", "acc.time_gap_s", "시간 간격 (유지 거리 += 이 값 × 내 속도)", "s", 0, 2, 0.3);
+  d("차량 추종 (ACC)", "acc.decel_mps2", "거리 기반 감속도", "m/s²", 0.2, 3, 0.8);
+  d("차량 추종 (ACC)", "acc.lateral_margin_m", "경로 막힘 판정 옆 여유", "m", 0, 0.3, 0.05);
+  d("차량 추종 (ACC)", "acc.min_follow_speed_mps", "이보다 느린 앞차는 정지로 봄", "m/s", 0, 1.5, 0.3);
+  d("차량 추종 (ACC)", "acc.hold_near_m", "이 거리 안에서 놓치면 서 있다고 가정", "m", 0, 1.5, 0.6);
+  d("차량 추종 (ACC)", "acc.lost_timeout_sec", "멀리서 놓친 앞차 유지 시간", "s", 0.05, 2, 0.3);
   d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
   d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 60, 20.0);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
+  r.add_order_constraint("acc.stop_gap_m", "acc.resume_gap_m");
   r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
   r.add_order_constraint("lane.corner_entry_full_offset_m", "lane.corner_entry_distance_m");
@@ -149,6 +159,15 @@ Settings settings_from(const ParamRegistry & r) {
   s.lane_timeout_sec = g("drive.lane_timeout_sec");
   s.lane_side_tracking = g("lane.side_tracking") >= 0.5;
   s.avoid_vehicles = g("plan.avoid_vehicles") >= 0.5;
+  s.lead.enabled = g("acc.enabled") >= 0.5;
+  s.lead.stop_gap = g("acc.stop_gap_m");
+  s.lead.resume_gap = g("acc.resume_gap_m");
+  s.lead.time_gap = g("acc.time_gap_s");
+  s.lead.decel = g("acc.decel_mps2");
+  s.lead.lateral_margin = g("acc.lateral_margin_m");
+  s.lead.min_follow_speed = g("acc.min_follow_speed_mps");
+  s.lead.hold_near = g("acc.hold_near_m");
+  s.lead.lost_timeout = g("acc.lost_timeout_sec");
   return s;
 }
 

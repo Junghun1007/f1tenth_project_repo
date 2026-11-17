@@ -1,5 +1,6 @@
 // 브라우저 텔레메트리 JSON (web/app.js와 같은 필드). full=false면 상태·점검만 (프리뷰 꺼짐)
 #pragma once
+#include "cone_drive_test/core/lead_follower.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -34,7 +35,8 @@ struct TelemetryFrame {
   std::vector<DetectionInfo> detections;
   std::vector<MemoryInfo> memory;
   int memory_mode{0};
-  double lock_m{0};   // 모드 2: 남은 경로 고정 거리 (m)
+  double lock_m{0};
+  LeadState lead;   // 차량 추종 상태   // 모드 2: 남은 경로 고정 거리 (m)
   std::vector<StageStats::Row> stages;
   SystemUsage usage;
   std::uint64_t params_version{0};

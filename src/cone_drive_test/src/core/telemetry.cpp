@@ -1,5 +1,6 @@
 #include "cone_drive_test/core/telemetry.hpp"
 #include "cone_drive_test/core/json_writer.hpp"
+#include <cmath>
 
 namespace cone_drive_test {
 
@@ -57,6 +58,14 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
     w.end_array();
     w.key("memory_mode").value((long long)f.memory_mode);
     w.key("lock_m").value(f.lock_m);
+    w.key("lead").begin_object();
+    w.key("active").value(f.lead.active);
+    w.key("seen").value(f.lead.seen);
+    w.key("holding").value(f.lead.holding);
+    w.key("gap").value(f.lead.gap);
+    w.key("speed").value(f.lead.lead_speed);
+    w.key("cap").value(std::isfinite(f.lead.cap) ? f.lead.cap : -1.0);
+    w.end_object();
     w.key("memory").begin_array();
     for (const auto & m : f.memory)
       w.begin_object().key("x").value(m.x, 3).key("y").value(m.y, 3).key("confirmed").value(m.confirmed).key("id").value((long long)m.id).end_object();

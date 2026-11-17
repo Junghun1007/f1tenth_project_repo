@@ -104,5 +104,15 @@
     drive.start_duty: 0.053             # 정지 출발 duty
     drive.brake_maximum_current: 2.0    # 최대 제동 전류 (A)
     # 안전
+    # 차량 추종 (ACC): 경로에 걸친 트럭·세단은 회피 대신 뒤따른다 (끄면 plan.avoid_vehicles 규칙)
+    acc.enabled: 1.0                    # 0=끔, 1=켬
+    acc.stop_gap_m: 0.25                # 앞차가 서 있을 때 정지 거리 (앞범퍼 기준, m)
+    acc.resume_gap_m: 0.40              # 재출발·주행 중 최소 거리 (m)
+    acc.time_gap_s: 0.3                 # 유지 거리 = resume_gap + 이 값 × 내 속도
+    acc.decel_mps2: 0.8                 # 거리 기반 감속도 (m/s²)
+    acc.lateral_margin_m: 0.05          # 경로 막힘 판정 옆 여유 (m)
+    acc.min_follow_speed_mps: 0.3       # 이보다 느린 앞차는 서 있는 것으로 (멈췄다 가기)
+    acc.hold_near_m: 0.6                # 이 거리 안에서 놓치면 다시 보일 때까지 서 있다고 가정 (m)
+    acc.lost_timeout_sec: 0.3           # 멀리서 놓친 앞차를 예측으로 유지하는 시간 (s)
     web.link_loss_stop_sec: 1.0         # 연결 끊김 정지 시간 (s)
     drive.lane_timeout_sec: 20.0        # 차선 끊김 허용 시간 (s). 0 = 제한 없음 (끊긴 동안 직전 경로로 주행). 넘으면 'lane input stale'로 정지

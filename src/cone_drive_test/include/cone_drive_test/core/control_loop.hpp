@@ -12,6 +12,7 @@
 #include "cone_drive_test/core/path_utils.hpp"
 #include "cone_drive_test/core/odometry.hpp"
 #include "cone_drive_test/core/path_lock.hpp"
+#include "cone_drive_test/core/lead_follower.hpp"
 #include "cone_drive_test/core/settings.hpp"
 #include "cone_drive_test/core/telemetry.hpp"
 
@@ -91,6 +92,7 @@ private:
   std::vector<Vec2> lane_memory_cones(const Pose2 & pose_lane, std::vector<Vec2> * blind_world = nullptr, double * blind_end = nullptr);
   StepOutput control_step(double now, bool have_path);
   void integrate_detections();
+  void remember_vehicles(const DetectionFrame & det, std::optional<double> dist_at_capture);
   RuntimeConfig rc_;
   Settings s_;
   mutable std::mutex m_;
@@ -105,6 +107,10 @@ private:
   bool lane_f_valid_{false};
   std::vector<Vec2> latest_sl_;             // 모드 3: 가장 최근 검출 프레임의 콘 (s, l) — 기억 없음
   double latest_det_t_{-1};
+  LeadFollower lead_;                        // 차량 추종
+  std::vector<ConeObservation> new_vehicles_;   // 새 깊이 검출의 차량 (촬영 시점 좌표)
+  double new_vehicles_dist_{0};                 // 그 촬영 시점 바퀴 누적 거리
+  bool new_det_{false};
   AvoidancePlanner planner_;
   Odometry odom_;
   LongitudinalController lon_;

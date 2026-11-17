@@ -70,6 +70,10 @@ void ControlLoop::apply_settings(const Settings & s) {
   sp.rate_limit_rad_s = s.steering_rate_rad_s;
   steer_.set_params(sp);
   sm_.set_link_loss_stop_sec(s.link_loss_stop_sec);
+  auto lead = s.lead;
+  lead.ego_half_width = s.planner.width / 2;
+  lead.front_overhang = s.planner.length - rc_.wheelbase - s.planner.rear_overhang;
+  lead_.set_params(lead);
   rc_.lane_timeout_sec = s.lane_timeout_sec;
 }
 
@@ -136,7 +140,8 @@ std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane, std::v
         const double shift = d_now - *d_cap;
         std::vector<Vec2> sl;
         std::vector<double> ranges;
-        for (const auto & c : obstacle_cells(det.cones, s_.cone_size_m, s_.avoid_vehicles)) {
+        remember_vehicles(det, d_cap);
+        for (const auto & c : obstacle_cells(det.cones, s_.cone_size_m, s_.avoid_vehicles && !s_.lead.enabled)) {
           sl.push_back(project_sl({c.center.x - shift, c.center.y}, f));
           ranges.push_back(std::hypot(c.center.x - rc_.camera.camera_x, c.center.y));
         }
@@ -209,7 +214,8 @@ void ControlLoop::integrate_detections() {
   if (!pose) { ++dropped_; return; }   // 오도메트리 이력 밖(너무 오래됨·미래) → 위치를 믿을 수 없음
   if (!f.depth_valid) return;          // 깊이 없는 프레임은 관측으로 치지 않음 (기억 콘을 놓침으로 세지 않음)
   last_det_ = f;
-  const auto cones = obstacle_cells(f.cones, s_.cone_size_m, s_.avoid_vehicles);
+  const auto cones = obstacle_cells(f.cones, s_.cone_size_m, s_.avoid_vehicles && !s_.lead.enabled);
+  remember_vehicles(f, odom_distance_at(f.capture_time));
   const auto cam = rc_.camera;
   const double cone = s_.cone_size_m;
   memory_.update(*pose, f.capture_time, cones, [cam, cone](const std::vector<Vec2> & centers, const Pose2 & p) {
@@ -218,6 +224,14 @@ void ControlLoop::integrate_detections() {
     for (const auto & w : centers) local.push_back(to_local(w, p));
     return expected_visible(local, cam, cone);
   });
+}
+
+void ControlLoop::remember_vehicles(const DetectionFrame & det, std::optional<double> dist) {
+  if (!det.depth_valid || !dist) return;
+  new_vehicles_.clear();
+  for (const auto & c : det.cones) if (c.class_id == 1 || c.class_id == 2) new_vehicles_.push_back(c);
+  new_vehicles_dist_ = *dist;
+  new_det_ = true;
 }
 
 StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
@@ -241,6 +255,16 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
       lock_.set_last_plan(std::move(sl));
     }
     plan_pose_ = pose_lane;
+    {   // 차량 추종: 새 검출 차량을 경로 시각으로 옮겨(바퀴 이동 거리만큼 앞쪽을 뺌) 앞차 갱신
+      const double d_lane = odom_distance_at(lane_.capture_time).value_or(odom_distance());
+      std::vector<ConeObservation> vehicles;
+      if (new_det_) {
+        const double shift = d_lane - new_vehicles_dist_;
+        for (auto v : new_vehicles_) { v.center.x -= shift; v.front.x -= shift; vehicles.push_back(v); }
+      }
+      lead_.update(plan_.path_local, vehicles, new_det_, lane_.capture_time, d_lane, speed_);
+      new_det_ = false;
+    }
     // 계획 자세 → 현재 자세로 옮겨 제어
     const Pose2 now_pose = odom_pose();
     control_path_.clear();
@@ -296,7 +320,8 @@ StepOutput ControlLoop::control_step(double now, bool have_path) {
     cte_ = st.cross_track_error_m;
     steer_.update(st.steering_angle_rad, dt, st.heading_error_rad, stop ? 0.0 : plan_target, speed_);
   }
-  const auto cmd = lon_.update(dt, path ? plan_target : 0.0, plan_.obstacle_active, plan_.speed_cap, stop || !path);
+  const double cap = s_.lead.enabled ? std::min(plan_.speed_cap, lead_.state().cap) : plan_.speed_cap;   // 차량 추종 상한
+  const auto cmd = lon_.update(dt, path ? plan_target : 0.0, plan_.obstacle_active, cap, stop || !path);
   target_ = cmd.target_speed;
   out.duty = cmd.duty;
   out.brake_current = cmd.brake_current;
@@ -380,6 +405,7 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   }
   f.memory_mode = s_.memory_mode;
   f.lock_m = lock_.remaining();
+  f.lead = lead_.state();
   f.stages = stats_.snapshot(now_sec());
   return f;
 }

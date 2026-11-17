@@ -6,6 +6,7 @@
 #include "cone_drive_test/core/cone_memory.hpp"
 #include "cone_drive_test/core/lane_memory.hpp"
 #include "cone_drive_test/core/lane_post.hpp"
+#include "cone_drive_test/core/lead_follower.hpp"
 #include "cone_drive_test/core/longitudinal.hpp"
 #include "cone_drive_test/core/params.hpp"
 #include "cone_drive_test/core/steering.hpp"
@@ -32,7 +33,8 @@ struct Settings {
   double corner_outward_offset_m{0.08}, corner_entry_distance_m{2.2}, corner_entry_full_offset_m{0.6};
   double link_loss_stop_sec{1.0};
   bool lane_side_tracking{true};   // 차선 좌우 판정 고정
-  bool avoid_vehicles{true};       // 트럭·세단도 회피 장애물로
+  bool avoid_vehicles{true};       // 트럭·세단도 회피 장애물로 (차량 추종이 켜져 있으면 회피 대신 추종)
+  LeadParams lead;                 // 차량 추종 (acc.*)
   double lane_timeout_sec{20.0};   // 차선 결과가 이만큼 안 오면 정지 (0 = 제한 없음). 그동안은 직전 경로를 현재 자세로 옮겨 추종
 };
 
