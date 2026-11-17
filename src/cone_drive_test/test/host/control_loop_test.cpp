@@ -297,10 +297,10 @@ TEST(no_memory_mode_forgets_unseen_cone) {   // 모드 3: 안 보이면 바로 �
   r.loop->apply_settings(settings_from(r.params));
   see_cone(r, {1.2, 0.22}, 2);
   auto tf = r.loop->telemetry(true, r.t);
-  CHECK(tf.memory.size() == 1);
+  CHECK(tf.memory.empty());               // 기억이 없으니 분홍(기억 콘)도 없음
+  CHECK(tf.detections.size() == 1);
   CHECK(tf.plan_mode != "center");
   drive_blind(r, 16);   // 0.4 s 검출 없음
   tf = r.loop->telemetry(true, r.t);
-  CHECK(tf.memory.empty());
   CHECK(tf.plan_mode == "center");
 }

@@ -33,6 +33,7 @@ struct CameraConfig {
   double dot_intensity{0.5};
   double imu_rate_hz{400.0};
   double depth_sync_ms{20.0};
+  double depth_wait_ms{30.0};   // 검출 후 깊이가 아직 안 왔으면 기다리는 최대 시간
   double maximum_imu_pair_skew_sec{0.003};
   bool stabilization_enabled{true};
 };

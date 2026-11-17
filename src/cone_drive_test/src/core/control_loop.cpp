@@ -110,8 +110,8 @@ std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane, std::v
     if (!d_cap) {
       ++dropped_;
     } else {
-      last_det_ = det;
       if (det.depth_valid) {
+        last_det_ = det;   // 깊이 없는 프레임으로 화면의 관측 콘을 지우지 않음
         const double shift = d_now - *d_cap;
         std::vector<Vec2> sl;
         std::vector<double> ranges;
@@ -130,12 +130,7 @@ std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane, std::v
   lane_f_valid_ = true;
   if (s_.memory_mode == 3) {   // 기억 없음: 마지막 검출 프레임에 보인 콘만 (0.3 s 넘게 검출이 없으면 콘 없음)
     if (lane_.capture_time - latest_det_t_ > 0.3) latest_sl_.clear();
-    std::uint32_t id = 1;
-    for (const auto & q : latest_sl_) {
-      const Vec2 local = from_frenet(q.x, q.y, f);
-      lane_mem_view_.push_back({local.x, local.y, true, id++});
-      world.push_back(to_world(local, pose_lane));
-    }
+    for (const auto & q : latest_sl_) world.push_back(to_world(from_frenet(q.x, q.y, f), pose_lane));   // 화면엔 관측 콘(주황)만: 기억이 아님
     return world;
   }
   // 3) 계획용: (s,l) → 차선 촬영 시점 차량 좌표 → 월드
@@ -192,8 +187,8 @@ void ControlLoop::integrate_detections() {
   pending_det_.reset();
   const auto pose = odom_pose_at(f.capture_time);
   if (!pose) { ++dropped_; return; }   // 오도메트리 이력 밖(너무 오래됨·미래) → 위치를 믿을 수 없음
-  last_det_ = f;
   if (!f.depth_valid) return;          // 깊이 없는 프레임은 관측으로 치지 않음 (기억 콘을 놓침으로 세지 않음)
+  last_det_ = f;
   std::vector<ConeObservation> cones;
   for (const auto & c : f.cones) if (c.class_id == 0) cones.push_back(c);
   const auto cam = rc_.camera;

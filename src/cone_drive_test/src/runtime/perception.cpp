@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <thread>
 
 namespace cone_drive_test {
 
@@ -158,8 +159,15 @@ void DetectWorker::loop_() {
     DetectionFrame out;
     out.capture_time = frame->t;
     // 추론하는 동안 도착한 깊이까지 포함해 다시 짝짓기. 끝내 없으면 이 프레임은 관측으로 치지 않는다
-    const auto depth = frame->depth ? frame->depth : cam_.nearest_depth(frame->t, cc.depth_sync_ms / 1000.0);
+    // 스테레오 깊이는 같은 시각 RGB보다 늦게 나온다. 추론 뒤에도 아직 없으면 잠깐(최대 depth_wait_ms) 기다린다.
+    // 짝을 못 지은 프레임은 관측으로 치지 않으므로, 여기서 놓치면 BEV에서 콘이 깜빡이고 늦게 나타난다
+    auto depth = frame->depth ? frame->depth : cam_.nearest_depth(frame->t, cc.depth_sync_ms / 1000.0);
+    for (double waited = now_sec(); !depth && running_ && now_sec() - waited < cc.depth_wait_ms / 1000.0;) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      depth = cam_.nearest_depth(frame->t, cc.depth_sync_ms / 1000.0);
+    }
     out.depth_valid = depth != nullptr;
+    if (!depth && !res.detections.empty()) stats.record("depth_miss", t1, t1);   // 진단: 박스는 있는데 깊이 짝이 없음 (FPS 칸 = 초당 횟수)
     if (depth) {
       auto & d = *depth;
       const int dw = int(d.getWidth()), dh = int(d.getHeight());
@@ -172,6 +180,7 @@ void DetectWorker::loop_() {
                            : det.class_id == 1 ? Footprint{0.60, 0.36} : det.class_id == 2 ? Footprint{0.50, 0.30} : Footprint{};
         const cv::Rect2f box(det.box.x * sx, det.box.y * sy, det.box.width * sx, det.box.height * sy);
         if (auto o = localize_box(mm, stride_px, k, mount, box, det.class_id, det.score, fp, s.box)) out.cones.push_back(*o);
+        else stats.record("loc_fail", t1, t1);   // 진단: 깊이는 있는데 박스 안 유효 점이 모자람
       }
     }
     stats.record("box_depth", t1, now_sec());

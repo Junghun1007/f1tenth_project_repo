@@ -11,6 +11,7 @@ const STAGE_LABEL = {
   receive: "영상 지연(촬영→처리)", stabilize_bev: "안정화+BEV", lane_infer: "차선 추론", lane_post: "중앙선",
   yolo_pre: "YOLO 전처리", yolo_infer: "YOLO 추론", yolo_post: "YOLO 후처리", box_depth: "Depth 정합",
   memory_plan: "기억+회피계획", control: "제어", web: "웹 전송",
+  depth_miss: "⚠ 깊이 짝 없음(회/s)", loc_fail: "⚠ 위치 계산 실패(회/s)",
 };
 const READY_LABEL = {
   attitude_ok: "카메라 자세", lane_model_ready: "차선 모델", yolo_model_ready: "YOLO 모델",
