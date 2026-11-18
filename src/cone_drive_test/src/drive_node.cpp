@@ -20,11 +20,23 @@ namespace cdt = cone_drive_test;
 
 class DriveNode : public rclcpp::Node {
 public:
+  static double as_number(const rclcpp::Parameter & p) {   // 실수·정수·bool 모두 숫자로 (YAML에 1, 1.0, true 어느 쪽으로 써도 됨)
+    switch (p.get_type()) {
+      case rclcpp::ParameterType::PARAMETER_DOUBLE: return p.as_double();
+      case rclcpp::ParameterType::PARAMETER_INTEGER: return double(p.as_int());
+      case rclcpp::ParameterType::PARAMETER_BOOL: return p.as_bool() ? 1.0 : 0.0;
+      default: throw std::invalid_argument("parameter '" + p.get_name() + "' must be a number");
+    }
+  }
+
   DriveNode() : Node("cone_drive_test") {
     cdt::register_params(registry_);
-    for (const auto & p : registry_.list()) declare_parameter<double>(p.name, p.value);   // YAML 시작값
+    // YAML 시작값. 1처럼 소수점 없이 적어도(정수) 받도록 타입을 고정하지 않고, 읽을 때 숫자로 바꾼다
+    rcl_interfaces::msg::ParameterDescriptor any_number;
+    any_number.dynamic_typing = true;
+    for (const auto & p : registry_.list()) declare_parameter(p.name, rclcpp::ParameterValue(p.value), any_number);
     std::map<std::string, double> start;
-    for (const auto & p : registry_.list()) start[p.name] = get_parameter(p.name).as_double();
+    for (const auto & p : registry_.list()) start[p.name] = as_number(get_parameter(p.name));
     const auto applied = registry_.apply(start);
     if (!applied.first) throw std::invalid_argument("parameter file: " + applied.second);
 
@@ -145,7 +157,7 @@ public:
 
     on_set_ = add_on_set_parameters_callback([this](const std::vector<rclcpp::Parameter> & ps) {   // ros2 param set도 같은 경로
       std::map<std::string, double> c;
-      for (const auto & p : ps) if (registry_.has(p.get_name())) c[p.get_name()] = p.as_double();
+      for (const auto & p : ps) if (registry_.has(p.get_name())) c[p.get_name()] = as_number(p);
       rcl_interfaces::msg::SetParametersResult res;
       const auto r = registry_.apply(c);
       res.successful = r.first;
