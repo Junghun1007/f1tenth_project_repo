@@ -67,8 +67,8 @@
     memory.lane_match_radius: 0.12      # [차선 기준] 같은 콘 판정 거리 (m)
     memory.lane_visible_s_min: 0.45     # [차선 기준] 이보다 가까우면 카메라 사각지대 → 지날 때까지 유지 (m)
     # 회피 계획
-    plan.hard_clearance: 0.015          # 차선 안 최소 여유 (m)
-    plan.soft_clearance: 0.06           # 차선 안 권장 여유 (m)
+    plan.hard_clearance: 0.018          # 차선 안 최소 여유 (m)
+    plan.soft_clearance: 0.055           # 차선 안 권장 여유 (m)
     plan.relaxed_soft_clearance: 0.04   # 차선 안(여유 0) 권장 여유 (m)
     plan.free_hard_clearance: 0.015     # 차선 밖 최소 여유 (m)
     plan.free_soft_clearance: 0.12      # 차선 밖 권장 여유 (m)
@@ -80,18 +80,18 @@
     plan.rollout_retry_margin: 0.03     # 재계획 여유 (m)
     plan.s_max: 3.0                     # 계획 거리 (m)
     # 속도
-    drive.maximum_speed_mps: 1.5        # 최대 속도 (m/s)
-    drive.minimum_speed_mps: 1.2        # 최소 속도(코너) (m/s)
+    drive.maximum_speed_mps: 1.3        # 최대 속도 (m/s)
+    drive.minimum_speed_mps: 1.1        # 최소 속도(코너) (m/s)
     drive.obstacle_speed_mps: 1.0       # 장애물 구간 속도 (m/s)
     drive.rollout_fail_speed_mps: 0.5   # 롤아웃 실패 시 속도 (m/s)
     drive.maximum_lateral_accel: 1.6    # 최대 횡가속 (m/s²)
-    drive.planning_decel: 0.4           # 계획 감속도 (m/s²)
+    drive.planning_decel: 0.5           # 계획 감속도 (m/s²)
     drive.obstacle_decel: 0.4           # 장애물 감속도 (m/s²)
     drive.obstacle_accel: 0.4           # 장애물 해제 가속도 (m/s²)
     # 조향 (Stanley)
-    drive.stanley_gain: 1.3             # Stanley gain
+    drive.stanley_gain: 1.2             # Stanley gain
     drive.stanley_softening: 0.3        # softening 속도 (m/s)
-    drive.heading_lookahead_m: 0.05     # heading lookahead (m)
+    drive.heading_lookahead_m: 0.12     # heading lookahead (m)
     drive.steering_current_weight: 0.4  # 조향 필터 현재 비중
     drive.steering_rate_deg_s: 240.0    # 조향 변화율 한계 (°/s)
     # 차선
@@ -101,16 +101,16 @@
     lane.corner_entry_full_offset_m: 0.6 # 최대 이동 시작 거리 (m)
     # 출력
     drive.maximum_duty: 0.12            # 최대 duty
-    drive.start_duty: 0.053             # 정지 출발 duty
+    drive.start_duty: 0.05              # 정지 출발 duty
     # 종방향 모드: 1 = staged (전류 제동, 기존), 2 = duty-only (duty만으로 가감속·회생 감속, 비상 시만 전류 제동). 정지했을 때 바뀜
-    drive.longitudinal_mode: 1.0
+    drive.longitudinal_mode: 2.0
     # duty-only (모드 2 전용, auto_control duty_only_* 와 같은 기본값) — 모드 1 튜닝에는 영향 없음
     duty_only.pid_kp: 0.06
     duty_only.pid_ki: 0.03
-    duty_only.ff_offset_duty: 0.01            # 굴러가는 데 필요한 기본 duty
-    duty_only.ff_duty_per_mps: 0.05           # 속도 1 m/s당 duty (정속 주행 duty로 맞출 것)
+    duty_only.ff_offset_duty: 0.05            # 굴러가는 데 필요한 기본 duty
+    duty_only.ff_duty_per_mps: 0.035           # 속도 1 m/s당 duty (정속 주행 duty로 맞출 것)
     duty_only.maximum_duty: 0.12
-    duty_only.start_duty: 0.053
+    duty_only.start_duty: 0.05 
     duty_only.duty_rise_rate: 0.04            # duty 상승률 (/s)
     duty_only.duty_fall_rate: 0.06            # duty 하강률 (/s): 클수록 회생 감속이 셈
     duty_only.planning_decel: 0.40            # 코너·앞차 감속 계획 (m/s²)
