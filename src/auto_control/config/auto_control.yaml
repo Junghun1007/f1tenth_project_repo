@@ -18,8 +18,51 @@ auto_control:
     longitudinal_pid_ki: 0.5
     longitudinal_pid_kd: 0.0             # D 기본 0: 속도 측정 노이즈 증폭 방지
     longitudinal_pid_integral_limit: 1.5
-    # duty를 먼저 줄이고, 감속 부족 시 별도 전류 제동. false=이전 signed PID 방식.
+    # 종방향 제어 모드 (GUI에서 LIVE 변경 가능, 실제 전환은 속도 0.05m/s 미만 정차 중에만 적용)
+    #   0 = legacy    : signed PID 하나로 duty/brake 결정 (구버전)
+    #   1 = staged    : duty를 먼저 줄이고 감속 부족 시 brake current 추가 (현재 기본)
+    #   2 = duty_only : duty만으로 가속·감속. 아래 duty_only_* 파라미터만 사용
+    longitudinal_control_mode: 1
+    # 구버전 프리셋 호환용. 무시됨 — longitudinal_control_mode가 우선.
     longitudinal_staged_control_enabled: true
+
+    # ── duty_only 모드(2) 전용 파라미터 ── 다른 모드의 튜닝에는 영향 없음. 모두 실차 튜닝 시작값.
+    # 속도 추종: duty = feedforward(목표속도) + PID(목표 - 실제). PID 출력 단위가 곧 duty.
+    duty_only_pid_kp: 0.06                       # duty/(m/s)
+    duty_only_pid_ki: 0.03                       # duty/(m/s·s)
+    duty_only_pid_kd: 0.0
+    duty_only_pid_integral_limit: 1.0            # 적분 상한 (m/s·s). 적분 기여 최대 = ki × 이 값
+    duty_only_feedforward_offset_duty: 0.01      # 굴러가는 데 필요한 기본 duty
+    duty_only_feedforward_duty_per_mps: 0.05     # 속도 1m/s당 duty. 실차 정속 주행 duty로 맞출 것
+    duty_only_feedforward_fade_speed_mps: 0.10   # 이 속도 아래에서 offset을 0까지 축소
+    duty_only_maximum_duty: 0.12
+    duty_only_start_duty: 0.053                  # 정차 후 출발 시 1회 적용하는 duty
+    duty_only_duty_rise_rate_per_sec: 0.04       # 가속 시 duty 상승률
+    # 감속 시 duty 하강률. duty 회생 감속의 안전 상한 ≈ 이 값 / duty_per_mps (0.06/0.05 ≈ 1.2m/s²).
+    # 평소 감속은 아래 계획 감속도가 정하므로, 이 값은 계획보다 넉넉히 크게 둔다.
+    duty_only_duty_fall_rate_per_sec: 0.06
+    # 속도 계획 감속도: duty 회생만으로 실제로 낼 수 있는 값 이하로 설정.
+    duty_only_planning_deceleration_mps2: 0.40   # 코너 진입·신호등 접근
+    duty_only_obstacle_planning_deceleration_mps2: 0.35 # 장애물 감속 목표 하강률
+    duty_only_response_sec: 0.10                 # duty 명령→감속 시작 지연 (계획 여유)
+    # 신호등 정지 마지막 구간: 정지 목표점까지 남은 거리 ≤ v²/(2·coast감속) + v·지연 이 되면
+    # duty 0으로 모터를 놓고 관성으로 굴러가서 멈춘다.
+    # 로그 duty_only_measured_coast_deceleration_mps2(실측)를 보고 이 값을 맞출 것.
+    # 실측보다 크게 잡으면 늦게 놓아서 지나치고, 작게 잡으면 일찍 놓아서 못 미친다.
+    duty_only_coast_deceleration_mps2: 0.50
+    duty_only_coast_release_speed_mps: 0.35      # 이 속도까지 duty로 감속한 뒤 모터 해제
+    duty_only_coast_release_delay_sec: 0.03      # 해제 명령→실제 해제 지연
+    # 정차 후 유지 전류. 0이면 전기 브레이크 없이 모터 해제 상태로 정차(평지 기준).
+    # 단, 정차 범위보다 덜 가서 멈추면 traffic_reapproach_speed_mps로 다시 다가간다.
+    duty_only_hold_current_amps: 0.0
+    # 비상 보조 제동: 아래 조건 중 하나라도 만족하면 brake current 사용. 각 문턱 0이면 그 조건 끔.
+    # 정지선을 지나서도 움직이는 경우에도 비상 제동(두 문턱이 모두 0이면 비상 제동 전체 꺼짐).
+    duty_only_emergency_deceleration_mps2: 1.2   # 필요 감속도가 이 값 이상
+    duty_only_emergency_overspeed_mps: 0.5       # 목표보다 이만큼 이상 빠름
+    duty_only_emergency_brake_current_amps: 2.0
+    duty_only_emergency_brake_rise_amps_per_sec: 8.0
+    duty_only_emergency_brake_fall_amps_per_sec: 8.0
+
     # 정지 후 출발 순간 1회 적용. 수동 start_duty와 동일; PID 요청이 작으면 그 값으로 제한.
     longitudinal_start_duty: 0.053       # 0=기존 0부터 상승. 이후에는 duty_rise_rate_per_sec 사용
     # 단계 제어의 속도 초과량→제동 비율. 구동 PID와 독립이며 코너/신호등 제동에 공통 적용.

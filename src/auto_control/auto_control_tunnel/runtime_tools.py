@@ -19,6 +19,9 @@ from std_srvs.srv import Trigger
 def category(name):
     if 'fps' in name or name.endswith('rate_hz'):
         return 'FPS·주기'
+    if name.startswith('duty_only_') or name == 'longitudinal_control_mode':
+        # Mode-2 parameters never affect modes 0/1; keep them on their own tab.
+        return 'duty_only 모드'
     if name.startswith('obstacles.'):
         return '장애물·회피'
     if name.startswith('traffic_'):

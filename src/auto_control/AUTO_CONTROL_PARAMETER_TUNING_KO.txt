@@ -124,7 +124,12 @@ steering_current_weight (예시 0.47)
 
 [속도와 감속]
 
-현재 기본은 longitudinal_pid_enabled=true, longitudinal_staged_control_enabled=true다.
+종방향 모드는 longitudinal_control_mode로 고른다(0=legacy, 1=staged, 2=duty_only, 기본 1).
+longitudinal_staged_control_enabled는 구버전 프리셋 호환용으로만 남아 있고 무시된다.
+아래 설명의 "단계 제어"는 모드 1, "signed PID 호환 모드"는 모드 0이다.
+모드 2는 맨 아래 [duty_only 모드] 절을 본다.
+
+현재 기본은 longitudinal_pid_enabled=true, longitudinal_control_mode=1이다.
 이 단계 제어에서는 구동 PI와 제동 세기를 아래처럼 따로 조절한다.
 코너/신호등 목표 속도 생성 및 제동 진입/해제 조건은 그대로 유지한다.
 모든 변경은 auto_control.ros__parameters에 넣고 노드를 재실행해 적용한다.
@@ -327,3 +332,46 @@ brake_current_rise_amps_per_sec / brake_current_fall_amps_per_sec (예시 6.0 / 
 - 중앙선이 흔들리는 상태에서 Stanley gain부터 높이면 차량 진동이 더 커진다.
 - 짧은 코너 경로 허용값을 더 낮출 때는 반드시 BEV 하단 노이즈를 확인한다.
 - 한 번의 장면보다 같은 코너를 3회 이상 반복한 결과로 값을 결정한다.
+
+
+[duty_only 모드 (longitudinal_control_mode=2)]
+
+개념
+  duty를 "이 속도로 가라"는 명령으로 쓴다. 목표 속도를 낮추면 duty가 따라 내려가고,
+  VESC가 현재 속도보다 낮은 duty를 받으면 스스로 회생 제동을 건다.
+  그래서 코너·장애물·신호등 감속 모두 duty 하나로 처리하고, 모드 전환이 없다.
+  brake current는 (1) 정차 유지 전류를 0보다 크게 줬을 때, (2) 비상 시에만 쓴다.
+  차선 유실·STOP 같은 guard stop 제동은 모든 모드에서 기존 그대로다.
+  duty_only_* 파라미터만 사용하므로 이 값을 바꿔도 모드 0/1의 튜닝은 변하지 않는다.
+
+전환
+  런타임 GUI에서 longitudinal_control_mode를 2로 Apply한다. 실제 전환은 차가
+  0.05m/s 미만으로 멈춰 있을 때 일어난다(로그: "Longitudinal mode staged -> duty_only").
+  driving log의 longitudinal_control_mode(현재)/requested_longitudinal_control_mode(요청)로 확인.
+
+신호등 정지 동작
+  1) 접근: 목표 속도 = duty_only_stop_speed_limit(남은 거리). planning 감속도로
+     release 속도까지 줄이는 구간 + coast 구간으로 된 프로파일.
+  2) 해제: 남은 거리 ≤ v·지연 + v²/(2·coast 감속)이 되면 duty 0(모터 해제).
+     traffic_phase=coast_stop, longitudinal_phase=duty_only_coast_stop.
+  3) 정차: 0.05m/s 미만이면 position_hold. 정차 범위보다 덜 갔으면 reapproach로 다시 접근.
+
+튜닝 순서 (한 번에 하나씩, 같은 조건 3회 이상 반복)
+  1) feedforward: 신호등·코너 없는 직선에서 일정 속도로 달리며 PID 기여가 작아지도록
+     duty_only_feedforward_duty_per_mps / offset_duty를 맞춘다.
+     (정속에서 command_duty ≈ feedforward_duty가 목표)
+  2) PID: 목표 속도 변화에 늦으면 kp를 올리고, 출렁이면 내린다. 정속 오차가 남으면 ki.
+  3) duty 회생 감속 확인: 직선에서 maximum_speed 슬라이더를 1.6 -> 1.2처럼 내려 보고(0.5m/s 이상 내리면 비상 제동 조건에 걸림)
+     measured_deceleration_mps2를 본다. 이 값보다 작게 duty_only_planning_deceleration_mps2를 둔다.
+     감속이 거의 안 나오면 VESC Tool의 Motor Current Min / Battery Current Min(회생 한도)을 확인.
+  4) coast 감속: 신호등 정지를 몇 번 해 보고 로그 duty_only_measured_coast_deceleration_mps2
+     (coast_stop 구간 실측)의 평균을 duty_only_coast_deceleration_mps2에 넣는다.
+     정지선을 지나치면 값을 낮추고(더 일찍 놓음), 못 미치면 올린다.
+  5) duty_only_coast_release_speed_mps: 낮추면 duty로 더 오래 끌고 가서 coast 구간이 짧아지고
+     coast 감속 오차의 영향이 줄어든다. 너무 낮으면 저속 duty 구간에서 덜컹거린다.
+  6) 비상 제동: 평소 주행에서 duty_only_emergency_brake가 1로 찍히면 문턱이 너무 낮거나
+     planning 감속도가 너무 크다는 뜻이다. 정상 주행에서는 0이어야 한다.
+
+duty_only_duty_fall_rate_per_sec
+  평소 감속은 계획 감속도가 정한다. 이 값은 목표가 갑자기 떨어질 때의 상한이다.
+  회생 감속 상한 ≈ fall_rate / duty_per_mps (0.06/0.05 ≈ 1.2m/s²).
