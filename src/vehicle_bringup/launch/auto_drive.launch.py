@@ -701,6 +701,9 @@ def generate_launch_description():
         ("traffic_stop_enabled", "false", "traffic_stop_enabled", bool),
         ("curvature_speed_control_enabled", "false", "curvature_speed_control_enabled", bool),
         ("longitudinal_pid_enabled", "true", "longitudinal_pid_enabled", bool),
+        # Without a declared argument, `driving_log_enabled:=true` was silently ignored.
+        ("driving_log_enabled", "false", "driving_log_enabled", bool),
+        ("driving_log_directory", "driving_logs", "driving_log_directory", str),
     ])
     controller_arguments = [
         (
