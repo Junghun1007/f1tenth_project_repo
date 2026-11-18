@@ -139,5 +139,17 @@
     acc.min_follow_speed_mps: 0.3       # 이보다 느린 앞차는 서 있는 것으로 (멈췄다 가기)
     acc.hold_near_m: 0.6                # 이 거리 안에서 놓치면 다시 보일 때까지 서 있다고 가정 (m)
     acc.lost_timeout_sec: 0.3           # 멀리서 놓친 앞차를 예측으로 유지하는 시간 (s)
+    # 신호등·정지선 (1030ML auto_control 방식): 빨간불 + 정지선이면 앞범퍼를 정지선 앞 0~stop_range_max에 세우고 초록불에 출발.
+    # 신호등이 안 보이면(UNKNOWN) 정지하지 않고, 정지에 들어간 뒤엔 빨간불이 안 보여도 초록불까지 유지
+    traffic.enabled: 1.0
+    traffic.stop_range_max_m: 0.25
+    traffic.stop_margin_m: 0.10
+    traffic.decel_mps2: 0.8
+    traffic.reapproach_speed_mps: 0.20
+    traffic.state_timeout_sec: 0.30
+    traffic.line_timeout_sec: 0.50
+    traffic.line_confirm_frames: 3.0
+    traffic.color_min_saturation: 80.0
+    traffic.color_min_value: 60.0
     web.link_loss_stop_sec: 1.0         # 연결 끊김 정지 시간 (s)
     drive.lane_timeout_sec: 20.0        # 차선 끊김 허용 시간 (s). 0 = 제한 없음 (끊긴 동안 직전 경로로 주행). 넘으면 'lane input stale'로 정지

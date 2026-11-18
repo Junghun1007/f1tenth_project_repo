@@ -80,7 +80,9 @@ void LaneWorker::loop_() {
       const double t2 = now_sec();
       stats.record("lane_infer", t1, t2);
       const cv::Mat labels(300, 120, CV_8UC1, const_cast<std::uint8_t *>(backend_->label_data()));
-      lane = post_->process(labels, frame->t, ctl_.cones_nearby());
+      const auto * stop_data = backend_->stop_line_mask_data();
+      const cv::Mat stop_mask = stop_data ? cv::Mat(300, 120, CV_8UC1, const_cast<std::uint8_t *>(stop_data)) : cv::Mat();
+      lane = post_->process(labels, frame->t, ctl_.cones_nearby(), stop_mask);
       stats.record("lane_post", t2, now_sec());
       for (int k = 0; k < lane.side_relabeled; ++k) stats.record("lane_side_fix", t2, t2);   // 진단: 좌우 교정 (회/s)
       for (int k = 0; k < lane.side_dropped; ++k) stats.record("lane_side_drop", t2, t2);    // 진단: 짝 틀린 조각 제외 (회/s)
@@ -152,7 +154,31 @@ void DetectWorker::loop_() {
     YoloxDetectionResult res;
     {
       std::lock_guard<std::mutex> l(mutex_);
-      res = detector_->detect_nv12(data.data(), data.size(), stride, w, h, roi);
+      // 신호등을 켜면 화면 전체를 추론한다. 모델 입력(512×320)은 가로 기준 축소라 축소 비율·연산량은 그대로 (위쪽이 패딩 대신 영상)
+      res = detector_->detect_nv12(data.data(), data.size(), stride, w, h, s.traffic.enabled ? cv::Rect(0, 0, w, h) : roi);
+    }
+    // 콘·차량은 지금처럼 하단 ROI 안(박스 아래 끝 기준)만, 신호등은 점수가 가장 높은 것 하나의 색을 본다
+    std::vector<Detection> obstacles;
+    const Detection * light = nullptr;
+    for (const auto & det : res.detections) {
+      if (det.class_id == 3) { if (!light || det.score > light->score) light = &det; continue; }
+      if (det.box.y + det.box.height > roi.y) obstacles.push_back(det);
+    }
+    if (s.traffic.enabled) {
+      TrafficSignal sig = TrafficSignal::Unknown;
+      if (light) {   // 이긴 박스만 BGR로 (traffic_light_node와 같음)
+        const int l = std::clamp(int(std::floor(light->box.x)), 0, w) & ~1, t = std::clamp(int(std::floor(light->box.y)), 0, h) & ~1;
+        const int r = std::min(w, (std::clamp(int(std::ceil(light->box.x + light->box.width)), 0, w) + 1) & ~1);
+        const int b = std::min(h, (std::clamp(int(std::ceil(light->box.y + light->box.height)), 0, h) + 1) & ~1);
+        if (r > l && b > t) {
+          const cv::Mat yp(b - t, r - l, CV_8UC1, const_cast<std::uint8_t *>(data.data()) + t * stride + l, stride);
+          const cv::Mat uv((b - t) / 2, (r - l) / 2, CV_8UC2, const_cast<std::uint8_t *>(data.data()) + h * stride + (t / 2) * stride + l, stride);
+          cv::Mat bgr;
+          cv::cvtColorTwoPlane(yp, uv, bgr, cv::COLOR_YUV2BGR_NV12);
+          sig = classify_traffic_color(bgr, s.traffic_min_saturation, s.traffic_min_value);
+        }
+      }
+      ctl_.on_traffic_signal(sig, frame->t);
     }
     const double t1 = now_sec();
     stats.record("yolo_pre", t0, t0 + res.timing.preprocessing_nanoseconds * 1e-9);
@@ -169,7 +195,7 @@ void DetectWorker::loop_() {
       depth = cam_.nearest_depth(frame->t, cc.depth_sync_ms / 1000.0);
     }
     out.depth_valid = depth != nullptr;
-    if (!depth && !res.detections.empty()) stats.record("depth_miss", t1, t1);   // 진단: 박스는 있는데 깊이 짝이 없음 (FPS 칸 = 초당 횟수)
+    if (!depth && !obstacles.empty()) stats.record("depth_miss", t1, t1);   // 진단: 박스는 있는데 깊이 짝이 없음 (FPS 칸 = 초당 횟수)
     if (depth) {
       auto & d = *depth;
       const int dw = int(d.getWidth()), dh = int(d.getHeight());
@@ -177,7 +203,7 @@ void DetectWorker::loop_() {
       const DepthIntrinsics k{cc.fx * sx, cc.fy * sy, cc.cx * sx, cc.cy * sy, dw, dh};
       const auto * mm = reinterpret_cast<const std::uint16_t *>(d.getData().data());
       const int stride_px = d.getStride() > 0 ? int(d.getStride() / 2) : dw;
-      for (const auto & det : res.detections) {
+      for (const auto & det : obstacles) {
         const Footprint fp = det.class_id == 0 ? Footprint{s.cone_size_m, s.cone_size_m}
                            : det.class_id == 1 ? Footprint{0.60, 0.36} : det.class_id == 2 ? Footprint{0.50, 0.30} : Footprint{};
         const cv::Rect2f box(det.box.x * sx, det.box.y * sy, det.box.width * sx, det.box.height * sy);

@@ -10,7 +10,8 @@ list(APPEND CDT_CORE_SOURCES
   ${CDT_PKG_DIR}/src/copied/startup_attitude.cpp
   ${CDT_PKG_DIR}/src/copied/ground_plane_estimator.cpp
   ${CDT_PKG_DIR}/src/copied/imu_image_stabilizer.cpp
-  ${CDT_PKG_DIR}/src/copied/vehicle_motion_estimator.cpp)
+  ${CDT_PKG_DIR}/src/copied/vehicle_motion_estimator.cpp
+  ${CDT_PKG_DIR}/src/copied/stop_line_distance.cpp)
 # YOLOX 검출기: TensorRtYoloxBackend를 호출하므로 백엔드(실제 또는 disabled)와 같은 라이브러리에 둔다
 set(CDT_DETECTOR_SOURCES ${CDT_PKG_DIR}/src/copied/yolox_detector.cpp)
 # 내장 웹 서버 (cpp-httplib, ROS 불필요)

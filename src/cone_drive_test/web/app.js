@@ -128,6 +128,12 @@ function drawBev(f) {
     const [u, v] = P(d.x + d.length / 2, d.y);
     ctx.fillStyle = "#fff"; ctx.font = "11px sans-serif"; ctx.fillText(d.score.toFixed(2), u + 8, v);
   }
+  if (f.traffic && f.traffic.enabled && f.traffic.line > -90) {   // 정지선 (앞범퍼 기준 거리 → 앞차축 +5 cm)
+    const [, v] = P(0.05 + f.traffic.line, 0);
+    ctx.save(); ctx.strokeStyle = "#22c55e"; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(0, v); ctx.lineTo(cv.width, v); ctx.stroke();
+    ctx.fillStyle = "#22c55e"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`정지선 ${f.traffic.line.toFixed(2)} m${f.traffic.holding ? " · 정지" : f.traffic.committed ? " · 정지 중" : ""}`, 6, v - 6); ctx.restore();
+  }
   if (f.lead && f.lead.active) {   // 차량 추종: 앞범퍼(앞차축 +5 cm)에서 거리만큼 앞에 빨간 정지선
     const x = 0.05 + f.lead.gap, [, v] = P(x, 0);
     ctx.save(); ctx.strokeStyle = f.lead.seen ? "#f43f5e" : "#fda4af"; ctx.lineWidth = 3; ctx.setLineDash(f.lead.seen ? [] : [6, 4]);
@@ -166,6 +172,12 @@ function render() {
   const st = $("stateBadge");
   st.textContent = f.state; st.className = "state " + f.state;
   $("reason").textContent = f.reason || "";
+  if (f.traffic) {   // 신호등 칩 (켜져 있을 때만)
+    const chip = $("sigChip"), name = ["UNKNOWN", "RED", "GREEN"][f.traffic.signal] || "UNKNOWN";
+    chip.hidden = !f.traffic.enabled;
+    chip.className = "sig " + name;
+    chip.textContent = "신호 " + ["-", "빨강", "초록"][f.traffic.signal] + (f.traffic.committed ? " · 정지" : "");
+  }
   document.querySelectorAll("#modeSeg button").forEach((b) => {
     b.classList.toggle("on", b.dataset.mode === f.mode);
     b.disabled = !["READY", "MANUAL"].includes(f.state);
@@ -196,6 +208,8 @@ function render() {
   kv($("avoid"), [["계획", PLAN_LABEL[plan.mode] || plan.mode || "-"], ["롤아웃", plan.mode === "center" ? "-" : plan.rollout_ok ? "OK" : "FAIL → 감속"],
     ["관측 콘", f.detections.length], ["기억 콘", f.memory.length], ["기억 방식", f.memory_mode === 2 ? (f.lock_m > 0 ? `보이는 콘 · 고정 ${f.lock_m.toFixed(2)} m` : "보이는 콘") : f.memory_mode === 3 ? "기억 없음" : f.memory_mode === 1 ? "차선 기준 단기" : "월드"], ["계획 시간", planMs !== undefined ? planMs.toFixed(1) + " ms" : "-"],
     ["앞차", f.lead && f.lead.active ? `${f.lead.gap.toFixed(2)} m · ${f.lead.speed.toFixed(2)} m/s${f.lead.seen ? "" : " (놓침·유지)"}` : "-"],
+    ["신호", f.traffic && f.traffic.enabled ? ["-", "빨강", "초록"][f.traffic.signal] + (f.traffic.committed ? (f.traffic.holding ? " · 정지 유지" : " · 정지 중") : "") : "꺼짐"],
+    ["정지선", f.traffic && f.traffic.line > -90 ? f.traffic.line.toFixed(2) + " m" : "-"],
     ["추종 상한", f.lead && f.lead.active && f.lead.cap >= 0 ? (f.lead.holding ? "정지 유지" : f.lead.cap.toFixed(2) + " m/s") : "-"]]);
   $("stages").querySelector("tbody").innerHTML = f.stages.map((s) =>
     `<tr><td>${STAGE_LABEL[s.name] || s.name}</td><td>${s.ms.toFixed(1)}</td><td>${s.fps.toFixed(0)}</td></tr>`).join("");

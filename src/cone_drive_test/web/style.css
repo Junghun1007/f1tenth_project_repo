@@ -15,6 +15,8 @@ button { font: inherit; color: inherit; }
 .state { padding: 4px 10px; border-radius: 4px; font-weight: 700; background: #333; }
 .state.DRIVING { background: var(--go); } .state.STOPPING, .state.REFITTING { background: var(--warn); color: #222; }
 .state.READY { background: #2563eb; } .state.MANUAL { background: #6b7280; } .state.INSPECTING, .state.BOOT { background: #7c3aed; }
+.sig { padding: 4px 10px; border-radius: 4px; font-weight: 700; background: #333; color: var(--dim); }
+.sig.RED { background: var(--stop); color: #fff; } .sig.GREEN { background: var(--go); color: #fff; }
 .reason { color: var(--warn); max-width: 360px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .spacer { flex: 1; }
 .sep { width: 1px; height: 22px; background: var(--line); }

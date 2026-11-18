@@ -13,6 +13,7 @@
 #include "cone_drive_test/core/odometry.hpp"
 #include "cone_drive_test/core/path_lock.hpp"
 #include "cone_drive_test/core/lead_follower.hpp"
+#include "cone_drive_test/core/traffic_stop.hpp"
 #include "cone_drive_test/core/settings.hpp"
 #include "cone_drive_test/core/telemetry.hpp"
 
@@ -54,6 +55,7 @@ public:
   void on_vesc_connected(bool connected, double t);
   void on_handover_mode(const std::string & mode, double t);
   void on_detections(const DetectionFrame & frame);
+  void on_traffic_signal(TrafficSignal signal, double capture_time);   // 신호등 색 (검출 스레드)
   // 점검
   void set_attitude(const AttitudeInfo & a);
   void set_camera_geometry(const CameraGeometry & g);
@@ -108,6 +110,7 @@ private:
   std::vector<Vec2> latest_sl_;             // 모드 3: 가장 최근 검출 프레임의 콘 (s, l) — 기억 없음
   double latest_det_t_{-1};
   LeadFollower lead_;                        // 차량 추종
+  TrafficStopper traffic_;                   // 신호등 정지
   std::vector<ConeObservation> new_vehicles_;   // 새 깊이 검출의 차량 (촬영 시점 좌표)
   double new_vehicles_dist_{0};                 // 그 촬영 시점 바퀴 누적 거리
   bool new_det_{false};

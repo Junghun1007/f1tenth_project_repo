@@ -1,6 +1,7 @@
 // 브라우저 텔레메트리 JSON (web/app.js와 같은 필드). full=false면 상태·점검만 (프리뷰 꺼짐)
 #pragma once
 #include "cone_drive_test/core/lead_follower.hpp"
+#include "cone_drive_test/core/traffic_stop.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -37,6 +38,8 @@ struct TelemetryFrame {
   int memory_mode{0};
   double lock_m{0};
   LeadState lead;   // 차량 추종 상태
+  TrafficState traffic;   // 신호등 정지 상태
+  bool traffic_enabled{false};
   int lon_mode{1};          // 실제 적용 중인 종방향 모드 (1 staged, 2 duty-only)
   int lon_mode_requested{1};
   std::string lon_phase;   // 모드 2: 남은 경로 고정 거리 (m)

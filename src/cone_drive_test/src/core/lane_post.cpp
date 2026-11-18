@@ -41,7 +41,7 @@ Vec2 LanePostprocessor::pixel_to_vehicle(const cv::Point2f & p) const {
           c_.y_max_m - (p.x - c_.connection.padding_px + 0.5) * c_.meter_per_pixel};
 }
 
-LaneObservation LanePostprocessor::process(const cv::Mat & labels, double t, bool want_reference) const {
+LaneObservation LanePostprocessor::process(const cv::Mat & labels, double t, bool want_reference, const cv::Mat & stop_mask) const {
   LaneObservation out;
   out.capture_time = t;
   auto conn = connect_lane_fragments(labels, c_.connection, false, nullptr, false);
@@ -53,6 +53,9 @@ LaneObservation LanePostprocessor::process(const cv::Mat & labels, double t, boo
   const auto center = generate_centerline(conn.labels, conn.observed_paths, labels.cols, c_.connection.padding_px,
                                           c_.centerline, false, nullptr);
   for (const auto & p : center.points) out.path.push_back(pixel_to_vehicle(p));
+  if (!stop_mask.empty() && center.points.size() >= 2)   // line_detactor와 같은 계산: 정지선 근변과 중앙선 교차점까지 거리
+    out.stop_line_m = estimate_stop_line_distance_m(stop_mask, center.points, c_.connection.padding_px,
+                                                    c_.centerline.bev_width_m, c_.centerline.bev_height_m, c_.stop_line);
   if (want_reference && !out.path.empty()) {
     const auto ref = generate_centerline(conn.labels, conn.observed_paths, labels.cols, c_.connection.padding_px,
                                          reference_, false, nullptr);

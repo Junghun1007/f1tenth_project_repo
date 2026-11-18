@@ -3,6 +3,7 @@
 #include "cone_drive_test/core/visibility.hpp"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace cone_drive_test {
 
@@ -83,6 +84,18 @@ void ControlLoop::apply_settings(const Settings & s) {
     lead.response = d.response_sec;
   }
   lead_.set_params(lead);
+  auto tp = s.traffic;
+  tp.front_overhang = lead.front_overhang;
+  if (s.lon.mode == 2) {   // duty-only: 회생 감속으로 줄이고 모터를 풀어 굴러서 정지선 앞에 선다
+    const auto & d = s.lon.duty_only;
+    tp.duty_only = true;
+    tp.decel = std::min(tp.decel, d.planning_deceleration_mps2);
+    tp.coast_decel = d.coast_deceleration_mps2;
+    tp.release_speed = d.coast_release_speed_mps;
+    tp.release_delay = d.coast_release_delay_sec;
+    tp.response = d.response_sec;
+  }
+  traffic_.set_params(tp);
   rc_.lane_timeout_sec = s.lane_timeout_sec;
 }
 
@@ -235,6 +248,11 @@ void ControlLoop::integrate_detections() {
   });
 }
 
+void ControlLoop::on_traffic_signal(TrafficSignal signal, double t) {
+  std::lock_guard<std::mutex> l(m_);
+  traffic_.on_signal(signal, t);
+}
+
 void ControlLoop::remember_vehicles(const DetectionFrame & det, std::optional<double> dist) {
   if (!det.depth_valid || !dist) return;
   new_vehicles_.clear();
@@ -273,6 +291,8 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
       }
       lead_.update(plan_.path_local, vehicles, new_det_, lane_.capture_time, d_lane, speed_);
       new_det_ = false;
+      // 신호등 정지: 이번에 새로 들어온 차선 결과의 정지선만 관측으로 (재사용한 lane_은 NaN)
+      traffic_.update(lane.valid ? lane.stop_line_m : std::numeric_limits<double>::quiet_NaN(), lane_.capture_time, d_lane, speed_);
     }
     // 계획 자세 → 현재 자세로 옮겨 제어
     const Pose2 now_pose = odom_pose();
@@ -330,10 +350,10 @@ StepOutput ControlLoop::control_step(double now, bool have_path) {
     cte_ = st.cross_track_error_m;
     // 정지 시 조향 유지는 '목표 속도 0'일 때만 걸린다 → 차량 추종·롤아웃 상한까지 반영한 실제 목표를 넘긴다
     // (곡률 계획 속도만 넘기면 앞차 뒤에 서 있어도 목표>0이라 차선 인식 흔들림을 그대로 따라 조향이 떨린다)
-    const double cap_now = s_.lead.enabled ? std::min(plan_.speed_cap, lead_.state().cap) : plan_.speed_cap;
+    const double cap_now = std::min({plan_.speed_cap, s_.lead.enabled ? lead_.state().cap : plan_.speed_cap, traffic_.state().cap});
     steer_.update(st.steering_angle_rad, dt, st.heading_error_rad, stop ? 0.0 : std::min(plan_target, cap_now), speed_);
   }
-  const double cap = s_.lead.enabled ? std::min(plan_.speed_cap, lead_.state().cap) : plan_.speed_cap;   // 차량 추종 상한
+  const double cap = std::min({plan_.speed_cap, s_.lead.enabled ? lead_.state().cap : plan_.speed_cap, traffic_.state().cap});   // 차량 추종·신호등 상한
   const auto cmd = lon_.update(dt, path ? plan_target : 0.0, plan_.obstacle_active, cap, stop || !path);
   target_ = cmd.target_speed;
   out.duty = cmd.duty;
@@ -419,6 +439,8 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   f.memory_mode = s_.memory_mode;
   f.lock_m = lock_.remaining();
   f.lead = lead_.state();
+  f.traffic = traffic_.state();
+  f.traffic_enabled = s_.traffic.enabled;
   f.lon_mode = lon_.active_mode();
   f.lon_mode_requested = s_.lon.mode;
   f.lon_phase = lon_.phase();

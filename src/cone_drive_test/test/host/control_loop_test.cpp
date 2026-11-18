@@ -336,3 +336,22 @@ TEST(steering_holds_while_stopped_behind_lead) {   // 앞차 뒤 정지 중엔 �
   }
   CHECK(worst < 1e-6);
 }
+
+TEST(red_light_and_stop_line_reach_control_cap) {   // 차선 결과의 정지선 + 검출의 빨간불 → 속도 상한
+  Rig r(DriveMode::Detect);
+  for (int k = 0; k < 5; ++k) {
+    r.t += 0.025;
+    r.loop->on_speed(1.0, r.t);
+    r.loop->on_yaw_rate(0.0, r.t);
+    r.loop->on_heartbeat("web", r.t);
+    r.loop->on_traffic_signal(TrafficSignal::Red, r.t - 0.01);
+    auto lane = lane_at(r.t - 0.005);
+    lane.stop_line_m = 1.2;
+    r.loop->on_lane(lane, r.t);
+  }
+  const auto tf = r.loop->telemetry(true, r.t);
+  CHECK(tf.traffic_enabled);
+  CHECK(tf.traffic.signal == TrafficSignal::Red);
+  CHECK(tf.traffic.committed);
+  CHECK(tf.traffic.cap < 1.5);
+}
