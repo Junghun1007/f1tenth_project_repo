@@ -1,4 +1,5 @@
 #include "cone_drive_test/core/lead_follower.hpp"
+#include "cone_drive_test/core/duty_only.hpp"
 #include <algorithm>
 #include <cmath>
 
@@ -33,6 +34,15 @@ double lead_gap_along_path(const std::vector<Vec2> & path, const ConeObservation
 
 double LeadFollower::cap_for(double gap, double v_lead, double v_ego) {
   const double v_eff = v_lead < p_.min_follow_speed ? 0.0 : v_lead;   // 너무 느린 앞차는 서 있는 것으로 (멈췄다 가기)
+  if (v_eff <= 0.0 && p_.duty_only) {
+    // 굴러서 서므로 정지 위치가 조금 짧을 수 있다: 정지 거리 +5 cm 안에서 멈추면 정지 유지, 더 짧으면 다시 다가감
+    if (gap <= p_.stop_gap + 0.02 || (std::abs(v_ego) < 0.05 && gap <= p_.stop_gap + 0.05)) s_.holding = true;
+    else if (gap >= p_.resume_gap) s_.holding = false;
+    if (s_.holding) return 0.0;
+    const double remaining = gap - p_.stop_gap;
+    if (duty_only_coast_release(remaining, v_ego, p_.coast_decel, p_.release_delay, p_.release_speed + 0.05)) return 0.0;
+    return duty_only_stop_speed_limit(remaining, p_.decel, p_.coast_decel, p_.release_speed, p_.response);
+  }
   if (v_eff <= 0.0) {
     if (gap <= p_.stop_gap + 0.02) s_.holding = true;
     else if (gap >= p_.resume_gap) s_.holding = false;

@@ -21,6 +21,9 @@ struct LeadParams {
   double hold_near{0.6}, lost_timeout{0.3};
   double speed_tau{0.3};
   double ego_half_width{0.15}, front_overhang{0.05};
+  // 종방향 duty-only 모드: 서 있는 앞차 앞에서는 duty로 release 속도까지 줄인 뒤 모터를 풀고 굴러서 정지 거리에 선다
+  bool duty_only{false};
+  double coast_decel{0.5}, release_speed{0.35}, release_delay{0.03}, response{0.10};
 };
 
 struct LeadState {

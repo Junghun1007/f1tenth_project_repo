@@ -58,6 +58,8 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
     w.end_array();
     w.key("memory_mode").value((long long)f.memory_mode);
     w.key("lock_m").value(f.lock_m);
+    w.key("lon").begin_object().key("mode").value((long long)f.lon_mode).key("requested").value((long long)f.lon_mode_requested)
+      .key("phase").value(f.lon_phase).end_object();
     w.key("lead").begin_object();
     w.key("active").value(f.lead.active);
     w.key("seen").value(f.lead.seen);

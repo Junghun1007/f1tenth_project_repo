@@ -189,7 +189,8 @@ function render() {
 
   const v = f.vehicle;
   kv($("vehicle"), [["속도", v.speed.toFixed(2) + " m/s"], ["목표", v.target.toFixed(2) + " m/s"], ["조향", v.steer_deg.toFixed(1) + "°"],
-    ["CTE", (v.cte * 100).toFixed(1) + " cm"], ["duty", v.duty.toFixed(3)], ["제동", v.brake.toFixed(1) + " A"]]);
+    ["CTE", (v.cte * 100).toFixed(1) + " cm"], ["duty", v.duty.toFixed(3)], ["제동", v.brake.toFixed(1) + " A"],
+    ["종방향", f.lon ? (f.lon.mode === 2 ? "duty-only" : "staged") + (f.lon.requested !== f.lon.mode ? " (정지 시 전환)" : "") : "-"], ["단계", f.lon ? f.lon.phase : "-"]]);
   const plan = f.plan || {};
   const planMs = (f.stages.find((s) => s.name === "memory_plan") || {}).ms;
   kv($("avoid"), [["계획", PLAN_LABEL[plan.mode] || plan.mode || "-"], ["롤아웃", plan.mode === "center" ? "-" : plan.rollout_ok ? "OK" : "FAIL → 감속"],

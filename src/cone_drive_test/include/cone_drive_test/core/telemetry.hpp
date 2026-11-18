@@ -36,7 +36,10 @@ struct TelemetryFrame {
   std::vector<MemoryInfo> memory;
   int memory_mode{0};
   double lock_m{0};
-  LeadState lead;   // 차량 추종 상태   // 모드 2: 남은 경로 고정 거리 (m)
+  LeadState lead;   // 차량 추종 상태
+  int lon_mode{1};          // 실제 적용 중인 종방향 모드 (1 staged, 2 duty-only)
+  int lon_mode_requested{1};
+  std::string lon_phase;   // 모드 2: 남은 경로 고정 거리 (m)
   std::vector<StageStats::Row> stages;
   SystemUsage usage;
   std::uint64_t params_version{0};

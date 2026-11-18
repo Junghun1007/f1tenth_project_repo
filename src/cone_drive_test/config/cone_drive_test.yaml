@@ -102,6 +102,26 @@
     # 출력
     drive.maximum_duty: 0.12            # 최대 duty
     drive.start_duty: 0.053             # 정지 출발 duty
+    # 종방향 모드: 1 = staged (전류 제동, 기존), 2 = duty-only (duty만으로 가감속·회생 감속, 비상 시만 전류 제동). 정지했을 때 바뀜
+    drive.longitudinal_mode: 1.0
+    # duty-only (모드 2 전용, auto_control duty_only_* 와 같은 기본값) — 모드 1 튜닝에는 영향 없음
+    duty_only.pid_kp: 0.06
+    duty_only.pid_ki: 0.03
+    duty_only.ff_offset_duty: 0.01            # 굴러가는 데 필요한 기본 duty
+    duty_only.ff_duty_per_mps: 0.05           # 속도 1 m/s당 duty (정속 주행 duty로 맞출 것)
+    duty_only.maximum_duty: 0.12
+    duty_only.start_duty: 0.053
+    duty_only.duty_rise_rate: 0.04            # duty 상승률 (/s)
+    duty_only.duty_fall_rate: 0.06            # duty 하강률 (/s): 클수록 회생 감속이 셈
+    duty_only.planning_decel: 0.40            # 코너·앞차 감속 계획 (m/s²)
+    duty_only.obstacle_decel: 0.35            # 장애물 감속 (m/s²)
+    duty_only.response_sec: 0.10              # duty 명령 → 감속 시작 지연 (s)
+    duty_only.coast_decel: 0.50               # 모터를 풀었을 때 감속도 (m/s²): 실측으로 맞출 것
+    duty_only.coast_release_speed: 0.35       # 이 속도까지 줄인 뒤 모터를 풀고 굴러서 정지 (m/s)
+    duty_only.hold_current: 0.0               # 정지 유지 전류 (A, 0 = 안 씀)
+    duty_only.emergency_decel: 1.2            # 비상 제동: 필요 감속도가 이 이상이면 (m/s²)
+    duty_only.emergency_overspeed: 0.5        # 비상 제동: 목표보다 이만큼 빠르면 (m/s)
+    duty_only.emergency_current: 2.0          # 비상 제동 전류 (A)
     drive.brake_maximum_current: 2.0    # 최대 제동 전류 (A)
     drive.brake_speed_gain: 0.8         # 제동 전류 = 최대 전류 × min(1, 이 값 × 속도 초과 m/s + 감속 부족 비율)
     drive.brake_deceleration_gain: 0.5  # 장애물 접근 시 감속 부족(m/s²) → 제동 비율

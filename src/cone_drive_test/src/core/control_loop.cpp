@@ -73,6 +73,15 @@ void ControlLoop::apply_settings(const Settings & s) {
   auto lead = s.lead;
   lead.ego_half_width = s.planner.width / 2;
   lead.front_overhang = s.planner.length - rc_.wheelbase - s.planner.rear_overhang;
+  if (s.lon.mode == 2) {   // duty-only: 회생 감속 능력에 맞춰 계획 (전류 제동을 전제로 한 acc.decel보다 크지 않게)
+    const auto & d = s.lon.duty_only;
+    lead.duty_only = true;
+    lead.decel = std::min(lead.decel, d.planning_deceleration_mps2);
+    lead.coast_decel = d.coast_deceleration_mps2;
+    lead.release_speed = d.coast_release_speed_mps;
+    lead.release_delay = d.coast_release_delay_sec;
+    lead.response = d.response_sec;
+  }
   lead_.set_params(lead);
   rc_.lane_timeout_sec = s.lane_timeout_sec;
 }
@@ -307,8 +316,9 @@ StepOutput ControlLoop::control_step(double now, bool have_path) {
   double plan_target = 0.0;
   if (path) {
     try {
+      const double plan_decel = s_.lon.mode == 2 ? s_.lon.duty_only.planning_deceleration_mps2 : s_.planning_decel;   // duty-only는 회생 감속 능력으로
       const auto sp = plan_path_speeds(*path, s_.lon.minimum_speed_mps, s_.lon.maximum_speed_mps, s_.maximum_lateral_accel,
-                                       s_.planning_decel, s_.lon.planning_acceleration_mps2, s_.lon.maximum_speed_mps, 0.0, 0.08);
+                                       plan_decel, s_.lon.planning_acceleration_mps2, s_.lon.maximum_speed_mps, 0.0, 0.08);
       plan_target = sp.target_nominal_speed_mps;
     } catch (const std::exception &) {
       path.reset();
@@ -409,6 +419,9 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   f.memory_mode = s_.memory_mode;
   f.lock_m = lock_.remaining();
   f.lead = lead_.state();
+  f.lon_mode = lon_.active_mode();
+  f.lon_mode_requested = s_.lon.mode;
+  f.lon_phase = lon_.phase();
   f.stages = stats_.snapshot(now_sec());
   return f;
 }

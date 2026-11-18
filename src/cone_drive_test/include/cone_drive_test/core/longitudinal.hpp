@@ -7,7 +7,25 @@
 
 namespace cone_drive_test {
 
+// duty-only 모드(2) 전용 값 (auto_control duty_only_* 와 같은 이름·기본값). 모드 1(staged) 튜닝에는 영향 없음
+struct DutyOnlyParams {
+  double kp{0.06}, ki{0.03}, kd{0.0}, integral_limit{1.0};       // duty/(m/s)
+  double ff_offset_duty{0.01}, ff_duty_per_mps{0.05}, ff_fade_speed_mps{0.10};
+  double maximum_duty{0.12}, start_duty{0.053};
+  double duty_rise_rate_per_sec{0.04}, duty_fall_rate_per_sec{0.06};
+  double planning_deceleration_mps2{0.40};          // 코너·차량 추종 감속 계획
+  double obstacle_planning_deceleration_mps2{0.35}; // 장애물 목표 하강률
+  double response_sec{0.10};                        // duty 명령 → 감속 시작 지연
+  double coast_deceleration_mps2{0.50};             // 모터를 풀었을 때 굴러가며 줄어드는 감속도
+  double coast_release_speed_mps{0.35}, coast_release_delay_sec{0.03};
+  double hold_current_amps{0.0};                    // 정지 유지 전류 (0 = 안 씀)
+  double emergency_deceleration_mps2{1.2}, emergency_overspeed_mps{0.5};   // 비상 제동 조건
+  double emergency_brake_current_amps{2.0}, emergency_brake_rise_amps_per_sec{8.0}, emergency_brake_fall_amps_per_sec{8.0};
+};
+
 struct LongitudinalParams {
+  int mode{1};                                    // 1 = staged (auto_control 기본), 2 = duty_only. 바꾸면 정지했을 때 적용
+  DutyOnlyParams duty_only;
   double minimum_speed_mps{1.0}, maximum_speed_mps{1.8};
   double obstacle_speed_mps{1.0};                 // 장애물 구간 도달 속도
   double obstacle_planning_deceleration_mps2{0.35}, obstacle_planning_acceleration_mps2{0.35};
@@ -48,9 +66,16 @@ public:
   bool speed_valid() const { return have_speed_; }
   // plan_target: 곡률 속도 계획 목표, obstacle_active: 근처 콘, speed_cap: 롤아웃 실패 등 즉시 상한, stop: 정지 요청
   LongitudinalCommand update(double dt, double plan_target, bool obstacle_active, double speed_cap, bool stop);
+  int active_mode() const { return active_mode_; }
+  const std::string & phase() const { return phase_; }
 
 private:
+  LongitudinalCommand duty_only_update(double dt, double target, bool obstacle_profile);
+  void apply_requested_mode();
   LongitudinalParams p_;
+  int active_mode_{1};
+  std::unique_ptr<SpeedPid> duty_pid_;
+  bool duty_emergency_{false};
   std::unique_ptr<SpeedPid> pid_;
   double speed_{0}, decel_{0}, coast_decel_{0};
   bool have_speed_{false}, have_decel_{false};
