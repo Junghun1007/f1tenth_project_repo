@@ -9,6 +9,7 @@
 // ROS·DepthAI 없이 동작 (호스트 테스트 가능). SlamCore의 공개 함수는 스레드 안전.
 #pragma once
 #include <deque>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <string>
@@ -90,7 +91,9 @@ struct SlamConfig {
   bool stopline_correction{true};
   int stop_confirm{3};              // 정지선 관측 확인 횟수
   double stop_tolerance_m{0.25};
-  double min_lap_fraction{0.5};     // 직전 통과 후 이만큼(바퀴 길이 비율) 달려야 다음 통과로 셈
+  // 정지선 오인식(코너에서 휜 흰 선 등)을 바퀴로 세지 않게 두 가지로 거른다
+  double stop_gate_m{1.2};          // 관측한 정지선의 지도 위치가 정지선 S에서 이 거리 안일 때만
+  double lap_window{0.25};          // 직전 통과 후 주행 거리가 한 바퀴 길이의 (1 ± 이 비율) 안일 때만 통과로 셈
 };
 
 struct LiveState {
@@ -101,6 +104,10 @@ struct LiveState {
   double lap_dist{0};               // 이번 바퀴 주행 거리
   double lap_length{0};
   double bias0{0};
+  double stop_seen_m{std::numeric_limits<double>::quiet_NaN()};   // 마지막으로 본 정지선 거리 (앞차축 기준)
+  bool stop_near_s{false};          // 그 정지선이 지도상 정지선 S 근처인지
+  int rejected_far{0};              // 지도상 S와 멀어서 무시한 정지선 (오인식)
+  int rejected_lap{0};              // 바퀴 거리가 안 맞아 무시한 통과
 };
 
 class SlamCore {
@@ -151,6 +158,7 @@ private:
   double lap_sq_{0};
   int lap_n_{0};
   bool finish_reported_{false};
+  bool last_rejected_{false};
 };
 
 }  // namespace semi_slam

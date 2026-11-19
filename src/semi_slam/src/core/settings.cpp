@@ -20,6 +20,8 @@ void register_params(ParamRegistry & r) {
   m("매핑·보정", "slam.auto_calibrate", "목표 바퀴 완료 시 보정 자동 적용 (0=끔, 1=켬)", "", 0, 1, 1);
   m("매핑·보정", "slam.max_range_m", "매핑·보정에 쓰는 차선 점 최대 거리", "m", 0.5, 3.0, 1.5);
   m("매핑·보정", "slam.stop_confirm_frames", "정지선 확인 횟수", "", 1, 10, 3);
+  m("매핑·보정", "slam.stop_gate_m", "정지선 인정 범위: 지도상 정지선 S에서 이 거리 안", "m", 0.2, 3.0, 1.2);
+  m("매핑·보정", "slam.lap_window", "바퀴 인정 범위: 한 바퀴 길이의 (1 ± 이 비율)", "", 0.05, 0.6, 0.25);
   d("조향 (Stanley)", "drive.stanley_gain", "Stanley gain", "", 0.1, 5, 1.2);
   d("조향 (Stanley)", "drive.stanley_softening", "softening 속도", "m/s", 0, 2, 0.3);
   d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.12);
@@ -62,6 +64,8 @@ Settings settings_from(const ParamRegistry & r) {
   s.auto_calibrate = g("slam.auto_calibrate") >= 0.5;
   s.slam.max_range_m = g("slam.max_range_m");
   s.slam.stop_confirm = int(std::lround(g("slam.stop_confirm_frames")));
+  s.slam.stop_gate_m = g("slam.stop_gate_m");
+  s.slam.lap_window = g("slam.lap_window");
   s.stanley_gain = g("drive.stanley_gain");
   s.stanley_softening = g("drive.stanley_softening");
   s.heading_lookahead_m = g("drive.heading_lookahead_m");

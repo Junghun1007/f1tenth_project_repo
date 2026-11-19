@@ -179,6 +179,9 @@ function renderNow() {
     ? `<tr><td>${h.time.slice(11, 16)}</td><td colspan="3">이전 값으로 되돌림</td><td></td></tr>`
     : `<tr><td>${h.time.slice(11, 16)}</td><td>${h.speed.toFixed(2)}</td><td>${h.laps}</td><td>${cm(h.before)} → ${cm(h.after)}</td>` +
       `<td class="${h.action === "applied" ? "good" : "bad"}">${h.action === "applied" ? "적용" : "건너뜀"}</td></tr>`).join("");
+  const seen = r.stop_seen !== null && r.stop_seen !== undefined && isFinite(r.stop_seen);
+  kv($("stopInfo"), [["지금 보이는 정지선", seen ? `${r.stop_seen.toFixed(2)} m 앞 · ${r.stop_near ? "S 맞음" : "S 아님 → 무시"}` : "-"],
+    ["무시한 정지선 (S와 먼 위치)", String(r.rejected_far || 0)], ["무시한 통과 (바퀴 거리 안 맞음)", String(r.rejected_lap || 0)]]);
   $("corrTable").querySelector("tbody").innerHTML = f.corrections.length ? f.corrections.map(([lap, s]) => `<tr><td>${lap}</td><td>${(s >= 0 ? "+" : "") + cm(s)}</td></tr>`).join("") : `<tr><td colspan="2" style="color:var(--dim)">${f.run.running ? "정지선 S를 지나면 표시" : "-"}</td></tr>`;
   const insp = f.inspection;
   $("checks").innerHTML = Object.entries(READY_LABEL).map(([k, n]) => `<span class="chip ${f.readiness[k] ? "ok" : ""}">${n}</span>`).join("");
@@ -285,7 +288,7 @@ function demo() {
     onTelemetry({ state: "DRIVING", reason: "", full: true, readiness: { attitude_ok: true, lane_model_ready: true, vesc_connected: true, erpm_fresh: true, lane_fresh: true, client_alive: true },
       inspection: { attitude: { status: "PASS", height_m: 0.225, roll_deg: 0.2, pitch_down_deg: 6.2, message: "" }, model: { status: "READY", stage: "" }, stabilization: "적용 97%", stabilization_on: true },
       vehicle: { speed: 1.19, target: 1.2, steer_deg: 4.1, cte: 0.013, duty: 0.087, brake: 0, phase: "duty_only_track", lon_mode: 2 },
-      run: { running: true, finished: false, lap, laps: 10, target_speed: 1.2, lap_dist: s - lapStart, lap_length: L, bias0: 0.0021, pose: [x, y, p[2]], status: "주행 중", dir: "2026-11-19_1420_v1.20", finishing: false },
+      run: { running: true, finished: false, lap, laps: 10, target_speed: 1.2, lap_dist: s - lapStart, lap_length: L, bias0: 0.0021, pose: [x, y, p[2]], stop_seen: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null, stop_near: true, rejected_far: 2, rejected_lap: 0, status: "주행 중", dir: "2026-11-19_1420_v1.20", finishing: false },
       laps: lapsM, corrections: corr, calib: { gyro_scale: 1.0172, gyro_bias: -0.0073, latency: 0.048, wheel: [[1.0, 0.9813], [1.2, 0.9731]] },
       history: [{ time: "2026-11-19 14:02:11", action: "applied", speed: 1.0, laps: 10, before: 0.068, after: 0.029, acc: 0.91 }, { time: "2026-11-19 14:20:40", action: "skipped", speed: 1.2, laps: 10, before: 0.044, after: 0.049, acc: 0.85 }],
       new_track: [[x, y]], new_points: pts,

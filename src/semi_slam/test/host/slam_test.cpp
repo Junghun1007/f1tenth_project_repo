@@ -53,7 +53,7 @@ double unwrap_rate(double y1, double y0, double dt) {
 
 // SlamCore로 실제처럼 실시간 처리 (정지선 바퀴 세기 포함) 후 RunData 반환
 RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double wheel_err, double gyro_err, double bias_res,
-                 double stamp_delay = 0.0, double noise = 0.0) {
+                 double stamp_delay = 0.0, double noise = 0.0, bool fake_corner_stop = false) {
   unsigned rng = 12345u;
   auto gauss = [&]() { double a = 0; for (int i = 0; i < 6; ++i) { rng = rng * 1664525u + 1013904223u; a += (rng >> 8) / double(1u << 24); } return (a - 3.0) / std::sqrt(0.5); };
   const Sim sim = make_path(m, laps + 1);
@@ -84,6 +84,9 @@ RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double
       for (std::size_t i = 0; i < m.outer.size(); i += 3) { const Vec2 q = local(m.outer[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) L.right.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
       const Vec2 sq = local(S);
       if (sq.x > 0.15 && sq.x < 1.5 && std::abs(sq.y) < 0.3) L.stop_line_m = sq.x;
+      // 오인식: 코너(바퀴의 60~65% 지점)에서 휜 흰 선을 정지선으로 0.6 m 앞에 봤다고 가정
+      const double frac = std::fmod(s, sim.s.back() / (laps + 1)) / (sim.s.back() / (laps + 1));
+      if (fake_corner_stop && frac > 0.60 && frac < 0.65) L.stop_line_m = 0.6;
       if (core.on_lane(L)) break;   // 목표 바퀴 완료
     }
   }
@@ -185,4 +188,15 @@ TEST(calibration_handles_lane_noise_and_camera_delay) {   // 차선 점 잡음 �
   CHECK_NEAR(r.calib.wheel_scale_for(1.4), 1 / 0.96, 0.015);
   CHECK_NEAR(r.calib.gyro_scale, 1 / 1.02, 0.01);
   CHECK_NEAR(r.calib.latency, 0.04, 0.025);
+}
+
+TEST(false_stop_lines_at_corners_are_not_counted_as_laps) {
+  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
+  SlamCore core(m);
+  const auto run = simulate(core, m, 4, 1.0, 1.05, 0.97, 0.004, 0.0, 0.0, true);
+  const auto live = core.live();
+  std::printf("  laps %d crossings %zu rejected_far %d rejected_lap %d\n", live.lap, run.crossing_t.size(), live.rejected_far, live.rejected_lap);
+  CHECK(live.lap == 4);
+  CHECK(run.crossing_t.size() == 4);
+  CHECK(live.rejected_far >= 3);   // 바퀴마다 코너 오인식을 무시
 }

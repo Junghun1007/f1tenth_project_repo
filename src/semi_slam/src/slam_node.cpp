@@ -411,6 +411,8 @@ private:
     w.key("run").begin_object().key("running").value(live.running).key("finished").value(live.finished).key("lap").value((long long)live.lap)
      .key("laps").value((long long)live.laps_target).key("target_speed").value(live.target_speed, 2).key("lap_dist").value(live.lap_dist, 3)
      .key("lap_length").value(live.lap_length, 3).key("bias0").value(live.bias0, 5)
+     .key("stop_seen").value(live.stop_seen_m, 3).key("stop_near").value(live.stop_near_s)
+     .key("rejected_far").value((long long)live.rejected_far).key("rejected_lap").value((long long)live.rejected_lap)
      .key("pose").begin_array().value(live.pose.x, 3).value(live.pose.y, 3).value(live.pose.yaw, 4).end_array();
     {
       std::lock_guard<std::mutex> l(run_m_);

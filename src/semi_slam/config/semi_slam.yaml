@@ -46,6 +46,8 @@
     slam.auto_calibrate: 1.0                # 목표 바퀴 완료 시 보정 자동 적용 (0=끔, 1=켬)
     slam.max_range_m: 1.5                   # 매핑·보정에 쓰는 차선 점 최대 거리 (m)
     slam.stop_confirm_frames: 3.0           # 정지선 확인 횟수
+    slam.stop_gate_m: 1.2                   # 정지선 인정 범위: 지도상 정지선 S에서 이 거리 안 (m)
+    slam.lap_window: 0.25                   # 바퀴 인정 범위: 한 바퀴 길이의 (1 ± 이 비율)
     # 조향 (Stanley)
     drive.stanley_gain: 1.2                 # Stanley gain
     drive.stanley_softening: 0.3            # softening 속도 (m/s)

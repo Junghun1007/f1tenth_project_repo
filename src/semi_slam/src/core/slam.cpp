@@ -257,6 +257,7 @@ void SlamCore::begin_run(double target_speed, int laps, const Pose & start) {
   laps_.clear(); corr_.clear();
   lap_sq_ = 0; lap_n_ = 0;
   finish_reported_ = false;
+  last_rejected_ = false;
   last_gyro_t_ = start.t;
 }
 
@@ -307,14 +308,15 @@ void SlamCore::on_crossing(double t) {
   armed_dist_ = -1;
   stop_n_ = 0;
   Pose & p = live_.pose;
-  if (p.dist - last_cross_dist_ < cfg_.min_lap_fraction * map_.lap_length()) return;   // 출발선 T1 등 바로 뒤의 선
   const Vec2 S = map_.stop_center(), dir = map_.travel_dir_at(S);
+  // 한 바퀴에 정지선은 하나: 직전 통과 후 거리가 한 바퀴 길이와 맞지 않으면 오인식으로 보고 무시
+  const double expected_len = live_.lap == 0 ? map_.lap_length() - dot({run_.start.x - S.x, run_.start.y - S.y}, dir) : map_.lap_length();
+  if ((p.dist - last_cross_dist_) / std::max(1e-6, expected_len) < 1.0 - cfg_.lap_window) { ++live_.rejected_lap; return; }
   LapMetrics m;
   m.lap = live_.lap + 1;
   m.along_err_m = dot({p.x - S.x, p.y - S.y}, dir);
   m.heading_err_deg = wrap(p.yaw - std::atan2(dir.y, dir.x)) * 180.0 / kPi;
-  const double expected = live_.lap == 0 ? map_.lap_length() - dot({run_.start.x - S.x, run_.start.y - S.y}, dir) : map_.lap_length();
-  m.length_err = (p.dist - last_cross_dist_) / std::max(1e-6, expected) - 1.0;
+  m.length_err = (p.dist - last_cross_dist_) / std::max(1e-6, expected_len) - 1.0;
   m.points = lap_n_;
   m.rms_m = lap_n_ ? std::sqrt(lap_sq_ / lap_n_) : std::numeric_limits<double>::quiet_NaN();
   laps_.push_back(m);
@@ -363,10 +365,23 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
   }
   // 정지선 통과 예측: 앞차축이 정지선에 닿는 누적 거리
   if (std::isfinite(s.stop_m) && s.stop_m > 0.15 && s.stop_m < cfg_.max_range_m) {
-    const double d_cross = pose_at(s.t + calib_.latency).dist + s.stop_m;   // 그 장면을 본 위치 기준
-    if (stop_n_ > 0 && std::abs(d_cross - stop_cand_) < cfg_.stop_tolerance_m) { stop_cand_ = 0.5 * (stop_cand_ + d_cross); ++stop_n_; }
-    else { stop_cand_ = d_cross; stop_n_ = 1; }
-    if (stop_n_ >= cfg_.stop_confirm) armed_dist_ = stop_cand_;
+    const Pose seen = pose_at(s.t + calib_.latency);   // 그 장면을 본 위치
+    const Vec2 w = to_world(seen, {s.stop_m, 0.0}), S = map_.stop_center();
+    live_.stop_seen_m = s.stop_m;
+    live_.stop_near_s = std::hypot(w.x - S.x, w.y - S.y) <= cfg_.stop_gate_m;
+    if (!live_.stop_near_s) {   // 지도상 정지선 S가 아닌 곳: 오인식 (코너의 휜 선 등)
+      if (!last_rejected_) ++live_.rejected_far;
+      last_rejected_ = true;
+    } else {
+      last_rejected_ = false;
+      const double d_cross = seen.dist + s.stop_m;   // 앞차축이 정지선에 닿는 누적 거리. 가까이서 본 최신 관측이 가장 정확
+      if (stop_n_ > 0 && std::abs(d_cross - stop_cand_) < cfg_.stop_tolerance_m) { stop_cand_ = d_cross; ++stop_n_; }
+      else { stop_cand_ = d_cross; stop_n_ = 1; }
+      if (stop_n_ >= cfg_.stop_confirm) armed_dist_ = stop_cand_;
+    }
+  } else {
+    live_.stop_seen_m = std::numeric_limits<double>::quiet_NaN();
+    last_rejected_ = false;
   }
   run_.lanes.push_back(std::move(s));
   if (live_.finished && !finish_reported_) { finish_reported_ = true; return true; }   // 통과는 IMU 적분 중에 일어나므로 여기서 한 번 알림
