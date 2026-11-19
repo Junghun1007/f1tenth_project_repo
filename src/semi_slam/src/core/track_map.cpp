@@ -1,4 +1,5 @@
 #include "semi_slam/core/track_map.hpp"
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -47,6 +48,28 @@ TrackMap TrackMap::load_csv(const std::string & path) {
   for (const auto & p : m.inner) { sx += p.x; sy += p.y; }
   m.middle_ = {sx / double(m.inner.size()), sy / double(m.inner.size())};
   m.lap_length_ = 0.5 * (length_closed(m.outer) + length_closed(m.inner));
+  if (m.center.size() < 8) {   // 중앙선이 없으면 바깥 선 점마다 가장 가까운 안쪽 선과의 가운데로 만든다
+    m.center.clear();
+    for (const auto & o : m.outer) {
+      Vec2 best = m.inner[0];
+      double bd = 1e9;
+      for (const auto & q : m.inner) { const double d = std::hypot(q.x - o.x, q.y - o.y); if (d < bd) { bd = d; best = q; } }
+      m.center.push_back({(o.x + best.x) / 2, (o.y + best.y) / 2});
+    }
+  }
+  {   // 반시계 순서로 맞추고 (넓이 부호) 누적 거리
+    double area = 0;
+    for (std::size_t i = 0; i < m.center.size(); ++i) {
+      const auto & a = m.center[i];
+      const auto & b = m.center[(i + 1) % m.center.size()];
+      area += a.x * b.y - b.x * a.y;
+    }
+    if (area < 0) std::reverse(m.center.begin(), m.center.end());
+    m.center_s_.assign(m.center.size(), 0.0);
+    for (std::size_t i = 1; i < m.center.size(); ++i)
+      m.center_s_[i] = m.center_s_[i - 1] + std::hypot(m.center[i].x - m.center[i - 1].x, m.center[i].y - m.center[i - 1].y);
+    m.center_len_ = length_closed(m.center);
+  }
   m.build_fields();
   m.lane_width_ = m.dist_inner(m.outer[0]);   // 아래 변 가운데: 바깥 선에서 안쪽 선까지
   return m;
@@ -78,6 +101,44 @@ double TrackMap::field(const cv::Mat & f, const Vec2 & p) const {
   const int c = int(std::lround((p.x - x0_) / res_)), r = int(std::lround((p.y - y0_) / res_));
   if (r < 0 || c < 0 || r >= f.rows || c >= f.cols) return 1e3;
   return f.at<float>(r, c);
+}
+
+double TrackMap::wrap_s(double s) const {
+  if (center_len_ <= 0) return s;
+  s = std::fmod(s, center_len_);
+  return s < 0 ? s + center_len_ : s;
+}
+
+double TrackMap::arc_diff(double a, double b) const {
+  double d = wrap_s(a - b);
+  if (d > 0.5 * center_len_) d -= center_len_;
+  return d;
+}
+
+Vec2 TrackMap::center_at(double s, Vec2 * tangent) const {
+  const std::size_t n = center.size();
+  if (n < 2) return {};
+  s = wrap_s(s);
+  std::size_t i = std::size_t(std::upper_bound(center_s_.begin(), center_s_.end(), s) - center_s_.begin());
+  i = i == 0 ? 0 : i - 1;
+  const Vec2 & a = center[i], & b = center[(i + 1) % n];
+  const double seg = std::max(1e-9, std::hypot(b.x - a.x, b.y - a.y));
+  const double u = std::clamp((s - center_s_[i]) / seg, 0.0, 1.0);
+  if (tangent) *tangent = {(b.x - a.x) / seg, (b.y - a.y) / seg};
+  return {a.x + u * (b.x - a.x), a.y + u * (b.y - a.y)};
+}
+
+double TrackMap::center_project(const Vec2 & p) const {
+  const std::size_t n = center.size();
+  double best = 1e18, best_s = 0;
+  for (std::size_t i = 0; i < n; ++i) {
+    const Vec2 & a = center[i], & b = center[(i + 1) % n];
+    const double dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
+    const double u = L2 > 0 ? std::clamp(((p.x - a.x) * dx + (p.y - a.y) * dy) / L2, 0.0, 1.0) : 0.0;
+    const double ex = a.x + u * dx - p.x, ey = a.y + u * dy - p.y, d = ex * ex + ey * ey;
+    if (d < best) { best = d; best_s = center_s_[i] + u * std::sqrt(L2); }
+  }
+  return wrap_s(best_s);
 }
 
 Vec2 TrackMap::straight_start(bool cw) const {

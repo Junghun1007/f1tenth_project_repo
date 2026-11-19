@@ -24,6 +24,9 @@ struct LaneObservation {
   std::vector<Vec2> left, right;
   int side_relabeled{0}, side_dropped{0};
   double stop_line_m{std::numeric_limits<double>::quiet_NaN()};   // 앞차축 → 정지선 (중앙선 따라), 없으면 NaN   // 차선 좌우 판정 고정: 이번 프레임 교정·제외 조각 수
+  // 정지선(가로 흰 선)이 차 기준으로 기울어 보이는 각 (rad, + = 왼쪽 끝이 가깝고 오른쪽 끝이 멂 = 차선이 왼쪽으로 기울어 보이는 것과 같은 방향).
+  // 선이 짧거나 두꺼우면 NaN. 카메라 yaw 측정용
+  double stop_line_angle{std::numeric_limits<double>::quiet_NaN()};
   double capture_time{0};
   bool valid{false};
 };

@@ -1,11 +1,13 @@
-// semi_slam 핵심: 바퀴 거리 + IMU 회전으로 위치를 적분하고, 정답 트랙과 비교해 오도메트리 보정 값을 찾는다.
+// semi_slam 핵심: 정지선 S와 바퀴 수만으로 오도메트리를 보정하고, 트랙 중앙선 위 위치를 추정한다.
 //
-//  위치 적분   x += v·k(v)·cos(ψ)·dt,  ψ += g·(ω − b0 − b)·dt
-//              k(v): 속도별 거리 배율, g: 자이로 배율, b0: 출발 직전 정지 중 잰 영점, b: 잔여 영점
-//  지도 비교   차선 인식의 왼쪽 선 → 정답 안쪽 흰 선, 오른쪽 선 → 바깥 흰 선 (반시계 주행, 시계 주행은 반대).
-//              중앙선(점선)은 정확한 중앙이 아니고 코너에선 한쪽 선 + 반폭 가정이라 쓰지 않는다
-//  정지선 S    관측 거리로 통과 지점을 예측해 바퀴 수를 세고, (켜져 있으면) 통과할 때 진행 방향 위치를 바로잡는다
-//  보정        주행이 끝나면 기록 전체로 (k(주행 속도), g, b, 카메라 시간차)를 Nelder–Mead로 찾는다
+//  위치 적분   x += v·k(v)·cos(ψ)·dt,  ψ += g·(ω − b0)·dt      k(v): 속도별 거리 배율, g: 자이로 배율, b0: 출발 직전 정지 영점
+//  보정        트랙 모양(테이프 휨·폭 차이)과 주행 라인에 영향받지 않는 기준만 쓴다
+//              · 자이로: S → S 한 바퀴 회전량 = 정확히 360°
+//              · 바퀴:   S → S 거리 = 지도 중앙선 한 바퀴 길이 (주행 라인 차이로 ±1% 남음)
+//              여러 주행의 바퀴 수 가중 평균으로 갱신 (한 번에 덮어쓰지 않음)
+//  위치 추정   진행 방향 = 마지막 S 통과 후 거리로 중앙선 위 지점, 옆 = BEV 차 바로 앞(0.3 m) 차선 가운데, 방향 = 자이로
+//              (자유 적분 궤적도 비교용으로 따로 유지)
+//  지도 맞춤   차선 점과 정답 흰 선 거리 RMS는 참고용 (보정 기준 아님)
 // ROS·DepthAI 없이 동작 (호스트 테스트 가능). SlamCore의 공개 함수는 스레드 안전.
 #pragma once
 #include <deque>
@@ -20,16 +22,17 @@
 namespace semi_slam {
 
 struct OdomCalib {
+  static constexpr int kVersion = 2;   // 1 = 예전 (Nelder–Mead, 카메라 각도 포함) → 읽으면 version 1로 표시
+  int version{kVersion};
   std::map<int, double> wheel_scale;   // 키: 속도 (cm/s), 값: 거리 배율. 사이는 선형 보간, 밖은 끝값, 비면 1
+  std::map<int, int> wheel_laps;       // 그 배율에 쓰인 바퀴 수 (누적 평균 가중치)
   double gyro_scale{1.0};
-  double gyro_bias{0.0};    // rad/s. 출발 직전 정지 측정 영점에 더하는 잔여
-  double latency{0.0};      // s. 차선 영상 시각 + latency = 그 장면을 본 위치의 시각
-  // BEV 보정 (오도메트리가 아니라 카메라 쪽): 차선 점 q_BEV → 차량 좌표 q = R(cam_yaw)·(x, bev_scale·y)
-  double cam_yaw{0.0};      // rad. 카메라가 차량 정면에서 틀어진 각도
-  double bev_scale{1.0};    // BEV 가로 축척 (인식한 차선 폭 × 이 값 = 실제 폭)
-  Vec2 bev_point(const Vec2 & q) const;
+  int gyro_laps{0};
+  double gyro_bias{0.0};    // rad/s. 잔여 영점 (같은 속도 주행으로는 배율과 구분이 안 돼 추정하지 않음, 0)
+  double latency{0.0};      // s. 차선 영상 시각 + latency = 그 장면을 본 위치의 시각 (설정값)
   double wheel_scale_for(double v) const;
   void set_wheel_scale(double v, double scale);
+  static int speed_key(double v);   // 5 cm/s 단위
   std::string to_json() const;
   static OdomCalib from_json(const std::string & text);   // 형식 오류면 기본값
 };
@@ -52,12 +55,12 @@ struct RunData {
   std::vector<SpeedSample> speed;
   std::vector<GyroSample> gyro;
   std::vector<LaneSample> lanes;
-  std::vector<double> crossing_t;           // 정지선 S 통과 시각 (바퀴 경계)
+  std::vector<double> crossing_t;           // 정지선 S 통과 시각 (바퀴 경계). 기록은 첫 S 통과(start.t)부터
   double crossing_latency{0};
-  // 정지선 S에 다가가며 BEV 양쪽 차선으로 잰 값 (보정 전 원값): x = 차선 기울기 각 atan(a), y = 두 선 가운데의 차 기준 옆 위치.
-  // start_rel: 기록 시작점, anchor_rel[k]: k번째 통과. 없으면 NaN. 통과할 때 방향·옆 위치를 이 값으로 다시 잡는다
+  // 정지선 S에 다가가며 BEV 양쪽 차선으로 잰 값: x = 차선 기울기 각 atan(a), y = 두 선 가운데의 차 기준 옆 위치. 없으면 NaN
   Vec2 start_rel{std::numeric_limits<double>::quiet_NaN(), 0};
-  std::vector<Vec2> anchor_rel;               // 통과 시각을 계산할 때 쓴 카메라 시간차 (다시 적분할 때 새 시간차만큼 옮긴다)
+  std::vector<Vec2> anchor_rel;
+  std::map<std::string, double> params;     // 주행 당시 주요 파라미터 (기록용)
 };
 
 class Trajectory {
@@ -66,19 +69,23 @@ public:
   Pose at(double t) const;                  // 선형 보간 (범위 밖은 끝값)
 };
 
-// 기록을 보정 값으로 다시 적분. stopline_correction이면 S 통과 시각마다 진행 방향 위치를 S에 맞춘다
+// 기록을 보정 값으로 다시 적분 (자유 적분). stopline_correction이면 S 통과 시각마다 진행 방향 위치를 S에 맞춘다
 Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMap & map, bool stopline_correction);
 
 struct LapMetrics {
   int lap{0};
-  double along_err_m{0};      // S 통과 순간 추정 위치의 진행 방향 오차 (+ = 앞)
-  double heading_err_deg{0};
-  double length_err{0};       // 바퀴 길이 / 정답 − 1
-  double rms_m{0};            // 그 바퀴 인식 선과 정답 선 거리 RMS
+  double dist_m{0};           // 이 바퀴 주행 거리 (보정 적용)
+  double s_err_m{0};          // S 도착 오차: 주행 거리 − 중앙선 한 바퀴 (+ = 거리로는 S를 지나서야 실제 S)
+  double turn_deg{0};         // 이 바퀴 회전량 (보정 적용, 정답 360)
+  double lat_mean_m{0};       // 평균 옆 위치 (+ = 중앙선보다 진행 방향 왼쪽)
+  double along_err_m{0};      // 자유 적분 궤적의 S 통과 순간 진행 방향 오차 (참고)
+  double heading_err_deg{0};  // 자유 적분 궤적의 S 통과 순간 방향 오차 (참고, 차선 대비 비스듬함 포함)
+  double length_err{0};       // dist_m / 중앙선 − 1
+  double rms_m{0};            // 그 바퀴 인식 선과 정답 선 거리 RMS (참고)
   int points{0};
 };
 struct Evaluation {
-  double rms_m{0}, accuracy{0};   // accuracy = 1 − rms / 차선 반폭 (지도 선 간격의 절반)
+  double rms_m{0}, accuracy{0};   // accuracy = 1 − rms / 차선 반폭 (참고)
   double stop_rms_m{0};
   int points{0};
   double cost{0};
@@ -86,22 +93,40 @@ struct Evaluation {
 };
 Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap & map, double max_range_m = 1.5, double cap_m = 0.15);
 
-struct CalibResult {
-  OdomCalib calib;
-  Evaluation before, after;
-  bool improved{false};
-  int evaluations{0};
+// 한 주행에서 직접 구한 값 (보정 전 원값 기준)
+struct OdomEstimate {
+  bool ok{false};
   std::string message;
+  int laps{0};
+  double gyro_scale{std::numeric_limits<double>::quiet_NaN()};    // 360° / 원값 회전량
+  double wheel_scale{std::numeric_limits<double>::quiet_NaN()};   // 중앙선 길이 / 원값 거리
+  double raw_turn_deg_per_lap{0}, raw_dist_per_lap{0}, ref_length{0};
+  // 주행 중 검산: 직선에서 BEV 차선 각도 − (옆으로 밀리는 속도로 구한 실제 비스듬함) = BEV가 더 기울어 보이는 각 (0이면 카메라 yaw 맞음)
+  double bev_yaw_residual_deg{std::numeric_limits<double>::quiet_NaN()};
+  double straight_angle_deg{std::numeric_limits<double>::quiet_NaN()}, straight_slip_deg{std::numeric_limits<double>::quiet_NaN()};
+  int straights{0};
 };
-CalibResult calibrate(const RunData & run, const OdomCalib & start, const TrackMap & map, double max_range_m = 1.5);
+OdomEstimate estimate_odometry(const RunData & run, const TrackMap & map);
+
+struct CalibResult {
+  OdomCalib calib;          // 갱신 후 값 (applied가 false면 이전 값 그대로)
+  OdomEstimate est;
+  bool applied{false};
+  bool gyro_used{false}, wheel_used{false};
+  std::string message;
+  Evaluation before, after;   // 참고: 지도 맞춤 RMS
+};
+// 이전 값과 바퀴 수 가중 평균 (이전 가중치는 최대 max_prev_laps). 이전 값과 outlier_ratio 넘게 다르면 그 항목은 반영하지 않음
+CalibResult calibrate(const RunData & run, const OdomCalib & current, const TrackMap & map, double max_range_m = 1.5,
+                      int max_prev_laps = 30, double outlier_ratio = 0.02);
 
 struct SlamConfig {
-  double max_range_m{1.5};          // 매핑·보정에 쓰는 차선 점 최대 거리 (먼 점은 BEV 오차가 큼)
+  double max_range_m{1.5};          // 매핑에 쓰는 차선 점 최대 거리
   bool stopline_correction{true};
   int stop_confirm{3};              // 정지선 관측 확인 횟수
   double stop_tolerance_m{0.25};
   // 정지선 오인식(코너에서 휜 흰 선 등)을 바퀴로 세지 않게 두 가지로 거른다
-  double stop_gate_m{1.2};          // 관측한 정지선의 지도 위치가 정지선 S에서 이 거리 안일 때만
+  double stop_gate_m{1.2};          // 관측한 정지선의 중앙선 위 위치가 S에서 이 거리 안일 때만
   double lap_window{0.25};          // 직전 통과 후 주행 거리가 한 바퀴 길이의 (1 ± 이 비율) 안일 때만 통과로 셈
 };
 
@@ -111,14 +136,18 @@ struct LiveState {
   bool waiting_s{true};             // 정지선 S를 처음 지나기 전: 가속만 (기록·매핑·바퀴 세기는 S부터)
   int lap{0}, laps_target{0};
   double target_speed{0};
-  Pose pose;
+  Pose pose;                        // 위치 추정 (중앙선 위 지점 + 옆 위치, 방향은 자이로)
+  Pose free_pose;                   // 자유 적분 (비교용)
+  double s_arc{0};                  // 중앙선 위 위치 (m, 반시계 기준)
+  double lat{0};                    // 옆 위치 (+ = 진행 방향 왼쪽)
+  bool lat_valid{false};
   double lap_dist{0};               // 이번 바퀴 주행 거리
-  double lap_length{0};
+  double lap_length{0};             // 중앙선 한 바퀴
   double bias0{0};
   double stop_seen_m{std::numeric_limits<double>::quiet_NaN()};   // 마지막으로 본 정지선 거리 (앞차축 기준)
-  bool stop_near_s{false};          // 그 정지선이 지도상 정지선 S 근처인지
-  double lane_width{std::numeric_limits<double>::quiet_NaN()};   // BEV로 잰 차선 폭 (테이프 가운데 간격, 정답은 지도 값)
-  int rejected_far{0};              // 지도상 S와 멀어서 무시한 정지선 (오인식)
+  bool stop_near_s{false};          // 그 정지선이 중앙선 위에서 S 근처인지
+  double lane_width{std::numeric_limits<double>::quiet_NaN()};   // BEV로 잰 차선 폭
+  int rejected_far{0};              // S와 멀어서 무시한 정지선 (오인식)
   int rejected_lap{0};              // 바퀴 거리가 안 맞아 무시한 통과
 };
 
@@ -131,6 +160,7 @@ public:
   OdomCalib calib() const;
 
   void begin_run(double target_speed, int laps, const Pose & start, bool cw = false);
+  void set_run_params(const std::map<std::string, double> & p);
   void end_run();
   void on_speed(double v, double t);
   void on_gyro(double w, double t);
@@ -140,15 +170,18 @@ public:
   LiveState live() const;
   std::vector<LapMetrics> lap_metrics() const;
   std::vector<Vec2> take_map_points(std::vector<int> * side);   // 새로 매핑한 점 (side 0 왼쪽, 1 오른쪽)
-  std::vector<Pose> track_since(std::size_t * cursor) const;   // 화면용 궤적 (20 Hz)
+  std::vector<Pose> track_since(std::size_t * cursor) const;   // 화면용 위치 추정 궤적 (20 Hz)
+  std::vector<Pose> free_since(std::size_t * cursor) const;    // 화면용 자유 적분 궤적 (20 Hz)
   RunData run_data() const;
   std::vector<std::pair<int, double>> corrections() const;    // (바퀴, 정지선 위치 보정량 m)
 
 private:
-  void step(double t);                         // gyro 시각까지 적분 (락 안에서)
-  Pose pose_at(double t) const;                // 최근 이력 보간 (락 안에서)
+  void step(double t);
+  Pose pose_at(double t) const;                // 최근 자유 적분 이력 보간 (락 안에서)
+  double arc_at_dist(double dist) const;       // 누적 거리 → 중앙선 위 위치
+  Pose snap_of(const Pose & free) const;       // 자유 적분 자세 → 위치 추정 (중앙선 위 지점 + 옆 위치, 방향은 그대로)
   void on_crossing(double t);
-  Vec2 take_lane_rel();                        // S 접근 중 잰 차선 대비 값 평균을 꺼내고 비움
+  Vec2 take_lane_rel();
   TrackMap map_;
   SlamConfig cfg_;
   OdomCalib calib_;
@@ -159,21 +192,22 @@ private:
   double bias_ema_{0};
   bool bias_init_{false};
   std::deque<Pose> hist_;
-  std::vector<Pose> track_;
+  std::vector<Pose> track_, free_track_;
   double track_last_t_{-1};
   std::vector<Vec2> new_pts_;
   std::vector<int> new_side_;
+  double anchor_s_{0}, anchor_dist_{0}, s_stop_{0};        // 중앙선 위치 기준점 (마지막 S 또는 출발점)
   // 정지선 통과 예측
   int stop_n_{0};
   double stop_cand_{0}, armed_dist_{-1}, last_cross_dist_{0};
   std::vector<LapMetrics> laps_;
   std::vector<std::pair<int, double>> corr_;
-  double lap_sq_{0};
-  int lap_n_{0};
+  double lap_sq_{0}, lap_turn_{0}, lap_lat_sum_{0};
+  int lap_n_{0}, lap_lat_n_{0};
   bool finish_reported_{false};
   bool last_rejected_{false};
   int lane_rel_n_{0};
-  double lane_rel_yaw_{0}, lane_rel_lat_{0};   // 정지선 S 근처에서 BEV 차선으로 잰 차선 대비 방향·옆 위치 (기록 시작점 보정)
+  double lane_rel_yaw_{0}, lane_rel_lat_{0};
 };
 
 }  // namespace semi_slam

@@ -7,7 +7,6 @@
     camera.fps: 70.0
     camera.x_m: -0.09                 # 앞차축 기준 카메라 위치 (bev_config.yaml)
     camera.y_m: 0.0
-    camera.yaw_deg: 0.0
     camera.fixed_view_zoom: 1.25      # 아래 fx/fy는 bev_config.yaml 값(1.25배 확대 포함). 원본 영상엔 fx/zoom
     camera.fx: 701.751174926
     camera.fy: 701.420440674
@@ -38,6 +37,7 @@
     # 주행 계획
     run.speed_mps: 1.0                      # 일정 속도 (코너 감속 없음) (m/s)
     run.laps: 10.0                          # 목표 바퀴 수 (정지선 S 통과로 셈)
+    camera.yaw_deg: 0.0                     # 카메라 yaw (+ = 왼쪽을 봄). 웹에서 바꾸거나 자동 측정하면 <data_dir>/camera_yaw.json에 저장되고 다음 실행에도 그 값을 씀 (°)
     slam.direction: 0                       # 주행 방향 (0=반시계: 왼쪽 아래 x≈1.0 m에서 +x로 출발, 1=시계: 오른쪽 아래 x≈3.0 m에서 −x로 출발)
     slam.start_shift_m: 0.0                 # 출발 위치: 앞범퍼가 아래 직선 시작점에서 진행 방향 앞(+)/뒤(−)로 (m)
     slam.start_lateral_m: 0.0               # 출발 위치: 도로 가운데에서 왼쪽(+)으로 (m)

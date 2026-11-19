@@ -20,6 +20,7 @@ RunData load_run(const std::string & dir);   // 기록 폴더 → RunData (PC에
 struct CalibHistoryEntry {
   std::string time, run, action;   // action: "applied" | "skipped" | "reverted"
   double speed{0}, rms_before{0}, rms_after{0}, accuracy_after{0};
+  double gyro_est{0}, wheel_est{0}, yaw_residual{0};   // 그 주행에서 구한 값
   int laps{0};
 };
 

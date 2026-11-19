@@ -1,5 +1,8 @@
 #include "semi_slam/core/lane_post.hpp"
 #include <algorithm>
+#include <cmath>
+#include <limits>
+#include <opencv2/imgproc.hpp>
 
 namespace semi_slam {
 
@@ -41,6 +44,34 @@ Vec2 LanePostprocessor::pixel_to_vehicle(const cv::Point2f & p) const {
           c_.y_max_m - (p.x - c_.connection.padding_px + 0.5) * c_.meter_per_pixel};
 }
 
+double LanePostprocessor::stop_line_angle(const cv::Mat & mask) const {
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  if (mask.empty() || mask.type() != CV_8UC1) return nan;
+  std::vector<cv::Point> px;
+  cv::findNonZero(mask, px);
+  if (px.size() < 40) return nan;
+  std::vector<cv::Point2f> pts;   // 차량 좌표 (x 앞, y 왼쪽), 0.1~1.5 m 앞만
+  pts.reserve(px.size());
+  for (const auto & p : px) {
+    const Vec2 v = pixel_to_vehicle(cv::Point2f(float(p.x + c_.connection.padding_px), float(p.y)));
+    if (v.x > 0.1 && v.x < 1.5) pts.emplace_back(float(v.x), float(v.y));
+  }
+  if (pts.size() < 40) return nan;
+  cv::Vec4f f;
+  cv::fitLine(pts, f, cv::DIST_HUBER, 0, 0.01, 0.01);
+  double dx = f[0], dy = f[1];
+  if (dy < 0) { dx = -dx; dy = -dy; }   // 왼쪽(+y)을 향하게
+  if (dy < 0.7) return nan;             // 가로선이 아님
+  double lo = 1e9, hi = -1e9, off = 0;
+  for (const auto & p : pts) {
+    const double ax = p.x - f[2], ay = p.y - f[3];
+    const double along = ax * dx + ay * dy, across = -ax * dy + ay * dx;
+    lo = std::min(lo, along); hi = std::max(hi, along); off += across * across;
+  }
+  if (hi - lo < 0.25 || std::sqrt(off / pts.size()) > 0.04) return nan;   // 짧거나 두꺼우면 (덩어리) 믿지 않음
+  return std::atan2(-dx, dy);   // 가로선 (0,1)이 θ만큼 반시계로 돌면 (−sinθ, cosθ)
+}
+
 LaneObservation LanePostprocessor::process(const cv::Mat & labels, double t, bool want_reference, const cv::Mat & stop_mask) const {
   LaneObservation out;
   out.capture_time = t;
@@ -66,6 +97,7 @@ LaneObservation LanePostprocessor::process(const cv::Mat & labels, double t, boo
     for (const auto & frag : conn.observed_paths[side]) for (const auto & p : frag) dst.push_back(pixel_to_vehicle(p));
     std::sort(dst.begin(), dst.end(), [](const Vec2 & a, const Vec2 & b) { return a.x < b.x; });
   }
+  if (!stop_mask.empty()) out.stop_line_angle = stop_line_angle(stop_mask);
   out.valid = out.path.size() >= 4;
   return out;
 }

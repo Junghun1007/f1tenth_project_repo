@@ -27,6 +27,8 @@ public:
   // stop_mask: 정지선 채널 (모델 크기, 비어 있으면 정지선 계산 생략)
   LaneObservation process(const cv::Mat & labels, double capture_time, bool want_reference, const cv::Mat & stop_mask = cv::Mat()) const;
   Vec2 pixel_to_vehicle(const cv::Point2f & p_padded) const;
+  // 정지선 채널(모델 크기, 패딩 없음)에서 가로선의 기울기 (rad). 실패 시 NaN
+  double stop_line_angle(const cv::Mat & stop_mask) const;
 
 private:
   LanePostConfig c_;

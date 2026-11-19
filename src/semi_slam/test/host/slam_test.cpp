@@ -54,13 +54,17 @@ double unwrap_rate(double y1, double y0, double dt) {
   return d / dt;
 }
 
+struct SnapErr { double sq{0}, max{0}; int n{0}; double rms() const { return n ? std::sqrt(sq / n) : 0; } };
+SnapErr g_snap;
+
 // SlamCore로 실제처럼 실시간 처리 (정지선 바퀴 세기 포함) 후 RunData 반환
 RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double wheel_err, double gyro_err, double bias_res,
-                 double stamp_delay = 0.0, double noise = 0.0, bool fake_corner_stop = false, bool cw = false) {
+                 double stamp_delay = 0.0, double noise = 0.0, bool fake_corner_stop = false, bool cw = false, double bev_rot = 0.0) {
   unsigned rng = 12345u;
   auto gauss = [&]() { double a = 0; for (int i = 0; i < 6; ++i) { rng = rng * 1664525u + 1013904223u; a += (rng >> 8) / double(1u << 24); } return (a - 3.0) / std::sqrt(0.5); };
   const Sim sim = make_path(m, laps + 1, cw);
   const double bias0 = 0.02;
+  g_snap = SnapErr{};
   double t = 100.0;
   for (int k = 0; k < 400; ++k) { core.on_speed(0.0, t); core.on_gyro(bias0, t); t += 0.0025; }   // 출발 전 정지 영점
   Pose start = true_pose(sim, 0.0);
@@ -82,7 +86,11 @@ RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double
       L.valid = true;
       L.capture_time = t - stamp_delay;   // 영상 시각이 실제 장면보다 stamp_delay만큼 이르게 찍힘
       const double c = std::cos(p.yaw), sn = std::sin(p.yaw);
-      auto local = [&](const Vec2 & w) { const double dx = w.x - p.x, dy = w.y - p.y; return Vec2{c * dx + sn * dy, -sn * dx + c * dy}; };
+      const double cr = std::cos(bev_rot), sr = std::sin(bev_rot);   // BEV가 bev_rot만큼 반시계로 돌아 보임 (카메라 yaw 오차)
+      auto local = [&](const Vec2 & w) {
+        const double dx = w.x - p.x, dy = w.y - p.y, lx = c * dx + sn * dy, ly = -sn * dx + c * dy;
+        return Vec2{cr * lx - sr * ly, sr * lx + cr * ly};
+      };
       auto & to_inner = cw ? L.right : L.left;   // 반시계: 안쪽 선이 왼쪽, 시계: 오른쪽
       auto & to_outer = cw ? L.left : L.right;
       for (std::size_t i = 0; i < m.inner.size(); i += 3) { const Vec2 q = local(m.inner[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) to_inner.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
@@ -92,7 +100,13 @@ RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double
       // 오인식: 코너(바퀴의 60~65% 지점)에서 휜 흰 선을 정지선으로 0.6 m 앞에 봤다고 가정
       const double frac = std::fmod(s, sim.s.back() / (laps + 1)) / (sim.s.back() / (laps + 1));
       if (fake_corner_stop && frac > 0.60 && frac < 0.65) L.stop_line_m = 0.6;
-      if (core.on_lane(L)) break;   // 목표 바퀴 완료
+      const bool done = core.on_lane(L);
+      const auto lv = core.live();
+      if (!lv.waiting_s) {   // 위치 추정 오차 (앞차축 실제 위치 대비)
+        const double e = std::hypot(lv.pose.x - p.x, lv.pose.y - p.y);
+        g_snap.sq += e * e; ++g_snap.n; g_snap.max = std::max(g_snap.max, e);
+      }
+      if (done) break;   // 목표 바퀴 완료
     }
   }
   core.end_run();
@@ -113,9 +127,12 @@ TEST(track_map_loads_and_measures_line_distance) {
 
 TEST(calibration_value_round_trips_json) {
   OdomCalib c;
-  c.gyro_scale = 1.031; c.gyro_bias = -0.004; c.latency = 0.05;
-  c.set_wheel_scale(1.2, 0.97);
+  c.gyro_scale = 1.031; c.gyro_laps = 7; c.latency = 0.05;
+  c.set_wheel_scale(1.2, 0.97); c.wheel_laps[120] = 4;
   const auto d = OdomCalib::from_json(c.to_json());
+  CHECK(d.version == OdomCalib::kVersion);
+  CHECK(d.gyro_laps == 7 && d.wheel_laps.at(120) == 4);
+  CHECK(OdomCalib::from_json(R"({"gyro_scale":1.02,"cam_yaw":-0.1})").version == 1);   // 예전 형식 → 노드가 초기화
   CHECK_NEAR(d.gyro_scale, 1.031, 1e-6);
   CHECK_NEAR(d.wheel_scale_for(1.2), 0.97, 1e-6);
   CHECK_NEAR(d.latency, 0.05, 1e-6);
@@ -126,27 +143,75 @@ TEST(laps_are_counted_at_stop_line_and_calibration_recovers_sensor_errors) {
   SlamCore core(m);
   const auto run = simulate(core, m, 5, 1.0, 1.05, 0.97, 0.0015);   // 잔여 영점: 출발 직전 정지 측정 뒤 남는 정도 (0.09°/s)
   const auto live = core.live();
-  std::printf("  lap %d finished %d crossings %zu\n", live.lap, int(live.finished), run.crossing_t.size());
   CHECK(live.finished);
   CHECK(live.lap == 5);
   CHECK(run.crossing_t.size() == 5);
   const auto r = calibrate(run, OdomCalib{}, m);
-  std::printf("  before rms %.3f m (acc %.1f%%), after rms %.3f m (acc %.1f%%), evals %d\n", r.before.rms_m, r.before.accuracy * 100,
-              r.after.rms_m, r.after.accuracy * 100, r.evaluations);
-  std::printf("  wheel %.4f (truth %.4f) gyro %.4f (truth %.4f) bias %.4f (truth %.4f) latency %.3f\n", r.calib.wheel_scale_for(1.0), 1 / 1.05,
-              r.calib.gyro_scale, 1 / 0.97, r.calib.gyro_bias, 0.0015, r.calib.latency);
-  CHECK(r.improved);
-  CHECK(r.after.rms_m < 0.02);
-  CHECK(r.after.accuracy > 0.95);
+  std::printf("  gyro %.4f (truth %.4f) wheel %.4f (truth %.4f) per lap %.2f deg %.3f m\n", r.calib.gyro_scale, 1 / 0.97,
+              r.calib.wheel_scale_for(1.0), 1 / 1.05, r.est.raw_turn_deg_per_lap, r.est.raw_dist_per_lap);
+  CHECK(r.applied);
+  CHECK_NEAR(r.calib.gyro_scale, 1 / 0.97, 0.005);   // 잔여 영점 0.0015 rad/s × 11 s = 바퀴당 0.9° → 0.3%
   CHECK_NEAR(r.calib.wheel_scale_for(1.0), 1 / 1.05, 0.01);
-  // 일정 속도·같은 트랙에서는 자이로 배율과 잔여 영점이 서로 일부 대신할 수 있어(궤적이 거의 같음) 넓게 본다
-  CHECK_NEAR(r.calib.gyro_scale, 1 / 0.97, 0.015);
-  CHECK_NEAR(r.calib.gyro_bias, 0.0015, 0.004);
+  CHECK(r.calib.gyro_laps == 5);
+  CHECK(std::abs(r.est.bev_yaw_residual_deg) < 1.0);   // 카메라 yaw 오차 없음
+}
+
+TEST(calibration_accumulates_over_runs_and_rejects_outliers) {
+  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
+  SlamCore core(m);
+  const auto run = simulate(core, m, 3, 1.0, 1.0, 1.0, 0.0);
+  OdomCalib prev;
+  prev.gyro_scale = 1.010; prev.gyro_laps = 6;
+  prev.set_wheel_scale(1.0, 1.0); prev.wheel_laps[100] = 3;
+  const auto r = calibrate(run, prev, m);
+  // 자이로: 이전 1.010(6바퀴)과 이번 ≈1.000 차이 1% → 2% 안이라 가중 평균 (6·1.010 + 3·1.000) / 9
+  CHECK(r.gyro_used);
+  CHECK_NEAR(r.calib.gyro_scale, (6 * 1.010 + 3 * r.est.gyro_scale) / 9, 1e-9);
+  CHECK(r.calib.gyro_laps == 9);
+  prev.gyro_scale = 1.05;   // 이번 값과 5% 차이 → 반영 안 함
+  const auto r2 = calibrate(run, prev, m);
+  CHECK(!r2.gyro_used);
+  CHECK_NEAR(r2.calib.gyro_scale, 1.05, 1e-12);
+}
+
+TEST(position_on_center_line_tracks_true_position) {   // 보정이 맞으면 위치 추정 = 실제 앞차축 위치 (중앙선 거리 + BEV 옆 위치)
+  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
+  SlamCore core(m);
+  OdomCalib truth;
+  truth.gyro_scale = 1 / 0.97; truth.set_wheel_scale(1.0, 1 / 1.05);
+  core.set_calib(truth);
+  simulate(core, m, 3, 1.0, 1.05, 0.97, 0.0, 0.0, 0.01);
+  std::printf("  snap error rms %.3f m max %.3f m (frames %d)\n", g_snap.rms(), g_snap.max, g_snap.n);
+  CHECK(g_snap.rms() < 0.03);
+  CHECK(g_snap.max < 0.10);
+}
+
+TEST(driving_check_detects_bev_rotation) {   // BEV가 3° 돌아 보이면 주행 검산이 ≈ +3°를 낸다
+  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
+  SlamCore core(m);
+  const auto run = simulate(core, m, 3, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, false, false, 3.0 * M_PI / 180.0);
+  const auto e = estimate_odometry(run, m);
+  std::printf("  straights %d angle %.2f slip %.2f residual %.2f deg\n", e.straights, e.straight_angle_deg, e.straight_slip_deg, e.bev_yaw_residual_deg);
+  CHECK(e.straights >= 4);
+  CHECK_NEAR(e.bev_yaw_residual_deg, 3.0, 0.7);
+}
+
+#include "semi_slam/core/lane_post.hpp"
+#include <opencv2/imgproc.hpp>
+
+TEST(stop_line_angle_from_mask) {   // 가로선이 5° 반시계로 돌아 보이면 +5°: 왼쪽 끝(작은 열)이 가깝다(큰 행)
+  LanePostprocessor post{LanePostConfig()};
+  cv::Mat mask(300, 120, CV_8UC1, cv::Scalar(0));
+  const double t = std::tan(5.0 * M_PI / 180.0);
+  cv::line(mask, cv::Point(10, int(std::lround(250 + 50 * t))), cv::Point(110, int(std::lround(250 - 50 * t))), cv::Scalar(255), 3);
+  const double a = post.stop_line_angle(mask) * 180.0 / M_PI;
+  std::printf("  stop line angle %.2f deg\n", a);
+  CHECK_NEAR(a, 5.0, 0.8);
+  CHECK(std::isnan(post.stop_line_angle(cv::Mat(300, 120, CV_8UC1, cv::Scalar(0)))));
 }
 
 #include "semi_slam/core/run_store.hpp"
 #include <filesystem>
-
 TEST(run_folder_round_trips_and_calibration_store_reverts) {
   const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
   SlamCore core(m);
@@ -163,7 +228,9 @@ TEST(run_folder_round_trips_and_calibration_store_reverts) {
   CHECK_NEAR(back.gyro_bias0, run.gyro_bias0, 1e-9);
   // 저장한 기록으로 다시 보정해도 같은 결과 (PC에서 재보정 가능)
   const auto r1 = calibrate(run, OdomCalib{}, m), r2 = calibrate(back, OdomCalib{}, m);
-  CHECK_NEAR(r1.after.rms_m, r2.after.rms_m, 2e-3);   // 저장 반올림으로 개별 값은 조금 달라도 궤적 정확도는 같음
+  CHECK(r1.applied);
+  CHECK_NEAR(r1.calib.gyro_scale, r2.calib.gyro_scale, 1e-4);
+  CHECK_NEAR(r1.calib.wheel_scale_for(1.2), r2.calib.wheel_scale_for(1.2), 1e-4);
   write_calibration_result(dir, r1);
   CalibStore store(data);
   const OdomCalib before = store.load();
@@ -181,24 +248,6 @@ TEST(run_folder_round_trips_and_calibration_store_reverts) {
   CHECK_NEAR(store.load().gyro_scale, 1.0, 1e-12);
   CHECK(store.history().empty());
   CHECK(std::filesystem::exists(backup + "/calibration_history.jsonl"));
-}
-
-TEST(calibration_handles_lane_noise_and_camera_delay) {   // 차선 점 잡음 σ 1.5 cm + 영상 시각 40 ms 지연
-  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
-  SlamCore core(m);
-  const auto run = simulate(core, m, 5, 1.4, 0.96, 1.02, -0.001, 0.04, 0.015);
-  const auto r = calibrate(run, OdomCalib{}, m);
-  std::printf("  acc %.1f%% -> %.1f%%  wheel %.4f (truth %.4f) gyro %.4f (truth %.4f) bias %.4f (truth -0.001) latency %.3f (truth 0.040)\n",
-              r.before.accuracy * 100, r.after.accuracy * 100, r.calib.wheel_scale_for(1.4), 1 / 0.96, r.calib.gyro_scale, 1 / 1.02, r.calib.gyro_bias, r.calib.latency);
-  OdomCalib truth;
-  truth.set_wheel_scale(1.4, 1 / 0.96); truth.gyro_scale = 1 / 1.02; truth.gyro_bias = -0.001; truth.latency = 0.04;
-  const auto et = evaluate(run, truth, m);
-  std::printf("  truth params: acc %.1f%% rms %.4f stop %.4f cost %.6f / found rms %.4f stop %.4f cost %.6f\n", et.accuracy * 100, et.rms_m, et.stop_rms_m, et.cost, r.after.rms_m, r.after.stop_rms_m, r.after.cost);
-  CHECK(r.improved);
-  CHECK(r.after.accuracy > 0.93);
-  CHECK_NEAR(r.calib.wheel_scale_for(1.4), 1 / 0.96, 0.015);
-  CHECK_NEAR(r.calib.gyro_scale, 1 / 1.02, 0.01);
-  CHECK_NEAR(r.calib.latency, 0.04, 0.025);
 }
 
 TEST(false_stop_lines_at_corners_are_not_counted_as_laps) {
@@ -224,8 +273,9 @@ TEST(clockwise_run_counts_laps_and_calibrates) {   // 시계 방향: 오른쪽 �
   CHECK(live.lap == 4);
   CHECK(run.cw);
   const auto r = calibrate(run, OdomCalib{}, m);
-  std::printf("  cw before rms %.3f after rms %.3f wheel %.4f gyro %.4f\n", r.before.rms_m, r.after.rms_m, r.calib.wheel_scale_for(1.0), r.calib.gyro_scale);
-  CHECK(r.improved);
-  CHECK(r.after.rms_m < 0.02);
+  std::printf("  cw wheel %.4f gyro %.4f rms after %.3f\n", r.calib.wheel_scale_for(1.0), r.calib.gyro_scale, r.after.rms_m);
+  CHECK(r.applied);
+  CHECK_NEAR(r.calib.gyro_scale, 1 / 0.97, 0.005);
   CHECK_NEAR(r.calib.wheel_scale_for(1.0), 1 / 1.05, 0.01);
+  CHECK(r.after.rms_m < 0.03);
 }

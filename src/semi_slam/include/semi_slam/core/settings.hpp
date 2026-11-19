@@ -15,6 +15,7 @@ struct Settings {
   bool stabilization{true};       // IMU 영상 안정화 (전체 / 끄기)
   bool auto_calibrate{true};      // 목표 바퀴 완료 시 보정 계산·적용
   bool clockwise{false};          // 주행 방향 (출발할 때 적용)
+  double camera_yaw_deg{0.0};     // 카메라 yaw (BEV 생성에 반영)
   double start_offset_m{0.0};     // 출발: 앞범퍼가 아래 직선 시작점에서 진행 방향으로 이만큼 앞 (+)
   double start_lateral_m{0.0};    // 출발: 도로 가운데에서 왼쪽(+)으로
   SlamConfig slam;

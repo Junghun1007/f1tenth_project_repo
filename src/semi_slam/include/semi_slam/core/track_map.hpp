@@ -28,12 +28,21 @@ struct TrackMap {
   double dist_side(int side, bool cw, const Vec2 & p) const { return ((side == 0) != cw) ? dist_inner(p) : dist_outer(p); }
   void build_fields(double resolution_m = 0.01);   // load_csv가 호출
 
+  // 중앙선 (지도에 그린 점선 = 두 흰 선 가운데) 위 거리 좌표 s: 반시계 방향으로 증가, 0 ~ center_length()
+  double center_length() const { return center_len_; }
+  Vec2 center_at(double s, Vec2 * tangent = nullptr) const;   // tangent: 반시계 방향 단위 벡터
+  double center_project(const Vec2 & p) const;                 // p에서 가장 가까운 중앙선 위치의 s
+  double arc_diff(double a, double b) const;                   // a − b를 (−L/2, L/2]로
+  double wrap_s(double s) const;
+
 private:
   double field(const cv::Mat & f, const Vec2 & p) const;
   cv::Mat outer_field_, inner_field_;
   double res_{0.01}, x0_{-0.5}, y0_{-0.5};
   double lap_length_{0}, lane_width_{0.67};
   Vec2 middle_{2, 2};
+  std::vector<double> center_s_;   // 중앙선 점마다 누적 거리
+  double center_len_{0};
 };
 
 }  // namespace semi_slam

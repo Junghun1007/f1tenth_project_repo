@@ -75,6 +75,10 @@ void write_run(const std::string & dir, const RunData & run, const OdomCalib & c
       << ",\"laps_target\":" << run.laps_target << ",\"laps_done\":" << run.crossing_t.size()
       << ",\"stopline_correction\":" << (run.stopline_correction ? "true" : "false")
       << ",\"direction\":\"" << (run.cw ? "cw" : "ccw") << "\""
+      << ",\"params\":{";
+    bool first = true;
+    for (const auto & [k, v] : run.params) { o << (first ? "" : ",") << "\"" << k << "\":" << v; first = false; }
+    o << "}"
       << ",\"start_rel_yaw\":" << (std::isfinite(run.start_rel.x) ? std::to_string(run.start_rel.x) : "null") << ",\"start_rel_lat\":" << run.start_rel.y << ",\"crossing_latency\":" << run.crossing_latency << ",\"gyro_bias0\":" << std::setprecision(9) << run.gyro_bias0 << ",\"start\":" << pose_json(run.start)
       << ",\"calib_used\":" << calib.to_json() << "}\n";
   }
@@ -95,8 +99,10 @@ void write_run(const std::string & dir, const RunData & run, const OdomCalib & c
   }
   {
     std::ofstream o(dir + "/laps.csv");
-    o << "lap,along_err_m,heading_err_deg,length_err,rms_m,points\n";
-    for (const auto & m : laps) o << m.lap << ',' << m.along_err_m << ',' << m.heading_err_deg << ',' << m.length_err << ',' << m.rms_m << ',' << m.points << '\n';
+    o << "lap,dist_m,s_err_m,turn_deg,lat_mean_m,free_along_err_m,free_heading_err_deg,length_err,rms_m,points\n";
+    for (const auto & m : laps)
+      o << m.lap << ',' << m.dist_m << ',' << m.s_err_m << ',' << m.turn_deg << ',' << m.lat_mean_m << ',' << m.along_err_m << ','
+        << m.heading_err_deg << ',' << m.length_err << ',' << m.rms_m << ',' << m.points << '\n';
   }
   { std::ofstream o(dir + "/corrections.csv"); o << "lap,shift_m\n"; for (const auto & [lap, s] : corr) o << lap << ',' << s << '\n'; }
   { std::ofstream o(dir + "/trajectory.csv"); o << "t,x,y,yaw,dist\n" << std::setprecision(10); for (const auto & p : traj) o << p.t << ',' << p.x << ',' << p.y << ',' << p.yaw << ',' << p.dist << '\n'; }
@@ -109,7 +115,14 @@ void write_calibration_result(const std::string & dir, const CalibResult & r) {
     w.key(k).begin_object().key("rms_m").value(e.rms_m).key("accuracy").value(e.accuracy).key("stop_rms_m").value(e.stop_rms_m)
      .key("points").value((long long)e.points).key("cost").value(e.cost, 6).end_object();
   };
-  w.begin_object().key("improved").value(r.improved).key("message").value(r.message).key("evaluations").value((long long)r.evaluations);
+  const auto & e = r.est;
+  w.begin_object().key("applied").value(r.applied).key("gyro_used").value(r.gyro_used).key("wheel_used").value(r.wheel_used)
+   .key("message").value(r.message);
+  w.key("estimate").begin_object().key("ok").value(e.ok).key("message").value(e.message).key("laps").value((long long)e.laps)
+   .key("gyro_scale").value(e.gyro_scale, 6).key("wheel_scale").value(e.wheel_scale, 6).key("raw_turn_deg_per_lap").value(e.raw_turn_deg_per_lap, 3)
+   .key("raw_dist_per_lap").value(e.raw_dist_per_lap, 4).key("ref_length").value(e.ref_length, 4)
+   .key("bev_yaw_residual_deg").value(e.bev_yaw_residual_deg, 2).key("straight_angle_deg").value(e.straight_angle_deg, 2)
+   .key("straight_slip_deg").value(e.straight_slip_deg, 2).key("straights").value((long long)e.straights).end_object();
   ev("before", r.before);
   ev("after", r.after);
   w.end_object();
@@ -175,7 +188,8 @@ void CalibStore::save(const OdomCalib & c) const {
   { std::ofstream o(dir_ + "/calibration.json"); o << c.to_json() << '\n'; }
   std::ofstream y(dir_ + "/odometry_calibration.yaml");
   y << "# semi_slam 오도메트리 보정 (" << now_string("%Y-%m-%d %H:%M:%S") << ")\n"
-    << "# 속도 v = ERPM 속도 × 거리 배율(속도별 보간), 요레이트 = 자이로 배율 × (자이로 − 정지 영점 − 잔여 영점)\n"
+    << "# 속도 v = ERPM 속도 × 거리 배율(속도별 보간), 요레이트 = 자이로 배율 × (자이로 − 정지 영점)\n"
+    << "# 정지선 S → S 한 바퀴 = 360°, 중앙선 길이 기준. 누적 바퀴 수: 자이로 " << c.gyro_laps << "\n"
     << "odometry:\n"
     << "  gyro_scale: " << c.gyro_scale << "\n"
     << "  gyro_bias_rad_s: " << c.gyro_bias << "\n"
@@ -189,6 +203,7 @@ void CalibStore::record(const CalibResult & r, const std::string & run_dir, cons
   JsonWriter w;
   w.begin_object().key("time").value(now_string("%Y-%m-%d %H:%M:%S")).key("run").value(fs::path(run_dir).filename().string())
    .key("action").value(applied ? "applied" : "skipped").key("speed").value(speed, 2).key("laps").value((long long)laps)
+   .key("gyro_est").value(r.est.gyro_scale, 5).key("wheel_est").value(r.est.wheel_scale, 5).key("yaw_residual").value(r.est.bev_yaw_residual_deg, 2)
    .key("rms_before").value(r.before.rms_m).key("rms_after").value(r.after.rms_m).key("accuracy_after").value(r.after.accuracy).end_object();
   std::string line = w.str();
   line.pop_back();   // 객체 닫기 전에 보정 값 두 개를 붙인다
@@ -244,6 +259,9 @@ std::vector<CalibHistoryEntry> CalibStore::history(std::size_t last_n) const {
     CalibHistoryEntry e;
     e.time = str_or(&*j, "time"); e.run = str_or(&*j, "run"); e.action = str_or(&*j, "action");
     e.speed = num_or(&*j, "speed", 0); e.laps = int(num_or(&*j, "laps", 0));
+    e.gyro_est = num_or(&*j, "gyro_est", std::nan(""));
+    e.wheel_est = num_or(&*j, "wheel_est", std::nan(""));
+    e.yaw_residual = num_or(&*j, "yaw_residual", std::nan(""));
     e.rms_before = num_or(&*j, "rms_before", 0); e.rms_after = num_or(&*j, "rms_after", 0); e.accuracy_after = num_or(&*j, "accuracy_after", 0);
     all.push_back(e);
   }

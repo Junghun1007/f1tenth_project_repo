@@ -1,6 +1,7 @@
 // 저장한 주행 기록으로 보정만 다시 계산 (Jetson·PC 모두, ROS 불필요)
 //   ros2 run semi_slam semi_slam_recalibrate <기록 폴더> [--apply] [--map <csv>] [--data <data_dir>]
-// --apply: 오차가 줄었으면 지금 보정 값으로 저장 (이력에도 남김). 없으면 결과만 출력
+// --apply: 지금 보정 값에 누적 반영해 저장 (이력에도 남김). 없으면 결과만 출력
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -23,22 +24,28 @@ int main(int argc, char ** argv) {
   const auto map = TrackMap::load_csv(map_path);
   const auto run = load_run(run_dir);
   CalibStore store(data_dir);
-  const OdomCalib start = store.load();
-  std::printf("기록 %s: 속도 %.2f m/s, 바퀴 %zu, 차선 프레임 %zu\n", run_dir.c_str(), run.target_speed, run.crossing_t.size(), run.lanes.size());
+  OdomCalib start = store.load();
+  if (start.version < OdomCalib::kVersion) start = OdomCalib{};
+  std::printf("기록 %s: 속도 %.2f m/s, 바퀴 %zu, 차선 프레임 %zu, 방향 %s\n", run_dir.c_str(), run.target_speed, run.crossing_t.size(),
+              run.lanes.size(), run.cw ? "시계" : "반시계");
   const auto r = calibrate(run, start, map);
-  std::printf("정합 RMS %.1f → %.1f cm, 정확도 %.1f%% → %.1f%% (%s, 계산 %d회)\n", r.before.rms_m * 100, r.after.rms_m * 100,
-              r.before.accuracy * 100, r.after.accuracy * 100, r.message.c_str(), r.evaluations);
-  std::printf("보정 값 %s\n", r.calib.to_json().c_str());
+  const auto & e = r.est;
+  std::printf("이번 주행 값: 자이로 ×%.4f (원값 한 바퀴 %.2f°), 거리 ×%.4f (원값 한 바퀴 %.3f m, 기준 %.3f m)\n", e.gyro_scale,
+              e.raw_turn_deg_per_lap, e.wheel_scale, e.raw_dist_per_lap, e.ref_length);
+  if (std::isfinite(e.bev_yaw_residual_deg))
+    std::printf("주행 검산: 직선 %d개, BEV 차선 각 %+.2f° − 실제 비스듬함 %+.2f° = BEV가 더 기울어 보임 %+.2f°\n", e.straights,
+                e.straight_angle_deg, e.straight_slip_deg, e.bev_yaw_residual_deg);
+  std::printf("%s\n보정 값 %s\n", r.message.c_str(), r.calib.to_json().c_str());
   for (const auto & m : r.after.laps)
-    std::printf("  바퀴 %d: 통과 위치 %+.1f cm, 방향 %+.1f°, 길이 %+.1f%%, RMS %.1f cm\n", m.lap, m.along_err_m * 100, m.heading_err_deg,
-                m.length_err * 100, m.rms_m * 100);
+    std::printf("  바퀴 %d: 거리 %.3f m (S 도착 %+.1f cm), 회전 %.1f°, 자유 적분 S 오차 %+.1f cm %+.1f°\n", m.lap, m.dist_m, m.s_err_m * 100,
+                m.turn_deg, m.along_err_m * 100, m.heading_err_deg);
   write_calibration_result(run_dir, r);
-  if (apply && r.improved) {
+  if (apply && r.applied) {
     store.record(r, run_dir, start, run.target_speed, int(run.crossing_t.size()), true);
     store.save(r.calib);
     std::printf("적용함: %s/calibration.json (semi_slam을 다시 실행하면 반영)\n", data_dir.c_str());
   } else if (apply) {
-    std::printf("오차가 줄지 않아 적용하지 않음\n");
+    std::printf("반영할 값이 없어 저장하지 않음\n");
   }
   return 0;
 }

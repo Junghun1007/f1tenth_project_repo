@@ -16,6 +16,7 @@ void register_params(ParamRegistry & r) {
   m("주행 계획", "slam.direction", "주행 방향 (0=반시계: 왼쪽 아래에서 출발, 1=시계: 오른쪽 아래에서 출발)", "", 0, 1, 0);
   m("주행 계획", "slam.start_shift_m", "출발 위치: 앞범퍼가 아래 직선 시작점에서 진행 방향 앞(+)/뒤(−)로", "m", -0.5, 1.0, 0.0);
   m("주행 계획", "slam.start_lateral_m", "출발 위치: 도로 가운데에서 왼쪽(+)으로", "m", -0.3, 0.3, 0.0);
+  m("카메라", "camera.yaw_deg", "카메라 yaw (+ = 카메라가 왼쪽을 봄). BEV를 이만큼 돌려 만든다 · 바로 반영", "°", -20, 20, 0);
   m("매핑·보정", "camera.stabilization", "IMU 영상 안정화 (0=끄기, 1=전체)", "", 0, 1, 1);
   m("매핑·보정", "slam.stopline_correction", "정지선 통과 시 위치 보정 (0=끔, 1=켬)", "", 0, 1, 1);
   m("매핑·보정", "slam.auto_calibrate", "목표 바퀴 완료 시 보정 자동 적용 (0=끔, 1=켬)", "", 0, 1, 1);
@@ -62,6 +63,7 @@ Settings settings_from(const ParamRegistry & r) {
   s.start_offset_m = g("slam.start_shift_m");
   s.start_lateral_m = g("slam.start_lateral_m");
   s.stabilization = g("camera.stabilization") >= 0.5;
+  s.camera_yaw_deg = g("camera.yaw_deg");
   s.slam.stopline_correction = g("slam.stopline_correction") >= 0.5;
   s.auto_calibrate = g("slam.auto_calibrate") >= 0.5;
   s.slam.max_range_m = g("slam.max_range_m");
