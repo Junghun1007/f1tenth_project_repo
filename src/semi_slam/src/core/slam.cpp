@@ -33,11 +33,30 @@ double OdomCalib::wheel_scale_for(double v) const {
   return lo->second + std::clamp(a, 0.0, 1.0) * (hi->second - lo->second);
 }
 
+Vec2 OdomCalib::bev_point(const Vec2 & q) const {
+  const double c = std::cos(cam_yaw), s = std::sin(cam_yaw), y = q.y * bev_scale;
+  return {c * q.x - s * y, s * q.x + c * y};
+}
+
+// 정지선 S에서 BEV로 잰 차선 대비 값(원값)으로 차량 자세를 다시 잡는다: 앞뒤 = S, 옆 = 두 선 가운데 기준, 방향 = 차선 방향 기준
+static void anchor_at_stop(Pose & p, const Vec2 & rel, const OdomCalib & c, const TrackMap & map) {
+  const Vec2 S = map.stop_center(), dir = map.travel_dir_at(S), left{-dir.y, dir.x};
+  const double along = (p.x - S.x) * dir.x + (p.y - S.y) * dir.y;
+  p.x -= along * dir.x;
+  p.y -= along * dir.y;
+  if (!std::isfinite(rel.x)) return;
+  const double lat = -rel.y * c.bev_scale;   // 두 선 가운데가 차 기준 왼쪽이면 차는 가운데보다 오른쪽
+  p.x = S.x + left.x * lat;
+  p.y = S.y + left.y * lat;
+  p.yaw = std::atan2(dir.y, dir.x) - (rel.x + c.cam_yaw);   // 차선이 차 기준 반시계로 보이면 차는 시계 방향으로 틀어진 것
+}
+
 void OdomCalib::set_wheel_scale(double v, double s) { wheel_scale[int(std::lround(std::abs(v) * 20.0)) * 5] = s; }
 
 std::string OdomCalib::to_json() const {
   JsonWriter w;
-  w.begin_object().key("gyro_scale").value(gyro_scale, 6).key("gyro_bias").value(gyro_bias, 6).key("latency").value(latency, 4);
+  w.begin_object().key("gyro_scale").value(gyro_scale, 6).key("gyro_bias").value(gyro_bias, 6).key("latency").value(latency, 4)
+   .key("cam_yaw").value(cam_yaw, 6).key("bev_scale").value(bev_scale, 5);
   w.key("wheel_scale").begin_object();
   for (const auto & [k, s] : wheel_scale) w.key(std::to_string(k).c_str()).value(s, 6);
   w.end_object().end_object();
@@ -52,6 +71,8 @@ OdomCalib OdomCalib::from_json(const std::string & text) {
   num("gyro_scale", c.gyro_scale);
   num("gyro_bias", c.gyro_bias);
   num("latency", c.latency);
+  num("cam_yaw", c.cam_yaw);
+  num("bev_scale", c.bev_scale);
   if (const auto * ws = j->get("wheel_scale"); ws && ws->kind == JsonValue::Object)
     for (const auto & [k, v] : ws->obj) if (v->kind == JsonValue::Number) c.wheel_scale[std::stoi(k)] = v->num;
   return c;
@@ -73,8 +94,8 @@ Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMa
   tr.poses.reserve(run.gyro.size() + 1);
   Pose p = run.start;
   p.dist = 0;
+  if (std::isfinite(run.start_rel.x)) anchor_at_stop(p, run.start_rel, calib, map);   // 기록 시작점도 후보 카메라 값으로 다시
   tr.poses.push_back(p);
-  const Vec2 S = map.stop_center(), dir = map.travel_dir_at(S);
   std::size_t si = 0, ci = 0;
   double v_raw = 0, last_t = p.t;
   const double shift = calib.latency - run.crossing_latency;   // 통과 시각 = 정지선을 본 영상 시각 기준이라 시간차가 바뀌면 같이 옮김
@@ -92,11 +113,7 @@ Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMa
     p.dist += v * dt;
     p.t = t;
     while (ci < run.crossing_t.size() && run.crossing_t[ci] + shift <= t) {   // 정지선 S 통과: 진행 방향 위치를 S에 맞춤
-      if (correction) {
-        const double along = dot({p.x - S.x, p.y - S.y}, dir);
-        p.x -= along * dir.x;
-        p.y -= along * dir.y;
-      }
+      if (correction) anchor_at_stop(p, ci < run.anchor_rel.size() ? run.anchor_rel[ci] : Vec2{std::nan(""), 0}, calib, map);
       ++ci;
     }
     tr.poses.push_back(p);
@@ -110,7 +127,7 @@ Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMa
 }
 
 // ---------------------------------------------------------------- 평가
-Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap & map, double max_range) {
+Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap & map, double max_range, double cap) {
   Evaluation e;
   const auto tr = integrate(run, calib, map, run.stopline_correction);
   const Vec2 S = map.stop_center(), dir = map.travel_dir_at(S);
@@ -128,8 +145,8 @@ Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap
     for (int side = 0; side < 2; ++side)
       for (const auto & q : side == 0 ? L.left : L.right) {
         if (q.x < 0 || q.x > max_range) continue;
-        const Vec2 w = to_world(p, q);
-        const double d = std::min(kCap, side == 0 ? map.dist_inner(w) : map.dist_outer(w));
+        const Vec2 w = to_world(p, calib.bev_point(q));
+        const double d = std::min(cap, side == 0 ? map.dist_inner(w) : map.dist_outer(w));
         sq += d * d; lap_sq[lap] += d * d; ++lap_n[lap]; ++e.points;
       }
     if (std::isfinite(L.stop_m) && L.stop_m > 0.15 && L.stop_m < max_range) {
@@ -169,56 +186,58 @@ CalibResult calibrate(const RunData & run, const OdomCalib & start, const TrackM
     r.message = "기록이 너무 적어 보정하지 않음";
     return r;
   }
-  using X = std::array<double, 4>;   // 거리 배율, 자이로 배율, 잔여 영점, 시간차
-  const X lo{0.80, 0.90, -0.05, -0.05}, hi{1.20, 1.10, 0.05, 0.20};
-  auto clampx = [&](X x) { for (int i = 0; i < 4; ++i) x[i] = std::clamp(x[i], lo[i], hi[i]); return x; };
+  // x = 거리 배율, 자이로 배율, 잔여 영점, 시간차, 카메라 틀어짐, BEV 가로 축척
+  constexpr int N = 6;
+  using X = std::array<double, N>;
+  const X lo{0.80, 0.90, -0.05, -0.05, -0.10, 0.80}, hi{1.20, 1.10, 0.05, 0.20, 0.10, 1.25};
+  auto clampx = [&](X x) { for (int i = 0; i < N; ++i) x[i] = std::clamp(x[i], lo[i], hi[i]); return x; };
   auto make = [&](const X & x) {
     OdomCalib c = start;
     c.wheel_scale.clear();
     c.wheel_scale[100] = x[0];   // 적합 중에는 모든 속도에 같은 배율
-    c.gyro_scale = x[1];
-    c.gyro_bias = x[2];
-    c.latency = x[3];
+    c.gyro_scale = x[1]; c.gyro_bias = x[2]; c.latency = x[3]; c.cam_yaw = x[4]; c.bev_scale = x[5];
     return c;
   };
-  auto f = [&](const X & x) { ++r.evaluations; return evaluate(run, make(clampx(x)), map, max_range).cost; };
-  X best_x = clampx(X{start.wheel_scale_for(run.target_speed), start.gyro_scale, start.gyro_bias, start.latency});
-  double best_f = f(best_x);
-  // Nelder–Mead를 찾은 점에서 새 단체로 몇 번 다시 시작 (지연처럼 비용 면이 평평한 값이 중간에 멈추지 않게)
-  for (int restart = 0; restart < 3; ++restart) {
-    const double k = restart == 0 ? 1.0 : 0.5;
-    const X step{0.02 * k, 0.01 * k, 0.004 * k, 0.03 * k};
-    std::array<X, 5> s;
-    std::array<double, 5> fv;
-    s[0] = best_x;
-    fv[0] = best_f;
-    for (int i = 0; i < 4; ++i) { s[i + 1] = s[0]; s[i + 1][i] += step[i]; s[i + 1] = clampx(s[i + 1]); fv[i + 1] = f(s[i + 1]); }
-    for (int it = 0; it < 160; ++it) {
-      std::array<int, 5> o{0, 1, 2, 3, 4};
-      std::sort(o.begin(), o.end(), [&](int a, int b) { return fv[a] < fv[b]; });
-      std::array<X, 5> s2; std::array<double, 5> f2;
-      for (int i = 0; i < 5; ++i) { s2[i] = s[o[i]]; f2[i] = fv[o[i]]; }
-      s = s2; fv = f2;
-      if (std::abs(fv[4] - fv[0]) < 1e-10) break;
-      X c{};
-      for (int i = 0; i < 4; ++i) for (int d = 0; d < 4; ++d) c[d] += s[i][d] / 4.0;
-      auto lerp = [&](double a) { X x; for (int d = 0; d < 4; ++d) x[d] = c[d] + a * (s[4][d] - c[d]); return clampx(x); };
-      const X xr = lerp(-1.0); const double fr = f(xr);
-      if (fr < fv[0]) { const X xe = lerp(-2.0); const double fe = f(xe); if (fe < fr) { s[4] = xe; fv[4] = fe; } else { s[4] = xr; fv[4] = fr; } continue; }
-      if (fr < fv[3]) { s[4] = xr; fv[4] = fr; continue; }
-      const X xc = lerp(0.5); const double fc = f(xc);
-      if (fc < fv[4]) { s[4] = xc; fv[4] = fc; continue; }
-      for (int i = 1; i < 5; ++i) { for (int d = 0; d < 4; ++d) s[i][d] = s[0][d] + 0.5 * (s[i][d] - s[0][d]); s[i] = clampx(s[i]); fv[i] = f(s[i]); }
+  double cap = 0.6;
+  auto f = [&](const X & x) { ++r.evaluations; return evaluate(run, make(clampx(x)), map, max_range, cap).cost; };
+  X best_x = clampx(X{start.wheel_scale_for(run.target_speed), start.gyro_scale, start.gyro_bias, start.latency, start.cam_yaw, start.bev_scale});
+  // 오차 상한을 크게 시작해 줄여 간다: 처음부터 15 cm로 자르면 큰 오차에서 비용이 평평해 방향을 못 잡는다
+  for (double stage_cap : {0.6, 0.3, 0.15}) {
+    cap = stage_cap;
+    double best_f = f(best_x);
+    for (int restart = 0; restart < 2; ++restart) {   // 찾은 점에서 새 단체로 다시 (평평한 방향에서 멈추지 않게)
+      const double k = restart == 0 ? 1.0 : 0.4;
+      const X step{0.03 * k, 0.015 * k, 0.005 * k, 0.03 * k, 0.03 * k, 0.05 * k};
+      std::array<X, N + 1> s;
+      std::array<double, N + 1> fv;
+      s[0] = best_x; fv[0] = best_f;
+      for (int i = 0; i < N; ++i) { s[i + 1] = s[0]; s[i + 1][i] += step[i]; s[i + 1] = clampx(s[i + 1]); fv[i + 1] = f(s[i + 1]); }
+      for (int it = 0; it < 200; ++it) {
+        std::array<int, N + 1> o;
+        for (int i = 0; i <= N; ++i) o[i] = i;
+        std::sort(o.begin(), o.end(), [&](int a, int b) { return fv[a] < fv[b]; });
+        std::array<X, N + 1> s2; std::array<double, N + 1> f2;
+        for (int i = 0; i <= N; ++i) { s2[i] = s[o[i]]; f2[i] = fv[o[i]]; }
+        s = s2; fv = f2;
+        if (std::abs(fv[N] - fv[0]) < 1e-10) break;
+        X c{};
+        for (int i = 0; i < N; ++i) for (int d = 0; d < N; ++d) c[d] += s[i][d] / N;
+        auto lerp = [&](double a) { X x; for (int d = 0; d < N; ++d) x[d] = c[d] + a * (s[N][d] - c[d]); return clampx(x); };
+        const X xr = lerp(-1.0); const double fr = f(xr);
+        if (fr < fv[0]) { const X xe = lerp(-2.0); const double fe = f(xe); if (fe < fr) { s[N] = xe; fv[N] = fe; } else { s[N] = xr; fv[N] = fr; } continue; }
+        if (fr < fv[N - 1]) { s[N] = xr; fv[N] = fr; continue; }
+        const X xc = lerp(0.5); const double fc = f(xc);
+        if (fc < fv[N]) { s[N] = xc; fv[N] = fc; continue; }
+        for (int i = 1; i <= N; ++i) { for (int d = 0; d < N; ++d) s[i][d] = s[0][d] + 0.5 * (s[i][d] - s[0][d]); s[i] = clampx(s[i]); fv[i] = f(s[i]); }
+      }
+      const int bi = int(std::min_element(fv.begin(), fv.end()) - fv.begin());
+      if (fv[bi] < best_f) { best_f = fv[bi]; best_x = s[bi]; }
     }
-    const int bi = int(std::min_element(fv.begin(), fv.end()) - fv.begin());
-    if (fv[bi] < best_f) { best_f = fv[bi]; best_x = s[bi]; }
   }
   const X xb = best_x;
   r.calib = start;
   r.calib.set_wheel_scale(run.target_speed, xb[0]);   // 이 주행 속도의 거리 배율만 갱신
-  r.calib.gyro_scale = xb[1];
-  r.calib.gyro_bias = xb[2];
-  r.calib.latency = xb[3];
+  r.calib.gyro_scale = xb[1]; r.calib.gyro_bias = xb[2]; r.calib.latency = xb[3]; r.calib.cam_yaw = xb[4]; r.calib.bev_scale = xb[5];
   r.after = evaluate(run, r.calib, map, max_range);
   r.improved = r.after.cost < r.before.cost * 0.99 && r.after.rms_m <= r.before.rms_m;
   r.message = r.improved ? "보정 적용" : "오차가 줄지 않아 적용하지 않음";
@@ -312,15 +331,8 @@ void SlamCore::on_crossing(double t) {
   Pose & p = live_.pose;
   const Vec2 S = map_.stop_center(), dir = map_.travel_dir_at(S);
   if (live_.waiting_s) {   // 처음 지나는 정지선 S = 기록 시작점: 진행 방향 위치를 S에 맞추고 여기서부터 바퀴·기록·매핑
-    const double along = dot({p.x - S.x, p.y - S.y}, dir);
-    p.x -= along * dir.x;
-    p.y -= along * dir.y;
-    if (lane_rel_n_ > 0) {   // 가속 구간 적분 오차 대신 BEV 차선으로 잰 방향·옆 위치 (S 근처 직선)
-      const Vec2 left{-dir.y, dir.x};
-      p.x = S.x + left.x * lane_rel_lat_ / lane_rel_n_;
-      p.y = S.y + left.y * lane_rel_lat_ / lane_rel_n_;
-      p.yaw = std::atan2(dir.y, dir.x) + lane_rel_yaw_ / lane_rel_n_;
-    }
+    const Vec2 rel = take_lane_rel();   // 가속 구간 적분 오차 대신 BEV 차선으로 잰 방향·옆 위치 (S 근처 직선)
+    anchor_at_stop(p, rel, calib_, map_);
     p.dist = 0;
     p.t = t;
     const double bias0 = run_.gyro_bias0, v = run_.target_speed, lat = run_.crossing_latency;
@@ -329,6 +341,7 @@ void SlamCore::on_crossing(double t) {
     run_ = RunData{};
     run_.start = p;
     run_.gyro_bias0 = bias0; run_.target_speed = v; run_.crossing_latency = lat; run_.laps_target = laps; run_.stopline_correction = corr;
+    run_.start_rel = rel;
     hist_.clear(); hist_.push_back(p);
     track_.clear(); track_.push_back(p); track_last_t_ = t;
     last_cross_dist_ = 0; live_.lap_dist = 0; lap_sq_ = 0; lap_n_ = 0;
@@ -347,9 +360,10 @@ void SlamCore::on_crossing(double t) {
   m.rms_m = lap_n_ ? std::sqrt(lap_sq_ / lap_n_) : std::numeric_limits<double>::quiet_NaN();
   laps_.push_back(m);
   run_.crossing_t.push_back(t);
-  if (cfg_.stopline_correction) {
-    p.x -= m.along_err_m * dir.x;
-    p.y -= m.along_err_m * dir.y;
+  const Vec2 rel = take_lane_rel();
+  run_.anchor_rel.push_back(rel);
+  if (cfg_.stopline_correction) {   // 앞뒤 = S, 옆·방향 = BEV 차선 (S 근처 직선에서 잰 값)
+    anchor_at_stop(p, rel, calib_, map_);
     corr_.push_back({m.lap, -m.along_err_m});
   }
   last_cross_dist_ = p.dist;
@@ -357,6 +371,13 @@ void SlamCore::on_crossing(double t) {
   live_.lap_dist = 0;
   live_.lap = m.lap;
   if (live_.laps_target > 0 && live_.lap >= live_.laps_target) live_.finished = true;
+}
+
+Vec2 SlamCore::take_lane_rel() {
+  Vec2 r{std::numeric_limits<double>::quiet_NaN(), 0};
+  if (lane_rel_n_ > 0) r = {lane_rel_yaw_ / lane_rel_n_, lane_rel_lat_ / lane_rel_n_};
+  lane_rel_n_ = 0; lane_rel_yaw_ = lane_rel_lat_ = 0;
+  return r;
 }
 
 Pose SlamCore::pose_at(double t) const {
@@ -377,7 +398,7 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
   s.stop_m = lane.stop_line_m;
   for (const auto & q : lane.left) if (q.x >= 0 && q.x <= cfg_.max_range_m) s.left.push_back(q);
   for (const auto & q : lane.right) if (q.x >= 0 && q.x <= cfg_.max_range_m) s.right.push_back(q);
-  if (live_.waiting_s) {   // 기록 시작 전: S 근처 직선에서 양쪽 차선으로 차선 대비 방향·옆 위치를 잰다
+  {   // 정지선 S에 다가가는 직선에서 양쪽 차선으로 차선 대비 방향·옆 위치(원값)를 잰다 → 통과할 때 자세를 다시 잡음
     auto fit = [](const std::vector<Vec2> & pts, double & a, double & b) {   // y = a·x + b (가까운 직선 부분만: 앞 코너가 섞이지 않게)
       double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
       for (const auto & q : pts) if (q.x >= 0.15 && q.x <= 0.8) { ++n; sx += q.x; sy += q.y; sxx += q.x * q.x; sxy += q.x * q.y; }
@@ -387,14 +408,20 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
       return true;
     };
     double al, bl, ar, br;
+    // 추정 위치(오차가 쌓임)가 아니라 BEV에 정지선이 실제로 1 m 안에 보일 때만 잰다 → 확실히 S 앞 직선
     const Pose here = pose_at(s.t + calib_.latency);
     const Vec2 S = map_.stop_center();
-    const double to_s = dot({S.x - here.x, S.y - here.y}, map_.travel_dir_at(S));
-    if (to_s > 0.1 && to_s < 1.2 && fit(s.left, al, bl) && fit(s.right, ar, br) && std::abs(al - ar) < 0.1 &&
-        std::abs((bl - br) - 0.65) < 0.15) {
-      lane_rel_yaw_ += -std::atan(0.5 * (al + ar));   // 차선이 차 기준 반시계로 기울어 보이면 차가 시계 방향으로 틀어진 것
-      lane_rel_lat_ += -0.5 * (bl + br);              // 두 선 가운데가 차 기준 왼쪽(+)이면 차는 가운데보다 오른쪽
-      ++lane_rel_n_;                                   // S에 다가가는 동안 평균
+    bool s_in_view = std::isfinite(s.stop_m) && s.stop_m > 0.2 && s.stop_m < 1.0;
+    if (s_in_view) { const Vec2 w = to_world(here, {s.stop_m, 0.0}); s_in_view = std::hypot(w.x - S.x, w.y - S.y) <= cfg_.stop_gate_m; }
+    const bool both = fit(s.left, al, bl) && fit(s.right, ar, br) && std::abs(al - ar) < 0.1 && bl - br > 0.3 && bl - br < 1.0;
+    if (both) {   // 진단: BEV로 잰 차선 폭 (정답 0.65 m)
+      const double wdt = (bl - br) * std::cos(std::atan(0.5 * (al + ar)));
+      live_.lane_width = std::isfinite(live_.lane_width) ? live_.lane_width + 0.05 * (wdt - live_.lane_width) : wdt;
+    }
+    if (s_in_view && both) {
+      lane_rel_yaw_ += std::atan(0.5 * (al + ar));   // 원값: 차선 기울기 각
+      lane_rel_lat_ += 0.5 * (bl + br);              // 원값: 두 선 가운데의 차 기준 옆 위치
+      ++lane_rel_n_;                                  // S에 다가가는 동안 평균
     }
   }
   // 매핑 (그 장면을 본 위치 = 촬영 시각 + 시간차). 정지선 S를 지나기 전(가속 구간)에는 하지 않음
@@ -403,7 +430,7 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
     const auto & pts = side == 0 ? s.left : s.right;
     const std::size_t stride = std::max<std::size_t>(1, pts.size() / 6);
     for (std::size_t k = 0; k < pts.size(); k += stride) {
-      const Vec2 w = to_world(p, pts[k]);
+      const Vec2 w = to_world(p, calib_.bev_point(pts[k]));
       const double d = std::min(kCap, side == 0 ? map_.dist_inner(w) : map_.dist_outer(w));
       lap_sq_ += d * d; ++lap_n_;
       if (new_pts_.size() < 1200) { new_pts_.push_back(w); new_side_.push_back(side); }

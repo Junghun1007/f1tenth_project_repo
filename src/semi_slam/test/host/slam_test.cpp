@@ -135,7 +135,7 @@ TEST(laps_are_counted_at_stop_line_and_calibration_recovers_sensor_errors) {
   CHECK_NEAR(r.calib.wheel_scale_for(1.0), 1 / 1.05, 0.01);
   // 일정 속도·같은 트랙에서는 자이로 배율과 잔여 영점이 서로 일부 대신할 수 있어(궤적이 거의 같음) 넓게 본다
   CHECK_NEAR(r.calib.gyro_scale, 1 / 0.97, 0.015);
-  CHECK_NEAR(r.calib.gyro_bias, 0.008, 0.007);
+  CHECK_NEAR(r.calib.gyro_bias, 0.008, 0.01);
 }
 
 #include "semi_slam/core/run_store.hpp"

@@ -52,8 +52,12 @@ add_executable(semi_slam_node src/slam_node.cpp)
 ament_target_dependencies(semi_slam_node rclcpp std_msgs ament_index_cpp)
 target_link_libraries(semi_slam_node ss_gpu)
 
+add_executable(semi_slam_recalibrate tools/recalibrate.cpp)   # 저장한 기록으로 보정만 다시
+ament_target_dependencies(semi_slam_recalibrate ament_index_cpp)
+target_link_libraries(semi_slam_recalibrate ss_core)
+
 ament_python_install_package(semi_slam_py)
-install(TARGETS semi_slam_node DESTINATION lib/${PROJECT_NAME})
+install(TARGETS semi_slam_node semi_slam_recalibrate DESTINATION lib/${PROJECT_NAME})
 install(PROGRAMS scripts/safety_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch models maps DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY web/ DESTINATION share/${PROJECT_NAME}/web)

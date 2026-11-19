@@ -74,7 +74,7 @@ void write_run(const std::string & dir, const RunData & run, const OdomCalib & c
     o << "{\"created\":\"" << now_string("%Y-%m-%d %H:%M:%S") << "\",\"target_speed\":" << run.target_speed
       << ",\"laps_target\":" << run.laps_target << ",\"laps_done\":" << run.crossing_t.size()
       << ",\"stopline_correction\":" << (run.stopline_correction ? "true" : "false")
-      << ",\"crossing_latency\":" << run.crossing_latency << ",\"gyro_bias0\":" << std::setprecision(9) << run.gyro_bias0 << ",\"start\":" << pose_json(run.start)
+      << ",\"start_rel_yaw\":" << (std::isfinite(run.start_rel.x) ? std::to_string(run.start_rel.x) : "null") << ",\"start_rel_lat\":" << run.start_rel.y << ",\"crossing_latency\":" << run.crossing_latency << ",\"gyro_bias0\":" << std::setprecision(9) << run.gyro_bias0 << ",\"start\":" << pose_json(run.start)
       << ",\"calib_used\":" << calib.to_json() << "}\n";
   }
   { std::ofstream o(dir + "/speed.csv"); o << "t,v\n" << std::setprecision(10); for (const auto & s : run.speed) o << s.t << ',' << s.v << '\n'; }
@@ -84,7 +84,14 @@ void write_run(const std::string & dir, const RunData & run, const OdomCalib & c
     o << "t,stop_m,left,right\n" << std::setprecision(10);
     for (const auto & l : run.lanes) o << l.t << ',' << (std::isfinite(l.stop_m) ? std::to_string(l.stop_m) : "nan") << ',' << pts(l.left) << ',' << pts(l.right) << '\n';
   }
-  { std::ofstream o(dir + "/crossings.csv"); o << "lap,t\n" << std::setprecision(10); for (std::size_t k = 0; k < run.crossing_t.size(); ++k) o << k + 1 << ',' << run.crossing_t[k] << '\n'; }
+  {
+    std::ofstream o(dir + "/crossings.csv");
+    o << "lap,t,rel_yaw,rel_lat\n" << std::setprecision(10);
+    for (std::size_t k = 0; k < run.crossing_t.size(); ++k) {
+      const Vec2 a = k < run.anchor_rel.size() ? run.anchor_rel[k] : Vec2{std::nan(""), 0};
+      o << k + 1 << ',' << run.crossing_t[k] << ',' << (std::isfinite(a.x) ? std::to_string(a.x) : "nan") << ',' << a.y << '\n';
+    }
+  }
   {
     std::ofstream o(dir + "/laps.csv");
     o << "lap,along_err_m,heading_err_deg,length_err,rms_m,points\n";
@@ -116,6 +123,8 @@ RunData load_run(const std::string & dir) {
     r.laps_target = int(num_or(&*meta, "laps_target", 0));
     r.gyro_bias0 = num_or(&*meta, "gyro_bias0", 0);
     r.crossing_latency = num_or(&*meta, "crossing_latency", 0);
+    const auto * sy = meta->get("start_rel_yaw");
+    if (sy && sy->kind == JsonValue::Number) r.start_rel = {sy->num, num_or(&*meta, "start_rel_lat", 0)};
     const auto * sc = meta->get("stopline_correction");
     r.stopline_correction = !sc || sc->b;
     const auto * st = meta->get("start");
@@ -135,7 +144,11 @@ RunData load_run(const std::string & dir) {
   };
   rows("speed.csv", [&](const auto & c) { if (c.size() >= 2) r.speed.push_back({std::stod(c[0]), std::stod(c[1])}); });
   rows("gyro.csv", [&](const auto & c) { if (c.size() >= 2) r.gyro.push_back({std::stod(c[0]), std::stod(c[1])}); });
-  rows("crossings.csv", [&](const auto & c) { if (c.size() >= 2) r.crossing_t.push_back(std::stod(c[1])); });
+  rows("crossings.csv", [&](const auto & c) {
+    if (c.size() < 2) return;
+    r.crossing_t.push_back(std::stod(c[1]));
+    r.anchor_rel.push_back(c.size() >= 4 && c[2] != "nan" ? Vec2{std::stod(c[2]), std::stod(c[3])} : Vec2{std::nan(""), 0});
+  });
   rows("lanes.csv", [&](const auto & c) {
     if (c.size() < 2) return;
     LaneSample s;

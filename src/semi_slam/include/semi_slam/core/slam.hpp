@@ -24,6 +24,10 @@ struct OdomCalib {
   double gyro_scale{1.0};
   double gyro_bias{0.0};    // rad/s. 출발 직전 정지 측정 영점에 더하는 잔여
   double latency{0.0};      // s. 차선 영상 시각 + latency = 그 장면을 본 위치의 시각
+  // BEV 보정 (오도메트리가 아니라 카메라 쪽): 차선 점 q_BEV → 차량 좌표 q = R(cam_yaw)·(x, bev_scale·y)
+  double cam_yaw{0.0};      // rad. 카메라가 차량 정면에서 틀어진 각도
+  double bev_scale{1.0};    // BEV 가로 축척 (인식한 차선 폭 × 이 값 = 실제 폭)
+  Vec2 bev_point(const Vec2 & q) const;
   double wheel_scale_for(double v) const;
   void set_wheel_scale(double v, double scale);
   std::string to_json() const;
@@ -48,7 +52,11 @@ struct RunData {
   std::vector<GyroSample> gyro;
   std::vector<LaneSample> lanes;
   std::vector<double> crossing_t;           // 정지선 S 통과 시각 (바퀴 경계)
-  double crossing_latency{0};               // 통과 시각을 계산할 때 쓴 카메라 시간차 (다시 적분할 때 새 시간차만큼 옮긴다)
+  double crossing_latency{0};
+  // 정지선 S에 다가가며 BEV 양쪽 차선으로 잰 값 (보정 전 원값): x = 차선 기울기 각 atan(a), y = 두 선 가운데의 차 기준 옆 위치.
+  // start_rel: 기록 시작점, anchor_rel[k]: k번째 통과. 없으면 NaN. 통과할 때 방향·옆 위치를 이 값으로 다시 잡는다
+  Vec2 start_rel{std::numeric_limits<double>::quiet_NaN(), 0};
+  std::vector<Vec2> anchor_rel;               // 통과 시각을 계산할 때 쓴 카메라 시간차 (다시 적분할 때 새 시간차만큼 옮긴다)
 };
 
 class Trajectory {
@@ -75,7 +83,7 @@ struct Evaluation {
   double cost{0};
   std::vector<LapMetrics> laps;
 };
-Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap & map, double max_range_m = 1.5);
+Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap & map, double max_range_m = 1.5, double cap_m = 0.15);
 
 struct CalibResult {
   OdomCalib calib;
@@ -107,6 +115,7 @@ struct LiveState {
   double bias0{0};
   double stop_seen_m{std::numeric_limits<double>::quiet_NaN()};   // 마지막으로 본 정지선 거리 (앞차축 기준)
   bool stop_near_s{false};          // 그 정지선이 지도상 정지선 S 근처인지
+  double lane_width{std::numeric_limits<double>::quiet_NaN()};   // BEV로 잰 차선 폭 (정답 0.65 m, 다르면 BEV 축척 문제)
   int rejected_far{0};              // 지도상 S와 멀어서 무시한 정지선 (오인식)
   int rejected_lap{0};              // 바퀴 거리가 안 맞아 무시한 통과
 };
@@ -137,6 +146,7 @@ private:
   void step(double t);                         // gyro 시각까지 적분 (락 안에서)
   Pose pose_at(double t) const;                // 최근 이력 보간 (락 안에서)
   void on_crossing(double t);
+  Vec2 take_lane_rel();                        // S 접근 중 잰 차선 대비 값 평균을 꺼내고 비움
   TrackMap map_;
   SlamConfig cfg_;
   OdomCalib calib_;

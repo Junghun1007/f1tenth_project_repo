@@ -411,7 +411,7 @@ private:
     w.key("run").begin_object().key("running").value(live.running).key("finished").value(live.finished).key("lap").value((long long)live.lap)
      .key("laps").value((long long)live.laps_target).key("target_speed").value(live.target_speed, 2).key("lap_dist").value(live.lap_dist, 3)
      .key("lap_length").value(live.lap_length, 3).key("bias0").value(live.bias0, 5)
-     .key("waiting_s").value(live.waiting_s).key("stop_seen").value(live.stop_seen_m, 3).key("stop_near").value(live.stop_near_s)
+     .key("waiting_s").value(live.waiting_s).key("lane_width").value(live.lane_width, 3).key("stop_seen").value(live.stop_seen_m, 3).key("stop_near").value(live.stop_near_s)
      .key("rejected_far").value((long long)live.rejected_far).key("rejected_lap").value((long long)live.rejected_lap)
      .key("pose").begin_array().value(live.pose.x, 3).value(live.pose.y, 3).value(live.pose.yaw, 4).end_array();
     {
@@ -428,7 +428,7 @@ private:
     for (const auto & [lap, sh] : slam_->corrections()) w.begin_array().value((long long)lap).value(sh, 4).end_array();
     w.end_array();
     w.key("calib").begin_object().key("gyro_scale").value(calib.gyro_scale, 5).key("gyro_bias").value(calib.gyro_bias, 5)
-     .key("latency").value(calib.latency, 3).key("wheel").begin_array();
+     .key("latency").value(calib.latency, 3).key("cam_yaw").value(calib.cam_yaw, 5).key("bev_scale").value(calib.bev_scale, 4).key("wheel").begin_array();
     for (const auto & [k, sc] : calib.wheel_scale) w.begin_array().value(k / 100.0, 2).value(sc, 5).end_array();
     w.end_array().end_object();
     w.key("history").begin_array();

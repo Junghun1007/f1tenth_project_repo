@@ -173,7 +173,9 @@ function renderNow() {
   $("accNote").innerHTML = last && last.rms !== null ? `통과 위치 = 정지선 S를 지날 때 추정 위치의 앞뒤 오차 · 정확도 = 1 − RMS ÷ 차선 반폭 → 지금 <b style="color:#9ee6b8">${(100 * Math.max(0, 1 - last.rms / 0.325)).toFixed(1)}%</b>` : "정지선 S를 지날 때마다 한 줄씩 채워집니다";
   const c = f.calib;
   kv($("calib"), [["자이로 배율", c.gyro_scale.toFixed(4)], ["잔여 영점", (c.gyro_bias * 180 / Math.PI).toFixed(3) + " °/s"],
-    ["정지 영점 (이번 출발)", (r.bias0 * 180 / Math.PI).toFixed(3) + " °/s"], ["카메라–오도메트리 시간차", (c.latency * 1000).toFixed(0) + " ms"]]);
+    ["정지 영점 (이번 출발)", (r.bias0 * 180 / Math.PI).toFixed(3) + " °/s"], ["카메라–오도메트리 시간차", (c.latency * 1000).toFixed(0) + " ms"],
+    ["카메라 틀어짐 (BEV 회전)", ((c.cam_yaw || 0) * 180 / Math.PI).toFixed(2) + "°"], ["BEV 가로 축척", (c.bev_scale || 1).toFixed(3)],
+    ["BEV로 잰 차선 폭 (정답 65 cm)", r.lane_width !== null && r.lane_width !== undefined && isFinite(r.lane_width) ? cm(r.lane_width) : "-"]]);
   $("wheelTable").querySelector("tbody").innerHTML = c.wheel.length ? c.wheel.map(([s, k]) => `<tr><td></td><td>${s.toFixed(2)} m/s</td><td>${k.toFixed(4)}</td></tr>`).join("") : `<tr><td colspan="3" style="color:var(--dim)">아직 없음 (기본 1.0)</td></tr>`;
   $("histTable").querySelector("tbody").innerHTML = f.history.slice().reverse().map((h) => h.action === "reverted"
     ? `<tr><td>${h.time.slice(11, 16)}</td><td colspan="3">이전 값으로 되돌림</td><td></td></tr>`
@@ -288,8 +290,8 @@ function demo() {
     onTelemetry({ state: "DRIVING", reason: "", full: true, readiness: { attitude_ok: true, lane_model_ready: true, vesc_connected: true, erpm_fresh: true, lane_fresh: true, client_alive: true },
       inspection: { attitude: { status: "PASS", height_m: 0.225, roll_deg: 0.2, pitch_down_deg: 6.2, message: "" }, model: { status: "READY", stage: "" }, stabilization: "적용 97%", stabilization_on: true },
       vehicle: { speed: 1.19, target: 1.2, steer_deg: 4.1, cte: 0.013, duty: 0.087, brake: 0, phase: "duty_only_track", lon_mode: 2 },
-      run: { running: true, finished: false, lap, laps: 10, target_speed: 1.2, lap_dist: s - lapStart, lap_length: L, bias0: 0.0021, pose: [x, y, p[2]], stop_seen: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null, stop_near: true, rejected_far: 2, rejected_lap: 0, status: "주행 중", dir: "2026-11-19_1420_v1.20", finishing: false },
-      laps: lapsM, corrections: corr, calib: { gyro_scale: 1.0172, gyro_bias: -0.0073, latency: 0.048, wheel: [[1.0, 0.9813], [1.2, 0.9731]] },
+      run: { running: true, finished: false, lap, laps: 10, target_speed: 1.2, lap_dist: s - lapStart, lap_length: L, bias0: 0.0021, pose: [x, y, p[2]], stop_seen: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null, stop_near: true, lane_width: 0.598, rejected_far: 2, rejected_lap: 0, status: "주행 중", dir: "2026-11-19_1420_v1.20", finishing: false },
+      laps: lapsM, corrections: corr, calib: { gyro_scale: 1.0172, gyro_bias: -0.0073, latency: 0.048, cam_yaw: -0.012, bev_scale: 1.084, wheel: [[1.0, 0.9813], [1.2, 0.9731]] },
       history: [{ time: "2026-11-19 14:02:11", action: "applied", speed: 1.0, laps: 10, before: 0.068, after: 0.029, acc: 0.91 }, { time: "2026-11-19 14:20:40", action: "skipped", speed: 1.2, laps: 10, before: 0.044, after: 0.049, acc: 0.85 }],
       new_track: [[x, y]], new_points: pts,
       lane: { left: [[0.2, 0.33], [1.5, 0.31], [2.8, 0.2]], right: [[0.2, -0.33], [1.5, -0.34], [2.8, -0.45]], path: [[0, 0], [1.5, -0.01], [2.8, -0.12]], stop: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null },
