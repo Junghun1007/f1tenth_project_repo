@@ -2,7 +2,7 @@
 //
 //  위치 적분   x += v·k(v)·cos(ψ)·dt,  ψ += g·(ω − b0 − b)·dt
 //              k(v): 속도별 거리 배율, g: 자이로 배율, b0: 출발 직전 정지 중 잰 영점, b: 잔여 영점
-//  지도 비교   차선 인식의 왼쪽 선 → 정답 안쪽 흰 선, 오른쪽 선 → 바깥 흰 선 (반시계 주행).
+//  지도 비교   차선 인식의 왼쪽 선 → 정답 안쪽 흰 선, 오른쪽 선 → 바깥 흰 선 (반시계 주행, 시계 주행은 반대).
 //              중앙선(점선)은 정확한 중앙이 아니고 코너에선 한쪽 선 + 반폭 가정이라 쓰지 않는다
 //  정지선 S    관측 거리로 통과 지점을 예측해 바퀴 수를 세고, (켜져 있으면) 통과할 때 진행 방향 위치를 바로잡는다
 //  보정        주행이 끝나면 기록 전체로 (k(주행 속도), g, b, 카메라 시간차)를 Nelder–Mead로 찾는다
@@ -48,6 +48,7 @@ struct RunData {
   double target_speed{0};
   int laps_target{0};
   bool stopline_correction{true};
+  bool cw{false};                           // 주행 방향: false = 반시계, true = 시계
   std::vector<SpeedSample> speed;
   std::vector<GyroSample> gyro;
   std::vector<LaneSample> lanes;
@@ -106,6 +107,7 @@ struct SlamConfig {
 
 struct LiveState {
   bool running{false}, finished{false};
+  bool cw{false};
   bool waiting_s{true};             // 정지선 S를 처음 지나기 전: 가속만 (기록·매핑·바퀴 세기는 S부터)
   int lap{0}, laps_target{0};
   double target_speed{0};
@@ -128,7 +130,7 @@ public:
   void set_calib(const OdomCalib & c);
   OdomCalib calib() const;
 
-  void begin_run(double target_speed, int laps, const Pose & start);
+  void begin_run(double target_speed, int laps, const Pose & start, bool cw = false);
   void end_run();
   void on_speed(double v, double t);
   void on_gyro(double w, double t);

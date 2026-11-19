@@ -74,6 +74,7 @@ void write_run(const std::string & dir, const RunData & run, const OdomCalib & c
     o << "{\"created\":\"" << now_string("%Y-%m-%d %H:%M:%S") << "\",\"target_speed\":" << run.target_speed
       << ",\"laps_target\":" << run.laps_target << ",\"laps_done\":" << run.crossing_t.size()
       << ",\"stopline_correction\":" << (run.stopline_correction ? "true" : "false")
+      << ",\"direction\":\"" << (run.cw ? "cw" : "ccw") << "\""
       << ",\"start_rel_yaw\":" << (std::isfinite(run.start_rel.x) ? std::to_string(run.start_rel.x) : "null") << ",\"start_rel_lat\":" << run.start_rel.y << ",\"crossing_latency\":" << run.crossing_latency << ",\"gyro_bias0\":" << std::setprecision(9) << run.gyro_bias0 << ",\"start\":" << pose_json(run.start)
       << ",\"calib_used\":" << calib.to_json() << "}\n";
   }
@@ -127,6 +128,8 @@ RunData load_run(const std::string & dir) {
     if (sy && sy->kind == JsonValue::Number) r.start_rel = {sy->num, num_or(&*meta, "start_rel_lat", 0)};
     const auto * sc = meta->get("stopline_correction");
     r.stopline_correction = !sc || sc->b;
+    const auto * dr = meta->get("direction");   // 없으면 반시계 (예전 기록)
+    r.cw = dr && dr->kind == JsonValue::String && dr->str == "cw";
     const auto * st = meta->get("start");
     r.start = {num_or(st, "t", 0), num_or(st, "x", 0), num_or(st, "y", 0), num_or(st, "yaw", 0), 0};
   }

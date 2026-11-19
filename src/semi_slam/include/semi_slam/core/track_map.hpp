@@ -20,8 +20,12 @@ struct TrackMap {
   double lane_width() const { return lane_width_; }       // 두 흰 선(테이프 가운데) 간격
   Vec2 stop_center() const { return {(stop_a.x + stop_b.x) / 2, (stop_a.y + stop_b.y) / 2}; }
   Vec2 start_center() const { return {(start_a.x + start_b.x) / 2, (start_a.y + start_b.y) / 2}; }
-  // 주행 방향 (정지선을 반시계로 지날 때 진행 방향, 단위 벡터): 정지선의 법선 중 트랙 안쪽 중심 기준 반시계
-  Vec2 travel_dir_at(const Vec2 & p) const;
+  // 주행 방향 (단위 벡터, 직선 구간 축 방향): 반시계면 트랙 중심 기준 반시계, cw면 반대
+  Vec2 travel_dir_at(const Vec2 & p, bool cw = false) const;
+  // 아래 직선이 시작되는 점 (도로 가운데): 반시계 = 왼쪽 아래 코너가 끝나는 곳, 시계 = 오른쪽 아래 코너가 끝나는 곳
+  Vec2 straight_start(bool cw) const;
+  // 차선 인식의 왼쪽(side 0)/오른쪽(1) 선이 대응하는 정답 선까지 거리. 반시계: 왼쪽 = 안쪽, 시계: 왼쪽 = 바깥
+  double dist_side(int side, bool cw, const Vec2 & p) const { return ((side == 0) != cw) ? dist_inner(p) : dist_outer(p); }
   void build_fields(double resolution_m = 0.01);   // load_csv가 호출
 
 private:

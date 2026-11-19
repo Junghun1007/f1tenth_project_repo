@@ -227,10 +227,10 @@ private:
 
   void set_status(const std::string & s) { std::lock_guard<std::mutex> l(run_m_); status_ = s; }
 
-  // 출발 위치: 앞범퍼를 출발선 T1에 맞춘 도로 가운데 (진행 방향 = 반시계)
+  // 출발 위치: 앞범퍼를 아래 직선 시작점에 맞춘 도로 가운데 (반시계 = 왼쪽 아래에서 +x, 시계 = 오른쪽 아래에서 −x)
   ss::Pose start_pose(const ss::Settings & s) const {
     const auto & m = slam_->map();
-    const ss::Vec2 T = m.start_center(), d = m.travel_dir_at(T), left{-d.y, d.x};
+    const ss::Vec2 T = m.straight_start(s.clockwise), d = m.travel_dir_at(T, s.clockwise), left{-d.y, d.x};
     const double along = s.start_offset_m - front_overhang_;   // 앞차축 = 앞범퍼 − 앞 오버행
     return {ss::now_sec(), T.x + d.x * along + left.x * s.start_lateral_m, T.y + d.y * along + left.y * s.start_lateral_m,
             std::atan2(d.y, d.x), 0};
@@ -250,7 +250,7 @@ private:
       track_cursor_ = 0;
       status_ = "주행 중";
     }
-    slam_->begin_run(s.run_speed, s.run_laps, start_pose(s));
+    slam_->begin_run(s.run_speed, s.run_laps, start_pose(s), s.clockwise);
     RCLCPP_INFO(get_logger(), "run start: %.2f m/s, %d laps -> %s", s.run_speed, s.run_laps, run_dir_.c_str());
     return res;
   }
@@ -370,6 +370,10 @@ private:
     w.key("center"); points_json(w, m.center, 1);
     w.key("stop"); points_json(w, {m.stop_a, m.stop_b});
     w.key("start"); points_json(w, {m.start_a, m.start_b});
+    for (const bool cw : {false, true}) {   // 출발 위치 (아래 직선 시작점)와 진행 방향 1 m 앞 점
+      const ss::Vec2 a = m.straight_start(cw), d = m.travel_dir_at(a, cw);
+      w.key(cw ? "start_cw" : "start_ccw"); points_json(w, {a, {a.x + d.x, a.y + d.y}});
+    }
     w.key("lap_length").value(m.lap_length(), 3);
     w.key("lane_width").value(m.lane_width(), 3);
     w.end_object();
@@ -421,7 +425,7 @@ private:
     w.key("run").begin_object().key("running").value(live.running).key("finished").value(live.finished).key("lap").value((long long)live.lap)
      .key("laps").value((long long)live.laps_target).key("target_speed").value(live.target_speed, 2).key("lap_dist").value(live.lap_dist, 3)
      .key("lap_length").value(live.lap_length, 3).key("bias0").value(live.bias0, 5)
-     .key("waiting_s").value(live.waiting_s).key("lane_width").value(live.lane_width, 3).key("stop_seen").value(live.stop_seen_m, 3).key("stop_near").value(live.stop_near_s)
+     .key("waiting_s").value(live.waiting_s).key("cw").value(live.cw).key("lane_width").value(live.lane_width, 3).key("stop_seen").value(live.stop_seen_m, 3).key("stop_near").value(live.stop_near_s)
      .key("rejected_far").value((long long)live.rejected_far).key("rejected_lap").value((long long)live.rejected_lap)
      .key("pose").begin_array().value(live.pose.x, 3).value(live.pose.y, 3).value(live.pose.yaw, 4).end_array();
     {

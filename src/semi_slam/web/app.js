@@ -90,6 +90,18 @@ function drawBase() {
   c.font = "bold 12px sans-serif";
   { const [u, v] = P(mapData.stop[1][0] - 0.12, mapData.stop[1][1] + 0.08); c.fillStyle = "#f8fafc"; c.fillText("S", u, v); }
   { const [u, v] = P(mapData.start[1][0] + 0.03, mapData.start[1][1] + 0.08); c.fillStyle = "#ef4444"; c.fillText("T1", u, v); }
+  // 출발 위치 (선택한 방향): 아래 직선 시작점, 진행 방향 화살표
+  const sp = pval("slam.direction") === 1 ? mapData.start_cw : mapData.start_ccw;
+  if (sp) {
+    const [a, b] = sp, dx = b[0] - a[0], dy = b[1] - a[1], tip = [a[0] + 0.3 * dx, a[1] + 0.3 * dy];
+    c.save(); c.strokeStyle = c.fillStyle = "#22c55e"; c.lineWidth = 3;
+    const [u0, v0] = P(a[0], a[1]), [u1, v1] = P(tip[0], tip[1]);
+    c.beginPath(); c.arc(u0, v0, 5, 0, 2 * Math.PI); c.fill();
+    c.beginPath(); c.moveTo(u0, v0); c.lineTo(u1, v1); c.stroke();
+    const ang = Math.atan2(v1 - v0, u1 - u0);
+    c.beginPath(); c.moveTo(u1, v1); c.lineTo(u1 - 9 * Math.cos(ang - 0.5), v1 - 9 * Math.sin(ang - 0.5)); c.lineTo(u1 - 9 * Math.cos(ang + 0.5), v1 - 9 * Math.sin(ang + 0.5)); c.closePath(); c.fill();
+    c.fillText("출발", u0 - 12, v0 + 18); c.restore();
+  }
 }
 function resetPoints() { const c = ptsLayer.getContext("2d"); c.clearRect(0, 0, ptsLayer.width, ptsLayer.height); }
 function addPoints(pts) {   // 매핑 점은 누적 레이어에 한 번만 그린다
@@ -202,11 +214,14 @@ function renderNow() {
 
 // ---------- 상단 입력 ↔ 파라미터 ----------
 function pval(name) { const p = params.find((q) => q.name === name); return p ? p.value : null; }
+let lastDir = null;
 function syncBar() {
   if (document.activeElement !== $("inSpeed")) $("inSpeed").value = pval("run.speed_mps") ?? "";
   if (document.activeElement !== $("inLaps")) $("inLaps").value = pval("run.laps") ?? "";
   const seg = (id, name) => $(id).querySelectorAll("button").forEach((b) => b.classList.toggle("on", Number(b.dataset.v) === pval(name)));
-  seg("segStab", "camera.stabilization"); seg("segCorr", "slam.stopline_correction");
+  seg("segStab", "camera.stabilization"); seg("segCorr", "slam.stopline_correction"); seg("segDir", "slam.direction");
+  const dir = pval("slam.direction");
+  if (mapData && dir !== lastDir) { lastDir = dir; drawBase(); }
 }
 
 // ---------- 파라미터 창 (cone_drive_test와 같음) ----------
@@ -246,6 +261,7 @@ function bind() {
   $("inLaps").addEventListener("change", () => setParam("run.laps", Number($("inLaps").value)));
   $("segStab").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setParam("camera.stabilization", Number(b.dataset.v))));
   $("segCorr").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setParam("slam.stopline_correction", Number(b.dataset.v))));
+  $("segDir").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setParam("slam.direction", Number(b.dataset.v))));
   $("togBev").addEventListener("change", () => {
     $("bevImg").src = $("togBev").checked && !DEMO ? "/api/stream/bev?client=" + clientId + "&t=" + Date.now() : "";
     post("/api/view", { preview: true, bev: $("togBev").checked, camera: false });
@@ -273,11 +289,12 @@ function rounded(inset, rad) {
 function demoParams() {
   return [{ name: "run.speed_mps", group: "slam", section: "주행 계획", label: "일정 속도", unit: "m/s", min: 0.2, max: 2.5, value: 1.2, live: true },
     { name: "run.laps", group: "slam", section: "주행 계획", label: "목표 바퀴 수", unit: "", min: 1, max: 30, value: 10, live: true },
+    { name: "slam.direction", group: "slam", section: "주행 계획", label: "주행 방향 (0=반시계, 1=시계)", unit: "", min: 0, max: 1, value: 0, live: true },
     { name: "camera.stabilization", group: "slam", section: "매핑·보정", label: "IMU 영상 안정화 (0=끄기, 1=전체)", unit: "", min: 0, max: 1, value: 1, live: true },
     { name: "slam.stopline_correction", group: "slam", section: "매핑·보정", label: "정지선 통과 시 위치 보정", unit: "", min: 0, max: 1, value: 1, live: true }];
 }
 function demo() {
-  mapData = { outer: rounded(0.165, 0.62), inner: rounded(0.835, 0.174), center: rounded(0.5, 0.4), stop: [[1.97, 0.165], [1.97, 0.835]], start: [[2.03, 0.165], [2.03, 0.835]], lap_length: 10.8, lane_width: 0.67 };
+  mapData = { outer: rounded(0.165, 0.62), inner: rounded(0.835, 0.174), center: rounded(0.5, 0.4), stop: [[1.97, 0.165], [1.97, 0.835]], start: [[2.03, 0.165], [2.03, 0.835]], start_ccw: [[1.0, 0.5], [2.0, 0.5]], start_cw: [[3.0, 0.5], [2.0, 0.5]], lap_length: 10.8, lane_width: 0.67 };
   setupCanvas();
   const mid = rounded(0.5, 0.4); mid.push(mid[0]);
   const seg = []; let L = 0; for (let i = 1; i < mid.length; i++) { const d = Math.hypot(mid[i][0] - mid[i - 1][0], mid[i][1] - mid[i - 1][1]); seg.push([L, i]); L += d; }

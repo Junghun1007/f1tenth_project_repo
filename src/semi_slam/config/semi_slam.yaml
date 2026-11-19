@@ -38,7 +38,8 @@
     # 주행 계획
     run.speed_mps: 1.0                      # 일정 속도 (코너 감속 없음) (m/s)
     run.laps: 10.0                          # 목표 바퀴 수 (정지선 S 통과로 셈)
-    slam.start_offset_m: -1.03              # 출발 위치: 앞범퍼가 출발선 T1에서 앞(+)/뒤(−)로. 기본 = 아래 직선 시작점 (x 1.0 m) (m)
+    slam.direction: 0                       # 주행 방향 (0=반시계: 왼쪽 아래 x≈1.0 m에서 +x로 출발, 1=시계: 오른쪽 아래 x≈3.0 m에서 −x로 출발)
+    slam.start_shift_m: 0.0                 # 출발 위치: 앞범퍼가 아래 직선 시작점에서 진행 방향 앞(+)/뒤(−)로 (m)
     slam.start_lateral_m: 0.0               # 출발 위치: 도로 가운데에서 왼쪽(+)으로 (m)
     # 매핑·보정
     camera.stabilization: 1.0               # IMU 영상 안정화 (0=끄기, 1=전체)

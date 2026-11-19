@@ -38,8 +38,8 @@ Vec2 OdomCalib::bev_point(const Vec2 & q) const {
 }
 
 // 정지선 S에서 BEV로 잰 차선 대비 값(원값)으로 차량 자세를 다시 잡는다: 앞뒤 = S, 옆 = 두 선 가운데 기준, 방향 = 차선 방향 기준
-static void anchor_at_stop(Pose & p, const Vec2 & rel, const OdomCalib & c, const TrackMap & map) {
-  const Vec2 S = map.stop_center(), dir = map.travel_dir_at(S), left{-dir.y, dir.x};
+static void anchor_at_stop(Pose & p, const Vec2 & rel, const OdomCalib & c, const TrackMap & map, bool cw) {
+  const Vec2 S = map.stop_center(), dir = map.travel_dir_at(S, cw), left{-dir.y, dir.x};
   const double along = (p.x - S.x) * dir.x + (p.y - S.y) * dir.y;
   p.x -= along * dir.x;
   p.y -= along * dir.y;
@@ -93,7 +93,7 @@ Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMa
   tr.poses.reserve(run.gyro.size() + 1);
   Pose p = run.start;
   p.dist = 0;
-  if (std::isfinite(run.start_rel.x)) anchor_at_stop(p, run.start_rel, calib, map);   // 기록 시작점도 후보 카메라 값으로 다시
+  if (std::isfinite(run.start_rel.x)) anchor_at_stop(p, run.start_rel, calib, map, run.cw);   // 기록 시작점도 후보 카메라 값으로 다시
   tr.poses.push_back(p);
   std::size_t si = 0, ci = 0;
   double v_raw = 0, last_t = p.t;
@@ -112,7 +112,7 @@ Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMa
     p.dist += v * dt;
     p.t = t;
     while (ci < run.crossing_t.size() && run.crossing_t[ci] + shift <= t) {   // 정지선 S 통과: 진행 방향 위치를 S에 맞춤
-      if (correction) anchor_at_stop(p, ci < run.anchor_rel.size() ? run.anchor_rel[ci] : Vec2{std::nan(""), 0}, calib, map);
+      if (correction) anchor_at_stop(p, ci < run.anchor_rel.size() ? run.anchor_rel[ci] : Vec2{std::nan(""), 0}, calib, map, run.cw);
       ++ci;
     }
     tr.poses.push_back(p);
@@ -129,7 +129,7 @@ Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMa
 Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap & map, double max_range, double cap) {
   Evaluation e;
   const auto tr = integrate(run, calib, map, run.stopline_correction);
-  const Vec2 S = map.stop_center(), dir = map.travel_dir_at(S);
+  const Vec2 S = map.stop_center(), dir = map.travel_dir_at(S, run.cw);
   const std::size_t nl = run.crossing_t.size() + 1;
   std::vector<double> cross = run.crossing_t;
   for (auto & c : cross) c += calib.latency - run.crossing_latency;
@@ -145,7 +145,7 @@ Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap
       for (const auto & q : side == 0 ? L.left : L.right) {
         if (q.x < 0 || q.x > max_range) continue;
         const Vec2 w = to_world(p, calib.bev_point(q));
-        const double d = std::min(cap, side == 0 ? map.dist_inner(w) : map.dist_outer(w));
+        const double d = std::min(cap, map.dist_side(side, run.cw, w));
         sq += d * d; lap_sq[lap] += d * d; ++lap_n[lap]; ++e.points;
       }
     if (std::isfinite(L.stop_m) && L.stop_m > 0.15 && L.stop_m < max_range) {
@@ -248,7 +248,7 @@ void SlamCore::set_config(const SlamConfig & c) { std::lock_guard<std::mutex> l(
 void SlamCore::set_calib(const OdomCalib & c) { std::lock_guard<std::mutex> l(m_); calib_ = c; }
 OdomCalib SlamCore::calib() const { std::lock_guard<std::mutex> l(m_); return calib_; }
 
-void SlamCore::begin_run(double target_speed, int laps, const Pose & start) {
+void SlamCore::begin_run(double target_speed, int laps, const Pose & start, bool cw) {
   std::lock_guard<std::mutex> l(m_);
   run_ = RunData{};
   run_.start = start;
@@ -257,8 +257,10 @@ void SlamCore::begin_run(double target_speed, int laps, const Pose & start) {
   run_.target_speed = target_speed;
   run_.laps_target = laps;
   run_.stopline_correction = cfg_.stopline_correction;
+  run_.cw = cw;
   run_.crossing_latency = calib_.latency;
   live_ = LiveState{};
+  live_.cw = cw;
   live_.running = true;
   live_.waiting_s = true;
   lane_rel_n_ = 0; lane_rel_yaw_ = lane_rel_lat_ = 0;
@@ -328,18 +330,18 @@ void SlamCore::on_crossing(double t) {
   armed_dist_ = -1;
   stop_n_ = 0;
   Pose & p = live_.pose;
-  const Vec2 S = map_.stop_center(), dir = map_.travel_dir_at(S);
+  const Vec2 S = map_.stop_center(), dir = map_.travel_dir_at(S, run_.cw);
   if (live_.waiting_s) {   // 처음 지나는 정지선 S = 기록 시작점: 진행 방향 위치를 S에 맞추고 여기서부터 바퀴·기록·매핑
     const Vec2 rel = take_lane_rel();   // 가속 구간 적분 오차 대신 BEV 차선으로 잰 방향·옆 위치 (S 근처 직선)
-    anchor_at_stop(p, rel, calib_, map_);
+    anchor_at_stop(p, rel, calib_, map_, run_.cw);
     p.dist = 0;
     p.t = t;
     const double bias0 = run_.gyro_bias0, v = run_.target_speed, lat = run_.crossing_latency;
     const int laps = run_.laps_target;
-    const bool corr = run_.stopline_correction;
+    const bool corr = run_.stopline_correction, cw = run_.cw;
     run_ = RunData{};
     run_.start = p;
-    run_.gyro_bias0 = bias0; run_.target_speed = v; run_.crossing_latency = lat; run_.laps_target = laps; run_.stopline_correction = corr;
+    run_.gyro_bias0 = bias0; run_.target_speed = v; run_.crossing_latency = lat; run_.laps_target = laps; run_.stopline_correction = corr; run_.cw = cw;
     run_.start_rel = rel;
     hist_.clear(); hist_.push_back(p);
     track_.clear(); track_.push_back(p); track_last_t_ = t;
@@ -362,7 +364,7 @@ void SlamCore::on_crossing(double t) {
   const Vec2 rel = take_lane_rel();
   run_.anchor_rel.push_back(rel);
   if (cfg_.stopline_correction) {   // 앞뒤 = S, 옆·방향 = BEV 차선 (S 근처 직선에서 잰 값)
-    anchor_at_stop(p, rel, calib_, map_);
+    anchor_at_stop(p, rel, calib_, map_, run_.cw);
     corr_.push_back({m.lap, -m.along_err_m});
   }
   last_cross_dist_ = p.dist;
@@ -430,7 +432,7 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
     const std::size_t stride = std::max<std::size_t>(1, pts.size() / 6);
     for (std::size_t k = 0; k < pts.size(); k += stride) {
       const Vec2 w = to_world(p, calib_.bev_point(pts[k]));
-      const double d = std::min(kCap, side == 0 ? map_.dist_inner(w) : map_.dist_outer(w));
+      const double d = std::min(kCap, map_.dist_side(side, run_.cw, w));
       lap_sq_ += d * d; ++lap_n_;
       if (new_pts_.size() < 1200) { new_pts_.push_back(w); new_side_.push_back(side); }
     }

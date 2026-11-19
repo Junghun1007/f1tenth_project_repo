@@ -1,5 +1,6 @@
 #include "check.hpp"
 #include "semi_slam/core/slam.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -14,7 +15,7 @@ struct Sim {
   std::vector<double> s;
 };
 
-Sim make_path(const TrackMap & m, int laps) {
+Sim make_path(const TrackMap & m, int laps, bool cw = false) {
   // 바깥 선 점마다 가장 가까운 안쪽 선과의 중점 → 실제 주행선 (출발선 T1 근처에서 시작하도록 회전)
   std::vector<Vec2> mid;
   for (std::size_t i = 0; i < m.outer.size(); i += 2) {
@@ -24,8 +25,10 @@ Sim make_path(const TrackMap & m, int laps) {
     for (const auto & q : m.inner) { const double d = std::hypot(q.x - o.x, q.y - o.y); if (d < bd) { bd = d; best = q; } }
     mid.push_back({(o.x + best.x) / 2, (o.y + best.y) / 2});
   }
-  std::size_t k0 = 0;   // T1 (x 2.03, 아래쪽 도로) 바로 앞 점부터
-  for (std::size_t i = 0; i < mid.size(); ++i) if (mid[i].y < 1.0 && mid[i].x >= 1.0 && mid[i].x < 1.2) { k0 = i; break; }   // 아래 직선 시작점 (S보다 약 1 m 앞)
+  if (cw) std::reverse(mid.begin(), mid.end());   // 시계 방향: 같은 주행선을 거꾸로
+  std::size_t k0 = 0;   // 아래 직선 시작점 (S보다 약 1 m 앞): 반시계 x 1.0~1.2, 시계 x 2.8~3.0
+  for (std::size_t i = 0; i < mid.size(); ++i)
+    if (mid[i].y < 1.0 && (cw ? (mid[i].x > 2.8 && mid[i].x <= 3.0) : (mid[i].x >= 1.0 && mid[i].x < 1.2))) { k0 = i; break; }   // 아래 직선 시작점 (S보다 약 1 m 앞)
   Sim sim;
   for (int l = 0; l < laps; ++l) for (std::size_t i = 0; i < mid.size(); ++i) sim.path.push_back(mid[(k0 + i) % mid.size()]);
   sim.s.push_back(0);
@@ -53,16 +56,16 @@ double unwrap_rate(double y1, double y0, double dt) {
 
 // SlamCore로 실제처럼 실시간 처리 (정지선 바퀴 세기 포함) 후 RunData 반환
 RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double wheel_err, double gyro_err, double bias_res,
-                 double stamp_delay = 0.0, double noise = 0.0, bool fake_corner_stop = false) {
+                 double stamp_delay = 0.0, double noise = 0.0, bool fake_corner_stop = false, bool cw = false) {
   unsigned rng = 12345u;
   auto gauss = [&]() { double a = 0; for (int i = 0; i < 6; ++i) { rng = rng * 1664525u + 1013904223u; a += (rng >> 8) / double(1u << 24); } return (a - 3.0) / std::sqrt(0.5); };
-  const Sim sim = make_path(m, laps + 1);
+  const Sim sim = make_path(m, laps + 1, cw);
   const double bias0 = 0.02;
   double t = 100.0;
   for (int k = 0; k < 400; ++k) { core.on_speed(0.0, t); core.on_gyro(bias0, t); t += 0.0025; }   // 출발 전 정지 영점
   Pose start = true_pose(sim, 0.0);
   start.t = t;
-  core.begin_run(v, laps, start);
+  core.begin_run(v, laps, start, cw);
   const Vec2 S = m.stop_center();
   double s = 0, yaw_prev = start.yaw, next_lane = t, next_speed = t;
   const double dt = 0.0025;
@@ -80,8 +83,10 @@ RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double
       L.capture_time = t - stamp_delay;   // 영상 시각이 실제 장면보다 stamp_delay만큼 이르게 찍힘
       const double c = std::cos(p.yaw), sn = std::sin(p.yaw);
       auto local = [&](const Vec2 & w) { const double dx = w.x - p.x, dy = w.y - p.y; return Vec2{c * dx + sn * dy, -sn * dx + c * dy}; };
-      for (std::size_t i = 0; i < m.inner.size(); i += 3) { const Vec2 q = local(m.inner[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) L.left.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
-      for (std::size_t i = 0; i < m.outer.size(); i += 3) { const Vec2 q = local(m.outer[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) L.right.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
+      auto & to_inner = cw ? L.right : L.left;   // 반시계: 안쪽 선이 왼쪽, 시계: 오른쪽
+      auto & to_outer = cw ? L.left : L.right;
+      for (std::size_t i = 0; i < m.inner.size(); i += 3) { const Vec2 q = local(m.inner[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) to_inner.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
+      for (std::size_t i = 0; i < m.outer.size(); i += 3) { const Vec2 q = local(m.outer[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) to_outer.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
       const Vec2 sq = local(S);
       if (sq.x > 0.15 && sq.x < 1.5 && std::abs(sq.y) < 0.3) L.stop_line_m = sq.x;
       // 오인식: 코너(바퀴의 60~65% 지점)에서 휜 흰 선을 정지선으로 0.6 m 앞에 봤다고 가정
@@ -205,4 +210,22 @@ TEST(false_stop_lines_at_corners_are_not_counted_as_laps) {
   CHECK(live.lap == 4);
   CHECK(run.crossing_t.size() == 4);
   CHECK(live.rejected_far >= 3);   // 바퀴마다 코너 오인식을 무시
+}
+
+TEST(clockwise_run_counts_laps_and_calibrates) {   // 시계 방향: 오른쪽 아래(x≈3 m)에서 −x로 출발, 왼쪽 선 = 바깥 흰 선
+  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
+  const Vec2 a = m.straight_start(true), d = m.travel_dir_at(a, true);
+  CHECK_NEAR(a.x, 3.0, 0.02);
+  CHECK_NEAR(d.x, -1.0, 1e-9);
+  SlamCore core(m);
+  const auto run = simulate(core, m, 4, 1.0, 1.05, 0.97, 0.0015, 0.0, 0.0, false, true);
+  const auto live = core.live();
+  CHECK(live.finished);
+  CHECK(live.lap == 4);
+  CHECK(run.cw);
+  const auto r = calibrate(run, OdomCalib{}, m);
+  std::printf("  cw before rms %.3f after rms %.3f wheel %.4f gyro %.4f\n", r.before.rms_m, r.after.rms_m, r.calib.wheel_scale_for(1.0), r.calib.gyro_scale);
+  CHECK(r.improved);
+  CHECK(r.after.rms_m < 0.02);
+  CHECK_NEAR(r.calib.wheel_scale_for(1.0), 1 / 1.05, 0.01);
 }

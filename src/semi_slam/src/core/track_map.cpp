@@ -80,13 +80,21 @@ double TrackMap::field(const cv::Mat & f, const Vec2 & p) const {
   return f.at<float>(r, c);
 }
 
-Vec2 TrackMap::travel_dir_at(const Vec2 & p) const {
+Vec2 TrackMap::straight_start(bool cw) const {
+  // 출발선 T1에서 반시계 진행 반대로 1.03 m = 왼쪽 아래 코너가 끝나는 x ≈ 1.0 m. 시계는 트랙 가운데 기준 좌우 대칭 (x ≈ 3.0 m)
+  const Vec2 T = start_center(), d = travel_dir_at(T, false);
+  Vec2 b{T.x - 1.03 * d.x, T.y - 1.03 * d.y};
+  if (cw) b.x = 2.0 * middle_.x - b.x;
+  return b;
+}
+
+Vec2 TrackMap::travel_dir_at(const Vec2 & p, bool cw) const {
   // 반시계 주행: 트랙 중심에서 p로 향하는 방향을 왼쪽으로 90° 돌린 것 (정사각형 트랙의 직선 구간에서는 축 방향으로 맞춤)
   const double dx = p.x - middle_.x, dy = p.y - middle_.y;
   Vec2 d{-dy, dx};
   if (std::abs(d.x) > std::abs(d.y)) d = {d.x > 0 ? 1.0 : -1.0, 0.0};
   else d = {0.0, d.y > 0 ? 1.0 : -1.0};
-  return d;
+  return cw ? Vec2{-d.x, -d.y} : d;
 }
 
 }  // namespace semi_slam
