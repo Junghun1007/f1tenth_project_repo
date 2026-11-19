@@ -181,7 +181,7 @@ private:
   double arc_at_dist(double dist) const;       // 누적 거리 → 중앙선 위 위치
   Pose snap_of(const Pose & free) const;       // 자유 적분 자세 → 위치 추정 (중앙선 위 지점 + 옆 위치, 방향은 그대로)
   void on_crossing(double t);
-  Vec2 take_lane_rel();
+  Vec2 take_lane_rel(double yaw_now);   // S 접근 중 잰 차선 대비 방향을 지금(통과 순간)으로 옮긴 평균 (그 사이 자이로 회전만큼)
   TrackMap map_;
   SlamConfig cfg_;
   OdomCalib calib_;
@@ -207,7 +207,7 @@ private:
   bool finish_reported_{false};
   bool last_rejected_{false};
   int lane_rel_n_{0};
-  double lane_rel_yaw_{0}, lane_rel_lat_{0};
+  double lane_rel_yaw_{0}, lane_rel_lat_{0}, lane_rel_ref_{0};
 };
 
 }  // namespace semi_slam

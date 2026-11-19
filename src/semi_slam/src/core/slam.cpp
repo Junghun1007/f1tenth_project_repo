@@ -432,7 +432,7 @@ void SlamCore::on_crossing(double t) {
   const Vec2 S = map_.stop_center(), dir = map_.travel_dir_at(S, run_.cw);
   const double Lc = map_.center_length();
   if (live_.waiting_s) {   // 처음 지나는 정지선 S = 기록 시작점: 여기서부터 바퀴·기록·매핑
-    const Vec2 rel = take_lane_rel();
+    const Vec2 rel = take_lane_rel(p.yaw);
     anchor_at_stop(p, rel, map_, run_.cw);
     p.dist = 0;
     p.t = t;
@@ -470,7 +470,7 @@ void SlamCore::on_crossing(double t) {
   m.rms_m = lap_n_ ? std::sqrt(lap_sq_ / lap_n_) : kNaN;
   laps_.push_back(m);
   run_.crossing_t.push_back(t);
-  const Vec2 rel = take_lane_rel();
+  const Vec2 rel = take_lane_rel(p.yaw);
   run_.anchor_rel.push_back(rel);
   if (cfg_.stopline_correction) {   // 자유 적분도 S에 맞춤 (앞뒤 = S, 옆·방향 = BEV 차선)
     anchor_at_stop(p, rel, map_, run_.cw);
@@ -486,9 +486,10 @@ void SlamCore::on_crossing(double t) {
   if (live_.laps_target > 0 && live_.lap >= live_.laps_target) live_.finished = true;
 }
 
-Vec2 SlamCore::take_lane_rel() {
+Vec2 SlamCore::take_lane_rel(double yaw_now) {
+  // 잰 순간 i의 차 방향 ψi = 차선 방향 − rel_i → 통과 순간 rel = (rel_i + ψi) − ψ_now. 코너를 막 빠져나오며 차가 돌고 있어도 맞음
   Vec2 r{kNaN, 0};
-  if (lane_rel_n_ > 0) r = {lane_rel_yaw_ / lane_rel_n_, lane_rel_lat_ / lane_rel_n_};
+  if (lane_rel_n_ > 0) r = {wrap(lane_rel_ref_ + lane_rel_yaw_ / lane_rel_n_ - yaw_now), lane_rel_lat_ / lane_rel_n_};
   lane_rel_n_ = 0; lane_rel_yaw_ = lane_rel_lat_ = 0;
   return r;
 }
@@ -534,7 +535,9 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
     }
     // 정지선 S가 실제로 0.2~1.0 m 앞에 보일 때 양쪽 차선으로 차선 대비 방향·옆 위치 (통과할 때 자유 적분 자세를 다시 잡음)
     if (f.both && stop_near && s.stop_m > 0.2 && s.stop_m < 1.0) {
-      lane_rel_yaw_ += f.angle;
+      const double a = f.angle + seen.yaw;   // 차선 방향 (자유 적분 좌표)
+      if (lane_rel_n_ == 0) { lane_rel_ref_ = a; lane_rel_yaw_ = 0; }
+      lane_rel_yaw_ += wrap(a - lane_rel_ref_);
       lane_rel_lat_ += f.center_y;
       ++lane_rel_n_;
     }
