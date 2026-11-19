@@ -158,7 +158,7 @@ function renderNow() {
   const st = $("status"); st.textContent = f.run.running && f.run.waiting_s ? "가속 중 · 정지선 S를 지나면 기록·보정 시작" : (f.run.status || ""); st.className = "status" + (/실패|않음|중간/.test(f.run.status || "") ? " warn" : "");
   const stopped = ["READY", "MANUAL"].includes(f.state);
   $("btnStart").disabled = !(stopped && Object.values(f.readiness).every(Boolean)) || f.run.finishing;
-  $("btnRevert").disabled = f.run.running || f.run.finishing;
+  $("btnRevert").disabled = $("btnReset2").disabled = f.run.running || f.run.finishing;
   const r = f.run, v = f.vehicle;
   $("lapBig").innerHTML = `${r.lap} <small>/ ${r.laps} 바퀴</small>`;
   kv($("drive"), [["속도 / 목표", `${v.speed.toFixed(2)} / ${v.target.toFixed(2)} m/s`],
@@ -236,6 +236,10 @@ function bind() {
   $("btnRevert").addEventListener("click", async () => {
     if (!confirm("마지막으로 적용한 보정을 이전 값으로 되돌릴까요?")) return;
     const r = await post("/api/action/revert"); $("reason").textContent = r.ok ? "되돌림" : r.reason;
+  });
+  $("btnReset2").addEventListener("click", async () => {
+    if (!confirm("보정 값과 보정 이력을 처음(기본값)으로 초기화할까요?\n지금 값과 이력은 백업 폴더로 옮겨지고, 주행 기록은 그대로 남습니다.")) return;
+    const r = await post("/api/action/reset"); $("reason").textContent = r.ok ? "초기화됨 · 백업: " + r.reason : r.reason;
   });
   $("inSpeed").addEventListener("change", () => setParam("run.speed_mps", Number($("inSpeed").value)));
   $("inLaps").addEventListener("change", () => setParam("run.laps", Number($("inLaps").value)));

@@ -135,6 +135,14 @@ public:
     cb.heartbeat = [this](const std::string & id) { loop_->on_heartbeat(id, ss::now_sec()); };
     cb.get_json["map"] = [this] { return map_json(); };
     cb.get_json["run"] = [this] { return run_json(); };
+    cb.actions["reset"] = [this] {
+      if (slam_->live().running || finishing_) return ss::Reply{false, "주행 중·기록 처리 중에는 초기화할 수 없음"};
+      const auto backup = store_->reset();
+      slam_->set_calib(ss::OdomCalib{});
+      set_status("보정 초기화: 이전 값·이력은 " + backup + " 로 옮김");
+      RCLCPP_INFO(get_logger(), "calibration reset, backup %s", backup.c_str());
+      return ss::Reply{true, backup};
+    };
     cb.actions["revert"] = [this] {
       if (slam_->live().running) return ss::Reply{false, "주행 중에는 되돌릴 수 없음"};
       ss::OdomCalib c;

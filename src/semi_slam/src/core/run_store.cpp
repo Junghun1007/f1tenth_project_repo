@@ -220,6 +220,17 @@ bool CalibStore::revert(OdomCalib * out) const {
   return false;
 }
 
+std::string CalibStore::reset() const {
+  const std::string backup = dir_ + "/backup_" + now_string("%Y-%m-%d_%H%M%S");
+  fs::create_directories(backup);
+  for (const char * f : {"calibration.json", "calibration_history.jsonl", "odometry_calibration.yaml"}) {
+    std::error_code ec;
+    if (fs::exists(dir_ + "/" + f)) fs::rename(dir_ + "/" + f, backup + "/" + f, ec);
+  }
+  save(OdomCalib{});
+  return backup;
+}
+
 std::vector<CalibHistoryEntry> CalibStore::history(std::size_t last_n) const {
   std::ifstream in(dir_ + "/calibration_history.jsonl");
   std::vector<CalibHistoryEntry> all;

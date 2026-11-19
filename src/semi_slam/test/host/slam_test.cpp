@@ -170,6 +170,11 @@ TEST(run_folder_round_trips_and_calibration_store_reverts) {
   CHECK_NEAR(store.load().gyro_scale, 1.0, 1e-9);
   CHECK(!store.revert(&reverted));   // 되돌릴 적용이 더 없음
   CHECK(store.history().size() == 2);
+  store.save(r1.calib);
+  const auto backup = store.reset();   // 초기화: 기본값으로, 이전 값·이력은 백업
+  CHECK_NEAR(store.load().gyro_scale, 1.0, 1e-12);
+  CHECK(store.history().empty());
+  CHECK(std::filesystem::exists(backup + "/calibration_history.jsonl"));
 }
 
 TEST(calibration_handles_lane_noise_and_camera_delay) {   // 차선 점 잡음 σ 1.5 cm + 영상 시각 40 ms 지연

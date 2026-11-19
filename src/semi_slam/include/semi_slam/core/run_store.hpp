@@ -30,6 +30,8 @@ public:
   void save(const OdomCalib & c) const;           // calibration.json + odometry_calibration.yaml
   void record(const CalibResult & r, const std::string & run_dir, const OdomCalib & previous, double speed, int laps, bool applied) const;
   bool revert(OdomCalib * out) const;             // 마지막 적용 이전 값으로 (성공 시 저장까지)
+  // 보정 초기화: 보정 값·이력·yaml을 backup_<시각>/ 으로 옮기고 기본값(모두 1, 0)으로 시작. 주행 기록(runs)은 그대로. 반환: 백업 폴더
+  std::string reset() const;
   std::vector<CalibHistoryEntry> history(std::size_t last_n = 20) const;
   const std::string & dir() const { return dir_; }
 
