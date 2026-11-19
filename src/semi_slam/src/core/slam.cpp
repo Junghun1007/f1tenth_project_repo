@@ -242,6 +242,8 @@ void SlamCore::begin_run(double target_speed, int laps, const Pose & start) {
   run_.crossing_latency = calib_.latency;
   live_ = LiveState{};
   live_.running = true;
+  live_.waiting_s = true;
+  lane_rel_n_ = 0; lane_rel_yaw_ = lane_rel_lat_ = 0;
   live_.laps_target = laps;
   live_.target_speed = target_speed;
   live_.pose = run_.start;
@@ -266,7 +268,7 @@ void SlamCore::end_run() { std::lock_guard<std::mutex> l(m_); live_.running = fa
 void SlamCore::on_speed(double v, double t) {
   std::lock_guard<std::mutex> l(m_);
   last_v_ = v;
-  if (live_.running) run_.speed.push_back({t, v});
+  if (live_.running && !live_.waiting_s) run_.speed.push_back({t, v});
 }
 
 void SlamCore::on_gyro(double w, double t) {
@@ -280,7 +282,7 @@ void SlamCore::on_gyro(double w, double t) {
     last_gyro_t_ = t;
     return;
   }
-  run_.gyro.push_back({t, w});
+  if (!live_.waiting_s) run_.gyro.push_back({t, w});
   last_w_ = w;
   step(t);
 }
@@ -309,6 +311,30 @@ void SlamCore::on_crossing(double t) {
   stop_n_ = 0;
   Pose & p = live_.pose;
   const Vec2 S = map_.stop_center(), dir = map_.travel_dir_at(S);
+  if (live_.waiting_s) {   // 처음 지나는 정지선 S = 기록 시작점: 진행 방향 위치를 S에 맞추고 여기서부터 바퀴·기록·매핑
+    const double along = dot({p.x - S.x, p.y - S.y}, dir);
+    p.x -= along * dir.x;
+    p.y -= along * dir.y;
+    if (lane_rel_n_ > 0) {   // 가속 구간 적분 오차 대신 BEV 차선으로 잰 방향·옆 위치 (S 근처 직선)
+      const Vec2 left{-dir.y, dir.x};
+      p.x = S.x + left.x * lane_rel_lat_ / lane_rel_n_;
+      p.y = S.y + left.y * lane_rel_lat_ / lane_rel_n_;
+      p.yaw = std::atan2(dir.y, dir.x) + lane_rel_yaw_ / lane_rel_n_;
+    }
+    p.dist = 0;
+    p.t = t;
+    const double bias0 = run_.gyro_bias0, v = run_.target_speed, lat = run_.crossing_latency;
+    const int laps = run_.laps_target;
+    const bool corr = run_.stopline_correction;
+    run_ = RunData{};
+    run_.start = p;
+    run_.gyro_bias0 = bias0; run_.target_speed = v; run_.crossing_latency = lat; run_.laps_target = laps; run_.stopline_correction = corr;
+    hist_.clear(); hist_.push_back(p);
+    track_.clear(); track_.push_back(p); track_last_t_ = t;
+    last_cross_dist_ = 0; live_.lap_dist = 0; lap_sq_ = 0; lap_n_ = 0;
+    live_.waiting_s = false;
+    return;
+  }
   // 한 바퀴에 정지선은 하나: 직전 통과 후 거리가 한 바퀴 길이와 맞지 않으면 오인식으로 보고 무시
   const double expected_len = live_.lap == 0 ? map_.lap_length() - dot({run_.start.x - S.x, run_.start.y - S.y}, dir) : map_.lap_length();
   if ((p.dist - last_cross_dist_) / std::max(1e-6, expected_len) < 1.0 - cfg_.lap_window) { ++live_.rejected_lap; return; }
@@ -351,9 +377,29 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
   s.stop_m = lane.stop_line_m;
   for (const auto & q : lane.left) if (q.x >= 0 && q.x <= cfg_.max_range_m) s.left.push_back(q);
   for (const auto & q : lane.right) if (q.x >= 0 && q.x <= cfg_.max_range_m) s.right.push_back(q);
-  // 매핑 (그 장면을 본 위치 = 촬영 시각 + 시간차)
+  if (live_.waiting_s) {   // 기록 시작 전: S 근처 직선에서 양쪽 차선으로 차선 대비 방향·옆 위치를 잰다
+    auto fit = [](const std::vector<Vec2> & pts, double & a, double & b) {   // y = a·x + b (가까운 직선 부분만: 앞 코너가 섞이지 않게)
+      double n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+      for (const auto & q : pts) if (q.x >= 0.15 && q.x <= 0.8) { ++n; sx += q.x; sy += q.y; sxx += q.x * q.x; sxy += q.x * q.y; }
+      const double den = n * sxx - sx * sx;
+      if (n < 6 || std::abs(den) < 1e-9) return false;
+      a = (n * sxy - sx * sy) / den; b = (sy - a * sx) / n;
+      return true;
+    };
+    double al, bl, ar, br;
+    const Pose here = pose_at(s.t + calib_.latency);
+    const Vec2 S = map_.stop_center();
+    const double to_s = dot({S.x - here.x, S.y - here.y}, map_.travel_dir_at(S));
+    if (to_s > 0.1 && to_s < 1.2 && fit(s.left, al, bl) && fit(s.right, ar, br) && std::abs(al - ar) < 0.1 &&
+        std::abs((bl - br) - 0.65) < 0.15) {
+      lane_rel_yaw_ += -std::atan(0.5 * (al + ar));   // 차선이 차 기준 반시계로 기울어 보이면 차가 시계 방향으로 틀어진 것
+      lane_rel_lat_ += -0.5 * (bl + br);              // 두 선 가운데가 차 기준 왼쪽(+)이면 차는 가운데보다 오른쪽
+      ++lane_rel_n_;                                   // S에 다가가는 동안 평균
+    }
+  }
+  // 매핑 (그 장면을 본 위치 = 촬영 시각 + 시간차). 정지선 S를 지나기 전(가속 구간)에는 하지 않음
   const Pose p = pose_at(s.t + calib_.latency);
-  for (int side = 0; side < 2; ++side) {
+  for (int side = 0; side < 2 && !live_.waiting_s; ++side) {
     const auto & pts = side == 0 ? s.left : s.right;
     const std::size_t stride = std::max<std::size_t>(1, pts.size() / 6);
     for (std::size_t k = 0; k < pts.size(); k += stride) {
@@ -383,7 +429,7 @@ bool SlamCore::on_lane(const LaneObservation & lane) {
     live_.stop_seen_m = std::numeric_limits<double>::quiet_NaN();
     last_rejected_ = false;
   }
-  run_.lanes.push_back(std::move(s));
+  if (!live_.waiting_s) run_.lanes.push_back(std::move(s));
   if (live_.finished && !finish_reported_) { finish_reported_ = true; return true; }   // 통과는 IMU 적분 중에 일어나므로 여기서 한 번 알림
   return false;
 }

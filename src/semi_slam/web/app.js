@@ -155,7 +155,7 @@ function renderNow() {
   if (!f) return;
   $("stateBadge").textContent = f.state; $("stateBadge").className = "state " + f.state;
   $("reason").textContent = f.reason || "";
-  const st = $("status"); st.textContent = f.run.status || ""; st.className = "status" + (/실패|않음|중간/.test(f.run.status || "") ? " warn" : "");
+  const st = $("status"); st.textContent = f.run.running && f.run.waiting_s ? "가속 중 · 정지선 S를 지나면 기록·보정 시작" : (f.run.status || ""); st.className = "status" + (/실패|않음|중간/.test(f.run.status || "") ? " warn" : "");
   const stopped = ["READY", "MANUAL"].includes(f.state);
   $("btnStart").disabled = !(stopped && Object.values(f.readiness).every(Boolean)) || f.run.finishing;
   $("btnRevert").disabled = f.run.running || f.run.finishing;

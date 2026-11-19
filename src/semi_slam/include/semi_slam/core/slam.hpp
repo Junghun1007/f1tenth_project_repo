@@ -98,6 +98,7 @@ struct SlamConfig {
 
 struct LiveState {
   bool running{false}, finished{false};
+  bool waiting_s{true};             // 정지선 S를 처음 지나기 전: 가속만 (기록·매핑·바퀴 세기는 S부터)
   int lap{0}, laps_target{0};
   double target_speed{0};
   Pose pose;
@@ -159,6 +160,8 @@ private:
   int lap_n_{0};
   bool finish_reported_{false};
   bool last_rejected_{false};
+  int lane_rel_n_{0};
+  double lane_rel_yaw_{0}, lane_rel_lat_{0};   // 정지선 S 근처에서 BEV 차선으로 잰 차선 대비 방향·옆 위치 (기록 시작점 보정)
 };
 
 }  // namespace semi_slam
