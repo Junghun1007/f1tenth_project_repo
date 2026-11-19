@@ -1,0 +1,5 @@
+#!/usr/bin/env python3
+from semi_slam_py.safety_node import main
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,79 @@
+# semi_slam 기본 파라미터. 브라우저 파라미터 창의 [YAML 저장]도 같은 형식으로 저장한다. params_file:=<경로>로 바꿔 실행.
+/**/semi_slam:
+  ros__parameters:
+    # ---- 재시작해야 바뀌는 값 ----
+    slam.map_path: ""                 # 비우면 패키지의 maps/track_4x4.csv (정답 트랙)
+    slam.data_dir: ""                 # 비우면 ~/semi_slam_data (주행 기록·보정 값 저장 위치)
+    camera.fps: 70.0
+    camera.x_m: -0.09                 # 앞차축 기준 카메라 위치 (bev_config.yaml)
+    camera.y_m: 0.0
+    camera.yaw_deg: 0.0
+    camera.fixed_view_zoom: 1.25      # 아래 fx/fy는 bev_config.yaml 값(1.25배 확대 포함). 원본 영상엔 fx/zoom
+    camera.fx: 701.751174926
+    camera.fy: 701.420440674
+    camera.cx: 643.032653809
+    camera.cy: 392.621124268
+    camera.manual_height_enabled: false
+    camera.manual_height_m: 0.20
+    camera.measurement_timeout_sec: 45.0
+    vehicle.wheelbase_m: 0.33
+    vehicle.front_overhang_m: 0.05    # 앞차축 → 앞범퍼 (출발선에 앞범퍼를 맞춤)
+    vehicle.maximum_steering_deg: 30.0
+    vehicle.servo_left: 1.0
+    vehicle.servo_center: 0.5
+    vehicle.servo_right: 0.0
+    vehicle.steering_servo_inverted: true
+    vehicle.wheel_diameter_m: 0.1095
+    vehicle.motor_pole_pairs: 2
+    vehicle.motor_pinion_teeth: 13
+    vehicle.spur_gear_teeth: 54
+    vehicle.differential_pinion_teeth: 13
+    vehicle.differential_ring_teeth: 37
+    vehicle.erpm_direction_sign: 1.0
+    vehicle.speed_scale_correction: 1.0
+    model.lane_precision: int8
+    web.bind: 0.0.0.0
+    web.port: 8766
+    # ---- 브라우저 파라미터 창에서 실시간으로 바꿀 수 있는 값 ----
+    # 주행 계획
+    run.speed_mps: 1.0                      # 일정 속도 (코너 감속 없음) (m/s)
+    run.laps: 10.0                          # 목표 바퀴 수 (정지선 S 통과로 셈)
+    slam.start_offset_m: 0.0                # 출발 위치: 앞범퍼가 출발선 T1에서 앞(+)으로 (m)
+    slam.start_lateral_m: 0.0               # 출발 위치: 도로 가운데에서 왼쪽(+)으로 (m)
+    # 매핑·보정
+    camera.stabilization: 1.0               # IMU 영상 안정화 (0=끄기, 1=전체)
+    slam.stopline_correction: 1.0           # 정지선 통과 시 위치 보정 (0=끔, 1=켬)
+    slam.auto_calibrate: 1.0                # 목표 바퀴 완료 시 보정 자동 적용 (0=끔, 1=켬)
+    slam.max_range_m: 1.5                   # 매핑·보정에 쓰는 차선 점 최대 거리 (m)
+    slam.stop_confirm_frames: 3.0           # 정지선 확인 횟수
+    # 조향 (Stanley)
+    drive.stanley_gain: 1.2                 # Stanley gain
+    drive.stanley_softening: 0.3            # softening 속도 (m/s)
+    drive.heading_lookahead_m: 0.12         # heading lookahead (m)
+    drive.steering_current_weight: 0.4      # 조향 필터 현재 비중
+    drive.steering_rate_deg_s: 240.0        # 조향 변화율 한계 (°/s)
+    # 차선
+    lane.side_tracking: 1.0                 # 좌우 판정 고정 (0=끔, 1=켬)
+    lane.corner_outward_offset_m: 0.08      # 코너 바깥 이동 (주행 경로만, 매핑과 무관) (m)
+    lane.corner_entry_distance_m: 2.2       # 코너 진입 거리 (m)
+    lane.corner_entry_full_offset_m: 0.6    # 최대 이동 시작 거리 (m)
+    # 종방향 모드
+    drive.longitudinal_mode: 2.0            # 종방향 모드 (1=staged 전류 제동, 2=duty-only 회생 감속) · 정지했을 때 적용
+    # duty-only (모드 2 전용)
+    duty_only.pid_kp: 0.06                  # PID P (duty/(m/s))
+    duty_only.pid_ki: 0.03                  # PID I (duty/(m/s·s))
+    duty_only.ff_offset_duty: 0.05          # 기본 duty (굴러가는 데 필요한 값)
+    duty_only.ff_duty_per_mps: 0.035        # 속도 1 m/s당 duty (/(m/s))
+    duty_only.maximum_duty: 0.12            # 최대 duty
+    duty_only.start_duty: 0.05              # 정지 출발 duty
+    duty_only.duty_rise_rate: 0.04          # duty 상승률 (/s)
+    duty_only.duty_fall_rate: 0.06          # duty 하강률 (회생 감속 세기) (/s)
+    duty_only.emergency_overspeed: 0.5      # 비상 제동: 목표보다 이만큼 빠르면 (m/s)
+    duty_only.emergency_current: 2.0        # 비상 제동 전류 (A)
+    # staged (모드 1 전용)
+    drive.maximum_duty: 0.12                # 최대 duty
+    drive.start_duty: 0.05                  # 정지 출발 duty
+    drive.brake_maximum_current: 2.0        # 최대 제동 전류 (A)
+    # 안전
+    drive.lane_timeout_sec: 1.0             # 차선 끊김 허용 시간 (0=제한 없음) (s)
+    web.link_loss_stop_sec: 1.0             # 연결 끊김 정지 시간 (s)

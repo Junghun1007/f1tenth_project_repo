@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>semi_slam</name>
+  <version>0.1.0</version>
+  <description>Semi-SLAM odometry calibration on a known closed track: lane following at constant speed, wheel+IMU dead reckoning mapped onto the ground-truth track, stop-line lap counting, automatic calibration, browser view.</description>
+  <maintainer email="ohslo@example.com">ohslo</maintainer>
+  <license>Proprietary</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>ament_cmake_python</buildtool_depend>
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>ament_index_cpp</depend>
+  <depend>depthai</depend>
+  <depend>opencv4</depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- 하드웨어 드라이버: launch에서 함께 실행 (vesc_enabled/joy_enabled:=false로 끌 수 있음) -->
+  <exec_depend>vesc_bridge</exec_depend>
+  <exec_depend>joy_initializer</exec_depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

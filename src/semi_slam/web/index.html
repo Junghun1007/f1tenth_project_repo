@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>semi_slam</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">semi_slam</div>
+  <div class="state" id="stateBadge">BOOT</div>
+  <span class="status" id="status">대기</span>
+  <div class="reason" id="reason"></div>
+  <div class="spacer"></div>
+  <label class="field">일정 속도 <input id="inSpeed" inputmode="decimal"> m/s</label>
+  <label class="field">바퀴 <input id="inLaps" inputmode="numeric"></label>
+  <span class="sep"></span>
+  <span class="field">IMU 안정화</span>
+  <div class="seg" id="segStab"><button data-v="1">전체</button><button data-v="0">끄기</button></div>
+  <span class="field">정지선 위치 보정</span>
+  <div class="seg" id="segCorr"><button data-v="1">켬</button><button data-v="0">끔</button></div>
+  <span class="sep"></span>
+  <button class="btn go" id="btnStart">주행 시작</button>
+  <button class="btn stop" id="btnStop">정지</button>
+  <button class="btn" id="btnRevert">보정 되돌리기</button>
+  <button class="btn" id="btnParams">파라미터</button>
+  <span class="link" id="link">연결 끊김</span>
+</header>
+
+<main class="main">
+  <section class="panel mappanel">
+    <h2>트랙 <small id="mapNote">정답 트랙 위에 추정 궤적·인식 차선 누적</small></h2>
+    <div class="mapwrap"><canvas id="map"></canvas></div>
+    <div class="legend">
+      <span><i style="background:#5b6573"></i>정답 흰 선</span>
+      <span><i style="background:#9aa4b1;height:2px"></i>중앙선 (표시만)</span>
+      <span><i style="background:#22d3ee"></i>이번 바퀴 궤적</span>
+      <span><i style="background:#0e7490"></i>이전 바퀴</span>
+      <span><i style="background:#a3e635"></i>보정 후 다시 계산한 궤적</span>
+      <span><i style="background:#3b82f6"></i>인식 왼쪽 선</span>
+      <span><i style="background:#ef4444"></i>인식 오른쪽 선</span>
+      <span><i style="background:#f8fafc"></i>정지선 S</span>
+      <span><i style="background:#ef4444;height:5px"></i>출발선 T1</span>
+    </div>
+  </section>
+  <div class="colw">
+    <div class="panel"><h2>주행</h2><div class="big" id="lapBig">0 <small>/ 0 바퀴</small></div><div class="kv2" id="drive" style="margin-top:6px"></div></div>
+    <div class="panel">
+      <h2>오차 <small>정답 트랙 대비 · 이번 주행</small></h2>
+      <table id="lapTable"><thead><tr><th>바퀴</th><th>통과 위치</th><th>방향</th><th>길이</th><th>정합 RMS</th></tr></thead><tbody></tbody></table>
+      <div class="note" id="accNote"></div>
+    </div>
+    <div class="panel"><h2>오도메트리 보정 값 <small>목표 바퀴 완료 시 자동 계산·적용</small></h2><div class="kv2" id="calib"></div>
+      <table style="margin-top:8px" id="wheelTable"><thead><tr><th>속도별 거리 배율</th><th>속도</th><th>배율</th></tr></thead><tbody></tbody></table></div>
+    <div class="panel"><h2>보정 이력</h2>
+      <table id="histTable"><thead><tr><th>시각</th><th>속도</th><th>바퀴</th><th>RMS 전→후</th><th></th></tr></thead><tbody></tbody></table></div>
+  </div>
+  <div class="colw narrow">
+    <div class="panel">
+      <h2>BEV <small>앞차축 기준 0~3 m</small> <label class="tog" style="float:right"><input type="checkbox" id="togBev"> 원본</label></h2>
+      <div class="bevbox">
+        <div style="position:relative;line-height:0"><img id="bevImg" alt="" class="offscreen"><canvas id="bev" width="120" height="300"></canvas></div>
+        <div class="kv2" id="bevInfo"></div>
+      </div>
+    </div>
+    <div class="panel"><h2>출발 전 점검</h2><div class="checks" id="checks"></div><div class="kv2" id="inspect"></div></div>
+    <div class="panel"><h2>정지선 위치 보정</h2>
+      <table id="corrTable"><thead><tr><th>바퀴</th><th>보정량</th></tr></thead><tbody></tbody></table></div>
+    <div class="panel"><h2>단계별 연산 <small>최근 1초</small></h2>
+      <table id="stages"><thead><tr><th>단계</th><th>ms</th><th>FPS</th></tr></thead><tbody></tbody></table>
+      <div id="usage" style="margin-top:6px"></div></div>
+  </div>
+</main>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head">
+    <div class="tabs" id="tabs">
+      <button data-group="slam" class="on">매핑·보정</button>
+      <button data-group="driving">주행</button>
+    </div>
+    <button class="btn" id="btnClose">닫기</button>
+  </div>
+  <div class="plist" id="plist"></div>
+  <div class="drawer-foot">
+    <span id="pmsg"></span>
+    <button class="btn" id="btnReset">되돌리기</button>
+    <button class="btn" id="btnSave">YAML 저장</button>
+    <button class="btn go" id="btnApply">적용</button>
+  </div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>

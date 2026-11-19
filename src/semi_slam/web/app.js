@@ -1,0 +1,304 @@
+// semi_slam 브라우저 화면. Jetson은 수치·좌표만 보내고 그림은 여기서 그린다.
+// 데모: index.html?demo (가짜 주행으로 화면 확인)
+"use strict";
+
+const qs = new URLSearchParams(location.search);
+const DEMO = qs.has("demo");
+const $ = (id) => document.getElementById(id);
+const STAGE_LABEL = {
+  cam_rgb: "카메라 RGB 수신", receive: "영상 지연(촬영→처리)", stabilize_bev: "안정화+BEV", lane_infer: "차선 추론",
+  lane_post: "차선 후처리", control: "제어", lane_side_fix: "⚠ 차선 좌우 교정(회/s)", lane_side_drop: "⚠ 차선 조각 제외(회/s)",
+};
+const READY_LABEL = { attitude_ok: "카메라 자세", lane_model_ready: "차선 모델", vesc_connected: "VESC", erpm_fresh: "ERPM", lane_fresh: "차선 입력", client_alive: "브라우저" };
+
+let latest = null, params = [], edits = {}, group = "slam", mapData = null;
+let clientId = "";
+try { clientId = localStorage.getItem("ss_client") || ""; } catch (e) { /* 저장소 없음 */ }
+if (!clientId) { clientId = Math.random().toString(36).slice(2, 10); try { localStorage.setItem("ss_client", clientId); } catch (e) { /* 없음 */ } }
+
+// 화면에 쌓는 데이터
+const laps = [[]];            // 바퀴별 궤적 [[x,y],...]
+let afterTrack = [];          // 보정 후 다시 계산한 궤적
+let lastLap = 0, lastRunning = false, lastFinishing = false;
+
+// ---------- 서버 통신 ----------
+async function post(path, body) {
+  if (DEMO) return { ok: true, reason: "" };
+  if (path === "/api/view") body = Object.assign({ client: clientId }, body || {});
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    return await r.json();
+  } catch (e) { return { ok: false, reason: "요청 실패: " + e.message }; }
+}
+async function setParam(name, value) {
+  const r = await post("/api/params", { changes: { [name]: value } });
+  if (!r.ok) $("reason").textContent = r.reason; else loadParams();
+}
+function connect() {
+  const es = new EventSource("/api/events");
+  es.onmessage = (ev) => { onTelemetry(JSON.parse(ev.data)); setLink(true); };
+  es.onerror = () => setLink(false);
+  setInterval(() => post("/api/heartbeat", { client: clientId }), 200);
+  post("/api/view", { preview: true, bev: $("togBev").checked, camera: false });
+}
+function setLink(ok) { const el = $("link"); el.textContent = ok ? "연결됨" : "연결 끊김"; el.className = "link" + (ok ? " ok" : ""); }
+async function loadParams() {
+  if (DEMO) { params = demoParams(); renderParams(); syncBar(); return; }
+  try { params = (await (await fetch("/api/params")).json()).params; } catch (e) { params = []; }
+  renderParams(); syncBar();
+}
+async function loadRun() {   // 재접속·보정 후: 서버가 모아 둔 궤적·매핑 점으로 다시 그림
+  if (DEMO) return;
+  try {
+    const r = await (await fetch("/api/run")).json();
+    laps.length = 0; laps.push(r.track || []);
+    afterTrack = r.after || [];
+    resetPoints(); addPoints(r.points || []);
+  } catch (e) { /* 다음에 다시 */ }
+}
+
+// ---------- 트랙 캔버스 ----------
+const cv = $("map"), ctx = cv.getContext("2d");
+const PX = 150, M = 18;   // px/m, 여백
+let bounds = { x0: 0, y0: 0, x1: 4, y1: 4 };
+const ptsLayer = document.createElement("canvas"), baseLayer = document.createElement("canvas");
+function P(x, y) { return [M + (x - bounds.x0) * PX, M + (bounds.y1 - y) * PX]; }
+function setupCanvas() {
+  const xs = mapData.outer.map((p) => p[0]), ys = mapData.outer.map((p) => p[1]);
+  bounds = { x0: Math.floor(Math.min(...xs)), y0: Math.floor(Math.min(...ys)), x1: Math.ceil(Math.max(...xs)), y1: Math.ceil(Math.max(...ys)) };
+  for (const c of [cv, ptsLayer, baseLayer]) { c.width = Math.round((bounds.x1 - bounds.x0) * PX + 2 * M); c.height = Math.round((bounds.y1 - bounds.y0) * PX + 2 * M); }
+  drawBase(); resetPoints();
+}
+function line(c, pts, color, w, dash, close) {
+  if (!pts || pts.length < 2) return;
+  c.save(); c.strokeStyle = color; c.lineWidth = w; c.setLineDash(dash || []); c.lineJoin = "round"; c.beginPath();
+  pts.forEach((p, i) => { const [u, v] = P(p[0], p[1]); i ? c.lineTo(u, v) : c.moveTo(u, v); });
+  if (close) c.closePath();
+  c.stroke(); c.restore();
+}
+function drawBase() {
+  const c = baseLayer.getContext("2d");
+  c.fillStyle = "#0b0e12"; c.fillRect(0, 0, baseLayer.width, baseLayer.height);
+  c.strokeStyle = "#1d242c"; c.lineWidth = 1; c.fillStyle = "#55606b"; c.font = "11px sans-serif";
+  for (let x = bounds.x0; x <= bounds.x1 + 1e-6; x += 0.5) { const [u] = P(x, 0); c.beginPath(); c.moveTo(u, M); c.lineTo(u, baseLayer.height - M); c.stroke(); if (Number.isInteger(x)) c.fillText(x + " m", u + 2, baseLayer.height - M - 3); }
+  for (let y = bounds.y0; y <= bounds.y1 + 1e-6; y += 0.5) { const [, v] = P(0, y); c.beginPath(); c.moveTo(M, v); c.lineTo(baseLayer.width - M, v); c.stroke(); }
+  line(c, mapData.outer, "#5b6573", 4, [], true);
+  line(c, mapData.inner, "#5b6573", 4, [], true);
+  line(c, mapData.center, "#9aa4b1", 1.5, [8, 6], true);
+  line(c, mapData.stop, "#f8fafc", 4);
+  line(c, mapData.start, "#ef4444", 5);
+  c.font = "bold 12px sans-serif";
+  { const [u, v] = P(mapData.stop[1][0] - 0.12, mapData.stop[1][1] + 0.08); c.fillStyle = "#f8fafc"; c.fillText("S", u, v); }
+  { const [u, v] = P(mapData.start[1][0] + 0.03, mapData.start[1][1] + 0.08); c.fillStyle = "#ef4444"; c.fillText("T1", u, v); }
+}
+function resetPoints() { const c = ptsLayer.getContext("2d"); c.clearRect(0, 0, ptsLayer.width, ptsLayer.height); }
+function addPoints(pts) {   // 매핑 점은 누적 레이어에 한 번만 그린다
+  if (!mapData) return;
+  const c = ptsLayer.getContext("2d");
+  for (const p of pts) { const [u, v] = P(p[0], p[1]); c.fillStyle = p[2] === 0 ? "rgba(59,130,246,.75)" : "rgba(239,68,68,.75)"; c.fillRect(u - 1.2, v - 1.2, 2.4, 2.4); }
+}
+function drawMap() {
+  if (!mapData) return;
+  ctx.drawImage(baseLayer, 0, 0);
+  ctx.drawImage(ptsLayer, 0, 0);
+  laps.slice(0, -1).forEach((l) => line(ctx, l, "#0e7490", 2));
+  line(ctx, afterTrack, "#a3e635", 2, [5, 4]);
+  const cur = laps[laps.length - 1];
+  line(ctx, cur, "#22d3ee", 3);
+  const r = latest && latest.run;
+  if (r && (r.running || cur.length)) {   // 차량 화살표
+    const [x, y, yaw] = r.pose; const [u, v] = P(x, y);
+    ctx.save(); ctx.translate(u, v); ctx.rotate(-yaw); ctx.fillStyle = "#facc15"; ctx.beginPath();
+    ctx.moveTo(14, 0); ctx.lineTo(-10, 8); ctx.lineTo(-10, -8); ctx.closePath(); ctx.fill(); ctx.restore();
+  }
+}
+
+// ---------- BEV 미니 ----------
+const bcv = $("bev"), bctx = bcv.getContext("2d");
+function BP(x, y) { return [(0.6 - y) * 100, (3.0 - x) * 100]; }
+function drawBev(f) {
+  bctx.fillStyle = "#0a0d10"; bctx.fillRect(0, 0, 120, 300);
+  const img = $("bevImg");
+  if ($("togBev").checked && img.complete && img.naturalWidth > 0) bctx.drawImage(img, 0, 0, 120, 300);
+  if (!f.lane) return;
+  const pl = (pts, color, w, dash) => { if (!pts || pts.length < 2) return; bctx.save(); bctx.strokeStyle = color; bctx.lineWidth = w; bctx.setLineDash(dash || []);
+    bctx.beginPath(); pts.forEach((p, i) => { const [u, v] = BP(p[0], p[1]); i ? bctx.lineTo(u, v) : bctx.moveTo(u, v); }); bctx.stroke(); bctx.restore(); };
+  pl(f.lane.left, "#3b82f6", 3); pl(f.lane.right, "#ef4444", 3); pl(f.lane.path, "#facc15", 2, [6, 5]);
+  if (f.lane.stop !== null && f.lane.stop !== undefined && isFinite(f.lane.stop)) {
+    const [, v] = BP(f.lane.stop, 0); bctx.strokeStyle = "#22c55e"; bctx.lineWidth = 5; bctx.beginPath(); bctx.moveTo(10, v); bctx.lineTo(110, v); bctx.stroke();
+  }
+}
+
+// ---------- 화면 갱신 ----------
+function kv(el, rows) { el.innerHTML = rows.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join(""); }
+const cm = (m) => (m * 100).toFixed(1) + " cm";
+function usageRow(name, value) {
+  const ok = value !== null && value !== undefined && isFinite(value), pct = ok ? Math.max(0, Math.min(100, value)) : 0;
+  return `<div class="bar-row"><span>${name}</span><div class="track"><div class="fill ${pct > 85 ? "hot" : ""}" style="width:${pct}%"></div></div><span>${ok ? value.toFixed(0) + " %" : "--"}</span></div>`;
+}
+function onTelemetry(f) {
+  latest = f;
+  const r = f.run;
+  if (r.running && !lastRunning) { laps.length = 0; laps.push([]); afterTrack = []; resetPoints(); lastLap = 0; }   // 새 주행
+  for (const p of f.new_track || []) laps[laps.length - 1].push(p);
+  if (r.lap !== lastLap && r.running) { const last = laps[laps.length - 1]; laps.push(last.length ? [last[last.length - 1]] : []); lastLap = r.lap; }
+  addPoints(f.new_points || []);
+  if (lastFinishing && !r.finishing) loadRun();   // 보정 끝남 → 보정 후 궤적
+  lastRunning = r.running; lastFinishing = r.finishing;
+  if (f.params_version !== undefined && f.params_version !== window._pv) { window._pv = f.params_version; loadParams(); }
+  render();
+}
+let pending = false;
+function render() { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; renderNow(); }); }
+function renderNow() {
+  const f = latest;
+  if (!f) return;
+  $("stateBadge").textContent = f.state; $("stateBadge").className = "state " + f.state;
+  $("reason").textContent = f.reason || "";
+  const st = $("status"); st.textContent = f.run.status || ""; st.className = "status" + (/실패|않음|중간/.test(f.run.status || "") ? " warn" : "");
+  const stopped = ["READY", "MANUAL"].includes(f.state);
+  $("btnStart").disabled = !(stopped && Object.values(f.readiness).every(Boolean)) || f.run.finishing;
+  $("btnRevert").disabled = f.run.running || f.run.finishing;
+  const r = f.run, v = f.vehicle;
+  $("lapBig").innerHTML = `${r.lap} <small>/ ${r.laps} 바퀴</small>`;
+  kv($("drive"), [["속도 / 목표", `${v.speed.toFixed(2)} / ${v.target.toFixed(2)} m/s`],
+    ["이번 바퀴 진행", `${r.lap_dist.toFixed(2)} / ${r.lap_length.toFixed(2)} m (${Math.min(999, 100 * r.lap_dist / r.lap_length).toFixed(0)}%)`],
+    ["위치 (x, y)", `${r.pose[0].toFixed(2)}, ${r.pose[1].toFixed(2)} m`], ["방향", (r.pose[2] * 180 / Math.PI).toFixed(1) + "°"],
+    ["duty / 단계", `${v.duty.toFixed(3)} · ${v.phase || "-"}`], ["CTE · 조향", `${cm(v.cte)} · ${v.steer_deg.toFixed(1)}°`],
+    ["기록 폴더", r.dir || "-"]]);
+  $("lapTable").querySelector("tbody").innerHTML = f.laps.map((m) =>
+    `<tr><td>${m.lap}</td><td class="${Math.abs(m.along) > 0.1 ? "bad" : ""}">${(m.along >= 0 ? "+" : "") + cm(m.along)}</td><td>${m.heading.toFixed(1)}°</td>` +
+    `<td>${(m.length >= 0 ? "+" : "") + (m.length * 100).toFixed(1)}%</td><td>${m.rms === null ? "-" : cm(m.rms)}</td></tr>`).join("");
+  const last = f.laps[f.laps.length - 1];
+  $("accNote").innerHTML = last && last.rms !== null ? `통과 위치 = 정지선 S를 지날 때 추정 위치의 앞뒤 오차 · 정확도 = 1 − RMS ÷ 차선 반폭 → 지금 <b style="color:#9ee6b8">${(100 * Math.max(0, 1 - last.rms / 0.325)).toFixed(1)}%</b>` : "정지선 S를 지날 때마다 한 줄씩 채워집니다";
+  const c = f.calib;
+  kv($("calib"), [["자이로 배율", c.gyro_scale.toFixed(4)], ["잔여 영점", (c.gyro_bias * 180 / Math.PI).toFixed(3) + " °/s"],
+    ["정지 영점 (이번 출발)", (r.bias0 * 180 / Math.PI).toFixed(3) + " °/s"], ["카메라–오도메트리 시간차", (c.latency * 1000).toFixed(0) + " ms"]]);
+  $("wheelTable").querySelector("tbody").innerHTML = c.wheel.length ? c.wheel.map(([s, k]) => `<tr><td></td><td>${s.toFixed(2)} m/s</td><td>${k.toFixed(4)}</td></tr>`).join("") : `<tr><td colspan="3" style="color:var(--dim)">아직 없음 (기본 1.0)</td></tr>`;
+  $("histTable").querySelector("tbody").innerHTML = f.history.slice().reverse().map((h) => h.action === "reverted"
+    ? `<tr><td>${h.time.slice(11, 16)}</td><td colspan="3">이전 값으로 되돌림</td><td></td></tr>`
+    : `<tr><td>${h.time.slice(11, 16)}</td><td>${h.speed.toFixed(2)}</td><td>${h.laps}</td><td>${cm(h.before)} → ${cm(h.after)}</td>` +
+      `<td class="${h.action === "applied" ? "good" : "bad"}">${h.action === "applied" ? "적용" : "건너뜀"}</td></tr>`).join("");
+  $("corrTable").querySelector("tbody").innerHTML = f.corrections.length ? f.corrections.map(([lap, s]) => `<tr><td>${lap}</td><td>${(s >= 0 ? "+" : "") + cm(s)}</td></tr>`).join("") : `<tr><td colspan="2" style="color:var(--dim)">${f.run.running ? "정지선 S를 지나면 표시" : "-"}</td></tr>`;
+  const insp = f.inspection;
+  $("checks").innerHTML = Object.entries(READY_LABEL).map(([k, n]) => `<span class="chip ${f.readiness[k] ? "ok" : ""}">${n}</span>`).join("");
+  kv($("inspect"), [["카메라 자세", `${insp.attitude.status} · 높이 ${insp.attitude.height_m.toFixed(3)} m · roll ${insp.attitude.roll_deg.toFixed(1)}° · pitch ${insp.attitude.pitch_down_deg.toFixed(1)}°`],
+    ["차선 모델", `${insp.model.status} ${insp.model.stage || ""}`], ["IMU 안정화", `${insp.stabilization_on ? "켜짐" : "꺼짐"} · ${insp.stabilization}`]]);
+  if (f.full) {
+    kv($("bevInfo"), [["정지선", f.lane.stop !== null && isFinite(f.lane.stop) ? f.lane.stop.toFixed(2) + " m" : "-"],
+      ["차선", f.lane.left.length && f.lane.right.length ? "양쪽" : f.lane.left.length ? "왼쪽만" : f.lane.right.length ? "오른쪽만" : "없음"]]);
+    $("stages").querySelector("tbody").innerHTML = f.stages.map((s) => `<tr><td>${STAGE_LABEL[s.name] || s.name}</td><td>${s.ms.toFixed(1)}</td><td>${s.fps.toFixed(0)}</td></tr>`).join("");
+    const u = f.usage; $("usage").innerHTML = usageRow("CPU", u.cpu) + usageRow("이 프로세스", u.proc_cpu) + usageRow("GPU", u.gpu) + usageRow("메모리", u.mem);
+    drawBev(f);
+  }
+  drawMap();
+}
+
+// ---------- 상단 입력 ↔ 파라미터 ----------
+function pval(name) { const p = params.find((q) => q.name === name); return p ? p.value : null; }
+function syncBar() {
+  if (document.activeElement !== $("inSpeed")) $("inSpeed").value = pval("run.speed_mps") ?? "";
+  if (document.activeElement !== $("inLaps")) $("inLaps").value = pval("run.laps") ?? "";
+  const seg = (id, name) => $(id).querySelectorAll("button").forEach((b) => b.classList.toggle("on", Number(b.dataset.v) === pval(name)));
+  seg("segStab", "camera.stabilization"); seg("segCorr", "slam.stopline_correction");
+}
+
+// ---------- 파라미터 창 (cone_drive_test와 같음) ----------
+function renderParams() {
+  const list = params.filter((p) => p.group === group);
+  let html = "", section = null;
+  for (const p of list) {
+    if (p.section !== section) { section = p.section; html += `<h3>${section}</h3>`; }
+    const val = p.name in edits ? edits[p.name] : p.value;
+    html += `<div class="prow"><label for="p_${p.name}">${p.label}${p.live ? "" : '<span class="restart">재시작 필요</span>'}<small>${p.name}</small></label>` +
+      `<input id="p_${p.name}" data-name="${p.name}" value="${val}" class="${p.name in edits ? "changed" : ""}" inputmode="decimal">` +
+      `<span class="unit">${p.unit || ""}</span></div>`;
+  }
+  $("plist").innerHTML = html;
+  $("plist").querySelectorAll("input").forEach((inp) => inp.addEventListener("input", () => {
+    const p = params.find((q) => q.name === inp.dataset.name), x = Number(inp.value);
+    inp.classList.toggle("bad", !(isFinite(x) && x >= p.min && x <= p.max));
+    if (x === p.value) delete edits[p.name]; else edits[p.name] = x;
+    inp.classList.toggle("changed", p.name in edits);
+    $("pmsg").textContent = Object.keys(edits).length ? `변경 ${Object.keys(edits).length}개 (적용 전)` : "";
+  }));
+}
+function openDrawer(open) { $("drawer").hidden = !open; }
+
+function bind() {
+  $("btnStart").addEventListener("click", async () => { const r = await post("/api/start"); if (!r.ok) $("reason").textContent = r.reason; });
+  $("btnStop").addEventListener("click", () => post("/api/stop"));
+  $("btnRevert").addEventListener("click", async () => {
+    if (!confirm("마지막으로 적용한 보정을 이전 값으로 되돌릴까요?")) return;
+    const r = await post("/api/action/revert"); $("reason").textContent = r.ok ? "되돌림" : r.reason;
+  });
+  $("inSpeed").addEventListener("change", () => setParam("run.speed_mps", Number($("inSpeed").value)));
+  $("inLaps").addEventListener("change", () => setParam("run.laps", Number($("inLaps").value)));
+  $("segStab").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setParam("camera.stabilization", Number(b.dataset.v))));
+  $("segCorr").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => setParam("slam.stopline_correction", Number(b.dataset.v))));
+  $("togBev").addEventListener("change", () => {
+    $("bevImg").src = $("togBev").checked && !DEMO ? "/api/stream/bev?client=" + clientId + "&t=" + Date.now() : "";
+    post("/api/view", { preview: true, bev: $("togBev").checked, camera: false });
+  });
+  $("btnParams").addEventListener("click", () => openDrawer($("drawer").hidden));
+  $("btnClose").addEventListener("click", () => openDrawer(false));
+  $("tabs").querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    group = b.dataset.group; $("tabs").querySelectorAll("button").forEach((c) => c.classList.toggle("on", c === b)); renderParams();
+  }));
+  $("btnReset").addEventListener("click", () => { edits = {}; $("pmsg").textContent = ""; renderParams(); });
+  $("btnApply").addEventListener("click", async () => {
+    const r = await post("/api/params", { changes: edits }); $("pmsg").textContent = r.ok ? "적용됨" : "거부: " + r.reason;
+    if (r.ok) { edits = {}; await loadParams(); }
+  });
+  $("btnSave").addEventListener("click", async () => { const r = await post("/api/params/save"); $("pmsg").textContent = r.ok ? "저장됨: " + (r.reason || "") : "저장 실패: " + r.reason; });
+}
+
+// ---------- 데모 (서버 없이 화면 확인) ----------
+function rounded(inset, rad) {
+  const a = inset, b = 4 - inset, pts = [];
+  const arc = (cx, cy, a0) => { for (let k = 0; k < 16; k++) { const t = a0 + (k / 16) * Math.PI / 2; pts.push([cx + rad * Math.cos(t), cy + rad * Math.sin(t)]); } };
+  pts.push([2, a]); arc(b - rad, a + rad, -Math.PI / 2); arc(b - rad, b - rad, 0); arc(a + rad, b - rad, Math.PI / 2); arc(a + rad, a + rad, Math.PI);
+  return pts;
+}
+function demoParams() {
+  return [{ name: "run.speed_mps", group: "slam", section: "주행 계획", label: "일정 속도", unit: "m/s", min: 0.2, max: 2.5, value: 1.2, live: true },
+    { name: "run.laps", group: "slam", section: "주행 계획", label: "목표 바퀴 수", unit: "", min: 1, max: 30, value: 10, live: true },
+    { name: "camera.stabilization", group: "slam", section: "매핑·보정", label: "IMU 영상 안정화 (0=끄기, 1=전체)", unit: "", min: 0, max: 1, value: 1, live: true },
+    { name: "slam.stopline_correction", group: "slam", section: "매핑·보정", label: "정지선 통과 시 위치 보정", unit: "", min: 0, max: 1, value: 1, live: true }];
+}
+function demo() {
+  mapData = { outer: rounded(0.175, 0.61), inner: rounded(0.825, 0.184), center: rounded(0.5, 0.4), stop: [[1.97, 0.175], [1.97, 0.825]], start: [[2.03, 0.175], [2.03, 0.825]], lap_length: 10.8 };
+  setupCanvas();
+  const mid = rounded(0.5, 0.4); mid.push(mid[0]);
+  const seg = []; let L = 0; for (let i = 1; i < mid.length; i++) { const d = Math.hypot(mid[i][0] - mid[i - 1][0], mid[i][1] - mid[i - 1][1]); seg.push([L, i]); L += d; }
+  const at = (s) => { s = ((s % L) + L) % L; let i = 1, acc = 0; for (; i < mid.length; i++) { const d = Math.hypot(mid[i][0] - mid[i - 1][0], mid[i][1] - mid[i - 1][1]); if (acc + d >= s) break; acc += d; }
+    const a = mid[i - 1], b = mid[Math.min(i, mid.length - 1)], u = (s - acc) / Math.max(1e-6, Math.hypot(b[0] - a[0], b[1] - a[1])); return [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1]), Math.atan2(b[1] - a[1], b[0] - a[0])]; };
+  let s = 0.03, lap = 0, lapStart = 0; const lapsM = [], corr = [];
+  setLink(true); loadParams();
+  setInterval(() => {
+    s += 0.12; const p = at(s), drift = 0.012 * (s - lapStart);
+    const x = p[0] + drift * Math.cos(p[2] + 1.2), y = p[1] + drift * Math.sin(p[2] + 1.2);
+    const pts = [];
+    for (let k = 0; k < 4; k++) { const q = at(s + 0.3 + k * 0.25); const l = [-Math.sin(q[2]), Math.cos(q[2])];
+      pts.push([q[0] + 0.325 * l[0] + drift * 0.8, q[1] + 0.325 * l[1], 0], [q[0] - 0.325 * l[0] + drift * 0.8, q[1] - 0.325 * l[1], 1]); }
+    if (s - lapStart > L) { lap++; lapsM.push({ lap, along: 0.12 - 0.03 * lap, heading: -5 + lap, length: 0.026 - 0.004 * lap, rms: 0.052 - 0.006 * lap }); corr.push([lap, -(0.12 - 0.03 * lap)]); lapStart = s; }
+    onTelemetry({ state: "DRIVING", reason: "", full: true, readiness: { attitude_ok: true, lane_model_ready: true, vesc_connected: true, erpm_fresh: true, lane_fresh: true, client_alive: true },
+      inspection: { attitude: { status: "PASS", height_m: 0.225, roll_deg: 0.2, pitch_down_deg: 6.2, message: "" }, model: { status: "READY", stage: "" }, stabilization: "적용 97%", stabilization_on: true },
+      vehicle: { speed: 1.19, target: 1.2, steer_deg: 4.1, cte: 0.013, duty: 0.087, brake: 0, phase: "duty_only_track", lon_mode: 2 },
+      run: { running: true, finished: false, lap, laps: 10, target_speed: 1.2, lap_dist: s - lapStart, lap_length: L, bias0: 0.0021, pose: [x, y, p[2]], status: "주행 중", dir: "2026-11-19_1420_v1.20", finishing: false },
+      laps: lapsM, corrections: corr, calib: { gyro_scale: 1.0172, gyro_bias: -0.0073, latency: 0.048, wheel: [[1.0, 0.9813], [1.2, 0.9731]] },
+      history: [{ time: "2026-11-19 14:02:11", action: "applied", speed: 1.0, laps: 10, before: 0.068, after: 0.029, acc: 0.91 }, { time: "2026-11-19 14:20:40", action: "skipped", speed: 1.2, laps: 10, before: 0.044, after: 0.049, acc: 0.85 }],
+      new_track: [[x, y]], new_points: pts,
+      lane: { left: [[0.2, 0.33], [1.5, 0.31], [2.8, 0.2]], right: [[0.2, -0.33], [1.5, -0.34], [2.8, -0.45]], path: [[0, 0], [1.5, -0.01], [2.8, -0.12]], stop: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null },
+      stages: [{ name: "cam_rgb", ms: 0, fps: 61 }, { name: "receive", ms: 43.9, fps: 63 }, { name: "stabilize_bev", ms: 1.4, fps: 63 }, { name: "lane_infer", ms: 6.0, fps: 62 }, { name: "lane_post", ms: 2.4, fps: 63 }, { name: "control", ms: 0.1, fps: 63 }],
+      usage: { cpu: 38, proc_cpu: 11, gpu: 41, mem: 35 } });
+  }, 100);
+}
+
+bind();
+if (DEMO) demo();
+else {
+  fetch("/api/map").then((r) => r.json()).then((m) => { mapData = m; setupCanvas(); loadRun(); render(); });
+  loadParams();
+  connect();
+}
