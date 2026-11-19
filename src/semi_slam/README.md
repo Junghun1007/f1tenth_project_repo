@@ -50,7 +50,8 @@ source install/setup.bash && ros2 launch semi_slam semi_slam.launch.py
 ## 정답 트랙
 
 `maps/track_4x4.csv` (`line,x_m,y_m`: outer, inner, center, stop_S, start_T1). 치수는 사용자 트랙 그림에서 읽은 값으로
-`tools/make_track_csv.py`에 적혀 있다 (바깥 선 0.175 m 안쪽·코너 R 0.61, 안쪽 선 0.825 m·r 0.184, 정지선 x 1.97, 출발선 x 2.03).
+`tools/make_track_csv.py`에 적혀 있다. 선 위치는 테이프 가운데이고, 차선 폭은 실측(테이프 안쪽 64 cm + 테이프 3 cm = 가운데 간격 67 cm)을 쓴다
+(바깥 선 0.165 m 안쪽·코너 R 0.62, 안쪽 선 0.835 m·r 0.174, 정지선 x 1.97, 출발선 x 2.03).
 
 ## 호스트 테스트 (ROS 없이)
 

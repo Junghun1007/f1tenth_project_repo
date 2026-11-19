@@ -48,6 +48,7 @@ TrackMap TrackMap::load_csv(const std::string & path) {
   m.middle_ = {sx / double(m.inner.size()), sy / double(m.inner.size())};
   m.lap_length_ = 0.5 * (length_closed(m.outer) + length_closed(m.inner));
   m.build_fields();
+  m.lane_width_ = m.dist_inner(m.outer[0]);   // 아래 변 가운데: 바깥 선에서 안쪽 선까지
   return m;
 }
 

@@ -98,8 +98,9 @@ RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double
 TEST(track_map_loads_and_measures_line_distance) {
   const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
   CHECK(m.outer.size() > 100 && m.inner.size() > 100);
-  CHECK_NEAR(m.dist_outer({2.0, 0.175}), 0.0, 0.011);
-  CHECK_NEAR(m.dist_inner({2.0, 0.5}), 0.325, 0.011);
+  CHECK_NEAR(m.dist_outer({2.0, 0.165}), 0.0, 0.011);
+  CHECK_NEAR(m.dist_inner({2.0, 0.5}), 0.335, 0.011);
+  CHECK_NEAR(m.lane_width(), 0.67, 0.011);   // 테이프 안쪽 64 cm + 두께 3 cm
   CHECK(m.lap_length() > 10.0 && m.lap_length() < 13.0);
   const Vec2 d = m.travel_dir_at(m.stop_center());   // 아래쪽 도로를 반시계로 → +x
   CHECK_NEAR(d.x, 1.0, 1e-9);
@@ -118,7 +119,7 @@ TEST(calibration_value_round_trips_json) {
 TEST(laps_are_counted_at_stop_line_and_calibration_recovers_sensor_errors) {
   const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
   SlamCore core(m);
-  const auto run = simulate(core, m, 5, 1.0, 1.05, 0.97, 0.008);
+  const auto run = simulate(core, m, 5, 1.0, 1.05, 0.97, 0.0015);   // 잔여 영점: 출발 직전 정지 측정 뒤 남는 정도 (0.09°/s)
   const auto live = core.live();
   std::printf("  lap %d finished %d crossings %zu\n", live.lap, int(live.finished), run.crossing_t.size());
   CHECK(live.finished);
@@ -128,14 +129,14 @@ TEST(laps_are_counted_at_stop_line_and_calibration_recovers_sensor_errors) {
   std::printf("  before rms %.3f m (acc %.1f%%), after rms %.3f m (acc %.1f%%), evals %d\n", r.before.rms_m, r.before.accuracy * 100,
               r.after.rms_m, r.after.accuracy * 100, r.evaluations);
   std::printf("  wheel %.4f (truth %.4f) gyro %.4f (truth %.4f) bias %.4f (truth %.4f) latency %.3f\n", r.calib.wheel_scale_for(1.0), 1 / 1.05,
-              r.calib.gyro_scale, 1 / 0.97, r.calib.gyro_bias, 0.008, r.calib.latency);
+              r.calib.gyro_scale, 1 / 0.97, r.calib.gyro_bias, 0.0015, r.calib.latency);
   CHECK(r.improved);
   CHECK(r.after.rms_m < 0.02);
   CHECK(r.after.accuracy > 0.95);
   CHECK_NEAR(r.calib.wheel_scale_for(1.0), 1 / 1.05, 0.01);
   // 일정 속도·같은 트랙에서는 자이로 배율과 잔여 영점이 서로 일부 대신할 수 있어(궤적이 거의 같음) 넓게 본다
   CHECK_NEAR(r.calib.gyro_scale, 1 / 0.97, 0.015);
-  CHECK_NEAR(r.calib.gyro_bias, 0.008, 0.01);
+  CHECK_NEAR(r.calib.gyro_bias, 0.0015, 0.004);
 }
 
 #include "semi_slam/core/run_store.hpp"
@@ -180,12 +181,12 @@ TEST(run_folder_round_trips_and_calibration_store_reverts) {
 TEST(calibration_handles_lane_noise_and_camera_delay) {   // 차선 점 잡음 σ 1.5 cm + 영상 시각 40 ms 지연
   const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
   SlamCore core(m);
-  const auto run = simulate(core, m, 5, 1.4, 0.96, 1.02, -0.006, 0.04, 0.015);
+  const auto run = simulate(core, m, 5, 1.4, 0.96, 1.02, -0.001, 0.04, 0.015);
   const auto r = calibrate(run, OdomCalib{}, m);
-  std::printf("  acc %.1f%% -> %.1f%%  wheel %.4f (truth %.4f) gyro %.4f (truth %.4f) bias %.4f (truth -0.006) latency %.3f (truth 0.040)\n",
+  std::printf("  acc %.1f%% -> %.1f%%  wheel %.4f (truth %.4f) gyro %.4f (truth %.4f) bias %.4f (truth -0.001) latency %.3f (truth 0.040)\n",
               r.before.accuracy * 100, r.after.accuracy * 100, r.calib.wheel_scale_for(1.4), 1 / 0.96, r.calib.gyro_scale, 1 / 1.02, r.calib.gyro_bias, r.calib.latency);
   OdomCalib truth;
-  truth.set_wheel_scale(1.4, 1 / 0.96); truth.gyro_scale = 1 / 1.02; truth.gyro_bias = -0.006; truth.latency = 0.04;
+  truth.set_wheel_scale(1.4, 1 / 0.96); truth.gyro_scale = 1 / 1.02; truth.gyro_bias = -0.001; truth.latency = 0.04;
   const auto et = evaluate(run, truth, m);
   std::printf("  truth params: acc %.1f%% rms %.4f stop %.4f cost %.6f / found rms %.4f stop %.4f cost %.6f\n", et.accuracy * 100, et.rms_m, et.stop_rms_m, et.cost, r.after.rms_m, r.after.stop_rms_m, r.after.cost);
   CHECK(r.improved);

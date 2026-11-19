@@ -170,12 +170,13 @@ function renderNow() {
     `<tr><td>${m.lap}</td><td class="${Math.abs(m.along) > 0.1 ? "bad" : ""}">${(m.along >= 0 ? "+" : "") + cm(m.along)}</td><td>${m.heading.toFixed(1)}°</td>` +
     `<td>${(m.length >= 0 ? "+" : "") + (m.length * 100).toFixed(1)}%</td><td>${m.rms === null ? "-" : cm(m.rms)}</td></tr>`).join("");
   const last = f.laps[f.laps.length - 1];
-  $("accNote").innerHTML = last && last.rms !== null ? `통과 위치 = 정지선 S를 지날 때 추정 위치의 앞뒤 오차 · 정확도 = 1 − RMS ÷ 차선 반폭 → 지금 <b style="color:#9ee6b8">${(100 * Math.max(0, 1 - last.rms / 0.325)).toFixed(1)}%</b>` : "정지선 S를 지날 때마다 한 줄씩 채워집니다";
+  const half = mapData && mapData.lane_width ? mapData.lane_width / 2 : 0.335;
+  $("accNote").innerHTML = last && last.rms !== null ? `통과 위치 = 정지선 S를 지날 때 추정 위치의 앞뒤 오차 · 정확도 = 1 − RMS ÷ 차선 반폭 → 지금 <b style="color:#9ee6b8">${(100 * Math.max(0, 1 - last.rms / half)).toFixed(1)}%</b>` : "정지선 S를 지날 때마다 한 줄씩 채워집니다";
   const c = f.calib;
   kv($("calib"), [["자이로 배율", c.gyro_scale.toFixed(4)], ["잔여 영점", (c.gyro_bias * 180 / Math.PI).toFixed(3) + " °/s"],
     ["정지 영점 (이번 출발)", (r.bias0 * 180 / Math.PI).toFixed(3) + " °/s"], ["카메라–오도메트리 시간차", (c.latency * 1000).toFixed(0) + " ms"],
     ["카메라 틀어짐 (BEV 회전)", ((c.cam_yaw || 0) * 180 / Math.PI).toFixed(2) + "°"], ["BEV 가로 축척", (c.bev_scale || 1).toFixed(3)],
-    ["BEV로 잰 차선 폭 (정답 65 cm)", r.lane_width !== null && r.lane_width !== undefined && isFinite(r.lane_width) ? cm(r.lane_width) : "-"]]);
+    [`BEV로 잰 차선 폭 (정답 ${mapData && mapData.lane_width ? cm(mapData.lane_width) : "-"})`, r.lane_width !== null && r.lane_width !== undefined && isFinite(r.lane_width) ? cm(r.lane_width) : "-"]]);
   $("wheelTable").querySelector("tbody").innerHTML = c.wheel.length ? c.wheel.map(([s, k]) => `<tr><td></td><td>${s.toFixed(2)} m/s</td><td>${k.toFixed(4)}</td></tr>`).join("") : `<tr><td colspan="3" style="color:var(--dim)">아직 없음 (기본 1.0)</td></tr>`;
   $("histTable").querySelector("tbody").innerHTML = f.history.slice().reverse().map((h) => h.action === "reverted"
     ? `<tr><td>${h.time.slice(11, 16)}</td><td colspan="3">이전 값으로 되돌림</td><td></td></tr>`
@@ -276,7 +277,7 @@ function demoParams() {
     { name: "slam.stopline_correction", group: "slam", section: "매핑·보정", label: "정지선 통과 시 위치 보정", unit: "", min: 0, max: 1, value: 1, live: true }];
 }
 function demo() {
-  mapData = { outer: rounded(0.175, 0.61), inner: rounded(0.825, 0.184), center: rounded(0.5, 0.4), stop: [[1.97, 0.175], [1.97, 0.825]], start: [[2.03, 0.175], [2.03, 0.825]], lap_length: 10.8 };
+  mapData = { outer: rounded(0.165, 0.62), inner: rounded(0.835, 0.174), center: rounded(0.5, 0.4), stop: [[1.97, 0.165], [1.97, 0.835]], start: [[2.03, 0.165], [2.03, 0.835]], lap_length: 10.8, lane_width: 0.67 };
   setupCanvas();
   const mid = rounded(0.5, 0.4); mid.push(mid[0]);
   const seg = []; let L = 0; for (let i = 1; i < mid.length; i++) { const d = Math.hypot(mid[i][0] - mid[i - 1][0], mid[i][1] - mid[i - 1][1]); seg.push([L, i]); L += d; }

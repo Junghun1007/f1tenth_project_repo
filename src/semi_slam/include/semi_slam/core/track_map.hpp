@@ -17,6 +17,7 @@ struct TrackMap {
   double dist_outer(const Vec2 & p) const { return field(outer_field_, p); }
   double dist_inner(const Vec2 & p) const { return field(inner_field_, p); }
   double lap_length() const { return lap_length_; }       // 바깥·안쪽 선 길이 평균 (참고 값)
+  double lane_width() const { return lane_width_; }       // 두 흰 선(테이프 가운데) 간격
   Vec2 stop_center() const { return {(stop_a.x + stop_b.x) / 2, (stop_a.y + stop_b.y) / 2}; }
   Vec2 start_center() const { return {(start_a.x + start_b.x) / 2, (start_a.y + start_b.y) / 2}; }
   // 주행 방향 (정지선을 반시계로 지날 때 진행 방향, 단위 벡터): 정지선의 법선 중 트랙 안쪽 중심 기준 반시계
@@ -27,7 +28,7 @@ private:
   double field(const cv::Mat & f, const Vec2 & p) const;
   cv::Mat outer_field_, inner_field_;
   double res_{0.01}, x0_{-0.5}, y0_{-0.5};
-  double lap_length_{0};
+  double lap_length_{0}, lane_width_{0.67};
   Vec2 middle_{2, 2};
 };
 

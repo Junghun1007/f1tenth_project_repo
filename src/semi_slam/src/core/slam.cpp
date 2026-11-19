@@ -11,7 +11,6 @@ namespace semi_slam {
 
 namespace {
 constexpr double kPi = 3.14159265358979323846;
-constexpr double kLaneHalf = 0.325;
 constexpr double kCap = 0.15;          // 차선 점 오차 상한 (오인식 점이 보정을 끌고 가지 않게)
 double wrap(double a) { while (a > kPi) a -= 2 * kPi; while (a < -kPi) a += 2 * kPi; return a; }
 double dot(const Vec2 & a, const Vec2 & b) { return a.x * b.x + a.y * b.y; }
@@ -156,7 +155,7 @@ Evaluation evaluate(const RunData & run, const OdomCalib & calib, const TrackMap
   }
   e.rms_m = e.points ? std::sqrt(sq / e.points) : std::numeric_limits<double>::quiet_NaN();
   e.stop_rms_m = ns ? std::sqrt(ssq / ns) : 0.0;
-  e.accuracy = e.points ? std::max(0.0, 1.0 - e.rms_m / kLaneHalf) : 0.0;
+  e.accuracy = e.points ? std::max(0.0, 1.0 - e.rms_m / (0.5 * map.lane_width())) : 0.0;
   e.cost = (e.points ? sq / e.points : 1.0) + (ns ? ssq / ns : 0.0);
   const Vec2 st{run.start.x, run.start.y};
   double prev_d = 0;

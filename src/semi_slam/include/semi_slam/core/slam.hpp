@@ -77,7 +77,7 @@ struct LapMetrics {
   int points{0};
 };
 struct Evaluation {
-  double rms_m{0}, accuracy{0};   // accuracy = 1 − rms / 차선 반폭(0.325)
+  double rms_m{0}, accuracy{0};   // accuracy = 1 − rms / 차선 반폭 (지도 선 간격의 절반)
   double stop_rms_m{0};
   int points{0};
   double cost{0};
@@ -115,7 +115,7 @@ struct LiveState {
   double bias0{0};
   double stop_seen_m{std::numeric_limits<double>::quiet_NaN()};   // 마지막으로 본 정지선 거리 (앞차축 기준)
   bool stop_near_s{false};          // 그 정지선이 지도상 정지선 S 근처인지
-  double lane_width{std::numeric_limits<double>::quiet_NaN()};   // BEV로 잰 차선 폭 (정답 0.65 m, 다르면 BEV 축척 문제)
+  double lane_width{std::numeric_limits<double>::quiet_NaN()};   // BEV로 잰 차선 폭 (테이프 가운데 간격, 정답은 지도 값)
   int rejected_far{0};              // 지도상 S와 멀어서 무시한 정지선 (오인식)
   int rejected_lap{0};              // 바퀴 거리가 안 맞아 무시한 통과
 };

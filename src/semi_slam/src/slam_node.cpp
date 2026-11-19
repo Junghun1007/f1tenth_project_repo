@@ -220,6 +220,7 @@ private:
       lc.centerline.corner_entry_distance_m = s.corner_entry_distance_m;
       lc.centerline.corner_entry_full_offset_distance_m = s.corner_entry_full_offset_m;
       lc.side_tracking = s.lane_side_tracking;
+      lc.centerline.lane_width_m = slam_->map().lane_width();   // 한쪽 선만 보일 때 중앙선 = 그 선 + 실제 반폭 (주행 경로)
       lane_->set_post_config(lc);
     }
   }
@@ -370,6 +371,7 @@ private:
     w.key("stop"); points_json(w, {m.stop_a, m.stop_b});
     w.key("start"); points_json(w, {m.start_a, m.start_b});
     w.key("lap_length").value(m.lap_length(), 3);
+    w.key("lane_width").value(m.lane_width(), 3);
     w.end_object();
     return w.str();
   }

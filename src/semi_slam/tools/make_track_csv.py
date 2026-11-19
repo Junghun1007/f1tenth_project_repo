@@ -1,9 +1,11 @@
 """정답 트랙 CSV 생성 (사용자가 준 4 m × 4 m 트랙 그림에서 읽은 치수).
 
 좌표: 트랙 영역 왼쪽 아래 모서리 = 원점, x = 오른쪽, y = 위 (m). 주행 방향은 반시계.
-  바깥 흰 선: 가장자리에서 0.175 m 안쪽, 코너 반지름 0.61 m (대각선 50.0 cm에서 계산)
-  안쪽 흰 선: 가장자리에서 0.825 m 안쪽, 코너 반지름 0.184 m (대각선 124.3 cm에서 계산)
-  도로 폭 0.65 m. 중앙 점선은 그림에 표시만 한 것 → 화면 참고용으로만 저장 (매핑·보정에 쓰지 않음)
+  선 위치 = 테이프 가운데 (차선 인식도 테이프 가운데를 선으로 잡는다)
+  실측: 차선 폭 = 테이프 안쪽 끼리 0.64 m, 테이프 두께 0.03 m → 테이프 가운데 간격 0.67 m
+  도로 가운데(가장자리에서 0.50 m)는 그림 그대로 두고 두 선을 양쪽으로 0.335 m씩
+  바깥 흰 선: 가장자리에서 0.165 m, 코너 반지름 0.62 m (그림의 대각선 50.0 cm에서 구한 코너 중심 유지)
+  안쪽 흰 선: 가장자리에서 0.835 m, 코너 반지름 0.174 m (그림의 대각선 124.3 cm에서 구한 코너 중심 유지) 중앙 점선은 그림에 표시만 한 것 → 화면 참고용으로만 저장 (매핑·보정에 쓰지 않음)
   정지선 S: x = 1.97 m, 출발선 T1: x = 2.03 m (아래쪽 도로를 가로지름)
 
     python3 tools/make_track_csv.py maps/track_4x4.csv
@@ -12,8 +14,11 @@ import math
 import sys
 
 SIZE = 4.0
-OUTER_INSET, OUTER_R = 0.175, 0.61
-INNER_INSET, INNER_R = 0.825, 0.184
+LANE_INNER_EDGE, TAPE = 0.64, 0.03
+HALF = (LANE_INNER_EDGE + TAPE) / 2                      # 0.335
+OUTER_CORNER_CENTER, INNER_CORNER_CENTER = 0.785, 1.009  # 그림에서 구한 코너 중심 (가장자리에서)
+OUTER_INSET, INNER_INSET = 0.50 - HALF, 0.50 + HALF
+OUTER_R, INNER_R = OUTER_CORNER_CENTER - OUTER_INSET, INNER_CORNER_CENTER - INNER_INSET
 STOP_X, START_X = 1.97, 2.03
 SPACING = 0.01
 
