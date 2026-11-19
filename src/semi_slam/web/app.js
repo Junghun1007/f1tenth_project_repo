@@ -125,6 +125,31 @@ function drawMap() {
   }
 }
 
+// ---------- BEV 차선 각도 (카메라 틀어짐 확인용) ----------
+// 차를 직선에 차선과 나란히 세웠을 때 0°에 가까워야 정상. 계속 몇 도씩 나오면 BEV(카메라)가 그만큼 틀어진 것
+const angHist = [];
+function fitLine(pts) {   // y = a·x + b, 가까운 직선 부분만 (semi_slam 정지선 기준 보정과 같은 범위)
+  let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const [x, y] of pts) if (x >= 0.15 && x <= 0.8) { n++; sx += x; sy += y; sxx += x * x; sxy += x * y; }
+  const den = n * sxx - sx * sx;
+  if (n < 6 || Math.abs(den) < 1e-9) return null;
+  const a = (n * sxy - sx * sy) / den;
+  return { a, b: (sy - a * sx) / n };
+}
+function laneAngle(lane) {
+  const L = fitLine(lane.left || []), R = fitLine(lane.right || []);
+  const d = (f) => (f ? Math.atan(f.a) * 180 / Math.PI : null);
+  const left = d(L), right = d(R);
+  const both = L && R && Math.abs(L.a - R.a) < 0.1;
+  const mean = both ? (left + right) / 2 : left !== null ? left : right;
+  const now = performance.now() / 1000;
+  if (both) angHist.push([now, mean]);
+  while (angHist.length && angHist[0][0] < now - 2) angHist.shift();
+  const avg = angHist.length ? angHist.reduce((s, v) => s + v[1], 0) / angHist.length : null;
+  const center = both ? ((L.a + R.a) / 2) * 0.3 + (L.b + R.b) / 2 : null;
+  return { left, right, mean, avg, center };
+}
+
 // ---------- BEV 미니 ----------
 const bcv = $("bev"), bctx = bcv.getContext("2d");
 function BP(x, y) { return [(0.6 - y) * 100, (3.0 - x) * 100]; }
@@ -203,8 +228,13 @@ function renderNow() {
   kv($("inspect"), [["카메라 자세", `${insp.attitude.status} · 높이 ${insp.attitude.height_m.toFixed(3)} m · roll ${insp.attitude.roll_deg.toFixed(1)}° · pitch ${insp.attitude.pitch_down_deg.toFixed(1)}°`],
     ["차선 모델", `${insp.model.status} ${insp.model.stage || ""}`], ["IMU 안정화", `${insp.stabilization_on ? "켜짐" : "꺼짐"} · ${insp.stabilization}`]]);
   if (f.full) {
+    const ang = laneAngle(f.lane);
+    const deg = (v) => (v === null ? "-" : (v >= 0 ? "+" : "") + v.toFixed(1) + "°");
     kv($("bevInfo"), [["정지선", f.lane.stop !== null && isFinite(f.lane.stop) ? f.lane.stop.toFixed(2) + " m" : "-"],
-      ["차선", f.lane.left.length && f.lane.right.length ? "양쪽" : f.lane.left.length ? "왼쪽만" : f.lane.right.length ? "오른쪽만" : "없음"]]);
+      ["차선", f.lane.left.length && f.lane.right.length ? "양쪽" : f.lane.left.length ? "왼쪽만" : f.lane.right.length ? "오른쪽만" : "없음"],
+      ["차선 각도 (0.15~0.8 m, + = 왼쪽으로 기울어 보임)", `${deg(ang.mean)} · 2초 평균 ${deg(ang.avg)}`],
+      ["  왼쪽 선 / 오른쪽 선", `${deg(ang.left)} / ${deg(ang.right)}`],
+      ["차선 가운데 (0.3 m 앞, + = 차보다 왼쪽)", ang.center === null ? "-" : (ang.center * 100).toFixed(1) + " cm"]]);
     $("stages").querySelector("tbody").innerHTML = f.stages.map((s) => `<tr><td>${STAGE_LABEL[s.name] || s.name}</td><td>${s.ms.toFixed(1)}</td><td>${s.fps.toFixed(0)}</td></tr>`).join("");
     const u = f.usage; $("usage").innerHTML = usageRow("CPU", u.cpu) + usageRow("이 프로세스", u.proc_cpu) + usageRow("GPU", u.gpu) + usageRow("메모리", u.mem);
     drawBev(f);
@@ -316,7 +346,7 @@ function demo() {
       laps: lapsM, corrections: corr, calib: { gyro_scale: 1.0172, gyro_bias: -0.0073, latency: 0.048, cam_yaw: -0.012, bev_scale: 1.084, wheel: [[1.0, 0.9813], [1.2, 0.9731]] },
       history: [{ time: "2026-11-19 14:02:11", action: "applied", speed: 1.0, laps: 10, before: 0.068, after: 0.029, acc: 0.91 }, { time: "2026-11-19 14:20:40", action: "skipped", speed: 1.2, laps: 10, before: 0.044, after: 0.049, acc: 0.85 }],
       new_track: [[x, y]], new_points: pts,
-      lane: { left: [[0.2, 0.33], [1.5, 0.31], [2.8, 0.2]], right: [[0.2, -0.33], [1.5, -0.34], [2.8, -0.45]], path: [[0, 0], [1.5, -0.01], [2.8, -0.12]], stop: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null },
+      lane: { left: Array.from({ length: 40 }, (_, i) => [0.2 + i * 0.05, 0.33 + i * 0.05 * 0.035]), right: Array.from({ length: 40 }, (_, i) => [0.2 + i * 0.05, -0.34 + i * 0.05 * 0.035]), path: [[0, 0], [1.5, -0.01], [2.8, -0.12]], stop: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null },
       stages: [{ name: "cam_rgb", ms: 0, fps: 61 }, { name: "receive", ms: 43.9, fps: 63 }, { name: "stabilize_bev", ms: 1.4, fps: 63 }, { name: "lane_infer", ms: 6.0, fps: 62 }, { name: "lane_post", ms: 2.4, fps: 63 }, { name: "control", ms: 0.1, fps: 63 }],
       usage: { cpu: 38, proc_cpu: 11, gpu: 41, mem: 35 } });
   }, 100);
