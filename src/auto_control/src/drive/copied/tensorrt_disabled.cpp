@@ -12,6 +12,7 @@ TensorRtYoloxBackend::TensorRtYoloxBackend(TensorRtYoloxBackend &&) noexcept = d
 TensorRtYoloxBackend & TensorRtYoloxBackend::operator=(TensorRtYoloxBackend &&) noexcept = default;
 TensorRtInferenceTiming TensorRtYoloxBackend::infer(const float *, std::size_t, float *, std::size_t) {throw std::logic_error("TensorRT disabled");}
 TensorRtInferenceTiming TensorRtYoloxBackend::infer_nv12(const std::uint8_t *, std::size_t, std::size_t, int, int, int, int, int, int, float *, std::size_t) {throw std::logic_error("TensorRT disabled");}
+TensorRtInferenceTiming TensorRtYoloxBackend::infer_nv12_device(const std::uint8_t *, std::size_t, int, int, int, int, int, int, float *, std::size_t) {throw std::logic_error("TensorRT disabled");}
 int TensorRtYoloxBackend::output_row_count() const noexcept { return 0; }
 int TensorRtYoloxBackend::output_column_count() const noexcept { return 0; }
 const std::string & TensorRtYoloxBackend::engine_cache_path() const noexcept {static const std::string empty; return empty;}

@@ -25,12 +25,16 @@ struct ModelConfig {
 };
 
 // 카메라 NV12 한 장 (owner가 버퍼를 붙잡고 있음). t = 촬영 시각 (steady, s)
+//  호스트: nv12 (신호등 색·카메라 보기에 씀)  /  GPU: device (camera_driver 공유 업로드, 있으면 추론은 이걸로)
 struct Nv12Frame {
   std::shared_ptr<const void> owner;
   const std::uint8_t * nv12{nullptr};
   std::size_t size{0}, stride{0};
   int width{0}, height{0};
   double t{0};
+  std::shared_ptr<const void> device_owner;
+  const std::uint8_t * device{nullptr};   // Y 평면, UV는 height×device_pitch 위치
+  std::size_t device_pitch{0};
 };
 
 // 깊이 한 장 (RAW16 mm, CAM_A 정렬). 내부 파라미터는 이 깊이 영상 기준
@@ -58,7 +62,9 @@ public:
   void set_mount(const CameraMount & m, const RgbIntrinsics & k);
   void set_paused(bool paused) { paused_ = paused; }   // 터널(IR) 구간: 추론하지 않음
   bool ready() const;
-  void push_frame(std::shared_ptr<const Nv12Frame> f);   // 카메라 스레드: 최신 것만 남기고 바로 돌아감
+  void push_frame(std::shared_ptr<const Nv12Frame> f);   // 카메라 스레드 (호스트 NV12): 최신 것만 남기고 바로 돌아감
+  // GPU 원본 (camera_driver 공유 업로드). 들어오기 시작하면 추론은 이것으로 하고, 같은 시각의 호스트 프레임을 짝지어 둔다
+  void push_device_frame(std::shared_ptr<const Nv12Frame> f);
   void push_depth(std::shared_ptr<const DepthImage> d);  // 깊이 스레드
   void start();
   void stop();
@@ -82,6 +88,8 @@ private:
   std::mutex frame_m_;
   std::condition_variable frame_cv_;
   std::shared_ptr<const Nv12Frame> pending_;
+  std::deque<std::shared_ptr<const Nv12Frame>> host_recent_;   // GPU 프레임과 짝지을 최근 호스트 프레임 (최대 4장)
+  double last_device_t_{-1e9};                                 // 마지막 GPU 프레임 도착 (now_sec)
   mutable std::mutex depth_m_;
   std::deque<std::shared_ptr<const DepthImage>> depths_;   // 최근 깊이 (최대 8장)
   std::thread thread_, jpeg_thread_;

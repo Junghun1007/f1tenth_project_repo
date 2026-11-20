@@ -7,6 +7,8 @@
 #include "camera_driver/msg/bev_input.hpp"
 #include "camera_driver/msg/tunnel_frame_stats.hpp"
 #include "camera_driver/tunnel_frame_stats.hpp"
+#include "camera_driver/device_nv12_uploader.hpp"
+#include "bev_handoff/device_frame_handoff.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include "point_cloud/depth_source.hpp"
@@ -1270,6 +1272,8 @@ private:
       point_cloud::validate(depth_config_);
     }
     tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
+    // true: 원본 NV12를 GPU에 한 번 올려 BEV(bev_processor)·YOLO(auto_control)가 함께 쓴다 (호스트 크롭 복사·이중 업로드 없음)
+    gpu_shared_upload_enabled_=node_.declare_parameter<bool>("gpu_shared_upload_enabled",false,descriptor);
     tunnel_validation_mode_=node_.declare_parameter<bool>("tunnel.validation_mode",false);
     tunnel_ir_imu_enabled_=node_.declare_parameter<bool>("tunnel.ir_imu_enabled",true);
     tunnel_ir_imu_max_age_sec_=node_.declare_parameter<double>("tunnel.ir_imu_max_age_sec",0.05);
@@ -2356,7 +2360,8 @@ while True:
   bool copy_frame_to_bev_input(
     dai::ImgFrame & packet,
     const StabilizationTransform & transform,
-    camera_driver::msg::BevInput & message)
+    camera_driver::msg::BevInput & message,
+    const std::uint64_t device_frame_id = 0U)
   {
     const auto & frame_data = packet.getData();
     const auto source_stride =
@@ -2412,6 +2417,11 @@ while True:
       message.depth_geometry_valid=true;
     }
 
+    if (device_frame_id != 0U) {
+      // 원본이 이미 GPU에 있다 (bev_handoff::DeviceNv12Frame) → 호스트 크롭 복사를 하지 않는다
+      message.device_frame_id = device_frame_id;
+      return true;
+    }
     const std::size_t output_y_bytes =
       static_cast<std::size_t>(frame_width) *
       static_cast<std::size_t>(fused_bev_crop_height_);
@@ -2717,13 +2727,43 @@ while True:
               output_available;
           }
 
+          // 원본 NV12를 GPU에 한 번만 올려 BEV와 YOLO(같은 프로세스)가 함께 쓴다
+          std::uint64_t device_frame_id = 0U;
+          if (gpu_shared_upload_enabled_ && fused_bev_output_enabled_ &&
+            snapshot->packet->getType() == dai::ImgFrame::Type::NV12)
+          {
+            try {
+              const int width = static_cast<int>(snapshot->packet->getWidth());
+              const int height = static_cast<int>(snapshot->packet->getHeight());
+              if (!device_uploader_ || device_uploader_->width() != width || device_uploader_->height() != height) {
+                device_uploader_ = std::make_unique<DeviceNv12Uploader>(width, height, 4);
+              }
+              const auto & data = snapshot->packet->getData();
+              const std::size_t stride = snapshot->packet->getStride() ? snapshot->packet->getStride() : width;
+              if (data.size() >= stride * static_cast<std::size_t>(height) * 3U / 2U) {
+                if (auto device_frame = device_uploader_->upload(
+                    data.data(), stride, ++device_frame_counter_, snapshot->sensor_timestamp))
+                {
+                  device_frame_id = device_frame->id;
+                  bev_handoff::publishDeviceNv12Frame(std::move(device_frame));
+                } else {
+                  RCLCPP_WARN_THROTTLE(node_.get_logger(), *node_.get_clock(), 5000,
+                    "Shared GPU NV12 pool busy; this frame uses the host copy path");
+                }
+              }
+            } catch (const std::exception & e) {
+              RCLCPP_ERROR_THROTTLE(node_.get_logger(), *node_.get_clock(), 5000,
+                "Shared GPU NV12 upload failed (%s); using the host copy path", e.what());
+            }
+          }
+
           std::unique_ptr<camera_driver::msg::BevInput> bev_message;
           if (fused_bev_output_enabled_) {
             bev_message = std::make_unique<camera_driver::msg::BevInput>();
             bev_message->header.stamp = snapshot->ros_stamp;
             bev_message->header.frame_id = frame_id_;
             output_available = copy_frame_to_bev_input(
-              *snapshot->packet, transform, *bev_message) ||
+              *snapshot->packet, transform, *bev_message, device_frame_id) ||
               output_available;
           }
 
@@ -3505,6 +3545,10 @@ while True:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_state_sub_;
   rclcpp::Publisher<camera_driver::msg::TunnelFrameStats>::SharedPtr tcn_publisher_;
+  // GPU 공유 업로드 (gpu_shared_upload_enabled): 발행 스레드 전용
+  bool gpu_shared_upload_enabled_{false};
+  std::unique_ptr<DeviceNv12Uploader> device_uploader_;
+  std::uint64_t device_frame_counter_{0};
   std::thread tcn_thread_;
   std::mutex tcn_mutex_;
   std::condition_variable tcn_condition_;

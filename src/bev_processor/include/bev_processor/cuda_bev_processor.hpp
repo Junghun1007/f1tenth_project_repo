@@ -64,6 +64,16 @@ public:
     int source_crop_top,
     bool download_to_host);
 
+  // camera_driver가 GPU에 올려 둔 원본 전체 NV12 (bev_handoff::DeviceNv12Frame)를 직접 읽는다.
+  // 동기화까지 끝난 버퍼여야 하고, 이 함수가 돌아올 때 이 버퍼 읽기는 끝나 있다
+  CudaBevResult process_device(
+    const std::uint8_t * device_full,
+    std::size_t pitch,
+    int full_height,
+    const cv::Matx33d & stabilized_to_source_homography,
+    int source_crop_top,
+    bool download_to_host);
+
   const std::string & deviceName() const;
 
 private:

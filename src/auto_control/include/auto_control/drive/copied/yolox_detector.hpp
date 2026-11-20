@@ -69,6 +69,13 @@ public:
     int source_width,
     int source_height,
     const cv::Rect & roi);
+  // auto_control: GPU에 있는 원본 NV12 (camera_driver 공유 업로드)로 추론. TensorRT 백엔드에서만
+  YoloxDetectionResult detect_nv12_device(
+    const std::uint8_t * device_nv12,
+    std::size_t pitch,
+    int source_width,
+    int source_height,
+    const cv::Rect & roi);
   void set_thresholds(const std::array<float, 4> & values);
   bool supports_nv12_input() const noexcept;
   void draw(

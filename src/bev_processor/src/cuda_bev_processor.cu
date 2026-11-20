@@ -333,7 +333,9 @@ __device__ float sampleChroma(
 }
 
 __global__ void nv12ToBevKernel(
-  const std::uint8_t * nv12,
+  const std::uint8_t * y_plane,
+  const std::uint8_t * uv_plane,
+  const int pitch,
   const int input_width,
   const int input_height,
   const float * map_x,
@@ -407,16 +409,13 @@ __global__ void nv12ToBevKernel(
     return;
   }
 
-  const std::uint8_t * y_plane = nv12;
-  const std::uint8_t * uv_plane =
-    nv12 + input_width * input_height;
   float y = 0.0F;
   if (interpolation == static_cast<int>(BevInterpolation::Adaptive)) {
     const float x_vehicle_m =
       bev_x_max_m - (output_y + 0.5F) * meter_per_pixel;
     y = samplePlaneAdaptive(
       y_plane,
-      input_width,
+      pitch,
       input_width,
       input_height,
       source_x,
@@ -432,7 +431,7 @@ __global__ void nv12ToBevKernel(
   } else if (interpolation == static_cast<int>(BevInterpolation::Bicubic)) {
     y = samplePlaneBicubic(
       y_plane,
-      input_width,
+      pitch,
       input_width,
       input_height,
       source_x,
@@ -440,7 +439,7 @@ __global__ void nv12ToBevKernel(
   } else {
     y = samplePlane(
       y_plane,
-      input_width,
+      pitch,
       input_width,
       input_height,
       source_x,
@@ -448,7 +447,7 @@ __global__ void nv12ToBevKernel(
   }
   const float u = sampleChroma(
     uv_plane,
-    input_width,
+    pitch,
     input_width,
     input_height,
     source_x,
@@ -456,7 +455,7 @@ __global__ void nv12ToBevKernel(
     0);
   const float v = sampleChroma(
     uv_plane,
-    input_width,
+    pitch,
     input_width,
     input_height,
     source_x,
@@ -760,26 +759,6 @@ public:
     if (data_size < input_stride * input_rows) {
       throw std::invalid_argument("host NV12 buffer is smaller than expected");
     }
-    if (
-      source_crop_top < 0 || source_crop_top % 2 != 0 ||
-      !cv::checkRange(cv::Mat(stabilized_to_source_homography)))
-    {
-      throw std::invalid_argument(
-              "invalid source crop or stabilized-to-source homography");
-    }
-
-    std::array<float, 9> homography{};
-    for (int row = 0; row < 3; ++row) {
-      for (int column = 0; column < 3; ++column) {
-        homography[static_cast<std::size_t>(row * 3 + column)] =
-          static_cast<float>(
-          stabilized_to_source_homography(row, column));
-      }
-    }
-
-    const auto device_owner = output_pool_->acquire();
-    auto * device_output = static_cast<std::uint8_t *>(
-      const_cast<void *>(device_owner.get()));
     std::lock_guard<std::mutex> lock(stream_mutex_);
     checkCuda(
       cudaMemcpy2DAsync(
@@ -792,6 +771,61 @@ public:
         cudaMemcpyHostToDevice,
       stream_),
       "upload NV12 frame");
+    return run_locked(
+      device_nv12_, device_nv12_ + static_cast<std::size_t>(input_width_) * input_height_,
+      input_width_, stabilized_to_source_homography, source_crop_top, download_to_host);
+  }
+
+  // camera_driver가 GPU에 올려 둔 원본 전체 프레임을 그대로 쓴다 (호스트 복사·업로드 없음).
+  // device_full: 원본 Y 평면 시작, pitch: 한 줄 바이트, full_height: 원본 높이. 크롭 위쪽은 포인터로 건너뛴다
+  CudaBevResult process_device(
+    const std::uint8_t * device_full,
+    const std::size_t pitch,
+    const int full_height,
+    const cv::Matx33d & stabilized_to_source_homography,
+    const int source_crop_top,
+    const bool download_to_host)
+  {
+    if (device_full == nullptr || pitch < static_cast<std::size_t>(input_width_) ||
+      source_crop_top < 0 || source_crop_top % 2 != 0 || source_crop_top + input_height_ > full_height)
+    {
+      throw std::invalid_argument("invalid shared device NV12 frame or crop");
+    }
+    std::lock_guard<std::mutex> lock(stream_mutex_);
+    return run_locked(
+      device_full + static_cast<std::size_t>(source_crop_top) * pitch,
+      device_full + static_cast<std::size_t>(full_height) * pitch + static_cast<std::size_t>(source_crop_top / 2) * pitch,
+      static_cast<int>(pitch), stabilized_to_source_homography, source_crop_top, download_to_host);
+  }
+
+private:
+  // stream_mutex_를 잡은 채로 호출
+  CudaBevResult run_locked(
+    const std::uint8_t * y_plane,
+    const std::uint8_t * uv_plane,
+    const int pitch,
+    const cv::Matx33d & stabilized_to_source_homography,
+    const int source_crop_top,
+    const bool download_to_host)
+  {
+    if (
+      source_crop_top < 0 || source_crop_top % 2 != 0 ||
+      !cv::checkRange(cv::Mat(stabilized_to_source_homography)))
+    {
+      throw std::invalid_argument(
+              "invalid source crop or stabilized-to-source homography");
+    }
+    std::array<float, 9> homography{};
+    for (int row = 0; row < 3; ++row) {
+      for (int column = 0; column < 3; ++column) {
+        homography[static_cast<std::size_t>(row * 3 + column)] =
+          static_cast<float>(
+          stabilized_to_source_homography(row, column));
+      }
+    }
+    const auto device_owner = output_pool_->acquire();
+    auto * device_output = static_cast<std::uint8_t *>(
+      const_cast<void *>(device_owner.get()));
     checkCuda(
       cudaMemcpyAsync(
         device_stabilized_to_source_,
@@ -806,7 +840,9 @@ public:
       static_cast<unsigned int>((output_width_ + 15) / 16),
       static_cast<unsigned int>((output_height_ + 15) / 16));
     nv12ToBevKernel<<<grid, block, 0, stream_>>>(
-      device_nv12_,
+      y_plane,
+      uv_plane,
+      pitch,
       input_width_,
       input_height_,
       device_map_x_,
@@ -859,6 +895,7 @@ public:
     return output;
   }
 
+public:
   const std::string & deviceName() const
   {
     return device_name_;
@@ -937,6 +974,18 @@ CudaBevResult CudaBevProcessor::process(
     stabilized_to_source_homography,
     source_crop_top,
     download_to_host);
+}
+
+CudaBevResult CudaBevProcessor::process_device(
+  const std::uint8_t * device_full,
+  const std::size_t pitch,
+  const int full_height,
+  const cv::Matx33d & stabilized_to_source_homography,
+  const int source_crop_top,
+  const bool download_to_host)
+{
+  return impl_->process_device(
+    device_full, pitch, full_height, stabilized_to_source_homography, source_crop_top, download_to_host);
 }
 
 const std::string & CudaBevProcessor::deviceName() const

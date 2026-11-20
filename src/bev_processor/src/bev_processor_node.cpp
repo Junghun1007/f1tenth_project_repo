@@ -1,3 +1,4 @@
+#include "bev_handoff/device_frame_handoff.hpp"
 #include <bev_handoff/runtime_monitor.hpp>
 #include <bev_handoff/stage_meter.hpp>
 #include <algorithm>
@@ -1183,15 +1184,32 @@ private:
           }
           fused_coverage_reported_ = true;
         }
-        CudaBevResult cuda_result = processor->process(
-          input->nv12.data(),
-          input->nv12.size(),
-          static_cast<std::size_t>(input->step),
-          stabilized_to_source,
-          static_cast<int>(input->source_crop_top),
-          publish_enabled_ || preview_enabled_ ||
-          dataset_collection_enabled_ ||
-          dataset_collection_manual_capture_mode_);
+        const bool download_to_host = publish_enabled_ || preview_enabled_ ||
+          dataset_collection_enabled_ || dataset_collection_manual_capture_mode_;
+        CudaBevResult cuda_result;
+        if (input->device_frame_id != 0U) {
+          // camera_driver가 GPU에 올려 둔 원본을 그대로 읽는다 (호스트 크롭 복사·업로드 없음)
+          const auto device_frame = bev_handoff::findDeviceNv12Frame(input->device_frame_id);
+          if (!device_frame || device_frame->width != static_cast<int>(input->source_width) ||
+            device_frame->height != static_cast<int>(input->source_height))
+          {
+            RCLCPP_WARN_THROTTLE(get_logger(), *get_clock(), 2000,
+              "Shared GPU frame %lu is no longer available; frame dropped",
+              static_cast<unsigned long>(input->device_frame_id));
+            continue;   // 다음 입력 기다림
+          }
+          cuda_result = processor->process_device(
+            device_frame->device, device_frame->pitch, device_frame->height, stabilized_to_source,
+            static_cast<int>(input->source_crop_top), download_to_host);
+        } else {
+          cuda_result = processor->process(
+            input->nv12.data(),
+            input->nv12.size(),
+            static_cast<std::size_t>(input->step),
+            stabilized_to_source,
+            static_cast<int>(input->source_crop_top),
+            download_to_host);
+        }
         output->bgr = std::move(cuda_result.bgr);
         if(direct_host_copy_enabled_)output->download_bgr=std::move(cuda_result.download_bgr);
         output->device_bgr = cuda_result.device_bgr;

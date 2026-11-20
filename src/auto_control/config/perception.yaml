@@ -2,6 +2,9 @@
 # 주행 컴포넌트(auto_drive)가 YOLO 박스 안 깊이로 콘·차량 위치를 구하고, bev_processor 시작 측정값을 카메라 장착값으로 쓴다.
 camera_driver:
   ros__parameters:
+    # 원본 NV12를 GPU에 한 번만 올려 BEV(bev_processor)와 YOLO(auto_drive)가 함께 쓴다
+    # (호스트 크롭 복사·BEV 업로드·YOLO 업로드 → 업로드 1회). false면 예전처럼 각자 복사·업로드
+    gpu_shared_upload_enabled: true
     obstacles.depth.enabled: true
     obstacles.depth.align_rgb: true      # 깊이를 장치에서 CAM_A(RGB)에 정렬 (cone_drive_test와 같음, Jetson 연산 없음)
     obstacles.depth.align_width: 640

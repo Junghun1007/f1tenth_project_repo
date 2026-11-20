@@ -21,6 +21,7 @@ add_library(bev_handoff SHARED
   src/direct_obstacle_handoff.cpp
   src/avoidance_handoff.cpp
   src/lane_control_hints.cpp
+  src/device_frame_handoff.cpp
 )
 target_include_directories(bev_handoff
   PUBLIC

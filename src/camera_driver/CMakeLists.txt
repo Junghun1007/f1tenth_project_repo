@@ -26,6 +26,7 @@ find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/DepthaiWorkspace.cmake")
 find_package(Threads REQUIRED)
 find_package(point_cloud REQUIRED)
+find_package(CUDAToolkit REQUIRED)   # 원본 NV12 GPU 공유 업로드 (런타임 API만, 커널 없음)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BevInput.msg"
@@ -60,6 +61,7 @@ target_include_directories(camera_vehicle_motion
 add_library(camera_driver_component SHARED
   src/camera_driver_node.cpp
   src/tunnel_frame_stats.cpp
+  src/device_nv12_uploader.cpp
 )
 target_compile_definitions(camera_driver_component
   PRIVATE CAMERA_DRIVER_BUILDING_DLL
@@ -83,6 +85,7 @@ target_link_libraries(camera_driver_component
   camera_vehicle_motion
   point_cloud::point_cloud_depth_source
   depthai::core
+  CUDA::cudart
   ${OpenCV_LIBS}
   Threads::Threads
 )

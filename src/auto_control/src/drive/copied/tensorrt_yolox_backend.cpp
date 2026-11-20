@@ -464,6 +464,47 @@ public:
       preprocessing_finished_.get(), true, output, output_element_count);
   }
 
+  TensorRtInferenceTiming infer_nv12_device(
+    const std::uint8_t * device_nv12,
+    const std::size_t pitch,
+    const int source_width,
+    const int source_height,
+    const int roi_left,
+    const int roi_top,
+    const int roi_width,
+    const int roi_height,
+    float * output,
+    const std::size_t output_element_count)
+  {
+    if (device_nv12 == nullptr || output == nullptr) {
+      throw std::invalid_argument("TensorRT device NV12 input and output are required");
+    }
+    if (
+      source_width <= 0 || source_height <= 0 || source_width % 2 != 0 || source_height % 2 != 0 ||
+      pitch < static_cast<std::size_t>(source_width) ||
+      roi_left < 0 || roi_top < 0 || roi_width <= 0 || roi_height <= 0 ||
+      roi_left > source_width - roi_width || roi_top > source_height - roi_height)
+    {
+      throw std::invalid_argument("device NV12 input and inference ROI geometry are invalid");
+    }
+    if (output_element_count != output_element_count_) {
+      throw std::invalid_argument("TensorRT output element count mismatch");
+    }
+    // 업로드 없음: 입력 구간 이벤트를 붙여 기록해 시간 표의 전송 시간이 0이 되게 한다
+    check_cuda(cudaEventRecord(input_started_.get(), stream_.get()), "cudaEventRecord(device NV12 input start)");
+    check_cuda(cudaEventRecord(input_finished_.get(), stream_.get()), "cudaEventRecord(device NV12 input finish)");
+    check_cuda(
+      launch_nv12_roi_to_bgr_nchw(
+        device_nv12, pitch, source_height, roi_left, roi_top, roi_width, roi_height,
+        static_cast<float *>(input_device_.get()), input_width_, input_height_, stream_.get()),
+      "launch device NV12 to BGR NCHW kernel");
+    check_cuda(
+      cudaEventRecord(preprocessing_finished_.get(), stream_.get()),
+      "cudaEventRecord(device NV12 preprocess finish)");
+    return execute_and_copy_output(
+      preprocessing_finished_.get(), true, output, output_element_count);
+  }
+
   int output_row_count() const noexcept
   {
     return output_row_count_;
@@ -846,6 +887,23 @@ TensorRtInferenceTiming TensorRtYoloxBackend::infer_nv12(
   return impl_->infer_nv12(
     nv12, data_size, source_stride, source_width, source_height, roi_left,
     roi_top, roi_width, roi_height, output, output_element_count);
+}
+
+TensorRtInferenceTiming TensorRtYoloxBackend::infer_nv12_device(
+  const std::uint8_t * device_nv12,
+  const std::size_t pitch,
+  const int source_width,
+  const int source_height,
+  const int roi_left,
+  const int roi_top,
+  const int roi_width,
+  const int roi_height,
+  float * output,
+  const std::size_t output_element_count)
+{
+  return impl_->infer_nv12_device(
+    device_nv12, pitch, source_width, source_height, roi_left, roi_top, roi_width, roi_height,
+    output, output_element_count);
 }
 
 int TensorRtYoloxBackend::output_row_count() const noexcept

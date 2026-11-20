@@ -268,6 +268,33 @@ YoloxDetectionResult YoloxDetector::detect_nv12(
     roi.x, roi.y, stage_timing);
 }
 
+YoloxDetectionResult YoloxDetector::detect_nv12_device(
+  const std::uint8_t * device_nv12,
+  const std::size_t pitch,
+  const int source_width,
+  const int source_height,
+  const cv::Rect & roi)
+{
+  if (!tensorrt_backend_) {
+    throw std::logic_error("device NV12 input requires the TensorRT backend");
+  }
+  const auto timing = tensorrt_backend_->infer_nv12_device(
+    device_nv12, pitch, source_width, source_height, roi.x, roi.y, roi.width, roi.height,
+    tensorrt_output_.data(), tensorrt_output_.size());
+  YoloxStageTiming stage_timing;
+  stage_timing.preprocessing_nanoseconds = timing.preprocessing_nanoseconds;
+  stage_timing.input_transfer_nanoseconds = timing.input_transfer_nanoseconds;
+  stage_timing.forward_nanoseconds = timing.execution_nanoseconds;
+  stage_timing.output_transfer_nanoseconds = timing.output_transfer_nanoseconds;
+  const float ratio = std::min(
+    static_cast<float>(input_height_) / static_cast<float>(roi.height),
+    static_cast<float>(input_width_) / static_cast<float>(roi.width));
+  return decode_output(
+    tensorrt_output_.data(), tensorrt_backend_->output_row_count(),
+    tensorrt_backend_->output_column_count(), ratio, roi.width, roi.height,
+    roi.x, roi.y, stage_timing);
+}
+
 bool YoloxDetector::supports_nv12_input() const noexcept
 {
   return tensorrt_backend_ != nullptr;

@@ -68,7 +68,27 @@ void DetectWorker::set_mount(const CameraMount & m, const RgbIntrinsics & k) {
 void DetectWorker::push_frame(std::shared_ptr<const Nv12Frame> f) {
   {
     std::lock_guard<std::mutex> l(frame_m_);
+    if (now_sec() - last_device_t_ < 0.5) {   // GPU 원본이 오는 중: 짝지을 수 있게 남겨만 둔다
+      host_recent_.push_back(std::move(f));
+      while (host_recent_.size() > 4) host_recent_.pop_front();
+      return;
+    }
     pending_ = std::move(f);
+  }
+  frame_cv_.notify_one();
+}
+
+void DetectWorker::push_device_frame(std::shared_ptr<const Nv12Frame> f) {
+  auto combined = std::make_shared<Nv12Frame>(*f);
+  {
+    std::lock_guard<std::mutex> l(frame_m_);
+    last_device_t_ = now_sec();
+    for (const auto & h : host_recent_)   // 같은 촬영 시각의 호스트 프레임 (신호등 색·카메라 보기용)
+      if (std::abs(h->t - f->t) < 1e-4) {
+        combined->owner = h->owner; combined->nv12 = h->nv12; combined->size = h->size; combined->stride = h->stride;
+        break;
+      }
+    pending_ = std::move(combined);
   }
   frame_cv_.notify_one();
 }
@@ -142,7 +162,11 @@ void DetectWorker::loop_() {
       std::lock_guard<std::mutex> l(mutex_);
       // 신호등을 켜면 화면 전체를 추론한다. 모델 입력(512×320)은 가로 기준 축소라 축소 비율·연산량은 그대로 (위쪽이 패딩 대신 영상)
       const cv::Rect infer_roi = s.traffic.enabled ? cv::Rect(0, 0, w, h) : roi;
-      if (detector_->supports_nv12_input()) {
+      if (frame->device && detector_->supports_nv12_input()) {   // GPU 원본 그대로 (업로드 없음)
+        res = detector_->detect_nv12_device(frame->device, frame->device_pitch, w, h, infer_roi);
+      } else if (!data) {
+        continue;   // 호스트 영상도 없음 (CPU 백엔드인데 GPU 프레임만 옴)
+      } else if (detector_->supports_nv12_input()) {
         res = detector_->detect_nv12(data, frame->size, stride, w, h, infer_roi);
       } else {   // CPU 백엔드: NV12 → BGR 변환 후 추론
         const cv::Mat nv12(h * 3 / 2, w, CV_8UC1, const_cast<std::uint8_t *>(data), stride);
@@ -162,7 +186,7 @@ void DetectWorker::loop_() {
     if (s.traffic.enabled) {
       TrafficSignal sig = TrafficSignal::Unknown;
       float score = 0.f;
-      if (light) {   // 이긴 박스만 BGR로 (traffic_light_node와 같음)
+      if (light && data) {   // 이긴 박스만 BGR로 (traffic_light_node와 같음)
         score = light->score;
         const int l = std::clamp(int(std::floor(light->box.x)), 0, w) & ~1, t = std::clamp(int(std::floor(light->box.y)), 0, h) & ~1;
         const int r = std::min(w, (std::clamp(int(std::ceil(light->box.x + light->box.width)), 0, w) + 1) & ~1);
@@ -212,7 +236,7 @@ void DetectWorker::loop_() {
     }
     stats.record("box_depth", t1, now_sec());
     ctl_.on_detections(out);
-    if (camera_wanted && camera_wanted() && t0 - last_jpeg_t_ >= 0.1) {   // 검출 확인용 카메라 보기 (켰을 때만, 10 fps)
+    if (data && camera_wanted && camera_wanted() && t0 - last_jpeg_t_ >= 0.1) {   // 검출 확인용 카메라 보기 (켰을 때만, 10 fps)
       auto view = std::make_unique<CameraView>();   // 프레임 포인터와 박스만 넘기고 바로 다음 검출로
       view->frame = frame;
       view->detections = res.detections;

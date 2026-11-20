@@ -24,6 +24,17 @@
 [vesc_bridge] [vehicle_dynamics_monitor] [joy_initializer]
 ```
 
+## 연산 구조 (오린 나노 8GB 기준으로 정리)
+
+- **영상은 프로세스 밖으로 나가지 않는다**: 카메라·BEV·차선·YOLO·주행 컴포넌트가 한 컨테이너. 프로세스 사이로는 작은 메시지만 오간다
+- **원본 GPU 업로드 1회** (`perception.yaml` `gpu_shared_upload_enabled`): camera_driver가 원본 NV12를 GPU 버퍼 풀에 한 번 올리고
+  BEV(bev_processor)와 YOLO가 같은 버퍼를 읽는다 (전에는 BEV용 호스트 크롭 복사 + BEV 업로드 + YOLO 업로드).
+  신호등 색 판정과 웹 카메라 보기만 같은 시각의 호스트 프레임을 쓴다. 풀이 바쁘거나 실패하면 그 프레임만 예전 경로
+- **터널 TCN**: camera_driver가 프레임 통계 7개를 C++로 계산해 `/tunnel/rgb_stats`로 보낸다 (전에는 원본 1.5 MB × 30 Hz를 Python 프로세스로)
+- **콜백 그룹**: IMU(400 Hz) · 차량 입력 · 차선 제어 · 상태 · 웹을 나눠 회피 계획 중에도 IMU 요레이트가 밀리지 않는다
+- **웹 카메라 보기**: 변환·그리기·JPEG 인코딩을 검출 스레드 밖에서 (켜도 검출 FPS 그대로)
+- **메시지 패키지**: `LaneResult`는 `line_detactor_msgs` (auto_control은 CUDA 패키지 없이 메시지만 의존)
+
 ## 빌드·실행 (Jetson, 워크스페이스 루트)
 
 ```bash

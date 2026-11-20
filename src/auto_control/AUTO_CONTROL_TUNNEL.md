@@ -399,7 +399,8 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 
 `speed_mps`는 0보다 큰 유한한 목표 속도(m/s)로 주행 YAML의 `drive.maximum_speed_mps`를 덮어쓴다.
 생략하면 주행 YAML(`auto_control/config/auto_drive.yaml`) 값을 쓴다.
-출발은 브라우저 [주행 시작]으로만 한다. 출발 전 점검에 터널 IR 차선 모델(`ir_line_detactor`, `tunnel_tcn_test`)
+TCN은 camera_driver가 C++로 계산한 프레임 통계(`/tunnel/rgb_stats`, 숫자 7개)만 받는다 (원본 영상 전송 없음,
+결과는 기존 Python 계산과 같음: `camera_driver/test/test_tunnel_frame_stats.py`). 출발은 브라우저 [주행 시작]으로만 한다. 출발 전 점검에 터널 IR 차선 모델(`ir_line_detactor`, `tunnel_tcn_test`)
 READY가 추가된다. 터널 안(`/tunnel/state`가 OUTSIDE가 아님)에서는 YOLO를 쉬고 콘·차량 기억을 비우며
 신호등 정지·앞차 추종을 끈다(차선만 추종). 밖으로 나오면 새 관측부터 다시 쌓는다.
 

@@ -16,6 +16,7 @@
 #include <line_detactor_msgs/msg/lane_result.hpp>
 #include <bev_handoff/direct_bev_handoff.hpp>
 #include <bev_handoff/direct_camera_handoff.hpp>
+#include <bev_handoff/device_frame_handoff.hpp>
 #include <bev_handoff/direct_obstacle_handoff.hpp>
 #include <bev_handoff/lane_control_hints.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -237,6 +238,14 @@ public:
       frame->owner = f;   // 카메라 버퍼를 붙잡는다 (최신 1장만)
       detect_->push_frame(std::move(frame));
     });
+    // camera_driver 공유 업로드(gpu_shared_upload_enabled)가 켜져 있으면 GPU 원본으로 추론 (업로드 1회, BEV와 공유)
+    device_consumer_ = bev_handoff::registerDeviceNv12Consumer([this](std::shared_ptr<const bev_handoff::DeviceNv12Frame> f) {
+      auto frame = std::make_shared<acd::Nv12Frame>();
+      frame->device = f->device; frame->device_pitch = f->pitch;
+      frame->width = f->width; frame->height = f->height; frame->t = steady_sec(f->captured_at);
+      frame->device_owner = f;
+      detect_->push_device_frame(std::move(frame));
+    });
     depth_thread_ = std::thread([this] { depth_loop(); });
     bev_handoff::setDirectBevPreviewTap([this](std::shared_ptr<const bev_handoff::DirectBevFrame> f) {   // 웹 "BEV 원본" (켰을 때만 1/15 s)
       const double t = acd::now_sec();
@@ -274,6 +283,7 @@ public:
     stopping_ = true;
     bev_handoff::setDirectBevPreviewTap({});
     if (camera_consumer_) bev_handoff::unregisterDirectCameraConsumer(camera_consumer_);
+    if (device_consumer_) bev_handoff::unregisterDeviceNv12Consumer(device_consumer_);
     bev_handoff::publishLaneControlHints(nullptr);
     bev_cv_.notify_all();
     if (inspect_thread_.joinable()) inspect_thread_.join();
@@ -701,7 +711,7 @@ private:
   bool last_hint_want_{false};
   std::atomic<double> last_lane_t_{0}, last_joy_t_{-1e9};
   // 영상·깊이
-  std::uint64_t camera_consumer_{0};
+  std::uint64_t camera_consumer_{0}, device_consumer_{0};
   std::chrono::steady_clock::time_point last_depth_{};
   std::atomic<bool> stopping_{false}, bev_wanted_{false};
   double last_bev_tap_t_{0};

@@ -21,3 +21,5 @@ bool depth_geometry_valid
 float64[9] source_intrinsics
 float64[9] rgb_from_source_rotation
 float64[3] rgb_from_source_translation
+# GPU 공유 원본 프레임 번호 (bev_handoff::DeviceNv12Frame.id). 0이 아니면 nv12는 비어 있고 BEV는 GPU 원본을 직접 읽는다
+uint64 device_frame_id

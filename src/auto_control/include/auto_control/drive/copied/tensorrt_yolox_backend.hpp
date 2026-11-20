@@ -41,6 +41,18 @@ public:
     std::size_t input_element_count,
     float * output,
     std::size_t output_element_count);
+  // auto_control: 이미 GPU에 있는 원본 NV12(동기화 끝난 버퍼, UV는 height×pitch 위치)로 바로 전처리·추론 (업로드 없음)
+  TensorRtInferenceTiming infer_nv12_device(
+    const std::uint8_t * device_nv12,
+    std::size_t pitch,
+    int source_width,
+    int source_height,
+    int roi_left,
+    int roi_top,
+    int roi_width,
+    int roi_height,
+    float * output,
+    std::size_t output_element_count);
   TensorRtInferenceTiming infer_nv12(
     const std::uint8_t * nv12,
     std::size_t data_size,
