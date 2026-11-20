@@ -61,8 +61,11 @@ source install/setup.bash && ros2 launch semi_slam semi_slam.launch.py
 | `calibration_history.jsonl` | 보정 이력 (반영/안 함/되돌림, 그 주행에서 구한 자이로·거리 배율, yaw 검산) |
 | `camera_yaw.json` | 웹에서 바꾸거나 자동 측정한 카메라 yaw (yaml보다 우선) |
 | `odometry_calibration.yaml` | 다른 패키지(cone_drive_test 등)가 읽기 쉬운 형식 |
-| `runs/<날짜_시각_v속도>/` | `meta.json`, `speed.csv`, `gyro.csv`, `lanes.csv`(차선 점·정지선 거리), `crossings.csv`, `laps.csv`, `corrections.csv`, `trajectory.csv`, `calibration.json` |
+| `runs/<날짜_시각_v속도>/` | `meta.json`, `speed.csv`, `gyro.csv`, `imu.csv`, `lanes.csv`(차선 점·정지선 거리), `crossings.csv`, `laps.csv`, `corrections.csv`, `trajectory.csv`, `calibration.json` |
 
+`imu.csv`: IMU 원값 6축 (차량 좌표 x 앞·y 왼쪽·z 위, 영점 보정 전, 가속도 m/s²·자이로 rad/s, S를 지난 뒤부터).
+저주파 IMU 보정(가속도계에서 차 가속도를 빼 중력 방향 찾기) 분석용으로만 기록하고 보정 계산에는 쓰지 않는다.
+센서 위치(`camera.x_m`, 축간거리)와 IMU 좌표 변환에 쓴 yaw(`imu.frame_yaw_deg`)는 `meta.json`의 params에 있다.
 `meta.json`에는 주행 당시 주요 파라미터(카메라 yaw, 코너 오프셋, 안정화, 속도, 방향 등)도 남는다.
 기록으로 보정만 다시: `ros2 run semi_slam semi_slam_recalibrate <기록 폴더> [--apply]`.
 

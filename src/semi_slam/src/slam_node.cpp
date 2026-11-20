@@ -193,6 +193,10 @@ public:
     camera_ = std::make_unique<ss::CameraPipeline>(cam_cfg_, stab);
     camera_->stats = &loop_->stats();
     camera_->on_yaw_rate = [this](double w, double t) { slam_->on_gyro(w, t); };
+    camera_->on_imu = [this](const cv::Vec3d & a, bool a_ok, const cv::Vec3d & g, double t) {
+      const double nan = std::nan("");
+      slam_->on_imu({t, a_ok ? a[0] : nan, a_ok ? a[1] : nan, a_ok ? a[2] : nan, g[0], g[1], g[2]});
+    };
     camera_->stationary_hint = [this]() -> std::optional<bool> {
       const double v = loop_->speed();
       if (std::abs(v) < 0.03) return true;
@@ -292,6 +296,9 @@ private:
                            "lane.corner_outward_offset_m", "lane.corner_entry_distance_m", "lane.side_tracking", "drive.stanley_gain",
                            "drive.heading_lookahead_m", "drive.longitudinal_mode"})
       if (registry_.has(k)) rp[k] = registry_.get(k);
+    // IMU 분석용: 센서 위치 (앞차축 기준, 뒤 차축 = −축간거리)와 imu.csv 좌표 변환에 쓴 yaw (실행 시작 때 값)
+    rp["camera.x_m"] = camera_x_; rp["camera.y_m"] = camera_y_; rp["vehicle.wheelbase_m"] = rc_.wheelbase;
+    rp["imu.frame_yaw_deg"] = imu_frame_yaw_deg_;
     slam_->set_run_params(rp);
     RCLCPP_INFO(get_logger(), "run start: %.2f m/s, %d laps -> %s", s.run_speed, s.run_laps, run_dir_.c_str());
     return res;
@@ -384,7 +391,8 @@ private:
       const auto m = camera_->measure(measure_cfg_, [this] { return stopping_.load(); });
       { std::lock_guard<std::mutex> l(geom_m_); att_ = {true, m.height_m, m.roll_deg, m.pitch_down_deg}; }
       rebuild_geometry();
-      camera_->open(m, camera_yaw_deg_.load());
+      imu_frame_yaw_deg_ = camera_yaw_deg_.load();
+      camera_->open(m, imu_frame_yaw_deg_);
       loop_->set_attitude({true, m.height_m, m.roll_deg, m.pitch_down_deg, "PASS", ""});
       cam_ok = true;
     } catch (const std::exception & e) {
@@ -630,7 +638,8 @@ private:
   ss::OakStartupMeasurementConfig measure_cfg_;
   ss::ModelConfig models_;
   double camera_x_{-0.09}, camera_y_{0}, front_overhang_{0.05};
-  std::atomic<double> camera_yaw_deg_{0};   // 차선 스레드(yaw 측정)도 읽는다
+  std::atomic<double> camera_yaw_deg_{0};
+  double imu_frame_yaw_deg_{0};   // IMU를 차량 좌표로 돌릴 때 쓴 yaw (카메라를 열 때 값, 이후 바꿔도 IMU 변환은 그대로)   // 차선 스레드(yaw 측정)도 읽는다
   std::string params_save_path_, data_dir_;
   std::unique_ptr<ss::SlamCore> slam_;
   std::unique_ptr<ss::CalibStore> store_;

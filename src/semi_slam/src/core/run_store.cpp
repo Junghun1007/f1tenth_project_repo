@@ -84,6 +84,15 @@ void write_run(const std::string & dir, const RunData & run, const OdomCalib & c
   }
   { std::ofstream o(dir + "/speed.csv"); o << "t,v\n" << std::setprecision(10); for (const auto & s : run.speed) o << s.t << ',' << s.v << '\n'; }
   { std::ofstream o(dir + "/gyro.csv"); o << "t,w\n" << std::setprecision(10); for (const auto & g : run.gyro) o << g.t << ',' << g.w << '\n'; }
+  if (!run.imu.empty()) {   // IMU 원값 6축 (차량 좌표, 영점 보정 전). 가속도 시각이 안 맞은 줄은 a* = nan
+    std::ofstream o(dir + "/imu.csv");
+    o << "t,ax,ay,az,gx,gy,gz\n" << std::setprecision(10);
+    auto v = [&](double x) { if (std::isfinite(x)) o << x; else o << "nan"; };
+    for (const auto & s : run.imu) {
+      o << s.t << ','; v(s.ax); o << ','; v(s.ay); o << ','; v(s.az);
+      o << ',' << s.gx << ',' << s.gy << ',' << s.gz << '\n';
+    }
+  }
   {
     std::ofstream o(dir + "/lanes.csv");
     o << "t,stop_m,left,right\n" << std::setprecision(10);
@@ -160,6 +169,13 @@ RunData load_run(const std::string & dir) {
   };
   rows("speed.csv", [&](const auto & c) { if (c.size() >= 2) r.speed.push_back({std::stod(c[0]), std::stod(c[1])}); });
   rows("gyro.csv", [&](const auto & c) { if (c.size() >= 2) r.gyro.push_back({std::stod(c[0]), std::stod(c[1])}); });
+  rows("imu.csv", [&](const auto & c) {   // 없으면 (예전 기록) 비어 있음
+    if (c.size() < 7) return;
+    ImuSample s;
+    s.t = std::stod(c[0]); s.ax = std::stod(c[1]); s.ay = std::stod(c[2]); s.az = std::stod(c[3]);
+    s.gx = std::stod(c[4]); s.gy = std::stod(c[5]); s.gz = std::stod(c[6]);
+    r.imu.push_back(s);
+  });
   rows("crossings.csv", [&](const auto & c) {
     if (c.size() < 2) return;
     r.crossing_t.push_back(std::stod(c[1]));

@@ -53,6 +53,8 @@ public:
   const Latest<CameraFrame> & frames() const { return frames_; }
   const CameraConfig & config() const { return c_; }
   std::function<void(double yaw_rate_vehicle, double t)> on_yaw_rate;   // IMU 스레드에서 호출
+  // IMU 원값 6축 (차량 좌표 x 앞 y 왼쪽 z 위, 영점 보정 전). acc_ok = 가속도와 자이로 시각이 맞을 때만 acc가 유효. IMU 스레드에서 호출
+  std::function<void(const cv::Vec3d & acc, bool acc_ok, const cv::Vec3d & gyro, double t)> on_imu;
   std::function<std::optional<bool>()> stationary_hint;
   StageStats * stats{nullptr};   // 카메라 실제 수신 FPS 기록 (선택)
   std::atomic<bool> stabilization_on{true};   // IMU 영상 안정화 켜기/끄기 (실시간)

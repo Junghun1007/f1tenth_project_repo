@@ -215,7 +215,9 @@ TEST(stop_line_angle_from_mask) {   // 가로선이 5° 반시계로 돌아 보�
 TEST(run_folder_round_trips_and_calibration_store_reverts) {
   const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
   SlamCore core(m);
-  const auto run = simulate(core, m, 2, 1.2, 1.03, 0.98, 0.004);
+  auto run = simulate(core, m, 2, 1.2, 1.03, 0.98, 0.004);
+  run.imu.push_back({run.start.t + 0.1, 0.1, -0.2, -9.81, 0.01, -0.02, 0.5});
+  run.imu.push_back({run.start.t + 0.2, std::nan(""), std::nan(""), std::nan(""), 0.0, 0.0, 0.4});   // 가속도 시각 안 맞음
   const std::string data = std::filesystem::temp_directory_path().string() + "/semi_slam_test_store";
   std::filesystem::remove_all(data);
   const auto dir = make_run_dir(data, 1.2);
@@ -226,6 +228,10 @@ TEST(run_folder_round_trips_and_calibration_store_reverts) {
   CHECK(back.lanes.size() == run.lanes.size());
   CHECK(back.crossing_t.size() == 2);
   CHECK_NEAR(back.gyro_bias0, run.gyro_bias0, 1e-9);
+  CHECK(back.imu.size() == 2);
+  CHECK_NEAR(back.imu[0].az, -9.81, 1e-9);
+  CHECK(std::isnan(back.imu[1].ax));
+  CHECK_NEAR(back.imu[1].gz, 0.4, 1e-9);
   // 저장한 기록으로 다시 보정해도 같은 결과 (PC에서 재보정 가능)
   const auto r1 = calibrate(run, OdomCalib{}, m), r2 = calibrate(back, OdomCalib{}, m);
   CHECK(r1.applied);

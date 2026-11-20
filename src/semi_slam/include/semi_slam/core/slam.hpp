@@ -39,6 +39,11 @@ struct OdomCalib {
 
 struct SpeedSample { double t, v; };        // ERPM에서 구한 속도 (보정 전)
 struct GyroSample { double t, w; };         // 차량 요레이트 rad/s (보정 전, 반시계 +)
+struct ImuSample {                          // IMU 원값 6축, 차량 좌표 (x 앞 y 왼쪽 z 위). 가속도는 시각이 안 맞으면 NaN
+  double t{0};
+  double ax{0}, ay{0}, az{0};               // m/s² (가속도계 = 차 가속도 − 중력)
+  double gx{0}, gy{0}, gz{0};               // rad/s
+};
 struct LaneSample {                         // 차선 결과 (앞차축 기준 차량 좌표, 관측 범위 안만)
   double t{0}, stop_m{0};                   // stop_m: 앞차축 → 정지선, 없으면 NaN
   std::vector<Vec2> left, right;
@@ -54,6 +59,7 @@ struct RunData {
   bool cw{false};                           // 주행 방향: false = 반시계, true = 시계
   std::vector<SpeedSample> speed;
   std::vector<GyroSample> gyro;
+  std::vector<ImuSample> imu;               // 저주파 IMU 보정(가속도에서 중력 분리) 분석용 기록. 보정 계산에는 쓰지 않음
   std::vector<LaneSample> lanes;
   std::vector<double> crossing_t;           // 정지선 S 통과 시각 (바퀴 경계). 기록은 첫 S 통과(start.t)부터
   double crossing_latency{0};
@@ -164,6 +170,7 @@ public:
   void end_run();
   void on_speed(double v, double t);
   void on_gyro(double w, double t);
+  void on_imu(const ImuSample & s);   // 기록만 (S를 지난 뒤부터, 주행 중)
   // 차선 결과마다. 이번 프레임에서 목표 바퀴 수를 채웠으면 true
   bool on_lane(const LaneObservation & lane);
 

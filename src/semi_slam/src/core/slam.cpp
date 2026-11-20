@@ -403,6 +403,11 @@ void SlamCore::on_gyro(double w, double t) {
   step(t);
 }
 
+void SlamCore::on_imu(const ImuSample & s) {
+  std::lock_guard<std::mutex> l(m_);
+  if (live_.running && !live_.waiting_s && run_.imu.size() < 400000) run_.imu.push_back(s);
+}
+
 void SlamCore::step(double t) {
   const double dt = std::clamp(t - last_gyro_t_, 0.0, 0.05);
   last_gyro_t_ = t;

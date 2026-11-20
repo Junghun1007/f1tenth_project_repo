@@ -116,6 +116,7 @@ void CameraPipeline::imu_loop() {
       if (std::abs(ta - tg) <= c_.maximum_imu_pair_skew_sec) sync_acc = acc;
       if (stabilizer_) stabilizer_->update(sync_acc, gyro, tg, stationary_hint ? stationary_hint() : std::nullopt);
       if (on_yaw_rate) on_yaw_rate((vehicle_from_camera_ * gyro)[2], tg);   // 차량 z축(위) 요레이트
+      if (on_imu) on_imu(vehicle_from_camera_ * acc, sync_acc.has_value(), vehicle_from_camera_ * gyro, tg);
     }
   }
 }
