@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>auto_control</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <div class="brand">auto_control</div>
+  <div class="seg" id="modeSeg" role="group" aria-label="모드">
+    <button data-mode="detect">검출 테스트</button>
+    <button data-mode="drive">자동 주행</button>
+  </div>
+  <div class="state" id="stateBadge">BOOT</div>
+  <div class="chipx" id="handoverChip" title="안전 전환 (safety_node)">전환 -</div>
+  <div class="chipx" id="sourceChip" title="차선 입력 카메라">RGB</div>
+  <div class="sig" id="sigChip" hidden>신호 -</div>
+  <div class="reason" id="reason"></div>
+  <div class="spacer"></div>
+  <button class="btn go" id="btnStart">주행 시작</button>
+  <button class="btn stop" id="btnStop">정지</button>
+  <button class="btn" id="btnRefit">Refit</button>
+  <span class="sep"></span>
+  <select id="recLabel" class="btn" title="녹화할 상황">
+    <option value="zigzag">지그재그 콘</option>
+    <option value="guided">유도 경로</option>
+    <option value="other">기타</option>
+  </select>
+  <button class="btn go" id="btnRec">● 녹화 시작</button>
+  <button class="btn stop" id="btnRecStop" disabled>■ 녹화 종료</button>
+  <span class="reason" id="recStatus"></span>
+  <span class="sep"></span>
+  <label class="tog main-tog"><input type="checkbox" id="togPreview" checked> 프리뷰</label>
+  <label class="tog"><input type="checkbox" id="togBev"> BEV 원본</label>
+  <label class="tog"><input type="checkbox" id="togCam"> 카메라</label>
+  <button class="btn" id="btnParams">파라미터</button>
+  <span class="link" id="link">연결 끊김</span>
+</header>
+
+<div class="off" id="offNote" hidden>
+  <b>프리뷰 꺼짐</b> — Jetson은 오버레이 좌표·단계 통계·영상을 만들지 않고, 상태만 초당 2회 보냅니다.
+  시작·정지·Refit과 연결 감시는 그대로 동작합니다.
+  <div class="mini" id="mini"></div>
+</div>
+<main class="main" id="main">
+  <section class="panel bevpanel">
+    <h2>BEV <small>앞차축 기준 0~3 m · ±0.6 m</small></h2>
+    <div class="bevwrap" id="bevWrap">
+      <img id="bevImg" alt="" class="offscreen">
+      <canvas id="bev"></canvas>
+    </div>
+    <div class="legend">
+      <span><i class="l-left"></i>왼쪽 차선</span><span><i class="l-right"></i>오른쪽 차선</span>
+      <span><i class="l-center"></i>중앙선</span><span><i class="l-plan"></i>회피 경로 (점선=FAIL)</span>
+      <span><i class="l-det"></i>관측 콘</span><span><i class="l-mem"></i>기억 콘</span>
+      <span><i class="l-veh"></i>앞차</span><span><i class="l-stop"></i>정지선</span>
+    </div>
+  </section>
+
+  <section class="panel campanel" id="camPanel" hidden>
+    <h2>카메라 <small>YOLO 박스 · ROI</small></h2>
+    <img id="camImg" alt="">
+    <table class="dets" id="detTable"><thead><tr><th>클래스</th><th>점수</th><th>X m</th><th>Y m</th></tr></thead><tbody></tbody></table>
+  </section>
+
+  <section class="side">
+   <div class="col">
+    <div class="panel">
+      <h2>주행 상태</h2>
+      <div class="drive-state">
+        <div class="ds-main"><span class="state big" id="dsState">-</span><span id="dsReason" class="ds-reason"></span></div>
+        <div class="kv" id="driveKv"></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>신호등 · 정지선</h2>
+      <div class="traffic">
+        <div class="lamp" id="lamp"><i class="red"></i><i class="green"></i></div>
+        <div class="kv" id="trafficKv"></div>
+      </div>
+      <div class="stopbar"><div class="stopbar-track" id="stopTrack"><div class="stopbar-zone" id="stopZone"></div><div class="stopbar-car" id="stopCar"></div></div>
+        <div class="stopbar-label" id="stopLabel">정지선 없음</div></div>
+    </div>
+    <div class="panel">
+      <h2>차량</h2>
+      <div class="kv" id="vehicle"></div>
+    </div>
+    <div class="panel">
+      <h2>회피</h2>
+      <div class="kv" id="avoid"></div>
+    </div>
+   </div>
+   </div>
+   <div class="col">
+    <div class="panel">
+      <h2>단계별 연산 <small>최근 1초 평균</small></h2>
+      <table class="stages" id="stages"><thead><tr><th>단계</th><th>ms</th><th>FPS</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="panel" id="inspect">
+      <h2>출발 전 점검</h2>
+      <div class="checks" id="checks"></div>
+      <div class="models" id="models"></div>
+    </div>
+    <div class="panel">
+      <h2>시스템</h2>
+      <div id="usage"></div>
+    </div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" hidden>
+  <div class="drawer-head">
+    <div class="tabs" id="tabs">
+      <button data-group="obstacle" class="on">장애물</button>
+      <button data-group="driving">주행</button>
+      <button data-group="traffic">신호등</button>
+    </div>
+    <button class="btn" id="btnSave" title="지금 값을 YAML 파일로 저장">YAML 저장</button>
+    <button class="btn" id="btnClose">닫기</button>
+  </div>
+  <div class="plist" id="plist"></div>
+  <div class="drawer-foot">
+    <span id="pmsg"></span>
+    <button class="btn" id="btnReset">되돌리기</button>
+    <button class="btn go" id="btnApply">적용</button>
+  </div>
+</aside>
+
+<script src="app.js"></script>
+</body>
+</html>
