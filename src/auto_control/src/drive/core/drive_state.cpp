@@ -35,6 +35,7 @@ std::string DriveStateMachine::readiness_problem(const Readiness & r, double now
   if (!r.attitude_ok) return "camera attitude not measured";
   if (!r.lane_model_ready) return "lane model not ready";
   if (!r.yolo_model_ready) return "yolo model not ready";
+  if (!r.ir_model_ready) return "tunnel IR lane model not ready";
   if (!r.vesc_connected) return "vesc disconnected";
   if (!r.erpm_fresh) return "erpm stale";
   if (!r.lane_fresh) return "lane input stale";

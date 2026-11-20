@@ -11,12 +11,14 @@ void register_params(ParamRegistry & r) {
   auto d = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
     r.add({name, "driving", sec, label, unit, lo, hi, v, live});
   };
+  auto t = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
+    r.add({name, "traffic", sec, label, unit, lo, hi, v, live});   // 웹 파라미터 창 [신호등] 탭
+  };
   o("YOLO 검출", "yolo.con_threshold", "콘 임계값", "", 0, 1, 0.83);
   o("YOLO 검출", "yolo.truck_threshold", "트럭 임계값", "", 0, 1, 0.70);
   o("YOLO 검출", "yolo.sedan_threshold", "세단 임계값", "", 0, 1, 0.70);
-  o("YOLO 검출", "yolo.traffic_light_threshold", "신호등 임계값", "", 0, 1, 0.70);
   o("YOLO 검출", "yolo.nms_threshold", "NMS IoU", "", 0.05, 0.95, 0.65);
-  o("YOLO 검출", "yolo.roi_height_percent", "하단 ROI", "%", 1, 100, 65);
+  o("YOLO 검출", "yolo.roi_height_percent", "콘·차량 인정 영역 (화면 아래에서, 신호등은 화면 전체)", "%", 1, 100, 65);
   o("YOLO 검출", "yolo.max_fps", "검출 FPS 상한", "fps", 1, 60, 40);
   o("위치 추정", "object.box_core_fraction", "박스 가운데 비율", "", 0.2, 1, 0.6);
   o("위치 추정", "object.min_points", "최소 점 수", "", 1, 200, 6);
@@ -123,20 +125,19 @@ void register_params(ParamRegistry & r) {
   d("차량 추종 (ACC)", "acc.min_follow_speed_mps", "이보다 느린 앞차는 정지로 봄", "m/s", 0, 1.5, 0.3);
   d("차량 추종 (ACC)", "acc.hold_near_m", "이 거리 안에서 놓치면 서 있다고 가정", "m", 0, 1.5, 0.6);
   d("차량 추종 (ACC)", "acc.lost_timeout_sec", "멀리서 놓친 앞차 유지 시간", "s", 0.05, 2, 0.3);
-  d("신호등·정지선", "traffic.enabled", "신호등 정지 (0=끔, 1=켬: 빨간불이면 정지선 앞에 정지, 초록불에 출발)", "", 0, 1, 1);
-  d("신호등·정지선", "traffic.stop_range_max_m", "허용 정차 범위 (앞범퍼가 정지선 앞 0~이 거리)", "m", 0.05, 1.0, 0.25);
-  d("신호등·정지선", "traffic.stop_margin_m", "목표 정차점 (정지선 앞 이 거리)", "m", 0, 0.5, 0.10);
-  d("신호등·정지선", "traffic.decel_mps2", "감속 계획 (staged. duty-only는 duty_only 계획 감속도와 작은 쪽)", "m/s²", 0.1, 3, 0.8);
-  d("신호등·정지선", "traffic.reapproach_speed_mps", "짧게 섰거나 정지선을 놓쳤을 때 다가가는 속도", "m/s", 0.05, 1.0, 0.20);
-  d("신호등·정지선", "traffic.state_timeout_sec", "신호 관측 유효 시간", "s", 0.05, 3, 0.30);
-  d("신호등·정지선", "traffic.line_timeout_sec", "정지선을 못 봐도 추적 유지", "s", 0.05, 3, 0.50);
-  d("신호등·정지선", "traffic.line_confirm_frames", "정지선 확인 횟수", "", 1, 10, 3);
-  d("신호등·정지선", "traffic.color_min_saturation", "신호 색 판별 최소 채도 (HSV S)", "", 0, 255, 80);
-  d("신호등·정지선", "traffic.color_min_value", "신호 색 판별 최소 밝기 (HSV V)", "", 0, 255, 60);
+  t("신호등 검출", "yolo.traffic_light_threshold", "신호등 임계값", "", 0, 1, 0.70);
+  t("신호등·정지선", "traffic.enabled", "신호등 정지 (0=끔, 1=켬: 빨간불이면 정지선 앞에 정지, 초록불에 출발)", "", 0, 1, 1);
+  t("신호등·정지선", "traffic.stop_range_max_m", "허용 정차 범위 (앞범퍼가 정지선 앞 0~이 거리)", "m", 0.05, 1.0, 0.25);
+  t("신호등·정지선", "traffic.stop_margin_m", "목표 정차점 (정지선 앞 이 거리)", "m", 0, 0.5, 0.10);
+  t("신호등·정지선", "traffic.decel_mps2", "감속 계획 (staged. duty-only는 duty_only 계획 감속도와 작은 쪽)", "m/s²", 0.1, 3, 0.8);
+  t("신호등·정지선", "traffic.reapproach_speed_mps", "짧게 섰거나 정지선을 놓쳤을 때 다가가는 속도", "m/s", 0.05, 1.0, 0.20);
+  t("신호등·정지선", "traffic.state_timeout_sec", "신호 관측 유효 시간", "s", 0.05, 3, 0.30);
+  t("신호등·정지선", "traffic.line_timeout_sec", "정지선을 못 봐도 추적 유지", "s", 0.05, 3, 0.50);
+  t("신호등·정지선", "traffic.line_confirm_frames", "정지선 확인 횟수", "", 1, 10, 3);
+  t("신호등·정지선", "traffic.color_min_saturation", "신호 색 판별 최소 채도 (HSV S)", "", 0, 255, 80);
+  t("신호등·정지선", "traffic.color_min_value", "신호 색 판별 최소 밝기 (HSV V)", "", 0, 255, 60);
   d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
   d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 60, 20.0);
-  d("IMU 안정화", "camera.accel_compensation",
-    "저주파 IMU 보정: 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정 (0=끔, 1=켬)", "", 0, 1, 1, false);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
   r.add_order_constraint("acc.stop_gap_m", "acc.resume_gap_m");
   r.add_order_constraint("traffic.stop_margin_m", "traffic.stop_range_max_m");

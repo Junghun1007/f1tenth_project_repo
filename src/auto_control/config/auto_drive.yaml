@@ -1,0 +1,162 @@
+# auto_control 주행 컴포넌트(auto_drive) 기본 파라미터. 브라우저 파라미터 창의 [YAML 저장]도 같은 형식으로 저장한다.
+# vehicle_bringup auto_drive.launch.py drive_params_file:=<경로>로 바꿔 실행.
+# 값의 출처: cone_drive_test.yaml (콘 기억·회피·신호등·추종·duty-only를 실차에서 맞춘 값)
+# 카메라 위치·내부 파라미터·장착 각도는 bev_processor 시작 측정값을 그대로 쓴다 (여기서 정하지 않음)
+/**/auto_drive:
+  ros__parameters:
+    # ---- 재시작해야 바뀌는 값 ----
+    camera.yaw_deg: 0.0
+    vehicle.wheelbase_m: 0.33
+    vehicle.maximum_steering_deg: 30.0
+    vehicle.servo_left: 1.0           # 자동 주행 조향 (수동 주행 값은 safety.yaml)
+    vehicle.servo_center: 0.5
+    vehicle.servo_right: 0.0
+    vehicle.steering_servo_inverted: true
+    vehicle.wheel_diameter_m: 0.1095
+    vehicle.motor_pole_pairs: 2
+    vehicle.motor_pinion_teeth: 13
+    vehicle.spur_gear_teeth: 54
+    vehicle.differential_pinion_teeth: 13
+    vehicle.differential_ring_teeth: 37
+    vehicle.erpm_direction_sign: 1.0
+    vehicle.speed_scale_correction: 1.0
+    log.cone_observations: true       # 콘 관측 기록 (주행 시작마다 <log.dir>/cone_obs_<시각>.csv). 분석: tools/analyze_cone_obs.py
+    log.dir: ""                       # 비우면 ~/auto_control_data
+    model.yolo_precision: fp16
+    web.bind: 0.0.0.0
+    web.port: 8765
+    # ---- 브라우저 파라미터 창에서 실시간으로 바꿀 수 있는 값 ----
+    # YOLO 검출
+    yolo.con_threshold: 0.83            # 콘 임계값
+    yolo.truck_threshold: 0.70          # 트럭 임계값
+    yolo.sedan_threshold: 0.70          # 세단 임계값
+    yolo.traffic_light_threshold: 0.70  # 신호등 임계값
+    yolo.nms_threshold: 0.65            # NMS IoU
+    yolo.roi_height_percent: 65.0       # 하단 ROI (%)
+    yolo.max_fps: 40.0                  # 검출 FPS 상한 (fps)
+    # 위치 추정
+    object.box_core_fraction: 0.6       # 박스 가운데 비율
+    object.min_points: 6.0              # 최소 점 수
+    object.min_point_share: 0.10        # 최소 점 비율
+    object.window_base_m: 0.05          # 거리 창 (m)
+    object.window_per_m: 0.03           # 거리 창 증가 (/m)
+    object.min_height_m: 0.03           # 지면 제거 높이 (m)
+    object.max_height_m: 1.0            # 최대 높이 (m)
+    object.cone_size_m: 0.13            # 콘 크기 (m)
+    object.range_gain: 0.971                # 검출 거리 배율 (정답 배치 녹화: 거리를 약 3% 길게 잼)
+    object.range_offset_m: -0.046           # 검출 거리 오프셋 (m)
+    object.time_offset_ms: 15               # 검출 시각 보정 (ms)
+    object.ground_check_ratio: 1.6          # 지면 거리 검사: 박스 아래 끝으로 구한 거리와 깊이 거리가 이 배율 넘게 다르면 버림 (0=끔)
+    object.ground_check_min_m: 0.3          # 지면 거리 검사: 두 거리 차이가 이보다 작으면 통과 (m)
+    object.bearing_offset_deg: 0        # 검출 방향 보정 (°, + = 왼쪽). 정답 배치 분석값 −2.4°, 지금은 해제
+    # 콘 기억
+    memory.gate_radial_max: 0.17        # 거리 방향 게이트 (m)
+    memory.gate_lateral: 0.06           # 옆 방향 게이트 (m)
+    memory.merge_distance: 0.10         # 병합 거리 (m)
+    memory.confirm_hits: 3.0            # 확정 관측 횟수
+    memory.miss_delete: 4.0             # 놓침 삭제 횟수
+    memory.delete_behind: 0.10          # 뒤 삭제 거리 (m)
+    memory.ghost_timeout_sec: 1.5           # 유령 기억 정리 (s): 다시 안 보이고 차 옆·바로 앞도 아니면 삭제 (0=끔)
+    memory.mode: 0                      # 기억 방식 (0=월드, 1=차선 기준 단기, 2=보이는 콘+화면 밖 고정, 3=기억 없음)
+    memory.lane_confirm_hits: 4         # [차선 기준] 사용 전 관측 횟수
+    memory.lane_miss_delete: 2          # [차선 기준] 보이는 구간에서 안 보이면 삭제
+    memory.lane_match_radius: 0.12      # [차선 기준] 같은 콘 판정 거리 (m)
+    memory.lane_visible_s_min: 0.45     # [차선 기준] 이보다 가까우면 카메라 사각지대 → 지날 때까지 유지 (m)
+    # 회피 계획
+    # 경로 단계: ① 차선 안 → ② 차선 안·여유 축소 → ③ 차선 밖 (처음 길이 나오는 단계). 최소 여유는 세 단계 모두 안전 하한 이상
+    plan.hard_clearance: 0.02           # ① 차선 안 최소 여유 = 안전 하한 (m)
+    plan.soft_clearance: 0.10      # ① 차선 안 권장 여유 (m). 수동 주행 녹화 6회로 맞춤 (tools/fit_planner)
+    plan.relaxed_hard_clearance: 0.005   # ② 차선 안·여유 축소 최소 여유 (예전엔 코드에 0 고정 → 콘에 닿아도 통과) (m)
+    plan.relaxed_soft_clearance: 0.05   # ② 차선 안·여유 축소 권장 여유 (m)
+    plan.free_hard_clearance: 0.02      # ③ 차선 밖 최소 여유 (m)
+    plan.free_soft_clearance: 0.08      # ③ 차선 밖 권장 여유 (m)
+    plan.vehicle_length_m: 0.50         # 계획에 쓰는 차체 길이, 실측해서 맞출 것 (m)
+    plan.vehicle_width_m: 0.30          # 계획에 쓰는 차체 폭, 실측해서 맞출 것 (m)
+    plan.vehicle_rear_overhang_m: 0.12  # 뒤 차축 → 뒤 범퍼 (m)
+    plan.lane_tolerance: 0.07      # 차선 안 허용 이탈 (m). 녹화로 맞춤
+    plan.avoid_vehicles: 1.0            # 차량(트럭·세단)도 회피 (0=끔, 1=켬). 차량 크기만큼 13 cm 칸으로 채워 계획
+    plan.activation_margin_m: 0.05          # 회피 계획을 켜는 범위 여유 (차가 지나갈 폭에 더함) (m)
+    plan.free_max_excess: 0.45       # 차선 밖 회피에서 차체가 차선 밖으로 나갈 최대 거리 (m)
+    plan.w_obstacle: 400                # 콘 가까이 벌점 가중치 (녹화로 맞춤, 예전 코드 고정 4000)
+    plan.w_offset: 20                   # 중앙선에서 벗어남 벌점 가중치
+    plan.w_slope: 4                   # 경로 기울기 벌점 가중치 (예전 1)
+    plan.w_curvature: 0.1             # 경로 곡률 벌점 가중치 (예전 0.08)
+    plan.lane_return_distance: 1.2      # 차선 복귀 거리 (m)
+    plan.rollout_sec: 1.0               # 롤아웃 시간 (s)
+    plan.rollout_retry_margin: 0.03     # 재계획 여유 (m)
+    plan.s_max: 1.5       # 계획 거리 (m). 녹화로 맞춤 (사람은 1.5 m 앞부터 반응)
+    plan.forward_extension_m: 0.0       # 코너에서 잘린 중앙선을 끝 곡률로 늘리는 최대 길이 (m, 0=끔, 시험용). 중앙선 끝 너머 콘은 항상 회피 계획에서 뺌
+    # 속도
+    drive.maximum_speed_mps: 1.3        # 최대 속도 (m/s)
+    drive.minimum_speed_mps: 1.1        # 최소 속도(코너) (m/s)
+    drive.obstacle_speed_mps: 1.0       # 장애물 구간 속도 (m/s)
+    drive.rollout_fail_speed_mps: 0.8   # 롤아웃 실패 시 속도 (m/s)
+    drive.maximum_lateral_accel: 1.6    # 최대 횡가속 (m/s²)
+    drive.planning_decel: 0.5           # 계획 감속도 (m/s²)
+    drive.obstacle_decel: 0.4           # 장애물 감속도 (m/s²)
+    drive.obstacle_accel: 0.4           # 장애물 해제 가속도 (m/s²)
+    # 조향 (Stanley)
+    drive.stanley_gain: 1.3             # Stanley gain
+    drive.stanley_softening: 0.3        # softening 속도 (m/s)
+    drive.heading_lookahead_m: 0.08     # heading lookahead (m)
+    drive.steering_current_weight: 0.5  # 조향 필터 현재 비중
+    drive.steering_rate_deg_s: 260      # 조향 변화율 한계 (°/s)
+    # 차선
+    lane.side_tracking: 0             # 차선 좌우 판정 고정 (0=끔, 1=켬): 모델 라벨 대신 직전 프레임·차선 폭으로 좌우 재판정
+    lane.corner_outward_offset_m: 0.08  # 코너 바깥 이동 (m)
+    lane.corner_entry_distance_m: 2.2   # 코너 진입 거리 (m)
+    lane.corner_entry_full_offset_m: 0.6 # 최대 이동 시작 거리 (m)
+    # 출력
+    drive.maximum_duty: 0.12            # 최대 duty
+    drive.start_duty: 0.05              # 정지 출발 duty
+    # 종방향 모드: 1 = staged (전류 제동, 기존), 2 = duty-only (duty만으로 가감속·회생 감속, 비상 시만 전류 제동). 정지했을 때 바뀜
+    drive.longitudinal_mode: 2.0
+    # duty-only (모드 2 전용, auto_control duty_only_* 와 같은 기본값) — 모드 1 튜닝에는 영향 없음
+    duty_only.pid_kp: 0.06
+    duty_only.pid_ki: 0.03
+    duty_only.ff_offset_duty: 0.05            # 굴러가는 데 필요한 기본 duty
+    duty_only.ff_duty_per_mps: 0.035           # 속도 1 m/s당 duty (정속 주행 duty로 맞출 것)
+    duty_only.maximum_duty: 0.12
+    duty_only.start_duty: 0.05 
+    duty_only.duty_rise_rate: 0.04            # duty 상승률 (/s)
+    duty_only.duty_fall_rate: 0.06            # duty 하강률 (/s): 클수록 회생 감속이 셈
+    duty_only.planning_decel: 0.40            # 코너·앞차 감속 계획 (m/s²)
+    duty_only.obstacle_decel: 0.35            # 장애물 감속 (m/s²)
+    duty_only.response_sec: 0.10              # duty 명령 → 감속 시작 지연 (s)
+    duty_only.coast_decel: 0.50               # 모터를 풀었을 때 감속도 (m/s²): 실측으로 맞출 것
+    duty_only.coast_release_speed: 0.35       # 이 속도까지 줄인 뒤 모터를 풀고 굴러서 정지 (m/s)
+    duty_only.hold_current: 0.0               # 정지 유지 전류 (A, 0 = 안 씀)
+    duty_only.emergency_decel: 1.2            # 비상 제동: 필요 감속도가 이 이상이면 (m/s²)
+    duty_only.emergency_overspeed: 0.5        # 비상 제동: 목표보다 이만큼 빠르면 (m/s)
+    duty_only.emergency_current: 2.0          # 비상 제동 전류 (A)
+    drive.brake_maximum_current: 2.0    # 최대 제동 전류 (A)
+    drive.brake_speed_gain: 0.8         # 제동 전류 = 최대 전류 × min(1, 이 값 × 속도 초과 m/s + 감속 부족 비율)
+    drive.brake_deceleration_gain: 0.5  # 장애물 접근 시 감속 부족(m/s²) → 제동 비율
+    drive.brake_current_rise_aps: 1.5   # 제동 전류 상승 속도 (A/s). 낮추면 제동이 부드럽게 걸림
+    drive.brake_entry_speed_error_mps: 0.3   # 일반 주행: 목표보다 이만큼 빠르면 제동 시작
+    drive.brake_exit_speed_error_mps: 0.1    # 일반 주행: 이 아래로 내려오면 제동 해제
+    # 안전
+    # 차량 추종 (ACC): 경로에 걸친 트럭·세단은 회피 대신 뒤따른다 (끄면 plan.avoid_vehicles 규칙)
+    acc.enabled: 1.0                    # 0=끔, 1=켬
+    acc.stop_gap_m: 0.25                # 앞차가 서 있을 때 정지 거리 (앞범퍼 기준, m)
+    acc.resume_gap_m: 0.40              # 재출발·주행 중 최소 거리 (m)
+    acc.time_gap_s: 0.3                 # 유지 거리 = resume_gap + 이 값 × 내 속도
+    acc.decel_mps2: 0.8                 # 거리 기반 감속도 (m/s²)
+    acc.lateral_margin_m: 0.05          # 경로 막힘 판정 옆 여유 (m)
+    acc.min_follow_speed_mps: 0.3       # 이보다 느린 앞차는 서 있는 것으로 (멈췄다 가기)
+    acc.hold_near_m: 0.6                # 이 거리 안에서 놓치면 다시 보일 때까지 서 있다고 가정 (m)
+    acc.lost_timeout_sec: 0.3           # 멀리서 놓친 앞차를 예측으로 유지하는 시간 (s)
+    # 신호등·정지선 (1030ML auto_control 방식): 빨간불 + 정지선이면 앞범퍼를 정지선 앞 0~stop_range_max에 세우고 초록불에 출발.
+    # 신호등이 안 보이면(UNKNOWN) 정지하지 않고, 정지에 들어간 뒤엔 빨간불이 안 보여도 초록불까지 유지
+    traffic.enabled: 1.0
+    traffic.stop_range_max_m: 0.25
+    traffic.stop_margin_m: 0.10
+    traffic.decel_mps2: 0.8
+    traffic.reapproach_speed_mps: 0.20
+    traffic.state_timeout_sec: 0.30
+    traffic.line_timeout_sec: 0.50
+    traffic.line_confirm_frames: 3.0
+    traffic.color_min_saturation: 80.0
+    traffic.color_min_value: 60.0
+    web.link_loss_stop_sec: 1.0         # 연결 끊김 정지 시간 (s)
+    drive.lane_timeout_sec: 20.0        # 차선 끊김 허용 시간 (s). 0 = 제한 없음 (끊긴 동안 직전 경로로 주행). 넘으면 'lane input stale'로 정지

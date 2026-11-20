@@ -1,48 +1,38 @@
-cmake_minimum_required(VERSION 3.8)
-project(auto_control)
+cmake_minimum_required(VERSION 3.18)
+project(auto_control LANGUAGES CXX)
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
 endif()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
-# Depth projection and planning run per frame; never fall back to an
-# unoptimized build when colcon is invoked without an explicit build type.
+# 매 프레임 계획·검출이 돌므로 빌드 종류를 안 주면 Release
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
-
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall> $<$<COMPILE_LANGUAGE:CXX>:-Wextra>)
 endif()
+option(AUTO_CONTROL_TENSORRT "YOLO를 TensorRT + CUDA로 (Jetson). OFF는 개발 PC 문법 확인용 (검출 모델 로드 실패)" ON)
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
-# Keep the helper module distinct from auto_control's generated ROS messages.
-ament_python_install_package(auto_control_tunnel)
-find_package(builtin_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
-find_package(std_msgs REQUIRED)
-find_package(std_srvs REQUIRED)
-find_package(line_detactor REQUIRED)
-find_package(traffic_detection_test REQUIRED)
-find_package(Threads REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(rcl_interfaces REQUIRED)
-find_package(bev_handoff REQUIRED)
-find_package(bev_processor REQUIRED)
-find_package(camera_driver REQUIRED)
-find_package(point_cloud REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core)
-find_package(rosidl_default_generators REQUIRED)
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/AvoidancePlan.msg"
-  DEPENDENCIES builtin_interfaces std_msgs geometry_msgs)
-rosidl_get_typesupport_target(avoidance_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
+find_package(ament_index_cpp REQUIRED)
+find_package(bev_handoff REQUIRED)
+find_package(line_detactor REQUIRED)
+find_package(Threads REQUIRED)
+find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs dnn)
 
-# Export the existing pure control helpers for the VFH actuator adapter.
+ament_python_install_package(auto_control_tunnel)
+ament_python_install_package(auto_control_safety)
+
+# ---- 기존 제어 도우미 (roi_vfh_test가 auto_control::control_core로 링크) ----
 add_library(auto_control_core STATIC src/control_core.cpp src/driving_log.cpp)
 target_link_libraries(auto_control_core PUBLIC Threads::Threads)
 set_target_properties(auto_control_core PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME control_core)
@@ -52,78 +42,76 @@ target_include_directories(auto_control_core PUBLIC
 install(TARGETS auto_control_core EXPORT auto_control_core_targets ARCHIVE DESTINATION lib)
 ament_export_targets(auto_control_core_targets HAS_LIBRARY_TARGET)
 
-add_library(auto_obstacle_component SHARED
-  src/obstacle_detector_node.cpp src/obstacle_worker.cpp src/control_core.cpp)
-target_include_directories(auto_obstacle_component PRIVATE include ${OpenCV_INCLUDE_DIRS})
-ament_target_dependencies(auto_obstacle_component
-  rclcpp rclcpp_components rcl_interfaces bev_handoff bev_processor camera_driver geometry_msgs std_msgs)
-target_link_libraries(auto_obstacle_component point_cloud::point_cloud_depth_source ${OpenCV_LIBS} Threads::Threads ${avoidance_typesupport})
-rclcpp_components_register_nodes(auto_obstacle_component "auto_control::ObstacleDetectorNode")
-install(TARGETS auto_obstacle_component LIBRARY DESTINATION lib)
-
-# C++ tunnel lane selector, loaded into the detector container (intra-process LaneResult).
+# ---- 터널 차선 선택기 (검출 컨테이너, intra-process LaneResult) ----
 add_library(auto_tunnel_selector_component SHARED src/tunnel_lane_selector.cpp)
 target_include_directories(auto_tunnel_selector_component PRIVATE include)
 ament_target_dependencies(auto_tunnel_selector_component rclcpp rclcpp_components std_msgs line_detactor)
 rclcpp_components_register_nodes(auto_tunnel_selector_component "auto_control::TunnelLaneSelector")
 install(TARGETS auto_tunnel_selector_component LIBRARY DESTINATION lib)
 
+# ---- 주행부 (cone_drive_test에서 옮김): ROS 없는 판단부 + 웹 서버 ----
+include(cmake/drive_sources.cmake)
+add_library(auto_drive_core STATIC ${ACD_CORE_SOURCES} ${ACD_WEB_SOURCES})
+target_include_directories(auto_drive_core PUBLIC include third_party ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(auto_drive_core PUBLIC ${OpenCV_LIBS} Threads::Threads)
+target_compile_definitions(auto_drive_core PUBLIC ${ACD_WEB_DEFINITIONS})
+set_target_properties(auto_drive_core PROPERTIES POSITION_INDEPENDENT_CODE ON)
 
-add_executable(auto_control_node
-  src/auto_control_node.cpp
-  src/control_core.cpp
-  src/driving_log.cpp
-)
-target_include_directories(auto_control_node
-  PRIVATE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-    $<INSTALL_INTERFACE:include>
-)
-ament_target_dependencies(auto_control_node
-  builtin_interfaces
-  bev_handoff
-  rclcpp
-  std_msgs
-  std_srvs
-  rcl_interfaces
-)
-# These packages also export camera/inference components. Control consumes
-# only their ROS messages; do not link every exported implementation target.
-target_link_libraries(auto_control_node
-  Threads::Threads
-  ${avoidance_typesupport}
-  line_detactor::line_detactor__rosidl_typesupport_cpp
-  traffic_detection_test::traffic_detection_test__rosidl_typesupport_cpp
-)
+# 검출 (YOLOX → 신호등 색·박스 깊이)
+set(ACD_GPU_SOURCES ${ACD_DETECTOR_SOURCES} ${ACD_RUNTIME_SOURCES})
+if(AUTO_CONTROL_TENSORRT)
+  enable_language(CUDA)
+  set(CMAKE_CUDA_STANDARD 17)
+  find_package(CUDAToolkit REQUIRED)
+  find_path(TENSORRT_INCLUDE_DIR NvInfer.h HINTS /usr/include/aarch64-linux-gnu /usr/include/x86_64-linux-gnu /usr/local/TensorRT/include)
+  find_library(TENSORRT_LIBRARY nvinfer HINTS /usr/lib/aarch64-linux-gnu /usr/lib/x86_64-linux-gnu /usr/local/TensorRT/lib)
+  find_library(TENSORRT_PARSER nvonnxparser HINTS /usr/lib/aarch64-linux-gnu /usr/lib/x86_64-linux-gnu /usr/local/TensorRT/lib)
+  find_library(TENSORRT_PLUGIN nvinfer_plugin HINTS /usr/lib/aarch64-linux-gnu /usr/lib/x86_64-linux-gnu /usr/local/TensorRT/lib)
+  if(NOT TENSORRT_INCLUDE_DIR OR NOT TENSORRT_LIBRARY OR NOT TENSORRT_PARSER OR NOT TENSORRT_PLUGIN)
+    message(FATAL_ERROR "TensorRT 개발 헤더/라이브러리가 필요합니다 (libnvinfer-dev, libnvonnxparsers-dev, libnvinfer-plugin-dev)")
+  endif()
+  list(APPEND ACD_GPU_SOURCES src/drive/copied/tensorrt_yolox_backend.cpp src/drive/copied/cuda_yolox_preprocessor.cu)
+else()
+  list(APPEND ACD_GPU_SOURCES src/drive/copied/tensorrt_disabled.cpp)
+endif()
+add_library(auto_drive_gpu STATIC ${ACD_GPU_SOURCES})
+target_link_libraries(auto_drive_gpu PUBLIC auto_drive_core)
+set_target_properties(auto_drive_gpu PROPERTIES POSITION_INDEPENDENT_CODE ON)
+if(AUTO_CONTROL_TENSORRT)
+  target_include_directories(auto_drive_gpu PRIVATE ${TENSORRT_INCLUDE_DIR})
+  target_link_libraries(auto_drive_gpu PUBLIC CUDA::cudart ${TENSORRT_LIBRARY} ${TENSORRT_PARSER} ${TENSORRT_PLUGIN})
+  set_target_properties(auto_drive_gpu PROPERTIES CUDA_SEPARABLE_COMPILATION OFF)
+endif()
 
-install(TARGETS auto_control_node
-  RUNTIME DESTINATION lib/${PROJECT_NAME}
-)
-install(PROGRAMS scripts/tunnel_lane_selector scripts/model_startup_check scripts/startup_inspection scripts/runtime_tools scripts/remote_preview DESTINATION lib/${PROJECT_NAME})
-install(DIRECTORY auto_control_tunnel/web/ DESTINATION share/${PROJECT_NAME}/web)
+# 주행 컴포넌트: 카메라·BEV·차선 컨테이너에 함께 로드
+add_library(auto_drive_component SHARED src/drive/auto_drive_node.cpp)
+ament_target_dependencies(auto_drive_component rclcpp rclcpp_components rcl_interfaces std_msgs sensor_msgs geometry_msgs ament_index_cpp bev_handoff)
+# line_detactor는 메시지만 쓴다 (카메라·추론 구현 라이브러리까지 링크하지 않음)
+target_link_libraries(auto_drive_component auto_drive_gpu line_detactor::line_detactor__rosidl_typesupport_cpp)
+rclcpp_components_register_nodes(auto_drive_component "auto_control::AutoDriveNode")
+install(TARGETS auto_drive_component LIBRARY DESTINATION lib)
+
+install(PROGRAMS scripts/tunnel_lane_selector scripts/safety_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
-install(DIRECTORY config/ DESTINATION share/${PROJECT_NAME}/config)
-install(FILES
-  README.md
-  AUTO_CONTROL_PARAMETER_TUNING_KO.txt
-  AUTO_CONTROL_OBSTACLES.md
-  AUTO_CONTROL_TUNNEL.md
-  STARTUP_INSPECTION.md
-  DESTINATION share/${PROJECT_NAME}
-)
+install(DIRECTORY config models DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY web/ DESTINATION share/${PROJECT_NAME}/web PATTERN "demo" EXCLUDE)
+install(FILES README.md AUTO_CONTROL_TUNNEL.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
+  # ROS 없는 주행부 호스트 테스트는 test/host: cmake -S test/host -B build/host
   enable_testing()
-  add_executable(runtime_speed_limit_test test/runtime_speed_limit_test.cpp)
-  target_include_directories(runtime_speed_limit_test PRIVATE include)
-  add_test(NAME runtime_speed_limit_test COMMAND runtime_speed_limit_test)
   add_executable(staged_brake_test test/staged_brake_test.cpp src/control_core.cpp)
   target_include_directories(staged_brake_test PRIVATE include)
   add_test(NAME staged_brake_test COMMAND staged_brake_test)
   add_executable(duty_only_test test/duty_only_test.cpp src/control_core.cpp)
   target_include_directories(duty_only_test PRIVATE include)
   add_test(NAME duty_only_test COMMAND duty_only_test)
+  find_package(ament_cmake_pytest QUIET)
+  if(ament_cmake_pytest_FOUND)
+    ament_add_pytest_test(safety test/python)
+    ament_add_pytest_test(tunnel test/tunnel)
+  endif()
 endif()
 
-ament_export_dependencies(rosidl_default_runtime Threads)
+ament_export_dependencies(Threads)
 ament_package()

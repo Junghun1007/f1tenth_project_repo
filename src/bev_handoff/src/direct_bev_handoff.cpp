@@ -15,6 +15,7 @@ struct HandoffState
 {
   std::mutex mutex;
   DirectBevFrameCallback callback;
+  DirectBevFrameCallback preview_tap;
   std::uint64_t consumer_id{0U};
   std::uint64_t next_consumer_id{1U};
 };
@@ -77,11 +78,21 @@ bool deliverDirectBevFrame(std::shared_ptr<const DirectBevFrame> frame)
   // Keep the lock through the short enqueue callback so unregister returning
   // guarantees that no callback can still reference a destroyed consumer.
   std::lock_guard<std::mutex> lock(handoff.mutex);
+  if (handoff.preview_tap) {
+    handoff.preview_tap(frame);
+  }
   if (!handoff.callback) {
     return false;
   }
   handoff.callback(std::move(frame));
   return true;
+}
+
+void setDirectBevPreviewTap(DirectBevFrameCallback tap)
+{
+  auto & handoff = state();
+  std::lock_guard<std::mutex> lock(handoff.mutex);
+  handoff.preview_tap = std::move(tap);
 }
 
 }  // namespace bev_handoff

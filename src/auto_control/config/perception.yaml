@@ -1,0 +1,26 @@
+# auto_drive.launch.py가 camera_driver·bev_processor에 덧붙이는 설정 (perception_params_file).
+# 주행 컴포넌트(auto_drive)가 YOLO 박스 안 깊이로 콘·차량 위치를 구하고, bev_processor 시작 측정값을 카메라 장착값으로 쓴다.
+camera_driver:
+  ros__parameters:
+    obstacles.depth.enabled: true
+    obstacles.depth.align_rgb: true      # 깊이를 장치에서 CAM_A(RGB)에 정렬 (cone_drive_test와 같음, Jetson 연산 없음)
+    obstacles.depth.align_width: 640
+    obstacles.depth.align_height: 400
+    obstacles.camera.resolution: "400p"
+    obstacles.camera.fps: 30.0           # 스테레오 깊이 FPS (RGB 70 FPS와 같이 올리면 장치가 못 따라감)
+    obstacles.depth.mode: "high_density"
+    obstacles.depth.ir_dot_projector_intensity: 0.5
+    obstacles.depth.ir_flood_light_intensity: 0.0
+    obstacles.depth.confidence_threshold: 200
+    obstacles.depth.left_right_check: true
+    obstacles.depth.left_right_threshold: 10
+    obstacles.depth.subpixel: false
+    obstacles.depth.subpixel_fractional_bits: 3
+    obstacles.depth.median_filter: "3x3"
+    # IMU 영상 안정화: 차 가속도(vehicle_dynamics_monitor)에 카메라가 회전 중심(뒤 차축)보다 앞에 있어 생기는
+    # −ω²r(앞뒤)·(dω/dt)r(옆)을 더해 뺀다 (cone_drive_test 저주파 보정). r = 축간거리 0.33 + 카메라 x −0.09
+    imu_stabilization_lever_arm_m: 0.24
+
+bev_processor:
+  ros__parameters:
+    obstacles.share_reference: true      # 시작 측정 자세·카메라 모델을 같은 프로세스의 auto_drive와 공유

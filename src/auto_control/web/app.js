@@ -227,6 +227,7 @@ function render() {
   $("btnStart").disabled = !(f.mode === "drive" && stopped && Object.values(f.readiness).every(Boolean));
   $("btnStop").disabled = !["DRIVING", "STOPPING"].includes(f.state);
   $("btnRefit").disabled = !["READY", "MANUAL", "DRIVING"].includes(f.state);
+  $("btnRefit").hidden = f.refit_supported === false;   // auto_control: 카메라 자세는 시작할 때 bev_processor가 측정
   if (f.record) {
     $("btnRec").disabled = f.record.active; $("btnRecStop").disabled = !f.record.active; $("recLabel").disabled = f.record.active;
     if (f.record.active) $("recStatus").textContent = `● 녹화 중 ${f.record.seconds.toFixed(0)} s · ${f.record.frames} 프레임`;
@@ -242,7 +243,8 @@ function render() {
     `<div><span>카메라 자세</span><b class="${a.status === "PASS" ? "READY" : a.status === "FAIL" ? "FAILED" : "LOADING"}">${a.status}</b>` +
     `<span>${a.status === "PASS" ? `높이 ${a.height_m.toFixed(3)} m · roll ${a.roll_deg.toFixed(1)}° · pitch ${a.pitch_down_deg.toFixed(1)}°` : a.message}</span></div>` +
     f.inspection.models.map((m) => `<div><span>${m.name}</span><b class="${m.status}">${m.status}</b><span>${m.status === "READY" ? m.elapsed_s.toFixed(1) + " s" : m.stage + " · " + m.elapsed_s.toFixed(0) + " s"}</span></div>`).join("") +
-    `<div><span>IMU 영상 안정화</span><b class="${(f.stabilization || "").startsWith("적용") ? "READY" : "LOADING"}">${(f.stabilization || "").startsWith("적용") ? "ON" : "…"}</b><span>${f.stabilization || "-"}</span></div>`;
+    (f.stabilization === "camera_driver" ? "" :
+    `<div><span>IMU 영상 안정화</span><b class="${(f.stabilization || "").startsWith("적용") ? "READY" : "LOADING"}">${(f.stabilization || "").startsWith("적용") ? "ON" : "…"}</b><span>${f.stabilization || "-"}</span></div>`);
 
   renderDriveState(f);
   renderTraffic(f);
@@ -283,7 +285,8 @@ function renderDriveState(f) {
 }
 
 function renderTraffic(f) {
-  const tr = f.traffic || { enabled: false, signal: 0, line: -99 };
+  const tr = Object.assign({ enabled: false, signal: 0, line: -99 }, f.traffic || {});
+  if (f.yolo) { tr.score = f.yolo.signal_score; tr.fps = f.yolo.fps; }   // 실제 서버는 YOLO 항목에 따로 보냄
   const name = SIGNAL_NAME[tr.signal] || "UNKNOWN";
   $("lamp").className = "lamp " + (tr.enabled ? name : "");
   const ir = f.tunnel && f.tunnel.source === "IR";
@@ -408,18 +411,21 @@ async function demo() {
     g.tunnel = { enabled: true, source: "RGB", state: "OUTSIDE" };
     g.readiness.handover_ready = true;
     g.lon = { mode: 2, requested: 2, phase: g.vehicle.brake > 0 ? "제동" : g.vehicle.duty > 0 ? "구동" : "관성" };
-    if (g.state !== "INSPECTING") g.stabilization = "적용 98% · 평균 0.6° · 매칭 실패 0 · 저주파 보정 켜짐";
+    g.stabilization = "camera_driver";
+    g.refit_supported = false;
     g.stages = [
       { name: "lane_latency", ms: 9.8, fps: 70 }, { name: "lane_pre", ms: 0.9, fps: 70 }, { name: "lane_infer", ms: 3.2, fps: 70 },
       { name: "lane_geom", ms: 1.6, fps: 70 }, { name: "yolo_pre", ms: 0.5, fps: 40 }, { name: "yolo_infer", ms: 7.0, fps: 40 },
       { name: "yolo_post", ms: 0.3, fps: 40 }, { name: "box_depth", ms: 0.8, fps: 40 }, { name: "memory_plan", ms: 0.7, fps: 70 },
       { name: "control", ms: 0.1, fps: 70 }, { name: "web", ms: 0.4, fps: 20 }];
-    g.traffic = { enabled: true, signal: 0, committed: false, holding: false, line: -99, cap: -1, score: 0, fps: 40, stop_range: 0.25 };
+    g.traffic = { enabled: true, signal: 0, committed: false, holding: false, line: -99, cap: -1, stop_range: 0.25 };
+    g.yolo = { fps: 40, signal_score: 0 };
     if (scene === "red" || scene === "green") {
       g.detections = []; g.memory = []; g.plan = { path: [], mode: "center", rollout_ok: true };
       const red = scene === "red";
       g.traffic = { enabled: true, signal: red ? 1 : 2, committed: red, holding: false, line: red ? 0.62 : 1.4, cap: red ? 0.98 : -1,
-        score: 0.91, fps: 40, stop_range: 0.25 };
+        stop_range: 0.25 };
+      g.yolo = { fps: 40, signal_score: 0.91 };
       g.vehicle.speed = red ? 0.74 : 1.0; g.vehicle.target = red ? 0.62 : 1.05; g.vehicle.steer_deg = 2.1; g.vehicle.duty = red ? 0.0 : 0.06;
     } else if (scene === "lead") {
       g.memory = []; g.plan = { path: [], mode: "center", rollout_ok: true };

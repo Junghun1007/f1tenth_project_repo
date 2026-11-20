@@ -202,13 +202,21 @@ void ControlLoop::on_vesc_connected(bool c, double) { std::lock_guard<std::mutex
 
 void ControlLoop::on_handover_mode(const std::string & mode, double t) { std::lock_guard<std::mutex> l(m_); sm_.on_handover_mode(mode, t); }
 
-void ControlLoop::on_detections(const DetectionFrame & f) { std::lock_guard<std::mutex> l(m_); pending_det_ = f; }
+void ControlLoop::on_detections(const DetectionFrame & f) { std::lock_guard<std::mutex> l(m_); if (!obstacles_suspended_) pending_det_ = f; }
+
+void ControlLoop::set_obstacles_suspended(bool on) {
+  std::lock_guard<std::mutex> l(m_);
+  if (on == obstacles_suspended_) return;
+  obstacles_suspended_ = on;
+  pending_det_.reset();
+  clear_memories();
+}
 
 void ControlLoop::set_attitude(const AttitudeInfo & a) { std::lock_guard<std::mutex> l(m_); attitude_ = a; }
 
 void ControlLoop::set_camera_geometry(const CameraGeometry & g) { std::lock_guard<std::mutex> l(m_); rc_.camera = g; }
 
-void ControlLoop::set_model_status(int i, const InspectionModel & m) { std::lock_guard<std::mutex> l(m_); if (i == 0 || i == 1) models_[i] = m; }
+void ControlLoop::set_model_status(int i, const InspectionModel & m) { std::lock_guard<std::mutex> l(m_); if (i >= 0 && i <= 2) models_[i] = m; }
 
 void ControlLoop::on_inspection_done(bool ok, const std::string & reason, double t) { std::lock_guard<std::mutex> l(m_); sm_.on_inspection_done(ok, t, reason); }
 
@@ -233,6 +241,8 @@ Readiness ControlLoop::readiness(double now) const {
   r.attitude_ok = attitude_.ok;
   r.lane_model_ready = models_[0].status == "READY";
   r.yolo_model_ready = models_[1].status == "READY";
+  r.ir_model_used = !models_[2].name.empty();
+  r.ir_model_ready = !r.ir_model_used || models_[2].status == "READY";
   r.vesc_connected = vesc_connected_;
   r.erpm_fresh = now - last_erpm_t_ <= rc_.erpm_timeout_sec;
   r.lane_fresh = lane_.valid && (rc_.lane_timeout_sec <= 0 || now - last_lane_t_ <= rc_.lane_timeout_sec);   // 0 = 제한 없음
@@ -465,6 +475,7 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   f.inspection.roll_deg = attitude_.roll_deg;
   f.inspection.pitch_down_deg = attitude_.pitch_down_deg;
   f.inspection.models = {models_[0], models_[1]};
+  if (!models_[2].name.empty()) f.inspection.models.push_back(models_[2]);
   if (!full) return f;
   f.vehicle = {speed_, target_, steer_.angle() * kRad2Deg, cte_, last_out_.duty, last_out_.brake_current};
   // 화면은 현재 자세 기준 (차선은 촬영 시점 기준이지만 지연이 작아 그대로 표시)

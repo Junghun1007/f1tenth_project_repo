@@ -14,3 +14,5 @@ set(ACD_DETECTOR_SOURCES ${ACD_PKG_DIR}/src/drive/copied/yolox_detector.cpp)
 set(ACD_WEB_SOURCES ${ACD_PKG_DIR}/src/drive/runtime/web_server.cpp)
 # 브라우저 1대가 SSE 1 + MJPEG 최대 2 + keep-alive POST 1개를 잡는다 → 기본 8개면 2~3대에서 heartbeat·STOP이 밀림
 set(ACD_WEB_DEFINITIONS CPPHTTPLIB_THREAD_POOL_COUNT=32)
+# 검출 워커 (YOLO → 신호등 색·박스 깊이). ROS 없이 빌드되지만 YoloxDetector를 쓰므로 검출기 라이브러리와 함께 링크
+set(ACD_RUNTIME_SOURCES ${ACD_PKG_DIR}/src/drive/runtime/detector.cpp)

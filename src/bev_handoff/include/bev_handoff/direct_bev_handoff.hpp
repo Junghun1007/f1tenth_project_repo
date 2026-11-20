@@ -40,6 +40,9 @@ using DirectBevFrameCallback =
 std::uint64_t registerDirectBevConsumer(DirectBevFrameCallback callback);
 void unregisterDirectBevConsumer(std::uint64_t consumer_id);
 bool deliverDirectBevFrame(std::shared_ptr<const DirectBevFrame> frame);
+// 웹 화면의 "BEV 원본" 보기용 보조 수신. 소비자(차선 검출)와 별개로 하나만 등록할 수 있고,
+// 콜백은 최신 프레임 포인터를 바꿔 끼우기만 해야 한다 (다운로드·인코딩은 다른 스레드에서).
+void setDirectBevPreviewTap(DirectBevFrameCallback tap);
 
 // The IR worker produces an owning rendered image; the RGB detector's one
 // GUI thread displays it after selection. No second HighGUI window/thread.

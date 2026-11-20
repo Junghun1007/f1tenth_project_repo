@@ -18,6 +18,8 @@ struct Readiness {
   bool attitude_ok{false}, lane_model_ready{false}, yolo_model_ready{false};
   bool vesc_connected{false}, erpm_fresh{false}, lane_fresh{false};
   bool client_alive{false};   // 상태기계가 heartbeat로 직접 계산해 덮어씀
+  bool ir_model_ready{true};  // 터널(IR) 차선 모델: 터널을 켠 경우에만 검사 (auto_control)
+  bool ir_model_used{false};
 };
 
 class DriveStateMachine {

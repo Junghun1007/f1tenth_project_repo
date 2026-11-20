@@ -26,8 +26,9 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
   w.key("readiness").begin_object()
    .key("attitude_ok").value(r.attitude_ok).key("lane_model_ready").value(r.lane_model_ready)
    .key("yolo_model_ready").value(r.yolo_model_ready).key("vesc_connected").value(r.vesc_connected)
-   .key("erpm_fresh").value(r.erpm_fresh).key("lane_fresh").value(r.lane_fresh).key("client_alive").value(r.client_alive)
-   .end_object();
+   .key("erpm_fresh").value(r.erpm_fresh).key("lane_fresh").value(r.lane_fresh).key("client_alive").value(r.client_alive);
+  if (r.ir_model_used) w.key("ir_model_ready").value(r.ir_model_ready);
+  w.end_object();
   const auto & a = f.inspection;
   w.key("inspection").begin_object().key("attitude").begin_object()
    .key("status").value(a.attitude_status).key("height_m").value(a.height_m).key("roll_deg").value(a.roll_deg, 2)

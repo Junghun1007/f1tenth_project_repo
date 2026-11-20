@@ -86,12 +86,14 @@ public:
   void on_vesc_connected(bool connected, double t);
   void on_handover_mode(const std::string & mode, double t);
   void on_detections(const DetectionFrame & frame);
+  // 터널(IR) 구간 (auto_control): 켜면 콘·차량 기억을 모두 비우고 그동안 검출을 받지 않는다
+  void set_obstacles_suspended(bool on);
   void on_traffic_signal(TrafficSignal signal, double capture_time);   // 신호등 색 (검출 스레드)
   // 점검
   void set_attitude(const AttitudeInfo & a);
   void set_camera_geometry(const CameraGeometry & g);
   CameraGeometry camera_geometry() const { std::lock_guard<std::mutex> l(m_); return rc_.camera; }   // 측정한 높이·pitch를 '보여야 할 콘' 판정에 반영
-  void set_model_status(int index, const InspectionModel & m);   // 0=차선, 1=YOLO
+  void set_model_status(int index, const InspectionModel & m);   // 0=차선, 1=YOLO, 2=터널 IR 차선
   void on_inspection_done(bool ok, const std::string & reason, double t);
   void on_refit_done(bool ok, const std::string & reason, double t);
   // 제어 (차선 결과마다) / 감시 (차선이 오지 않을 때 주기적으로)
@@ -157,7 +159,8 @@ private:
   SteeringFilter steer_;
   StageStats stats_;
   AttitudeInfo attitude_;
-  InspectionModel models_[2];
+  bool obstacles_suspended_{false};
+  InspectionModel models_[3];   // 0=차선, 1=YOLO, 2=터널 IR 차선 (이름이 비면 안 씀)
   bool vesc_connected_{false};
   double last_erpm_t_{-1e9}, last_lane_t_{-1e9}, last_control_t_{-1}, last_request_t_{-1e9}, last_yaw_t_{-1};
   double speed_{0};
