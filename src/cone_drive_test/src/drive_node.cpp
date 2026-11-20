@@ -11,6 +11,8 @@
 #include <ctime>
 #include <fstream>
 #include <iomanip>
+#include <sstream>
+#include <cctype>
 #include "cone_drive_test/core/control_loop.hpp"
 #include "cone_drive_test/core/system_monitor.hpp"
 #include "cone_drive_test/runtime/camera_pipeline.hpp"
@@ -129,7 +131,7 @@ public:
     cdt::WebCallbacks cb;
     cb.start = [this] {
       auto r = loop_->request_start(cdt::now_sec());
-      if (r.first) open_cone_log();   // 주행마다 새 파일
+      if (r.first && !recording()) open_cone_log(cone_log_dir_, "");   // 주행마다 새 파일 (녹화 중이면 녹화 폴더에 이미 있음)
       return r;
     };
     cb.stop = [this] { loop_->request_stop("stop button", cdt::now_sec()); };
@@ -149,6 +151,9 @@ public:
       return out ? cdt::Reply{true, params_save_path_} : cdt::Reply{false, "cannot write " + params_save_path_};
     };
     cb.heartbeat = [this](const std::string & id) { loop_->on_heartbeat(id, cdt::now_sec()); };
+    cb.record_start = [this](const std::string & label) { return record_start(label); };
+    cb.record_stop = [this] { return record_stop(); };
+    loop_->on_record = [this](const cdt::RecordFrame & f) { record_frame(f); };
     web_ = std::make_unique<cdt::WebServer>(declare_parameter<std::string>("web.root", share + "/web"),
                                             declare_parameter<std::string>("web.bind", "0.0.0.0"),
                                             int(declare_parameter<int>("web.port", 8765)), registry_, cb);
@@ -209,21 +214,113 @@ public:
     web_->stop();
   }
 
-  void open_cone_log() {
+  static std::string time_string(const char * fmt) {
+    char b[64];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(b, sizeof(b), fmt, std::localtime(&now));
+    return b;
+  }
+
+  // name이 비면 cone_obs_<시각>.csv
+  void open_cone_log(const std::string & dir, std::string name) {
     if (!cone_log_enabled_) return;
     std::lock_guard<std::mutex> l(cone_log_m_);
     std::error_code ec;
-    std::filesystem::create_directories(cone_log_dir_, ec);
-    char name[64];
-    const std::time_t now = std::time(nullptr);
-    std::strftime(name, sizeof(name), "cone_obs_%Y-%m-%d_%H%M%S.csv", std::localtime(&now));
-    cone_log_ = std::make_unique<std::ofstream>(cone_log_dir_ + "/" + name);
-    if (!*cone_log_) { RCLCPP_WARN(get_logger(), "cannot write cone log in %s", cone_log_dir_.c_str()); cone_log_.reset(); return; }
+    std::filesystem::create_directories(dir, ec);
+    if (name.empty()) name = time_string("cone_obs_%Y-%m-%d_%H%M%S.csv");
+    cone_log_ = std::make_unique<std::ofstream>(dir + "/" + name);
+    if (!*cone_log_) { RCLCPP_WARN(get_logger(), "cannot write cone log in %s", dir.c_str()); cone_log_.reset(); return; }
     *cone_log_ << std::setprecision(10)
                << "t_rgb,t_depth,t_pose,id,class,local_x,local_y,front_x,front_y,range,bearing,pose_x,pose_y,pose_yaw,"
                   "speed,yaw_rate,gyro_bias,world_x,world_y,mem_x,mem_y,hits\n";
-    RCLCPP_INFO(get_logger(), "cone observation log: %s/%s", cone_log_dir_.c_str(), name);
+    RCLCPP_INFO(get_logger(), "cone observation log: %s/%s", dir.c_str(), name.c_str());
   }
+
+  // ---- 수동 주행 녹화: <log.dir>/manual/<시각>_<상황>/ meta.json, params.yaml, frames.csv, cone_obs.csv ----
+  bool recording() { std::lock_guard<std::mutex> l(rec_m_); return bool(rec_); }
+
+  cdt::Reply record_start(std::string label) {
+    for (auto & ch : label) if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_') ch = '_';
+    if (label.empty()) label = "run";
+    std::string dir;
+    {
+      std::lock_guard<std::mutex> l(rec_m_);
+      if (rec_) return {false, "이미 녹화 중: " + rec_dir_};
+      dir = cone_log_dir_ + "/manual/" + time_string("%Y-%m-%d_%H%M%S") + "_" + label;
+      std::error_code ec;
+      std::filesystem::create_directories(dir, ec);
+      rec_ = std::make_unique<std::ofstream>(dir + "/frames.csv");
+      if (!*rec_) { rec_.reset(); return {false, "폴더를 만들 수 없음: " + dir}; }
+      *rec_ << std::setprecision(10)
+            << "t,pose_x,pose_y,pose_yaw,speed,yaw_rate,state,plan_mode,rollout_ok,obstacle_active,left,right,path,plan,cones\n";
+      rec_dir_ = dir;
+      rec_t0_ = cdt::now_sec();
+      rec_frames_ = 0;
+      rec_label_ = label;
+    }
+    {   // 그때 파라미터 전부와 차 치수
+      std::ofstream y(dir + "/params.yaml");
+      y << registry_.to_yaml("cone_drive_test");
+      std::ofstream m(dir + "/meta.json");
+      m << "{\"label\":\"" << label << "\",\"started\":\"" << time_string("%Y-%m-%d %H:%M:%S") << "\",\"camera_x\":" << camera_x_
+        << ",\"wheelbase\":" << rc_.wheelbase << ",\"vehicle_length\":" << registry_.get("plan.vehicle_length_m")
+        << ",\"vehicle_width\":" << registry_.get("plan.vehicle_width_m") << ",\"rear_overhang\":" << registry_.get("plan.vehicle_rear_overhang_m")
+        << ",\"cone_size\":" << registry_.get("object.cone_size_m") << ",\"memory_mode\":" << registry_.get("memory.mode") << "}\n";
+    }
+    open_cone_log(dir, "cone_obs.csv");
+    RCLCPP_INFO(get_logger(), "manual recording start: %s", dir.c_str());
+    return {true, dir};
+  }
+
+  cdt::Reply record_stop() {
+    std::string dir;
+    int frames = 0;
+    {
+      std::lock_guard<std::mutex> l(rec_m_);
+      if (!rec_) return {false, "녹화 중이 아님"};
+      rec_->flush();
+      rec_.reset();
+      dir = rec_dir_;
+      frames = rec_frames_;
+      rec_last_ = dir;
+    }
+    { std::lock_guard<std::mutex> l(cone_log_m_); cone_log_.reset(); }
+    RCLCPP_INFO(get_logger(), "manual recording saved: %s (%d frames)", dir.c_str(), frames);
+    return {true, dir + " (" + std::to_string(frames) + " 프레임)"};
+  }
+
+  static void put_pts(std::ostream & o, const std::vector<cdt::Vec2> & v, std::size_t max_n) {
+    const std::size_t stride = std::max<std::size_t>(1, (v.size() + max_n - 1) / std::max<std::size_t>(1, max_n));
+    for (std::size_t i = 0; i < v.size(); i += stride) o << (i ? ";" : "") << std::fixed << std::setprecision(3) << v[i].x << ' ' << v[i].y;
+    o << std::defaultfloat << std::setprecision(10);
+  }
+
+  void record_frame(const cdt::RecordFrame & f) {
+    std::lock_guard<std::mutex> l(rec_m_);
+    if (!rec_) return;
+    auto & o = *rec_;
+    o << f.t << ',' << f.pose.x << ',' << f.pose.y << ',' << f.pose.yaw << ',' << f.speed << ',' << f.yaw_rate << ',' << f.state << ','
+      << f.plan_mode << ',' << int(f.rollout_ok) << ',' << int(f.obstacle_active) << ',';
+    put_pts(o, f.left, 40); o << ',';
+    put_pts(o, f.right, 40); o << ',';
+    put_pts(o, f.path, 40); o << ',';
+    put_pts(o, f.plan_path, 40); o << ',';
+    put_pts(o, f.cones_world, 60); o << '\n';
+    if (++rec_frames_ % 30 == 0) o.flush();
+  }
+
+  std::string record_status_json() {
+    std::lock_guard<std::mutex> l(rec_m_);
+    std::ostringstream s;
+    s << "{\"active\":" << (rec_ ? "true" : "false") << ",\"dir\":\"" << (rec_ ? rec_dir_ : rec_last_) << "\",\"seconds\":"
+      << (rec_ ? cdt::now_sec() - rec_t0_ : 0.0) << ",\"frames\":" << rec_frames_ << "}";
+    return s.str();
+  }
+  std::mutex rec_m_;
+  std::unique_ptr<std::ofstream> rec_;
+  std::string rec_dir_, rec_last_, rec_label_;
+  double rec_t0_{0};
+  int rec_frames_{0};
   bool cone_log_enabled_{true};
   std::string cone_log_dir_;
   std::mutex cone_log_m_;
@@ -337,7 +434,11 @@ private:
       f.params_version = registry_.version();
     }
     const double t0 = cdt::now_sec();
-    web_->publish_telemetry(cdt::telemetry_json(f));
+    {   // 녹화 상태를 붙여 보낸다
+      std::string j = cdt::telemetry_json(f);
+      if (!j.empty() && j.back() == '}') { j.pop_back(); j += ",\"record\":" + record_status_json() + "}"; }
+      web_->publish_telemetry(std::move(j));
+    }
     if (full) loop_->stats().record("web", t0, cdt::now_sec());
   }
 

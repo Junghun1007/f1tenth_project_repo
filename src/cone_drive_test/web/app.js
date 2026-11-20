@@ -186,6 +186,10 @@ function render() {
   $("btnStart").disabled = !(f.mode === "drive" && stopped && Object.values(f.readiness).every(Boolean));
   $("btnStop").disabled = !["DRIVING", "STOPPING"].includes(f.state);
   $("btnRefit").disabled = !["READY", "MANUAL", "DRIVING"].includes(f.state);
+  if (f.record) {
+    $("btnRec").disabled = f.record.active; $("btnRecStop").disabled = !f.record.active; $("recLabel").disabled = f.record.active;
+    if (f.record.active) $("recStatus").textContent = `● 녹화 중 ${f.record.seconds.toFixed(0)} s · ${f.record.frames} 프레임`;
+  }
   $("camPanel").hidden = !$("togCam").checked;
 
   const chips = Object.entries(f.readiness).map(([k, v]) => `<span class="chip ${v ? "ok" : ""}">${READY_LABEL[k] || k}</span>`).join("");
@@ -251,6 +255,15 @@ function bind() {
   }));
   $("btnStart").addEventListener("click", async () => { const r = await post("/api/start"); if (!r.ok) $("reason").textContent = r.reason; });
   $("btnStop").addEventListener("click", () => post("/api/stop"));
+  // 수동 주행 녹화: 사람이 달린 경로 + 같은 순간 계획기 경로·차선·콘을 남겨 파라미터를 찾는 데 쓴다
+  $("btnRec").addEventListener("click", async () => {
+    const r = await post("/api/record/start", { label: $("recLabel").value });
+    $("recStatus").textContent = r.ok ? "녹화 중" : r.reason;
+  });
+  $("btnRecStop").addEventListener("click", async () => {
+    const r = await post("/api/record/stop");
+    $("recStatus").textContent = r.ok ? "저장: " + r.reason : r.reason;
+  });
   $("btnRefit").addEventListener("click", async () => {
     if (!confirm("차량을 정지한 뒤 카메라 자세를 다시 측정합니다. 평평한 바닥에 세워 두세요.")) return;
     const r = await post("/api/refit"); if (!r.ok) $("reason").textContent = r.reason;

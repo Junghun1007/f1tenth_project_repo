@@ -21,6 +21,15 @@
   <button class="btn stop" id="btnStop">정지</button>
   <button class="btn" id="btnRefit">Refit</button>
   <span class="sep"></span>
+  <select id="recLabel" class="btn" title="녹화할 상황">
+    <option value="zigzag">지그재그 콘</option>
+    <option value="guided">유도 경로</option>
+    <option value="other">기타</option>
+  </select>
+  <button class="btn go" id="btnRec">● 녹화 시작</button>
+  <button class="btn stop" id="btnRecStop" disabled>■ 녹화 종료</button>
+  <span class="reason" id="recStatus"></span>
+  <span class="sep"></span>
   <label class="tog main-tog"><input type="checkbox" id="togPreview" checked> 프리뷰</label>
   <label class="tog"><input type="checkbox" id="togBev"> BEV 원본</label>
   <label class="tog"><input type="checkbox" id="togCam"> 카메라</label>

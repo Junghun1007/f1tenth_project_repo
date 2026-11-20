@@ -87,6 +87,14 @@ void WebServer::routes() {
   s.Post("/api/start", [this](const httplib::Request &, httplib::Response & res) { send(res, cb_.start ? cb_.start() : Reply{false, "unavailable"}); });
   s.Post("/api/stop", [this](const httplib::Request &, httplib::Response & res) { if (cb_.stop) cb_.stop(); send(res, {true, ""}); });
   s.Post("/api/refit", [this](const httplib::Request &, httplib::Response & res) { send(res, cb_.refit ? cb_.refit() : Reply{false, "unavailable"}); });
+  s.Post("/api/record/start", [this, body](const httplib::Request & req, httplib::Response & res) {
+    const auto j = body(req);
+    const auto * l = j ? j->get("label") : nullptr;
+    send(res, cb_.record_start ? cb_.record_start(l && l->kind == JsonValue::String ? l->str : std::string("run")) : Reply{false, "unavailable"});
+  });
+  s.Post("/api/record/stop", [this](const httplib::Request &, httplib::Response & res) {
+    send(res, cb_.record_stop ? cb_.record_stop() : Reply{false, "unavailable"});
+  });
   s.Post("/api/params/save", [this](const httplib::Request &, httplib::Response & res) {
     send(res, cb_.params_save ? cb_.params_save() : Reply{false, "unavailable"});
   });

@@ -305,6 +305,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
     std::vector<Vec2> blind;
     double blind_end = -1;
     const auto cones = s_.memory_mode >= 1 ? lane_memory_cones(pose_lane, commit ? &blind : nullptr, &blind_end) : memory_.confirmed_world();
+    rec_cones_ = cones;
     if (commit) lock_.refresh(blind_end);
     plan_ = planner_.plan(lane_, cones, pose_lane, speed_, steer_.angle(), commit ? lock_.pin() : nullptr, commit ? &blind : nullptr);
     if (commit && lane_f_valid_) {   // 다음 고정에 쓸 이번 경로 (s, l)
@@ -333,6 +334,22 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
     have_path = control_path_.size() >= 2;
   }
   stats_.record("memory_plan", t0, now_sec());
+  if (on_record && lane.valid) {
+    RecordFrame r;
+    r.t = lane_.capture_time;
+    r.pose = plan_pose_;
+    r.speed = speed_;
+    r.yaw_rate = last_yaw_rate_.load(std::memory_order_relaxed);
+    r.state = state_name(sm_.state());
+    r.lane_valid = lane.valid;
+    r.left = lane_.left; r.right = lane_.right; r.path = lane_.path;
+    r.plan_mode = plan_mode_name(plan_.mode);
+    r.rollout_ok = plan_.rollout_ok;
+    r.obstacle_active = plan_.obstacle_active;
+    r.plan_path = plan_.path_local;
+    r.cones_world = rec_cones_;
+    on_record(r);
+  }
   return control_step(now, have_path);
 }
 

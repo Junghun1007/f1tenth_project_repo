@@ -57,6 +57,20 @@ struct ConeLogRow {
   int hits{0};
 };
 
+// 수동 주행 녹화 한 프레임 (차선 결과마다): 사람이 달린 경로와 같은 순간 계획기가 낸 경로를 함께 남긴다
+struct RecordFrame {
+  double t{0};                         // 차선 영상 촬영 시각
+  Pose2 pose;                          // 그 시각 odom 앞차축 자세
+  double speed{0}, yaw_rate{0};
+  std::string state;                   // DRIVING / MANUAL ...
+  bool lane_valid{false};
+  std::vector<Vec2> left, right, path; // 차선 (차량 좌표, 그 시각 기준)
+  std::string plan_mode;               // center / lane / lane-tight / free / fallback
+  bool rollout_ok{true}, obstacle_active{false};
+  std::vector<Vec2> plan_path;         // 계획기가 낸 경로 (차량 좌표)
+  std::vector<Vec2> cones_world;       // 계획에 쓴 콘 (odom 좌표)
+};
+
 class ControlLoop {
 public:
   ControlLoop(DriveMode mode, const RuntimeConfig & rc);
@@ -97,6 +111,8 @@ public:
   StageStats & stats() { return stats_; }
   // 콘 관측 기록 (검출이 계획에 반영될 때마다, 제어 스레드에서 호출). 비워 두면 기록 안 함
   std::function<void(const std::vector<ConeLogRow> &)> on_cone_log;
+  // 수동 주행 녹화 (차선 결과마다, 제어 스레드에서). 비워 두면 기록 안 함
+  std::function<void(const RecordFrame &)> on_record;
   double gyro_bias() const { return gyro_bias_.load(std::memory_order_relaxed); }
 
 private:
@@ -144,6 +160,7 @@ private:
   double speed_{0};
   double odom_speed_{0};
   std::atomic<double> speed_atomic_{0.0};
+  std::vector<Vec2> rec_cones_;   // 녹화용: 이번 계획에 쓴 콘
   // 자이로 영점: 정지 중(속도 ≈ 0, ERPM 신선) 요레이트 평균. 오도메트리에서 뺀다 (안 빼면 약 0.15°/s씩 방향이 돈다)
   std::atomic<double> gyro_bias_{0.0}, last_erpm_atomic_{-1e9}, last_yaw_rate_{0.0};
   bool gyro_bias_init_{false};
