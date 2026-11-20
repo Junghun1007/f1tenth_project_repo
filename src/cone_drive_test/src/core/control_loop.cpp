@@ -40,15 +40,7 @@ ControlLoop::ControlLoop(DriveMode mode, const RuntimeConfig & rc)
 
 void ControlLoop::apply_settings(const Settings & s) {
   std::lock_guard<std::mutex> l(m_);
-  if (s.memory_mode != s_.memory_mode) {   // 방식을 바꾸면 두 기억 모두 새로 시작
-    memory_.clear();
-    lane_mem_.clear();
-    lane_mem_view_.clear();
-    lock_.clear();
-    latest_sl_.clear();
-    last_lane_dist_ = -1;
-    planner_.reset();
-  }
+  if (s.memory_mode != s_.memory_mode) clear_memories();   // 방식을 바꾸면 두 기억 모두 새로 시작
   s_ = s;
   auto lp = s.lane_memory;
   lp.front_axle_to_rear_bumper = rc_.wheelbase + s.planner.rear_overhang;
@@ -222,7 +214,16 @@ void ControlLoop::on_inspection_done(bool ok, const std::string & reason, double
 void ControlLoop::on_refit_done(bool ok, const std::string & reason, double t) {
   std::lock_guard<std::mutex> l(m_);
   sm_.on_refit_done(ok, t, reason);
-  memory_.clear();   // 자세가 바뀌었으니 기억을 다시 쌓는다
+  clear_memories();   // 자세가 바뀌었으니 콘 기억을 모두 비우고 다시 쌓는다
+}
+
+void ControlLoop::clear_memories() {
+  memory_.clear();
+  lane_mem_.clear();
+  lane_mem_view_.clear();
+  lock_.clear();
+  latest_sl_.clear();
+  last_lane_dist_ = -1;
   planner_.reset();
 }
 

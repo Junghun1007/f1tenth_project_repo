@@ -12,6 +12,21 @@
 namespace cone_drive_test {
 
 namespace {
+// 박스 아래 끝이 보이나: 다른 박스(더 가까운 물체)가 아래 끝 줄을 가로로 겹쳐 덮고 있으면 가려진 것으로 본다
+bool bottom_visible(const Detection & d, const std::vector<Detection> & all) {
+  const float bottom = d.box.y + d.box.height;
+  for (const auto & o : all) {
+    if (&o == &d) continue;
+    const float ob = o.box.y + o.box.height;
+    const bool covers_row = o.box.y < bottom && ob > bottom;   // 아래 끝 줄이 상대 박스 안 (상대가 더 아래까지 내려옴 = 더 가까움)
+    const bool overlaps_x = std::min(d.box.x + d.box.width, o.box.x + o.box.width) > std::max(d.box.x, o.box.x);
+    if (covers_row && overlaps_x) return false;
+  }
+  return true;
+}
+}  // namespace
+
+namespace {
 const char * kClassNames[] = {"con", "truck", "sedan", "traffic_light"};
 }
 
@@ -208,7 +223,10 @@ void DetectWorker::loop_() {
         const Footprint fp = det.class_id == 0 ? Footprint{s.cone_size_m, s.cone_size_m}
                            : det.class_id == 1 ? Footprint{0.60, 0.36} : det.class_id == 2 ? Footprint{0.50, 0.30} : Footprint{};
         const cv::Rect2f box(det.box.x * sx, det.box.y * sy, det.box.width * sx, det.box.height * sy);
-        if (auto o = localize_box(mm, stride_px, k, mount, box, det.class_id, det.score, fp, s.box)) out.cones.push_back(*o);
+        GroundCheck gc = GroundCheck::Skipped;
+        if (auto o = localize_box(mm, stride_px, k, mount, box, det.class_id, det.score, fp, s.box, bottom_visible(det, obstacles), &gc))
+          out.cones.push_back(*o);
+        else if (gc == GroundCheck::Rejected) stats.record("ground_reject", t1, t1);   // 진단: 깊이 거리와 지면 거리가 크게 달라 버림
         else stats.record("loc_fail", t1, t1);   // 진단: 깊이는 있는데 박스 안 유효 점이 모자람
       }
     }

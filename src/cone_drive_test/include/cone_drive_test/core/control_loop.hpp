@@ -117,6 +117,7 @@ public:
   double gyro_bias() const { return gyro_bias_.load(std::memory_order_relaxed); }
 
 private:
+  void clear_memories();   // 콘 기억(월드·차선 기준), 경로 고정, 보이는 콘, 계획 상태를 모두 비움. m_ 잡은 채로 호출
   Readiness readiness(double now) const;
   // 오도메트리는 400 Hz IMU 스레드가 갱신하므로 별도 락 (계획이 도는 동안 IMU·영상 안정화가 기다리지 않게).
   // 락 순서는 항상 m_ → odom_m_

@@ -63,3 +63,29 @@ TEST(box_depth_clips_box_outside_image) {
   const auto d = render(1.2, 0.1);
   CHECK(!localize_box(d.data(), K.width, K, M, {-50.f, -50.f, 10.f, 10.f}, 0, 0.9f, {0.13, 0.13}, {}).has_value());
 }
+
+// 화면 가장자리 엉터리 깊이: 2 m 앞 콘 박스 안 깊이가 0.35 m로 읽힘 → 박스 아래 끝으로 구한 지면 거리(약 2 m)와 안 맞아 버린다
+TEST(box_depth_rejects_near_depth_for_far_box) {
+  const cv::Rect2f box = box_of(2.0, -0.3);
+  auto d = render(10.0, 5.0);
+  for (int v = int(box.y); v < int(box.y + box.height); ++v)
+    for (int u = int(box.x); u < int(box.x + box.width); ++u) d[std::size_t(v) * K.width + u] = 350;
+  GroundCheck gc = GroundCheck::Skipped;
+  CHECK(!localize_box(d.data(), K.width, K, M, box, 0, 0.9f, {0.13, 0.13}, {}, true, &gc).has_value());
+  CHECK(gc == GroundCheck::Rejected);
+  BoxDepthOptions off;
+  off.ground_check_ratio = 0;   // 끄면 예전처럼 차 바로 앞으로 찍힌다
+  const auto o = localize_box(d.data(), K.width, K, M, box, 0, 0.9f, {0.13, 0.13}, off);
+  CHECK(o.has_value() && o->front.x < 0.5);
+  // 아래 끝이 다른 박스에 가려졌다고 하면 검사하지 않는다
+  CHECK(localize_box(d.data(), K.width, K, M, box, 0, 0.9f, {0.13, 0.13}, {}, false, &gc).has_value());
+  CHECK(gc == GroundCheck::Skipped);
+}
+
+TEST(box_depth_ground_check_passes_real_cone) {   // 정상 콘은 지면 거리와 맞아 통과
+  for (double x : {0.5, 1.2, 2.5}) {
+    GroundCheck gc = GroundCheck::Skipped;
+    CHECK(localize_box(render(x, 0.1).data(), K.width, K, M, box_of(x, 0.1), 0, 0.9f, {0.13, 0.13}, {}, true, &gc).has_value());
+    CHECK(gc == GroundCheck::Passed);
+  }
+}

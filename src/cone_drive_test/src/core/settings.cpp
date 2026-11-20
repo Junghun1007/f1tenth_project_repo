@@ -29,6 +29,8 @@ void register_params(ParamRegistry & r) {
   o("위치 추정", "object.bearing_offset_deg", "검출 방향 보정 (+ = 왼쪽으로 돌림). 정답 배치 분석값 −2.4°, 지금은 해제(0)", "°", -10, 10, 0);
   o("위치 추정", "object.range_gain", "검출 거리 배율 (카메라→콘 거리 × 이 값)", "", 0.8, 1.2, 0.971);
   o("위치 추정", "object.range_offset_m", "검출 거리 오프셋 (배율 뒤에 더함)", "m", -0.2, 0.2, -0.046);
+  o("위치 추정", "object.ground_check_ratio", "지면 거리 검사: 박스 아래 끝으로 구한 거리와 깊이 거리가 이 배율 넘게 다르면 버림 (0=끔)", "", 0, 5, 1.6);
+  o("위치 추정", "object.ground_check_min_m", "지면 거리 검사: 두 거리 차이가 이보다 작으면 통과", "m", 0, 1, 0.3);
   o("위치 추정", "object.time_offset_ms", "검출 시각 보정 (차 자세를 찾을 때 이만큼 뒤 시각으로)", "ms", -100, 100, 15);
   o("콘 기억", "memory.gate_radial_max", "거리 방향 게이트", "m", 0.02, 0.5, 0.17);
   o("콘 기억", "memory.gate_lateral", "옆 방향 게이트", "m", 0.01, 0.3, 0.06);
@@ -46,23 +48,23 @@ void register_params(ParamRegistry & r) {
   // 최소 여유(차체 직사각형 ↔ 콘 사각형 빈틈, 이보다 가까우면 불가)는 세 단계 모두 같은 안전 하한 이상으로 둔다:
   // ①만 올리면 ②(예전 0 고정)로 넘어가 오히려 콘에 더 붙는다
   o("회피 계획", "plan.hard_clearance", "① 차선 안 최소 여유 (안전 하한)", "m", 0, 0.2, 0.02);
-  o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.12);
+  o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.10);
   o("회피 계획", "plan.relaxed_hard_clearance", "② 차선 안·여유 축소 최소 여유 (차선 밖으로 나가기 전 마지막 단계)", "m", 0, 0.2, 0.005);
   o("회피 계획", "plan.relaxed_soft_clearance", "② 차선 안·여유 축소 권장 여유", "m", 0, 0.3, 0.05);
   o("회피 계획", "plan.free_hard_clearance", "③ 차선 밖 최소 여유", "m", 0, 0.2, 0.02);
-  o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.10);
+  o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.08);
   o("회피 계획", "plan.vehicle_length_m", "계획에 쓰는 차체 길이 (실측, 범퍼 끝~끝)", "m", 0.3, 0.8, 0.50);
   o("회피 계획", "plan.vehicle_width_m", "계획에 쓰는 차체 폭 (실측, 가장 넓은 곳)", "m", 0.15, 0.5, 0.30);
   o("회피 계획", "plan.vehicle_rear_overhang_m", "뒤 차축 → 뒤 범퍼 (실측)", "m", 0, 0.3, 0.12);
-  o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈 (수동 주행 녹화로 맞춤)", "m", 0, 0.1, 0.09);
+  o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈 (수동 주행 녹화로 맞춤)", "m", 0, 0.1, 0.07);
   o("회피 계획", "plan.avoid_vehicles", "차량(트럭·세단)도 회피 (0=끔, 1=켬)", "", 0, 1, 1.0);
   o("회피 계획", "plan.activation_margin_m", "회피 계획을 켜는 범위 여유: 차가 지나갈 폭(차체 반폭 + 권장 여유 + 콘 반폭)에 더함", "m", 0, 0.5, 0.05);
   o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 0.45);
   // 경로 모양 가중치 (예전엔 코드 고정). 수동 주행 녹화 6회를 다시 돌려 계획 경로가 사람 경로와 가장 비슷한 값으로 맞춤 (tools/fit_planner)
   o("회피 계획", "plan.w_obstacle", "콘 가까이 벌점 가중치 (권장 여유 안쪽을 얼마나 피할지)", "", 10, 40000, 400);
   o("회피 계획", "plan.w_offset", "기준 경로(중앙선)에서 벗어남 벌점 가중치", "", 0.1, 500, 20);
-  o("회피 계획", "plan.w_slope", "경로 기울기(옆으로 꺾임) 벌점 가중치", "", 0, 50, 0.5);
-  o("회피 계획", "plan.w_curvature", "경로 곡률(급한 꺾임) 벌점 가중치", "", 0, 2, 0.005);
+  o("회피 계획", "plan.w_slope", "경로 기울기(옆으로 꺾임) 벌점 가중치", "", 0, 50, 4);
+  o("회피 계획", "plan.w_curvature", "경로 곡률(급한 꺾임) 벌점 가중치", "", 0, 2, 0.1);
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 1.2);
   o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
   o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
@@ -159,6 +161,8 @@ Settings settings_from(const ParamRegistry & r) {
   s.box.bearing_offset_rad = g("object.bearing_offset_deg") * 3.14159265358979323846 / 180.0;
   s.box.range_gain = g("object.range_gain");
   s.box.range_offset_m = g("object.range_offset_m");
+  s.box.ground_check_ratio = g("object.ground_check_ratio");
+  s.box.ground_check_min_m = g("object.ground_check_min_m");
   s.obs_time_offset_s = g("object.time_offset_ms") / 1000.0;
   s.box.loc.min_points = std::size_t(std::lround(g("object.min_points")));
   s.box.loc.min_fraction = g("object.min_point_share");
