@@ -15,6 +15,10 @@ struct MemoryParams {
   int confirm_hits{3};
   int miss_delete{4};              // 보여야 하는데 안 보인 횟수
   double delete_behind{0.10};      // 뒷범퍼 뒤 이 거리 지나면 삭제
+  // 유령 기억 정리: 이 시간(s) 동안 다시 안 보였고 사각지대(차 옆·바로 앞)에도 없으면 삭제. 0 = 끔
+  // (카메라 시야 밖 기억은 '보여야 하는데 안 보임'으로 지워질 기회가 없어 오검출이 계속 남았다)
+  double ghost_timeout{1.5};
+  double blind_front{0.45};        // 사각지대 앞 끝 (앞차축 앞, m): 이보다 가까운 기억은 지나가는 중이라 유지
   double unconfirmed_timeout{0.5}; // 미확정 기억이 이 시간 동안 안 보이면 삭제
   double range_noise_base{0.01};   // 거리 오차 σ = base + per_m × 거리 (가중치·게이트)
   double range_noise_per_m{0.02};

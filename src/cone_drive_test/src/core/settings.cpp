@@ -36,6 +36,7 @@ void register_params(ParamRegistry & r) {
   o("콘 기억", "memory.confirm_hits", "확정 관측 횟수", "", 1, 20, 3);
   o("콘 기억", "memory.miss_delete", "놓침 삭제 횟수", "", 1, 50, 4);
   o("콘 기억", "memory.delete_behind", "뒤 삭제 거리", "m", 0, 1, 0.10);
+  o("콘 기억", "memory.ghost_timeout_sec", "유령 기억 정리: 이 시간 동안 다시 안 보이고 차 옆·바로 앞도 아니면 삭제 (0=끔)", "s", 0, 10, 1.5);
   o("콘 기억", "memory.mode", "기억 방식 (0=월드, 1=차선 기준 단기, 2=보이는 콘+화면 밖 고정, 3=기억 없음)", "", 0, 3, 0);
   o("콘 기억", "memory.lane_confirm_hits", "[차선 기준] 사용 전 관측 횟수", "", 1, 10, 4);
   o("콘 기억", "memory.lane_miss_delete", "[차선 기준] 보이는 구간 놓침 삭제", "", 1, 20, 2);
@@ -46,7 +47,7 @@ void register_params(ParamRegistry & r) {
   // ①만 올리면 ②(예전 0 고정)로 넘어가 오히려 콘에 더 붙는다
   o("회피 계획", "plan.hard_clearance", "① 차선 안 최소 여유 (안전 하한)", "m", 0, 0.2, 0.02);
   o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.12);
-  o("회피 계획", "plan.relaxed_hard_clearance", "② 차선 안·여유 축소 최소 여유 (차선 밖으로 나가기 전 마지막 단계)", "m", 0, 0.2, 0.02);
+  o("회피 계획", "plan.relaxed_hard_clearance", "② 차선 안·여유 축소 최소 여유 (차선 밖으로 나가기 전 마지막 단계)", "m", 0, 0.2, 0.005);
   o("회피 계획", "plan.relaxed_soft_clearance", "② 차선 안·여유 축소 권장 여유", "m", 0, 0.3, 0.05);
   o("회피 계획", "plan.free_hard_clearance", "③ 차선 밖 최소 여유", "m", 0, 0.2, 0.02);
   o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.10);
@@ -55,9 +56,10 @@ void register_params(ParamRegistry & r) {
   o("회피 계획", "plan.vehicle_rear_overhang_m", "뒤 차축 → 뒤 범퍼 (실측)", "m", 0, 0.3, 0.12);
   o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈 (수동 주행 녹화로 맞춤)", "m", 0, 0.1, 0.09);
   o("회피 계획", "plan.avoid_vehicles", "차량(트럭·세단)도 회피 (0=끔, 1=켬)", "", 0, 1, 1.0);
-  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 1.0);
+  o("회피 계획", "plan.activation_margin_m", "회피 계획을 켜는 범위 여유: 차가 지나갈 폭(차체 반폭 + 권장 여유 + 콘 반폭)에 더함", "m", 0, 0.5, 0.05);
+  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 0.45);
   // 경로 모양 가중치 (예전엔 코드 고정). 수동 주행 녹화 6회를 다시 돌려 계획 경로가 사람 경로와 가장 비슷한 값으로 맞춤 (tools/fit_planner)
-  o("회피 계획", "plan.w_obstacle", "콘 가까이 벌점 가중치 (권장 여유 안쪽을 얼마나 피할지)", "", 10, 40000, 200);
+  o("회피 계획", "plan.w_obstacle", "콘 가까이 벌점 가중치 (권장 여유 안쪽을 얼마나 피할지)", "", 10, 40000, 400);
   o("회피 계획", "plan.w_offset", "기준 경로(중앙선)에서 벗어남 벌점 가중치", "", 0.1, 500, 20);
   o("회피 계획", "plan.w_slope", "경로 기울기(옆으로 꺾임) 벌점 가중치", "", 0, 50, 0.5);
   o("회피 계획", "plan.w_curvature", "경로 곡률(급한 꺾임) 벌점 가중치", "", 0, 2, 0.005);
@@ -78,7 +80,7 @@ void register_params(ParamRegistry & r) {
   d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.08);
   d("조향 (Stanley)", "drive.steering_current_weight", "조향 필터 현재 비중", "", 0.05, 1, 0.5);
   d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 260);
-  d("차선", "lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 1.0);
+  d("차선", "lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 0);
   d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
   d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
   d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
@@ -168,6 +170,7 @@ Settings settings_from(const ParamRegistry & r) {
   s.memory.confirm_hits = int(std::lround(g("memory.confirm_hits")));
   s.memory.miss_delete = int(std::lround(g("memory.miss_delete")));
   s.memory.delete_behind = g("memory.delete_behind");
+  s.memory.ghost_timeout = g("memory.ghost_timeout_sec");
   s.memory_mode = int(std::lround(g("memory.mode")));
   s.lane_memory.confirm_hits = int(std::lround(g("memory.lane_confirm_hits")));
   s.lane_memory.miss_delete = int(std::lround(g("memory.lane_miss_delete")));
@@ -185,6 +188,7 @@ Settings settings_from(const ParamRegistry & r) {
   p.free_hard_clearance = g("plan.free_hard_clearance");
   p.free_soft_clearance = g("plan.free_soft_clearance");
   p.lane_tolerance = g("plan.lane_tolerance");
+  p.activation_margin = g("plan.activation_margin_m");
   p.w_obstacle = g("plan.w_obstacle");
   p.w_offset = g("plan.w_offset");
   p.w_slope = g("plan.w_slope");

@@ -102,3 +102,14 @@ TEST(update_reports_track_ids_per_observation) {
   CHECK(ids2.size() == 1 && ids2[0] == ids[1]);
   CHECK(mem.find(ids[1]) != nullptr);
 }
+
+TEST(ghost_memory_outside_view_expires_but_blind_zone_cone_stays) {   // 시야 밖 오래된 기억은 지우고, 차 옆을 지나는 콘은 유지
+  ConeMemory mem;   // ghost_timeout 1.5 s, 사각지대 앞 끝 0.45 m
+  const auto none = [](const std::vector<Vec2> &, const Pose2 &) { return std::vector<int>{}; };
+  for (int k = 0; k < 3; ++k) mem.update({0, 0, 0}, k * 0.03, {obs({2.0, 0.9}), obs({0.3, 0.25})}, none);
+  CHECK(mem.confirmed_world().size() == 2);
+  mem.update({0, 0, 0}, 2.5, {}, none);   // 2.5 s 동안 다시 안 보임
+  const auto left = mem.confirmed_world();
+  CHECK(left.size() == 1);
+  CHECK_NEAR(left[0].x, 0.3, 1e-6);   // 차 옆(사각지대) 콘만 남음
+}

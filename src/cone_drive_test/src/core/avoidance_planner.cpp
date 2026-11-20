@@ -50,12 +50,16 @@ PlanResult AvoidancePlanner::plan(const LaneObservation & lane, const std::vecto
   DesiredOffset l_des;
   for (auto i : order) { l_des.s.push_back(dsl[i].x); l_des.l.push_back(dsl[i].y); }
 
-  // 차선 안 경로에 영향을 줄 수 있는 콘만 회피 계획을 켠다: 차선 안 경로의 차체 끝(차선 반폭 + 허용 이탈)에서
-  // 권장 여유보다 멀리 있는 콘(도로 밖 콘)은 비용이 0이라 계획해도 중앙선과 같은 결과 → 중앙선을 그대로 쓴다
-  const double reach = p_.lane_half + p_.lane_tolerance + p_.soft_clearance + p_.cone_half + 0.02;
+  // 차가 실제로 지나갈 폭에 걸리는 콘만 회피 계획을 켠다: 지금 옆 위치(l0)와 따라갈 경로(l_des) 사이 띠에서
+  // 차체 반폭 + 권장 여유 + 콘 반폭 + activation_margin 안. 그 밖의 콘은 비용이 0이라 계획해도 중앙선과 같은 결과
+  // (예전: 차선 중앙선 ±(차선 반폭 + 허용 이탈 + 권장 여유 + …) ≈ 0.62 m → 코너에서 차선 밖 콘에도 계획이 켜졌다)
+  const double reach = p_.width / 2 + p_.soft_clearance + p_.cone_half + p_.activation_margin;
   bool near = false;
   for (const auto & c : cones_sl) {
-    if (c.x <= -0.6 || c.x >= s_end + 0.3 || std::abs(c.y) > reach) continue;
+    if (c.x <= -0.6 || c.x >= s_end + 0.3) continue;
+    const double ld = l_des.s.empty() ? 0.0 : interp(c.x, l_des.s, l_des.l);
+    const double lo = std::min(l0, ld) - reach, hi = std::max(l0, ld) + reach;
+    if (c.y < lo || c.y > hi) continue;
     near = true;
     if (c.x < 3.0) out.obstacle_active = true;
   }

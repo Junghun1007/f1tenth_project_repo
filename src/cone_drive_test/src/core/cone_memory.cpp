@@ -75,7 +75,10 @@ void ConeMemory::update(const Pose2 & pose, double t, const std::vector<ConeObse
   std::vector<TrackedCone> keep;
   keep.reserve(tracks_.size());
   for (const auto & tr : tracks_) {
-    if (to_local(tr.world, pose).x < behind) continue;
+    const Vec2 l = to_local(tr.world, pose);
+    if (l.x < behind) continue;
+    const bool blind = l.x <= p_.blind_front && std::abs(l.y) <= p_.bev_y_max;   // 차 옆·바로 앞: 지나가는 중
+    if (p_.ghost_timeout > 0 && !blind && t - tr.last_seen > p_.ghost_timeout) continue;
     if (tr.misses >= p_.miss_delete) continue;
     if (!confirmed(tr) && t - tr.last_seen > p_.unconfirmed_timeout) continue;
     keep.push_back(tr);

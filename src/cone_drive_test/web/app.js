@@ -123,6 +123,23 @@ function drawBev(f) {
   polyline(f.lane.right, "#ef4444", 3);
   polyline(f.lane.path, "#facc15", 2, [8, 6]);
   for (const m of f.memory) box(m.x, m.y, 0.13, 0.13, 0, null, "#f472b6", [4, 3]);
+  // 화면 밖 기억 콘: 가장자리에 화살표 + 거리 (계획이 왜 켜졌는지 보이게)
+  let off = 0;
+  for (const m of f.memory) {
+    const inside = m.x >= BEV.xMin && m.x <= BEV.xMax && Math.abs(m.y) <= BEV.yHalf;
+    if (inside) continue;
+    off++;
+    const cx = Math.min(BEV.xMax - 0.05, Math.max(BEV.xMin + 0.05, m.x)), cy = Math.min(BEV.yHalf - 0.03, Math.max(-BEV.yHalf + 0.03, m.y));
+    const [u, v] = P(cx, cy);
+    const [u0, v0] = P(0, 0);
+    const a = Math.atan2(v - v0, u - u0);
+    ctx.save(); ctx.fillStyle = "#f472b6"; ctx.beginPath();
+    ctx.moveTo(u + 7 * Math.cos(a), v + 7 * Math.sin(a));
+    ctx.lineTo(u + 7 * Math.cos(a + 2.4), v + 7 * Math.sin(a + 2.4)); ctx.lineTo(u + 7 * Math.cos(a - 2.4), v + 7 * Math.sin(a - 2.4));
+    ctx.closePath(); ctx.fill();
+    ctx.font = "10px sans-serif"; ctx.fillText(`${m.x.toFixed(1)},${m.y.toFixed(1)}`, Math.min(Math.max(u - 18, 2), cv.width - 46), v + (v > cv.height / 2 ? -9 : 16));
+    ctx.restore();
+  }
   for (const d of f.detections) {
     box(d.x, d.y, d.length, d.width, d.yaw || 0, "rgba(251,146,60,.85)", "#fb923c");
     const [u, v] = P(d.x + d.length / 2, d.y);
@@ -145,6 +162,15 @@ function drawBev(f) {
     polyline(f.plan.path, "#22d3ee", 3, f.plan.rollout_ok ? [] : [6, 5]);   // 롤아웃 실패 = 점선
     if (!f.plan.rollout_ok) { const e = f.plan.path[f.plan.path.length - 1]; const [u, v] = P(e[0], e[1]);
       ctx.fillStyle = "#22d3ee"; ctx.font = "bold 12px sans-serif"; ctx.fillText("롤아웃 FAIL", Math.min(u, cv.width - 80), v + 14); }
+  }
+  {   // 지금 계획 모드와 기억 콘 수 (화면 밖 포함)
+    const mode = f.plan ? (PLAN_LABEL[f.plan.mode] || f.plan.mode) : "-";
+    ctx.save(); ctx.font = "bold 12px sans-serif";
+    ctx.fillStyle = f.plan && f.plan.mode !== "center" ? "#22d3ee" : "rgba(255,255,255,.7)";
+    ctx.fillText(`계획: ${mode}`, 6, cv.height - 24);
+    ctx.fillStyle = "#f472b6";
+    ctx.fillText(`기억 콘 ${f.memory.length}${off ? ` (화면 밖 ${off})` : ""} · 관측 ${f.detections.length}`, 6, cv.height - 8);
+    ctx.restore();
   }
   // 차량 외곽 (앞차축 원점, 길이 0.50, 폭 0.30, 앞 오버행 0.05)
   box(0.05 - 0.25, 0, 0.5, 0.3, 0, "rgba(59,130,246,.25)", "#60a5fa");

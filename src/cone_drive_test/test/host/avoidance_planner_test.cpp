@@ -103,6 +103,12 @@ TEST(cones_outside_the_road_do_not_trigger_avoidance) {   // 도로 밖(차선�
   const auto r = pl.plan(straight_lane(), {{0.8, 0.65}, {1.2, -0.70}}, {0, 0, 0}, 1.0, 0.0);
   CHECK(r.mode == PlanMode::Center);
   CHECK(!r.obstacle_active);
-  const auto r2 = pl.plan(straight_lane(), {{0.8, 0.40}}, {0, 0, 0}, 1.0, 0.0);   // 차선선 바로 옆 콘은 계속 고려
-  CHECK(r2.mode != PlanMode::Center);
+  // 차선선 바로 옆(0.40 m) 콘도 차체와 18 cm 떨어져 권장 여유 밖이면 계획을 켜지 않음 (아래 테스트에서 띠 안·밖을 확인)
+}
+
+TEST(avoidance_turns_on_only_for_cones_in_the_driving_corridor) {   // 차가 지나갈 폭(차체 반폭 + 권장 여유 + 콘 반폭 + 여유) 밖 콘은 계획을 켜지 않는다
+  PlannerParams p;   // 반폭 0.15 + 권장 0.06 + 콘 0.065 + 여유 0.05 = 0.325 m
+  AvoidancePlanner pl{p, ControlParams{}};
+  CHECK(pl.plan(straight_lane(), {{1.2, 0.40}}, {0, 0, 0}, 1.0, 0.0).mode == PlanMode::Center);   // 차선 안이지만 띠 밖
+  CHECK(pl.plan(straight_lane(), {{1.2, 0.25}}, {0, 0, 0}, 1.0, 0.0).mode != PlanMode::Center);   // 띠 안
 }

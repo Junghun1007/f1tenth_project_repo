@@ -17,7 +17,8 @@ struct PlannerParams {
   double free_hard_clearance{0.005}, free_soft_clearance{0.10};
   double w_obstacle{4000}, w_lane{400}, w_lane_linear{40}, lane_quad_cap{0.06}, w_lane_linear_free{4};
   double lane_tolerance{0.03}, lane_return_distance{0.8};
-  double free_max_excess{1.0};    // 차선 밖 회피에서 차체가 차선 밖으로 나갈 최대 거리 (m). 1.0 = 시뮬레이터와 같음(사실상 제한 없음), 실차 기본은 settings 0.10
+  double free_max_excess{1.0};
+  double activation_margin{0.05};   // 회피 계획을 켜는 띠 여유 (차체 반폭 + 권장 여유 + 콘 반폭에 더함)    // 차선 밖 회피에서 차체가 차선 밖으로 나갈 최대 거리 (m). 1.0 = 시뮬레이터와 같음(사실상 제한 없음), 실차 기본은 settings 0.10
   double w_offset{20}, w_slope{1}, w_curvature{0.08}, max_curvature{3.5};
   double rollout_sec{1.5}, rollout_retry_margin{0.03}, backward_extension{0.8};
   double cone_half{0.065};
