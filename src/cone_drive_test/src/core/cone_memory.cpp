@@ -17,8 +17,9 @@ Vec2 to_local(const Vec2 & w, const Pose2 & p) {
 ConeMemory::ConeMemory(const MemoryParams & p) : p_(p) {}
 
 void ConeMemory::update(const Pose2 & pose, double t, const std::vector<ConeObservation> & cones,
-                        const ExpectedVisibleFn & expected) {
+                        const ExpectedVisibleFn & expected, std::vector<std::uint32_t> * ids) {
   std::vector<char> used(tracks_.size(), 0);
+  if (ids) ids->clear();
   const double c = std::cos(pose.yaw), s = std::sin(pose.yaw);
   for (const auto & d : cones) {
     const Vec2 o = to_world(d.center, pose);
@@ -42,6 +43,7 @@ void ConeMemory::update(const Pose2 & pose, double t, const std::vector<ConeObse
     if (best < 0) {
       tracks_.push_back({o, w, 1, 0, t, next_id_++});
       used.push_back(1);
+      if (ids) ids->push_back(tracks_.back().id);
     } else {
       auto & tr = tracks_[best];   // 가까이서 본 관측일수록 크게 반영, 가중치 상한으로 너무 굳지 않게
       tr.world = {(tr.world.x * tr.weight + o.x * w) / (tr.weight + w), (tr.world.y * tr.weight + o.y * w) / (tr.weight + w)};
@@ -50,6 +52,7 @@ void ConeMemory::update(const Pose2 & pose, double t, const std::vector<ConeObse
       tr.misses = 0;
       tr.last_seen = t;
       used[best] = 1;
+      if (ids) ids->push_back(tr.id);
     }
   }
   // 병합으로 인덱스가 바뀌므로 used를 id로 보관
@@ -103,6 +106,11 @@ void ConeMemory::merge_duplicates() {
       }
     }
   }
+}
+
+const TrackedCone * ConeMemory::find(std::uint32_t id) const {
+  for (const auto & tr : tracks_) if (tr.id == id) return &tr;
+  return nullptr;
 }
 
 std::vector<Vec2> ConeMemory::confirmed_world() const {

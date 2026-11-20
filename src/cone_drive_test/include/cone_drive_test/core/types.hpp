@@ -29,7 +29,8 @@ struct LaneObservation {
 };
 
 struct DetectionFrame {
-  double capture_time{0};
+  double capture_time{0};   // RGB 촬영 시각 (박스)
+  double depth_time{-1};    // 위치를 계산한 깊이 영상의 촬영 시각 (없으면 −1). 스테레오가 RGB보다 느려 최대 한 프레임 어긋난다
   bool depth_valid{true};   // 짝이 맞는 깊이가 없으면 false → 위치를 못 구했으므로 "안 보임"으로 세지 않는다
   std::vector<ConeObservation> cones;
 };

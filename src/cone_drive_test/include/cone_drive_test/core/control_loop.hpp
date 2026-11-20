@@ -2,6 +2,8 @@
 // → 상태기계 → 자동 명령과 안전 프로세스 요청, 텔레메트리. 모든 공개 함수는 스레드 안전.
 #pragma once
 #include <atomic>
+#include <cstdint>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -42,6 +44,19 @@ struct StepOutput {
   std::string handover_request; // "auto" | "manual" | ""
 };
 
+// 콘 관측 기록 한 줄 (처음 기억한 위치와 최근 위치가 틀어지는 원인 분석용)
+struct ConeLogRow {
+  double t_rgb{0}, t_depth{-1}, t_pose{0};   // 박스 시각, 깊이 시각, 자세를 찾은 시각
+  std::uint32_t id{0};
+  int class_id{0};
+  double local_x{0}, local_y{0}, front_x{0}, front_y{0}, range{0}, bearing{0};   // 차량 좌표 (앞차축 기준), range·bearing은 카메라 기준 앞면
+  double pose_x{0}, pose_y{0}, pose_yaw{0};   // odom 앞차축 자세
+  double speed{0}, yaw_rate{0}, gyro_bias{0};
+  double world_x{0}, world_y{0};              // 이 관측 하나의 월드 위치
+  double mem_x{0}, mem_y{0};                  // 갱신 후 기억 위치
+  int hits{0};
+};
+
 class ControlLoop {
 public:
   ControlLoop(DriveMode mode, const RuntimeConfig & rc);
@@ -80,6 +95,9 @@ public:
   std::uint64_t dropped_detections() const { std::lock_guard<std::mutex> l(m_); return dropped_; }
   TelemetryFrame telemetry(bool full, double now) const;
   StageStats & stats() { return stats_; }
+  // 콘 관측 기록 (검출이 계획에 반영될 때마다, 제어 스레드에서 호출). 비워 두면 기록 안 함
+  std::function<void(const std::vector<ConeLogRow> &)> on_cone_log;
+  double gyro_bias() const { return gyro_bias_.load(std::memory_order_relaxed); }
 
 private:
   Readiness readiness(double now) const;
@@ -126,6 +144,9 @@ private:
   double speed_{0};
   double odom_speed_{0};
   std::atomic<double> speed_atomic_{0.0};
+  // 자이로 영점: 정지 중(속도 ≈ 0, ERPM 신선) 요레이트 평균. 오도메트리에서 뺀다 (안 빼면 약 0.15°/s씩 방향이 돈다)
+  std::atomic<double> gyro_bias_{0.0}, last_erpm_atomic_{-1e9}, last_yaw_rate_{0.0};
+  bool gyro_bias_init_{false};
   std::optional<DetectionFrame> pending_det_;
   DetectionFrame last_det_;
   LaneObservation lane_;

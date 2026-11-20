@@ -8,7 +8,9 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <cstdlib>
 #include <filesystem>
+#include <ctime>
 #include <fstream>
+#include <iomanip>
 #include "cone_drive_test/core/control_loop.hpp"
 #include "cone_drive_test/core/system_monitor.hpp"
 #include "cone_drive_test/runtime/camera_pipeline.hpp"
@@ -91,6 +93,22 @@ public:
     params_save_path_ = declare_parameter<std::string>("params_save_path", cache + "/cone_drive_test_saved.yaml");
 
     loop_ = std::make_unique<cdt::ControlLoop>(mode == "drive" ? cdt::DriveMode::Drive : cdt::DriveMode::Detect, rc_);
+    // 콘 관측 기록 (처음 기억한 위치와 최근 위치가 틀어지는 원인 분석용): <log.dir>/cone_obs_<시각>.csv, 주행 시작마다 새 파일
+    cone_log_enabled_ = declare_parameter<bool>("log.cone_observations", true);
+    cone_log_dir_ = declare_parameter<std::string>("log.dir", "");
+    if (cone_log_dir_.empty()) cone_log_dir_ = std::string(std::getenv("HOME") ? std::getenv("HOME") : "/tmp") + "/cone_drive_test_data";
+    if (cone_log_enabled_)
+      loop_->on_cone_log = [this](const std::vector<cdt::ConeLogRow> & rows) {
+        std::lock_guard<std::mutex> l(cone_log_m_);
+        if (!cone_log_) return;
+        auto & o = *cone_log_;
+        for (const auto & r : rows)
+          o << r.t_rgb << ',' << r.t_depth << ',' << r.t_pose << ',' << r.id << ',' << r.class_id << ',' << r.local_x << ',' << r.local_y << ','
+            << r.front_x << ',' << r.front_y << ',' << r.range << ',' << r.bearing << ',' << r.pose_x << ',' << r.pose_y << ',' << r.pose_yaw << ','
+            << r.speed << ',' << r.yaw_rate << ',' << r.gyro_bias << ',' << r.world_x << ',' << r.world_y << ',' << r.mem_x << ',' << r.mem_y << ','
+            << r.hits << '\n';
+        o.flush();   // Ctrl+C로 꺼도 남게
+      };
     apply_settings();
 
     const auto command_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
@@ -109,7 +127,11 @@ public:
 
     // 웹
     cdt::WebCallbacks cb;
-    cb.start = [this] { return loop_->request_start(cdt::now_sec()); };
+    cb.start = [this] {
+      auto r = loop_->request_start(cdt::now_sec());
+      if (r.first) open_cone_log();   // 주행마다 새 파일
+      return r;
+    };
     cb.stop = [this] { loop_->request_stop("stop button", cdt::now_sec()); };
     cb.refit = [this] { return loop_->request_refit(cdt::now_sec()); };
     cb.mode = [this](const std::string & m) {
@@ -186,6 +208,26 @@ public:
     camera_->close();
     web_->stop();
   }
+
+  void open_cone_log() {
+    if (!cone_log_enabled_) return;
+    std::lock_guard<std::mutex> l(cone_log_m_);
+    std::error_code ec;
+    std::filesystem::create_directories(cone_log_dir_, ec);
+    char name[64];
+    const std::time_t now = std::time(nullptr);
+    std::strftime(name, sizeof(name), "cone_obs_%Y-%m-%d_%H%M%S.csv", std::localtime(&now));
+    cone_log_ = std::make_unique<std::ofstream>(cone_log_dir_ + "/" + name);
+    if (!*cone_log_) { RCLCPP_WARN(get_logger(), "cannot write cone log in %s", cone_log_dir_.c_str()); cone_log_.reset(); return; }
+    *cone_log_ << std::setprecision(10)
+               << "t_rgb,t_depth,t_pose,id,class,local_x,local_y,front_x,front_y,range,bearing,pose_x,pose_y,pose_yaw,"
+                  "speed,yaw_rate,gyro_bias,world_x,world_y,mem_x,mem_y,hits\n";
+    RCLCPP_INFO(get_logger(), "cone observation log: %s/%s", cone_log_dir_.c_str(), name);
+  }
+  bool cone_log_enabled_{true};
+  std::string cone_log_dir_;
+  std::mutex cone_log_m_;
+  std::unique_ptr<std::ofstream> cone_log_;
 
 private:
   void apply_settings() {

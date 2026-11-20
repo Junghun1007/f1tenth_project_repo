@@ -90,3 +90,15 @@ TEST(missed_when_expected_then_deleted) {
   for (int k = 0; k < P.miss_delete; ++k) mem.update({0, 0, 0}, 0.1 + k * 0.03, {}, all);
   CHECK(mem.confirmed_world().empty());
 }
+
+TEST(update_reports_track_ids_per_observation) {
+  ConeMemory mem;
+  const auto none = [](const std::vector<Vec2> &, const Pose2 &) { return std::vector<int>{}; };
+  std::vector<std::uint32_t> ids;
+  mem.update({0, 0, 0}, 0.0, {obs({0.5, 0.25}), obs({0.9, -0.2})}, none, &ids);
+  CHECK(ids.size() == 2 && ids[0] != ids[1]);
+  std::vector<std::uint32_t> ids2;
+  mem.update({0, 0, 0}, 0.03, {obs({0.9, -0.2})}, none, &ids2);
+  CHECK(ids2.size() == 1 && ids2[0] == ids[1]);
+  CHECK(mem.find(ids[1]) != nullptr);
+}

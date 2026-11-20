@@ -31,6 +31,8 @@
     vehicle.differential_pinion_teeth: 13
     vehicle.differential_ring_teeth: 37
     vehicle.erpm_direction_sign: 1.0
+    log.cone_observations: true           # 콘 관측 기록 (주행 시작마다 <log.dir>/cone_obs_<시각>.csv). 분석: tools/analyze_cone_obs.py
+    log.dir: ""                           # 비우면 ~/cone_drive_test_data
     vehicle.speed_scale_correction: 1.0
     model.lane_precision: int8        # 기존 line_detactor와 같음 (INT8 Q/DQ 모델 자동 선택). fp16이면 FP32 ONNX
     model.yolo_precision: fp16

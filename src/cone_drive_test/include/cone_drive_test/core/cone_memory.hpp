@@ -40,8 +40,10 @@ public:
   void set_params(const MemoryParams & p) { p_ = p; }
   const MemoryParams & params() const { return p_; }
   // pose: 촬영 시점 odom 앞차축 자세, cones: 그 시점 차량 좌표 관측
+  // ids(있으면): cones 순서대로 붙은 기억 id (기록·분석용). 병합되면 남은 쪽 id로 바뀔 수 있다
   void update(const Pose2 & pose, double capture_time, const std::vector<ConeObservation> & cones,
-              const ExpectedVisibleFn & expected);
+              const ExpectedVisibleFn & expected, std::vector<std::uint32_t> * ids = nullptr);
+  const TrackedCone * find(std::uint32_t id) const;
   std::vector<Vec2> confirmed_world() const;
   const std::vector<TrackedCone> & tracks() const { return tracks_; }
   bool confirmed(const TrackedCone & t) const { return t.hits >= p_.confirm_hits; }

@@ -198,6 +198,7 @@ void DetectWorker::loop_() {
     if (!depth && !obstacles.empty()) stats.record("depth_miss", t1, t1);   // 진단: 박스는 있는데 깊이 짝이 없음 (FPS 칸 = 초당 횟수)
     if (depth) {
       auto & d = *depth;
+      out.depth_time = std::chrono::duration<double>(d.getTimestamp(dai::CameraExposureOffset::MIDDLE).time_since_epoch()).count();
       const int dw = int(d.getWidth()), dh = int(d.getHeight());
       const double sx = double(dw) / w, sy = double(dh) / h;
       const DepthIntrinsics k{cc.fx * sx, cc.fy * sy, cc.cx * sx, cc.cy * sy, dw, dh};

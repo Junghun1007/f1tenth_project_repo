@@ -355,3 +355,28 @@ TEST(red_light_and_stop_line_reach_control_cap) {   // 차선 결과의 정지�
   CHECK(tf.traffic.committed);
   CHECK(tf.traffic.cap < 1.5);
 }
+
+TEST(gyro_bias_learned_while_stopped_and_cone_log_written) {   // 정지 중 자이로 영점을 배우고, 콘 관측 기록에 id·자세 시각이 남는다
+  Rig r(DriveMode::Detect);
+  for (int k = 0; k < 400; ++k) {   // 10 s 정지, 자이로 영점 0.003 rad/s
+    r.t += 0.025;
+    r.loop->on_speed(0.0, r.t);
+    r.loop->on_yaw_rate(0.003, r.t);
+  }
+  CHECK_NEAR(r.loop->gyro_bias(), 0.003, 2e-4);
+  std::vector<ConeLogRow> rows;
+  r.loop->on_cone_log = [&](const std::vector<ConeLogRow> & v) { rows.insert(rows.end(), v.begin(), v.end()); };
+  for (int k = 0; k < 3; ++k) {
+    r.step();
+    DetectionFrame d;
+    d.capture_time = r.t - 0.02;
+    d.depth_time = r.t - 0.01;   // 깊이 영상 시각으로 자세를 찾는다
+    ConeObservation c; c.center = {0.6, 0.1}; c.score = 0.9f; d.cones.push_back(c);
+    r.loop->on_detections(d);
+  }
+  r.step();
+  CHECK(rows.size() >= 2);
+  CHECK(rows.front().id == rows.back().id);
+  CHECK_NEAR(rows.back().t_pose, rows.back().t_depth, 1e-12);
+  CHECK_NEAR(rows.back().world_x, 0.6, 0.02);
+}

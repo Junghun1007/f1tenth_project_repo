@@ -112,14 +112,24 @@ void ControlLoop::on_speed(double v, double t) {
   speed_ = lon_.speed();
   speed_atomic_.store(speed_, std::memory_order_relaxed);
   last_erpm_t_ = t;
+  last_erpm_atomic_.store(t, std::memory_order_relaxed);
   std::lock_guard<std::mutex> lo(odom_m_);
   odom_speed_ = speed_;
 }
 
 void ControlLoop::on_yaw_rate(double w, double t) {
   std::lock_guard<std::mutex> lo(odom_m_);   // 주 락(m_)을 잡지 않는다
+  // 정지 중 영점 (semi_slam과 같은 방식: 시정수 약 2 s). 움직이는 동안은 마지막 값 유지
+  if (last_yaw_t_ >= 0 && std::abs(odom_speed_) < 0.02 && t - last_erpm_atomic_.load(std::memory_order_relaxed) < 0.5) {
+    const double dt = std::clamp(t - last_yaw_t_, 0.0, 0.05), a = dt / (2.0 + dt);
+    const double b = gyro_bias_init_ ? gyro_bias_.load(std::memory_order_relaxed) + a * (w - gyro_bias_.load(std::memory_order_relaxed)) : w;
+    gyro_bias_.store(b, std::memory_order_relaxed);
+    gyro_bias_init_ = true;
+  }
+  const double wc = w - gyro_bias_.load(std::memory_order_relaxed);
+  last_yaw_rate_.store(wc, std::memory_order_relaxed);
   if (last_yaw_t_ < 0) odom_.reset({0, 0, 0}, t);
-  else odom_.update(t, odom_speed_, w);
+  else odom_.update(t, odom_speed_, wc);
   last_yaw_t_ = t;
 }
 
@@ -232,7 +242,10 @@ void ControlLoop::integrate_detections() {
   if (!pending_det_) return;
   DetectionFrame f = std::move(*pending_det_);
   pending_det_.reset();
-  const auto pose = odom_pose_at(f.capture_time);
+  // 위치는 깊이 영상으로 계산하므로 차 자세도 깊이 촬영 시각으로 (RGB 시각과 최대 한 프레임 다름 → 회전 중 옆으로 어긋남)
+  const double t_pose = f.depth_time > 0 ? f.depth_time : f.capture_time;
+  auto pose = odom_pose_at(t_pose);
+  if (!pose) pose = odom_pose_at(f.capture_time);
   if (!pose) { ++dropped_; return; }   // 오도메트리 이력 밖(너무 오래됨·미래) → 위치를 믿을 수 없음
   if (!f.depth_valid) return;          // 깊이 없는 프레임은 관측으로 치지 않음 (기억 콘을 놓침으로 세지 않음)
   last_det_ = f;
@@ -240,12 +253,31 @@ void ControlLoop::integrate_detections() {
   remember_vehicles(f, odom_distance_at(f.capture_time));
   const auto cam = rc_.camera;
   const double cone = s_.cone_size_m;
+  std::vector<std::uint32_t> ids;
   memory_.update(*pose, f.capture_time, cones, [cam, cone](const std::vector<Vec2> & centers, const Pose2 & p) {
     std::vector<Vec2> local;
     local.reserve(centers.size());
     for (const auto & w : centers) local.push_back(to_local(w, p));
     return expected_visible(local, cam, cone);
-  });
+  }, on_cone_log ? &ids : nullptr);
+  if (on_cone_log && !cones.empty() && ids.size() == cones.size()) {
+    std::vector<ConeLogRow> rows;
+    rows.reserve(cones.size());
+    for (std::size_t i = 0; i < cones.size(); ++i) {
+      const auto & c = cones[i];
+      ConeLogRow r;
+      r.t_rgb = f.capture_time; r.t_depth = f.depth_time; r.t_pose = t_pose;
+      r.id = ids[i]; r.class_id = c.class_id;
+      r.local_x = c.center.x; r.local_y = c.center.y; r.front_x = c.front.x; r.front_y = c.front.y; r.range = c.range; r.bearing = c.bearing;
+      r.pose_x = pose->x; r.pose_y = pose->y; r.pose_yaw = pose->yaw;
+      r.speed = speed_; r.yaw_rate = last_yaw_rate_.load(std::memory_order_relaxed); r.gyro_bias = gyro_bias_.load(std::memory_order_relaxed);
+      const Vec2 w = to_world(c.center, *pose);
+      r.world_x = w.x; r.world_y = w.y;
+      if (const auto * tr = memory_.find(ids[i])) { r.mem_x = tr->world.x; r.mem_y = tr->world.y; r.hits = tr->hits; }
+      rows.push_back(r);
+    }
+    on_cone_log(rows);
+  }
 }
 
 void ControlLoop::on_traffic_signal(TrafficSignal signal, double t) {

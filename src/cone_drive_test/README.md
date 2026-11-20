@@ -133,3 +133,16 @@ python -m pytest -q src/cone_drive_test/test/python
 **확인하지 못한 것 (Jetson에서 확인 필요)**: colcon 빌드, OAK 실영상·깊이 CAM_A 정렬 정확도, TensorRT 엔진·FPS,
 VESC·조이스틱 동작, 실차 주행. 특히 깊이를 `setDepthAlign(CAM_A)`로 RGB에 정렬했는데(multiclass_yolo는 점을 투영),
 RGB는 undistort 출력이라 가장자리에서 약간 어긋날 수 있다 → 점검 3번에서 확인.
+
+## 콘 기억 위치 틀어짐 분석 (처음 기억한 위치 ↔ 가까이서 본 위치)
+
+- 오도메트리: 정지 중 자이로 영점(요레이트 평균, 시정수 약 2 s)을 배워 빼고 적분한다 (안 빼면 약 0.15°/s씩 방향이 돎).
+- 콘 위치는 깊이 영상으로 계산하므로, 그 순간의 차 자세도 **깊이 영상 촬영 시각**으로 찾는다 (스테레오가 RGB보다 느려 최대 한 프레임 어긋남).
+- 주행 시작마다 `~/cone_drive_test_data/cone_obs_<시각>.csv`에 콘 관측을 남긴다 (`log.cone_observations`, `log.dir`).
+  한 줄 = 관측 하나: 시각(RGB·깊이·자세), 기억 id, 차량 기준 위치·앞면·거리, 그때 자세·속도·요레이트·자이로 영점, 월드 위치, 기억 위치.
+- 분석:
+  ```bash
+  python3 src/cone_drive_test/tools/analyze_cone_obs.py ~/cone_drive_test_data/cone_obs_<시각>.csv
+  ```
+  콘마다 처음 본 위치와 가까이서(1 m 안) 본 위치의 차이, 거리 비례 치우침(스테레오 거리 배율), 시각 어긋남(자세를 몇 ms 옮기면 같은 콘 위치가 가장 모이는지)을 낸다.
+  실험: 콘 4~5개를 차선 안 좌우에 세우고 (1) 직진에 가깝게 (2) 회피하며, 콘 옆을 지나가게 한 번씩.
