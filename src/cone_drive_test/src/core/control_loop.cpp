@@ -342,7 +342,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
     r.yaw_rate = last_yaw_rate_.load(std::memory_order_relaxed);
     r.state = state_name(sm_.state());
     r.lane_valid = lane.valid;
-    r.left = lane_.left; r.right = lane_.right; r.path = lane_.path;
+    r.left = lane_.left; r.right = lane_.right; r.path = lane_.path; r.center = lane_.center;
     r.plan_mode = plan_mode_name(plan_.mode);
     r.rollout_ok = plan_.rollout_ok;
     r.obstacle_active = plan_.obstacle_active;

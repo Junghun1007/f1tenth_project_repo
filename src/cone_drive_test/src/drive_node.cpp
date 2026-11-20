@@ -252,7 +252,7 @@ public:
       rec_ = std::make_unique<std::ofstream>(dir + "/frames.csv");
       if (!*rec_) { rec_.reset(); return {false, "폴더를 만들 수 없음: " + dir}; }
       *rec_ << std::setprecision(10)
-            << "t,pose_x,pose_y,pose_yaw,speed,yaw_rate,state,plan_mode,rollout_ok,obstacle_active,left,right,path,plan,cones\n";
+            << "t,pose_x,pose_y,pose_yaw,speed,yaw_rate,state,plan_mode,rollout_ok,obstacle_active,left,right,path,plan,cones,center\n";
       rec_dir_ = dir;
       rec_t0_ = cdt::now_sec();
       rec_frames_ = 0;
@@ -305,7 +305,8 @@ public:
     put_pts(o, f.right, 40); o << ',';
     put_pts(o, f.path, 40); o << ',';
     put_pts(o, f.plan_path, 40); o << ',';
-    put_pts(o, f.cones_world, 60); o << '\n';
+    put_pts(o, f.cones_world, 60); o << ',';
+    put_pts(o, f.center, 40); o << '\n';
     if (++rec_frames_ % 30 == 0) o.flush();
   }
 

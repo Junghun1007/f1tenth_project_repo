@@ -160,3 +160,20 @@ RGB는 undistort 출력이라 가장자리에서 약간 어긋날 수 있다 →
    python3 src/cone_drive_test/tools/analyze_manual.py ~/cone_drive_test_data/manual/*_zigzag ~/cone_drive_test_data/manual/*_guided
    ```
    콘마다 사람이 지나간 최소 빈틈, 차체 차선 이탈, 계획기 빈틈, 복귀 거리를 내고, 최소 여유(안전 하한)·권장 여유·차선 허용 이탈·복귀 거리를 추천한다.
+
+### 녹화로 계획 파라미터 맞추기 (계획 경로 ≈ 사람이 달린 경로)
+
+녹화 프레임마다 그때의 차선·기억 콘·자세·속도로 실제 계획기(AvoidancePlanner)를 다시 돌리고, 그 순간 이후 사람이 달린 경로와
+같은 주행 거리(0.3~2.0 m)끼리 비교한다. `--fit`이면 권장·최소 여유, 차선 허용 이탈, 계획 거리, 경로 가중치를 하나씩 늘리고 줄여 보며
+차이가 가장 작은 값을 찾는다 (최소 여유는 2 cm 아래로 내리지 않음).
+
+```bash
+cmake -S src/cone_drive_test/test/host -B build/cdt_host && cmake --build build/cdt_host --target fit_planner
+build/cdt_host/fit_planner --fit ~/cone_drive_test_data/manual/*      # 결과는 params.yaml 형식
+build/cdt_host/fit_planner --set=plan.s_max=2.0 ~/cone_drive_test_data/manual/*   # 특정 값으로 점수만
+```
+
+2026-11-20 녹화 6회(지그재그 3, 유도 경로 3)로 맞춘 값이 지금 기본값이다: 경로 차이 RMS 30.2 → 23.3 cm
+(지그재그 31.8 → 24.2, 유도 경로 26.3 → 21.5). 맞추는 데 안 쓴 2회에서는 23.4 → 22.0 cm.
+남는 차이의 상당 부분은 파라미터로 줄지 않는다: 계획 실패 프레임 약 10%는 최소 여유를 0으로 내려도 6% 남는데,
+기억 콘의 위치 오차·같은 콘의 중복 기억으로 차선 안 길이 막혀 보이는 경우다.

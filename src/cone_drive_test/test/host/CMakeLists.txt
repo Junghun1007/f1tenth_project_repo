@@ -38,3 +38,6 @@ add_test(NAME original_postprocess COMMAND original_postprocess_test)
 add_test(NAME original_model_smoke COMMAND original_model_smoke ${PKG}/models/multiclass_yolox_tiny_512x320_holdout10.onnx)
 add_test(NAME original_imu_image_stabilizer COMMAND original_imu_image_stabilizer_test)
 add_test(NAME original_vehicle_motion_estimator COMMAND original_vehicle_motion_estimator_test)
+# 수동 주행 녹화로 회피 계획 파라미터 맞추기 (도구, 테스트 아님): build/.../fit_planner --fit <녹화 폴더>...
+add_executable(fit_planner ${PKG}/tools/fit_planner.cpp)
+target_link_libraries(fit_planner cdt_core Threads::Threads)

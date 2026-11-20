@@ -65,6 +65,7 @@ struct RecordFrame {
   std::string state;                   // DRIVING / MANUAL ...
   bool lane_valid{false};
   std::vector<Vec2> left, right, path; // 차선 (차량 좌표, 그 시각 기준)
+  std::vector<Vec2> center;            // 코너 바깥 이동 없는 중앙선 (콘이 근처일 때만, 계획기의 기준선)
   std::string plan_mode;               // center / lane / lane-tight / free / fallback
   bool rollout_ok{true}, obstacle_active{false};
   std::vector<Vec2> plan_path;         // 계획기가 낸 경로 (차량 좌표)

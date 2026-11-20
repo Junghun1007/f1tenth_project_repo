@@ -25,7 +25,7 @@ void register_params(ParamRegistry & r) {
   o("위치 추정", "object.min_height_m", "지면 제거 높이", "m", 0, 0.3, 0.03);
   o("위치 추정", "object.max_height_m", "최대 높이", "m", 0.05, 1.5, 1.0);
   o("위치 추정", "object.cone_size_m", "콘 크기", "m", 0.05, 0.5, 0.13);
-  o("위치 추정", "object.bearing_offset_deg", "검출 방향 보정 (+ = 왼쪽으로 돌림). 녹화 분석: 멀리서 본 콘이 일정하게 왼쪽 → 약 −2.4°", "°", -10, 10, -2.4);
+  o("위치 추정", "object.bearing_offset_deg", "검출 방향 보정 (+ = 왼쪽으로 돌림). 녹화 분석상 약 −2.4°가 맞지만, 계획 파라미터는 보정 없이 맞췄으므로 기본 0", "°", -10, 10, 0);
   o("콘 기억", "memory.gate_radial_max", "거리 방향 게이트", "m", 0.02, 0.5, 0.17);
   o("콘 기억", "memory.gate_lateral", "옆 방향 게이트", "m", 0.01, 0.3, 0.06);
   o("콘 기억", "memory.merge_distance", "병합 거리", "m", 0.01, 0.3, 0.10);
@@ -41,21 +41,26 @@ void register_params(ParamRegistry & r) {
   // 최소 여유(차체 직사각형 ↔ 콘 사각형 빈틈, 이보다 가까우면 불가)는 세 단계 모두 같은 안전 하한 이상으로 둔다:
   // ①만 올리면 ②(예전 0 고정)로 넘어가 오히려 콘에 더 붙는다
   o("회피 계획", "plan.hard_clearance", "① 차선 안 최소 여유 (안전 하한)", "m", 0, 0.2, 0.02);
-  o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유 (수동 주행 녹화: 차선 안 통과 빈틈 중앙값 약 11 cm)", "m", 0, 0.3, 0.10);
+  o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.12);
   o("회피 계획", "plan.relaxed_hard_clearance", "② 차선 안·여유 축소 최소 여유 (차선 밖으로 나가기 전 마지막 단계)", "m", 0, 0.2, 0.02);
   o("회피 계획", "plan.relaxed_soft_clearance", "② 차선 안·여유 축소 권장 여유", "m", 0, 0.3, 0.05);
   o("회피 계획", "plan.free_hard_clearance", "③ 차선 밖 최소 여유", "m", 0, 0.2, 0.02);
-  o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유 (녹화: 차선 밖 통과 빈틈 중앙값 약 10 cm)", "m", 0, 0.3, 0.10);
+  o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유 (수동 주행 녹화로 맞춤)", "m", 0, 0.3, 0.10);
   o("회피 계획", "plan.vehicle_length_m", "계획에 쓰는 차체 길이 (실측, 범퍼 끝~끝)", "m", 0.3, 0.8, 0.50);
   o("회피 계획", "plan.vehicle_width_m", "계획에 쓰는 차체 폭 (실측, 가장 넓은 곳)", "m", 0.15, 0.5, 0.30);
   o("회피 계획", "plan.vehicle_rear_overhang_m", "뒤 차축 → 뒤 범퍼 (실측)", "m", 0, 0.3, 0.12);
-  o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈", "m", 0, 0.1, 0.03);
+  o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈 (수동 주행 녹화로 맞춤)", "m", 0, 0.1, 0.09);
   o("회피 계획", "plan.avoid_vehicles", "차량(트럭·세단)도 회피 (0=끔, 1=켬)", "", 0, 1, 1.0);
-  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈 (녹화: 사람 최대 약 66 cm)", "m", 0, 1, 0.70);
+  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 1.0);
+  // 경로 모양 가중치 (예전엔 코드 고정). 수동 주행 녹화 6회를 다시 돌려 계획 경로가 사람 경로와 가장 비슷한 값으로 맞춤 (tools/fit_planner)
+  o("회피 계획", "plan.w_obstacle", "콘 가까이 벌점 가중치 (권장 여유 안쪽을 얼마나 피할지)", "", 10, 40000, 200);
+  o("회피 계획", "plan.w_offset", "기준 경로(중앙선)에서 벗어남 벌점 가중치", "", 0.1, 500, 20);
+  o("회피 계획", "plan.w_slope", "경로 기울기(옆으로 꺾임) 벌점 가중치", "", 0, 50, 0.5);
+  o("회피 계획", "plan.w_curvature", "경로 곡률(급한 꺾임) 벌점 가중치", "", 0, 2, 0.005);
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 1.2);
   o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
   o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
-  o("회피 계획", "plan.s_max", "계획 거리", "m", 1, 3.5, 3.0);
+  o("회피 계획", "plan.s_max", "계획 거리 (수동 주행 녹화로 맞춤: 사람은 1.5 m 앞부터 반응)", "m", 1, 3.5, 1.5);
   d("속도", "drive.maximum_speed_mps", "최대 속도", "m/s", 0, 3, 1.3);
   d("속도", "drive.minimum_speed_mps", "최소 속도(코너)", "m/s", 0, 2, 1.1);
   d("속도", "drive.obstacle_speed_mps", "장애물 구간 속도", "m/s", 0, 2, 1.0);
@@ -173,6 +178,10 @@ Settings settings_from(const ParamRegistry & r) {
   p.free_hard_clearance = g("plan.free_hard_clearance");
   p.free_soft_clearance = g("plan.free_soft_clearance");
   p.lane_tolerance = g("plan.lane_tolerance");
+  p.w_obstacle = g("plan.w_obstacle");
+  p.w_offset = g("plan.w_offset");
+  p.w_slope = g("plan.w_slope");
+  p.w_curvature = g("plan.w_curvature");
   p.free_max_excess = g("plan.free_max_excess");
   p.lane_return_distance = g("plan.lane_return_distance");
   p.rollout_sec = g("plan.rollout_sec");
