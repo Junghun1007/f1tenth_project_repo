@@ -136,7 +136,11 @@ void CameraPipeline::imu_loop() {
       const cv::Vec3d acc = imu_to_camera_ * cv::Vec3d(a.x, a.y, a.z);
       const cv::Vec3d gyro = imu_to_camera_ * cv::Vec3d(g.x, g.y, g.z);
       std::optional<cv::Vec3d> sync_acc;
-      if (std::abs(ta - tg) <= c_.maximum_imu_pair_skew_sec) sync_acc = acc;
+      if (std::abs(ta - tg) <= c_.maximum_imu_pair_skew_sec) {
+        sync_acc = acc;
+        if (vehicle_accel)   // 가속도계 = 차 가속도 − 중력 → 차 가속도(카메라 좌표로 돌림)를 빼면 중력 성분만
+          if (const auto va = vehicle_accel(ta)) sync_acc = acc - vehicle_from_camera_.t() * (*va);
+      }
       if (stabilizer_) stabilizer_->update(sync_acc, gyro, tg, stationary_hint ? stationary_hint() : std::nullopt);
       if (on_yaw_rate) on_yaw_rate((vehicle_from_camera_ * gyro)[2], tg);   // 차량 z축(위) 요레이트
     }

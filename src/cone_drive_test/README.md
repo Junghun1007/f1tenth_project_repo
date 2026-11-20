@@ -85,6 +85,12 @@ ros2 launch cone_drive_test cone_drive_test.launch.py mode:=detect
 보정 화면이 원본 안에 다 들어오는지는 검사하지 않는다(BEV는 화면 아래쪽만 사용). 타이밍 값은 camera_driver와 같다
 (`stabilization.maximum_frame_imu_wait_sec` 0.005, `..._age_sec` 0.012, `maximum_prediction_sec` 0.015, `maximum_correction_deg` 3.0).
 
+**저주파 IMU 보정 (옵션, `camera.accel_compensation`, 재시작 필요, 기본 끔)**: semi_slam과 같은 방식. 켜면 가속도계에서 차 가속도
+(원심 v·ω, 앞뒤 dv/dt, 뒤 차축에서 카메라까지 축간거리 + `camera.x_m` 떨어져 생기는 ω²r·ω̇r)를 빼고(`core/vehicle_accel`),
+안정화가 주행 중에도 가속도계로 기울기를 바로잡는다 (끄면 기존처럼 정지 중에만). 요레이트는 정지 중 학습한 자이로 영점을 뺀 값,
+속도는 배율 보정을 적용한 ERPM 속도를 쓴다. 켜져 있으면 점검 영역 "IMU 영상 안정화" 줄 끝에 "저주파 보정 켜짐"이 붙는다.
+semi_slam 기록 재생 기준 남는 기울기 흔들림 roll 3~9° → 약 1~1.5°.
+
 ## 안전 동작
 
 | 상황 | 동작 |

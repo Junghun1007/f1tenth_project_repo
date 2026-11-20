@@ -62,6 +62,8 @@ public:
   const Latest<CameraFrame> & frames() const { return frames_; }
   const CameraConfig & config() const { return c_; }
   std::function<void(double yaw_rate_vehicle, double t)> on_yaw_rate;   // IMU 스레드에서 호출
+  // 저주파 IMU 보정(옵션): 차가 만드는 가속도 (차량 좌표, 없으면 nullopt). 있으면 가속도계에서 빼고 안정화에 넘긴다 → 중력만 남음
+  std::function<std::optional<cv::Vec3d>(double t)> vehicle_accel;
   std::function<std::optional<bool>()> stationary_hint;
   StageStats * stats{nullptr};   // 카메라 실제 수신 FPS 기록 (선택)                   // ERPM 기반 정지 여부 (camera_driver와 같이 안정화에 전달)
   StabilizationStats & stabilization_stats() { return stab_stats_; }

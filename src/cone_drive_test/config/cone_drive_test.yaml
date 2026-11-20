@@ -170,3 +170,4 @@
     traffic.color_min_value: 60.0
     web.link_loss_stop_sec: 1.0         # 연결 끊김 정지 시간 (s)
     drive.lane_timeout_sec: 20.0        # 차선 끊김 허용 시간 (s). 0 = 제한 없음 (끊긴 동안 직전 경로로 주행). 넘으면 'lane input stale'로 정지
+    camera.accel_compensation: 0        # 저주파 IMU 보정 (재시작 필요): 1이면 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정

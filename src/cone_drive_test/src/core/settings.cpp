@@ -131,6 +131,8 @@ void register_params(ParamRegistry & r) {
   d("신호등·정지선", "traffic.color_min_value", "신호 색 판별 최소 밝기 (HSV V)", "", 0, 255, 60);
   d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
   d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 60, 20.0);
+  d("IMU 안정화", "camera.accel_compensation",
+    "저주파 IMU 보정: 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정 (0=끔, 1=켬)", "", 0, 1, 0, false);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
   r.add_order_constraint("acc.stop_gap_m", "acc.resume_gap_m");
   r.add_order_constraint("traffic.stop_margin_m", "traffic.stop_range_max_m");

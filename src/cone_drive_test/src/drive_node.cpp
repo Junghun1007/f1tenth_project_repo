@@ -15,6 +15,7 @@
 #include <cctype>
 #include "cone_drive_test/core/control_loop.hpp"
 #include "cone_drive_test/core/system_monitor.hpp"
+#include "cone_drive_test/core/vehicle_accel.hpp"
 #include "cone_drive_test/runtime/camera_pipeline.hpp"
 #include "cone_drive_test/runtime/perception.hpp"
 #include "cone_drive_test/runtime/web_server.hpp"
@@ -121,7 +122,11 @@ public:
     request_pub_ = create_publisher<std_msgs::msg::String>(declare_parameter<std::string>("topics.handover_request", "cone_drive/handover/request"),
                                                            rclcpp::QoS(rclcpp::KeepLast(5)).reliable());
     erpm_sub_ = create_subscription<std_msgs::msg::Int32>(declare_parameter<std::string>("topics.measured_erpm", "vesc/measured_erpm"), command_qos,
-      [this](std_msgs::msg::Int32::ConstSharedPtr m) { loop_->on_erpm(m->data, cdt::now_sec()); });
+      [this](std_msgs::msg::Int32::ConstSharedPtr m) {
+        const double t = cdt::now_sec();
+        loop_->on_erpm(m->data, t);
+        accel_model_.on_speed(loop_->speed(), t);   // 배율 보정 적용한 속도
+      });
     connected_sub_ = create_subscription<std_msgs::msg::Bool>(declare_parameter<std::string>("topics.vesc_connected", "vesc/connected"), state_qos,
       [this](std_msgs::msg::Bool::ConstSharedPtr m) { loop_->on_vesc_connected(m->data, cdt::now_sec()); });
     mode_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.handover_mode", "cone_drive/handover/mode"), state_qos,
@@ -161,13 +166,27 @@ public:
     RCLCPP_INFO(get_logger(), "Preview: http://<jetson-ip>:%d  mode=%s", web_->port(), mode.c_str());
 
     cdt::ImuImageStabilizerConfig stab;   // camera_driver camera_config.yaml 값
+    // 저주파 IMU 보정 (옵션, 재시작 필요): 켜면 차 가속도를 뺀 가속도계로 주행 중에도 기울기를 바로잡는다 (기본은 정지 중에만)
+    accel_comp_ = registry_.get("camera.accel_compensation") >= 0.5;
+    stab.acceleration_correction_stationary_only = !accel_comp_;
     stab.maximum_correction_deg = declare_parameter<double>("stabilization.maximum_correction_deg", 3.0);
     stab.maximum_frame_imu_wait_sec = declare_parameter<double>("stabilization.maximum_frame_imu_wait_sec", 0.005);
     stab.maximum_frame_imu_age_sec = declare_parameter<double>("stabilization.maximum_frame_imu_age_sec", 0.012);
     stab.maximum_frame_imu_prediction_sec = declare_parameter<double>("stabilization.maximum_prediction_sec", 0.015);
     camera_ = std::make_unique<cdt::CameraPipeline>(cam_cfg_, stab);
     camera_->stats = &loop_->stats();
-    camera_->on_yaw_rate = [this](double w, double t) { loop_->on_yaw_rate(w, t); };
+    camera_->on_yaw_rate = [this](double w, double t) {
+      loop_->on_yaw_rate(w, t);
+      accel_model_.on_yaw_rate(w - loop_->gyro_bias(), t);
+    };
+    accel_model_.set_lever(camera_x_ + rc_.wheelbase);   // 뒤 차축 → 카메라 (앞차축 기준 카메라 x + 축간거리)
+    if (accel_comp_)
+      camera_->vehicle_accel = [this](double t) -> std::optional<cv::Vec3d> {
+        const auto a = accel_model_.accel(t);
+        if (!a) return std::nullopt;
+        return cv::Vec3d(a->x, a->y, a->z);
+      };
+    RCLCPP_INFO(get_logger(), "low-frequency IMU correction (vehicle acceleration removed): %s", accel_comp_ ? "ON" : "off");
     camera_->stationary_hint = [this]() -> std::optional<bool> {   // ERPM 속도로 정지 여부 (camera_driver는 ERPM 100 이하 1 s)
       const double v = loop_->speed();
       if (std::abs(v) < 0.03) return true;
@@ -265,7 +284,7 @@ public:
       m << "{\"label\":\"" << label << "\",\"started\":\"" << time_string("%Y-%m-%d %H:%M:%S") << "\",\"camera_x\":" << camera_x_
         << ",\"wheelbase\":" << rc_.wheelbase << ",\"vehicle_length\":" << registry_.get("plan.vehicle_length_m")
         << ",\"vehicle_width\":" << registry_.get("plan.vehicle_width_m") << ",\"rear_overhang\":" << registry_.get("plan.vehicle_rear_overhang_m")
-        << ",\"cone_size\":" << registry_.get("object.cone_size_m") << ",\"memory_mode\":" << registry_.get("memory.mode") << "}\n";
+        << ",\"cone_size\":" << registry_.get("object.cone_size_m") << ",\"memory_mode\":" << registry_.get("memory.mode") << ",\"accel_compensation\":" << (accel_comp_ ? 1 : 0) << "}\n";
     }
     open_cone_log(dir, "cone_obs.csv");
     RCLCPP_INFO(get_logger(), "manual recording start: %s", dir.c_str());
@@ -428,7 +447,7 @@ private:
     last_status_t_ = now;
     auto f = loop_->telemetry(full, now);
     if (now - last_stab_t_ >= 1.0) { camera_->stabilization_stats().summary(); last_stab_t_ = now; }
-    f.stabilization = camera_->stabilization_stats().last();
+    f.stabilization = camera_->stabilization_stats().last() + (accel_comp_ ? " · 저주파 보정 켜짐" : "");
     if (full) {
       if (now - last_usage_t_ >= 1.0) { usage_ = sysmon_.sample(now); last_usage_t_ = now; }
       f.usage = usage_;
@@ -444,6 +463,8 @@ private:
   }
 
   cdt::ParamRegistry registry_;
+  cdt::VehicleAccelModel accel_model_;
+  bool accel_comp_{false};
   cdt::RuntimeConfig rc_;
   cdt::CameraConfig cam_cfg_;
   cdt::OakStartupMeasurementConfig measure_cfg_;
