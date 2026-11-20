@@ -43,8 +43,6 @@ target_link_libraries(multiclass_yolo_node multiclass_detector depthai::core Thr
   roi_lidar::roi_lidar_preview point_cloud::point_cloud_depth_source oak_startup::measurement)
 install(TARGETS multiclass_yolo_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY config launch models DESTINATION share/${PROJECT_NAME} PATTERN "__pycache__" EXCLUDE)
-install(FILES ../roi_vfh_test/config/reference/roi_lidar_test.yaml
-  ../roi_vfh_test/config/reference/bev_config_test.yaml DESTINATION share/${PROJECT_NAME}/config/vfh_reference)
 if(BUILD_TESTING)
   enable_testing()
   add_executable(multiclass_preview_exit_test test/preview_exit_test.cpp)

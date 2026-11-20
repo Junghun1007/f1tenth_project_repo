@@ -193,29 +193,11 @@ ROS 2 전체 노드 빌드 및 실제 OAK 카메라 동작은 차량 PC에서 �
 초기화한다. 장애물 포인트/스캔과 다른 패키지의 주행 제어에는 이 보정을 적용하지 않는다.
 기존 본문의 무보간 설명은 `terrain_raw` 및 보정 OFF에 해당한다.
 
-## VFH+ 프리뷰 연결
-
-`roi_vfh_test/README.md`의 통합 launch에서 파라미터 창과 Start/Stop 프리뷰를 함께 실행한다.
-`preview.publish_lane_bev=true`이면 같은 RGB의 깨끗한 120×300/1cm BEV를 `~/lane_bev`로 발행한다.
-`motion.publish_imu=true`이면 같은 OAK 세션에서 gyro를 읽어 앞차축 좌표의 `~/imu`로 발행한다.
-두 기능의 기본값은 false이며 활성화 변경은 카메라 재시작을 요구한다.
-`~/terrain_for_planning`은 ROI 격자와 동일한 최소 위험 표본 수·색상을 사용하는 계획 입력이다.
-위험 표본이 최소 수보다 적으면 초록으로 만들지 않고 회색으로 두며, 1표본만으로 별도 100을 강제하지 않는다.
-화면과 기존 terrain/raw 토픽의 분류 의미는 유지한다.
-`/roi_vfh_test/running=true` 수신 시 GUI 편집과 ROS 파라미터 쓰기를 모두 잠그고
-`~/parameters_locked`로 ACK한다. Stop(false) 수신 후 다시 변경할 수 있다.
-
-최신 스크린샷 기본값: 높이 상한 1.0m, 거리별 두께 증가 0.01m/m, 아래 허용 깊이 0.30m,
-셀 0.07m, 장애물 표본 8개, 표시 폭 눈금 2.0m, 픽셀 간격 1, 카메라 60 FPS를 사용한다.
-`terrain.vehicle_width_m`는 표시용이며 VFH+ 차량 검사 폭은 기존 차량 설정을 따른다.
-이번 기본값 변경의 빌드·테스트는 사용자 요청에 따라 실행하지 않았다.
-
 ## 프레임별 RANSAC·고립점 제거 — 실행창 2페이지
 
 이번 변경은 사용자 요청에 따라 **빌드·테스트를 실행하지 않았다.**
 900×590px 설정창의 **Next >** 또는 **]**로 2페이지를 연다. 모든 항목은 Enter/A/Apply로
 일괄 적용되며 카메라 재시작이 필요 없다. Prev/[로 되돌아갈 수 있고 Tab도 페이지를 넘어간다.
-VFH+ 실행 중에는 기존 GUI/ROS 쓰기 잠금이 적용된다. 페이지 이동과 값 확인은 가능하다.
 
 | 파라미터 | 기본값 | 의미 |
 |---|---:|---|
@@ -279,7 +261,7 @@ launch는 BEV 설정의 `measurement_roi_width=456`, `measurement_roi_height=228
 이후 프레임별 RANSAC은 별도의 보정이며 시작 카메라 좌표·BEV 자세 측정을 대체하지 않는다.
 이번 변경은 사용자 요청에 따라 빌드·테스트를 실행하지 않았다.
 
-`preview.show_bev_window`(기본 true)는 별도 RGB BEV창 표시만 제어한다. VFH launch는 false로 설정하여 VFH 창에 BEV를 통합하며, ROI 선택창과 파라미터 창·센서 발행은 유지한다.
+`preview.show_bev_window`(기본 true)는 별도 RGB BEV창 표시만 제어한다.
 
 IMU ON일 때는 카메라 세션별 전용 수신 스레드를 사용한다. depth RANSAC/고립점 처리 중에도
 IMU 배치를 계속 수신하며 원래 측정 시각을 보존한다. 장치를 닫기 전에 수신 스레드를 종료한다.

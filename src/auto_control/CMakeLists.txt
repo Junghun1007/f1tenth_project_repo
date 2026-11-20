@@ -32,16 +32,6 @@ find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs dnn)
 ament_python_install_package(auto_control_tunnel)
 ament_python_install_package(auto_control_safety)
 
-# ---- 기존 제어 도우미 (roi_vfh_test가 auto_control::control_core로 링크) ----
-add_library(auto_control_core STATIC src/control_core.cpp src/driving_log.cpp)
-target_link_libraries(auto_control_core PUBLIC Threads::Threads)
-set_target_properties(auto_control_core PROPERTIES POSITION_INDEPENDENT_CODE ON EXPORT_NAME control_core)
-target_include_directories(auto_control_core PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>)
-install(TARGETS auto_control_core EXPORT auto_control_core_targets ARCHIVE DESTINATION lib)
-ament_export_targets(auto_control_core_targets HAS_LIBRARY_TARGET)
-
 # ---- 터널 차선 선택기 (검출 컨테이너, intra-process LaneResult) ----
 add_library(auto_tunnel_selector_component SHARED src/tunnel_lane_selector.cpp)
 target_include_directories(auto_tunnel_selector_component PRIVATE include)
@@ -100,12 +90,6 @@ install(FILES README.md AUTO_CONTROL_TUNNEL.md DESTINATION share/${PROJECT_NAME}
 if(BUILD_TESTING)
   # ROS 없는 주행부 호스트 테스트는 test/host: cmake -S test/host -B build/host
   enable_testing()
-  add_executable(staged_brake_test test/staged_brake_test.cpp src/control_core.cpp)
-  target_include_directories(staged_brake_test PRIVATE include)
-  add_test(NAME staged_brake_test COMMAND staged_brake_test)
-  add_executable(duty_only_test test/duty_only_test.cpp src/control_core.cpp)
-  target_include_directories(duty_only_test PRIVATE include)
-  add_test(NAME duty_only_test COMMAND duty_only_test)
   find_package(ament_cmake_pytest QUIET)
   if(ament_cmake_pytest_FOUND)
     ament_add_pytest_test(safety test/python)

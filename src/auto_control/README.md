@@ -88,7 +88,7 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 - 안전 전환: `manual_control auto_handover`(AUTO → MANUAL 한 방향) → `safety_node`(MANUAL ↔ AUTO 반복)
 - 다른 패키지: `line_detactor`(LaneResult에 차선 경계·기준 중앙선, 좌우 재판정), `camera_driver`(깊이 CAM_A 정렬,
   IMU 보정에 카메라 앞쪽 거리 항), `bev_handoff`(차선 힌트, BEV 보기 탭)
-- 그대로: 카메라·BEV·차선 파이프라인, 터널 IR 전환(`AUTO_CONTROL_TUNNEL.md`), `auto_control::control_core` 라이브러리(roi_vfh_test용)
+- 그대로: 카메라·BEV·차선 파이프라인, 터널 IR 전환(`AUTO_CONTROL_TUNNEL.md`)
 
 ## 기록·분석 (`tools/`)
 
