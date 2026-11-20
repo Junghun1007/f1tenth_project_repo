@@ -95,7 +95,7 @@
     plan.w_slope: 4                   # 경로 기울기 벌점 가중치 (예전 1)
     plan.w_curvature: 0.1             # 경로 곡률 벌점 가중치 (예전 0.08)
     plan.lane_return_distance: 1.2      # 차선 복귀 거리 (m)
-    plan.rollout_sec: 1.5               # 롤아웃 시간 (s)
+    plan.rollout_sec: 1.0               # 롤아웃 시간 (s)
     plan.rollout_retry_margin: 0.03     # 재계획 여유 (m)
     plan.s_max: 1.5       # 계획 거리 (m). 녹화로 맞춤 (사람은 1.5 m 앞부터 반응)
     plan.forward_extension_m: 0.0       # 코너에서 잘린 중앙선을 끝 곡률로 늘리는 최대 길이 (m, 0=끔, 시험용). 중앙선 끝 너머 콘은 항상 회피 계획에서 뺌
@@ -103,7 +103,7 @@
     drive.maximum_speed_mps: 1.3        # 최대 속도 (m/s)
     drive.minimum_speed_mps: 1.1        # 최소 속도(코너) (m/s)
     drive.obstacle_speed_mps: 1.0       # 장애물 구간 속도 (m/s)
-    drive.rollout_fail_speed_mps: 0.5   # 롤아웃 실패 시 속도 (m/s)
+    drive.rollout_fail_speed_mps: 0.8   # 롤아웃 실패 시 속도 (m/s)
     drive.maximum_lateral_accel: 1.6    # 최대 횡가속 (m/s²)
     drive.planning_decel: 0.5           # 계획 감속도 (m/s²)
     drive.obstacle_decel: 0.4           # 장애물 감속도 (m/s²)
@@ -173,4 +173,4 @@
     traffic.color_min_value: 60.0
     web.link_loss_stop_sec: 1.0         # 연결 끊김 정지 시간 (s)
     drive.lane_timeout_sec: 20.0        # 차선 끊김 허용 시간 (s). 0 = 제한 없음 (끊긴 동안 직전 경로로 주행). 넘으면 'lane input stale'로 정지
-    camera.accel_compensation: 0        # 저주파 IMU 보정 (재시작 필요): 1이면 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정
+    camera.accel_compensation: 1        # 저주파 IMU 보정 (재시작 필요): 1이면 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정

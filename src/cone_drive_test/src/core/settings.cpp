@@ -66,14 +66,14 @@ void register_params(ParamRegistry & r) {
   o("회피 계획", "plan.w_slope", "경로 기울기(옆으로 꺾임) 벌점 가중치", "", 0, 50, 4);
   o("회피 계획", "plan.w_curvature", "경로 곡률(급한 꺾임) 벌점 가중치", "", 0, 2, 0.1);
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 1.2);
-  o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
+  o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.0);
   o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
   o("회피 계획", "plan.forward_extension_m", "코너에서 잘린 중앙선을 끝 곡률로(끝에서 0까지 줄이며) 늘리는 최대 길이 (0=끔, 시험용: 녹화 재생에선 막힘이 늘었음)", "m", 0, 1.5, 0.0);
   o("회피 계획", "plan.s_max", "계획 거리 (수동 주행 녹화로 맞춤: 사람은 1.5 m 앞부터 반응)", "m", 1, 3.5, 1.5);
   d("속도", "drive.maximum_speed_mps", "최대 속도", "m/s", 0, 3, 1.3);
   d("속도", "drive.minimum_speed_mps", "최소 속도(코너)", "m/s", 0, 2, 1.1);
   d("속도", "drive.obstacle_speed_mps", "장애물 구간 속도", "m/s", 0, 2, 1.0);
-  d("속도", "drive.rollout_fail_speed_mps", "롤아웃 실패 시 속도", "m/s", 0, 2, 0.5);
+  d("속도", "drive.rollout_fail_speed_mps", "롤아웃 실패 시 속도", "m/s", 0, 2, 0.8);
   d("속도", "drive.maximum_lateral_accel", "최대 횡가속", "m/s²", 0.2, 5, 1.6);
   d("속도", "drive.planning_decel", "계획 감속도", "m/s²", 0.1, 3, 0.5);
   d("속도", "drive.obstacle_decel", "장애물 감속도", "m/s²", 0.05, 3, 0.4);
@@ -135,7 +135,7 @@ void register_params(ParamRegistry & r) {
   d("안전", "web.link_loss_stop_sec", "연결 끊김 정지 시간", "s", 0.2, 5, 1.0);
   d("안전", "drive.lane_timeout_sec", "차선 끊김 허용 시간 (0=제한 없음, 그동안 직전 경로로 주행)", "s", 0, 60, 20.0);
   d("IMU 안정화", "camera.accel_compensation",
-    "저주파 IMU 보정: 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정 (0=끔, 1=켬)", "", 0, 1, 0, false);
+    "저주파 IMU 보정: 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정 (0=끔, 1=켬)", "", 0, 1, 1, false);
   r.add_order_constraint("drive.minimum_speed_mps", "drive.maximum_speed_mps");
   r.add_order_constraint("acc.stop_gap_m", "acc.resume_gap_m");
   r.add_order_constraint("traffic.stop_margin_m", "traffic.stop_range_max_m");
