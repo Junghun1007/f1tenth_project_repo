@@ -36,29 +36,35 @@ void anchor_at_stop(Pose & p, const Vec2 & rel, const TrackMap & map, bool cw) {
 // ---------------------------------------------------------------- 보정 값
 int OdomCalib::speed_key(double v) { return int(std::lround(std::abs(v) * 20.0)) * 5; }
 
-double OdomCalib::wheel_scale_for(double v) const {
-  if (wheel_scale.empty()) return 1.0;
+double OdomCalib::wheel_scale_for(double v, bool cw) const {
+  const auto & t = scales(cw);
+  if (t.empty()) return 1.0;
   const double cm = std::abs(v) * 100.0;
-  auto hi = wheel_scale.lower_bound(int(std::ceil(cm)));
-  if (hi == wheel_scale.begin()) return hi->second;
-  if (hi == wheel_scale.end()) return std::prev(hi)->second;
+  auto hi = t.lower_bound(int(std::ceil(cm)));
+  if (hi == t.begin()) return hi->second;
+  if (hi == t.end()) return std::prev(hi)->second;
   auto lo = std::prev(hi);
   const double a = (cm - lo->first) / double(hi->first - lo->first);
   return lo->second + std::clamp(a, 0.0, 1.0) * (hi->second - lo->second);
 }
 
-void OdomCalib::set_wheel_scale(double v, double s) { wheel_scale[speed_key(v)] = s; }
+void OdomCalib::set_wheel_scale(double v, double s, bool cw) { scales(cw)[speed_key(v)] = s; }
 
 std::string OdomCalib::to_json() const {
   JsonWriter w;
   w.begin_object().key("version").value((long long)version).key("gyro_scale").value(gyro_scale, 6).key("gyro_laps").value((long long)gyro_laps)
-   .key("gyro_bias").value(gyro_bias, 6).key("latency").value(latency, 4);
-  w.key("wheel_scale").begin_object();
-  for (const auto & [k, s] : wheel_scale) w.key(std::to_string(k).c_str()).value(s, 6);
+   .key("gyro_bias").value(gyro_bias, 6).key("latency").value(latency, 4)
+   .key("stop_offset").value(stop_offset, 4).key("stop_laps").value((long long)stop_laps)
+   .key("stop_offset_cw").value(stop_offset_cw, 4).key("stop_laps_cw").value((long long)stop_laps_cw);
+  for (const bool cw : {false, true}) {
+    w.key(cw ? "wheel_scale_cw" : "wheel_scale").begin_object();
+    for (const auto & [k, s] : scales(cw)) w.key(std::to_string(k).c_str()).value(s, 6);
+    w.end_object();
+    w.key(cw ? "wheel_laps_cw" : "wheel_laps").begin_object();
+    for (const auto & [k, n] : laps(cw)) w.key(std::to_string(k).c_str()).value((long long)n);
+    w.end_object();
+  }
   w.end_object();
-  w.key("wheel_laps").begin_object();
-  for (const auto & [k, n] : wheel_laps) w.key(std::to_string(k).c_str()).value((long long)n);
-  w.end_object().end_object();
   return w.str();
 }
 
@@ -75,10 +81,16 @@ OdomCalib OdomCalib::from_json(const std::string & text) {
   c.gyro_laps = int(gl);
   num("gyro_bias", c.gyro_bias);
   num("latency", c.latency);
-  if (const auto * ws = j->get("wheel_scale"); ws && ws->kind == JsonValue::Object)
-    for (const auto & [k, v] : ws->obj) if (v->kind == JsonValue::Number) c.wheel_scale[std::stoi(k)] = v->num;
-  if (const auto * wl = j->get("wheel_laps"); wl && wl->kind == JsonValue::Object)
-    for (const auto & [k, v] : wl->obj) if (v->kind == JsonValue::Number) c.wheel_laps[std::stoi(k)] = int(v->num);
+  double sl = 0, slc = 0;
+  num("stop_offset", c.stop_offset); num("stop_offset_cw", c.stop_offset_cw);
+  num("stop_laps", sl); num("stop_laps_cw", slc);
+  c.stop_laps = int(sl); c.stop_laps_cw = int(slc);
+  for (const bool cw : {false, true}) {
+    if (const auto * ws = j->get(cw ? "wheel_scale_cw" : "wheel_scale"); ws && ws->kind == JsonValue::Object)
+      for (const auto & [k, v] : ws->obj) if (v->kind == JsonValue::Number) c.scales(cw)[std::stoi(k)] = v->num;
+    if (const auto * wl = j->get(cw ? "wheel_laps_cw" : "wheel_laps"); wl && wl->kind == JsonValue::Object)
+      for (const auto & [k, v] : wl->obj) if (v->kind == JsonValue::Number) c.laps(cw)[std::stoi(k)] = int(v->num);
+  }
   return c;
 }
 
@@ -108,7 +120,7 @@ Trajectory integrate(const RunData & run, const OdomCalib & calib, const TrackMa
     advance_speed(t);
     const double dt = std::clamp(t - last_t, 0.0, 0.05);
     last_t = t;
-    const double v = v_raw * calib.wheel_scale_for(v_raw);
+    const double v = v_raw * calib.wheel_scale_for(v_raw, run.cw);
     const double w = calib.gyro_scale * (w_raw - run.gyro_bias0 - calib.gyro_bias);
     const double ym = p.yaw + 0.5 * w * dt;
     p.x += v * std::cos(ym) * dt;
@@ -274,6 +286,43 @@ OdomEstimate estimate_odometry(const RunData & run, const TrackMap & map) {
   return e;
 }
 
+double estimate_stop_offset(const RunData & run, const TrackMap & map, const OdomCalib & calib, int * laps_used) {
+  const double dir = run.cw ? -1.0 : 1.0, sS = map.center_project(map.stop_center()), d0 = calib.stop_off(run.cw);
+  double cs[4];
+  for (int k = 0; k < 4; ++k) cs[k] = map.arc_after_turn(sS, run.cw, (45.0 + 90.0 * k) * kPi / 180.0);
+  std::vector<double> b{run.start.t};
+  b.insert(b.end(), run.crossing_t.begin(), run.crossing_t.end());
+  double sum = 0;
+  int n = 0;
+  for (std::size_t L = 0; L + 1 < b.size(); ++L) {
+    double turn = 0, dist = 0, lt = b[L], v = 0, anchor_s = map.wrap_s(sS + dir * d0), anchor_d = 0, fix1 = kNaN;
+    std::size_t si = 0;
+    while (si < run.speed.size() && run.speed[si].t <= b[L]) v = run.speed[si++].v;
+    int next = 0;
+    for (const auto & g : run.gyro) {
+      if (g.t <= b[L]) continue;
+      if (g.t > b[L + 1]) break;
+      while (si < run.speed.size() && run.speed[si].t <= g.t) v = run.speed[si++].v;
+      const double dt = std::clamp(g.t - lt, 0.0, 0.05);
+      lt = g.t;
+      turn += calib.gyro_scale * (g.w - run.gyro_bias0 - calib.gyro_bias) * dt;
+      dist += std::abs(v) * calib.wheel_scale_for(v, run.cw) * dt;
+      if (next < 4 && dir * turn >= (45.0 + 90.0 * next) * kPi / 180.0) {
+        const double pred = map.wrap_s(anchor_s + dir * (dist - anchor_d));
+        if (next == 0) fix1 = map.arc_diff(cs[0], pred) * dir;   // + = 위치 추정이 코너보다 뒤
+        anchor_s = cs[next]; anchor_d = dist; ++next;
+      }
+    }
+    if (next < 4 || !std::isfinite(fix1)) continue;
+    const double pred_end = map.wrap_s(anchor_s + dir * (dist - anchor_d));
+    const double last = -map.arc_diff(map.wrap_s(sS + dir * d0), pred_end) * dir;   // 다음 S 판정 지점 대비 추정 위치 (+ = 추정이 앞)
+    sum += 0.5 * (fix1 + last);   // S 판정이 δ 이르면 S → 첫 코너는 실제로 δ만큼 길고 (fix1 = δ), 마지막 코너 → S는 δ만큼 짧다 (last = δ)
+    ++n;
+  }
+  if (laps_used) *laps_used = n;
+  return n ? d0 + sum / n : kNaN;
+}
+
 CalibResult calibrate(const RunData & run, const OdomCalib & current, const TrackMap & map, double max_range, int max_prev_laps,
                       double outlier_ratio) {
   CalibResult r;
@@ -298,18 +347,43 @@ CalibResult calibrate(const RunData & run, const OdomCalib & current, const Trac
   };
   r.gyro_used = merge(current.gyro_scale, current.gyro_laps, r.est.gyro_scale, &r.calib.gyro_scale, &r.calib.gyro_laps, "자이로");
   const int key = OdomCalib::speed_key(run.target_speed);
-  const auto it = current.wheel_scale.find(key);
-  const auto itn = current.wheel_laps.find(key);
-  double wv = it != current.wheel_scale.end() ? it->second : 1.0;
-  int wn = it != current.wheel_scale.end() && itn != current.wheel_laps.end() ? itn->second : 0;
-  r.wheel_used = merge(wv, wn, r.est.wheel_scale, &wv, &wn, "바퀴");
-  if (r.wheel_used) { r.calib.wheel_scale[key] = wv; r.calib.wheel_laps[key] = wn; }
-  r.applied = r.gyro_used || r.wheel_used;
+  const auto & ts = current.scales(run.cw);
+  const auto & tl = current.laps(run.cw);
+  const auto it = ts.find(key);
+  const auto itn = tl.find(key);
+  double wv = it != ts.end() ? it->second : 1.0;
+  int wn = it != ts.end() && itn != tl.end() ? itn->second : 0;
+  r.wheel_used = merge(wv, wn, r.est.wheel_scale, &wv, &wn, run.cw ? "거리(시계)" : "거리(반시계)");
+  if (r.wheel_used) { r.calib.scales(run.cw)[key] = wv; r.calib.laps(run.cw)[key] = wn; }
+  {   // S 통과 판정 오프셋: 방금 갱신한 자이로·거리 배율로
+    int n = 0;
+    r.est.stop_offset = estimate_stop_offset(run, map, r.calib, &n);
+    r.est.stop_laps = n;
+    if (std::isfinite(r.est.stop_offset) && n >= 2) {
+      const int n_prev = std::min(current.stop_n(run.cw), max_prev_laps);
+      const double old = current.stop_off(run.cw);
+      if (n_prev >= 5 && std::abs(r.est.stop_offset - old) > 0.10) {
+        char b[160];
+        std::snprintf(b, sizeof(b), "S 오프셋 이번 값 %+.1f cm가 누적 %+.1f cm와 10 cm 넘게 달라 반영 안 함. ", r.est.stop_offset * 100, old * 100);
+        notes += b;
+      } else {
+        r.calib.stop_off(run.cw) = (old * n_prev + r.est.stop_offset * n) / double(n_prev + n);
+        r.calib.stop_n(run.cw) = n_prev + n;
+        r.stop_used = true;
+      }
+    }
+  }
+  r.applied = r.gyro_used || r.wheel_used || r.stop_used;
   r.after = evaluate(run, r.calib, map, max_range);
   char b[200];
-  std::snprintf(b, sizeof(b), "보정 %s: 자이로 ×%.4f (누적 %d바퀴), 거리 ×%.4f @%.2f m/s. ", r.applied ? "반영" : "안 함", r.calib.gyro_scale,
-                r.calib.gyro_laps, r.calib.wheel_scale_for(run.target_speed), run.target_speed);
+  std::snprintf(b, sizeof(b), "보정 %s: 자이로 ×%.4f (누적 %d바퀴), 거리 ×%.4f @%.2f m/s %s. ", r.applied ? "반영" : "안 함", r.calib.gyro_scale,
+                r.calib.gyro_laps, r.calib.wheel_scale_for(run.target_speed, run.cw), run.target_speed, run.cw ? "시계" : "반시계");
   r.message = b + notes;
+  if (r.stop_used) {
+    char b2[120];
+    std::snprintf(b2, sizeof(b2), "S 오프셋 %+.1f cm (%s, 누적 %d바퀴).", r.calib.stop_off(run.cw) * 100, run.cw ? "시계" : "반시계", r.calib.stop_n(run.cw));
+    r.message += b2;
+  }
   return r;
 }
 
@@ -352,6 +426,9 @@ void SlamCore::begin_run(double target_speed, int laps, const Pose & start, bool
   live_.lap_length = map_.center_length();
   live_.bias0 = run_.gyro_bias0;
   s_stop_ = map_.center_project(map_.stop_center());
+  for (int k = 0; k < 4; ++k) corner_s_[k] = map_.arc_after_turn(s_stop_, cw, (45.0 + 90.0 * k) * kPi / 180.0);
+  next_corner_ = 0;
+  lap_corner_fix_ = 0;
   anchor_s_ = map_.center_project({start.x, start.y});
   anchor_dist_ = 0;
   {   // 출발 옆 위치 (설정한 출발 위치 기준, 차선이 보이면 곧 BEV 값으로 바뀜)
@@ -412,7 +489,7 @@ void SlamCore::step(double t) {
   const double dt = std::clamp(t - last_gyro_t_, 0.0, 0.05);
   last_gyro_t_ = t;
   Pose & p = live_.free_pose;
-  const double v = last_v_ * calib_.wheel_scale_for(last_v_);
+  const double v = last_v_ * calib_.wheel_scale_for(last_v_, run_.cw);
   const double w = calib_.gyro_scale * (last_w_ - run_.gyro_bias0 - calib_.gyro_bias);
   const double ym = p.yaw + 0.5 * w * dt;
   p.x += v * std::cos(ym) * dt;
@@ -421,7 +498,20 @@ void SlamCore::step(double t) {
   p.dist += v * dt;
   p.t = t;
   live_.lap_dist += v * dt;
-  if (!live_.waiting_s) lap_turn_ += w * dt;
+  if (!live_.waiting_s) {
+    lap_turn_ += w * dt;
+    const double turned = run_.cw ? -lap_turn_ : lap_turn_;   // S 이후 진행 방향으로 돈 양
+    if (cfg_.corner_anchor && next_corner_ < 4 && turned >= (45.0 + 90.0 * next_corner_) * kPi / 180.0) {
+      const double fix = map_.arc_diff(corner_s_[next_corner_], arc_at_dist(p.dist)) * (run_.cw ? -1.0 : 1.0);
+      if (std::abs(fix) < 1.0) {   // 1 m 넘게 차이 나면 (바퀴 세기 어긋남 등) 믿지 않음
+        anchor_s_ = corner_s_[next_corner_];
+        anchor_dist_ = p.dist;
+        live_.corner_fix_m = fix;
+        if (std::abs(fix) > std::abs(lap_corner_fix_)) lap_corner_fix_ = fix;
+      }
+      ++next_corner_;
+    }
+  }
   hist_.push_back(p);
   while (hist_.size() > 2 && hist_.front().t < t - 3.0) hist_.pop_front();
   live_.s_arc = arc_at_dist(p.dist);
@@ -450,8 +540,9 @@ void SlamCore::on_crossing(double t) {
     run_.gyro_bias0 = bias0; run_.target_speed = v; run_.crossing_latency = lat; run_.laps_target = laps; run_.stopline_correction = corr; run_.cw = cw;
     run_.params = std::move(params);
     run_.start_rel = rel;
-    anchor_s_ = s_stop_; anchor_dist_ = 0;
-    live_.s_arc = s_stop_;
+    anchor_s_ = map_.wrap_s(s_stop_ + (run_.cw ? -1.0 : 1.0) * calib_.stop_off(run_.cw)); anchor_dist_ = 0;
+    next_corner_ = 0; lap_corner_fix_ = 0;
+    live_.s_arc = anchor_s_;
     live_.pose = snap_of(p);
     hist_.clear(); hist_.push_back(p);
     track_.assign(1, live_.pose); free_track_.assign(1, p); track_last_t_ = t;
@@ -469,6 +560,7 @@ void SlamCore::on_crossing(double t) {
   m.length_err = m.dist_m / std::max(1e-6, Lc) - 1.0;
   m.turn_deg = (run_.cw ? -lap_turn_ : lap_turn_) * 180.0 / kPi;
   m.lat_mean_m = lap_lat_n_ ? lap_lat_sum_ / lap_lat_n_ : 0.0;
+  m.corner_fix_m = lap_corner_fix_;
   m.along_err_m = dot({p.x - S.x, p.y - S.y}, dir);
   m.heading_err_deg = wrap(p.yaw - std::atan2(dir.y, dir.x)) * 180.0 / kPi;
   m.points = lap_n_;
@@ -481,8 +573,10 @@ void SlamCore::on_crossing(double t) {
     anchor_at_stop(p, rel, map_, run_.cw);
     corr_.push_back({m.lap, -m.along_err_m});
   }
-  anchor_s_ = s_stop_; anchor_dist_ = p.dist;   // 위치 추정은 항상 S에서 다시 시작
-  live_.s_arc = s_stop_;
+  // 위치 추정은 항상 S에서 다시 시작 (판정 순간 차는 S에서 오프셋만큼 떨어져 있음)
+  anchor_s_ = map_.wrap_s(s_stop_ + (run_.cw ? -1.0 : 1.0) * calib_.stop_off(run_.cw)); anchor_dist_ = p.dist;
+  next_corner_ = 0; lap_corner_fix_ = 0;
+  live_.s_arc = anchor_s_;
   live_.pose = snap_of(p);
   last_cross_dist_ = p.dist;
   lap_sq_ = lap_turn_ = lap_lat_sum_ = 0; lap_n_ = lap_lat_n_ = 0;

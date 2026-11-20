@@ -292,7 +292,7 @@ private:
     }
     slam_->begin_run(s.run_speed, s.run_laps, start_pose(s), s.clockwise);
     std::map<std::string, double> rp;
-    for (const char * k : {"camera.yaw_deg", "camera.stabilization", "run.speed_mps", "run.laps", "slam.direction", "slam.stopline_correction",
+    for (const char * k : {"camera.yaw_deg", "camera.stabilization", "run.speed_mps", "run.laps", "slam.direction", "slam.stopline_correction", "slam.corner_anchor",
                            "lane.corner_outward_offset_m", "lane.corner_entry_distance_m", "lane.side_tracking", "drive.stanley_gain",
                            "drive.heading_lookahead_m", "drive.longitudinal_mode"})
       if (registry_.has(k)) rp[k] = registry_.get(k);
@@ -350,11 +350,6 @@ private:
         if (r.applied) { store_->save(r.calib); slam_->set_calib(r.calib); }
         const auto after = ss::integrate(run, r.calib, slam_->map(), run.stopline_correction);
         std::string msg = r.message;
-        if (std::isfinite(r.est.bev_yaw_residual_deg)) {
-          char b[160];
-          std::snprintf(b, sizeof(b), " 주행 검산: BEV가 %+.1f° 더 기울어 보임 (직선 %d개)", r.est.bev_yaw_residual_deg, r.est.straights);
-          msg += b;
-        }
         std::lock_guard<std::mutex> l(run_m_);
         after_track_.clear();
         for (std::size_t i = 0; i < after.poses.size(); i += 20) after_track_.push_back(after.poses[i]);
@@ -531,7 +526,7 @@ private:
      .key("rejected_far").value((long long)live.rejected_far).key("rejected_lap").value((long long)live.rejected_lap)
      .key("pose").begin_array().value(live.pose.x, 3).value(live.pose.y, 3).value(live.pose.yaw, 4).end_array()
      .key("free_pose").begin_array().value(live.free_pose.x, 3).value(live.free_pose.y, 3).value(live.free_pose.yaw, 4).end_array()
-     .key("s_arc").value(live.s_arc, 3).key("lat").value(live.lat_valid ? live.lat : std::nan(""), 3);
+     .key("s_arc").value(live.s_arc, 3).key("corner_fix").value(live.corner_fix_m, 3).key("lat").value(live.lat_valid ? live.lat : std::nan(""), 3);
     {
       std::lock_guard<std::mutex> l(run_m_);
       w.key("status").value(status_).key("dir").value(std::filesystem::path(run_dir_).filename().string()).key("finishing").value(finishing_.load());
@@ -540,19 +535,21 @@ private:
     w.key("laps").begin_array();
     for (const auto & m : slam_->lap_metrics())
       w.begin_object().key("lap").value((long long)m.lap).key("dist").value(m.dist_m, 3).key("s_err").value(m.s_err_m, 4)
-       .key("turn").value(m.turn_deg, 2).key("lat").value(m.lat_mean_m, 3).key("free_along").value(m.along_err_m, 4)
+       .key("turn").value(m.turn_deg, 2).key("lat").value(m.lat_mean_m, 3).key("corner_fix").value(m.corner_fix_m, 3).key("free_along").value(m.along_err_m, 4)
        .key("free_heading").value(m.heading_err_deg, 2).key("rms").value(m.rms_m, 4).end_object();
     w.end_array();
     w.key("corrections").begin_array();
     for (const auto & [lap, sh] : slam_->corrections()) w.begin_array().value((long long)lap).value(sh, 4).end_array();
     w.end_array();
     w.key("calib").begin_object().key("gyro_scale").value(calib.gyro_scale, 5).key("gyro_laps").value((long long)calib.gyro_laps)
-     .key("latency").value(calib.latency, 3).key("camera_yaw").value(camera_yaw_deg_.load(), 2).key("lap_ref").value(slam_->map().center_length(), 3)
+     .key("latency").value(calib.latency, 3).key("stop_offset").value(calib.stop_offset, 4).key("stop_laps").value((long long)calib.stop_laps)
+     .key("stop_offset_cw").value(calib.stop_offset_cw, 4).key("stop_laps_cw").value((long long)calib.stop_laps_cw).key("camera_yaw").value(camera_yaw_deg_.load(), 2).key("lap_ref").value(slam_->map().center_length(), 3)
      .key("wheel").begin_array();
-    for (const auto & [k, sc] : calib.wheel_scale) {
-      const auto it = calib.wheel_laps.find(k);
-      w.begin_array().value(k / 100.0, 2).value(sc, 5).value((long long)(it == calib.wheel_laps.end() ? 0 : it->second)).end_array();
-    }
+    for (const bool cw : {false, true})
+      for (const auto & [k, sc] : calib.scales(cw)) {
+        const auto it = calib.laps(cw).find(k);
+        w.begin_array().value(k / 100.0, 2).value(sc, 5).value((long long)(it == calib.laps(cw).end() ? 0 : it->second)).value(cw).end_array();
+      }
     w.end_array().end_object();
     {
       std::lock_guard<std::mutex> l(run_m_);
@@ -563,6 +560,7 @@ private:
          .key("turn_per_lap").value(e.raw_turn_deg_per_lap, 2).key("dist_per_lap").value(e.raw_dist_per_lap, 3)
          .key("yaw_residual").value(e.bev_yaw_residual_deg, 2).key("straight_angle").value(e.straight_angle_deg, 2)
          .key("straight_slip").value(e.straight_slip_deg, 2).key("straights").value((long long)e.straights)
+         .key("stop_offset").value(e.stop_offset, 4).key("stop_laps").value((long long)e.stop_laps)
          .key("rms_after").value(last_result_.after.rms_m, 4).end_object();
       }
     }

@@ -24,14 +24,28 @@ namespace semi_slam {
 struct OdomCalib {
   static constexpr int kVersion = 2;   // 1 = 예전 (Nelder–Mead, 카메라 각도 포함) → 읽으면 version 1로 표시
   int version{kVersion};
-  std::map<int, double> wheel_scale;   // 키: 속도 (cm/s), 값: 거리 배율. 사이는 선형 보간, 밖은 끝값, 비면 1
-  std::map<int, int> wheel_laps;       // 그 배율에 쓰인 바퀴 수 (누적 평균 가중치)
+  // 거리 배율 = 주행 거리 → 중앙선 거리 환산 (바퀴 센서 오차 + 주행 라인 차이). 방향마다 코너를 도는 길이 달라 따로 둔다
+  // 키: 속도 (cm/s). 사이는 선형 보간, 밖은 끝값, 비면 1
+  std::map<int, double> wheel_scale, wheel_scale_cw;   // 반시계 / 시계
+  std::map<int, int> wheel_laps, wheel_laps_cw;        // 그 배율에 쓰인 바퀴 수 (누적 평균 가중치)
+  std::map<int, double> & scales(bool cw) { return cw ? wheel_scale_cw : wheel_scale; }
+  const std::map<int, double> & scales(bool cw) const { return cw ? wheel_scale_cw : wheel_scale; }
+  std::map<int, int> & laps(bool cw) { return cw ? wheel_laps_cw : wheel_laps; }
+  const std::map<int, int> & laps(bool cw) const { return cw ? wheel_laps_cw : wheel_laps; }
   double gyro_scale{1.0};
   int gyro_laps{0};
+  // S 통과 판정 오프셋 (m): "S를 지났다"고 판정하는 순간 차(앞차축)가 실제로 S에서 진행 방향으로 이만큼 지난 곳 (− = 아직 S 앞).
+  // 정지선 거리 측정의 치우침이 그대로 남는 값. 코너 한가운데(자이로)와 비교해 방향마다 구한다
+  double stop_offset{0.0}, stop_offset_cw{0.0};
+  int stop_laps{0}, stop_laps_cw{0};
+  double & stop_off(bool cw) { return cw ? stop_offset_cw : stop_offset; }
+  double stop_off(bool cw) const { return cw ? stop_offset_cw : stop_offset; }
+  int & stop_n(bool cw) { return cw ? stop_laps_cw : stop_laps; }
+  int stop_n(bool cw) const { return cw ? stop_laps_cw : stop_laps; }
   double gyro_bias{0.0};    // rad/s. 잔여 영점 (같은 속도 주행으로는 배율과 구분이 안 돼 추정하지 않음, 0)
   double latency{0.0};      // s. 차선 영상 시각 + latency = 그 장면을 본 위치의 시각 (설정값)
-  double wheel_scale_for(double v) const;
-  void set_wheel_scale(double v, double scale);
+  double wheel_scale_for(double v, bool cw = false) const;
+  void set_wheel_scale(double v, double scale, bool cw = false);
   static int speed_key(double v);   // 5 cm/s 단위
   std::string to_json() const;
   static OdomCalib from_json(const std::string & text);   // 형식 오류면 기본값
@@ -84,6 +98,7 @@ struct LapMetrics {
   double s_err_m{0};          // S 도착 오차: 주행 거리 − 중앙선 한 바퀴 (+ = 거리로는 S를 지나서야 실제 S)
   double turn_deg{0};         // 이 바퀴 회전량 (보정 적용, 정답 360)
   double lat_mean_m{0};       // 평균 옆 위치 (+ = 중앙선보다 진행 방향 왼쪽)
+  double corner_fix_m{0};     // 코너에서 다시 잡을 때 옮긴 양 중 가장 큰 것 (+ = 앞으로)
   double along_err_m{0};      // 자유 적분 궤적의 S 통과 순간 진행 방향 오차 (참고)
   double heading_err_deg{0};  // 자유 적분 궤적의 S 통과 순간 방향 오차 (참고, 차선 대비 비스듬함 포함)
   double length_err{0};       // dist_m / 중앙선 − 1
@@ -107,18 +122,23 @@ struct OdomEstimate {
   double gyro_scale{std::numeric_limits<double>::quiet_NaN()};    // 360° / 원값 회전량
   double wheel_scale{std::numeric_limits<double>::quiet_NaN()};   // 중앙선 길이 / 원값 거리
   double raw_turn_deg_per_lap{0}, raw_dist_per_lap{0}, ref_length{0};
+  // S 통과 판정 오프셋: (이번 주행의 자이로·거리 배율로) S 직후 첫 코너와 마지막 코너 → S 구간이 같은 양만큼 어긋나는 것으로 구함
+  double stop_offset{std::numeric_limits<double>::quiet_NaN()};
+  int stop_laps{0};
   // 주행 중 검산: 직선에서 BEV 차선 각도 − (옆으로 밀리는 속도로 구한 실제 비스듬함) = BEV가 더 기울어 보이는 각 (0이면 카메라 yaw 맞음)
   double bev_yaw_residual_deg{std::numeric_limits<double>::quiet_NaN()};
   double straight_angle_deg{std::numeric_limits<double>::quiet_NaN()}, straight_slip_deg{std::numeric_limits<double>::quiet_NaN()};
   int straights{0};
 };
 OdomEstimate estimate_odometry(const RunData & run, const TrackMap & map);
+// 주어진 보정 값(자이로·거리 배율, 현재 S 오프셋)으로 바퀴마다 코너 한가운데 4곳에서 위치를 다시 잡아 보고 S 오프셋을 구한다. 실패 시 NaN
+double estimate_stop_offset(const RunData & run, const TrackMap & map, const OdomCalib & calib, int * laps_used = nullptr);
 
 struct CalibResult {
   OdomCalib calib;          // 갱신 후 값 (applied가 false면 이전 값 그대로)
   OdomEstimate est;
   bool applied{false};
-  bool gyro_used{false}, wheel_used{false};
+  bool gyro_used{false}, wheel_used{false}, stop_used{false};
   std::string message;
   Evaluation before, after;   // 참고: 지도 맞춤 RMS
 };
@@ -134,6 +154,9 @@ struct SlamConfig {
   // 정지선 오인식(코너에서 휜 흰 선 등)을 바퀴로 세지 않게 두 가지로 거른다
   double stop_gate_m{1.2};          // 관측한 정지선의 중앙선 위 위치가 S에서 이 거리 안일 때만
   double lap_window{0.25};          // 직전 통과 후 주행 거리가 한 바퀴 길이의 (1 ± 이 비율) 안일 때만 통과로 셈
+  // 코너마다 위치 다시 잡기: S 이후 자이로 회전량이 45°, 135°, 225°, 315°가 되는 순간 = 각 코너 한가운데 → 중앙선 위 그 지점으로.
+  // 코너를 파고들거나 넓게 돌아 경로 길이가 달라도 바퀴 중간에 앞뒤 오차가 쌓이지 않게 한다
+  bool corner_anchor{true};
 };
 
 struct LiveState {
@@ -147,6 +170,7 @@ struct LiveState {
   double s_arc{0};                  // 중앙선 위 위치 (m, 반시계 기준)
   double lat{0};                    // 옆 위치 (+ = 진행 방향 왼쪽)
   bool lat_valid{false};
+  double corner_fix_m{0};           // 마지막 코너에서 옮긴 양
   double lap_dist{0};               // 이번 바퀴 주행 거리
   double lap_length{0};             // 중앙선 한 바퀴
   double bias0{0};
@@ -203,7 +227,10 @@ private:
   double track_last_t_{-1};
   std::vector<Vec2> new_pts_;
   std::vector<int> new_side_;
-  double anchor_s_{0}, anchor_dist_{0}, s_stop_{0};        // 중앙선 위치 기준점 (마지막 S 또는 출발점)
+  double anchor_s_{0}, anchor_dist_{0}, s_stop_{0};
+  double corner_s_[4]{0, 0, 0, 0};             // 코너 한가운데 중앙선 위치 (S부터 진행 방향 45°, 135°, 225°, 315°)
+  int next_corner_{0};
+  double lap_corner_fix_{0};        // 중앙선 위치 기준점 (마지막 S 또는 출발점)
   // 정지선 통과 예측
   int stop_n_{0};
   double stop_cand_{0}, armed_dist_{-1}, last_cross_dist_{0};

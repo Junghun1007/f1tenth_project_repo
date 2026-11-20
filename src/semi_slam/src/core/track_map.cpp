@@ -141,6 +141,25 @@ double TrackMap::center_project(const Vec2 & p) const {
   return wrap_s(best_s);
 }
 
+double TrackMap::arc_after_turn(double s0, bool cw, double turn) const {
+  const double ds = 0.005, dir = cw ? -1.0 : 1.0;
+  Vec2 t0;
+  center_at(s0, &t0);
+  double acc = 0, prev = std::atan2(t0.y, t0.x);
+  for (double d = ds; d <= center_len_; d += ds) {
+    Vec2 t;
+    center_at(s0 + dir * d, &t);
+    const double h = std::atan2(t.y, t.x);
+    double dh = h - prev;
+    while (dh > M_PI) dh -= 2 * M_PI;
+    while (dh < -M_PI) dh += 2 * M_PI;
+    acc += dh * dir;   // 시계 방향 주행이면 오른쪽으로 도는 게 +
+    prev = h;
+    if (acc >= turn) return wrap_s(s0 + dir * d);
+  }
+  return wrap_s(s0);
+}
+
 Vec2 TrackMap::straight_start(bool cw) const {
   // 출발선 T1에서 반시계 진행 반대로 1.03 m = 왼쪽 아래 코너가 끝나는 x ≈ 1.0 m. 시계는 트랙 가운데 기준 좌우 대칭 (x ≈ 3.0 m)
   const Vec2 T = start_center(), d = travel_dir_at(T, false);

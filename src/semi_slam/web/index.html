@@ -56,14 +56,14 @@
     <div class="panel"><h2>주행</h2><div class="big" id="lapBig">0 <small>/ 0 바퀴</small></div><div class="kv2" id="drive" style="margin-top:6px"></div></div>
     <div class="panel">
       <h2>바퀴별 <small>정지선 S → S · 이번 주행</small></h2>
-      <table id="lapTable"><thead><tr><th>바퀴</th><th>거리</th><th>S 도착</th><th>회전</th><th>옆 위치</th><th>자유 적분 S</th></tr></thead><tbody></tbody></table>
+      <table id="lapTable"><thead><tr><th>바퀴</th><th>거리</th><th>S 도착</th><th>회전</th><th>옆 위치</th><th>코너 보정</th><th>자유 적분 S</th></tr></thead><tbody></tbody></table>
       <div class="note" id="accNote"></div>
     </div>
     <div class="panel"><h2>오도메트리 보정 값 <small>S → S 360° · 중앙선 길이 기준, 주행마다 누적 평균</small></h2><div class="kv2" id="calib"></div>
-      <table style="margin-top:8px" id="wheelTable"><thead><tr><th>속도</th><th>거리 배율</th><th>누적 바퀴</th></tr></thead><tbody></tbody></table>
+      <table style="margin-top:8px" id="wheelTable"><thead><tr><th>방향</th><th>속도</th><th>거리 배율</th><th>누적 바퀴</th></tr></thead><tbody></tbody></table>
       <div class="kv2" id="lastResult" style="margin-top:8px"></div></div>
     <div class="panel"><h2>보정 이력 <small>그 주행에서 구한 값</small></h2>
-      <table id="histTable"><thead><tr><th>시각</th><th>속도</th><th>바퀴</th><th>자이로 / 거리</th><th>yaw 검산</th><th></th></tr></thead><tbody></tbody></table></div>
+      <table id="histTable"><thead><tr><th>시각</th><th>속도</th><th>바퀴</th><th>자이로 / 거리</th><th></th></tr></thead><tbody></tbody></table></div>
   </div>
   <div class="colw narrow">
     <div class="panel">

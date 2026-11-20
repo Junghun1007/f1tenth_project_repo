@@ -108,9 +108,9 @@ void write_run(const std::string & dir, const RunData & run, const OdomCalib & c
   }
   {
     std::ofstream o(dir + "/laps.csv");
-    o << "lap,dist_m,s_err_m,turn_deg,lat_mean_m,free_along_err_m,free_heading_err_deg,length_err,rms_m,points\n";
+    o << "lap,dist_m,s_err_m,turn_deg,lat_mean_m,corner_fix_m,free_along_err_m,free_heading_err_deg,length_err,rms_m,points\n";
     for (const auto & m : laps)
-      o << m.lap << ',' << m.dist_m << ',' << m.s_err_m << ',' << m.turn_deg << ',' << m.lat_mean_m << ',' << m.along_err_m << ','
+      o << m.lap << ',' << m.dist_m << ',' << m.s_err_m << ',' << m.turn_deg << ',' << m.lat_mean_m << ',' << m.corner_fix_m << ',' << m.along_err_m << ','
         << m.heading_err_deg << ',' << m.length_err << ',' << m.rms_m << ',' << m.points << '\n';
   }
   { std::ofstream o(dir + "/corrections.csv"); o << "lap,shift_m\n"; for (const auto & [lap, s] : corr) o << lap << ',' << s << '\n'; }
@@ -131,7 +131,8 @@ void write_calibration_result(const std::string & dir, const CalibResult & r) {
    .key("gyro_scale").value(e.gyro_scale, 6).key("wheel_scale").value(e.wheel_scale, 6).key("raw_turn_deg_per_lap").value(e.raw_turn_deg_per_lap, 3)
    .key("raw_dist_per_lap").value(e.raw_dist_per_lap, 4).key("ref_length").value(e.ref_length, 4)
    .key("bev_yaw_residual_deg").value(e.bev_yaw_residual_deg, 2).key("straight_angle_deg").value(e.straight_angle_deg, 2)
-   .key("straight_slip_deg").value(e.straight_slip_deg, 2).key("straights").value((long long)e.straights).end_object();
+   .key("straight_slip_deg").value(e.straight_slip_deg, 2).key("straights").value((long long)e.straights)
+   .key("stop_offset").value(e.stop_offset, 4).key("stop_laps").value((long long)e.stop_laps).end_object();
   ev("before", r.before);
   ev("after", r.after);
   w.end_object();
@@ -210,8 +211,13 @@ void CalibStore::save(const OdomCalib & c) const {
     << "  gyro_scale: " << c.gyro_scale << "\n"
     << "  gyro_bias_rad_s: " << c.gyro_bias << "\n"
     << "  camera_latency_sec: " << c.latency << "\n"
+    << "  stop_line_offset_m: " << c.stop_offset << "    # S 통과 판정 순간 차가 S를 지난 거리 (반시계, − = 아직 앞)\n"
+    << "  stop_line_offset_m_clockwise: " << c.stop_offset_cw << "\n"
+    << "  # 거리 배율 = 주행 거리 → 중앙선 거리 환산 (바퀴 센서 + 주행 라인). 방향마다 따로\n"
     << "  wheel_scale_by_speed_cm_s:\n";
   for (const auto & [k, s] : c.wheel_scale) y << "    \"" << k << "\": " << s << "\n";
+  y << "  wheel_scale_by_speed_cm_s_clockwise:\n";
+  for (const auto & [k, s] : c.wheel_scale_cw) y << "    \"" << k << "\": " << s << "\n";
 }
 
 void CalibStore::record(const CalibResult & r, const std::string & run_dir, const OdomCalib & previous, double speed, int laps, bool applied) const {

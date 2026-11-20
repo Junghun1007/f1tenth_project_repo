@@ -34,6 +34,8 @@ struct TrackMap {
   double center_project(const Vec2 & p) const;                 // p에서 가장 가까운 중앙선 위치의 s
   double arc_diff(double a, double b) const;                   // a − b를 (−L/2, L/2]로
   double wrap_s(double s) const;
+  // s0에서 진행 방향(cw면 반대)으로 중앙선을 따라가며 진행 방향 기준 회전량이 turn(rad, 진행 방향으로 도는 쪽 +)에 처음 닿는 s
+  double arc_after_turn(double s0, bool cw, double turn) const;
 
 private:
   double field(const cv::Mat & f, const Vec2 & p) const;

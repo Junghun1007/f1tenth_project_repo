@@ -205,6 +205,7 @@ function renderNow() {
   kv($("drive"), [["속도 / 목표", `${v.speed.toFixed(2)} / ${v.target.toFixed(2)} m/s`],
     ["이번 바퀴 진행", `${r.lap_dist.toFixed(2)} / ${r.lap_length.toFixed(2)} m (${Math.min(999, 100 * r.lap_dist / r.lap_length).toFixed(0)}%)`],
     ["중앙선 위 위치 · 옆", `${(r.s_arc ?? 0).toFixed(2)} m · ${r.lat === null || r.lat === undefined || !isFinite(r.lat) ? "-" : (r.lat >= 0 ? "왼쪽 " : "오른쪽 ") + cm(Math.abs(r.lat))}`],
+    ["마지막 코너 보정", r.corner_fix === undefined ? "-" : `${r.corner_fix >= 0 ? "+" : ""}${(r.corner_fix * 100).toFixed(1)} cm`],
     ["위치 (x, y) · 방향", `${r.pose[0].toFixed(2)}, ${r.pose[1].toFixed(2)} m · ${(r.pose[2] * 180 / Math.PI).toFixed(1)}°`],
     ["duty / 단계", `${v.duty.toFixed(3)} · ${v.phase || "-"}`], ["CTE · 조향", `${cm(v.cte)} · ${v.steer_deg.toFixed(1)}°`],
     ["기록 폴더", r.dir || "-"]]);
@@ -213,24 +214,27 @@ function renderNow() {
   $("lapTable").querySelector("tbody").innerHTML = f.laps.map((m) =>
     `<tr><td>${m.lap}</td><td>${m.dist.toFixed(3)} m</td><td class="${Math.abs(m.s_err) > 0.1 ? "bad" : ""}">${sgn(m.s_err * 100, 1)} cm</td>` +
     `<td class="${Math.abs(m.turn - 360) > 2 ? "bad" : ""}">${m.turn.toFixed(1)}°</td><td>${sgn(m.lat * 100, 1)} cm</td>` +
+    `<td class="${Math.abs(m.corner_fix || 0) > 0.15 ? "bad" : ""}">${sgn((m.corner_fix || 0) * 100, 1)} cm</td>` +
     `<td>${sgn(m.free_along * 100, 1)} cm · ${sgn(m.free_heading, 1)}°</td></tr>`).join("");
   $("accNote").innerHTML = f.laps.length
-    ? "S 도착 = 바퀴 거리 − 중앙선 한 바퀴 (위치 추정의 앞뒤 오차, 주행 라인에 따라 ±1% 정도 흔들림) · 회전 = 보정 적용한 자이로 (정답 360°) · 옆 위치 + = 중앙선보다 왼쪽"
+    ? "S 도착 = 바퀴 거리 − 중앙선 한 바퀴 · 회전 = 보정 적용한 자이로 (정답 360°) · 옆 위치 + = 중앙선보다 왼쪽 · 코너 보정 = 코너 한가운데(자이로 45°·135°·225°·315°)에서 다시 잡을 때 옮긴 가장 큰 양"
     : "정지선 S를 지날 때마다 한 줄씩 채워집니다";
   const c = f.calib;
   kv($("calib"), [["자이로 배율", `${c.gyro_scale.toFixed(4)} · 누적 ${c.gyro_laps}바퀴`], ["기준 한 바퀴 (지도 중앙선)", `${(c.lap_ref || 0).toFixed(3)} m`],
+    ["S 통과 판정 오프셋 (반시계 / 시계)", `${sgn((c.stop_offset || 0) * 100, 1)} cm (${c.stop_laps || 0}바퀴) / ${sgn((c.stop_offset_cw || 0) * 100, 1)} cm (${c.stop_laps_cw || 0}바퀴)`],
     ["카메라 yaw (설정)", sgn(c.camera_yaw || 0, 2) + "°"], ["정지 영점 (이번 출발)", (r.bias0 * 180 / Math.PI).toFixed(3) + " °/s"],
     [`BEV로 잰 차선 폭 (지도 ${mapData && mapData.lane_width ? cm(mapData.lane_width) : "-"})`, fin(r.lane_width) ? cm(r.lane_width) : "-"]]);
-  $("wheelTable").querySelector("tbody").innerHTML = c.wheel.length ? c.wheel.map(([s, k, n]) => `<tr><td>${s.toFixed(2)} m/s</td><td>${k.toFixed(4)}</td><td>${n}</td></tr>`).join("") : `<tr><td colspan="3" style="color:var(--dim)">아직 없음 (기본 1.0)</td></tr>`;
+  $("wheelTable").querySelector("tbody").innerHTML = c.wheel.length ? c.wheel.map(([s, k, n, cw]) => `<tr><td>${cw ? "시계" : "반시계"}</td><td>${s.toFixed(2)} m/s</td><td>${k.toFixed(4)}</td><td>${n}</td></tr>`).join("") : `<tr><td colspan="4" style="color:var(--dim)">아직 없음 (기본 1.0)</td></tr>`;
   const res = f.result;
   kv($("lastResult"), res ? [["마지막 주행에서 구한 값", `자이로 ×${fin(res.gyro_est) ? res.gyro_est.toFixed(4) : "-"} · 거리 ×${fin(res.wheel_est) ? res.wheel_est.toFixed(4) : "-"} (${res.laps}바퀴)`],
     ["원값 한 바퀴", `${res.turn_per_lap.toFixed(1)}° · ${res.dist_per_lap.toFixed(3)} m`],
-    ["주행 중 yaw 검산", fin(res.yaw_residual) ? `BEV가 ${sgn(res.yaw_residual, 1)}° 더 기울어 보임 (직선 ${res.straights}개: 차선 각 ${sgn(res.straight_angle, 1)}° − 실제 비스듬함 ${sgn(res.straight_slip, 1)}°)` : "직선 구간 부족"],
+    ["S 통과 판정 오프셋 (이번)", fin(res.stop_offset) ? `${sgn(res.stop_offset * 100, 1)} cm (${res.stop_laps}바퀴, − = 판정 순간 차가 아직 S 앞)` : "-"],
+    ["직선에서 차선 대비 각 (참고)", fin(res.straight_angle) ? `BEV 각 ${sgn(res.straight_angle, 1)}° · 옆 이동으로 본 실제 각 ${sgn(res.straight_slip, 1)}° (직선 ${res.straights}개). 카메라 yaw 판단에는 쓰지 말 것: 차가 비스듬히 달리는 것이 섞임` : "직선 구간 부족"],
     ["결과", res.message]] : [["마지막 주행", "아직 없음"]]);
   $("histTable").querySelector("tbody").innerHTML = f.history.slice().reverse().map((h) => h.action === "reverted"
     ? `<tr><td>${h.time.slice(11, 16)}</td><td colspan="4">이전 값으로 되돌림</td><td></td></tr>`
     : `<tr><td>${h.time.slice(11, 16)}</td><td>${h.speed.toFixed(2)}</td><td>${h.laps}</td><td>${fin(h.gyro) ? h.gyro.toFixed(4) : "-"} / ${fin(h.wheel) ? h.wheel.toFixed(4) : "-"}</td>` +
-      `<td>${fin(h.yaw_res) ? sgn(h.yaw_res, 1) + "°" : "-"}</td><td class="${h.action === "applied" ? "good" : "bad"}">${h.action === "applied" ? "반영" : "안 함"}</td></tr>`).join("");
+      `<td class="${h.action === "applied" ? "good" : "bad"}">${h.action === "applied" ? "반영" : "안 함"}</td></tr>`).join("");
   const seen = r.stop_seen !== null && r.stop_seen !== undefined && isFinite(r.stop_seen);
   kv($("stopInfo"), [["지금 보이는 정지선", seen ? `${r.stop_seen.toFixed(2)} m 앞 · ${r.stop_near ? "S 맞음" : "S 아님 → 무시"}` : "-"],
     ["무시한 정지선 (S와 먼 위치)", String(r.rejected_far || 0)], ["무시한 통과 (바퀴 거리 안 맞음)", String(r.rejected_lap || 0)]]);
@@ -361,13 +365,13 @@ function demo() {
     const pts = [];
     for (let k = 0; k < 4; k++) { const q = at(s + 0.3 + k * 0.25); const l = [-Math.sin(q[2]), Math.cos(q[2])];
       pts.push([q[0] + 0.325 * l[0] + drift * 0.8, q[1] + 0.325 * l[1], 0], [q[0] - 0.325 * l[0] + drift * 0.8, q[1] - 0.325 * l[1], 1]); }
-    if (s - lapStart > L) { lap++; lapsM.push({ lap, dist: L + 0.04 - 0.01 * lap, s_err: 0.04 - 0.01 * lap, turn: 360.4 - 0.1 * lap, lat: -0.03, free_along: 0.12 - 0.03 * lap, free_heading: -5 + lap, rms: 0.052 }); corr.push([lap, -(0.12 - 0.03 * lap)]); lapStart = s; }
+    if (s - lapStart > L) { lap++; lapsM.push({ lap, dist: L + 0.04 - 0.01 * lap, s_err: 0.04 - 0.01 * lap, turn: 360.4 - 0.1 * lap, lat: -0.03, corner_fix: 0.04, free_along: 0.12 - 0.03 * lap, free_heading: -5 + lap, rms: 0.052 }); corr.push([lap, -(0.12 - 0.03 * lap)]); lapStart = s; }
     onTelemetry({ state: "DRIVING", reason: "", full: true, readiness: { attitude_ok: true, lane_model_ready: true, vesc_connected: true, erpm_fresh: true, lane_fresh: true, client_alive: true },
       inspection: { attitude: { status: "PASS", height_m: 0.225, roll_deg: 0.2, pitch_down_deg: 6.2, message: "" }, model: { status: "READY", stage: "" }, stabilization: "적용 97%", stabilization_on: true },
       vehicle: { speed: 1.19, target: 1.2, steer_deg: 4.1, cte: 0.013, duty: 0.087, brake: 0, phase: "duty_only_track", lon_mode: 2 },
       run: { running: true, finished: false, lap, laps: 10, target_speed: 1.2, lap_dist: s - lapStart, lap_length: L, bias0: 0.0021, pose: [x, y, p[2]], s_arc: (s - lapStart) % L, lat: -0.03, stop_seen: (L - (s - lapStart)) < 1.6 ? L - (s - lapStart) : null, stop_near: true, lane_width: 0.598, rejected_far: 2, rejected_lap: 0, status: "주행 중", dir: "2026-11-19_1420_v1.20", finishing: false },
-      laps: lapsM, corrections: corr, calib: { gyro_scale: 0.9957, gyro_laps: 30, latency: 0, camera_yaw: -2.1, lap_ref: 11.314, wheel: [[1.0, 1.0022, 5], [1.1, 1.0001, 15], [1.2, 0.9966, 5]] },
-      result: { applied: true, message: "보정 반영: 자이로 ×0.9957 (누적 30바퀴), 거리 ×1.0001 @1.10 m/s.", laps: 5, gyro_est: 0.9954, wheel_est: 1.0006, turn_per_lap: 359.6, dist_per_lap: 11.307, yaw_residual: 2.3, straight_angle: 8.1, straight_slip: 5.7, straights: 2 },
+      laps: lapsM, corrections: corr, calib: { gyro_scale: 0.9957, gyro_laps: 30, latency: 0, camera_yaw: 0, lap_ref: 11.314, stop_offset: -0.158, stop_laps: 32, stop_offset_cw: -0.224, stop_laps_cw: 8, wheel: [[0.8, 1.0126, 8, false], [1.1, 1.0077, 16, false], [1.4, 0.9922, 8, false], [1.1, 1.0491, 8, true]] },
+      result: { applied: true, message: "보정 반영: 자이로 ×0.9957 (누적 30바퀴), 거리 ×1.0001 @1.10 m/s.", laps: 5, gyro_est: 0.9954, wheel_est: 1.0006, turn_per_lap: 359.6, dist_per_lap: 11.307, yaw_residual: 2.3, straight_angle: 8.1, straight_slip: 5.7, straights: 2, stop_offset: -0.161, stop_laps: 8 },
       yaw_measure: { active: false, message: "차선 +2.05° · 정지선 +2.31° → 카메라 yaw −2.18° 적용 (이전 +0.00°)" },
       history: [{ time: "2026-11-19 14:02:11", action: "applied", speed: 1.0, laps: 5, gyro: 0.9953, wheel: 1.0022, yaw_res: 2.1 }, { time: "2026-11-19 14:20:40", action: "skipped", speed: 1.2, laps: 5, gyro: 0.9968, wheel: 0.9966, yaw_res: null }],
       new_track: [[x, y]], new_free: [[x + 0.05 * Math.sin(s), y + 0.04]], new_points: pts,

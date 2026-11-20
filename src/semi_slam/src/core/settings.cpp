@@ -19,6 +19,7 @@ void register_params(ParamRegistry & r) {
   m("카메라", "camera.yaw_deg", "카메라 yaw (+ = 카메라가 왼쪽을 봄). BEV를 이만큼 돌려 만든다 · 바로 반영", "°", -20, 20, 0);
   m("매핑·보정", "camera.stabilization", "IMU 영상 안정화 (0=끄기, 1=전체)", "", 0, 1, 1);
   m("매핑·보정", "slam.stopline_correction", "정지선 통과 시 위치 보정 (0=끔, 1=켬)", "", 0, 1, 1);
+  m("매핑·보정", "slam.corner_anchor", "코너마다 위치 다시 잡기 (자이로 45°·135°·225°·315° = 코너 한가운데) (0=끔, 1=켬)", "", 0, 1, 1);
   m("매핑·보정", "slam.auto_calibrate", "목표 바퀴 완료 시 보정 자동 적용 (0=끔, 1=켬)", "", 0, 1, 1);
   m("매핑·보정", "slam.max_range_m", "매핑·보정에 쓰는 차선 점 최대 거리", "m", 0.5, 3.0, 1.5);
   m("매핑·보정", "slam.stop_confirm_frames", "정지선 확인 횟수", "", 1, 10, 3);
@@ -65,6 +66,7 @@ Settings settings_from(const ParamRegistry & r) {
   s.stabilization = g("camera.stabilization") >= 0.5;
   s.camera_yaw_deg = g("camera.yaw_deg");
   s.slam.stopline_correction = g("slam.stopline_correction") >= 0.5;
+  s.slam.corner_anchor = g("slam.corner_anchor") >= 0.5;
   s.auto_calibrate = g("slam.auto_calibrate") >= 0.5;
   s.slam.max_range_m = g("slam.max_range_m");
   s.slam.stop_confirm = int(std::lround(g("slam.stop_confirm_frames")));

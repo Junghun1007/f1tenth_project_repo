@@ -44,6 +44,7 @@
     # 매핑·보정
     camera.stabilization: 1.0               # IMU 영상 안정화 (0=끄기, 1=전체)
     slam.stopline_correction: 1.0           # 정지선 통과 시 위치 보정 (0=끔, 1=켬)
+    slam.corner_anchor: 1                   # 코너마다 위치 다시 잡기 (자이로 회전량 = 코너 한가운데) (0=끔, 1=켬)
     slam.auto_calibrate: 1.0                # 목표 바퀴 완료 시 보정 자동 적용 (0=끔, 1=켬)
     slam.max_range_m: 1.5                   # 매핑·보정에 쓰는 차선 점 최대 거리 (m)
     slam.stop_confirm_frames: 3.0           # 정지선 확인 횟수

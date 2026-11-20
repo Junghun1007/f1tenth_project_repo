@@ -54,6 +54,7 @@ double unwrap_rate(double y1, double y0, double dt) {
   return d / dt;
 }
 
+double g_stop_bias = 0.0;   // 정지선 거리 측정 치우침 (− = 실제보다 가깝게 → S 통과를 일찍 판정)
 struct SnapErr { double sq{0}, max{0}; int n{0}; double rms() const { return n ? std::sqrt(sq / n) : 0; } };
 SnapErr g_snap;
 
@@ -96,7 +97,7 @@ RunData simulate(SlamCore & core, const TrackMap & m, int laps, double v, double
       for (std::size_t i = 0; i < m.inner.size(); i += 3) { const Vec2 q = local(m.inner[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) to_inner.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
       for (std::size_t i = 0; i < m.outer.size(); i += 3) { const Vec2 q = local(m.outer[i]); if (q.x > 0.05 && q.x < 1.5 && std::abs(q.y) < 0.6) to_outer.push_back({q.x + noise * gauss(), q.y + noise * gauss()}); }
       const Vec2 sq = local(S);
-      if (sq.x > 0.15 && sq.x < 1.5 && std::abs(sq.y) < 0.3) L.stop_line_m = sq.x;
+      if (sq.x > 0.15 && sq.x < 1.5 && std::abs(sq.y) < 0.3) L.stop_line_m = sq.x + g_stop_bias;
       // 오인식: 코너(바퀴의 60~65% 지점)에서 휜 흰 선을 정지선으로 0.6 m 앞에 봤다고 가정
       const double frac = std::fmod(s, sim.s.back() / (laps + 1)) / (sim.s.back() / (laps + 1));
       if (fake_corner_stop && frac > 0.60 && frac < 0.65) L.stop_line_m = 0.6;
@@ -184,6 +185,44 @@ TEST(position_on_center_line_tracks_true_position) {   // 보정이 맞으면 �
   std::printf("  snap error rms %.3f m max %.3f m (frames %d)\n", g_snap.rms(), g_snap.max, g_snap.n);
   CHECK(g_snap.rms() < 0.03);
   CHECK(g_snap.max < 0.10);
+}
+
+TEST(corner_anchoring_bounds_along_error_when_distance_scale_is_off) {   // 거리 배율이 5% 틀려도 코너마다 다시 잡아 바퀴 중간 오차가 쌓이지 않음
+  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
+  double max_on = 0, max_off = 0;
+  for (const bool on : {true, false}) {
+    SlamCore core(m);
+    SlamConfig cfg; cfg.corner_anchor = on;
+    core.set_config(cfg);
+    OdomCalib c; c.gyro_scale = 1 / 0.97;   // 자이로는 맞고 거리만 5% 틀림
+    core.set_calib(c);
+    simulate(core, m, 2, 1.0, 1.05, 0.97, 0.0);
+    (on ? max_on : max_off) = g_snap.max;
+  }
+  std::printf("  max position error: corner anchoring on %.3f m, off %.3f m\n", max_on, max_off);
+  CHECK(max_on < 0.20);
+  CHECK(max_off > 0.35);
+}
+
+TEST(stop_line_offset_is_estimated_and_used) {   // 정지선을 16 cm 가깝게 재면 S 통과를 16 cm 일찍 판정 → 코너 한가운데와 비교해 찾아냄
+  const auto m = TrackMap::load_csv(std::string(SLAM_MAPS) + "/track_4x4.csv");
+  struct Reset { ~Reset() { g_stop_bias = 0.0; } } reset;   // CHECK 실패로 중간에 끝나도 다음 테스트에 남지 않게
+  g_stop_bias = -0.16;
+  SlamCore core(m);
+  const auto run = simulate(core, m, 4, 1.0, 1.0, 1.0, 0.0);
+  const auto r = calibrate(run, OdomCalib{}, m);
+  std::printf("  stop offset est %.3f m (truth -0.16), laps %d\n", r.est.stop_offset, r.est.stop_laps);
+  CHECK(r.stop_used);
+  CHECK_NEAR(r.calib.stop_offset, -0.16, 0.04);
+  // 오프셋을 넣고 다시 달리면 위치 추정 오차가 줄어든다
+  SlamCore core2(m);
+  core2.set_calib(r.calib);
+  simulate(core2, m, 2, 1.0, 1.0, 1.0, 0.0);
+  const double with = g_snap.rms();
+  SlamCore core3(m);
+  simulate(core3, m, 2, 1.0, 1.0, 1.0, 0.0);
+  std::printf("  snap rms with offset %.3f m, without %.3f m\n", with, g_snap.rms());
+  CHECK(with < g_snap.rms());
 }
 
 TEST(driving_check_detects_bev_rotation) {   // BEV가 3° 돌아 보이면 주행 검산이 ≈ +3°를 낸다
@@ -282,6 +321,8 @@ TEST(clockwise_run_counts_laps_and_calibrates) {   // 시계 방향: 오른쪽 �
   std::printf("  cw wheel %.4f gyro %.4f rms after %.3f\n", r.calib.wheel_scale_for(1.0), r.calib.gyro_scale, r.after.rms_m);
   CHECK(r.applied);
   CHECK_NEAR(r.calib.gyro_scale, 1 / 0.97, 0.005);
-  CHECK_NEAR(r.calib.wheel_scale_for(1.0), 1 / 1.05, 0.01);
+  CHECK_NEAR(r.calib.wheel_scale_for(1.0, true), 1 / 1.05, 0.01);   // 시계 방향 표에 따로
+  CHECK(r.calib.wheel_scale.empty());
+  CHECK_NEAR(r.calib.wheel_scale_for(1.0, false), 1.0, 1e-12);
   CHECK(r.after.rms_m < 0.03);
 }
