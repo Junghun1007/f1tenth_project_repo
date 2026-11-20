@@ -33,6 +33,10 @@ struct Config
   bool speckle{false};
   bool hole_filling{false};
   bool adaptive_median{false};
+  // true: 장치에서 깊이를 CAM_A(RGB)에 정렬해 align_width×align_height로 낸다 (박스 안 깊이를 RGB 좌표로 바로 읽음).
+  // false: 기존 RECTIFIED_RIGHT 기준 (점구름 투영용)
+  bool align_rgb{false};
+  int align_width{640}, align_height{400};
   ProjectionOptions projection;
   GroundOptions ground;
   BevOptions bev;

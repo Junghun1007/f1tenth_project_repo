@@ -587,6 +587,12 @@ private:
       "imu_stabilization_measured_erpm_timeout_sec", 1.0);
     vehicle_motion_compensation_enabled_ = node_.declare_parameter<bool>(
       "imu_stabilization_vehicle_motion_compensation_enabled", true);
+    // 회전 중심(뒤 차축)에서 카메라까지 앞쪽 거리. 0이 아니면 차 가속도에 -ω²r(앞뒤)·(dω/dt)r(옆)을 더해 뺀다
+    // (cone_drive_test 저주파 IMU 보정과 같은 모델, 기록 재생 기준 남는 roll 흔들림 3~9° → 1~1.5°)
+    imu_lever_arm_m_ = node_.declare_parameter<double>("imu_stabilization_lever_arm_m", 0.0);
+    if (!std::isfinite(imu_lever_arm_m_) || std::abs(imu_lever_arm_m_) > 1.0) {
+      throw std::invalid_argument("imu_stabilization_lever_arm_m must be within +-1 m");
+    }
     maximum_longitudinal_acceleration_mps2_ =
       node_.declare_parameter<double>(
       "imu_stabilization_maximum_longitudinal_acceleration_mps2", 15.0);
@@ -1254,6 +1260,10 @@ private:
       depth_config_.subpixel=node_.declare_parameter<bool>("obstacles.depth.subpixel",true,descriptor);
       depth_config_.subpixel_bits=node_.declare_parameter<int>("obstacles.depth.subpixel_fractional_bits",3,descriptor);
       depth_config_.median=node_.declare_parameter<std::string>("obstacles.depth.median_filter","off",descriptor);
+      // auto_control 주행부(YOLO 박스 깊이)는 CAM_A 정렬 깊이를 쓴다 (cone_drive_test와 같은 640x400)
+      depth_config_.align_rgb=node_.declare_parameter<bool>("obstacles.depth.align_rgb",false,descriptor);
+      depth_config_.align_width=static_cast<int>(node_.declare_parameter<int>("obstacles.depth.align_width",640,descriptor));
+      depth_config_.align_height=static_cast<int>(node_.declare_parameter<int>("obstacles.depth.align_height",400,descriptor));
       point_cloud::validate(depth_config_);
     }
     tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
@@ -2493,14 +2503,29 @@ while True:
               const auto vehicle_acceleration = can_acceleration_at(
                 acceleration_query_timestamp_sec);
               const auto axes = vehicle_axes_camera();
+              if (axes && imu_lever_arm_m_ != 0.0) {
+                // 요레이트와 그 변화율 (IMU 스레드 전용 필터, 시정수 5 ms / 30 ms)
+                const double w = angular_velocity_camera.dot(axes->up);
+                const double dt = gyroscope_timestamp_sec - lever_yaw_t_;
+                if (lever_yaw_t_ < 0.0 || !(dt > 1e-5) || dt > 0.1) {
+                  lever_yaw_ = w; lever_yaw_rate_ = 0.0;
+                } else {
+                  const double w_new = lever_yaw_ + (1.0 - std::exp(-dt / 0.005)) * (w - lever_yaw_);
+                  lever_yaw_rate_ += (1.0 - std::exp(-dt / 0.03)) * ((w_new - lever_yaw_) / dt - lever_yaw_rate_);
+                  lever_yaw_ = w_new;
+                }
+                lever_yaw_t_ = gyroscope_timestamp_sec;
+              }
               if (synchronized_acceleration && vehicle_acceleration && axes) {
                 const cv::Vec3d vehicle_acceleration_camera =
                   axes->forward *
                   (can_longitudinal_compensation_gain_ *
-                  vehicle_acceleration->longitudinal_mps2) +
+                  vehicle_acceleration->longitudinal_mps2 -
+                  lever_yaw_ * lever_yaw_ * imu_lever_arm_m_) +
                   axes->left *
                   (can_lateral_compensation_gain_ *
-                  vehicle_acceleration->lateral_mps2);
+                  vehicle_acceleration->lateral_mps2 +
+                  lever_yaw_rate_ * imu_lever_arm_m_);
                 const cv::Vec3d residual_acceleration_camera =
                   *synchronized_acceleration - vehicle_acceleration_camera;
                 synchronized_acceleration = residual_acceleration_camera;
@@ -3370,6 +3395,8 @@ while True:
   bool high_frequency_only_{false};
   double high_frequency_vibration_cutoff_hz_{3.0};
   ImuImageStabilizerConfig imu_stabilizer_config_{};
+  double imu_lever_arm_m_{0.0};
+  double lever_yaw_{0.0}, lever_yaw_rate_{0.0}, lever_yaw_t_{-1.0};   // IMU 스레드 전용
   std::string startup_ground_reference_topic_;
   std::string measured_erpm_topic_;
   int stationary_erpm_enter_threshold_{100};

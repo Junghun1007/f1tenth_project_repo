@@ -58,6 +58,11 @@ void validate(const Config & c)
   if (c.confidence < 0 || c.confidence > 255 || c.lr_threshold < 0 || c.lr_threshold > 128) {
     throw std::invalid_argument("confidence_threshold must be 0..255; left_right_threshold must be 0..128");
   }
+  if (c.align_rgb && (c.align_width < 64 || c.align_width > 1920 || c.align_height < 48 || c.align_height > 1200 ||
+    c.align_width % 16 != 0))
+  {
+    throw std::invalid_argument("depth align size must be 64..1920 x 48..1200 (width multiple of 16)");
+  }
   if (c.subpixel_bits < 3 || c.subpixel_bits > 5) {
     throw std::invalid_argument("depth.subpixel_fractional_bits must be 3, 4 or 5");
   }
@@ -124,7 +129,12 @@ while True:
   auto stereo = pipeline.create<dai::node::StereoDepth>();
   stereo->build(*left_output, *right_output, preset(c.mode));
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
-  stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
+  if (c.align_rgb) {
+    stereo->setDepthAlign(dai::CameraBoardSocket::CAM_A);
+    stereo->setOutputSize(c.align_width, c.align_height);
+  } else {
+    stereo->setDepthAlign(dai::StereoDepthConfig::AlgorithmControl::DepthAlign::RECTIFIED_RIGHT);
+  }
   stereo->initialConfig->setConfidenceThreshold(c.confidence);
   stereo->initialConfig->setLeftRightCheckThreshold(c.lr_threshold);
   stereo->setLeftRightCheck(c.lr_check);
