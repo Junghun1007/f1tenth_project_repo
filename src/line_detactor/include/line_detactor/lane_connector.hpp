@@ -40,6 +40,8 @@ struct LaneConnectionResult
   cv::Mat labels;  // mono8: 0=background, 1/2=left/right model, 3/4=left/right bridge.
   cv::Mat image;   // bgr8: lanes/bridges; the node adds green stop lines and yellow centerline afterward.
   CenterlineResult centerline;
+  // 코너 바깥 이동 없는 기준 중앙선 (주행 컴포넌트가 콘 근처라고 알릴 때만 채움, 회피 계획의 기준선)
+  std::vector<cv::Point2f> reference_centerline;
   cv::Mat stop_line_mask;  // Independent mono8 0/255; original ROI only, no lane cleanup/bridges.
   bool stop_line_present{false};
   // Front-axle origin to the vehicle-near edge of the stop line, measured along

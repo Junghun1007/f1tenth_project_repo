@@ -108,6 +108,7 @@ add_library(line_detactor_component SHARED
   src/bev_theme.cpp
   src/speed_limit_panel.cpp
   src/lane_connector.cpp
+  src/lane_side_tracker.cpp
   src/centerline.cpp
   src/stop_line_distance.cpp
   src/processing_profile.cpp

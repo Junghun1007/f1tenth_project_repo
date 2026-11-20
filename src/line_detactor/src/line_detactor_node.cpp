@@ -4,6 +4,8 @@
 
 #include "line_detactor/tensorrt_lane_backend.hpp"
 #include "line_detactor/lane_connector.hpp"
+#include "line_detactor/lane_side_tracker.hpp"
+#include "bev_handoff/lane_control_hints.hpp"
 #include "line_detactor/observed_lane_length.hpp"
 #include "line_detactor/msg/lane_result.hpp"
 #include "line_detactor/stop_line_distance.hpp"
@@ -484,6 +486,14 @@ private:
     centerline_.outside_margin_m = node_.declare_parameter<double>(
       "centerline_outside_margin_m", 0.12);
     centerline_.max_samples = node_.declare_parameter<int>("centerline_max_samples", 2000);
+    side_tracking_enabled_ = node_.declare_parameter<bool>("lane_side_tracking_enabled", false);
+    {
+      LaneSideTrackerConfig tracker;
+      tracker.meter_per_pixel = centerline_.bev_width_m / std::max(1, model_input_width_);
+      tracker.lane_width_m = centerline_.lane_width_m;
+      tracker.width_tolerance_m = centerline_.width_tolerance_m;
+      side_tracker_ = std::make_unique<LaneSideTracker>(tracker);
+    }
     centerline_.line_width_px = node_.declare_parameter<int>("centerline_line_width_px", 2);
     centerline_.corner_outer_enabled = node_.declare_parameter<bool>(
       "centerline_corner_outer_enabled", true);
@@ -888,6 +898,16 @@ private:
       output.z = 0.0F;
       message.centerline_points.push_back(output);
     }
+    // 관측 차선 경계(좌우 재판정 후)와 기준 중앙선: 중앙선과 같은 패딩 픽셀 좌표
+    auto to_points = [](const std::vector<cv::Point2f> & in, std::vector<geometry_msgs::msg::Point32> & out) {
+      out.reserve(out.size() + in.size());
+      for (const auto & p : in) {
+        geometry_msgs::msg::Point32 q; q.x = p.x; q.y = p.y; q.z = 0.0F; out.push_back(q);
+      }
+    };
+    for (const auto & fragment : result.observed_paths[0]) {to_points(fragment, message.left_points);}
+    for (const auto & fragment : result.observed_paths[1]) {to_points(fragment, message.right_points);}
+    to_points(result.reference_centerline, message.reference_centerline_points);
     message.stop_line_present = result.stop_line_present;
     message.stop_line_distance_m = result.stop_line_distance_m;
     const auto result_ready_at = SteadyClock::now();
@@ -1199,9 +1219,31 @@ private:
               result.image.setTo(cv::Scalar(0, 255, 0), result.stop_line_mask);
             }
             stop_mask_timer.stop();
+            // 주행 컴포넌트 힌트: 코너 바깥 이동 값(웹에서 실시간 변경), 좌우 재판정, 기준 중앙선 요청
+            const auto hints = bev_handoff::laneControlHints();
+            CenterlineConfig centerline = centerline_;
+            if (hints) {
+              centerline.corner_outward_offset_m = hints->corner_outward_offset_m;
+              centerline.corner_entry_distance_m = hints->corner_entry_distance_m;
+              centerline.corner_entry_full_offset_distance_m = hints->corner_entry_full_offset_distance_m;
+            }
+            if (hints ? hints->side_tracking : side_tracking_enabled_) {
+              // 모델이 붙인 좌우 라벨 대신 직전 프레임·차선 폭 기준으로 조각마다 좌우를 다시 정한다
+              const double t = message->header.stamp.sec + message->header.stamp.nanosec * 1e-9;
+              side_tracker_->apply(result.observed_paths, model_input_height_, t);
+            }
             result.centerline = generate_centerline(
               result.labels, result.observed_paths,
-              model_input_width_, connection_.padding_px, centerline_, render_legacy_image, profile);
+              model_input_width_, connection_.padding_px, centerline, render_legacy_image, profile);
+            if (hints && hints->want_reference && centerline.corner_outer_enabled &&
+              result.centerline.points.size() >= 2U)
+            {
+              CenterlineConfig reference = centerline;
+              reference.corner_outer_enabled = false;
+              result.reference_centerline = generate_centerline(
+                result.labels, result.observed_paths,
+                model_input_width_, connection_.padding_px, reference, false, nullptr).points;
+            }
             ProfileTimer stop_distance_timer(profile, ProfileStage::stop_distance);
             result.stop_line_distance_m = estimate_stop_line_distance_m(
               stop_mask, result.centerline.points, connection_.padding_px,
@@ -1600,6 +1642,9 @@ private:
   StopLineDistanceConfig stop_line_distance_;
   LaneConnectionConfig connection_;
   CenterlineConfig centerline_;
+  // 차선 좌우 재판정 (cone_drive_test 방식). 주행 컴포넌트 힌트가 있으면 그 설정, 없으면 lane_side_tracking_enabled
+  bool side_tracking_enabled_{false};
+  std::unique_ptr<LaneSideTracker> side_tracker_;
   bool result_publish_enabled_{true};
   std::string result_topic_;
   std::string result_image_topic_;

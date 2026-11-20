@@ -65,3 +65,12 @@ uint8[] centerline_support
 # Physical extent of the unpadded source used for centerline geometry.
 float32 centerline_bev_width_m
 float32 centerline_bev_height_m
+
+# Observed lane boundaries (retained model components after optional left/right
+# re-assignment), padded pixel coordinates like centerline_points. Fragments of
+# one side are concatenated in fragment order; consumers sort by distance.
+geometry_msgs/Point32[] left_points
+geometry_msgs/Point32[] right_points
+# Centerline without the corner-outward shift. Filled only while the in-process
+# driving component asks for it (cones nearby); empty otherwise.
+geometry_msgs/Point32[] reference_centerline_points
