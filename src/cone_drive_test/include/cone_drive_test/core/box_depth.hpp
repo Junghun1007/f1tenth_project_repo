@@ -20,6 +20,8 @@ struct BoxDepthOptions {
   // 검출 방향 보정 (rad, + = 반시계/왼쪽): 박스 중심 시선 방향에 더한다 = 카메라 기준으로 관측을 돌림.
   // 수동 주행 녹화 6회에서 같은 콘을 멀리서 본 위치가 가까이서 본 위치보다 일정하게 왼쪽(약 2.4°)으로 치우쳐 있었다
   double bearing_offset_rad{0.0};
+  // 거리 보정: 카메라에서 콘까지 거리 r → r·range_gain + range_offset_m (앞면·중심 모두). 정답 배치 녹화 4회: 0.971, −0.046 m
+  double range_gain{1.0}, range_offset_m{0.0};
   LocalizationOptions loc;
 };
 

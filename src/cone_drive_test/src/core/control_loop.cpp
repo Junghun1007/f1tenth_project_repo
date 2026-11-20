@@ -243,7 +243,7 @@ void ControlLoop::integrate_detections() {
   DetectionFrame f = std::move(*pending_det_);
   pending_det_.reset();
   // 위치는 깊이 영상으로 계산하므로 차 자세도 깊이 촬영 시각으로 (RGB 시각과 최대 한 프레임 다름 → 회전 중 옆으로 어긋남)
-  const double t_pose = f.depth_time > 0 ? f.depth_time : f.capture_time;
+  const double t_pose = (f.depth_time > 0 ? f.depth_time : f.capture_time) + s_.obs_time_offset_s;
   auto pose = odom_pose_at(t_pose);
   if (!pose) pose = odom_pose_at(f.capture_time);
   if (!pose) { ++dropped_; return; }   // 오도메트리 이력 밖(너무 오래됨·미래) → 위치를 믿을 수 없음

@@ -78,7 +78,7 @@ public:
     cam_cfg_.fy = declare_parameter<double>("camera.fy", 701.420440674) / fixed_view_zoom;
     cam_cfg_.cx = declare_parameter<double>("camera.cx", cam_cfg_.cx);
     cam_cfg_.cy = declare_parameter<double>("camera.cy", cam_cfg_.cy);
-    camera_x_ = declare_parameter<double>("camera.x_m", -0.09);
+    camera_x_ = declare_parameter<double>("camera.x_m", -0.08);   // 실측: 렌즈가 앞차축 8 cm 뒤
     camera_y_ = declare_parameter<double>("camera.y_m", 0.0);
     measure_cfg_.manual_camera_height_enabled = declare_parameter<bool>("camera.manual_height_enabled", false);
     measure_cfg_.manual_camera_height_m = declare_parameter<double>("camera.manual_height_m", 0.20);

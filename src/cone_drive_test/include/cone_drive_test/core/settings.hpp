@@ -20,6 +20,7 @@ struct Settings {
   std::array<float, 4> yolo_thresholds{0.7f, 0.7f, 0.7f, 0.7f};   // con, truck, sedan, traffic_light
   double nms_threshold{0.65}, roi_height_percent{65}, yolo_max_fps{40};
   double cone_size_m{0.13};
+  double obs_time_offset_s{0.0};   // 콘 관측의 차 자세를 찾는 시각 보정 (object.time_offset_ms)
   BoxDepthOptions box;
   MemoryParams memory;
   int memory_mode{0};             // 0 = 월드 좌표 기억(오도메트리 x·y·방향), 1 = 차선 기준 단기 기억(이동 거리만)

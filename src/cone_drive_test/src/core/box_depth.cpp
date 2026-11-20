@@ -41,11 +41,18 @@ std::optional<ConeObservation> localize_box(const std::uint16_t * depth_mm, int 
   const double bearing = std::atan2(ray[1], ray[0]) + o.bearing_offset_rad;
   const auto est = localize(pts, m.x, m.y, bearing, footprint, o.loc);
   if (!est.valid) return std::nullopt;
+  // 거리 보정 (카메라 바닥 위치 기준으로 같은 방향을 따라 늘이거나 줄임)
+  const auto rescale = [&](double x, double y) {
+    const double dx = x - m.x, dy = y - m.y, r = std::hypot(dx, dy);
+    if (r < 1e-6) return Vec2{x, y};
+    const double k = std::max(0.0, r * o.range_gain + o.range_offset_m) / r;
+    return Vec2{m.x + dx * k, m.y + dy * k};
+  };
   ConeObservation c;
-  c.center = {est.center_x, est.center_y};
-  c.front = {est.front_x, est.front_y};
+  c.center = rescale(est.center_x, est.center_y);
+  c.front = rescale(est.front_x, est.front_y);
   c.bearing = est.bearing;
-  c.range = est.range;
+  c.range = std::max(0.0, est.range * o.range_gain + o.range_offset_m);
   c.class_id = class_id;
   c.score = score;
   c.length = footprint.length;

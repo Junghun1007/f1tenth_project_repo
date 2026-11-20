@@ -5,7 +5,7 @@
     slam.map_path: ""                 # 비우면 패키지의 maps/track_4x4.csv (정답 트랙)
     slam.data_dir: ""                 # 비우면 ~/semi_slam_data (주행 기록·보정 값 저장 위치)
     camera.fps: 70.0
-    camera.x_m: -0.09                 # 앞차축 기준 카메라 위치 (bev_config.yaml)
+    camera.x_m: -0.08                 # 앞차축 기준 카메라 위치 (실측: 렌즈가 앞차축 8 cm 뒤)
     camera.y_m: 0.0
     camera.fixed_view_zoom: 1.25      # 아래 fx/fy는 bev_config.yaml 값(1.25배 확대 포함). 원본 영상엔 fx/zoom
     camera.fx: 701.751174926

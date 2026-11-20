@@ -5,7 +5,7 @@
     # ---- 재시작해야 바뀌는 값 ----
     camera.fps: 70.0                  # 차선은 매 프레임, YOLO는 yolo.max_fps(40)로 골라서 처리
     camera.depth_fps: 30.0            # 스테레오 깊이 FPS (RGB와 같이 70으로 돌리면 장치가 못 따라가 전체가 ~26 FPS로 떨어짐)
-    camera.x_m: -0.09                # 앞차축 기준 카메라 위치 (bev_config.yaml)
+    camera.x_m: -0.08                   # 앞차축 기준 카메라 위치 (실측: 렌즈가 앞차축 8 cm 뒤)
     camera.y_m: 0.0
     camera.yaw_deg: 0.0
     camera.fixed_view_zoom: 1.25     # 아래 fx/fy는 bev_config.yaml 값(camera_driver 1.25배 확대 포함). 원본 영상엔 fx/zoom을 쓴다
@@ -40,7 +40,7 @@
     web.port: 8765
     # ---- 브라우저 파라미터 창에서 실시간으로 바꿀 수 있는 값 ----
     # YOLO 검출
-    yolo.con_threshold: 0.70            # 콘 임계값
+    yolo.con_threshold: 0.83            # 콘 임계값
     yolo.truck_threshold: 0.70          # 트럭 임계값
     yolo.sedan_threshold: 0.70          # 세단 임계값
     yolo.traffic_light_threshold: 0.70  # 신호등 임계값
@@ -56,7 +56,10 @@
     object.min_height_m: 0.03           # 지면 제거 높이 (m)
     object.max_height_m: 1.0            # 최대 높이 (m)
     object.cone_size_m: 0.13            # 콘 크기 (m)
-    object.bearing_offset_deg: 0         # 검출 방향 보정 (°, + = 왼쪽). 녹화 분석상 약 −2.4°. 계획 파라미터는 보정 없이 맞췄으므로 0
+    object.range_gain: 0.971                # 검출 거리 배율 (정답 배치 녹화: 거리를 약 3% 길게 잼)
+    object.range_offset_m: -0.046           # 검출 거리 오프셋 (m)
+    object.time_offset_ms: 15               # 검출 시각 보정 (ms)
+    object.bearing_offset_deg: -2.4     # 검출 방향 보정 (°, + = 왼쪽). 정답 배치 녹화 4회로 맞춤
     # 콘 기억
     memory.gate_radial_max: 0.17        # 거리 방향 게이트 (m)
     memory.gate_lateral: 0.06           # 옆 방향 게이트 (m)
@@ -64,9 +67,9 @@
     memory.confirm_hits: 3.0            # 확정 관측 횟수
     memory.miss_delete: 4.0             # 놓침 삭제 횟수
     memory.delete_behind: 0.10          # 뒤 삭제 거리 (m)
-    memory.mode: 3.0                    # 기억 방식 (0=월드: 오도메트리 위치·방향, 1=차선 기준 단기: 이동 거리만, 2=보이는 콘으로만 계획+화면 밖 콘 옆은 경로 고정, 3=기억 없음: 지금 보이는 콘만)
-    memory.lane_confirm_hits: 2.0       # [차선 기준] 사용 전 관측 횟수
-    memory.lane_miss_delete: 3.0        # [차선 기준] 보이는 구간에서 안 보이면 삭제
+    memory.mode: 0                      # 기억 방식 (0=월드, 1=차선 기준 단기, 2=보이는 콘+화면 밖 고정, 3=기억 없음)
+    memory.lane_confirm_hits: 4         # [차선 기준] 사용 전 관측 횟수
+    memory.lane_miss_delete: 2          # [차선 기준] 보이는 구간에서 안 보이면 삭제
     memory.lane_match_radius: 0.12      # [차선 기준] 같은 콘 판정 거리 (m)
     memory.lane_visible_s_min: 0.45     # [차선 기준] 이보다 가까우면 카메라 사각지대 → 지날 때까지 유지 (m)
     # 회피 계획
@@ -101,11 +104,11 @@
     drive.obstacle_decel: 0.4           # 장애물 감속도 (m/s²)
     drive.obstacle_accel: 0.4           # 장애물 해제 가속도 (m/s²)
     # 조향 (Stanley)
-    drive.stanley_gain: 1.2             # Stanley gain
+    drive.stanley_gain: 1.3             # Stanley gain
     drive.stanley_softening: 0.3        # softening 속도 (m/s)
-    drive.heading_lookahead_m: 0.12     # heading lookahead (m)
-    drive.steering_current_weight: 0.4  # 조향 필터 현재 비중
-    drive.steering_rate_deg_s: 240.0    # 조향 변화율 한계 (°/s)
+    drive.heading_lookahead_m: 0.08     # heading lookahead (m)
+    drive.steering_current_weight: 0.5  # 조향 필터 현재 비중
+    drive.steering_rate_deg_s: 260      # 조향 변화율 한계 (°/s)
     # 차선
     lane.side_tracking: 1.0             # 차선 좌우 판정 고정 (0=끔, 1=켬): 모델 라벨 대신 직전 프레임·차선 폭으로 좌우 재판정
     lane.corner_outward_offset_m: 0.08  # 코너 바깥 이동 (m)

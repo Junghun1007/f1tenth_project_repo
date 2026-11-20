@@ -10,7 +10,7 @@ void register_params(ParamRegistry & r) {
   auto d = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
     r.add({name, "driving", sec, label, unit, lo, hi, v, live});
   };
-  o("YOLO 검출", "yolo.con_threshold", "콘 임계값", "", 0, 1, 0.70);
+  o("YOLO 검출", "yolo.con_threshold", "콘 임계값", "", 0, 1, 0.83);
   o("YOLO 검출", "yolo.truck_threshold", "트럭 임계값", "", 0, 1, 0.70);
   o("YOLO 검출", "yolo.sedan_threshold", "세단 임계값", "", 0, 1, 0.70);
   o("YOLO 검출", "yolo.traffic_light_threshold", "신호등 임계값", "", 0, 1, 0.70);
@@ -25,7 +25,11 @@ void register_params(ParamRegistry & r) {
   o("위치 추정", "object.min_height_m", "지면 제거 높이", "m", 0, 0.3, 0.03);
   o("위치 추정", "object.max_height_m", "최대 높이", "m", 0.05, 1.5, 1.0);
   o("위치 추정", "object.cone_size_m", "콘 크기", "m", 0.05, 0.5, 0.13);
-  o("위치 추정", "object.bearing_offset_deg", "검출 방향 보정 (+ = 왼쪽으로 돌림). 녹화 분석상 약 −2.4°가 맞지만, 계획 파라미터는 보정 없이 맞췄으므로 기본 0", "°", -10, 10, 0);
+  // 정답 배치(콘 4개, 위치 실측) 녹화 4회로 맞춘 검출 위치 보정: 정답과의 오차 RMS 6.5 → 4.5 cm
+  o("위치 추정", "object.bearing_offset_deg", "검출 방향 보정 (+ = 왼쪽으로 돌림)", "°", -10, 10, -2.4);
+  o("위치 추정", "object.range_gain", "검출 거리 배율 (카메라→콘 거리 × 이 값)", "", 0.8, 1.2, 0.971);
+  o("위치 추정", "object.range_offset_m", "검출 거리 오프셋 (배율 뒤에 더함)", "m", -0.2, 0.2, -0.046);
+  o("위치 추정", "object.time_offset_ms", "검출 시각 보정 (차 자세를 찾을 때 이만큼 뒤 시각으로)", "ms", -100, 100, 15);
   o("콘 기억", "memory.gate_radial_max", "거리 방향 게이트", "m", 0.02, 0.5, 0.17);
   o("콘 기억", "memory.gate_lateral", "옆 방향 게이트", "m", 0.01, 0.3, 0.06);
   o("콘 기억", "memory.merge_distance", "병합 거리", "m", 0.01, 0.3, 0.10);
@@ -33,8 +37,8 @@ void register_params(ParamRegistry & r) {
   o("콘 기억", "memory.miss_delete", "놓침 삭제 횟수", "", 1, 50, 4);
   o("콘 기억", "memory.delete_behind", "뒤 삭제 거리", "m", 0, 1, 0.10);
   o("콘 기억", "memory.mode", "기억 방식 (0=월드, 1=차선 기준 단기, 2=보이는 콘+화면 밖 고정, 3=기억 없음)", "", 0, 3, 0);
-  o("콘 기억", "memory.lane_confirm_hits", "[차선 기준] 사용 전 관측 횟수", "", 1, 10, 2);
-  o("콘 기억", "memory.lane_miss_delete", "[차선 기준] 보이는 구간 놓침 삭제", "", 1, 20, 3);
+  o("콘 기억", "memory.lane_confirm_hits", "[차선 기준] 사용 전 관측 횟수", "", 1, 10, 4);
+  o("콘 기억", "memory.lane_miss_delete", "[차선 기준] 보이는 구간 놓침 삭제", "", 1, 20, 2);
   o("콘 기억", "memory.lane_match_radius", "[차선 기준] 같은 콘 판정 거리", "m", 0.02, 0.4, 0.12);
   o("콘 기억", "memory.lane_visible_s_min", "[차선 기준] 사각지대 경계 (앞차축 앞)", "m", 0.1, 1.5, 0.45);
   // 경로는 ① 차선 안 → ② 차선 안·여유 축소 → ③ 차선 밖 순서로 처음 길이 나오는 단계를 쓴다.
@@ -69,11 +73,11 @@ void register_params(ParamRegistry & r) {
   d("속도", "drive.planning_decel", "계획 감속도", "m/s²", 0.1, 3, 0.5);
   d("속도", "drive.obstacle_decel", "장애물 감속도", "m/s²", 0.05, 3, 0.4);
   d("속도", "drive.obstacle_accel", "장애물 해제 가속도", "m/s²", 0.05, 3, 0.4);
-  d("조향 (Stanley)", "drive.stanley_gain", "Stanley gain", "", 0.1, 5, 1.2);
+  d("조향 (Stanley)", "drive.stanley_gain", "Stanley gain", "", 0.1, 5, 1.3);
   d("조향 (Stanley)", "drive.stanley_softening", "softening 속도", "m/s", 0, 2, 0.3);
-  d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.12);
-  d("조향 (Stanley)", "drive.steering_current_weight", "조향 필터 현재 비중", "", 0.05, 1, 0.4);
-  d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 240.0);
+  d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.08);
+  d("조향 (Stanley)", "drive.steering_current_weight", "조향 필터 현재 비중", "", 0.05, 1, 0.5);
+  d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 260);
   d("차선", "lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 1.0);
   d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
   d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
@@ -149,6 +153,9 @@ Settings settings_from(const ParamRegistry & r) {
   s.cone_size_m = g("object.cone_size_m");
   s.box.box_core_fraction = g("object.box_core_fraction");
   s.box.bearing_offset_rad = g("object.bearing_offset_deg") * 3.14159265358979323846 / 180.0;
+  s.box.range_gain = g("object.range_gain");
+  s.box.range_offset_m = g("object.range_offset_m");
+  s.obs_time_offset_s = g("object.time_offset_ms") / 1000.0;
   s.box.loc.min_points = std::size_t(std::lround(g("object.min_points")));
   s.box.loc.min_fraction = g("object.min_point_share");
   s.box.loc.window_base_m = g("object.window_base_m");

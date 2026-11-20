@@ -277,7 +277,7 @@ TEST(visible_only_mode_locks_path_when_cone_leaves_view) {   // 모드 2: 사각
   Rig r(DriveMode::Detect);
   CHECK(r.params.apply({{"memory.mode", 2.0}}).first);
   r.loop->apply_settings(settings_from(r.params));
-  see_cone(r, {0.8, 0.22}, 3);
+  see_cone(r, {0.8, 0.22}, 6);   // 차선 기준 기억은 memory.lane_confirm_hits(기본 4)번 넘게 봐야 계획에 씀
   auto tf = r.loop->telemetry(true, r.t);
   CHECK(tf.plan_mode != "center");
   CHECK(tf.lock_m == 0.0);
@@ -377,6 +377,6 @@ TEST(gyro_bias_learned_while_stopped_and_cone_log_written) {   // 정지 중 자
   r.step();
   CHECK(rows.size() >= 2);
   CHECK(rows.front().id == rows.back().id);
-  CHECK_NEAR(rows.back().t_pose, rows.back().t_depth, 1e-12);
+  CHECK_NEAR(rows.back().t_pose, rows.back().t_depth + 0.015, 1e-9);   // 깊이 시각 + object.time_offset_ms (기본 15 ms)
   CHECK_NEAR(rows.back().world_x, 0.6, 0.02);
 }

@@ -73,7 +73,7 @@ public:
     cam_cfg_.cy = declare_parameter<double>("camera.cy", cam_cfg_.cy);
     cam_cfg_.stabilization_enabled = declare_parameter<bool>("camera.stabilization_enabled", true);
     cam_cfg_.dot_intensity = declare_parameter<double>("camera.ir_dot_intensity", 0.5);
-    camera_x_ = declare_parameter<double>("camera.x_m", -0.09);
+    camera_x_ = declare_parameter<double>("camera.x_m", -0.08);   // 실측: 렌즈가 앞차축 8 cm 뒤
     camera_y_ = declare_parameter<double>("camera.y_m", 0.0);
     camera_yaw_deg_ = declare_parameter<double>("camera.yaw_deg", 0.0);
     measure_cfg_.manual_camera_height_enabled = declare_parameter<bool>("camera.manual_height_enabled", false);
