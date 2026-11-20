@@ -169,6 +169,9 @@ const std::vector<Knob> & knobs() {
     {"plan.free_hard_clearance", &PlannerParams::free_hard_clearance, 0.02, 0.06, 0.01},
     {"plan.free_max_excess", &PlannerParams::free_max_excess, 0.2, 1.0, 0.1},
     {"plan.s_max", &PlannerParams::s_max, 1.5, 3.5, 0.5},
+    {"plan.w_lane_linear_free", &PlannerParams::w_lane_linear_free, 0.5, 400, 0.0},   // 탐색에서 고정 (분석용 --set)
+    {"plan.l_max_lane", &PlannerParams::l_max_lane, 0.2, 0.6, 0.0},
+    {"plan.width", &PlannerParams::width, 0.2, 0.4, 0.0},
     {"plan.lane_tolerance", &PlannerParams::lane_tolerance, 0.0, 0.10, 0.02},
     {"plan.lane_return_distance", &PlannerParams::lane_return_distance, 0.2, 3.0, 0.3},
     {"plan.w_obstacle", &PlannerParams::w_obstacle, 200, 40000, 2000},
@@ -179,7 +182,29 @@ const std::vector<Knob> & knobs() {
   return k;
 }
 
-struct Score { double rms{0}, fail{0}; int n{0}; std::map<std::string, int> modes; };
+struct Score {
+  double rms{0}, fail{0};
+  int n{0};
+  std::map<std::string, int> modes;
+  std::vector<double> plan_excess, human_excess;   // 프레임마다 앞 2 m 경로에서 차체가 차선 밖으로 나간 최대량 (m)
+};
+
+// 경로(차량 좌표)의 차체 차선 이탈 최대량: 차선 기준선(lane.path)에서의 옆 거리 + 차체 반폭 − 차선 반폭 (방향 기울기 무시)
+double path_excess(const std::vector<Vec2> & path, const std::vector<Vec2> & center, double half_width, double lane_half) {
+  double worst = -1;
+  for (const auto & q : path) {
+    if (q.x < 0 || q.x > 2.0) continue;
+    double best = 1e9;
+    for (std::size_t i = 1; i < center.size(); ++i) {
+      const Vec2 a = center[i - 1], b = center[i];
+      const double dx = b.x - a.x, dy = b.y - a.y, L2 = dx * dx + dy * dy;
+      const double u = L2 > 0 ? std::clamp(((q.x - a.x) * dx + (q.y - a.y) * dy) / L2, 0.0, 1.0) : 0.0;
+      best = std::min(best, std::hypot(a.x + u * dx - q.x, a.y + u * dy - q.y));
+    }
+    worst = std::max(worst, best + half_width - lane_half);
+  }
+  return worst;
+}
 
 Score evaluate(const std::vector<Case> & cases, const PlannerParams & p, const ControlParams & c, int threads) {
   std::vector<std::future<Score>> parts;
@@ -194,6 +219,8 @@ Score evaluate(const std::vector<Case> & cases, const PlannerParams & p, const C
         const double steer = cs.f->speed > 0.2 ? std::atan(cs.wheelbase * cs.f->yaw_rate / cs.f->speed) : 0.0;
         const auto res = planner.plan(cs.f->lane, cs.f->cones, cs.f->pose, cs.f->speed, steer);
         s.modes[plan_mode_name(res.mode)]++;
+        s.plan_excess.push_back(path_excess(res.path_local, cs.f->lane.path, p.width / 2, p.lane_half));
+        s.human_excess.push_back(path_excess(cs.human, cs.f->lane.path, p.width / 2, p.lane_half));
         if (res.mode == PlanMode::Fallback || res.path_local.size() < 3) { s.fail += 1; sq += 0.30 * 0.30 * 18; s.n += 18; continue; }
         for (double q = 0.3; q <= 2.0 + 1e-9; q += 0.1) {
           Vec2 a, b;
@@ -212,6 +239,8 @@ Score evaluate(const std::vector<Case> & cases, const PlannerParams & p, const C
   for (auto & f : parts) {
     auto s = f.get();
     sq += s.rms; total.n += s.n; total.fail += s.fail;
+    total.plan_excess.insert(total.plan_excess.end(), s.plan_excess.begin(), s.plan_excess.end());
+    total.human_excess.insert(total.human_excess.end(), s.human_excess.begin(), s.human_excess.end());
     for (auto & [k, v] : s.modes) total.modes[k] += v;
   }
   total.rms = total.n ? std::sqrt(sq / total.n) : 1e9;
@@ -219,8 +248,17 @@ Score evaluate(const std::vector<Case> & cases, const PlannerParams & p, const C
   return total;
 }
 
+double quant(std::vector<double> v, double q) {
+  if (v.empty()) return std::nan("");
+  std::sort(v.begin(), v.end());
+  return v[std::min(v.size() - 1, std::size_t(q * (v.size() - 1)))];
+}
+
 void print_score(const char * tag, const Score & s) {
-  std::printf("%s 경로 차이 RMS %.1f cm, 계획 실패 %.0f%% |", tag, s.rms * 100, s.fail * 100);
+  auto out = [](const std::vector<double> & v, double lim) { double n = 0; for (double x : v) n += x > lim; return 100 * n / std::max<std::size_t>(1, v.size()); };
+  std::printf("%s 경로 차이 RMS %.1f cm, 계획 실패 %.0f%% | 차선 이탈: 계획 중앙값 %.1f cm·90%% %.1f cm·10 cm 넘음 %.0f%% (사람 %.1f·%.1f cm·%.0f%%) |",
+              tag, s.rms * 100, s.fail * 100, quant(s.plan_excess, 0.5) * 100, quant(s.plan_excess, 0.9) * 100, out(s.plan_excess, 0.10),
+              quant(s.human_excess, 0.5) * 100, quant(s.human_excess, 0.9) * 100, out(s.human_excess, 0.10));
   int tot = 0;
   for (auto & [k, v] : s.modes) tot += v;
   for (auto & [k, v] : s.modes) std::printf(" %s %d%%", k.c_str(), 100 * v / std::max(1, tot));
@@ -235,11 +273,13 @@ int main(int argc, char ** argv) {
   std::vector<std::string> dirs;
   std::map<std::string, double> set;
   double bearing = std::nan("");
+  std::string params_yaml;   // 비우면 첫 녹화의 params.yaml (녹화 당시 값)
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--frames-every" && i + 1 < argc) every = std::max(1, std::atoi(argv[++i]));
     else if (a == "--fit") fit = true;
     else if (a.rfind("--bearing=", 0) == 0) bearing = std::atof(a.c_str() + 10);
+    else if (a == "--params" && i + 1 < argc) params_yaml = argv[++i];
     else if (a.rfind("--set=", 0) == 0) { const auto e = a.find('=', 6); set[a.substr(6, e - 6)] = std::atof(a.c_str() + e + 1); }
     else dirs.push_back(a);
   }
@@ -254,7 +294,7 @@ int main(int argc, char ** argv) {
   PlannerParams p;
   ControlParams c;
   {
-    std::ifstream y(dirs[0] + "/params.yaml");
+    std::ifstream y(params_yaml.empty() ? dirs[0] + "/params.yaml" : params_yaml);
     std::string line;
     while (std::getline(y, line)) {
       for (const auto & k : knobs()) {
@@ -268,6 +308,8 @@ int main(int argc, char ** argv) {
     for (const auto & k : knobs()) if (name == k.name) p.*(k.field) = v;
   p.length = runs[0].length; p.width = runs[0].width; p.rear_overhang = runs[0].overhang; p.wheelbase = runs[0].wheelbase;
   p.cone_half = runs[0].cone / 2;
+  if (set.count("plan.cone_half")) p.cone_half = set["plan.cone_half"];
+  if (set.count("plan.width")) p.width = set["plan.width"];
   // 비교할 프레임: 앞 3 m 안에 콘, 이후 2.0 m 이상 사람 경로가 있는 프레임
   std::vector<Case> cases;
   for (const auto & r : runs) {
