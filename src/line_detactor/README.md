@@ -541,7 +541,7 @@ YAML보다 우선하며 변경 후 재실행한다.
 
 ## 결과 토픽과 좌표
 
-- `/line_detactor/result`: `line_detactor/msg/LaneResult`
+- `/line_detactor/result`: `line_detactor_msgs/msg/LaneResult` (메시지 전용 패키지 `line_detactor_msgs`)
 - `/line_detactor/result_image`: `sensor_msgs/msg/Image`, `bgr8`, 차선·정지선·노란 중앙 경로를 그린 검은 배경 영상
 
 제어용 `LaneResult`에는 BGR 영상, 좌우 라벨, 정지선/중앙선 마스크와 좌우 곡선

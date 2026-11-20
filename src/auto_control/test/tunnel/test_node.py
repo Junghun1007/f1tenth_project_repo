@@ -13,13 +13,13 @@ from lane_fixture import lane, ns
 def load_node():
     modules = {name: ModuleType(name) for name in (
         'rclpy', 'rclpy.node', 'rclpy.qos', 'rclpy.serialization', 'std_msgs', 'std_msgs.msg',
-        'line_detactor', 'line_detactor.msg')}
+        'line_detactor_msgs', 'line_detactor_msgs.msg')}
     modules['rclpy.node'].Node = object
     for name in ('QoSProfile', 'ReliabilityPolicy', 'DurabilityPolicy'):
         setattr(modules['rclpy.qos'], name, object)
     modules['std_msgs.msg'].String = NS
     modules['rclpy.serialization'].deserialize_message = lambda raw, _type: None
-    modules['line_detactor.msg'].LaneResult = object
+    modules['line_detactor_msgs.msg'].LaneResult = object
     path = Path(__file__).resolve().parents[2] / 'auto_control_tunnel/node.py'
     spec = importlib.util.spec_from_file_location('auto_control_tunnel._node_test', path)
     module = importlib.util.module_from_spec(spec)

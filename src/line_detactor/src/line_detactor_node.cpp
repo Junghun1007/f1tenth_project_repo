@@ -7,7 +7,7 @@
 #include "line_detactor/lane_side_tracker.hpp"
 #include "bev_handoff/lane_control_hints.hpp"
 #include "line_detactor/observed_lane_length.hpp"
-#include "line_detactor/msg/lane_result.hpp"
+#include "line_detactor_msgs/msg/lane_result.hpp"
 #include "line_detactor/stop_line_distance.hpp"
 #include "line_detactor/bev_theme.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -181,7 +181,7 @@ public:
       .best_effort()
       .durability_volatile();
     if (connection_.enabled && result_publish_enabled_) {
-      result_publisher_ = node_.create_publisher<line_detactor::msg::LaneResult>(
+      result_publisher_ = node_.create_publisher<line_detactor_msgs::msg::LaneResult>(
         result_topic_, image_qos);
       result_image_publisher_ = node_.create_publisher<Image>(result_image_topic_, image_qos);
     }
@@ -862,7 +862,7 @@ private:
   {
     if (!result_publisher_) {return;}
     const auto message_build_started_at = SteadyClock::now();
-    line_detactor::msg::LaneResult message;
+    line_detactor_msgs::msg::LaneResult message;
     message.header = input.header;
     message.detector_input_received_stamp = input_received_stamp;
     message.engine_precision = engine_precision_;
@@ -881,7 +881,7 @@ private:
     message.observed_lane_length_valid = std::isfinite(observed_length);
     message.observed_lane_length_m = static_cast<float>(observed_length);
     message.state = result.state;
-    message.processing_mode = line_detactor::msg::LaneResult::BORDER_ONLY;
+    message.processing_mode = line_detactor_msgs::msg::LaneResult::BORDER_ONLY;
     message.source_width = static_cast<std::uint32_t>(input.width);
     message.source_height = static_cast<std::uint32_t>(input.height);
     message.padding_left = connection_.padding_px;
@@ -1649,7 +1649,7 @@ private:
   std::string result_topic_;
   std::string result_image_topic_;
   std::string control_latency_topic_;
-  rclcpp::Publisher<line_detactor::msg::LaneResult>::SharedPtr result_publisher_;
+  rclcpp::Publisher<line_detactor_msgs::msg::LaneResult>::SharedPtr result_publisher_;
   rclcpp::Publisher<Image>::SharedPtr result_image_publisher_;
   int warmup_iterations_{10};
   bool obstacle_overlay_enabled_{false};

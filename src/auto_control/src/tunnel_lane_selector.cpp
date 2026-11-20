@@ -11,7 +11,7 @@
 #include <string>
 
 #include "auto_control/tunnel_selection.hpp"
-#include "line_detactor/msg/lane_result.hpp"
+#include "line_detactor_msgs/msg/lane_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -19,7 +19,7 @@
 namespace auto_control
 {
 
-using line_detactor::msg::LaneResult;
+using line_detactor_msgs::msg::LaneResult;
 using std_msgs::msg::String;
 
 class TunnelLaneSelector : public rclcpp::Node

@@ -5,7 +5,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from rclpy.serialization import deserialize_message
 from std_msgs.msg import String
-from line_detactor.msg import LaneResult
+from line_detactor_msgs.msg import LaneResult
 from .selection import LaneSelector
 from .ir_length_exit import IrLengthExit
 from .path_validation import PathRules

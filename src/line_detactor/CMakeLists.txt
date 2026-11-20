@@ -28,14 +28,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(builtin_interfaces REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/LaneResult.msg"
-  "msg/SpeedLimitState.msg"
-  DEPENDENCIES std_msgs geometry_msgs builtin_interfaces
-)
-rosidl_get_typesupport_target(lane_typesupport ${PROJECT_NAME} rosidl_typesupport_cpp)
+find_package(line_detactor_msgs REQUIRED)   # LaneResult·SpeedLimitState (메시지 전용 패키지)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgproc)
 find_package(CUDAToolkit REQUIRED)
 find_package(Threads REQUIRED)
@@ -146,10 +139,10 @@ ament_target_dependencies(line_detactor_component
   std_msgs
   geometry_msgs
   builtin_interfaces
+  line_detactor_msgs
 )
 target_link_libraries(line_detactor_component
   line_tensorrt_backend
-  "${lane_typesupport}"
   ${OpenCV_LIBS}
   Threads::Threads
 )
@@ -221,7 +214,7 @@ install(
 
 ament_export_targets(export_line_detactor HAS_LIBRARY_TARGET)
 ament_export_dependencies(
-  rosidl_default_runtime
+  line_detactor_msgs
   builtin_interfaces
   std_msgs
   geometry_msgs

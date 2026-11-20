@@ -25,7 +25,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(bev_handoff REQUIRED)
-find_package(line_detactor REQUIRED)
+find_package(line_detactor_msgs REQUIRED)
 find_package(Threads REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs dnn)
 
@@ -35,7 +35,7 @@ ament_python_install_package(auto_control_safety)
 # ---- 터널 차선 선택기 (검출 컨테이너, intra-process LaneResult) ----
 add_library(auto_tunnel_selector_component SHARED src/tunnel_lane_selector.cpp)
 target_include_directories(auto_tunnel_selector_component PRIVATE include)
-ament_target_dependencies(auto_tunnel_selector_component rclcpp rclcpp_components std_msgs line_detactor)
+ament_target_dependencies(auto_tunnel_selector_component rclcpp rclcpp_components std_msgs line_detactor_msgs)
 rclcpp_components_register_nodes(auto_tunnel_selector_component "auto_control::TunnelLaneSelector")
 install(TARGETS auto_tunnel_selector_component LIBRARY DESTINATION lib)
 
@@ -75,9 +75,8 @@ endif()
 
 # 주행 컴포넌트: 카메라·BEV·차선 컨테이너에 함께 로드
 add_library(auto_drive_component SHARED src/drive/auto_drive_node.cpp)
-ament_target_dependencies(auto_drive_component rclcpp rclcpp_components rcl_interfaces std_msgs sensor_msgs geometry_msgs ament_index_cpp bev_handoff)
-# line_detactor는 메시지만 쓴다 (카메라·추론 구현 라이브러리까지 링크하지 않음)
-target_link_libraries(auto_drive_component auto_drive_gpu line_detactor::line_detactor__rosidl_typesupport_cpp)
+ament_target_dependencies(auto_drive_component rclcpp rclcpp_components rcl_interfaces std_msgs sensor_msgs geometry_msgs ament_index_cpp bev_handoff line_detactor_msgs)
+target_link_libraries(auto_drive_component auto_drive_gpu)
 rclcpp_components_register_nodes(auto_drive_component "auto_control::AutoDriveNode")
 install(TARGETS auto_drive_component LIBRARY DESTINATION lib)
 

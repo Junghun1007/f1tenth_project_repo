@@ -19,7 +19,8 @@
   <depend>geometry_msgs</depend>
   <depend>ament_index_cpp</depend>
   <depend>bev_handoff</depend>
-  <depend>line_detactor</depend>
+  <depend>line_detactor_msgs</depend>
+  <exec_depend>line_detactor</exec_depend>
   <depend>libopencv-dev</depend>
 
   <exec_depend>rclpy</exec_depend>

@@ -13,7 +13,7 @@
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
-#include <line_detactor/msg/lane_result.hpp>
+#include <line_detactor_msgs/msg/lane_result.hpp>
 #include <bev_handoff/direct_bev_handoff.hpp>
 #include <bev_handoff/direct_camera_handoff.hpp>
 #include <bev_handoff/direct_obstacle_handoff.hpp>
@@ -170,15 +170,15 @@ public:
     const auto lane_topic = declare_parameter<std::string>("topics.lane_result", "/line_detactor/result");
     const auto sensor_qos = rclcpp::SensorDataQoS().keep_last(1);
     if (tunnel_enabled_) {   // 터널 선택기가 카메라별 결과를 따로 낸다 (/rgb, /ir)
-      lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(lane_topic + "/rgb", sensor_qos,
-        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
-      ir_lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(lane_topic + "/ir", sensor_qos,
-        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "IR"); }, control);
+      lane_sub_ = create_subscription<line_detactor_msgs::msg::LaneResult>(lane_topic + "/rgb", sensor_qos,
+        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
+      ir_lane_sub_ = create_subscription<line_detactor_msgs::msg::LaneResult>(lane_topic + "/ir", sensor_qos,
+        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "IR"); }, control);
       tunnel_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.tunnel_state", "/tunnel/state"), state_qos,
         [this](std_msgs::msg::String::ConstSharedPtr m) { on_tunnel_state(m->data); }, status_latched);
     } else {
-      lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(lane_topic, sensor_qos,
-        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
+      lane_sub_ = create_subscription<line_detactor_msgs::msg::LaneResult>(lane_topic, sensor_qos,
+        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
     }
 
     // ---- 출발 전 점검: 카메라 자세(bev_processor 시작 측정), 모델 상태 ----
@@ -293,7 +293,7 @@ private:
     return acd::now_sec() - std::max(0.0, ros_now - ros_t);
   }
 
-  void on_lane(const line_detactor::msg::LaneResult & m, const char * source) {
+  void on_lane(const line_detactor_msgs::msg::LaneResult & m, const char * source) {
     const double t_in = acd::now_sec();
     const double capture = steady_from_stamp(m.header.stamp);
     {
@@ -728,7 +728,7 @@ private:
   std::vector<rclcpp::Subscription<std_msgs::msg::String>::SharedPtr> ir_model_subs_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
-  rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_, ir_lane_sub_;
+  rclcpp::Subscription<line_detactor_msgs::msg::LaneResult>::SharedPtr lane_sub_, ir_lane_sub_;
   rclcpp::TimerBase::SharedPtr watchdog_, telemetry_, setup_timer_;
   rclcpp::CallbackGroup::SharedPtr imu_group_, vehicle_group_, control_group_, status_group_, web_group_;
   OnSetParametersCallbackHandle::SharedPtr on_set_;
