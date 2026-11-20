@@ -162,30 +162,22 @@ GUI 없이 실행(BEV 단계 시간은 /perf/bev_stage 토픽으로 확인):
 ros2 launch bev_processor bev_processor.launch.py preview_enabled:=false
 
 
-[8. BEV 중앙선 기반 자율주행]
+[8. 자동 주행 (auto_control: 차선 + 콘 회피 + 신호등 + 앞차 추종)]
 
-수동주행 launch와 동시에 실행하지 않는다. 기본 실행은 원본 영상을 숨기고
-차선 인식 결과만 프리뷰하며, 중앙선과 VESC/ERPM이 준비되면 바로 출발한다.
+수동주행 launch와 동시에 실행하지 않는다. 화면은 노트북·iPad 브라우저 http://<jetson-ip>:8765 에서 본다.
+점검(카메라 자세·모델·VESC·차선)이 끝나면 브라우저 [주행 시작]으로 출발한다. 조이스틱을 먼저 만질 필요 없다.
 
 ros2 launch vehicle_bringup auto_drive.launch.py
 
-프리뷰를 완전히 끄고 실행:
+검출만 확인 (자동 명령 없음, 조이스틱 수동 주행):
 
-ros2 launch vehicle_bringup auto_drive.launch.py preview_enabled:=false
+ros2 launch vehicle_bringup auto_drive.launch.py mode:=detect
 
-바퀴를 띄운 상태에서 명령만 점검하려면 자동 출발을 끈다.
+속도 상한·터널:
 
-ros2 launch vehicle_bringup auto_drive.launch.py \
-  preview_enabled:=false \
-  auto_enabled:=false
+ros2 launch vehicle_bringup auto_drive.launch.py speed_mps:=0.8 tunnel_enabled:=true
 
-
-[9. 원격 프리뷰 (SSH 실행, iPad/MacBook 브라우저)]
-
-기존 명령 끝에 remote_preview_enabled:=true를 붙인다. 브라우저: http://<jetson-ip>:8765
-설정 YAML: remote_preview_params_file:=<경로> (기본 auto_control/config/remote_preview.yaml)
-
-ros2 launch vehicle_bringup auto_drive.launch.py remote_preview_enabled:=true
+자세한 내용: src/auto_control/README.md
 
 
 [안전 주의]

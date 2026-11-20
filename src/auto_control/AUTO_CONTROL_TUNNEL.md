@@ -388,36 +388,31 @@ colcon build --packages-up-to vehicle_bringup --executor sequential \
   --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
 
-# 먼저 연산·인식·전환만 확인. 기존 외부 주행 YAML 인자를 그대로 추가할 수 있다.
+# 먼저 연산·인식·전환만 확인 (자동 명령 없음, 조이스틱 수동 주행 가능)
 ros2 launch vehicle_bringup auto_drive.launch.py \
-  tunnel_enabled:=true \
-  auto_control_mode:=monitor_only preview_enabled:=true speed_mps:=1.0
+  tunnel_enabled:=true mode:=detect speed_mps:=1.0
 
-# 위 실행 종료 후 주행 준비. 기본적으로 출발은 보류한다.
+# 위 실행 종료 후 주행: 점검이 끝나면 브라우저(http://<jetson-ip>:8765) [주행 시작]으로 출발
 ros2 launch vehicle_bringup auto_drive.launch.py \
-  tunnel_enabled:=true \
-  auto_enabled:=false preview_enabled:=true speed_mps:=1.0
+  tunnel_enabled:=true speed_mps:=1.0
 ```
 
-`speed_mps`는 0보다 큰 유한한 목표 속도(m/s)이며 0.3 상한은 없다.
-생략하면 기존 외부 제어 YAML/launch의 최소·최대 속도를 상속한다.
-IR 전용 launch와 마찬가지로 실제 속도는 기존 ERPM 피드백으로 제어한다.
-`auto_enabled`는 기존 auto_drive 및 선택한 제어 YAML 값을 따른다. 위 주행 준비 명령은
-명시적으로 false를 지정한다. 보정을 끝내고 TCN LIVE·차선을 확인한 뒤
-다른 source된 터미널에서 활성화한다.
+`speed_mps`는 0보다 큰 유한한 목표 속도(m/s)로 주행 YAML의 `drive.maximum_speed_mps`를 덮어쓴다.
+생략하면 주행 YAML(`auto_control/config/auto_drive.yaml`) 값을 쓴다.
+출발은 브라우저 [주행 시작]으로만 한다. 출발 전 점검에 터널 IR 차선 모델(`ir_line_detactor`, `tunnel_tcn_test`)
+READY가 추가된다. 터널 안(`/tunnel/state`가 OUTSIDE가 아님)에서는 YOLO를 쉬고 콘·차량 기억을 비우며
+신호등 정지·앞차 추종을 끈다(차선만 추종). 밖으로 나오면 새 관측부터 다시 쌓는다.
 
 ```bash
-ros2 topic pub --once /auto/enabled std_msgs/msg/Bool 'data: true'
 ros2 topic echo /tunnel/state
 ros2 topic echo /tunnel/selected_source
 ros2 topic hz /tunnel/lane_result/rgb   # 터널 안에서는 /tunnel/lane_result/ir
 ```
 
 기존 인자 `camera_params_file`, `bev_params_file`, `line_detactor_params_file`,
-`auto_control_params_file`, `obstacle_params_file`, `vesc_port`, CAN 인자를 함께 쓸 수 있다.
+`drive_params_file`, `perception_params_file`, `vesc_port`, CAN 인자를 함께 쓸 수 있다.
 IR 학습과 일치하도록 통합 BEV는 앞차축 기준 120×300, 전방 0~3m, 좌우 ±0.6m,
-1cm/pixel을 요구한다. 기본 회피 제어가 활성화된 설정에서 외부 장애물도 제외하려면
-`obstacles_enabled:=false avoidance_control_enabled:=false`를 함께 지정한다.
+1cm/pixel을 요구한다.
 기존 RGB 전용 동작을 유지하도록 `tunnel_enabled` 기본값은 false다.
 공용 IR 모델과 검증 보고서는 `line_detactor/models`에 있으며, 단독 IR 테스트와 함께 사용한다.
 
@@ -431,8 +426,8 @@ c++ -std=c++17 -Isrc/line_detactor/include \
 /tmp/frame_rate_gate_test
 ```
 
-이 검사는 지연된 진입/출구의 경로 연속성, 실제 C++ 제어 코어에 대한 원본 경로 기하와
-카메라별 순서 검사, 무효·오래된·역순 결과 처리, 모델 준비 상태와 처리 빈도 제한을 확인한다.
+이 검사는 지연된 진입/출구의 경로 연속성, 카메라별 순서 검사, 무효·오래된·역순 결과 처리와
+처리 빈도 제한을 확인한다.
 카메라의 `rgb_exposure_recovery_test`는 노출 복원·자동복귀·프레임 유실·명령 실패와
 반복 터널 처리를 검증하며 프리뷰 시험은 실제 HUD 렌더링과 노출 데이터 전달을 확인한다.
 이 개발 환경에서는 ROS 빌드·DepthAI 동시 출력·Jetson TensorRT·실차 전환은 검증하지 않았다.
