@@ -93,12 +93,15 @@ std::shared_ptr<const DepthImage> DetectWorker::nearest_depth(double t, double m
 void DetectWorker::start() {
   if (running_.exchange(true)) return;
   thread_ = std::thread([this] { loop_(); });
+  jpeg_thread_ = std::thread([this] { jpeg_loop_(); });
 }
 
 void DetectWorker::stop() {
   if (!running_.exchange(false)) return;
   frame_cv_.notify_all();
+  jpeg_cv_.notify_all();
   if (thread_.joinable()) thread_.join();
+  if (jpeg_thread_.joinable()) jpeg_thread_.join();
 }
 
 void DetectWorker::loop_() {
@@ -209,23 +212,47 @@ void DetectWorker::loop_() {
     }
     stats.record("box_depth", t1, now_sec());
     ctl_.on_detections(out);
-    if (camera_wanted && camera_wanted() && t0 - last_jpeg_t_ >= 0.1) {   // 검출 확인용 카메라 보기 (켰을 때만)
-      const cv::Mat nv12(h * 3 / 2, w, CV_8UC1, const_cast<std::uint8_t *>(data), stride);
-      cv::Mat bgr;
-      cv::cvtColor(nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-      cv::line(bgr, {0, roi.y}, {w, roi.y}, {0, 220, 255}, 2);
-      for (const auto & det : res.detections) {
-        cv::rectangle(bgr, det.box, {60, 60, 255}, 2);
-        char label[48];
-        std::snprintf(label, sizeof(label), "%s %.2f", kClassNames[std::clamp(det.class_id, 0, 3)], det.score);
-        cv::putText(bgr, label, det.box.tl() + cv::Point2f(0, -4), cv::FONT_HERSHEY_SIMPLEX, 0.6, {255, 255, 255}, 2);
+    if (camera_wanted && camera_wanted() && t0 - last_jpeg_t_ >= 0.1) {   // 검출 확인용 카메라 보기 (켰을 때만, 10 fps)
+      auto view = std::make_unique<CameraView>();   // 프레임 포인터와 박스만 넘기고 바로 다음 검출로
+      view->frame = frame;
+      view->detections = res.detections;
+      view->roi_y = roi.y;
+      {
+        std::lock_guard<std::mutex> l(jpeg_m_);
+        jpeg_pending_ = std::move(view);   // 인코딩이 밀리면 이전 것은 버림
       }
-      cv::Mat small;
-      cv::resize(bgr, small, {640, 400}, 0, 0, cv::INTER_AREA);
-      std::vector<std::uint8_t> jpeg;
-      if (cv::imencode(".jpg", small, jpeg, {cv::IMWRITE_JPEG_QUALITY, 70}) && publish_camera_jpeg) publish_camera_jpeg(std::move(jpeg));
+      jpeg_cv_.notify_one();
       last_jpeg_t_ = t0;
     }
+  }
+}
+
+void DetectWorker::jpeg_loop_() {
+  while (running_) {
+    std::unique_ptr<CameraView> v;
+    {
+      std::unique_lock<std::mutex> l(jpeg_m_);
+      jpeg_cv_.wait_for(l, std::chrono::milliseconds(200), [this] { return jpeg_pending_ != nullptr || !running_; });
+      v = std::move(jpeg_pending_);
+    }
+    if (!v) continue;
+    const auto & f = *v->frame;
+    const cv::Mat nv12(f.height * 3 / 2, f.width, CV_8UC1, const_cast<std::uint8_t *>(f.nv12), f.stride);
+    cv::Mat bgr;
+    cv::cvtColor(nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+    const int w = f.width;
+    v->frame.reset();   // BGR로 바꿨으면 카메라 버퍼는 바로 돌려준다
+    cv::line(bgr, {0, v->roi_y}, {w, v->roi_y}, {0, 220, 255}, 2);
+    for (const auto & det : v->detections) {
+      cv::rectangle(bgr, det.box, {60, 60, 255}, 2);
+      char label[48];
+      std::snprintf(label, sizeof(label), "%s %.2f", kClassNames[std::clamp(det.class_id, 0, 3)], det.score);
+      cv::putText(bgr, label, det.box.tl() + cv::Point2f(0, -4), cv::FONT_HERSHEY_SIMPLEX, 0.6, {255, 255, 255}, 2);
+    }
+    cv::Mat small;
+    cv::resize(bgr, small, {640, 400}, 0, 0, cv::INTER_AREA);
+    std::vector<std::uint8_t> jpeg;
+    if (cv::imencode(".jpg", small, jpeg, {cv::IMWRITE_JPEG_QUALITY, 70}) && publish_camera_jpeg) publish_camera_jpeg(std::move(jpeg));
   }
 }
 

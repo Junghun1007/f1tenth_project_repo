@@ -69,6 +69,8 @@ public:
 
 private:
   void loop_();
+  void jpeg_loop_();   // 웹 카메라 보기: 변환·그리기·인코딩을 검출 스레드 밖에서
+  struct CameraView { std::shared_ptr<const Nv12Frame> frame; std::vector<Detection> detections; int roi_y{0}; };
   std::shared_ptr<const DepthImage> nearest_depth(double t, double max_dt) const;
   ControlLoop & ctl_;
   std::unique_ptr<YoloxDetector> detector_;
@@ -82,7 +84,10 @@ private:
   std::shared_ptr<const Nv12Frame> pending_;
   mutable std::mutex depth_m_;
   std::deque<std::shared_ptr<const DepthImage>> depths_;   // 최근 깊이 (최대 8장)
-  std::thread thread_;
+  std::thread thread_, jpeg_thread_;
+  std::mutex jpeg_m_;
+  std::condition_variable jpeg_cv_;
+  std::unique_ptr<CameraView> jpeg_pending_;
   std::atomic<bool> running_{false}, paused_{false};
   std::atomic<double> fps_{0};
   std::atomic<float> signal_score_{0.f};

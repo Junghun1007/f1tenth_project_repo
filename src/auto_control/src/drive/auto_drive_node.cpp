@@ -127,9 +127,23 @@ public:
     // ---- 출력 (safety_node로) ----
     const auto command_qos = rclcpp::QoS(rclcpp::KeepLast(1)).best_effort().durability_volatile();
     const auto state_qos = rclcpp::QoS(rclcpp::KeepLast(1)).reliable().transient_local();
+    // 콜백 그룹: 멀티스레드 컨테이너에서 서로 기다리지 않게 나눈다
+    //   imu      400 Hz 요레이트 (오도메트리 락만 씀 → 회피 계획 중에도 바로 처리)
+    //   vehicle  ERPM·VESC·안전 전환·조이스틱 (제어 락을 잠깐 잡음)
+    //   control  차선 결과 → 계획·제어, 감시 타이머 (순서 보장)
+    //   status   시작 측정·모델 상태·터널 상태, 카메라 장착값 대기
+    //   web      텔레메트리 JSON
+    auto group = [this] { return create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive); };
+    imu_group_ = group(); vehicle_group_ = group(); control_group_ = group(); status_group_ = group(); web_group_ = group();
+    auto in = [](const rclcpp::CallbackGroup::SharedPtr & g) { rclcpp::SubscriptionOptions o; o.callback_group = g; return o; };
     // 컨테이너가 intra-process를 켜도 래치(transient_local) 구독은 intra-process로 받을 수 없다 → 이 구독만 끈다
-    rclcpp::SubscriptionOptions latched;
-    latched.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+    auto latched_in = [&in](const rclcpp::CallbackGroup::SharedPtr & g) {
+      auto o = in(g);
+      o.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+      return o;
+    };
+    const auto vehicle = in(vehicle_group_), vehicle_latched = latched_in(vehicle_group_);
+    const auto control = in(control_group_), status_latched = latched_in(status_group_);
     duty_pub_ = create_publisher<std_msgs::msg::Float32>(declare_parameter<std::string>("topics.auto_duty", "auto_drive/auto/duty"), command_qos);
     brake_pub_ = create_publisher<std_msgs::msg::Float32>(declare_parameter<std::string>("topics.auto_brake_current", "auto_drive/auto/brake_current"), command_qos);
     servo_pub_ = create_publisher<std_msgs::msg::Float32>(declare_parameter<std::string>("topics.auto_servo_position", "auto_drive/auto/servo_position"), command_qos);
@@ -137,46 +151,46 @@ public:
                                                            rclcpp::QoS(rclcpp::KeepLast(5)).reliable());
     // ---- 차량 입력 ----
     erpm_sub_ = create_subscription<std_msgs::msg::Int32>(declare_parameter<std::string>("topics.measured_erpm", "vesc/measured_erpm"), command_qos,
-      [this](std_msgs::msg::Int32::ConstSharedPtr m) { loop_->on_erpm(m->data, acd::now_sec()); });
+      [this](std_msgs::msg::Int32::ConstSharedPtr m) { loop_->on_erpm(m->data, acd::now_sec()); }, vehicle);
     connected_sub_ = create_subscription<std_msgs::msg::Bool>(declare_parameter<std::string>("topics.vesc_connected", "vesc/connected"), state_qos,
-      [this](std_msgs::msg::Bool::ConstSharedPtr m) { loop_->on_vesc_connected(m->data, acd::now_sec()); }, latched);
+      [this](std_msgs::msg::Bool::ConstSharedPtr m) { loop_->on_vesc_connected(m->data, acd::now_sec()); }, vehicle_latched);
     mode_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.handover_mode", "auto_drive/handover/mode"), state_qos,
       [this](std_msgs::msg::String::ConstSharedPtr m) {
         loop_->on_handover_mode(m->data, acd::now_sec());
         std::lock_guard<std::mutex> l(status_m_);
         handover_mode_ = m->data;
-      }, latched);
+      }, vehicle_latched);
     joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(declare_parameter<std::string>("topics.joy", "joy"), rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::Joy::ConstSharedPtr) { last_joy_t_ = acd::now_sec(); });
+      [this](sensor_msgs::msg::Joy::ConstSharedPtr) { last_joy_t_ = acd::now_sec(); }, vehicle);
     // IMU (camera_driver IMU 브리지, 카메라 좌표 자이로) → 차량 요레이트 (오도메트리)
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(declare_parameter<std::string>("topics.imu", "/camera/imu"),
-      rclcpp::SensorDataQoS().keep_last(20), [this](sensor_msgs::msg::Imu::ConstSharedPtr m) { on_imu(*m); });
+      rclcpp::SensorDataQoS().keep_last(20), [this](sensor_msgs::msg::Imu::ConstSharedPtr m) { on_imu(*m); }, in(imu_group_));
 
     // ---- 차선 ----
     const auto lane_topic = declare_parameter<std::string>("topics.lane_result", "/line_detactor/result");
     const auto sensor_qos = rclcpp::SensorDataQoS().keep_last(1);
     if (tunnel_enabled_) {   // 터널 선택기가 카메라별 결과를 따로 낸다 (/rgb, /ir)
       lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(lane_topic + "/rgb", sensor_qos,
-        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); });
+        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
       ir_lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(lane_topic + "/ir", sensor_qos,
-        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "IR"); });
+        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "IR"); }, control);
       tunnel_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.tunnel_state", "/tunnel/state"), state_qos,
-        [this](std_msgs::msg::String::ConstSharedPtr m) { on_tunnel_state(m->data); }, latched);
+        [this](std_msgs::msg::String::ConstSharedPtr m) { on_tunnel_state(m->data); }, status_latched);
     } else {
       lane_sub_ = create_subscription<line_detactor::msg::LaneResult>(lane_topic, sensor_qos,
-        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); });
+        [this](line_detactor::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
     }
 
     // ---- 출발 전 점검: 카메라 자세(bev_processor 시작 측정), 모델 상태 ----
     startup_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.startup_status", "/bev_processor/startup_status"),
-      state_qos, [this](std_msgs::msg::String::ConstSharedPtr m) { on_startup_status(m->data); }, latched);
+      state_qos, [this](std_msgs::msg::String::ConstSharedPtr m) { on_startup_status(m->data); }, status_latched);
     lane_model_sub_ = create_subscription<std_msgs::msg::String>("/" + lane_model_node_ + "/model_status", state_qos,
-      [this](std_msgs::msg::String::ConstSharedPtr m) { on_model_status(0, "차선 (line_detactor)", m->data); }, latched);
+      [this](std_msgs::msg::String::ConstSharedPtr m) { on_model_status(0, "차선 (line_detactor)", m->data); }, status_latched);
     if (tunnel_enabled_)
       for (std::size_t i = 0; i < ir_model_nodes_.size(); ++i) {
         ir_model_status_.push_back("WAITING");
         ir_model_subs_.push_back(create_subscription<std_msgs::msg::String>("/" + ir_model_nodes_[i] + "/model_status", state_qos,
-          [this, i](std_msgs::msg::String::ConstSharedPtr m) { on_ir_model_status(i, m->data); }, latched));
+          [this, i](std_msgs::msg::String::ConstSharedPtr m) { on_ir_model_status(i, m->data); }, status_latched));
       }
 
     // ---- 웹 ----
@@ -250,9 +264,9 @@ public:
     watchdog_ = create_wall_timer(20ms, [this] {   // 차선 결과가 끊겨도 정지·제동이 이어지게
       if (acd::now_sec() - last_lane_t_.load() > 0.05) publish(loop_->tick(acd::now_sec()));
       bev_wanted_ = web_->stream_wanted("bev", acd::now_sec());
-    });
-    telemetry_ = create_wall_timer(33ms, [this] { send_telemetry(); });
-    setup_timer_ = create_wall_timer(100ms, [this] { connect_reference(); });   // bev_processor 시작 측정이 끝나야 카메라 장착값이 생김
+    }, control_group_);
+    telemetry_ = create_wall_timer(33ms, [this] { send_telemetry(); }, web_group_);
+    setup_timer_ = create_wall_timer(100ms, [this] { connect_reference(); }, status_group_);   // bev_processor 시작 측정이 끝나야 카메라 장착값이 생김
     inspect_thread_ = std::thread([this] { load_yolo(); });
   }
 
@@ -490,7 +504,8 @@ private:
     publish_hints();
   }
 
-  void publish_hints() {   // 바뀐 것이 있을 때만 새로 만들어 교체 (매 프레임 할당 없음)
+  void publish_hints() {   // 바뀐 것이 있을 때만 새로 만들어 교체 (매 프레임 할당 없음). 제어·웹·상태 스레드에서 호출
+    std::lock_guard<std::mutex> hl(hint_m_);
     const bool want = loop_->cones_nearby();
     const unsigned v = hint_version_.load();
     if (want == last_hint_want_ && v == last_hint_version_) return;
@@ -681,6 +696,7 @@ private:
   std::string handover_mode_{"-"}, lane_source_{"RGB"}, tunnel_state_{"OUTSIDE"};
   bev_handoff::LaneControlHints hint_base_;
   std::atomic<unsigned> hint_version_{0};
+  std::mutex hint_m_;   // last_hint_*
   unsigned last_hint_version_{~0u};
   bool last_hint_want_{false};
   std::atomic<double> last_lane_t_{0}, last_joy_t_{-1e9};
@@ -714,6 +730,7 @@ private:
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;
   rclcpp::Subscription<line_detactor::msg::LaneResult>::SharedPtr lane_sub_, ir_lane_sub_;
   rclcpp::TimerBase::SharedPtr watchdog_, telemetry_, setup_timer_;
+  rclcpp::CallbackGroup::SharedPtr imu_group_, vehicle_group_, control_group_, status_group_, web_group_;
   OnSetParametersCallbackHandle::SharedPtr on_set_;
 };
 
