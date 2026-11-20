@@ -51,14 +51,14 @@ void ControlLoop::apply_settings(const Settings & s) {
   }
   s_ = s;
   auto lp = s.lane_memory;
-  lp.front_axle_to_rear_bumper = rc_.wheelbase + 0.12;
+  lp.front_axle_to_rear_bumper = rc_.wheelbase + s.planner.rear_overhang;
   lp.range_noise_base = s.memory.range_noise_base;
   lp.range_noise_per_m = s.memory.range_noise_per_m;
   lane_mem_.set_params(lp);
   rc_.camera.roi_height_ratio = s.roi_height_percent / 100.0;   // 검출 ROI를 바꾸면 '보여야 할 콘' 판정도 같이
   auto mp = s.memory;
   mp.camera_x = rc_.camera.camera_x;
-  mp.front_axle_to_rear_bumper = rc_.wheelbase + 0.12;
+  mp.front_axle_to_rear_bumper = rc_.wheelbase + s.planner.rear_overhang;
   memory_.set_params(mp);
   auto pp = s.planner;
   pp.wheelbase = rc_.wheelbase;

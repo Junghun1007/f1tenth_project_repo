@@ -69,11 +69,16 @@
     memory.lane_match_radius: 0.12      # [차선 기준] 같은 콘 판정 거리 (m)
     memory.lane_visible_s_min: 0.45     # [차선 기준] 이보다 가까우면 카메라 사각지대 → 지날 때까지 유지 (m)
     # 회피 계획
-    plan.hard_clearance: 0.018          # 차선 안 최소 여유 (m)
-    plan.soft_clearance: 0.055           # 차선 안 권장 여유 (m)
-    plan.relaxed_soft_clearance: 0.04   # 차선 안(여유 0) 권장 여유 (m)
-    plan.free_hard_clearance: 0.015     # 차선 밖 최소 여유 (m)
-    plan.free_soft_clearance: 0.12      # 차선 밖 권장 여유 (m)
+    # 경로 단계: ① 차선 안 → ② 차선 안·여유 축소 → ③ 차선 밖 (처음 길이 나오는 단계). 최소 여유는 세 단계 모두 안전 하한 이상
+    plan.hard_clearance: 0.02           # ① 차선 안 최소 여유 = 안전 하한 (m)
+    plan.soft_clearance: 0.06           # ① 차선 안 권장 여유 (m)
+    plan.relaxed_hard_clearance: 0.02   # ② 차선 안·여유 축소 최소 여유 (예전엔 코드에 0 고정 → 콘에 닿아도 통과) (m)
+    plan.relaxed_soft_clearance: 0.03   # ② 차선 안·여유 축소 권장 여유 (m)
+    plan.free_hard_clearance: 0.02      # ③ 차선 밖 최소 여유 (m)
+    plan.free_soft_clearance: 0.10      # ③ 차선 밖 권장 여유 (m)
+    plan.vehicle_length_m: 0.50         # 계획에 쓰는 차체 길이, 실측해서 맞출 것 (m)
+    plan.vehicle_width_m: 0.30          # 계획에 쓰는 차체 폭, 실측해서 맞출 것 (m)
+    plan.vehicle_rear_overhang_m: 0.12  # 뒤 차축 → 뒤 범퍼 (m)
     plan.lane_tolerance: 0.03           # 차선 안 허용 이탈 (m)
     plan.avoid_vehicles: 1.0            # 차량(트럭·세단)도 회피 (0=끔, 1=켬). 차량 크기만큼 13 cm 칸으로 채워 계획
     plan.free_max_excess: 1.0           # 차선 밖 회피에서도 차체가 차선 밖으로 나갈 최대 거리 (m). 1.0 = 사실상 제한 없음

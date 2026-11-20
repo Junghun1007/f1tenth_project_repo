@@ -36,11 +36,18 @@ void register_params(ParamRegistry & r) {
   o("콘 기억", "memory.lane_miss_delete", "[차선 기준] 보이는 구간 놓침 삭제", "", 1, 20, 3);
   o("콘 기억", "memory.lane_match_radius", "[차선 기준] 같은 콘 판정 거리", "m", 0.02, 0.4, 0.12);
   o("콘 기억", "memory.lane_visible_s_min", "[차선 기준] 사각지대 경계 (앞차축 앞)", "m", 0.1, 1.5, 0.45);
-  o("회피 계획", "plan.hard_clearance", "차선 안 최소 여유", "m", 0, 0.2, 0.018);
-  o("회피 계획", "plan.soft_clearance", "차선 안 권장 여유", "m", 0, 0.3, 0.055);
-  o("회피 계획", "plan.relaxed_soft_clearance", "차선 안(여유 0) 권장 여유", "m", 0, 0.3, 0.04);
-  o("회피 계획", "plan.free_hard_clearance", "차선 밖 최소 여유", "m", 0, 0.2, 0.015);
-  o("회피 계획", "plan.free_soft_clearance", "차선 밖 권장 여유", "m", 0, 0.3, 0.12);
+  // 경로는 ① 차선 안 → ② 차선 안·여유 축소 → ③ 차선 밖 순서로 처음 길이 나오는 단계를 쓴다.
+  // 최소 여유(차체 직사각형 ↔ 콘 사각형 빈틈, 이보다 가까우면 불가)는 세 단계 모두 같은 안전 하한 이상으로 둔다:
+  // ①만 올리면 ②(예전 0 고정)로 넘어가 오히려 콘에 더 붙는다
+  o("회피 계획", "plan.hard_clearance", "① 차선 안 최소 여유 (안전 하한)", "m", 0, 0.2, 0.02);
+  o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유", "m", 0, 0.3, 0.06);
+  o("회피 계획", "plan.relaxed_hard_clearance", "② 차선 안·여유 축소 최소 여유 (차선 밖으로 나가기 전 마지막 단계)", "m", 0, 0.2, 0.02);
+  o("회피 계획", "plan.relaxed_soft_clearance", "② 차선 안·여유 축소 권장 여유", "m", 0, 0.3, 0.03);
+  o("회피 계획", "plan.free_hard_clearance", "③ 차선 밖 최소 여유", "m", 0, 0.2, 0.02);
+  o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유", "m", 0, 0.3, 0.10);
+  o("회피 계획", "plan.vehicle_length_m", "계획에 쓰는 차체 길이 (실측, 범퍼 끝~끝)", "m", 0.3, 0.8, 0.50);
+  o("회피 계획", "plan.vehicle_width_m", "계획에 쓰는 차체 폭 (실측, 가장 넓은 곳)", "m", 0.15, 0.5, 0.30);
+  o("회피 계획", "plan.vehicle_rear_overhang_m", "뒤 차축 → 뒤 범퍼 (실측)", "m", 0, 0.3, 0.12);
   o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈", "m", 0, 0.1, 0.03);
   o("회피 계획", "plan.avoid_vehicles", "차량(트럭·세단)도 회피 (0=끔, 1=켬)", "", 0, 1, 1.0);
   o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 1.0);
@@ -120,6 +127,7 @@ void register_params(ParamRegistry & r) {
   r.add_order_constraint("drive.brake_exit_speed_error_mps", "drive.brake_entry_speed_error_mps");
   r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
+  r.add_order_constraint("plan.relaxed_hard_clearance", "plan.relaxed_soft_clearance");
   r.add_order_constraint("lane.corner_entry_full_offset_m", "lane.corner_entry_distance_m");
   r.add_order_constraint("object.min_height_m", "object.max_height_m");
 }
@@ -155,7 +163,11 @@ Settings settings_from(const ParamRegistry & r) {
   auto & p = s.planner;
   p.hard_clearance = g("plan.hard_clearance");
   p.soft_clearance = g("plan.soft_clearance");
+  p.relaxed_hard_clearance = g("plan.relaxed_hard_clearance");
   p.relaxed_soft_clearance = g("plan.relaxed_soft_clearance");
+  p.length = g("plan.vehicle_length_m");
+  p.width = g("plan.vehicle_width_m");
+  p.rear_overhang = g("plan.vehicle_rear_overhang_m");
   p.free_hard_clearance = g("plan.free_hard_clearance");
   p.free_soft_clearance = g("plan.free_soft_clearance");
   p.lane_tolerance = g("plan.lane_tolerance");
