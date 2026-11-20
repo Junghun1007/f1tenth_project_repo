@@ -5,6 +5,13 @@
 
 namespace cone_drive_test {
 
+void set_field_of_view(CameraGeometry & g, double fx, double fy, int width, int height) {
+  if (!(fx > 0) || !(fy > 0) || width <= 0 || height <= 0) return;
+  const double tan_h = 0.5 * width / fx, tan_v = 0.5 * height / fy;
+  g.hfov_rad = 2.0 * std::atan(tan_h);
+  g.aspect = tan_v / tan_h;
+}
+
 std::vector<int> expected_visible(const std::vector<Vec2> & cones, const CameraGeometry & g, double size) {
   const double tan_h = std::tan(g.hfov_rad / 2), tan_v = tan_h * g.aspect;
   const double roi_top = 1.0 - g.roi_height_ratio;   // 화면 위에서부터 비율

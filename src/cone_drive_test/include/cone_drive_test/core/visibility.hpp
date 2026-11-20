@@ -18,6 +18,11 @@ struct CameraGeometry {
   double threshold{0.8};
 };
 
+// 화각을 실제 카메라(검출 영상) 내부 파라미터로: 가로 화각 = 2·atan(폭/2 / fx), 세로/가로 비 = (높이/2 / fy) / (폭/2 / fx).
+// 기본값(69°, 800/1280)은 실제(약 97°, 아래쪽 36°)보다 좁아, 0.2~0.42 m 앞 콘을 '못 보는 위치'로 판정했다
+// → 안 보여도 놓침이 안 쌓이고 사각지대 보호로 유령 정리도 안 돼 정지 중 계속 남았다
+void set_field_of_view(CameraGeometry & g, double fx, double fy, int width, int height);
+
 std::vector<int> expected_visible(const std::vector<Vec2> & cones_local, const CameraGeometry & g, double cone_size);
 
 }  // namespace cone_drive_test

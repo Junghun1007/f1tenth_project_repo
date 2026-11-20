@@ -384,6 +384,7 @@ private:
     auto geometry = rc_.camera;
     geometry.height = m.height_m;
     geometry.pitch_rad = cdt::degToRad(m.pitch_down_deg);
+    cdt::set_field_of_view(geometry, cam_cfg_.fx, cam_cfg_.fy, cam_cfg_.width, cam_cfg_.height);   // 검출 영상 화각 (확대 전)
     geometry.roi_height_ratio = registry_.get("yolo.roi_height_percent") / 100.0;
     loop_->set_camera_geometry(geometry);
     loop_->set_attitude({true, m.height_m, m.roll_deg, m.pitch_down_deg, "PASS", ""});
