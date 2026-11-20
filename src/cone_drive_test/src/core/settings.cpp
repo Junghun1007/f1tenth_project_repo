@@ -25,6 +25,7 @@ void register_params(ParamRegistry & r) {
   o("위치 추정", "object.min_height_m", "지면 제거 높이", "m", 0, 0.3, 0.03);
   o("위치 추정", "object.max_height_m", "최대 높이", "m", 0.05, 1.5, 1.0);
   o("위치 추정", "object.cone_size_m", "콘 크기", "m", 0.05, 0.5, 0.13);
+  o("위치 추정", "object.bearing_offset_deg", "검출 방향 보정 (+ = 왼쪽으로 돌림). 녹화 분석: 멀리서 본 콘이 일정하게 왼쪽 → 약 −2.4°", "°", -10, 10, -2.4);
   o("콘 기억", "memory.gate_radial_max", "거리 방향 게이트", "m", 0.02, 0.5, 0.17);
   o("콘 기억", "memory.gate_lateral", "옆 방향 게이트", "m", 0.01, 0.3, 0.06);
   o("콘 기억", "memory.merge_distance", "병합 거리", "m", 0.01, 0.3, 0.10);
@@ -40,17 +41,17 @@ void register_params(ParamRegistry & r) {
   // 최소 여유(차체 직사각형 ↔ 콘 사각형 빈틈, 이보다 가까우면 불가)는 세 단계 모두 같은 안전 하한 이상으로 둔다:
   // ①만 올리면 ②(예전 0 고정)로 넘어가 오히려 콘에 더 붙는다
   o("회피 계획", "plan.hard_clearance", "① 차선 안 최소 여유 (안전 하한)", "m", 0, 0.2, 0.02);
-  o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유", "m", 0, 0.3, 0.06);
+  o("회피 계획", "plan.soft_clearance", "① 차선 안 권장 여유 (수동 주행 녹화: 차선 안 통과 빈틈 중앙값 약 11 cm)", "m", 0, 0.3, 0.10);
   o("회피 계획", "plan.relaxed_hard_clearance", "② 차선 안·여유 축소 최소 여유 (차선 밖으로 나가기 전 마지막 단계)", "m", 0, 0.2, 0.02);
-  o("회피 계획", "plan.relaxed_soft_clearance", "② 차선 안·여유 축소 권장 여유", "m", 0, 0.3, 0.03);
+  o("회피 계획", "plan.relaxed_soft_clearance", "② 차선 안·여유 축소 권장 여유", "m", 0, 0.3, 0.05);
   o("회피 계획", "plan.free_hard_clearance", "③ 차선 밖 최소 여유", "m", 0, 0.2, 0.02);
-  o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유", "m", 0, 0.3, 0.10);
+  o("회피 계획", "plan.free_soft_clearance", "③ 차선 밖 권장 여유 (녹화: 차선 밖 통과 빈틈 중앙값 약 10 cm)", "m", 0, 0.3, 0.10);
   o("회피 계획", "plan.vehicle_length_m", "계획에 쓰는 차체 길이 (실측, 범퍼 끝~끝)", "m", 0.3, 0.8, 0.50);
   o("회피 계획", "plan.vehicle_width_m", "계획에 쓰는 차체 폭 (실측, 가장 넓은 곳)", "m", 0.15, 0.5, 0.30);
   o("회피 계획", "plan.vehicle_rear_overhang_m", "뒤 차축 → 뒤 범퍼 (실측)", "m", 0, 0.3, 0.12);
   o("회피 계획", "plan.lane_tolerance", "차선 안 허용 이탈", "m", 0, 0.1, 0.03);
   o("회피 계획", "plan.avoid_vehicles", "차량(트럭·세단)도 회피 (0=끔, 1=켬)", "", 0, 1, 1.0);
-  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈", "m", 0, 1, 1.0);
+  o("회피 계획", "plan.free_max_excess", "차선 밖 회피 최대 이탈 (녹화: 사람 최대 약 66 cm)", "m", 0, 1, 0.70);
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 1.2);
   o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
   o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
@@ -142,6 +143,7 @@ Settings settings_from(const ParamRegistry & r) {
   s.yolo_max_fps = g("yolo.max_fps");
   s.cone_size_m = g("object.cone_size_m");
   s.box.box_core_fraction = g("object.box_core_fraction");
+  s.box.bearing_offset_rad = g("object.bearing_offset_deg") * 3.14159265358979323846 / 180.0;
   s.box.loc.min_points = std::size_t(std::lround(g("object.min_points")));
   s.box.loc.min_fraction = g("object.min_point_share");
   s.box.loc.window_base_m = g("object.window_base_m");

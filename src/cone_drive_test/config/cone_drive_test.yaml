@@ -56,6 +56,7 @@
     object.min_height_m: 0.03           # 지면 제거 높이 (m)
     object.max_height_m: 1.0            # 최대 높이 (m)
     object.cone_size_m: 0.13            # 콘 크기 (m)
+    object.bearing_offset_deg: -2.4     # 검출 방향 보정 (°, + = 왼쪽). 수동 주행 녹화 6회 분석값 (−1.5 ~ −3.5, 평균 −2.4)
     # 콘 기억
     memory.gate_radial_max: 0.17        # 거리 방향 게이트 (m)
     memory.gate_lateral: 0.06           # 옆 방향 게이트 (m)
@@ -71,17 +72,17 @@
     # 회피 계획
     # 경로 단계: ① 차선 안 → ② 차선 안·여유 축소 → ③ 차선 밖 (처음 길이 나오는 단계). 최소 여유는 세 단계 모두 안전 하한 이상
     plan.hard_clearance: 0.02           # ① 차선 안 최소 여유 = 안전 하한 (m)
-    plan.soft_clearance: 0.06           # ① 차선 안 권장 여유 (m)
+    plan.soft_clearance: 0.10           # ① 차선 안 권장 여유 (m). 수동 주행 녹화: 차선 안 통과 빈틈 중앙값 약 11 cm
     plan.relaxed_hard_clearance: 0.02   # ② 차선 안·여유 축소 최소 여유 (예전엔 코드에 0 고정 → 콘에 닿아도 통과) (m)
-    plan.relaxed_soft_clearance: 0.03   # ② 차선 안·여유 축소 권장 여유 (m)
+    plan.relaxed_soft_clearance: 0.05   # ② 차선 안·여유 축소 권장 여유 (m)
     plan.free_hard_clearance: 0.02      # ③ 차선 밖 최소 여유 (m)
-    plan.free_soft_clearance: 0.10      # ③ 차선 밖 권장 여유 (m)
+    plan.free_soft_clearance: 0.10      # ③ 차선 밖 권장 여유 (m). 녹화: 차선 밖 통과 빈틈 중앙값 약 10 cm
     plan.vehicle_length_m: 0.50         # 계획에 쓰는 차체 길이, 실측해서 맞출 것 (m)
     plan.vehicle_width_m: 0.30          # 계획에 쓰는 차체 폭, 실측해서 맞출 것 (m)
     plan.vehicle_rear_overhang_m: 0.12  # 뒤 차축 → 뒤 범퍼 (m)
     plan.lane_tolerance: 0.03           # 차선 안 허용 이탈 (m)
     plan.avoid_vehicles: 1.0            # 차량(트럭·세단)도 회피 (0=끔, 1=켬). 차량 크기만큼 13 cm 칸으로 채워 계획
-    plan.free_max_excess: 1.0           # 차선 밖 회피에서도 차체가 차선 밖으로 나갈 최대 거리 (m). 1.0 = 사실상 제한 없음
+    plan.free_max_excess: 0.70          # 차선 밖 회피에서 차체가 차선 밖으로 나갈 최대 거리 (m). 녹화: 사람 최대 약 66 cm
     plan.lane_return_distance: 1.2      # 차선 복귀 거리 (m)
     plan.rollout_sec: 1.5               # 롤아웃 시간 (s)
     plan.rollout_retry_margin: 0.03     # 재계획 여유 (m)

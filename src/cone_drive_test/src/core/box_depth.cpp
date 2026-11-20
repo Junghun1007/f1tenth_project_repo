@@ -38,7 +38,7 @@ std::optional<ConeObservation> localize_box(const std::uint16_t * depth_mm, int 
   if (pts.size() < o.loc.min_points) { pts.clear(); collect(depth_mm, stride_px, k, R, m, full, o, pts); }
   // 방향: 박스 중심 픽셀의 시선을 지면에 투영
   const cv::Vec3d ray = R * cv::Vec3d((box.x + box.width / 2 - k.cx) / k.fx, (box.y + box.height / 2 - k.cy) / k.fy, 1.0);
-  const double bearing = std::atan2(ray[1], ray[0]);
+  const double bearing = std::atan2(ray[1], ray[0]) + o.bearing_offset_rad;
   const auto est = localize(pts, m.x, m.y, bearing, footprint, o.loc);
   if (!est.valid) return std::nullopt;
   ConeObservation c;

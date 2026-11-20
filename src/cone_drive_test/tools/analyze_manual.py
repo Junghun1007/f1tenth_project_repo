@@ -51,25 +51,57 @@ def line_fit(P, lo=0.1, hi=0.8):
     return np.polyfit(P[m, 0], P[m, 1], 1) if m.sum() >= 4 else None
 
 
-def cluster_cones(F):
-    """프레임마다 기억 콘 목록 → 콘 하나당 가장 최근 위치 (10 cm 안은 같은 콘)"""
-    out = []
+def cluster_cones(F, radius=0.15, min_frames=15):
+    """프레임마다 기억 콘 목록 → 콘 하나당 가장 최근 위치. radius 안은 같은 콘으로 보고,
+    min_frames보다 적게 나온 것(잠깐 생겼다 사라진 기억 = 오검출·위치 흔들림으로 생긴 복제)은 뺀다"""
+    out = []   # [x, y, 나온 프레임 수]
     for f in F:
         for c in f['cones']:
             for o in out:
-                if math.hypot(o[0] - c[0], o[1] - c[1]) < 0.10: o[0], o[1] = c[0], c[1]; break
-            else: out.append([c[0], c[1]])
-    return np.array(out)
+                if math.hypot(o[0] - c[0], o[1] - c[1]) < radius: o[0], o[1] = c[0], c[1]; o[2] += 1; break
+            else: out.append([c[0], c[1], 1])
+    keep = np.array([o[:2] for o in out if o[2] >= min_frames])
+    return keep, len(out) - len(keep)
 
 
-def analyze(run):
+def cones_from_obs(run, bearing_deg, cam_x=-0.09, near=1.0):
+    """cone_obs.csv에서 콘마다 가까이(카메라 1 m 안) 본 관측 평균 = 기억 오차가 가장 작은 위치.
+    bearing_deg: 관측을 카메라 기준으로 돌릴 각 (검출 방향 치우침 보정, analyze_cone_obs·bearing 분석 값)"""
+    path = os.path.join(run, 'cone_obs.csv')
+    if not os.path.exists(path): return None
+    R = list(csv.DictReader(open(path)))
+    if not R: return None
+    a = math.radians(bearing_deg); c, s = math.cos(a), math.sin(a)
+    acc = {}
+    for r in R:
+        if int(float(r['class'])) != 0: continue
+        lx, ly = float(r['local_x']) - cam_x, float(r['local_y'])
+        if math.hypot(lx, ly) > near: continue
+        X, Y = cam_x + c * lx - s * ly, s * lx + c * ly
+        px, py, yw = float(r['pose_x']), float(r['pose_y']), float(r['pose_yaw'])
+        w = (px + math.cos(yw) * X - math.sin(yw) * Y, py + math.sin(yw) * X + math.cos(yw) * Y)
+        acc.setdefault(int(float(r['id'])), []).append(w)
+    out = [np.mean(v, axis=0) for v in acc.values() if len(v) >= 3]
+    # 기억 id가 바뀌어 같은 콘이 둘로 나뉜 경우 합침
+    merged = []
+    for q in out:
+        for m in merged:
+            if math.hypot(m[0] - q[0], m[1] - q[1]) < 0.12: m[0], m[1] = (m[0] + q[0]) / 2, (m[1] + q[1]) / 2; break
+        else: merged.append([q[0], q[1]])
+    return np.array(merged)
+
+
+def analyze(run, bearing_deg=None):
     meta, F = load(run)
     L, W, ro, wb, cs = meta['vehicle_length'], meta['vehicle_width'], meta['rear_overhang'], meta['wheelbase'], meta['cone_size']
     hl, hw, hc = L / 2, W / 2, cs / 2
     off = L / 2 - ro - wb   # 앞차축 → 차체 중심 (음수)
     F = [f for f in F if f['v'] > 0.1]
     if len(F) < 20: return None
-    cones = cluster_cones(F)
+    cones, ghosts = cluster_cones(F)
+    if bearing_deg is not None:   # 기억 위치 대신 가까이서 본 관측으로 (기억 위치 오차를 빼고 사람이 실제로 둔 빈틈을 본다)
+        oc = cones_from_obs(run, bearing_deg)
+        if oc is not None and len(oc): cones = oc
     # 주행 거리 (앞차축)
     xy = np.array([[f['x'], f['y']] for f in F]); s_car = np.concatenate([[0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
     # 프레임마다: 차선 가운데 대비 앞차축 옆 위치, 차체 차선 이탈량
@@ -88,7 +120,8 @@ def analyze(run):
         if g[i] > 0.5: continue                   # 옆을 지나지 않은 콘
         # 사람이 지난 위치 기준 앞뒤 거리 (콘의 차량 기준 x가 0이 되는 순간)
         loc_x = np.array([math.cos(f['yaw']) * (c[0] - f['x']) + math.sin(f['yaw']) * (c[1] - f['y']) for f in F])
-        near = np.abs(loc_x) < 1.5
+        # 이 콘을 지나는 동안 (가장 가까웠던 순간 앞뒤 0.6 m 주행)만
+        near = np.abs(s_car - s_car[i]) < 0.6
         ex = np.nanmax(excess[near]) if np.isfinite(excess[near]).any() else np.nan
         # 계획기 경로의 빈틈: 콘이 0.5~2.0 m 앞에 있을 때 그 순간 계획 경로
         pg = []
@@ -109,7 +142,7 @@ def analyze(run):
                         mode=F[i]['mode'], v=F[i]['v']))
     modes = {}
     for f in F: modes[f['mode']] = modes.get(f['mode'], 0) + 1
-    return meta, res, modes
+    return meta, res, modes, ghosts
 
 
 def pct(a, q):
@@ -117,13 +150,18 @@ def pct(a, q):
     return float(np.percentile(a, q)) if len(a) else float('nan')
 
 
-def main(runs):
+def main(argv):
+    bearing = None
+    if argv and argv[0].startswith('--bearing='):
+        bearing = float(argv[0].split('=')[1]); argv = argv[1:]
+    runs = argv
+    if bearing is not None: print('콘 위치: 가까이(1 m 안)서 본 관측 평균, 방향 보정 %+.2f°' % bearing)
     allr = []
     for run in runs:
-        out = analyze(run)
+        out = analyze(run, bearing)
         if out is None: print('%s: 주행 프레임이 모자람' % run); continue
-        meta, res, modes = out
-        print('\n== %s (%s) 콘 %d개 · 계획 모드 %s' % (os.path.basename(run.rstrip('/')), meta['label'], len(res),
+        meta, res, modes, ghosts = out
+        print('\n== %s (%s) 콘 %d개 (잠깐 생겼다 사라진 기억 %d개 제외) · 계획 모드 %s' % (os.path.basename(run.rstrip('/')), meta['label'], len(res), ghosts,
               ', '.join('%s %d%%' % (k, 100 * v // max(1, sum(modes.values()))) for k, v in modes.items())))
         print('   콘  사람 최소 빈틈  차체 차선 이탈  계획기 빈틈  복귀 거리  속도')
         for r in res:
@@ -155,4 +193,4 @@ def main(runs):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2: print(__doc__); sys.exit(1)
-    main(sys.argv[1:])
+    main(sys.argv[1:])   # [--bearing=-2.4] 폴더...

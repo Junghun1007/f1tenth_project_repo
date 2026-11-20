@@ -17,6 +17,9 @@ struct BoxDepthOptions {
   double min_height_m{0.03};       // 지면 제거
   double max_height_m{1.0};
   double min_depth_m{0.15}, max_depth_m{4.0};
+  // 검출 방향 보정 (rad, + = 반시계/왼쪽): 박스 중심 시선 방향에 더한다 = 카메라 기준으로 관측을 돌림.
+  // 수동 주행 녹화 6회에서 같은 콘을 멀리서 본 위치가 가까이서 본 위치보다 일정하게 왼쪽(약 2.4°)으로 치우쳐 있었다
+  double bearing_offset_rad{0.0};
   LocalizationOptions loc;
 };
 

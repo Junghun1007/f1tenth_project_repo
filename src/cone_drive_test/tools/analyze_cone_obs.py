@@ -61,10 +61,10 @@ def main(path, cam_x=-0.09):
     k_r, c_r = fit(rng, er)
     print('\n[원인별]')
     print('  거리 방향 어긋남 = %.1f cm/m × 거리 %+.1f cm   → 스테레오 거리 배율 오차 약 %+.1f%%' % (k_r * 100, c_r * 100, k_r * 100))
-    tau, k_best, sc0, sc1 = search_time_and_scale(d, cam_x)
-    print('  시각 어긋남: 자세를 %+.0f ms 옮기고 거리 배율 %+.1f%%를 되돌리면 같은 콘 위치의 퍼짐이 %.1f → %.1f cm'
-          % (tau * 1000, k_best * 100, sc0 * 100, sc1 * 100))
-    print('     (+ = 영상이 기록된 시각보다 늦은 순간의 장면)')
+    tau, k_best, a_best, sc0, sc1 = search_time_and_scale(d, cam_x)
+    print('  가장 잘 모이는 보정: 방향 %+.2f° (object.bearing_offset_deg에 더할 값), 시간 %+.0f ms, 거리 배율 %+.1f%% → 같은 콘 위치의 퍼짐 %.1f → %.1f cm'
+          % (a_best, tau * 1000, k_best * 100, sc0 * 100, sc1 * 100))
+    print('     (방향 + = 관측을 왼쪽으로 돌림, 시간 + = 영상이 기록된 시각보다 늦은 순간의 장면)')
     print('\n[판단 기준] 거리 배율 오차가 ±1%% 넘거나 시간차가 ±10 ms 넘고, 퍼짐이 눈에 띄게 줄면 그 항목을 보정할 가치가 있다')
 
 
@@ -80,9 +80,10 @@ def search_time_and_scale(d, cam_x):
     keep = np.isin(ids, [i for i in np.unique(ids) if (ids == i).sum() >= 8])
     ids, lx, ly, tp = ids[keep], lx[keep], ly[keep], tp[keep]
     rx, ry = lx - cam_x, ly
-    def spread(tau, k):
+    def spread(tau, k, a=0.0):
         px = np.interp(tp + tau, tt, PX); py = np.interp(tp + tau, tt, PY); yaw = np.interp(tp + tau, tt, PYAW)
-        sx, sy = cam_x + rx / (1 + k), ry / (1 + k)
+        ca, sa = math.cos(a), math.sin(a)
+        sx, sy = cam_x + (ca * rx - sa * ry) / (1 + k), (sa * rx + ca * ry) / (1 + k)
         wx = px + np.cos(yaw) * sx - np.sin(yaw) * sy; wy = py + np.sin(yaw) * sx + np.cos(yaw) * sy
         tot, n = 0.0, 0
         for i in np.unique(ids):
@@ -90,12 +91,18 @@ def search_time_and_scale(d, cam_x):
             tot += ((wx[m] - wx[m].mean()) ** 2 + (wy[m] - wy[m].mean()) ** 2).sum(); n += m.sum()
         return math.sqrt(tot / max(1, n))
     s0 = spread(0.0, 0.0)
-    best = (s0, 0.0, 0.0)
-    for tau in np.arange(-0.10, 0.1001, 0.005):
-        for k in np.arange(-0.08, 0.0801, 0.005):
-            v = spread(tau, k)
-            if v < best[0]: best = (v, tau, k)
-    return best[1], best[2], s0, best[0]
+    best = (s0, 0.0, 0.0, 0.0)
+    for a in np.arange(-6.0, 6.01, 0.5):       # 먼저 방향·거리 (시간 0)
+        for k in np.arange(-0.06, 0.0601, 0.01):
+            v = spread(0.0, k, math.radians(a))
+            if v < best[0]: best = (v, 0.0, k, a)
+    _, _, k0, a0 = best
+    for tau in np.arange(-0.08, 0.0801, 0.005):   # 그 근처에서 시간까지 같이
+        for da in (-0.5, -0.25, 0.0, 0.25, 0.5):
+            for dk in (-0.01, -0.005, 0.0, 0.005, 0.01):
+                v = spread(tau, k0 + dk, math.radians(a0 + da))
+                if v < best[0]: best = (v, tau, k0 + dk, a0 + da)
+    return best[1], best[2], best[3], s0, best[0]
 
 
 if __name__ == '__main__':
