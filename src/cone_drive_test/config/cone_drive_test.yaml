@@ -98,6 +98,7 @@
     plan.rollout_sec: 1.5               # 롤아웃 시간 (s)
     plan.rollout_retry_margin: 0.03     # 재계획 여유 (m)
     plan.s_max: 1.5       # 계획 거리 (m). 녹화로 맞춤 (사람은 1.5 m 앞부터 반응)
+    plan.forward_extension_m: 0.0       # 코너에서 잘린 중앙선을 끝 곡률로 늘리는 최대 길이 (m, 0=끔, 시험용). 중앙선 끝 너머 콘은 항상 회피 계획에서 뺌
     # 속도
     drive.maximum_speed_mps: 1.3        # 최대 속도 (m/s)
     drive.minimum_speed_mps: 1.1        # 최소 속도(코너) (m/s)

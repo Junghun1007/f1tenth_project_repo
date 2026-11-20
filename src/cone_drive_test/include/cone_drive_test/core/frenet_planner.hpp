@@ -21,6 +21,12 @@ struct PlannerParams {
   double activation_margin{0.05};   // 회피 계획을 켜는 띠 여유 (차체 반폭 + 권장 여유 + 콘 반폭에 더함)    // 차선 밖 회피에서 차체가 차선 밖으로 나갈 최대 거리 (m). 1.0 = 시뮬레이터와 같음(사실상 제한 없음), 실차 기본은 settings 0.10
   double w_offset{20}, w_slope{1}, w_curvature{0.08}, max_curvature{3.5};
   double rollout_sec{1.5}, rollout_retry_margin{0.03}, backward_extension{0.8};
+  // 기준선(중앙선) 끝보다 beyond_end_margin 넘게 앞인 콘은 차선 좌표를 믿을 수 없으므로 회피 계획(비용·단계 판정)에서 뺀다.
+  // 롤아웃 충돌 검사에는 그대로 넣는다. (코너에서 BEV 옆 끝에 잘린 중앙선을 끝 방향 직선으로 늘려 계산하면
+  // 계속 꺾이는 길의 바깥 콘이 차선 한가운데로 나와 차선 밖으로 밀려났다. 녹화 재생: 코너 끝 fallback 41→31, 롤아웃 실패 68→44)
+  // forward_extension: 중앙선이 계획 거리보다 짧으면 끝 곡률을 0까지 줄여 가며 원호로 늘린다 (0 = 끔, 기본 끔).
+  // 녹화 재생에서는 늘린 길로 콘을 계산하면 오히려 막힘이 늘었다 (코너 끝 fallback 41→69~75) → 실차 시험용
+  double forward_extension{0.0}, beyond_end_margin{0.1};
   double cone_half{0.065};
   // 차량
   double wheelbase{0.33}, length{0.50}, width{0.30}, rear_overhang{0.12};

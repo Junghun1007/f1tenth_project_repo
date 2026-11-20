@@ -96,6 +96,32 @@ std::vector<Vec2> extend_backward(const std::vector<Vec2> & c, double length, do
   return out;
 }
 
+std::vector<Vec2> extend_forward_arc(const std::vector<Vec2> & c, double length, double fit_length, double max_curvature,
+                                     double spacing) {
+  const std::size_t n = c.size();
+  if (n < 3 || !(length > 0) || !(spacing > 0)) return c;
+  auto heading = [&](std::size_t i) { return std::atan2(c[i + 1].y - c[i].y, c[i + 1].x - c[i].x); };
+  // 끝에서 fit_length 앞 지점을 찾아 두 지점의 방향 차이 / 거리 = 평균 곡률
+  std::size_t j = n - 2;
+  double run = 0;
+  while (j > 0 && run < fit_length) { run += std::hypot(c[j + 1].x - c[j].x, c[j + 1].y - c[j].y); --j; }
+  const double h1 = heading(n - 2);
+  double k = run > 1e-6 ? std::remainder(h1 - heading(j), 2 * M_PI) / run : 0.0;
+  k = std::clamp(k, -max_curvature, max_curvature);
+  std::vector<Vec2> out = c;
+  double x = c.back().x, y = c.back().y, h = h1;
+  // 곡률은 끝에서 0까지 선형으로 줄인다: 늘린 길이 L 동안 더 꺾는 각 = k·L/2 (그대로 이으면 k·L로 90°를 넘겨 되돌아온다)
+  for (double s = spacing; s <= length + 1e-9; s += spacing) {
+    const double km = k * (1.0 - (s - spacing / 2) / length);
+    h += km * spacing / 2;   // 중점 방향으로 한 걸음
+    x += spacing * std::cos(h);
+    y += spacing * std::sin(h);
+    h += km * spacing / 2;
+    out.push_back({x, y});
+  }
+  return out;
+}
+
 FrenetFrame frenet_frame(const std::vector<Vec2> & center) {
   FrenetFrame f;
   const std::size_t n = center.size();

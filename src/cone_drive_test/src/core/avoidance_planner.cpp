@@ -3,6 +3,7 @@
 #include "cone_drive_test/core/path_utils.hpp"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <numeric>
 
 namespace cone_drive_test {
@@ -28,15 +29,26 @@ PlanResult AvoidancePlanner::plan(const LaneObservation & lane, const std::vecto
     out.rollout_ok = false;
     return out;
   }
-  const auto center = extend_backward(smooth_center(ref), p_.backward_extension);
+  auto center = extend_backward(smooth_center(ref), p_.backward_extension);
   auto f = frenet_frame(center);
-  const Vec2 origin = project_sl({0.0, 0.0}, f);   // 앞차축의 s를 0으로
+  Vec2 origin = project_sl({0.0, 0.0}, f);   // 앞차축의 s를 0으로
+  // 코너에서 중앙선이 BEV 옆 끝에 잘려 계획 거리보다 짧으면 끝 곡률 그대로 원호로 늘린다.
+  // 직선으로 늘리면(끝 방향 연장) 계속 꺾이는 길의 바깥 콘이 차선 한가운데로 계산돼 차선 밖으로 밀려났다
+  const double short_by = p_.s_max - (f.arc.back() - origin.x);
+  if (p_.forward_extension > 0 && short_by > 0.02) {
+    const double max_k = std::tan(p_.max_steer_rad) / p_.wheelbase;
+    center = extend_forward_arc(center, std::min(p_.forward_extension, short_by), 0.25, max_k);
+    f = frenet_frame(center);
+    origin = project_sl({0.0, 0.0}, f);
+  }
   for (auto & a : f.arc) a -= origin.x;
   const double l0 = origin.y;
   std::vector<Vec2> mem_local, cones_sl;
   for (const auto & w : cones_world) {
-    mem_local.push_back(to_local(w, pose));
-    cones_sl.push_back(project_sl(mem_local.back(), f));
+    mem_local.push_back(to_local(w, pose));   // 롤아웃 충돌 검사: 모든 콘
+    const Vec2 sl = project_sl(mem_local.back(), f);
+    if (sl.x > f.arc.back() + p_.beyond_end_margin) continue;   // 기준선 끝 너머: 차선 좌표를 믿을 수 없음
+    cones_sl.push_back(sl);
   }
   const Vec2 rear_sl = project_sl({-p_.wheelbase, 0.0}, f);
   const double s_end = std::min(p_.s_max, f.arc.back());

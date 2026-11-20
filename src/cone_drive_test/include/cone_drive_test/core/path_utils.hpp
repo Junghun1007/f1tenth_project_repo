@@ -28,6 +28,10 @@ struct FrenetFrame {
 };
 std::vector<Vec2> smooth_center(const std::vector<Vec2> & c);
 std::vector<Vec2> extend_backward(const std::vector<Vec2> & c, double length, double spacing = 0.05);
+// 끝을 마지막 fit_length 구간의 곡률 그대로 원호로 length만큼 잇는다 (|곡률| ≤ max_curvature).
+// 코너 도중 BEV 옆 끝에서 잘린 중앙선을 직선이 아니라 계속 꺾이는 길로 늘린다
+std::vector<Vec2> extend_forward_arc(const std::vector<Vec2> & c, double length, double fit_length, double max_curvature,
+                                     double spacing = 0.05);
 FrenetFrame frenet_frame(const std::vector<Vec2> & center);
 Vec2 project_sl(const Vec2 & p, const FrenetFrame & f);                 // (s, l)
 Vec2 from_frenet(double s, double l, const FrenetFrame & f);

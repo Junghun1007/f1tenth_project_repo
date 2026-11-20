@@ -1,5 +1,6 @@
 #include "check.hpp"
 #include "planner_params.hpp"
+#include "cone_drive_test/core/path_utils.hpp"
 #include <chrono>
 
 using namespace cone_drive_test;
@@ -110,4 +111,15 @@ TEST(dp_runtime) {
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / 100;
   std::cout << "  lane DP avg " << ms << " ms\n";
   CHECK(ms < 3.0);
+}
+
+TEST(forward_arc_extension_keeps_turning) {   // 반지름 1 m로 꺾이다 잘린 중앙선 → 늘린 부분은 곡률을 0까지 줄이며 k·L/2만큼 더 꺾인다
+  std::vector<Vec2> c;
+  for (double a = 0; a <= 0.6 + 1e-9; a += 0.02) c.push_back({std::sin(a), -(1 - std::cos(a))});   // 오른쪽으로 0.6 rad
+  const auto e = extend_forward_arc(c, 0.6, 0.25, 1.75);
+  const auto n = e.size();
+  const double head = std::atan2(e[n - 1].y - e[n - 2].y, e[n - 1].x - e[n - 2].x);
+  CHECK_NEAR(head, -(0.6 + 1.0 * 0.6 / 2), 0.05);
+  const auto tight = extend_forward_arc(c, 0.6, 0.25, 0.5);   // 곡률 상한으로 덜 꺾임
+  CHECK(tight.back().y > e.back().y + 0.02);
 }

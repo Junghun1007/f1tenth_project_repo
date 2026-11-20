@@ -112,3 +112,16 @@ TEST(avoidance_turns_on_only_for_cones_in_the_driving_corridor) {   // 차가 �
   CHECK(pl.plan(straight_lane(), {{1.2, 0.40}}, {0, 0, 0}, 1.0, 0.0).mode == PlanMode::Center);   // 차선 안이지만 띠 밖
   CHECK(pl.plan(straight_lane(), {{1.2, 0.25}}, {0, 0, 0}, 1.0, 0.0).mode != PlanMode::Center);   // 띠 안
 }
+
+TEST(cones_beyond_reference_end_do_not_block_the_lane) {   // 짧게 잘린 중앙선(0.5 m) 끝 너머 콘은 회피 계획에서 빠진다
+  LaneObservation lane;
+  for (double x = -0.1; x <= 0.5 + 1e-9; x += 0.05) { lane.center.push_back({x, 0}); lane.path.push_back({x, 0}); }
+  lane.valid = true;
+  AvoidancePlanner pl{PlannerParams{}, ControlParams{}};
+  // 끝 방향 직선 위 0.75 m: 예전에는 차선 한가운데 콘으로 계산돼 회피가 켜졌다
+  CHECK(pl.plan(lane, {{0.75, 0.0}}, {0, 0, 0}, 1.0, 0.0).mode == PlanMode::Center);
+  PlannerParams off;
+  off.beyond_end_margin = 100;
+  AvoidancePlanner old{off, ControlParams{}};
+  CHECK(old.plan(lane, {{0.75, 0.0}}, {0, 0, 0}, 1.0, 0.0).mode != PlanMode::Center);
+}

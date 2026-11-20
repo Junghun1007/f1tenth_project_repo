@@ -68,6 +68,7 @@ void register_params(ParamRegistry & r) {
   o("회피 계획", "plan.lane_return_distance", "차선 복귀 거리", "m", 0.1, 3, 1.2);
   o("회피 계획", "plan.rollout_sec", "롤아웃 시간", "s", 0.2, 3, 1.5);
   o("회피 계획", "plan.rollout_retry_margin", "재계획 여유", "m", 0, 0.1, 0.03);
+  o("회피 계획", "plan.forward_extension_m", "코너에서 잘린 중앙선을 끝 곡률로(끝에서 0까지 줄이며) 늘리는 최대 길이 (0=끔, 시험용: 녹화 재생에선 막힘이 늘었음)", "m", 0, 1.5, 0.0);
   o("회피 계획", "plan.s_max", "계획 거리 (수동 주행 녹화로 맞춤: 사람은 1.5 m 앞부터 반응)", "m", 1, 3.5, 1.5);
   d("속도", "drive.maximum_speed_mps", "최대 속도", "m/s", 0, 3, 1.3);
   d("속도", "drive.minimum_speed_mps", "최소 속도(코너)", "m/s", 0, 2, 1.1);
@@ -204,6 +205,7 @@ Settings settings_from(const ParamRegistry & r) {
   p.rollout_sec = g("plan.rollout_sec");
   p.rollout_retry_margin = g("plan.rollout_retry_margin");
   p.s_max = g("plan.s_max");
+  p.forward_extension = g("plan.forward_extension_m");
   p.cone_half = s.cone_size_m / 2;
   s.maximum_lateral_accel = g("drive.maximum_lateral_accel");
   s.planning_decel = g("drive.planning_decel");
