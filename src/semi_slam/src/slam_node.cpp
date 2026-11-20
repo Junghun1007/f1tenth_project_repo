@@ -15,6 +15,7 @@
 #include "semi_slam/core/lane_fit.hpp"
 #include "semi_slam/core/mini_json.hpp"
 #include "semi_slam/core/run_store.hpp"
+#include "semi_slam/core/vehicle_accel.hpp"
 #include "semi_slam/core/system_monitor.hpp"
 #include "semi_slam/runtime/camera_pipeline.hpp"
 #include "semi_slam/runtime/lane_worker.hpp"
@@ -130,7 +131,9 @@ public:
     erpm_sub_ = create_subscription<std_msgs::msg::Int32>(declare_parameter<std::string>("topics.measured_erpm", "vesc/measured_erpm"), command_qos,
       [this](std_msgs::msg::Int32::ConstSharedPtr m) {
         const double t = ss::now_sec();
-        slam_->on_speed(loop_->on_erpm(m->data, t), t);
+        const double v = loop_->on_erpm(m->data, t);
+        slam_->on_speed(v, t);
+        accel_model_.on_speed(v * slam_->calib().wheel_scale_for(v), t);
       });
     connected_sub_ = create_subscription<std_msgs::msg::Bool>(declare_parameter<std::string>("topics.vesc_connected", "vesc/connected"), state_qos,
       [this](std_msgs::msg::Bool::ConstSharedPtr m) { loop_->on_vesc_connected(m->data); });
@@ -186,13 +189,27 @@ public:
     RCLCPP_INFO(get_logger(), "Preview: http://<jetson-ip>:%d", web_->port());
 
     ss::ImuImageStabilizerConfig stab;
+    // 저주파 IMU 보정 (옵션, 재시작 필요): 켜면 차 가속도를 뺀 가속도계로 주행 중에도 기울기를 바로잡는다 (기본은 정지 중에만)
+    accel_comp_ = registry_.get("camera.accel_compensation") >= 0.5;
+    stab.acceleration_correction_stationary_only = !accel_comp_;
     stab.maximum_correction_deg = declare_parameter<double>("stabilization.maximum_correction_deg", 3.0);
     stab.maximum_frame_imu_wait_sec = declare_parameter<double>("stabilization.maximum_frame_imu_wait_sec", 0.005);
     stab.maximum_frame_imu_age_sec = declare_parameter<double>("stabilization.maximum_frame_imu_age_sec", 0.012);
     stab.maximum_frame_imu_prediction_sec = declare_parameter<double>("stabilization.maximum_prediction_sec", 0.015);
     camera_ = std::make_unique<ss::CameraPipeline>(cam_cfg_, stab);
     camera_->stats = &loop_->stats();
-    camera_->on_yaw_rate = [this](double w, double t) { slam_->on_gyro(w, t); };
+    camera_->on_yaw_rate = [this](double w, double t) {
+      slam_->on_gyro(w, t);
+      accel_model_.on_yaw_rate(w - slam_->live().bias0, t);
+    };
+    accel_model_.set_lever(camera_x_ + rc_.wheelbase);   // 뒤 차축 → 카메라 (앞차축 기준 카메라 x + 축간거리)
+    if (accel_comp_)
+      camera_->vehicle_accel = [this](double t) -> std::optional<cv::Vec3d> {
+        const auto a = accel_model_.accel(t);
+        if (!a) return std::nullopt;
+        return cv::Vec3d(a->x, a->y, a->z);
+      };
+    RCLCPP_INFO(get_logger(), "low-frequency IMU correction (vehicle acceleration removed): %s", accel_comp_ ? "ON" : "off");
     camera_->on_imu = [this](const cv::Vec3d & a, bool a_ok, const cv::Vec3d & g, double t) {
       const double nan = std::nan("");
       slam_->on_imu({t, a_ok ? a[0] : nan, a_ok ? a[1] : nan, a_ok ? a[2] : nan, g[0], g[1], g[2]});
@@ -292,7 +309,7 @@ private:
     }
     slam_->begin_run(s.run_speed, s.run_laps, start_pose(s), s.clockwise);
     std::map<std::string, double> rp;
-    for (const char * k : {"camera.yaw_deg", "camera.stabilization", "run.speed_mps", "run.laps", "slam.direction", "slam.stopline_correction", "slam.corner_anchor",
+    for (const char * k : {"camera.yaw_deg", "camera.stabilization", "run.speed_mps", "run.laps", "slam.direction", "slam.stopline_correction", "slam.corner_anchor", "camera.accel_compensation",
                            "lane.corner_outward_offset_m", "lane.corner_entry_distance_m", "lane.side_tracking", "drive.stanley_gain",
                            "drive.heading_lookahead_m", "drive.longitudinal_mode"})
       if (registry_.has(k)) rp[k] = registry_.get(k);
@@ -514,7 +531,7 @@ private:
      .key("pitch_down_deg").value(snap.attitude.pitch_down_deg, 2).key("message").value(snap.attitude.message).end_object()
      .key("model").begin_object().key("status").value(snap.model.status).key("stage").value(snap.model.stage)
      .key("message").value(snap.model.message).key("elapsed_s").value(snap.model.elapsed_s, 1).end_object()
-     .key("stabilization").value(camera_->stabilization_stats().last()).key("stabilization_on").value(camera_->stabilization_on.load()).end_object();
+     .key("stabilization").value(camera_->stabilization_stats().last()).key("stabilization_on").value(camera_->stabilization_on.load()).key("accel_comp").value(accel_comp_).end_object();
     const auto & v = snap.vehicle;
     w.key("vehicle").begin_object().key("speed").value(v.speed, 3).key("target").value(v.target, 3).key("steer_deg").value(v.steer_deg, 2)
      .key("cte").value(v.cte, 3).key("duty").value(v.duty, 4).key("brake").value(v.brake, 2).key("phase").value(v.phase)
@@ -619,6 +636,8 @@ private:
   }
 
   ss::ParamRegistry registry_;
+  ss::VehicleAccelModel accel_model_;
+  bool accel_comp_{false};
   struct Attitude { bool ok{false}; double height{0}, roll{0}, pitch{0}; };
   std::mutex geom_m_;
   Attitude att_;

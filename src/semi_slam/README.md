@@ -72,6 +72,9 @@ source install/setup.bash && ros2 launch semi_slam semi_slam.launch.py
 `imu.csv`: IMU 원값 6축 (차량 좌표 x 앞·y 왼쪽·z 위, 영점 보정 전, 가속도 m/s²·자이로 rad/s, S를 지난 뒤부터).
 저주파 IMU 보정(가속도계에서 차 가속도를 빼 중력 방향 찾기) 분석용으로만 기록하고 보정 계산에는 쓰지 않는다.
 센서 위치(`camera.x_m`, 축간거리)와 IMU 좌표 변환에 쓴 yaw(`imu.frame_yaw_deg`)는 `meta.json`의 params에 있다.
+**저주파 IMU 보정 (옵션, `camera.accel_compensation`, 재시작 필요, 기본 끔)**: 켜면 가속도계에서 차 가속도
+(원심 v·ω, 앞뒤 dv/dt, 뒤 차축에서 카메라까지 0.24 m 떨어져 생기는 ω²r·ω̇r)를 빼고(`core/vehicle_accel`), 안정화가 주행 중에도
+가속도계로 기울기를 바로잡는다 (끄면 기존처럼 정지 중에만). 기록 재생 기준 남는 기울기 흔들림 roll 3~9° → 약 1~1.5°.
 `meta.json`에는 주행 당시 주요 파라미터(카메라 yaw, 코너 오프셋, 안정화, 속도, 방향 등)도 남는다.
 기록으로 보정만 다시: `ros2 run semi_slam semi_slam_recalibrate <기록 폴더> [--apply]`.
 

@@ -242,7 +242,8 @@ function renderNow() {
   const insp = f.inspection;
   $("checks").innerHTML = Object.entries(READY_LABEL).map(([k, n]) => `<span class="chip ${f.readiness[k] ? "ok" : ""}">${n}</span>`).join("");
   kv($("inspect"), [["카메라 자세", `${insp.attitude.status} · 높이 ${insp.attitude.height_m.toFixed(3)} m · roll ${insp.attitude.roll_deg.toFixed(1)}° · pitch ${insp.attitude.pitch_down_deg.toFixed(1)}°`],
-    ["차선 모델", `${insp.model.status} ${insp.model.stage || ""}`], ["IMU 안정화", `${insp.stabilization_on ? "켜짐" : "꺼짐"} · ${insp.stabilization}`]]);
+    ["차선 모델", `${insp.model.status} ${insp.model.stage || ""}`], ["IMU 안정화", `${insp.stabilization_on ? "켜짐" : "꺼짐"} · ${insp.stabilization}`],
+    ["저주파 IMU 보정 (주행 중 기울기)", insp.accel_comp ? "켜짐: 차 가속도를 뺀 가속도계 사용" : "꺼짐: 정지 중에만 가속도계 사용"]]);
   if (f.full) {
     const ang = laneAngle(f.lane);
     const deg = (v) => (v === null ? "-" : (v >= 0 ? "+" : "") + v.toFixed(1) + "°");

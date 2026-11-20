@@ -18,6 +18,8 @@ void register_params(ParamRegistry & r) {
   m("주행 계획", "slam.start_lateral_m", "출발 위치: 도로 가운데에서 왼쪽(+)으로", "m", -0.3, 0.3, 0.0);
   m("카메라", "camera.yaw_deg", "카메라 yaw (+ = 카메라가 왼쪽을 봄). BEV를 이만큼 돌려 만든다 · 바로 반영", "°", -20, 20, 0);
   m("매핑·보정", "camera.stabilization", "IMU 영상 안정화 (0=끄기, 1=전체)", "", 0, 1, 1);
+  r.add({"camera.accel_compensation", "slam", "매핑·보정",
+         "저주파 IMU 보정: 가속도계에서 차 가속도(원심·앞뒤·센서 위치)를 빼고 주행 중에도 기울기 보정 (0=끔, 1=켬)", "", 0, 1, 0, false});
   m("매핑·보정", "slam.stopline_correction", "정지선 통과 시 위치 보정 (0=끔, 1=켬)", "", 0, 1, 1);
   m("매핑·보정", "slam.corner_anchor", "코너마다 위치 다시 잡기 (자이로 45°·135°·225°·315° = 코너 한가운데) (0=끔, 1=켬)", "", 0, 1, 1);
   m("매핑·보정", "slam.auto_calibrate", "목표 바퀴 완료 시 보정 자동 적용 (0=끔, 1=켬)", "", 0, 1, 1);

@@ -55,6 +55,8 @@ public:
   std::function<void(double yaw_rate_vehicle, double t)> on_yaw_rate;   // IMU 스레드에서 호출
   // IMU 원값 6축 (차량 좌표 x 앞 y 왼쪽 z 위, 영점 보정 전). acc_ok = 가속도와 자이로 시각이 맞을 때만 acc가 유효. IMU 스레드에서 호출
   std::function<void(const cv::Vec3d & acc, bool acc_ok, const cv::Vec3d & gyro, double t)> on_imu;
+  // 저주파 IMU 보정(옵션): 차가 만드는 가속도 (차량 좌표, 없으면 nullopt). 있으면 가속도계에서 빼고 안정화에 넘긴다 → 중력만 남음
+  std::function<std::optional<cv::Vec3d>(double t)> vehicle_accel;
   std::function<std::optional<bool>()> stationary_hint;
   StageStats * stats{nullptr};   // 카메라 실제 수신 FPS 기록 (선택)
   std::atomic<bool> stabilization_on{true};   // IMU 영상 안정화 켜기/끄기 (실시간)
