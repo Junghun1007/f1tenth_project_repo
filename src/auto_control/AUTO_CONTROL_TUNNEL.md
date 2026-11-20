@@ -4,7 +4,7 @@
 `auto_control`이 관리한다. 상태·경로 선택기는 이 패키지의 C++ 컴포넌트 `auto_control::TunnelLaneSelector`(검출기와 같은 컨테이너에서 intra-process로 차선 결과 수신, 기존 Python 구현은 참고용으로 유지)이며,
 별도 ROS 패키지나 전용 launch 없이 기존 `vehicle_bringup auto_drive.launch.py`에서
 `tunnel_enabled:=true`로 활성화한다. 하나의 카메라 세션·자동제어기·VESC 경로를 사용한다. 항상 터널 밖에서 시작한다.
-기존 `tunnel_tcn_test`, `ir_bev_line_detection`의 독립 launch는 그대로 사용할 수 있다.
+기존 `tunnel_tcn_test`의 독립 launch는 그대로 사용할 수 있다. (IR 단독 주행 패키지 `ir_bev_line_detection`은 이 통합으로 대체되어 삭제했다. 토픽 이름 `/ir_bev_line_detection/*`은 그대로 쓴다)
 통합 launch와 기존 카메라/자동/수동 launch를 동시에 실행하지 않는다.
 
 ## 현재 기본: 독립 IR 테스트와 맞춘 파이프라인 검증
