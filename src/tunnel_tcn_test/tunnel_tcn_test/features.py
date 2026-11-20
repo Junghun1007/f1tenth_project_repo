@@ -12,21 +12,37 @@ FEATURES = (
     'dark_area_prior_delta',
 )
 
+# 프레임 하나에서 뽑는 값 (영상이 필요한 부분). camera_driver C++(tunnel_frame_stats.cpp)도 같은 값을 계산해
+# /tunnel/rgb_stats로 보낸다 → 통합 실행에서는 원본 영상을 프로세스 사이로 보내지 않는다
+FRAME_STATS = ('mean', 'std', 'center_mean', 'surround_mean', 'p10', 'p90', 'center_dark_fraction')
+
+
+def frame_stats(gray):
+    g = gray.astype(np.float32)
+    h, w = g.shape; ya, yb = h//3, 2*h//3; xa, xb = w//3, 2*w//3
+    center = g[ya:yb, xa:xb]
+    surround = np.concatenate((g[:ya, xa:xb].ravel(), g[ya:yb, :xa].ravel(), g[ya:yb, xb:].ravel()))
+    q25, med, q75 = np.percentile(surround, [25, 50, 75])
+    p10, p90 = np.percentile(g, [10, 90])
+    return dict(mean=float(g.mean()), std=float(g.std()), center_mean=float(center.mean()),
+                surround_mean=float(surround.mean()), p10=float(p10), p90=float(p90),
+                center_dark_fraction=float(np.mean(center < med-0.5*max(q75-q25, 2.))))
+
+
 class FeatureExtractor:
     def __init__(self):
         self.rows, self.times = [], []
 
     def push(self, gray, timestamp):
-        g = gray.astype(np.float32)
-        h, w = g.shape; ya, yb = h//3, 2*h//3; xa, xb = w//3, 2*w//3
-        center = g[ya:yb, xa:xb]
-        surround = np.concatenate((g[:ya, xa:xb].ravel(), g[ya:yb, :xa].ravel(), g[ya:yb, xb:].ravel()))
-        mean, std, cm, sm = float(g.mean()), float(g.std()), float(center.mean()), float(surround.mean())
-        q25, med, q75 = np.percentile(surround, [25, 50, 75])
-        dark = float(np.mean(center < med-0.5*max(q75-q25, 2.)))
+        return self.push_stats(frame_stats(gray), timestamp)
+
+    def push_stats(self, stats, timestamp):
+        """frame_stats()와 같은 키의 값 (0~255 밝기 단위) → 특징 16개 (시간 이력 포함)."""
+        mean, std, cm, sm = stats['mean'], stats['std'], stats['center_mean'], stats['surround_mean']
+        dark = stats['center_dark_fraction']
         contrast = (sm-cm)/(sm+cm+1.)
         values = [mean/255, std/255, cm/255, sm/255,
-                  *list(np.percentile(g, [10, 90])/255), contrast, dark,
+                  stats['p10']/255, stats['p90']/255, contrast, dark,
                   float(np.clip((sm-cm)/max(std, 2.), -8, 8))]
         n = len(self.rows)
         lag = max(0, bisect_right(self.times, timestamp - .5 + 1e-7)-1)
@@ -97,6 +113,12 @@ class FeatureStream:
     def push(self, image, timestamp):
         self._time(timestamp)
         feature = self.extractor.push(preprocess(image), timestamp)
+        return self._context(feature, timestamp)
+
+    def push_stats(self, stats, timestamp):
+        """camera_driver가 계산한 프레임 통계 (FRAME_STATS 키)."""
+        self._time(timestamp)
+        feature = self.extractor.push_stats(stats, timestamp)
         return self._context(feature, timestamp)
 
     def push_features(self, feature, timestamp):

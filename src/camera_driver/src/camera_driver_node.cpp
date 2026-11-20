@@ -5,6 +5,8 @@
 #include "camera_driver/ir_imu_synchronizer.hpp"
 #include "camera_driver/rgb_exposure_recovery.hpp"
 #include "camera_driver/msg/bev_input.hpp"
+#include "camera_driver/msg/tunnel_frame_stats.hpp"
+#include "camera_driver/tunnel_frame_stats.hpp"
 #include "bev_handoff/direct_camera_handoff.hpp"
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include "point_cloud/depth_source.hpp"
@@ -397,6 +399,7 @@ public:
       capture_thread_ = std::thread(&Impl::capture_loop, this);
       if (depth_enabled_) {depth_thread_=std::thread(&Impl::depth_loop,this);}
       if (tunnel_enabled_) {ir_thread_=std::thread(&Impl::ir_loop,this);}
+      if (tunnel_enabled_) {tcn_thread_=std::thread(&Impl::tcn_stats_loop,this);}
       if (tunnel_enabled_ && rgb_exposure_recovery_enabled_) {
         rgb_exposure_thread_=std::thread(&Impl::rgb_exposure_loop,this);
       }
@@ -1284,8 +1287,9 @@ private:
       if (camera_socket_!=dai::CameraBoardSocket::CAM_A || !imu_stabilization_enabled_) {
         throw std::runtime_error("Tunnel integration requires CAM_A and IMU stabilization");
       }
-      tcn_publisher_=node_.create_publisher<sensor_msgs::msg::Image>(
-        "/tunnel/rgb_raw",rclcpp::SensorDataQoS().keep_last(1));
+      // TCN은 프레임 통계 7개만 받는다 (원본 NV12 1.5 MB × 30 Hz를 다른 프로세스로 보내지 않음)
+      tcn_publisher_=node_.create_publisher<camera_driver::msg::TunnelFrameStats>(
+        "/tunnel/rgb_stats",rclcpp::SensorDataQoS().keep_last(1));
       rclcpp::SubscriptionOptions tunnel_options;
       tunnel_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
       tunnel_mode_sub_=node_.create_subscription<std_msgs::msg::String>(
@@ -1852,6 +1856,41 @@ while True:
     bev_handoff::publishDirectIr(nullptr);
   }
 
+  // 터널 TCN 입력: 최신 RGB 프레임의 밝기 통계 (tunnel_tcn_test features.frame_stats와 같음)
+  void tcn_stats_loop()
+  {
+    while (!stop_requested_.load(std::memory_order_relaxed)) {
+      std::shared_ptr<dai::ImgFrame> packet;
+      builtin_interfaces::msg::Time stamp;
+      {
+        std::unique_lock<std::mutex> lock(tcn_mutex_);
+        tcn_condition_.wait_for(lock, 100ms, [this] {
+          return tcn_pending_ != nullptr || stop_requested_.load(std::memory_order_relaxed);});
+        packet=std::move(tcn_pending_);
+        stamp=tcn_pending_stamp_;
+      }
+      if (!packet) {continue;}
+      try {
+        const auto & data=packet->getData();
+        const int width=static_cast<int>(packet->getWidth()), height=static_cast<int>(packet->getHeight());
+        const std::size_t stride=packet->getStride() ? packet->getStride() : packet->getWidth();
+        if (data.size() < stride*static_cast<std::size_t>(height)) {continue;}
+        const auto stats=tunnel_frame_stats(tunnel_gray_from_luma(data.data(),width,height,stride));
+        packet.reset();
+        auto message=std::make_unique<camera_driver::msg::TunnelFrameStats>();
+        message->header.stamp=stamp; message->header.frame_id=frame_id_;
+        message->mean=static_cast<float>(stats.mean); message->std=static_cast<float>(stats.std);
+        message->center_mean=static_cast<float>(stats.center_mean);
+        message->surround_mean=static_cast<float>(stats.surround_mean);
+        message->p10=static_cast<float>(stats.p10); message->p90=static_cast<float>(stats.p90);
+        message->center_dark_fraction=static_cast<float>(stats.center_dark_fraction);
+        tcn_publisher_->publish(std::move(message));
+      } catch (const std::exception & e) {
+        RCLCPP_ERROR_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,"Tunnel TCN stats: %s",e.what());
+      }
+    }
+  }
+
   void depth_loop()
   {
     auto last=std::chrono::steady_clock::time_point{};
@@ -1920,16 +1959,14 @@ while True:
         if (tunnel_enabled_ && packet->getType()==dai::ImgFrame::Type::NV12 &&
           (last_tcn_frame_==std::chrono::steady_clock::time_point{} ||
           (tcn_decimated ? sensor_timestamp>=last_tcn_frame_+25ms : sensor_timestamp>=last_tcn_frame_+33333333ns))) {
-          // Publish raw, unstabilized luminance at approximately 30Hz for the
-          // existing TCN feature history. Keep source capture stamps and padding.
-          auto message=std::make_unique<sensor_msgs::msg::Image>();
-          message->header.stamp=ros_timestamp_for(sensor_timestamp);
-          message->header.frame_id=frame_id_; message->encoding="nv12";
-          message->width=packet->getWidth(); message->height=packet->getHeight();
-          message->step=packet->getStride() ? packet->getStride() : packet->getWidth();
-          const auto & frame_bytes=packet->getData();
-          message->data.assign(frame_bytes.begin(),frame_bytes.end());
-          tcn_publisher_->publish(std::move(message));
+          // About 30Hz of raw, unstabilized luminance for the TCN feature history. The statistics
+          // (resize + histograms) run on tcn_thread_; capture only hands over the packet pointer.
+          {
+            std::lock_guard<std::mutex> lock(tcn_mutex_);
+            tcn_pending_=packet;
+            tcn_pending_stamp_=ros_timestamp_for(sensor_timestamp);
+          }
+          tcn_condition_.notify_one();
           // Advance a source-time grid rather than quantizing 80Hz to 26.7Hz.
           if (last_tcn_frame_==std::chrono::steady_clock::time_point{} || tcn_decimated) {last_tcn_frame_=sensor_timestamp;}
           else {last_tcn_frame_+=33333333ns; if (sensor_timestamp-last_tcn_frame_>33333333ns) {last_tcn_frame_=sensor_timestamp;}}
@@ -3330,6 +3367,8 @@ while True:
     join_thread(capture_thread_);
     join_thread(depth_thread_);
     join_thread(ir_thread_);
+    tcn_condition_.notify_all();
+    join_thread(tcn_thread_);
     join_thread(rgb_exposure_thread_);
     rgb_controls_.reset();
     bev_handoff::publishCameraExposure(false,nullptr);
@@ -3465,7 +3504,12 @@ while True:
   std::thread ir_thread_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_state_sub_;
-  rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr tcn_publisher_;
+  rclcpp::Publisher<camera_driver::msg::TunnelFrameStats>::SharedPtr tcn_publisher_;
+  std::thread tcn_thread_;
+  std::mutex tcn_mutex_;
+  std::condition_variable tcn_condition_;
+  std::shared_ptr<dai::ImgFrame> tcn_pending_;
+  builtin_interfaces::msg::Time tcn_pending_stamp_;
   std::chrono::steady_clock::time_point last_tcn_frame_{};
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr perf_publisher_;
   rclcpp::TimerBase::SharedPtr perf_timer_;

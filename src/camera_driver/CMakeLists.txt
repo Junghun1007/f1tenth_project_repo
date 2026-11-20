@@ -29,6 +29,7 @@ find_package(point_cloud REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/BevInput.msg"
+  "msg/TunnelFrameStats.msg"
   DEPENDENCIES std_msgs
 )
 
@@ -58,6 +59,7 @@ target_include_directories(camera_vehicle_motion
 
 add_library(camera_driver_component SHARED
   src/camera_driver_node.cpp
+  src/tunnel_frame_stats.cpp
 )
 target_compile_definitions(camera_driver_component
   PRIVATE CAMERA_DRIVER_BUILDING_DLL

@@ -126,6 +126,34 @@ class NodeTests(unittest.TestCase):
         self.node.on_image(message)
         self.node.process()
 
+    def test_stats_input_matches_image_input(self):
+        """camera_driver가 보낸 프레임 통계로도 영상 입력과 같은 특징·결과가 나온다."""
+        from tunnel_tcn_test.features import frame_stats, FRAME_STATS
+        rng = np.random.default_rng(5)
+        images = [rng.integers(0, 256, (40, 64), np.uint8) for _ in range(40)]
+        for frame, image in enumerate(images):
+            stamp = 1_000_000_000 + round(frame * 1e9 / 30)
+            self.clock_ns = stamp
+            self.node.on_image(SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(
+                sec=stamp // 1_000_000_000, nanosec=stamp % 1_000_000_000)),
+                encoding='mono8', width=64, height=40, step=64, data=image.tobytes()))
+            self.node.process()
+        image_inputs = [c.copy() for c in self.calls]
+        self.setUp()
+        self.node.stats_input = True
+        from tunnel_tcn_test.features import preprocess
+        for frame, image in enumerate(images):
+            stamp = 1_000_000_000 + round(frame * 1e9 / 30)
+            self.clock_ns = stamp
+            stats = frame_stats(preprocess(image))
+            message = SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(
+                sec=stamp // 1_000_000_000, nanosec=stamp % 1_000_000_000)), **{k: np.float32(stats[k]) for k in FRAME_STATS})
+            self.node.on_image(message)
+            self.node.process()
+        self.assertEqual(len(self.calls), len(image_inputs))
+        for a, b in zip(self.calls, image_inputs):
+            np.testing.assert_allclose(a, b, atol=1e-4)
+
     def test_warmup_holds_events_then_emits_one_entry(self):
         for frame in range(80):
             self.frame(frame)

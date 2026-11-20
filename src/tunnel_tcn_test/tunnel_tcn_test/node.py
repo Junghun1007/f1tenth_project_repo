@@ -14,7 +14,7 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
 from ament_index_python.packages import get_package_share_directory
-from .features import FeatureStream, EventDecoder, sigmoid
+from .features import FeatureStream, EventDecoder, sigmoid, FRAME_STATS
 from .backend import TensorRTBackend
 from .display import footer, mono_image
 
@@ -22,6 +22,7 @@ WINDOW = 'Tunnel TCN - RGB FP32'
 
 
 class TunnelNode(Node):
+    stats_input = False   # True: camera_driver 프레임 통계(stats_topic)를 받음
     def __init__(self):
         super().__init__('tunnel_tcn_test')
         cv2.setNumThreads(1)
@@ -65,7 +66,15 @@ class TunnelNode(Node):
         self.get_logger().info(f'[MODEL CHECK] PASS TCN | model={model_path}')
         self.get_logger().info(f'TensorRT ready: {self.backend.engine_path}')
         qos = QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
-        self.subscription = self.create_subscription(Image, parameter('image_topic', '/camera/image_rect'), self.on_image, qos)
+        # 통합 주행(auto_drive tunnel_enabled)에서는 camera_driver가 프레임 통계만 보낸다 (stats_topic).
+        # 단독 실행은 지금처럼 영상(image_topic)을 받아 여기서 통계를 계산한다
+        stats_topic = parameter('stats_topic', '')
+        self.stats_input = bool(stats_topic)
+        if self.stats_input:
+            from camera_driver.msg import TunnelFrameStats
+            self.subscription = self.create_subscription(TunnelFrameStats, stats_topic, self.on_image, qos)
+        else:
+            self.subscription = self.create_subscription(Image, parameter('image_topic', '/camera/image_rect'), self.on_image, qos)
         self.result = self.create_publisher(String, '/tunnel_tcn/result', 10)
         self.pending = None
         self.settings = 'CAM_A RGB / auto exposure'
@@ -116,7 +125,8 @@ class TunnelNode(Node):
         if self.last_stamp is not None and stamp < self.last_stamp:
             self.clear_history()
         started = time.perf_counter()
-        self.frame = mono_image(message)
+        if not self.stats_input:
+            self.frame = mono_image(message)
         self.last_received = time.monotonic()
         if self.last_stamp is not None:
             self.dropped += max(0, round((stamp - self.last_stamp) * self.fps / 1e9) - 1)
@@ -126,7 +136,10 @@ class TunnelNode(Node):
         timestamp = (stamp - self.origin_ns) / 1e9
         self.times.append(timestamp)
         self.measured_fps = (len(self.times) - 1) / (self.times[-1] - self.times[0]) if len(self.times) > 1 else 0.
-        self.stream.push(self.frame, timestamp)
+        if self.stats_input:
+            self.stream.push_stats({key: float(getattr(message, key)) for key in FRAME_STATS}, timestamp)
+        else:
+            self.stream.push(self.frame, timestamp)
         if self.stream.discontinuity:
             self.decoder.pause()
             self.next_inference = timestamp

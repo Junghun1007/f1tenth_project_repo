@@ -74,7 +74,7 @@ def integrated_nodes(rgb_detector, controller, context):
     processes = [
         Node(package='tunnel_tcn_test', executable='tunnel_tcn_node', name='tunnel_tcn_test',
              output='screen', parameters=[str(shares['tunnel_tcn_test'] / 'config/tunnel_tcn.yaml'),
-                                          {'image_topic': '/tunnel/rgb_raw', 'initial_state': 'outside',
+                                          {'stats_topic': '/tunnel/rgb_stats', 'initial_state': 'outside',
                                            'preview_enabled': False}])]
     return components, processes
 
