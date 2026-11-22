@@ -389,9 +389,11 @@ private:
       loop_->set_attitude({true, pose_->height, pose_->roll, pose_->pitch, "PASS", ""});
       update_mount();
     } else if (s.rfind("FAIL", 0) == 0) {
-      loop_->set_attitude({false, 0, 0, 0, "FAIL", s});
+      const auto bar = s.find(" | ");
+      loop_->set_attitude({false, 0, 0, 0, "FAIL",
+                           "측정 실패 (평평한 바닥·정지 상태 확인 후 재실행): " + (bar == std::string::npos ? s : s.substr(bar + 3))});
     } else {
-      loop_->set_attitude({false, 0, 0, 0, "MEASURING", s.empty() ? "정지 상태 지면·IMU 측정 중" : s});
+      loop_->set_attitude({false, 0, 0, 0, "MEASURING", "카메라 높이·기울기 측정 중 — 차를 평평한 바닥에 세우고 움직이지 마세요"});
     }
     check_inspection();
   }

@@ -9,6 +9,7 @@
 (YOLO 신호등·콘·차량, 콘 기억·회피, 신호등 정지, 앞차 추종, duty-only, 웹)가 영상·깊이·차선 결과를 복사 없이 주고받는다.
 vesc/*는 safety_node만 발행한다 (MANUAL로 시작, [주행 시작] 승인 시 AUTO, X = 언제든 정지 후 MANUAL).
 """
+import json
 import math
 import os
 
@@ -188,11 +189,12 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         if not math.isfinite(speed) or speed <= 0:
             raise RuntimeError("speed_mps must be a positive number or inherit")
         drive_overrides["drive.maximum_speed_mps"] = speed
-    nodes.append(ComposableNode(
-        package="auto_control", plugin="auto_control::AutoDriveNode", name="auto_drive",
-        parameters=[LaunchConfiguration("drive_params_file").perform(context), drive_overrides],
-        extra_arguments=[{"use_intra_process_comms": True}],
-    ))
+    # 주행 컴포넌트(웹 화면 포함)는 카메라 시작 측정보다 먼저 컨테이너에 올린다
+    # → 실행하자마자 브라우저가 열리고 점검 영역에서 카메라 자세 측정 진행을 볼 수 있다
+    context.launch_configurations["first_composable_nodes_json"] = json.dumps([{
+        "package": "auto_control", "plugin": "auto_control::AutoDriveNode", "name": "auto_drive",
+        "parameters": [os.path.expanduser(LaunchConfiguration("drive_params_file").perform(context)), drive_overrides],
+    }])
 
     safety = Node(
         package="auto_control", executable="safety_node", name="auto_drive_safety", namespace=namespace, output="screen",

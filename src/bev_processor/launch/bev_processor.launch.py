@@ -98,6 +98,32 @@ def _configure_depthai_runtime(context, package_share):
     ]
 
 
+
+def _container(context, core_nodes):
+    """카메라 컨테이너. first_composable_nodes_json이 있으면 그 노드들을 시작 측정(bev_processor)보다 먼저 올린다.
+
+    컨테이너는 노드를 하나씩 순서대로 올리고, bev_processor는 생성자에서 OAK 시작 측정을 끝낼 때까지 막는다.
+    auto_control 주행 컴포넌트(웹 화면 포함)를 먼저 올리면 측정 진행 상황을 브라우저 점검 영역에서 볼 수 있다.
+    형식: [{"package", "plugin", "name", "parameters": [YAML 경로 또는 dict, ...]}]
+    """
+    import json
+    first = []
+    text = context.launch_configurations.get("first_composable_nodes_json", "")
+    for spec in (json.loads(text) if text else []):
+        first.append(ComposableNode(
+            package=spec["package"], plugin=spec["plugin"], name=spec["name"],
+            parameters=spec.get("parameters", []),
+            extra_arguments=[{"use_intra_process_comms": True}]))
+    return [ComposableNodeContainer(
+        additional_env={"LD_LIBRARY_PATH": LaunchConfiguration("depthai_runtime_library_path")},
+        name="bev_processor_container",
+        namespace="",
+        package="rclcpp_components",
+        executable="component_container_mt",
+        output="screen",
+        composable_node_descriptions=first + list(core_nodes),
+    )]
+
 def generate_launch_description():
     camera_share = get_package_share_directory("camera_driver")
     bev_share = get_package_share_directory("bev_processor")
@@ -357,14 +383,7 @@ def generate_launch_description():
                     "launch_parameter_defaults": launch_parameter_defaults,
                 },
             ),
-            ComposableNodeContainer(
-                additional_env={"LD_LIBRARY_PATH": LaunchConfiguration("depthai_runtime_library_path")},
-                name="bev_processor_container",
-                namespace="",
-                package="rclcpp_components",
-                executable="component_container_mt",
-                output="screen",
-                composable_node_descriptions=[
+            OpaqueFunction(function=_container, kwargs={"core_nodes": [
                     # BEV가 먼저 OAK를 단독으로 열어 roll·pitch와 자동 모드의
                     # 높이를 측정하고 장치를 닫은 뒤 camera_driver가 시작된다.
                     ComposableNode(
@@ -484,7 +503,6 @@ def generate_launch_description():
                             {"use_intra_process_comms": True},
                         ],
                     ),
-                ],
-            ),
+                ]}),
         ]
     )
