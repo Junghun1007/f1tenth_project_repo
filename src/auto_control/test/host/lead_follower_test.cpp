@@ -1,3 +1,4 @@
+#include <cmath>
 #include "check.hpp"
 #include "auto_control/drive/core/lead_follower.hpp"
 
@@ -52,15 +53,19 @@ TEST(moving_lead_keeps_speed_dependent_gap) {
   CHECK(g.state().cap < 1.0);
 }
 
-TEST(lost_close_lead_is_held_until_seen_off_path) {
+TEST(lost_lead_releases_cruise_after_timeout) {
   LeadFollower f;
   f.set_params(LeadParams{});
   f.update(straight(), {car(0.30, 0.0)}, true, 0.0, 0.0, 0.0);   // 정지 거리(0.25)에 서 있음
-  auto s = f.update(straight(), {}, true, 2.0, 0.0, 0.0);   // 가까이서 2초간 안 보임 → 유지
+  auto s = f.update(straight(), {}, true, 0.2, 0.0, 0.0);   // 잠깐 안 보임 (lost_timeout 0.3 안) → 유지
   CHECK(s.active);
   CHECK(!s.seen);
   CHECK_NEAR(s.cap, 0.0, 1e-9);
-  s = f.update(straight(), {car(0.35, 0.6)}, true, 2.1, 0.0, 0.0);   // 경로 밖에서 보임 → 해제
+  s = f.update(straight(), {}, true, 0.5, 0.0, 0.0);   // 0.3 s 넘게 안 보임 → 크루즈 종료
+  CHECK(!s.active);
+  CHECK(std::isinf(s.cap));
+  f.update(straight(), {car(1.5, 0.0)}, true, 1.0, 0.0, 0.0);
+  s = f.update(straight(), {}, false, 1.5, 0.0, 1.0);   // 검출이 아예 안 들어와도 시간이 지나면 해제
   CHECK(!s.active);
 }
 

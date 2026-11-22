@@ -327,6 +327,11 @@ TEST(steering_holds_while_stopped_behind_lead) {   // 앞차 뒤 정지 중엔 �
     r.loop->on_speed(0.0, r.t);
     r.loop->on_yaw_rate(0.0, r.t);
     r.loop->on_heartbeat("web", r.t);
+    DetectionFrame d;   // 앞차는 계속 보인다 (안 보이면 lost_timeout 뒤 크루즈 종료)
+    d.capture_time = r.t - 0.005;
+    ConeObservation car; car.class_id = 2; car.length = 0.5; car.width = 0.3; car.center = {0.30 + 0.25, 0.0}; car.score = 0.9f;
+    d.cones.push_back(car);
+    r.loop->on_detections(d);
     auto lane = lane_at(r.t - 0.005);
     const double off = (k % 2 ? 0.04 : -0.04);
     for (auto & p : lane.path) p.y += off;

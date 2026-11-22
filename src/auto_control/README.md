@@ -74,6 +74,8 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 | 자동 명령 끊김 | 0.3 s 안 오면 safety_node가 제동 |
 
 ## 화면
+- 조이스틱 버튼 (8BitDo): **A** 주행 시작, **B** Refit, **X** 정지 (X는 safety_node에서도 제동 → MANUAL). `joy.start_button`/`joy.refit_button`/`joy.stop_button`
+- 차량 추종: 앞차가 `acc.lost_timeout_sec`(0.3 s) 넘게 안 보이면 크루즈를 끝내고 정상 주행
 
 - 상단: 모드, 상태, 안전 전환(AUTO/제동 중/MANUAL), 차선 입력(RGB/IR 터널), 신호, [주행 시작] [정지] [Refit], 녹화, [프리뷰] [BEV 원본] [카메라], [파라미터]
 - 터널 안(ENTERING~EXITING): [카메라]는 IR 카메라(CAM_B 왼쪽 흑백) 원본, [BEV 원본]은 IR BEV(120×300, 2배 확대)를 보여 준다

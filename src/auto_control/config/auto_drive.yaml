@@ -144,8 +144,8 @@
     acc.decel_mps2: 0.8                 # 거리 기반 감속도 (m/s²)
     acc.lateral_margin_m: 0.05          # 경로 막힘 판정 옆 여유 (m)
     acc.min_follow_speed_mps: 0.3       # 이보다 느린 앞차는 서 있는 것으로 (멈췄다 가기)
-    acc.hold_near_m: 0.6                # 이 거리 안에서 놓치면 다시 보일 때까지 서 있다고 가정 (m)
-    acc.lost_timeout_sec: 0.3           # 멀리서 놓친 앞차를 예측으로 유지하는 시간 (s)
+    acc.hold_near_m: 0.6                # 이 거리 안에서 놓치면 (놓친 동안) 서 있다고 가정 (m)
+    acc.lost_timeout_sec: 0.3           # 앞차를 놓친 뒤 크루즈 유지 시간. 넘으면 크루즈 종료 → 정상 주행 (s)
     # 신호등·정지선 (1030ML auto_control 방식): 빨간불 + 정지선이면 앞범퍼를 정지선 앞 0~stop_range_max에 세우고 초록불에 출발.
     # 신호등이 안 보이면(UNKNOWN) 정지하지 않고, 정지에 들어간 뒤엔 빨간불이 안 보여도 초록불까지 유지
     traffic.enabled: 1.0

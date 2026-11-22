@@ -1339,7 +1339,9 @@ private:
             download_to_host);
         }
         output->bgr = std::move(cuda_result.bgr);
-        if(direct_host_copy_enabled_)output->download_bgr=std::move(cuda_result.download_bgr);
+        // 지연 다운로드(부르기 전엔 복사 없음)는 항상 붙인다: 웹 "BEV 원본"(auto_drive 프리뷰 탭)이 쓴다.
+        // direct_host_copy_enabled는 차선 검출기 화면 겹침 프리뷰용 (그쪽에서만 실제로 내려받음)
+        output->download_bgr=std::move(cuda_result.download_bgr);
         output->device_bgr = cuda_result.device_bgr;
         output->device_stride = cuda_result.device_stride;
         output->width = bev_config_.output_width;

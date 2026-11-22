@@ -130,8 +130,8 @@ void register_params(ParamRegistry & r) {
   d("차량 추종 (ACC)", "acc.decel_mps2", "거리 기반 감속도", "m/s²", 0.2, 3, 0.8);
   d("차량 추종 (ACC)", "acc.lateral_margin_m", "경로 막힘 판정 옆 여유", "m", 0, 0.3, 0.05);
   d("차량 추종 (ACC)", "acc.min_follow_speed_mps", "이보다 느린 앞차는 정지로 봄", "m/s", 0, 1.5, 0.3);
-  d("차량 추종 (ACC)", "acc.hold_near_m", "이 거리 안에서 놓치면 서 있다고 가정", "m", 0, 1.5, 0.6);
-  d("차량 추종 (ACC)", "acc.lost_timeout_sec", "멀리서 놓친 앞차 유지 시간", "s", 0.05, 2, 0.3);
+  d("차량 추종 (ACC)", "acc.hold_near_m", "이 거리 안에서 놓치면 (놓친 동안) 서 있다고 가정", "m", 0, 1.5, 0.6);
+  d("차량 추종 (ACC)", "acc.lost_timeout_sec", "앞차를 놓친 뒤 크루즈 유지 시간 (넘으면 정상 주행)", "s", 0.05, 2, 0.3);
   t("신호등 검출", "yolo.traffic_light_threshold", "신호등 임계값", "", 0, 1, 0.70);
   t("신호등·정지선", "traffic.enabled", "신호등 정지 (0=끔, 1=켬: 빨간불 + 정지선이면 정지선 앞에 정지, 초록불에 출발)", "", 0, 1, 1);
   t("신호등·정지선", "traffic.signal_confirm_frames", "신호 색 인정: 같은 색 연속 관측 횟수", "회", 1, 10, 3);

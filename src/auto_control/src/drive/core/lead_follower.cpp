@@ -83,13 +83,12 @@ const LeadState & LeadFollower::update(const std::vector<Vec2> & path, const std
       if (!vehicles.empty()) {
         reset();                                   // 차량은 보이는데 경로 밖 → 비켜났음
       } else if (pred <= p_.hold_near) {
-        s_.lead_speed = 0.0;                       // 가까이서 놓침(카메라 아래 사각): 다시 보일 때까지 서 있다고 가정
-        meas_gap_ = pred; meas_t_ = t; meas_dist_ = dist;
-      } else if (t - meas_t_ > p_.lost_timeout) {
-        reset();                                   // 멀리서 놓침: 잠깐은 예측으로 유지, 넘으면 해제
+        s_.lead_speed = 0.0;                       // 가까이서 놓침: 놓친 동안(lost_timeout까지)은 서 있다고 가정 (meas_t_는 그대로)
       }
     }
   }
+  // 앞차가 lost_timeout 넘게 안 보이면 크루즈 종료 → 정상 주행 (검출이 아예 안 들어와도 같음)
+  if (s_.active && !s_.seen && t - meas_t_ > p_.lost_timeout) reset();
   if (s_.active) {
     s_.gap = std::max(0.0, meas_gap_ - (dist - meas_dist_) + s_.lead_speed * (t - meas_t_));
     s_.cap = cap_for(s_.gap, s_.lead_speed, v_ego);

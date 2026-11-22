@@ -5,7 +5,7 @@
 //  - 앞차 속도: 측정 간 거리 변화 + 내 이동 거리(바퀴), 시정수 speed_tau로 평활
 //  - 앞차가 min_follow_speed보다 느리면 서 있는 것으로 보고 stop_gap에서 정지, 거리가 resume_gap 이상이 되면 다시 출발
 //  - 움직이면 목표 거리 = resume_gap + time_gap × 내 속도 (빠를수록 멀리)
-//  - hold_near 안에서 놓치면(카메라 아래 사각) 다시 보일 때까지 그 자리에 서 있다고 가정
+//  - 앞차가 lost_timeout 넘게 안 보이면 크루즈를 끝내고 정상 주행 (hold_near 안에서 놓치면 그동안만 서 있다고 가정)
 #pragma once
 #include <limits>
 #include <vector>

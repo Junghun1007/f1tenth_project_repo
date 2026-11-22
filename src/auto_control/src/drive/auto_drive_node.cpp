@@ -169,8 +169,13 @@ public:
         std::lock_guard<std::mutex> l(status_m_);
         handover_mode_ = m->data;
       }, vehicle_latched);
+    // 조이스틱 버튼 (8BitDo SDL 배치, vehicle_bringup/config/controller_keymap.yaml): A=주행 시작, B=Refit, X=정지.
+    // X는 safety_node에서도 제동 → MANUAL 전환을 한다 (여기서는 주행 상태기계도 정지로)
+    joy_start_button_ = int(declare_parameter<int>("joy.start_button", 0));
+    joy_refit_button_ = int(declare_parameter<int>("joy.refit_button", 1));
+    joy_stop_button_ = int(declare_parameter<int>("joy.stop_button", 2));
     joy_sub_ = create_subscription<sensor_msgs::msg::Joy>(declare_parameter<std::string>("topics.joy", "joy"), rclcpp::SensorDataQoS(),
-      [this](sensor_msgs::msg::Joy::ConstSharedPtr) { last_joy_t_ = acd::now_sec(); }, vehicle);
+      [this](sensor_msgs::msg::Joy::ConstSharedPtr m) { on_joy(*m); }, vehicle);
     // IMU (camera_driver IMU 브리지, 카메라 좌표 자이로) → 차량 요레이트 (오도메트리)
     imu_sub_ = create_subscription<sensor_msgs::msg::Imu>(declare_parameter<std::string>("topics.imu", "/camera/imu"),
       rclcpp::SensorDataQoS().keep_last(20), [this](sensor_msgs::msg::Imu::ConstSharedPtr m) { on_imu(*m); }, in(imu_group_));
@@ -354,6 +359,30 @@ private:
     last_lane_t_ = acd::now_sec();
     publish(loop_->on_lane(lane, acd::now_sec()));
     publish_hints();   // 다음 프레임의 기준 중앙선 요청 (콘이 근처일 때만)
+  }
+
+  void on_joy(const sensor_msgs::msg::Joy & m) {
+    const double now = acd::now_sec();
+    last_joy_t_ = now;
+    auto rising = [&](int button, bool & was) {
+      const bool pressed = button >= 0 && std::size_t(button) < m.buttons.size() && m.buttons[std::size_t(button)] != 0;
+      const bool edge = pressed && !was;
+      was = pressed;
+      return edge;
+    };
+    if (rising(joy_stop_button_, joy_stop_was_)) {
+      loop_->request_stop("joystick X", now);
+      RCLCPP_INFO(get_logger(), "joystick X: stop");
+    }
+    if (rising(joy_start_button_, joy_start_was_)) {
+      const auto r = loop_->request_start(now);
+      if (r.first && !recording()) open_cone_log(log_dir_, "");
+      RCLCPP_INFO(get_logger(), "joystick A: start -> %s %s", r.first ? "ok" : "refused", r.second.c_str());
+    }
+    if (rising(joy_refit_button_, joy_refit_was_)) {
+      const auto r = loop_->request_refit(now);
+      RCLCPP_INFO(get_logger(), "joystick B: refit -> %s %s", r.first ? "ok" : "refused", r.second.c_str());
+    }
   }
 
   void on_imu(const sensor_msgs::msg::Imu & m) {
@@ -801,6 +830,8 @@ private:
   unsigned last_hint_version_{~0u};
   bool last_hint_want_{false};
   std::atomic<double> last_lane_t_{0}, last_joy_t_{-1e9};
+  int joy_start_button_{0}, joy_refit_button_{1}, joy_stop_button_{2};
+  bool joy_start_was_{false}, joy_refit_was_{false}, joy_stop_was_{false};
   // 영상·깊이
   std::uint64_t camera_consumer_{0}, device_consumer_{0};
   std::chrono::steady_clock::time_point last_depth_{};
