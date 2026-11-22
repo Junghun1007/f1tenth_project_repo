@@ -20,6 +20,11 @@ void register_params(ParamRegistry & r) {
   o("YOLO 검출", "yolo.nms_threshold", "NMS IoU", "", 0.05, 0.95, 0.65);
   o("YOLO 검출", "yolo.roi_height_percent", "콘·차량 인정 영역 (화면 아래에서, 신호등은 화면 전체)", "%", 1, 100, 65);
   o("YOLO 검출", "yolo.max_fps", "검출 FPS 상한", "fps", 1, 60, 40);
+  // 스테레오 흑백 카메라(CAM_B/C) — 터널 밖: 장애물 깊이용. 노출 0 = 자동노출 (30 FPS라 최대 33 ms)
+  o("IR 카메라 · 터널 밖 (장애물 깊이)", "ir_cam.outside_exposure_us", "노출 (0 = 자동노출)", "µs", 0, 33000, 0);
+  o("IR 카메라 · 터널 밖 (장애물 깊이)", "ir_cam.outside_iso", "ISO (수동 노출일 때만)", "", 100, 1600, 400);
+  o("IR 카메라 · 터널 밖 (장애물 깊이)", "ir_cam.outside_dot", "점 투사기 세기 (깊이 품질)", "", 0, 1, 0.5);
+  o("IR 카메라 · 터널 밖 (장애물 깊이)", "ir_cam.outside_flood", "플러드 조명 세기", "", 0, 1, 0);
   o("위치 추정", "object.box_core_fraction", "박스 가운데 비율", "", 0.2, 1, 0.6);
   o("위치 추정", "object.min_points", "최소 점 수", "", 1, 200, 6);
   o("위치 추정", "object.min_point_share", "최소 점 비율", "", 0, 1, 0.10);
@@ -90,6 +95,11 @@ void register_params(ParamRegistry & r) {
   d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
   d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
   d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
+  // 스테레오 흑백 카메라 — 터널 안: IR 차선용 (tunnel_enabled:=true일 때만). 수동 노출 고정
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_exposure_us", "노출", "µs", 1000, 33000, 30000);
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_iso", "ISO", "", 100, 1600, 800);
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_dot", "점 투사기 세기 (차선 영상에 점이 찍힘)", "", 0, 1, 0);
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_flood", "플러드 조명 세기", "", 0, 1, 0.5);
   // 터널 IR 차선 (tunnel_enabled:=true일 때만 쓰임). RGB 차선과 따로 조절
   d("IR 차선 (터널)", "ir_lane.mask_threshold", "차선 마스크 임계값 (낮을수록 흐린 선도 잡음)", "", 0.05, 0.95, 0.5);
   d("IR 차선 (터널)", "ir_lane.lane_width_m", "차선 폭 (한쪽만 보일 때 중앙선 위치)", "m", 0.3, 1.2, 0.65);
@@ -277,6 +287,10 @@ Settings settings_from(const ParamRegistry & r) {
   s.link_loss_stop_sec = g("web.link_loss_stop_sec");
   s.lane_timeout_sec = g("drive.lane_timeout_sec");
   s.lane_side_tracking = g("lane.side_tracking") >= 0.5;
+  s.ir_camera.inside = {int(std::lround(g("ir_cam.inside_exposure_us"))), int(std::lround(g("ir_cam.inside_iso"))),
+                        g("ir_cam.inside_dot"), g("ir_cam.inside_flood")};
+  s.ir_camera.outside = {int(std::lround(g("ir_cam.outside_exposure_us"))), int(std::lround(g("ir_cam.outside_iso"))),
+                         g("ir_cam.outside_dot"), g("ir_cam.outside_flood")};
   s.ir_lane.mask_threshold = g("ir_lane.mask_threshold");
   s.ir_lane.lane_width_m = g("ir_lane.lane_width_m");
   s.ir_lane.side_tracking = g("ir_lane.side_tracking") >= 0.5;

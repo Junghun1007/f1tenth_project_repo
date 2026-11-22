@@ -22,6 +22,7 @@ add_library(bev_handoff SHARED
   src/avoidance_handoff.cpp
   src/lane_control_hints.cpp
   src/device_frame_handoff.cpp
+  src/ir_camera_settings.cpp
 )
 target_include_directories(bev_handoff
   PUBLIC

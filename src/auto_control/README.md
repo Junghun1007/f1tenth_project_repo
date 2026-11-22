@@ -74,6 +74,8 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 | 자동 명령 끊김 | 0.3 s 안 오면 safety_node가 제동 |
 
 ## 화면
+- 파라미터 "IR 카메라 · 터널 안 (차선)" / "IR 카메라 · 터널 밖 (장애물 깊이)": 스테레오 흑백 카메라 노출(µs, 밖은 0=자동노출)·ISO·점 투사기·플러드 조명.
+  바꾸면 camera_driver가 바로 다시 적용한다 (터널 안 IR 프레임 노출 검사 기준도 같이 바뀜)
 - 조이스틱 버튼 (8BitDo): **A** 주행 시작, **B** Refit, **X** 정지 (X는 safety_node에서도 제동 → MANUAL). `joy.start_button`/`joy.refit_button`/`joy.stop_button`
 - 차량 추종: 앞차가 `acc.lost_timeout_sec`(0.3 s) 넘게 안 보이면 크루즈를 끝내고 정상 주행
 

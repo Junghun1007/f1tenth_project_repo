@@ -36,6 +36,10 @@ struct Settings {
   double corner_outward_offset_m{0.08}, corner_entry_distance_m{2.2}, corner_entry_full_offset_m{0.6};
   double link_loss_stop_sec{1.0};
   bool lane_side_tracking{true};   // 차선 좌우 판정 고정
+  struct IrCameraProfile { int exposure_us{0}, iso{800}; double dot{0}, flood{0}; };   // 노출 0 = 자동
+  struct IrCamera {   // 스테레오 흑백 카메라: 터널 안(차선) / 밖(장애물 깊이)
+    IrCameraProfile inside{30000, 800, 0.0, 0.5}, outside{0, 400, 0.5, 0.0};
+  } ir_camera;
   struct IrLane {   // 터널 IR 차선 검출기 전용
     double mask_threshold{0.5}, lane_width_m{0.65};
     bool side_tracking{false};

@@ -2,6 +2,7 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/tunnel_ir_input_policy.hpp"
+#include "bev_handoff/ir_camera_settings.hpp"
 #include "camera_driver/ir_imu_synchronizer.hpp"
 #include "camera_driver/rgb_exposure_recovery.hpp"
 #include "camera_driver/msg/bev_input.hpp"
@@ -1347,10 +1348,11 @@ private:
     std::shared_ptr<dai::node::StereoDepth> stereo;
     if (depth_enabled_) {
       pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
-      tunnel_cameras_.sensor_size=tunnel_ir_size_;
+      // 터널 꺼짐: 센서는 깊이 해상도 그대로 (카메라 핸들만 받아 웹 노출·ISO 제어에 씀)
+      tunnel_cameras_.sensor_size=tunnel_enabled_ ? tunnel_ir_size_ : std::pair<std::uint32_t,std::uint32_t>{0U,0U};
       // 터널 INSIDE에서는 장치 Script 게이트로 스테레오 입력을 끊어 StereoDepth를 쉬게 한다.
       // 게이트 없이 계속 돌리면 터널 안에서 장치가 밀려 IR 프레임이 점점 늦어지고(→ 오래된 프레임으로 버려짐) IR 차선이 2 FPS로 떨어진다
-      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr,
+      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,&tunnel_cameras_,
         tunnel_enabled_ ? &depth_gate_control_ : nullptr);
       depth_queue_=stereo->depth.createOutputQueue(1,false);
       bev_handoff::publishDirectDepth(nullptr);
@@ -1396,11 +1398,10 @@ while True:
       ir_gate_control_=ir_gate->inputs["control"].createInputQueue();
       ir_output=&ir_gate->outputs["out"];
       ir_queue_=ir_output->createOutputQueue(1,false);
-      ir_controls_.push_back(tunnel_cameras_.left->inputControl.createInputQueue());
-      if (tunnel_cameras_.right) {
-        ir_controls_.push_back(tunnel_cameras_.right->inputControl.createInputQueue());
-      }
     }
+    // 스테레오 흑백 카메라 노출 제어 (터널 IR 프로필 + 웹 "IR 카메라" 값)
+    if (tunnel_cameras_.left) {ir_controls_.push_back(tunnel_cameras_.left->inputControl.createInputQueue());}
+    if (tunnel_cameras_.right) {ir_controls_.push_back(tunnel_cameras_.right->inputControl.createInputQueue());}
 
     // CAM_A is the native color/NV12 path. The stereo sensors on CAM_B/C are
     // native monochrome, so keep them GRAY8 on the device and synthesize
@@ -1702,6 +1703,34 @@ while True:
     bev_handoff::publishRgbExposureControl(bev_handoff::RgbExposureControl::automatic);
   }
 
+  // 웹 값이 없으면 예전 고정값: 안 = 30 ms ISO800 dot0 flood0.5, 밖 = 자동노출 + 장애물 깊이 조명 파라미터
+  bev_handoff::IrCameraProfile current_ir_profile(bool inside) const
+  {
+    if (const auto s=bev_handoff::irCameraSettings()) {return inside ? s->inside : s->outside;}
+    if (inside) {return {30000,800,0.0,0.5};}
+    return {0,800,depth_config_.dot_intensity,depth_config_.flood_intensity};
+  }
+
+  void apply_ir_profile(const bev_handoff::IrCameraProfile & p, bool inside)
+  {
+    const bool manual=p.exposure_us>0;
+    const int exposure=std::clamp(p.exposure_us,1,33000), iso=std::clamp(p.iso,100,1600);
+    for (const auto & queue:ir_controls_) {
+      auto control=std::make_shared<dai::CameraControl>();
+      if (manual) {control->setManualExposure(static_cast<std::uint32_t>(exposure),static_cast<std::uint32_t>(iso));}
+      else {control->setAutoExposureEnable();}
+      queue->send(control);
+    }
+    // 깊이가 꺼져 있으면 터널 밖 조명은 켜지 않는다 (예전 동작)
+    const double dot=std::clamp(depth_enabled_ || inside ? p.dot_intensity : 0.0,0.0,1.0);
+    const double flood=std::clamp(depth_enabled_ || inside ? p.flood_intensity : 0.0,0.0,1.0);
+    if (tunnel_device_ && (!tunnel_device_->setIrLaserDotProjectorIntensity(static_cast<float>(dot)) ||
+      !tunnel_device_->setIrFloodLightIntensity(static_cast<float>(flood))))
+    {
+      if (dot>0 || flood>0) {throw std::runtime_error("IR lighting command failed");}
+    }
+  }
+
   void ir_loop()
   {
     bool applied=false;
@@ -1765,22 +1794,18 @@ while True:
           previous_expired=pending.expired(); previous_overflow=pending.overflow();
           previous_superseded=pending.superseded();
         }
+        // 웹에서 IR 카메라 값을 바꾸면 현재 프로필(안/밖)을 다시 적용
+        if (const auto revision=bev_handoff::irCameraSettingsRevision(); revision!=ir_settings_revision_) {
+          ir_settings_revision_=revision;
+          dirty=true;
+        }
         if ((dirty || requested!=applied) && now>=retry_at) {
           dirty=true;
           tunnel_profile_ready_.store(false);
           // One owner changes BOTH stereo exposures and the shared IR lights.
-          for (const auto & queue:ir_controls_) {
-            auto control=std::make_shared<dai::CameraControl>();
-            if (requested) {control->setManualExposure(30000,800);}
-            else {control->setAutoExposureEnable();}
-            queue->send(control);
-          }
-          const double dot=requested ? 0.0 : (depth_enabled_ ? depth_config_.dot_intensity : 0.0);
-          const double flood=requested ? 0.5 : (depth_enabled_ ? depth_config_.flood_intensity : 0.0);
-          if (!tunnel_device_->setIrLaserDotProjectorIntensity(static_cast<float>(dot)) ||
-            !tunnel_device_->setIrFloodLightIntensity(static_cast<float>(flood))) {
-            throw std::runtime_error("Tunnel IR lighting command failed");
-          }
+          const auto profile=current_ir_profile(requested);
+          apply_ir_profile(profile,requested);
+          ir_expected_exposure_us_=profile.exposure_us; ir_expected_iso_=profile.iso;
           applied=requested;
           dirty=false;
           tunnel_profile_applied_.store(applied);
@@ -1792,7 +1817,9 @@ while True:
           bev_handoff::publishDirectIr(nullptr);
           bev_handoff::publishDirectDepth(nullptr);
           bev_handoff::clearObstacles();
-          RCLCPP_INFO(node_.get_logger(),"Camera profile=%s",applied ? "IR 30ms ISO800 dot0 flood0.5" : "OUTSIDE auto exposure/depth lights restored");
+          const std::string exposure_text=profile.exposure_us>0 ? std::to_string(profile.exposure_us)+"us" : std::string("AE");
+          RCLCPP_INFO(node_.get_logger(),"Camera profile=%s: exposure=%s ISO%d dot%.2f flood%.2f",applied ? "TUNNEL IR" : "OUTSIDE",
+            exposure_text.c_str(),profile.iso,profile.dot_intensity,profile.flood_intensity);
         }
         if (!ir_active) {
           // Drain anything sent before the device gate closed.
@@ -1810,7 +1837,7 @@ while True:
           if (dirty) {continue;}
           const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
           const auto rejection=tunnelIrRejection(tunnel_validation_mode_,applied,
-            captured,last,now,changed_at,last_exposure_us,last_iso);
+            captured,last,now,changed_at,last_exposure_us,last_iso,ir_expected_exposure_us_,ir_expected_iso_);
           if (rejection==TunnelIrRejection::time) {++time_rejected; continue;}
           if (rejection==TunnelIrRejection::exposure) {++exposure_rejected; continue;}
           last=captured;
@@ -1901,6 +1928,12 @@ while True:
     while (!stop_requested_.load(std::memory_order_relaxed)) {
       try {
         if (!pipeline_->isRunning()) {break;}
+        if (!tunnel_enabled_) {   // 터널 꺼짐: 웹 "IR 카메라 · 터널 밖" 값을 바뀔 때만 적용 (터널 켜짐은 ir_loop가 맡음)
+          if (const auto revision=bev_handoff::irCameraSettingsRevision(); revision!=ir_settings_revision_) {
+            ir_settings_revision_=revision;
+            apply_ir_profile(current_ir_profile(false),false);
+          }
+        }
         auto packet=depth_queue_->tryGet<dai::ImgFrame>();
         if (!packet) {std::this_thread::sleep_for(1ms); continue;}
         if (tunnel_enabled_ && (!tunnel_profile_ready_.load() || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
@@ -3550,6 +3583,8 @@ while True:
   std::shared_ptr<dai::MessageQueue> ir_queue_;
   std::vector<double> ir_distortion_;   // 비어 있으면 장치가 이미 왜곡 보정한 IR 영상
   std::vector<std::shared_ptr<dai::InputQueue>> ir_controls_;
+  std::uint64_t ir_settings_revision_{0};                 // 마지막으로 적용한 웹 IR 카메라 값 (ir_loop 또는 depth_loop 한 곳만 씀)
+  std::atomic<int> ir_expected_exposure_us_{30000}, ir_expected_iso_{800};   // 터널 IR 프레임 노출 검사 기준
   std::thread ir_thread_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_mode_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_state_sub_;

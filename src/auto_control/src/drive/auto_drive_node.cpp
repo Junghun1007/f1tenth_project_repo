@@ -19,6 +19,7 @@
 #include <bev_handoff/direct_camera_handoff.hpp>
 #include <bev_handoff/device_frame_handoff.hpp>
 #include <bev_handoff/direct_obstacle_handoff.hpp>
+#include <bev_handoff/ir_camera_settings.hpp>
 #include <bev_handoff/lane_control_hints.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -616,6 +617,7 @@ private:
     if (inside) { s.traffic.enabled = false; s.lead.enabled = false; }
     loop_->apply_settings(s);
     detect_->set_settings(s);
+    publish_ir_camera(s.ir_camera);
     {
       std::lock_guard<std::mutex> l(status_m_);
       hint_base_.side_tracking = s.lane_side_tracking;
@@ -632,6 +634,27 @@ private:
     }
     hint_version_++;
     publish_hints();
+  }
+
+  // 웹 "IR 카메라" 값 → camera_driver (같은 프로세스). 바뀐 경우에만 새로 내서 장치 명령을 줄인다
+  void publish_ir_camera(const acd::Settings::IrCamera & c) {
+    auto conv = [](const acd::Settings::IrCameraProfile & p) {
+      return bev_handoff::IrCameraProfile{p.exposure_us, p.iso, p.dot, p.flood};
+    };
+    const auto cur = bev_handoff::irCameraSettings();
+    const auto in = conv(c.inside), out = conv(c.outside);
+    auto same = [](const bev_handoff::IrCameraProfile & a, const bev_handoff::IrCameraProfile & b) {
+      return a.exposure_us == b.exposure_us && a.iso == b.iso && a.dot_intensity == b.dot_intensity && a.flood_intensity == b.flood_intensity;
+    };
+    if (cur && same(cur->inside, in) && same(cur->outside, out)) return;
+    auto s = std::make_shared<bev_handoff::IrCameraSettings>();
+    s->inside = in;
+    s->outside = out;
+    bev_handoff::publishIrCameraSettings(std::move(s));
+    const std::string out_exposure = out.exposure_us > 0 ? std::to_string(out.exposure_us) + "us" : std::string("AE");
+    RCLCPP_INFO(get_logger(), "IR camera: inside %dus ISO%d dot%.2f flood%.2f | outside %s ISO%d dot%.2f flood%.2f",
+                in.exposure_us, in.iso, in.dot_intensity, in.flood_intensity,
+                out_exposure.c_str(), out.iso, out.dot_intensity, out.flood_intensity);
   }
 
   void publish_hints() {   // 바뀐 것이 있을 때만 새로 만들어 교체 (매 프레임 할당 없음). 제어·웹·상태 스레드에서 호출
