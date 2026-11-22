@@ -2736,7 +2736,7 @@ while True:
               const int width = static_cast<int>(snapshot->packet->getWidth());
               const int height = static_cast<int>(snapshot->packet->getHeight());
               if (!device_uploader_ || device_uploader_->width() != width || device_uploader_->height() != height) {
-                device_uploader_ = std::make_unique<DeviceNv12Uploader>(width, height, 4);
+                device_uploader_ = std::make_unique<DeviceNv12Uploader>(width, height, 8);   // BEV·YOLO·찾기용 최근 2장이 동시에 잡아도 남게
               }
               const auto & data = snapshot->packet->getData();
               const std::size_t stride = snapshot->packet->getStride() ? snapshot->packet->getStride() : width;

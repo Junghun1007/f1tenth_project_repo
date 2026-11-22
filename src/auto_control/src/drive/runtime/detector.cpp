@@ -219,6 +219,12 @@ void DetectWorker::loop_() {
     if (!depth && !obstacles.empty()) stats.record("depth_miss", t1, t1);   // 진단: 박스는 있는데 깊이 짝이 없음 (회/s)
     if (depth && mount_ok) {
       const auto & d = *depth;
+      if (!geometry_logged_) {   // 위치 계산 실패 진단용: RGB·깊이 내부 파라미터와 박스 변환 한 번 출력
+        geometry_logged_ = true;
+        std::fprintf(stderr, "[auto_drive detector] rgb %dx%d fx=%.1f fy=%.1f cx=%.1f cy=%.1f | depth %dx%d fx=%.1f fy=%.1f cx=%.1f cy=%.1f stride=%zu "
+                     "| mount x=%.3f h=%.3f pitch=%.1fdeg\n", w, h, rgb_k.fx, rgb_k.fy, rgb_k.cx, rgb_k.cy, d.width, d.height, d.fx, d.fy,
+                     d.cx, d.cy, d.stride, mount.x, mount.height, mount.pitch_down_rad * 57.2958);
+      }
       out.depth_time = d.t;
       const DepthIntrinsics k{d.fx, d.fy, d.cx, d.cy, d.width, d.height};
       const auto * mm = reinterpret_cast<const std::uint16_t *>(d.data);
@@ -231,7 +237,14 @@ void DetectWorker::loop_() {
         if (auto o = localize_box(mm, stride_px, k, mount, box, det.class_id, det.score, fp, s.box, bottom_visible(det, obstacles), &gc))
           out.cones.push_back(*o);
         else if (gc == GroundCheck::Rejected) stats.record("ground_reject", t1, t1);
-        else stats.record("loc_fail", t1, t1);
+        else {
+          stats.record("loc_fail", t1, t1);   // 진단: 깊이는 있는데 박스 안 유효 점이 모자람
+          if (loc_fail_logged_ < 3) {   // 처음 몇 번은 RGB 박스 → 깊이 박스를 남긴다
+            ++loc_fail_logged_;
+            std::fprintf(stderr, "[auto_drive detector] localize failed: class=%d rgb box=(%.0f,%.0f %.0fx%.0f) -> depth box=(%.0f,%.0f %.0fx%.0f)\n",
+                         det.class_id, det.box.x, det.box.y, det.box.width, det.box.height, box.x, box.y, box.width, box.height);
+          }
+        }
       }
     }
     stats.record("box_depth", t1, now_sec());

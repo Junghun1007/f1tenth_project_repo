@@ -1035,10 +1035,11 @@ private:
       static_cast<std::size_t>(input_crop_width_);
     const std::size_t nv12_rows =
       static_cast<std::size_t>(input_crop_height_) * 3U / 2U;
-    const bool memory_valid =
+    // GPU 공유 원본(device_frame_id)이면 nv12는 일부러 비어 있다 → 호스트 버퍼 크기 검사를 하지 않는다
+    const bool memory_valid = message->device_frame_id != 0U || (
       message->step >= minimum_step &&
       message->nv12.size() >=
-      static_cast<std::size_t>(message->step) * nv12_rows;
+      static_cast<std::size_t>(message->step) * nv12_rows);
     if (!dimensions_valid || !memory_valid)
     {
       invalid_total_.fetch_add(1U, std::memory_order_relaxed);

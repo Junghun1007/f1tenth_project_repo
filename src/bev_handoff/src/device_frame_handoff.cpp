@@ -9,7 +9,7 @@ namespace
 struct State
 {
   std::mutex mutex;
-  std::array<std::shared_ptr<const DeviceNv12Frame>, 3> recent;   // BEV가 BevInput을 받을 때까지 (보통 바로 다음)
+  std::array<std::shared_ptr<const DeviceNv12Frame>, 2> recent;   // BEV가 BevInput을 받을 때까지 (보통 바로 다음)
   std::size_t next{0};
   DeviceNv12Callback consumer;
   std::uint64_t consumer_id{0}, next_consumer_id{1};

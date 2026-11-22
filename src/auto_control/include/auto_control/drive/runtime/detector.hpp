@@ -100,6 +100,8 @@ private:
   std::atomic<double> fps_{0};
   std::atomic<float> signal_score_{0.f};
   double last_jpeg_t_{0};
+  bool geometry_logged_{false};
+  int loc_fail_logged_{0};
   double depth_sync_s_{0.025}, depth_wait_s_{0.020};   // 30 FPS 깊이: 가장 가까운 깊이는 ±17 ms 안. 아직 안 왔으면 최대 20 ms 기다림
 };
 
