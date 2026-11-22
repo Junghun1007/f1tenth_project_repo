@@ -36,6 +36,11 @@ struct Settings {
   double corner_outward_offset_m{0.08}, corner_entry_distance_m{2.2}, corner_entry_full_offset_m{0.6};
   double link_loss_stop_sec{1.0};
   bool lane_side_tracking{true};   // 차선 좌우 판정 고정
+  struct IrLane {   // 터널 IR 차선 검출기 전용
+    double mask_threshold{0.5}, lane_width_m{0.65};
+    bool side_tracking{false};
+    double corner_outward_offset_m{0.08}, corner_entry_distance_m{2.2}, corner_entry_full_offset_m{0.6};
+  } ir_lane;
   bool avoid_vehicles{true};       // 트럭·세단도 회피 장애물로 (차량 추종이 켜져 있으면 회피 대신 추종)
   LeadParams lead;                 // 차량 추종 (acc.*)
   TrafficParams traffic;           // 신호등 정지 (traffic.*)

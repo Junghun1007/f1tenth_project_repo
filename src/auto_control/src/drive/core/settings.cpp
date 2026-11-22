@@ -90,6 +90,13 @@ void register_params(ParamRegistry & r) {
   d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
   d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
   d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
+  // 터널 IR 차선 (tunnel_enabled:=true일 때만 쓰임). RGB 차선과 따로 조절
+  d("IR 차선 (터널)", "ir_lane.mask_threshold", "차선 마스크 임계값 (낮을수록 흐린 선도 잡음)", "", 0.05, 0.95, 0.5);
+  d("IR 차선 (터널)", "ir_lane.lane_width_m", "차선 폭 (한쪽만 보일 때 중앙선 위치)", "m", 0.3, 1.2, 0.65);
+  d("IR 차선 (터널)", "ir_lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 0);
+  d("IR 차선 (터널)", "ir_lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
+  d("IR 차선 (터널)", "ir_lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
+  d("IR 차선 (터널)", "ir_lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
   d("출력", "drive.maximum_duty", "최대 duty", "", 0, 0.5, 0.12);
   d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.05);
   d("종방향 모드", "drive.longitudinal_mode", "종방향 모드 (1=staged 전류 제동, 2=duty-only 회생 감속) · 정지했을 때 적용", "", 1, 2, 2.0);
@@ -152,6 +159,7 @@ void register_params(ParamRegistry & r) {
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
   r.add_order_constraint("plan.relaxed_hard_clearance", "plan.relaxed_soft_clearance");
   r.add_order_constraint("lane.corner_entry_full_offset_m", "lane.corner_entry_distance_m");
+  r.add_order_constraint("ir_lane.corner_entry_full_offset_m", "ir_lane.corner_entry_distance_m");
   r.add_order_constraint("object.min_height_m", "object.max_height_m");
 }
 
@@ -269,6 +277,12 @@ Settings settings_from(const ParamRegistry & r) {
   s.link_loss_stop_sec = g("web.link_loss_stop_sec");
   s.lane_timeout_sec = g("drive.lane_timeout_sec");
   s.lane_side_tracking = g("lane.side_tracking") >= 0.5;
+  s.ir_lane.mask_threshold = g("ir_lane.mask_threshold");
+  s.ir_lane.lane_width_m = g("ir_lane.lane_width_m");
+  s.ir_lane.side_tracking = g("ir_lane.side_tracking") >= 0.5;
+  s.ir_lane.corner_outward_offset_m = g("ir_lane.corner_outward_offset_m");
+  s.ir_lane.corner_entry_distance_m = g("ir_lane.corner_entry_distance_m");
+  s.ir_lane.corner_entry_full_offset_m = g("ir_lane.corner_entry_full_offset_m");
   s.avoid_vehicles = g("plan.avoid_vehicles") >= 0.5;
   s.traffic.enabled = g("traffic.enabled") >= 0.5;
   s.traffic.stop_range_max = g("traffic.stop_range_max_m");

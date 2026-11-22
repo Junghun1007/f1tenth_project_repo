@@ -1290,6 +1290,8 @@ private:
     gpu_shared_upload_enabled_=node_.declare_parameter<bool>("gpu_shared_upload_enabled",false,descriptor);
     tunnel_validation_mode_=node_.declare_parameter<bool>("tunnel.validation_mode",false);
     tunnel_ir_imu_enabled_=node_.declare_parameter<bool>("tunnel.ir_imu_enabled",true);
+    // 터널 IR 차선 입력 해상도. 왼쪽 흑백 센서를 장애물 깊이와 같이 쓰므로 800p면 터널 밖에서도 센서가 800p로 돈다
+    tunnel_ir_size_=point_cloud::resolutionSize(node_.declare_parameter<std::string>("tunnel.ir_resolution","800p"));
     tunnel_ir_imu_max_age_sec_=node_.declare_parameter<double>("tunnel.ir_imu_max_age_sec",0.05);
     tunnel_ir_imu_wait_sec_=node_.declare_parameter<double>("tunnel.ir_imu_wait_sec",0.10);
     rgb_exposure_recovery_enabled_=node_.declare_parameter<bool>("tunnel.rgb_exit_exposure_recovery_enabled",true);
@@ -1345,8 +1347,9 @@ private:
     std::shared_ptr<dai::node::StereoDepth> stereo;
     if (depth_enabled_) {
       pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
-      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr,
-        tunnel_enabled_ ? &depth_gate_control_ : nullptr);
+      tunnel_cameras_.sensor_size=tunnel_ir_size_;
+      // 터널 안 깊이는 장치 Script 게이트 대신 호스트(depth_loop)에서 버린다 (스테레오 입력이 장치 CPU를 거치지 않게)
+      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr,nullptr);
       depth_queue_=stereo->depth.createOutputQueue(1,false);
       bev_handoff::publishDirectDepth(nullptr);
     }
@@ -1355,7 +1358,7 @@ private:
     if (tunnel_enabled_) {
       if (!tunnel_cameras_.left) {
         tunnel_cameras_.left=pipeline_->create<dai::node::Camera>()->build(
-          dai::CameraBoardSocket::CAM_B,std::make_pair(1280,800),30.0F);
+          dai::CameraBoardSocket::CAM_B,tunnel_ir_size_,30.0F);
       }
       // 왜곡 보정은 장치(warp 엔진, RGB 보정과 공유)에서 하지 않고 IR BEV LUT에 합친다 (호스트 추가 비용 0).
       // 원근(Perspective) 모델이 아니면 예전처럼 장치에서 보정한다.
@@ -1369,7 +1372,7 @@ private:
       RCLCPP_INFO(node_.get_logger(),"Tunnel IR undistort: %s",
         ir_device_undistort ? "device (warp)" : "host BEV LUT");
       ir_output=tunnel_cameras_.left->requestOutput(
-        std::make_pair(1280,800),dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,ir_device_undistort);
+        tunnel_ir_size_,dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,ir_device_undistort);
       // Outside the tunnel the lane IR stream is unused: stop it on the device
       // so 1280x800 frames are not sent over USB only to be discarded.
       auto ir_gate=pipeline_->create<dai::node::Script>();
@@ -1417,39 +1420,8 @@ while True:
       resize_mode_,
       static_cast<float>(sensor_fps_),
       undistort_enabled_);
-    if (tunnel_enabled_) {
-      // INSIDE only needs RGB for TCN exit detection (and 5 FPS RGB lane standby).
-      // Keep the sensor rate (and its exposure behaviour) unchanged and forward
-      // ~30 FPS to the host instead; every frame passes otherwise.
-      const int sensor_rate=static_cast<int>(std::lround(sensor_fps_));
-      auto rgb_gate=pipeline_->create<dai::node::Script>();
-      rgb_gate->setScript(
-        "sensor = " + std::to_string(sensor_rate) + "\n"
-        "target = " + std::to_string(kTunnelRgbInsideFps) + "\n" R"PY(
-decimate = False
-last_slot = None
-while True:
-    control = node.io['control'].tryGet()
-    if control is not None:
-        decimate = bool(control.getData()[0])
-        last_slot = None
-    frame = node.io['in'].get()
-    if not decimate:
-        node.io['out'].send(frame)
-        continue
-    slot = (frame.getSequenceNum() * target) // sensor
-    if slot != last_slot:
-        last_slot = slot
-        node.io['out'].send(frame)
-)PY");
-      output->link(rgb_gate->inputs["in"]);
-      rgb_gate->inputs["in"].setMaxSize(2);
-      rgb_gate->inputs["in"].setBlocking(false);
-      rgb_gate->inputs["control"].setMaxSize(1);
-      rgb_gate->inputs["control"].setBlocking(false);
-      rgb_gate_control_=rgb_gate->inputs["control"].createInputQueue();
-      output=&rgb_gate->outputs["out"];
-    }
+    // 터널 INSIDE의 RGB ~30 FPS 솎기는 호스트(capture_loop)에서 한다.
+    // 장치 Script로 60 FPS 원본을 전부 넘기면 장치 CPU가 밀려 터널 밖 RGB FPS까지 떨어진다.
 
     output_queue_ = output->createOutputQueue(
       static_cast<unsigned int>(queue_size_), queue_blocking_);
@@ -1930,6 +1902,7 @@ while True:
         auto packet=depth_queue_->tryGet<dai::ImgFrame>();
         if (!packet) {std::this_thread::sleep_for(1ms); continue;}
         if (tunnel_enabled_ && (!tunnel_profile_ready_.load() || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
+          rgb_tunnel_phase_.load()==RgbTunnelPhase::inside ||
           std::chrono::duration_cast<std::chrono::nanoseconds>(
             packet->getTimestamp(dai::CameraExposureOffset::MIDDLE).time_since_epoch()).count()<depth_resume_ns_.load())) {
           bev_handoff::publishDirectDepth(nullptr);
@@ -1983,9 +1956,13 @@ while True:
           dai::CameraExposureOffset::MIDDLE);
         bev_handoff::publishCameraExposure(false,std::make_shared<bev_handoff::CameraExposureObservation>(
           bev_handoff::CameraExposureObservation{static_cast<long>(packet->getExposureTime().count()),static_cast<int>(packet->getSensitivity()),sensor_timestamp}));
-        // INSIDE frames arrive already decimated to ~30 FPS on the device; pass
-        // them all (the 33.3ms grid would drop some of the uneven 2/3-frame gaps).
+        // INSIDE: 호스트에서 ~30 FPS로 솎는다 (예전 장치 Script 게이트와 같은 역할). 이후 처리는 건너뜀
         const bool tcn_decimated=rgb_decimated_.load();
+        if (tcn_decimated) {
+          if (rgb_keep_at_!=std::chrono::steady_clock::time_point{} && sensor_timestamp<rgb_keep_at_) {continue;}
+          rgb_keep_at_=(rgb_keep_at_==std::chrono::steady_clock::time_point{} || sensor_timestamp-rgb_keep_at_>100ms) ?
+            sensor_timestamp+30ms : rgb_keep_at_+std::chrono::nanoseconds(1000000000/kTunnelRgbInsideFps);
+        } else {rgb_keep_at_={};}
         if (tunnel_enabled_ && packet->getType()==dai::ImgFrame::Type::NV12 &&
           (last_tcn_frame_==std::chrono::steady_clock::time_point{} ||
           (tcn_decimated ? sensor_timestamp>=last_tcn_frame_+25ms : sensor_timestamp>=last_tcn_frame_+33333333ns))) {
@@ -3561,6 +3538,8 @@ while True:
   // Device-side routing per tunnel phase (see tunnel loop).
   std::shared_ptr<dai::InputQueue> depth_gate_control_,ir_gate_control_,rgb_gate_control_;
   std::atomic<bool> rgb_decimated_{false};
+  std::chrono::steady_clock::time_point rgb_keep_at_{};   // 터널 INSIDE 호스트 솎기: 다음으로 받을 촬영 시각
+  std::pair<std::uint32_t,std::uint32_t> tunnel_ir_size_{1280U,800U};
   std::atomic<bool> tunnel_profile_applied_{false};
   std::atomic<bool> tunnel_profile_ready_{false};
   std::atomic<std::int64_t> depth_resume_ns_{0};

@@ -484,6 +484,8 @@ public:
     return engine_cache_path_;
   }
 
+  void set_mask_threshold(const float value) noexcept {mask_threshold_ = value;}
+
 private:
   LaneInferenceTiming finish_inference(const std::uint8_t * device_bgr)
   {
@@ -870,6 +872,14 @@ LaneInferenceTiming TensorRtLaneBackend::infer_bgr(
   const std::size_t source_stride)
 {
   return impl_->infer_bgr(bgr, data_size, source_stride);
+}
+
+void TensorRtLaneBackend::set_mask_threshold(const float mask_threshold)
+{
+  if (!std::isfinite(mask_threshold) || mask_threshold < 0.0F || mask_threshold > 1.0F) {
+    throw std::invalid_argument("mask_threshold must be in [0,1]");
+  }
+  impl_->set_mask_threshold(mask_threshold);
 }
 
 LaneInferenceTiming TensorRtLaneBackend::infer_device_bgr(

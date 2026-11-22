@@ -6,6 +6,7 @@
 //   웹: http://<jetson-ip>:8765 (SSE 텔레메트리, BEV·카메라 MJPEG, 명령·파라미터)
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
+#include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
 #include <sensor_msgs/msg/joy.hpp>
 #include <std_msgs/msg/bool.hpp>
@@ -20,6 +21,7 @@
 #include <bev_handoff/direct_obstacle_handoff.hpp>
 #include <bev_handoff/lane_control_hints.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <cctype>
 #include <cstdlib>
 #include <ctime>
@@ -183,6 +185,9 @@ public:
         [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "IR"); }, control);
       tunnel_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.tunnel_state", "/tunnel/state"), state_qos,
         [this](std_msgs::msg::String::ConstSharedPtr m) { on_tunnel_state(m->data); }, status_latched);
+      // 터널 안 웹 "BEV 원본": RGB BEV 대신 IR BEV (shared_ir_bev, mono8 120×300). 켰을 때만 1/15 s 복사
+      ir_bev_sub_ = create_subscription<sensor_msgs::msg::Image>(declare_parameter<std::string>("topics.ir_bev_image", "/camera/image_bev_ir"),
+        sensor_qos, [this](sensor_msgs::msg::Image::ConstSharedPtr m) { on_ir_bev(*m); }, in(status_group_));
     } else {
       lane_sub_ = create_subscription<line_detactor_msgs::msg::LaneResult>(lane_topic, sensor_qos,
         [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
@@ -258,6 +263,7 @@ public:
     bev_handoff::setDirectBevPreviewTap([this](std::shared_ptr<const bev_handoff::DirectBevFrame> f) {   // 웹 "BEV 원본" (켰을 때만 1/15 s)
       const double t = acd::now_sec();
       if (!bev_wanted_.load() || t - last_bev_tap_t_ < 1.0 / 15.0) return;
+      if (tunnel_view_.load() && t - last_ir_bev_t_.load() < 0.5) return;   // 터널 안: IR BEV를 보여 주는 중
       last_bev_tap_t_ = t;
       std::lock_guard<std::mutex> l(bev_m_);
       bev_pending_ = std::move(f);
@@ -284,7 +290,9 @@ public:
       bev_wanted_ = web_->stream_wanted("bev", acd::now_sec());
     }, control_group_);
     telemetry_ = create_wall_timer(33ms, [this] { send_telemetry(); }, web_group_);
-    setup_timer_ = create_wall_timer(100ms, [this] { connect_reference(); }, status_group_);   // bev_processor 시작 측정이 끝나야 카메라 장착값이 생김
+    setup_timer_ = create_wall_timer(100ms, [this] { connect_reference(); }, status_group_);
+    // 터널 안 웹 "카메라": YOLO가 쉬는 동안 IR 카메라(CAM_B 왼쪽 흑백, 차선 입력 원본)를 보여 준다
+    if (tunnel_enabled_) ir_camera_timer_ = create_wall_timer(66ms, [this] { publish_ir_camera(); }, web_group_);   // bev_processor 시작 측정이 끝나야 카메라 장착값이 생김
     inspect_thread_ = std::thread([this] { load_yolo(); });
   }
 
@@ -370,14 +378,48 @@ private:
     }
   }
 
+  void on_ir_bev(const sensor_msgs::msg::Image & m) {
+    const double t = acd::now_sec();
+    if (!tunnel_view_.load() || !bev_wanted_.load() || t - last_ir_bev_t_.load() < 1.0 / 15.0) return;
+    if (m.encoding != "mono8" || m.width == 0 || m.height == 0 || m.step < m.width || m.data.size() < std::size_t(m.step) * m.height) return;
+    last_ir_bev_t_ = t;
+    cv::Mat img = cv::Mat(int(m.height), int(m.width), CV_8UC1, const_cast<std::uint8_t *>(m.data.data()), m.step).clone();
+    std::lock_guard<std::mutex> l(bev_m_);
+    ir_bev_pending_ = std::move(img);
+    bev_cv_.notify_one();
+  }
+
+  void publish_ir_camera() {   // 웹 스레드: 최신 IR 한 장 → 640 폭 JPEG (켰을 때·터널 안일 때만)
+    if (!tunnel_view_.load() || !web_->stream_wanted("camera", acd::now_sec())) return;
+    const auto f = bev_handoff::latestDirectIr();
+    if (!f || f->mono.empty() || f->captured_at == last_ir_camera_at_) return;
+    last_ir_camera_at_ = f->captured_at;
+    cv::Mat view;
+    const double scale = 640.0 / f->mono.cols;
+    cv::resize(f->mono, view, {}, scale, scale, cv::INTER_AREA);
+    cv::cvtColor(view, view, cv::COLOR_GRAY2BGR);
+    cv::putText(view, "IR (CAM_B left)", {8, 22}, cv::FONT_HERSHEY_SIMPLEX, 0.6, {0, 255, 255}, 2);
+    std::vector<std::uint8_t> jpeg;
+    if (cv::imencode(".jpg", view, jpeg, {cv::IMWRITE_JPEG_QUALITY, 70})) web_->publish_jpeg("camera", std::move(jpeg));
+  }
+
   void bev_jpeg_loop() {   // BEV 원본 다운로드·인코딩 (BEV·차선 스레드를 막지 않게 따로)
     while (!stopping_) {
       std::shared_ptr<const bev_handoff::DirectBevFrame> f;
+      cv::Mat ir;
       {
         std::unique_lock<std::mutex> l(bev_m_);
-        bev_cv_.wait_for(l, 200ms, [this] { return bev_pending_ != nullptr || stopping_; });
+        bev_cv_.wait_for(l, 200ms, [this] { return bev_pending_ != nullptr || !ir_bev_pending_.empty() || stopping_; });
         f = std::move(bev_pending_);
         bev_pending_.reset();
+        ir = std::move(ir_bev_pending_);
+        ir_bev_pending_ = cv::Mat();
+      }
+      if (!ir.empty()) {   // IR BEV 120×300 → 2배 확대
+        cv::Mat big;
+        cv::resize(ir, big, {}, 2.0, 2.0, cv::INTER_NEAREST);
+        std::vector<std::uint8_t> jpeg;
+        if (cv::imencode(".jpg", big, jpeg, {cv::IMWRITE_JPEG_QUALITY, 80})) web_->publish_jpeg("bev", std::move(jpeg));
       }
       if (!f) continue;
       const cv::Mat bgr = !f->bgr.empty() ? f->bgr : (f->download_bgr ? f->download_bgr() : cv::Mat());
@@ -531,6 +573,7 @@ private:
     }
     // 터널 안: YOLO를 쉬고 콘·차량 기억을 비우며 신호등·앞차 추종을 끈다 (차선만 따라감). 나오면 새 관측부터 다시
     detect_->set_paused(inside);
+    tunnel_view_ = inside;
     loop_->set_obstacles_suspended(inside);
     apply_settings();
     RCLCPP_INFO(get_logger(), "tunnel %s: obstacles/traffic/lead %s", s.c_str(), inside ? "suspended" : "restored");
@@ -550,6 +593,12 @@ private:
       hint_base_.corner_outward_offset_m = s.corner_outward_offset_m;
       hint_base_.corner_entry_distance_m = s.corner_entry_distance_m;
       hint_base_.corner_entry_full_offset_distance_m = s.corner_entry_full_offset_m;
+      hint_base_.ir.mask_threshold = s.ir_lane.mask_threshold;
+      hint_base_.ir.lane_width_m = s.ir_lane.lane_width_m;
+      hint_base_.ir.side_tracking = s.ir_lane.side_tracking;
+      hint_base_.ir.corner_outward_offset_m = s.ir_lane.corner_outward_offset_m;
+      hint_base_.ir.corner_entry_distance_m = s.ir_lane.corner_entry_distance_m;
+      hint_base_.ir.corner_entry_full_offset_distance_m = s.ir_lane.corner_entry_full_offset_m;
       update_mount();   // ROI 비율이 바뀌었을 수 있음
     }
     hint_version_++;
@@ -760,6 +809,12 @@ private:
   std::mutex bev_m_;
   std::condition_variable bev_cv_;
   std::shared_ptr<const bev_handoff::DirectBevFrame> bev_pending_;
+  cv::Mat ir_bev_pending_;                                  // 터널 안 IR BEV (bev_m_)
+  std::atomic<bool> tunnel_view_{false};                    // 터널 안: 웹 카메라·BEV 원본을 IR로
+  std::atomic<double> last_ir_bev_t_{-1e9};
+  std::chrono::steady_clock::time_point last_ir_camera_at_{};
+  rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr ir_bev_sub_;
+  rclcpp::TimerBase::SharedPtr ir_camera_timer_;
   std::thread inspect_thread_, depth_thread_, bev_thread_;
   // 기록
   std::mutex rec_m_;

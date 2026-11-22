@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "point_cloud/depth_source.hpp"
 
 #include <cmath>
@@ -95,10 +96,13 @@ std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
   auto left = pipeline.create<dai::node::Camera>();
   auto right = pipeline.create<dai::node::Camera>();
   // An additional undistorted 800p LEFT output is used by tunnel lane inference.
-  const auto sensor_size = cameras ? std::make_pair(1280U, 800U) : size;
+  auto sensor_size = size;
+  if (cameras) {
+    sensor_size = {std::max(size.first, cameras->sensor_size.first), std::max(size.second, cameras->sensor_size.second)};
+  }
   left->build(dai::CameraBoardSocket::CAM_B, sensor_size, static_cast<float>(c.fps));
   right->build(dai::CameraBoardSocket::CAM_C, sensor_size, static_cast<float>(c.fps));
-  if (cameras) {*cameras = {left, right};}
+  if (cameras) {cameras->left = left; cameras->right = right;}
   auto * left_output = left->requestOutput(size);
   auto * right_output = right->requestOutput(size);
   if (gate_control) {

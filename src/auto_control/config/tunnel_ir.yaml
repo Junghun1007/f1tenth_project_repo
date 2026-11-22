@@ -20,3 +20,5 @@ line_detactor:
     result_publish_enabled: true
     centerline_bev_width_m: 1.2
     centerline_bev_height_m: 3.0
+    # 웹 "IR 차선 (터널)" 파라미터(주행 컴포넌트 힌트의 IR 전용 값)를 따른다
+    lane_hints_profile: ir

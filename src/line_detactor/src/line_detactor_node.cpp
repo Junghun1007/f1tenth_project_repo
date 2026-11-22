@@ -487,6 +487,8 @@ private:
       "centerline_outside_margin_m", 0.12);
     centerline_.max_samples = node_.declare_parameter<int>("centerline_max_samples", 2000);
     side_tracking_enabled_ = node_.declare_parameter<bool>("lane_side_tracking_enabled", false);
+    // ir: 주행 컴포넌트 힌트 중 터널 IR 전용 값(LaneControlHints::ir)을 쓴다 (웹 "IR 차선 (터널)" 파라미터)
+    ir_hints_ = node_.declare_parameter<std::string>("lane_hints_profile", "rgb") == "ir";
     {
       LaneSideTrackerConfig tracker;
       tracker.meter_per_pixel = centerline_.bev_width_m / std::max(1, model_input_width_);
@@ -1170,8 +1172,15 @@ private:
           std::min(preview_fps_,bev_theme_preview_fps_) : preview_fps_;
         const bool display_due=(preview_enabled_ || shared_ir_preview_output_enabled_) &&
           display_gate.accept(std::chrono::duration<double>(SteadyClock::now().time_since_epoch()).count(),display_fps);
+        const auto hints = bev_handoff::laneControlHints();
         try {
           validate_image(*message);
+          if (ir_hints_ && hints && hints->ir.mask_threshold > 0.0 &&
+            static_cast<float>(hints->ir.mask_threshold) != applied_mask_threshold_)
+          {   // 웹에서 바꾼 IR 차선 임계값: 다음 추론부터
+            applied_mask_threshold_ = static_cast<float>(hints->ir.mask_threshold);
+            backend_->set_mask_threshold(applied_mask_threshold_);
+          }
           ProfileTimer backend_timer(profile, ProfileStage::backend_wall);
           timing = message->device_bgr != nullptr ?
             backend_->infer_device_bgr(
@@ -1220,14 +1229,21 @@ private:
             }
             stop_mask_timer.stop();
             // 주행 컴포넌트 힌트: 코너 바깥 이동 값(웹에서 실시간 변경), 좌우 재판정, 기준 중앙선 요청
-            const auto hints = bev_handoff::laneControlHints();
             CenterlineConfig centerline = centerline_;
-            if (hints) {
+            bool side_tracking = side_tracking_enabled_;
+            if (hints && ir_hints_) {   // 터널 IR 검출기: IR 전용 값
+              centerline.corner_outward_offset_m = hints->ir.corner_outward_offset_m;
+              centerline.corner_entry_distance_m = hints->ir.corner_entry_distance_m;
+              centerline.corner_entry_full_offset_distance_m = hints->ir.corner_entry_full_offset_distance_m;
+              if (hints->ir.lane_width_m > 0.0) {centerline.lane_width_m = hints->ir.lane_width_m;}
+              side_tracking = hints->ir.side_tracking;
+            } else if (hints) {
               centerline.corner_outward_offset_m = hints->corner_outward_offset_m;
               centerline.corner_entry_distance_m = hints->corner_entry_distance_m;
               centerline.corner_entry_full_offset_distance_m = hints->corner_entry_full_offset_distance_m;
+              side_tracking = hints->side_tracking;
             }
-            if (hints ? hints->side_tracking : side_tracking_enabled_) {
+            if (side_tracking) {
               // 모델이 붙인 좌우 라벨 대신 직전 프레임·차선 폭 기준으로 조각마다 좌우를 다시 정한다
               const double t = message->header.stamp.sec + message->header.stamp.nanosec * 1e-9;
               side_tracker_->apply(result.observed_paths, model_input_height_, t);
@@ -1644,6 +1660,8 @@ private:
   CenterlineConfig centerline_;
   // 차선 좌우 재판정 (cone_drive_test 방식). 주행 컴포넌트 힌트가 있으면 그 설정, 없으면 lane_side_tracking_enabled
   bool side_tracking_enabled_{false};
+  bool ir_hints_{false};
+  float applied_mask_threshold_{-1.0F};
   std::unique_ptr<LaneSideTracker> side_tracker_;
   bool result_publish_enabled_{true};
   std::string result_topic_;

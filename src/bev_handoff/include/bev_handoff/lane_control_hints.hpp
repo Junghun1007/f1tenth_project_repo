@@ -14,6 +14,16 @@ struct LaneControlHints
   double corner_outward_offset_m{0.08};
   double corner_entry_distance_m{2.2};
   double corner_entry_full_offset_distance_m{0.6};
+  // 터널 IR 차선 검출기(lane_hints_profile: ir) 전용 값. mask_threshold·lane_width_m < 0이면 검출기 자기 파라미터
+  struct Ir
+  {
+    double mask_threshold{-1.0};
+    double lane_width_m{-1.0};
+    bool side_tracking{true};
+    double corner_outward_offset_m{0.08};
+    double corner_entry_distance_m{2.2};
+    double corner_entry_full_offset_distance_m{0.6};
+  } ir;
 };
 void publishLaneControlHints(std::shared_ptr<const LaneControlHints> hints);
 std::shared_ptr<const LaneControlHints> laneControlHints();   // 없으면 nullptr

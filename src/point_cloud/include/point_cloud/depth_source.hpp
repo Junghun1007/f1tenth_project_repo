@@ -52,6 +52,8 @@ void validate(const Config & config);
 struct StereoCameras
 {
   std::shared_ptr<dai::node::Camera> left, right;
+  // 입력: 센서 구동 해상도 (터널 IR 출력과 같은 센서를 쓰므로 둘 중 큰 쪽). 깊이 입력은 c.resolution으로 줄여 씀
+  std::pair<std::uint32_t, std::uint32_t> sensor_size{1280U, 800U};
 };
 // With gate_control, a device Script forwards stereo inputs only while the last
 // control byte was nonzero (initially open), so StereoDepth can idle in a tunnel.

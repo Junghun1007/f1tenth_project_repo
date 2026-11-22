@@ -30,6 +30,8 @@
 - **원본 GPU 업로드 1회** (`perception.yaml` `gpu_shared_upload_enabled`): camera_driver가 원본 NV12를 GPU 버퍼 풀에 한 번 올리고
   BEV(bev_processor)와 YOLO가 같은 버퍼를 읽는다 (전에는 BEV용 호스트 크롭 복사 + BEV 업로드 + YOLO 업로드).
   신호등 색 판정과 웹 카메라 보기만 같은 시각의 호스트 프레임을 쓴다. 풀이 바쁘거나 실패하면 그 프레임만 예전 경로
+- **터널 OAK 부하**: 장치 Script 게이트(RGB 솎기·스테레오)를 없애고 호스트에서 버림, IR 왜곡 보정은 IR BEV LUT에 합침.
+  `camera_config.yaml`의 `tunnel.ir_resolution`(800p|400p): 왼쪽 흑백 센서를 깊이와 같이 써서 800p면 터널 밖에서도 센서가 800p로 돈다
 - **터널 TCN**: camera_driver가 프레임 통계 7개를 C++로 계산해 `/tunnel/rgb_stats`로 보낸다 (전에는 원본 1.5 MB × 30 Hz를 Python 프로세스로)
 - **콜백 그룹**: IMU(400 Hz) · 차량 입력 · 차선 제어 · 상태 · 웹을 나눠 회피 계획 중에도 IMU 요레이트가 밀리지 않는다
 - **웹 카메라 보기**: 변환·그리기·JPEG 인코딩을 검출 스레드 밖에서 (켜도 검출 FPS 그대로)
@@ -74,6 +76,8 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 ## 화면
 
 - 상단: 모드, 상태, 안전 전환(AUTO/제동 중/MANUAL), 차선 입력(RGB/IR 터널), 신호, [주행 시작] [정지] [Refit], 녹화, [프리뷰] [BEV 원본] [카메라], [파라미터]
+- 터널 안(ENTERING~EXITING): [카메라]는 IR 카메라(CAM_B 왼쪽 흑백) 원본, [BEV 원본]은 IR BEV(120×300, 2배 확대)를 보여 준다
+- 파라미터 "IR 차선 (터널)": IR 차선 검출기 전용 마스크 임계값·차선 폭·좌우 판정·코너 바깥 이동 (RGB "차선"과 따로, 다음 프레임부터)
 - **[Refit]**: 주행 중이면 먼저 멈춘 뒤, 카메라를 닫지 않고 실시간 깊이로 지면을 다시 맞춰(bev_processor) 높이·roll·pitch·BEV·영상 안정화 기준을 갱신하고
   콘·차량 기억을 모두 지운다. 측정 실패(흔들림 등)면 이전 보정을 유지하고 사유를 표시. 평평한 바닥에 세우고 몇 초간 움직이지 말 것
 - BEV: 차선·중앙선·회피 경로·관측 콘·기억 콘·앞차·정지선
