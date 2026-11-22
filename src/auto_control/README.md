@@ -30,7 +30,7 @@
 - **원본 GPU 업로드 1회** (`perception.yaml` `gpu_shared_upload_enabled`): camera_driver가 원본 NV12를 GPU 버퍼 풀에 한 번 올리고
   BEV(bev_processor)와 YOLO가 같은 버퍼를 읽는다 (전에는 BEV용 호스트 크롭 복사 + BEV 업로드 + YOLO 업로드).
   신호등 색 판정과 웹 카메라 보기만 같은 시각의 호스트 프레임을 쓴다. 풀이 바쁘거나 실패하면 그 프레임만 예전 경로
-- **터널 OAK 부하**: 장치 Script 게이트(RGB 솎기·스테레오)를 없애고 호스트에서 버림, IR 왜곡 보정은 IR BEV LUT에 합침.
+- **터널 OAK 부하**: RGB 솎기 장치 Script 게이트를 없애고 호스트에서 버림 (스테레오 게이트는 유지: 터널 안에서 StereoDepth를 쉬게 함), IR 왜곡 보정은 IR BEV LUT에 합침.
   `camera_config.yaml`의 `tunnel.ir_resolution`(800p|400p): 왼쪽 흑백 센서를 깊이와 같이 써서 800p면 터널 밖에서도 센서가 800p로 돈다
 - **터널 TCN**: camera_driver가 프레임 통계 7개를 C++로 계산해 `/tunnel/rgb_stats`로 보낸다 (전에는 원본 1.5 MB × 30 Hz를 Python 프로세스로)
 - **콜백 그룹**: IMU(400 Hz) · 차량 입력 · 차선 제어 · 상태 · 웹을 나눠 회피 계획 중에도 IMU 요레이트가 밀리지 않는다

@@ -1348,8 +1348,10 @@ private:
     if (depth_enabled_) {
       pipeline_->setAutoCalibrationMode(dai::Pipeline::AutoCalibrationMode::OFF);
       tunnel_cameras_.sensor_size=tunnel_ir_size_;
-      // 터널 안 깊이는 장치 Script 게이트 대신 호스트(depth_loop)에서 버린다 (스테레오 입력이 장치 CPU를 거치지 않게)
-      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr,nullptr);
+      // 터널 INSIDE에서는 장치 Script 게이트로 스테레오 입력을 끊어 StereoDepth를 쉬게 한다.
+      // 게이트 없이 계속 돌리면 터널 안에서 장치가 밀려 IR 프레임이 점점 늦어지고(→ 오래된 프레임으로 버려짐) IR 차선이 2 FPS로 떨어진다
+      stereo=point_cloud::addStereoDepth(*pipeline_,depth_config_,tunnel_enabled_ ? &tunnel_cameras_ : nullptr,
+        tunnel_enabled_ ? &depth_gate_control_ : nullptr);
       depth_queue_=stereo->depth.createOutputQueue(1,false);
       bev_handoff::publishDirectDepth(nullptr);
     }
