@@ -972,15 +972,29 @@ private:
     }
     const cv::Vec3d up_camera(
       message.vector.x, message.vector.y, message.vector.z);
+    const double up_norm = cv::norm(up_camera);
+    const bool changed = up_norm > 1.0e-9 &&
+      (!accepted_ground_reference_ || cv::norm(up_camera / up_norm - *accepted_ground_reference_) > 1.0e-6);
     if (!imu_stabilizer_->setExternalReferenceUpCamera(up_camera)) {
-      if (!late_external_reference_reported_.exchange(true)) {
-        RCLCPP_WARN(
-          node_.get_logger(),
-          "Ignored invalid or late BEV startup ground reference; the virtual "
-          "gimbal reference is immutable after calibration.");
+      // 보정이 끝난 뒤 다른 지면 방향이 오면 = 웹 [Refit] (bev_processor가 실시간 깊이로 다시 맞춤):
+      // 새 방향을 기준으로 영상 안정화 보정을 처음부터 다시 한다 (차가 서 있는 동안 몇 초)
+      if (changed && imu_stabilizer_->initialized() && imu_stabilizer_->restartCalibration(up_camera)) {
+        {
+          std::lock_guard<std::mutex> lock(vehicle_axes_mutex_);
+          vehicle_axes_camera_.reset();
+        }
+        RCLCPP_INFO(node_.get_logger(), "Refit ground reference accepted; recalibrating IMU stabilization (keep the vehicle still).");
+      } else {
+        if (!late_external_reference_reported_.exchange(true)) {
+          RCLCPP_WARN(
+            node_.get_logger(),
+            "Ignored invalid or late BEV startup ground reference; the virtual "
+            "gimbal reference is immutable after calibration.");
+        }
+        return;
       }
-      return;
     }
+    accepted_ground_reference_ = up_camera / up_norm;
     if (
       vehicle_motion_compensation_enabled_ &&
       !set_vehicle_axes_from_up_camera(up_camera))
@@ -3475,6 +3489,7 @@ while True:
   double high_frequency_vibration_cutoff_hz_{3.0};
   ImuImageStabilizerConfig imu_stabilizer_config_{};
   double imu_lever_arm_m_{0.0};
+  std::optional<cv::Vec3d> accepted_ground_reference_;   // 마지막으로 받은 지면 방향 (Refit 판별용)
   double lever_yaw_{0.0}, lever_yaw_rate_{0.0}, lever_yaw_t_{-1.0};   // IMU 스레드 전용
   std::string startup_ground_reference_topic_;
   std::string measured_erpm_topic_;

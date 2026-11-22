@@ -104,6 +104,8 @@ public:
   // It must be expressed in camera optical coordinates and is accepted only
   // before the startup stationary calibration has completed.
   bool setExternalReferenceUpCamera(const cv::Vec3d & up_camera);
+  // Refit: 보정을 처음부터 다시 한다 (새 지면 방향을 기준으로). 다시 정지 보정이 끝날 때까지 initialized() == false
+  bool restartCalibration(const cv::Vec3d & up_camera);
 
   std::optional<ImageStabilizationCorrection> correctionAt(
     double timestamp_sec) const;

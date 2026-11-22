@@ -682,6 +682,47 @@ public:
     return true;
   }
 
+  bool restartCalibration(const cv::Vec3d & up_camera)
+  {
+    if (!finiteVector(up_camera) || cv::norm(up_camera) <= 1.0e-9) {
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    // 설정을 뺀 모든 상태를 생성 직후로 되돌린다
+    calibration_count_ = 0U;
+    calibration_reset_count_ = 0U;
+    startup_discard_started_ = false;
+    startup_discard_completed_ = config_.startup_discard_duration_sec <= 0.0;
+    startup_discard_started_at_sec_ = 0.0;
+    startup_discard_last_timestamp_sec_ = 0.0;
+    calibration_started_at_sec_ = 0.0;
+    calibration_last_timestamp_sec_ = 0.0;
+    calibration_last_accelerometer_confidence_ = 0.0;
+    calibration_last_angular_speed_degps_ = 0.0;
+    calibration_last_rejection_reason_.clear();
+    warmup_acceleration_sum_ = cv::Vec3d(0.0, 0.0, 0.0);
+    warmup_gyroscope_sum_ = cv::Vec3d(0.0, 0.0, 0.0);
+    warmup_gyroscope_squared_sum_ = cv::Vec3d(0.0, 0.0, 0.0);
+    gyroscope_bias_radps_ = cv::Vec3d(0.0, 0.0, 0.0);
+    gravity_magnitude_reference_mps2_ = 9.80665;
+    online_tilt_bias_update_count_ = 0U;
+    moving_gravity_anchor_update_count_ = 0U;
+    stationary_confirmed_ = false;
+    external_reference_up_camera_ = normalized(up_camera);
+    stationary_acceleration_reference_up_camera_ = cv::Vec3d(0.0, -1.0, 0.0);
+    accelerometer_to_reference_rotation_ = Quaternion{};
+    reference_up_camera_ = cv::Vec3d(0.0, -1.0, 0.0);
+    current_up_camera_ = cv::Vec3d(0.0, -1.0, 0.0);
+    moving_accelerometer_nudge_deg_ = cv::Vec2d(0.0, 0.0);
+    last_timestamp_sec_ = 0.0;
+    initialized_ = false;
+    calibration_samples_.clear();
+    stationary_samples_.clear();
+    history_.clear();
+    history_condition_.notify_all();
+    return true;
+  }
+
   std::optional<ImageStabilizationCorrection> correctionAt(
     const double timestamp_sec) const
   {
@@ -1200,6 +1241,11 @@ bool ImuImageStabilizer::setExternalReferenceUpCamera(
   const cv::Vec3d & up_camera)
 {
   return impl_->setExternalReferenceUpCamera(up_camera);
+}
+
+bool ImuImageStabilizer::restartCalibration(const cv::Vec3d & up_camera)
+{
+  return impl_->restartCalibration(up_camera);
 }
 
 std::optional<ImageStabilizationCorrection>

@@ -149,6 +149,8 @@ public:
     };
     const auto vehicle = in(vehicle_group_), vehicle_latched = latched_in(vehicle_group_);
     const auto control = in(control_group_), status_latched = latched_in(status_group_);
+    refit_pub_ = create_publisher<std_msgs::msg::String>(
+      declare_parameter<std::string>("topics.refit_request", "/bev_processor/refit_request"), rclcpp::QoS(1).reliable());
     duty_pub_ = create_publisher<std_msgs::msg::Float32>(declare_parameter<std::string>("topics.auto_duty", "auto_drive/auto/duty"), command_qos);
     brake_pub_ = create_publisher<std_msgs::msg::Float32>(declare_parameter<std::string>("topics.auto_brake_current", "auto_drive/auto/brake_current"), command_qos);
     servo_pub_ = create_publisher<std_msgs::msg::Float32>(declare_parameter<std::string>("topics.auto_servo_position", "auto_drive/auto/servo_position"), command_qos);
@@ -206,7 +208,9 @@ public:
       return r;
     };
     cb.stop = [this] { loop_->request_stop("stop button", acd::now_sec()); };
-    cb.refit = [] { return acd::Reply{false, "auto_control은 카메라 자세를 시작할 때 bev_processor가 측정합니다. 다시 측정하려면 재실행하세요"}; };
+    // Refit: 정지(주행 중이면 먼저 세움) → 실시간 깊이로 카메라 높이·기울기 다시 측정(bev_processor) → BEV·영상 안정화 기준 갱신,
+    // 끝나면 콘·차량 기억을 모두 비운다 (실패해도 이전 보정 유지 + 기억 비움)
+    cb.refit = [this] { return loop_->request_refit(acd::now_sec()); };
     cb.mode = [this](const std::string & m) {
       if (m != "drive" && m != "detect") return acd::Reply{false, "mode must be drive or detect"};
       return loop_->request_mode(m == "drive" ? acd::DriveMode::Drive : acd::DriveMode::Detect, acd::now_sec());
@@ -276,6 +280,7 @@ public:
 
     watchdog_ = create_wall_timer(20ms, [this] {   // 차선 결과가 끊겨도 정지·제동이 이어지게
       if (acd::now_sec() - last_lane_t_.load() > 0.05) publish(loop_->tick(acd::now_sec()));
+      drive_refit(acd::now_sec());
       bev_wanted_ = web_->stream_wanted("bev", acd::now_sec());
     }, control_group_);
     telemetry_ = create_wall_timer(33ms, [this] { send_telemetry(); }, web_group_);
@@ -383,15 +388,45 @@ private:
   }
 
   // ------------------------------------------------------------------ 점검
+  // 상태기계가 REFITTING이 되면(정차 확인 뒤) bev_processor에 다시 측정을 요청하고, 결과(~/startup_status)를 기다린다
+  void drive_refit(double now) {
+    if (!loop_->refit_pending()) { refit_sent_ = false; return; }
+    if (!refit_sent_) {
+      refit_sent_ = true;
+      refit_t0_ = now;
+      { std::lock_guard<std::mutex> l(status_m_); refit_failure_.clear(); }
+      std_msgs::msg::String m;
+      m.data = "refit";
+      refit_pub_->publish(m);
+      RCLCPP_INFO(get_logger(), "Refit requested: re-measuring camera pose from live depth, obstacle memory will be cleared");
+    } else if (now - refit_t0_ > 25.0) {   // bev_processor 응답 없음
+      loop_->on_refit_done(false, "camera re-measurement did not answer (25 s)", now);
+    }
+  }
+
   void on_startup_status(const std::string & s) {
     // bev_processor: "READY | height=0.201m roll=-0.4deg pitch_down=13.2deg source=..." / "FAILED | ..." / 측정 중
+    //               Refit: "MEASURING | refit ..." → "READY | ..." 또는 "REFIT_FAILED | 이유" 뒤 이전 값으로 "READY | ..."
     std::lock_guard<std::mutex> l(status_m_);
     std::smatch mt;
+    if (s.rfind("REFIT_FAILED", 0) == 0) {
+      const auto bar = s.find(" | ");
+      refit_failure_ = bar == std::string::npos ? "refit failed" : s.substr(bar + 3);
+      return;
+    }
     if (s.rfind("READY", 0) == 0 &&
         std::regex_search(s, mt, std::regex(R"(height=([-0-9.eE]+)m roll=([-0-9.eE]+)deg pitch_down=([-0-9.eE]+)deg)"))) {
       pose_ = Pose{std::stod(mt[1]), std::stod(mt[2]), std::stod(mt[3])};
       loop_->set_attitude({true, pose_->height, pose_->roll, pose_->pitch, "PASS", ""});
+      if (auto ref = bev_handoff::obstacleReference()) reference_ = ref;   // Refit이면 카메라 회전이 바뀜
       update_mount();
+      if (refit_sent_ && loop_->refit_pending()) {   // Refit 끝 (실패면 이전 보정을 다시 알린 것): 콘 기억도 여기서 비워짐
+        loop_->on_refit_done(refit_failure_.empty(), refit_failure_, acd::now_sec());
+        RCLCPP_INFO(get_logger(), "Refit %s: height %.3f m, roll %.2f deg, pitch %.2f deg%s", refit_failure_.empty() ? "done" : "failed",
+                    pose_->height, pose_->roll, pose_->pitch, refit_failure_.empty() ? "" : (" (" + refit_failure_ + ")").c_str());
+      }
+    } else if (refit_sent_ && s.rfind("MEASURING", 0) == 0) {
+      loop_->set_attitude({false, 0, 0, 0, "MEASURING", "Refit: 카메라 높이·기울기 다시 측정 중 — 차를 움직이지 마세요"});
     } else if (s.rfind("FAIL", 0) == 0) {
       const auto bar = s.find(" | ");
       loop_->set_attitude({false, 0, 0, 0, "FAIL",
@@ -572,7 +607,7 @@ private:
           << ",\"tunnel\":{\"enabled\":" << (tunnel_enabled_ ? "true" : "false") << ",\"source\":\"" << lane_source_
           << "\",\"state\":\"" << json_escape(tunnel_state_) << "\"}"
           << ",\"yolo\":{\"fps\":" << detect_->fps() << ",\"signal_score\":" << detect_->last_signal_score() << "}"
-          << ",\"refit_supported\":false";
+          << ",\"refit_supported\":true";
       }
       if (drive_t0_ > 0 && f.state == "DRIVING") x << ",\"drive_s\":" << (now - drive_t0_);
       x << ",\"record\":" << record_status_json() << "}";
@@ -738,7 +773,10 @@ private:
   std::unique_ptr<std::ofstream> cone_log_;
   // ROS
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_, brake_pub_, servo_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr request_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr request_pub_, refit_pub_;
+  std::atomic<bool> refit_sent_{false};   // 제어 스레드(watchdog)가 쓰고 상태 스레드가 읽음
+  double refit_t0_{0};
+  std::string refit_failure_;   // status_m_
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connected_sub_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_, startup_sub_, lane_model_sub_, tunnel_sub_;

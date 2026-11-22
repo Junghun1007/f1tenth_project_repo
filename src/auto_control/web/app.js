@@ -348,7 +348,7 @@ function bind() {
     $("recStatus").textContent = r.ok ? "저장: " + r.reason : r.reason;
   });
   $("btnRefit").addEventListener("click", async () => {
-    if (!confirm("차량을 정지한 뒤 카메라 자세를 다시 측정합니다. 평평한 바닥에 세워 두세요.")) return;
+    if (!confirm("Refit: 주행 중이면 먼저 멈춘 뒤, 카메라 높이·기울기를 다시 측정하고 콘·차량 기억을 모두 지웁니다.\n평평한 바닥에 세우고 몇 초간 움직이지 마세요.")) return;
     const r = await post("/api/refit"); if (!r.ok) $("reason").textContent = r.reason;
   });
   $("togBev").addEventListener("change", () => {

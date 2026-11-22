@@ -43,6 +43,8 @@
 #include "bev_handoff/direct_obstacle_handoff.hpp"
 #include "bev_processor/cuda_bev_processor.hpp"
 #include "bev_processor/oak_startup_measurement.hpp"
+#include "bev_processor/ground_plane_estimator.hpp"
+#include "bev_processor/startup_attitude.hpp"
 #include "camera_driver/msg/bev_input.hpp"
 
 namespace bev_processor
@@ -264,22 +266,9 @@ public:
       "depth-plane attitude + depth-plane offset height" :
       "IMU attitude + depth-plane offset height");
 
-    if (share_obstacle_reference) {
-      auto reference=std::make_shared<bev_handoff::ObstacleReference>();
-      reference->device_id=measurement.device_id; reference->frame_id=output_frame_id_;
-      reference->input_topic=input_topic_; reference->settle_sec=stabilization_settle_sec_;
-      reference->rotation_vehicle_from_camera=mountRotationVehicleFromCamera(
-        degToRad(startup_roll_deg_),degToRad(startup_pitch_down_deg_),degToRad(camera_yaw_deg_));
-      reference->position_vehicle_m=camera_model_.position_vehicle_m;
-      reference->fx=camera_model_.fx; reference->fy=camera_model_.fy;
-      reference->cx=camera_model_.cx; reference->cy=camera_model_.cy;
-      reference->source_width=camera_model_.image_width; reference->source_height=camera_model_.image_height;
-      reference->x_min=bev_config_.x_min_m; reference->x_max=bev_config_.x_max_m;
-      reference->y_min=bev_config_.y_min_m; reference->y_max=bev_config_.y_max_m;
-      reference->meter_per_pixel=bev_config_.meter_per_pixel;
-      reference->width=bev_config_.output_width; reference->height=bev_config_.output_height;
-      bev_handoff::publishObstacleReference(std::move(reference));
-    }
+    share_obstacle_reference_ = share_obstacle_reference;
+    device_id_ = measurement.device_id;
+    shareObstacleReference();
 
     auto reference_qos = rclcpp::QoS(rclcpp::KeepLast(1));
     reference_qos.reliable().transient_local();
@@ -293,14 +282,13 @@ public:
       startup_ground_reference_topic_, reference_qos,
       reference_publisher_options);
     publishStartupGroundReference(measurement.attitude_source);
-    {
-      std::ostringstream detail;
-      detail<<"READY | height="<<measurement.height_m<<"m roll="<<measurement.roll_deg
-        <<"deg pitch_down="<<measurement.pitch_down_deg<<"deg source="<<measurement.attitude_source
-        <<" height_source="<<measurement.height_source;
-      publishStartupStatus(detail.str());
-    }
+    publishReadyStatus(measurement.attitude_source, measurement.height_source);
 
+    refit_attitude_source_ = measurement.attitude_source;
+    refit_height_source_ = measurement.height_source;
+    refit_subscription_ = create_subscription<std_msgs::msg::String>(
+      "~/refit_request", rclcpp::QoS(1).reliable(),
+      [this](std_msgs::msg::String::ConstSharedPtr) {startRefit();});
     const auto image_qos = rclcpp::SensorDataQoS().keep_last(1);
     if (declare_parameter<bool>("tunnel.enabled",false)) {
       rclcpp::SubscriptionOptions tunnel_options;
@@ -444,6 +432,9 @@ public:
   ~BevProcessorNode() override
   {
     stop_.store(true, std::memory_order_release);
+    if (refit_thread_.joinable()) {
+      refit_thread_.join();
+    }
     input_cv_.notify_all();
     output_cv_.notify_all();
 
@@ -944,6 +935,142 @@ private:
     input_crop_height_ = std::clamp(
       input_crop_height_, 2, camera_model_.image_height);
     input_crop_top_ = camera_model_.image_height - input_crop_height_;
+  }
+
+  void shareObstacleReference()
+  {
+    if (!share_obstacle_reference_) {return;}
+    {
+      auto reference=std::make_shared<bev_handoff::ObstacleReference>();
+      reference->device_id=device_id_; reference->frame_id=output_frame_id_;
+      reference->input_topic=input_topic_; reference->settle_sec=stabilization_settle_sec_;
+      reference->rotation_vehicle_from_camera=mountRotationVehicleFromCamera(
+        degToRad(startup_roll_deg_),degToRad(startup_pitch_down_deg_),degToRad(camera_yaw_deg_));
+      reference->position_vehicle_m=camera_model_.position_vehicle_m;
+      reference->fx=camera_model_.fx; reference->fy=camera_model_.fy;
+      reference->cx=camera_model_.cx; reference->cy=camera_model_.cy;
+      reference->source_width=camera_model_.image_width; reference->source_height=camera_model_.image_height;
+      reference->x_min=bev_config_.x_min_m; reference->x_max=bev_config_.x_max_m;
+      reference->y_min=bev_config_.y_min_m; reference->y_max=bev_config_.y_max_m;
+      reference->meter_per_pixel=bev_config_.meter_per_pixel;
+      reference->width=bev_config_.output_width; reference->height=bev_config_.output_height;
+      bev_handoff::publishObstacleReference(std::move(reference));
+    }
+  }
+
+  void publishReadyStatus(const std::string & attitude_source, const std::string & height_source)
+  {
+    std::ostringstream detail;
+    detail<<"READY | height="<<camera_model_.position_vehicle_m[2]<<"m roll="<<startup_roll_deg_
+      <<"deg pitch_down="<<startup_pitch_down_deg_<<"deg source="<<attitude_source
+      <<" height_source="<<height_source;
+    publishStartupStatus(detail.str());
+  }
+
+  // ---- Refit (auto_control 웹 [Refit]): 카메라를 닫지 않고 실시간 깊이로 지면을 다시 맞춘다 ----
+  // 차가 정지한 상태에서 CAM_A 정렬 깊이(camera_driver 공유)로 시작 측정과 같은 지면 평면 맞춤을 stable_plane_frame_count장 하고,
+  // 높이·roll·pitch를 바꿔 BEV LUT·장애물 기준·영상 안정화 기준(지면 방향)을 다시 낸다. 실패하면 이전 보정을 그대로 둔다.
+  // 진행·결과는 ~/startup_status: "MEASURING | refit ..." → "READY | ..." 또는 "REFIT_FAILED | 이유" 뒤 이전 "READY | ..."
+  void startRefit()
+  {
+    if (refitting_.exchange(true)) {return;}
+    if (refit_thread_.joinable()) {refit_thread_.join();}
+    refit_thread_ = std::thread([this]() {
+      try {
+        const auto reason = runRefit();
+        if (!reason.empty()) {
+          RCLCPP_WARN(get_logger(), "Refit failed: %s (previous calibration kept)", reason.c_str());
+          publishStartupStatus("REFIT_FAILED | " + reason);
+          publishReadyStatus(refit_attitude_source_, refit_height_source_);
+        }
+      } catch (const std::exception & e) {
+        publishStartupStatus(std::string("REFIT_FAILED | ") + e.what());
+        publishReadyStatus(refit_attitude_source_, refit_height_source_);
+      }
+      refitting_ = false;
+    });
+  }
+
+  std::string runRefit()
+  {
+    const auto & c = startup_measurement_config_;
+    publishStartupStatus("MEASURING | refit: keep the vehicle stationary on flat ground");
+    const cv::Vec3d reference_up = attitudeUpVector(startup_roll_deg_, startup_pitch_down_deg_);
+    GroundPlaneFitConfig fit;
+    fit.ransac_iterations = c.plane_ransac_iterations;
+    fit.inlier_threshold_m = 2.0 * c.plane_inlier_threshold_m;    // 실시간 깊이(640×400, subpixel 없음)는 시작 측정보다 거칠다
+    fit.minimum_inlier_ratio = c.plane_minimum_inlier_ratio;
+    fit.maximum_residual_mad_m = 2.0 * c.plane_maximum_residual_mad_m;
+    fit.maximum_reference_angle_deg = 15.0;                         // 이전 자세 기준 (장착이 크게 바뀐 경우까지)
+    fit.minimum_height_m = c.minimum_height_m;
+    fit.maximum_height_m = c.maximum_height_m;
+    std::vector<GroundPlaneEstimate> planes;
+    std::string last_rejection = "no depth frame";
+    std::uint64_t revision = 0;
+    const auto deadline = SteadyClock::now() + std::chrono::seconds(10);
+    while (static_cast<int>(planes.size()) < c.stable_plane_frame_count) {
+      if (SteadyClock::now() > deadline) {return "timeout: " + last_rejection;}
+      const auto d = bev_handoff::waitDirectDepth(revision, std::chrono::milliseconds(200));
+      if (!d || d->width <= 0 || d->height <= 0) {continue;}
+      // 시작 측정과 같은 비율의 ROI (가운데, 아래로 offset), 같은 표본 밀도가 되게 간격을 줄인다
+      const double sx = static_cast<double>(d->width) / c.stereo_width, sy = static_cast<double>(d->height) / c.stereo_height;
+      const int rw = std::max(8, static_cast<int>(c.roi_width * sx)), rh = std::max(8, static_cast<int>(c.roi_height * sy));
+      const int u0 = std::clamp((d->width - rw) / 2, 0, d->width - rw);
+      const int v0 = std::clamp((d->height - rh) / 2 + static_cast<int>(c.roi_vertical_offset_px * sy), 0, d->height - rh);
+      const int step = std::max(1, static_cast<int>(std::lround(c.point_sample_step * sx)));
+      const double fx = d->intrinsics[0], fy = d->intrinsics[1], cx = d->intrinsics[2], cy = d->intrinsics[3];
+      const auto & R = d->rgb_from_depth_rotation;
+      const auto & T = d->rgb_from_depth_translation;
+      std::vector<cv::Vec3d> points;
+      points.reserve(static_cast<std::size_t>(rw / step + 1) * (rh / step + 1));
+      for (int v = v0; v < v0 + rh; v += step) {
+        const auto * row = reinterpret_cast<const std::uint16_t *>(d->data + static_cast<std::size_t>(v) * d->stride);
+        for (int u = u0; u < u0 + rw; u += step) {
+          const double z = row[u] * 0.001;
+          if (row[u] == 0U || z < c.minimum_depth_m || z > c.maximum_depth_m) {continue;}
+          const double x = (u - cx) * z / fx, y = (v - cy) * z / fy;
+          points.emplace_back(R[0] * x + R[1] * y + R[2] * z + T[0], R[3] * x + R[4] * y + R[5] * z + T[1],
+                              R[6] * x + R[7] * y + R[8] * z + T[2]);   // CAM_A(RGB) 좌표
+        }
+      }
+      fit.minimum_inliers = std::max<std::size_t>(200U, static_cast<std::size_t>(0.5 * points.size()));
+      std::string rejection;
+      if (auto plane = fitGroundPlane(points, reference_up, fit, &rejection)) {planes.push_back(*plane);}
+      else {planes.clear(); last_rejection = rejection;}
+    }
+    std::vector<double> heights;
+    cv::Vec3d mean_normal(0, 0, 0);
+    double mean_height = 0;
+    for (const auto & p : planes) {heights.push_back(p.height_m); mean_height += p.height_m; mean_normal += p.up_camera;}
+    mean_height /= planes.size();
+    mean_normal /= cv::norm(mean_normal);
+    double height_sq = 0, angle_sq = 0;
+    for (const auto & p : planes) {
+      height_sq += (p.height_m - mean_height) * (p.height_m - mean_height);
+      const double a = std::acos(std::clamp(p.up_camera.dot(mean_normal), -1.0, 1.0)) * 180.0 / M_PI;
+      angle_sq += a * a;
+    }
+    const double height_std = std::sqrt(height_sq / planes.size()), normal_rms = std::sqrt(angle_sq / planes.size());
+    if (height_std > 2.0 * c.maximum_height_stddev_m || normal_rms > 2.0 * c.maximum_plane_normal_rms_deg) {
+      std::ostringstream o;
+      o << "ground plane not stable (height std " << height_std * 1000 << " mm, normal rms " << normal_rms << " deg). keep still";
+      return o.str();
+    }
+    std::nth_element(heights.begin(), heights.begin() + heights.size() / 2, heights.end());
+    const auto attitude = selectStartupAttitude(mean_normal, mean_normal, StartupAttitudeSource::kDepth, 0.0, 0.0);
+    const double old_height = camera_model_.position_vehicle_m[2];
+    if (!c.manual_camera_height_enabled) {camera_model_.position_vehicle_m[2] = heights[heights.size() / 2];}
+    startup_roll_deg_ = attitude.roll_deg;
+    startup_pitch_down_deg_ = attitude.pitch_down_deg;
+    installProcessor(startup_roll_deg_, startup_pitch_down_deg_, "refit (live depth plane)");
+    shareObstacleReference();
+    publishStartupGroundReference("refit_depth");   // camera_driver 영상 안정화가 새 지면 방향으로 다시 보정
+    refit_attitude_source_ = "refit_depth";
+    refit_height_source_ = c.manual_camera_height_enabled ? "manual" : "refit_depth_plane";
+    RCLCPP_INFO(get_logger(), "Refit: height %.4f -> %.4f m, roll %.3f deg, pitch_down %.3f deg (height std %.1f mm, normal rms %.3f deg)",
+                old_height, camera_model_.position_vehicle_m[2], startup_roll_deg_, startup_pitch_down_deg_, height_std * 1000, normal_rms);
+    publishReadyStatus(refit_attitude_source_, refit_height_source_);
+    return "";
   }
 
   void publishStartupGroundReference(const std::string & attitude_source)
@@ -2105,6 +2232,13 @@ private:
   RemapLut bev_lut_{};
   bool fused_coverage_reported_{false};
   double startup_roll_deg_{0.0};
+  // Refit (실시간 깊이로 지면 다시 맞춤)
+  bool share_obstacle_reference_{false};
+  std::string device_id_;
+  std::atomic<bool> refitting_{false};
+  std::thread refit_thread_;
+  std::string refit_attitude_source_{"unknown"}, refit_height_source_{"unknown"};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr refit_subscription_;
   double startup_pitch_down_deg_{14.0};
   std::atomic<double> valid_lut_percent_{0.0};
   std::atomic<double> applied_roll_deg_{0.0};
