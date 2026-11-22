@@ -89,6 +89,10 @@ public:
     rc_.steering.servo_right = declare_parameter<double>("vehicle.servo_right", 0.0);
     rc_.steering.inverted = declare_parameter<bool>("vehicle.steering_servo_inverted", true);
     camera_yaw_deg_ = declare_parameter<double>("camera.yaw_deg", 0.0);
+    // camera_driver의 1.25배 확대는 BEV에서만 쓰는 가상 확대다. bev_processor가 공유하는 fx·fy는 확대 영상 기준이고
+    // YOLO가 받는 원본 NV12는 확대 전이므로 fx·fy를 이 값으로 나눠 쓴다 (cx·cy는 확대 중심이라 그대로, cone_drive_test와 같음)
+    fixed_view_zoom_ = declare_parameter<double>("camera.fixed_view_zoom", 1.25);
+    if (!(fixed_view_zoom_ >= 1.0 && fixed_view_zoom_ <= 3.0)) throw std::invalid_argument("camera.fixed_view_zoom must be 1..3");
     rc_.camera.roi_height_ratio = registry_.get("yolo.roi_height_percent") / 100.0;
 
     models_.yolo_model = declare_parameter<std::string>("model.yolo_path", share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx");
@@ -412,14 +416,15 @@ private:
   void update_mount() {   // status_m_ 잡은 채로
     if (!reference_ || !pose_) return;
     const auto & r = *reference_;
+    const double fx = r.fx / fixed_view_zoom_, fy = r.fy / fixed_view_zoom_;   // 원본(확대 전) 영상 기준
     detect_->set_mount({r.position_vehicle_m[0], r.position_vehicle_m[1], pose_->height, pose_->roll * M_PI / 180.0,
                         pose_->pitch * M_PI / 180.0, camera_yaw_deg_ * M_PI / 180.0},
-                       {r.fx, r.fy, r.cx, r.cy});
+                       {fx, fy, r.cx, r.cy});
     auto g = loop_->camera_geometry();
     g.camera_x = r.position_vehicle_m[0];
     g.height = pose_->height;
     g.pitch_rad = pose_->pitch * M_PI / 180.0;
-    acd::set_field_of_view(g, r.fx, r.fy, r.source_width, r.source_height);   // 검출 영상(고정 확대 포함) 화각
+    acd::set_field_of_view(g, fx, fy, r.source_width, r.source_height);   // 검출 영상(원본, 확대 전) 화각
     g.roi_height_ratio = registry_.get("yolo.roi_height_percent") / 100.0;
     loop_->set_camera_geometry(g);
   }
@@ -688,7 +693,7 @@ private:
   acd::ParamRegistry registry_;
   acd::RuntimeConfig rc_;
   acd::ModelConfig models_;
-  double camera_yaw_deg_{0};
+  double camera_yaw_deg_{0}, fixed_view_zoom_{1.25};
   std::string params_save_path_, lane_model_node_;
   std::vector<std::string> ir_model_nodes_;
   std::vector<std::string> ir_model_status_;

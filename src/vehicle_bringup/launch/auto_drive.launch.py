@@ -171,8 +171,11 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         nodes.extend(components)
         lane_topic = "/tunnel/lane_result"   # 선택기가 /rgb, /ir로 나눠 낸다
 
+    camera = _ros_parameters(os.path.expanduser(LaunchConfiguration("camera_params_file").perform(context)), "camera_driver")
     drive_overrides = {
         "mode": mode,
+        # BEV용 가상 확대 배율: auto_drive가 공유 fx·fy를 원본 영상 기준으로 되돌리는 데 씀
+        "camera.fixed_view_zoom": float(camera.get("fixed_view_zoom", 1.25)),
         "tunnel.enabled": tunnel,
         "web.port": int(LaunchConfiguration("web_port").perform(context)),
         "topics.lane_result": lane_topic,
