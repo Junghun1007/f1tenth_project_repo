@@ -19,6 +19,8 @@ struct DirectIrFrame
   std_msgs::msg::Header header;
   std::chrono::steady_clock::time_point captured_at;
   std::array<double, 4> intrinsics{};
+  // OpenCV 원근 왜곡 계수 (k1,k2,p1,p2,k3,...). 비어 있으면 mono는 이미 왜곡 보정된 영상
+  std::vector<double> distortion;
   cv::Matx33d rgb_from_view{cv::Matx33d::eye()};
   cv::Vec3d view_center_rgb_m{0, 0, 0};
   cv::Matx33d current_rgb_to_reference{cv::Matx33d::eye()};

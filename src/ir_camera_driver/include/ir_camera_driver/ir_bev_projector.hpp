@@ -1,6 +1,8 @@
 #ifndef IR_CAMERA_DRIVER__IR_BEV_PROJECTOR_HPP_
 #define IR_CAMERA_DRIVER__IR_BEV_PROJECTOR_HPP_
 
+#include <vector>
+
 #include "opencv2/core.hpp"
 #include "bev_processor/bev_geometry.hpp"
 
@@ -34,7 +36,8 @@ public:
     double fx, double fy, double cx, double cy,
     int input_width, int input_height,
     const cv::Matx33d & rotation_rgb_from_view,
-    const cv::Vec3d & view_center_rgb_m);
+    const cv::Vec3d & view_center_rgb_m,
+    const std::vector<double> & distortion = {});   // 비어 있으면 이미 왜곡 보정된 입력
 
   cv::Mat project(
     const cv::Mat & rectified_image,
@@ -55,7 +58,10 @@ private:
   cv::Matx33d rotation_rgb_from_view_{cv::Matx33d::eye()};
   cv::Vec3d view_center_rgb_m_{0.0, 0.0, 0.0};
   cv::Matx33d last_correction_{cv::Matx33d::eye()};
+  std::vector<double> distortion_;
+  double max_normalized_radius_{0.0};   // 원본 영상 안쪽 시선의 최대 반경 (왜곡 다항식이 되감기는 바깥 차단)
   void updateMaps(const cv::Matx33d & current_rgb_to_reference);
+  bev_processor::RemapLut distortedRemap() const;
 };
 
 }  // namespace ir_camera_driver

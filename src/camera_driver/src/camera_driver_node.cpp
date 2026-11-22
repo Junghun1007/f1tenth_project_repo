@@ -1357,8 +1357,19 @@ private:
         tunnel_cameras_.left=pipeline_->create<dai::node::Camera>()->build(
           dai::CameraBoardSocket::CAM_B,std::make_pair(1280,800),30.0F);
       }
+      // 왜곡 보정은 장치(warp 엔진, RGB 보정과 공유)에서 하지 않고 IR BEV LUT에 합친다 (호스트 추가 비용 0).
+      // 원근(Perspective) 모델이 아니면 예전처럼 장치에서 보정한다.
+      ir_distortion_.clear();
+      if (depth_calibration_->getDistortionModel(dai::CameraBoardSocket::CAM_B)==dai::CameraModel::Perspective) {
+        for (const float c:depth_calibration_->getDistortionCoefficients(dai::CameraBoardSocket::CAM_B)) {
+          ir_distortion_.push_back(c);
+        }
+      }
+      const bool ir_device_undistort=ir_distortion_.empty();
+      RCLCPP_INFO(node_.get_logger(),"Tunnel IR undistort: %s",
+        ir_device_undistort ? "device (warp)" : "host BEV LUT");
       ir_output=tunnel_cameras_.left->requestOutput(
-        std::make_pair(1280,800),dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,true);
+        std::make_pair(1280,800),dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,ir_device_undistort);
       // Outside the tunnel the lane IR stream is unused: stop it on the device
       // so 1280x800 frames are not sent over USB only to be discarded.
       auto ir_gate=pipeline_->create<dai::node::Script>();
@@ -1852,6 +1863,7 @@ while True:
         auto frame=std::make_shared<bev_handoff::DirectIrFrame>();
         frame->mono=packet->getFrame(false); frame->owner=packet;
         frame->intrinsics={k[0][0],k[1][1],k[0][2],k[1][2]};
+        frame->distortion=ir_distortion_;
         for (int r=0;r<3;++r) {
           frame->view_center_rgb_m[r]=transform.translation[r];
           for (int c=0;c<3;++c) {frame->rgb_from_view(r,c)=transform.rotation[r*3+c];}
@@ -3555,6 +3567,7 @@ while True:
   point_cloud::StereoCameras tunnel_cameras_;
   std::shared_ptr<dai::Device> tunnel_device_;
   std::shared_ptr<dai::MessageQueue> ir_queue_;
+  std::vector<double> ir_distortion_;   // 비어 있으면 장치가 이미 왜곡 보정한 IR 영상
   std::vector<std::shared_ptr<dai::InputQueue>> ir_controls_;
   std::thread ir_thread_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_mode_sub_;

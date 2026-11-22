@@ -87,7 +87,7 @@ private:
         projector_=std::make_unique<IrBevProjector>(IrBevConfig{});
         const auto & k=frame->intrinsics;
         projector_->configure(k[0],k[1],k[2],k[3],frame->mono.cols,frame->mono.rows,
-          frame->rgb_from_view,frame->view_center_rgb_m);
+          frame->rgb_from_view,frame->view_center_rgb_m,frame->distortion);
         projector_->setMountPose(reference->rotation_vehicle_from_camera,reference->position_vehicle_m);
       }
       if (!inside_ && standby_==0.0) {return;}

@@ -20,7 +20,7 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(CUDAToolkit REQUIRED)
-find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
+find_package(OpenCV 4 REQUIRED COMPONENTS calib3d core highgui imgcodecs imgproc)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_components REQUIRED)
 find_package(bev_handoff REQUIRED)
