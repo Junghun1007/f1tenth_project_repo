@@ -90,6 +90,14 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
     bev = _merged_parameters(bev_config, LaunchConfiguration("bev_params_file").perform(context), "bev_processor")
     detector = _merged_parameters(line_detactor_config, LaunchConfiguration("line_detactor_params_file").perform(context),
                                   "line_detactor")
+    # 없는 YAML을 주면 카메라 측정·노드가 다 뜬 뒤에야 실패하므로, 아무것도 띄우기 전에 알려 주고 멈춘다
+    for argument in ("drive_params_file", "perception_params_file", "bev_params_file",
+                     "camera_params_file", "line_detactor_params_file"):
+        path = os.path.expanduser(LaunchConfiguration(argument).perform(context))
+        if not os.path.isfile(path):
+            hint = (" (웹 파라미터 창에서 [YAML 저장]을 눌러야 생기는 파일입니다. 처음에는 이 인자 없이 실행하세요)"
+                    if argument == "drive_params_file" else "")
+            raise RuntimeError(f"{argument} 파일이 없습니다: {path}{hint}")
     mode = LaunchConfiguration("mode").perform(context)
     if mode not in ("drive", "detect"):
         raise RuntimeError("mode must be drive or detect")
