@@ -27,9 +27,19 @@ TrafficSignal classify_traffic_color(const cv::Mat & bgr, int min_s, int min_v) 
 
 void TrafficStopper::on_signal(TrafficSignal sig, double t) {
   if (!p_.enabled) return;
+  // 같은 색이 연속 signal_confirm 번 나와야 인정 (UNKNOWN도 연속을 끊는다)
+  streak_n_ = sig == streak_sig_ ? streak_n_ + 1 : 1;
+  streak_sig_ = sig;
+  if (sig == TrafficSignal::Unknown || streak_n_ < std::max(1, p_.signal_confirm)) return;
   if (sig == TrafficSignal::Red) red_t_ = std::max(red_t_, t);
   if (sig == TrafficSignal::Green) green_t_ = std::max(green_t_, t);
-  if (sig != TrafficSignal::Unknown) { last_sig_ = sig; sig_t_ = std::max(sig_t_, t); }
+  last_sig_ = sig;
+  sig_t_ = std::max(sig_t_, t);
+}
+
+double TrafficStopper::stop_distance(double v) const {
+  v = std::max(0.0, v);
+  return v * p_.response + v * v / (2.0 * std::max(0.05, p_.max_decel));
 }
 
 const TrafficState & TrafficStopper::update(double m, double t, double dist, double v) {
@@ -45,7 +55,7 @@ const TrafficState & TrafficStopper::update(double m, double t, double dist, dou
       const double cand_pred = cand_line_ - (dist - cand_dist_);
       cand_n_ = (cand_n_ > 0 && std::abs(m - cand_pred) <= p_.match_tolerance) ? cand_n_ + 1 : 1;
       cand_line_ = m; cand_dist_ = dist;
-      if (cand_n_ >= p_.line_confirm && (!s_.line_tracked || !s_.committed)) {   // 정지 중엔 추적 중인 선을 다른 선으로 갈아타지 않음
+      if (cand_n_ >= p_.line_confirm && (!s_.line_tracked || !(s_.committed || s_.passing))) {   // 정지·통과 중엔 다른 선으로 갈아타지 않음
         s_.line_tracked = true;
         meas_line_ = m; meas_dist_ = dist; meas_t_ = t;
       }
@@ -53,22 +63,29 @@ const TrafficState & TrafficStopper::update(double m, double t, double dist, dou
   } else {
     cand_n_ = 0;
   }
-  if (s_.line_tracked) {
+  if (s_.line_tracked && !s_.committed) {   // 정지 중에는 안 보여도 이동 거리로 계속 이어 간다
     const double bumper = meas_line_ - (dist - meas_dist_) - p_.front_overhang;
     const bool terminal = bumper <= p_.terminal_distance + p_.stop_range_max;
-    const double age = t - meas_t_;
-    const bool keep = s_.holding || age <= (terminal ? p_.terminal_timeout : p_.line_timeout);
-    if (!keep) { s_.line_tracked = false; lost_t_ = t; }
+    if (t - meas_t_ > (terminal ? p_.terminal_timeout : p_.line_timeout)) s_.line_tracked = false;
   }
   s_.line_m = s_.line_tracked ? meas_line_ - (dist - meas_dist_) - p_.front_overhang : std::numeric_limits<double>::quiet_NaN();
-  // 정지 시작·해제
-  const bool red = t - red_t_ <= p_.state_timeout;
+
+  // 빨간불 기억: 인정된 빨간불이 유효한 동안 + 그 뒤 red_memory_m 달릴 때까지. 그보다 새 초록불이면 지움
+  const bool red_fresh = t - red_t_ <= p_.state_timeout;
   const bool green = t - green_t_ <= p_.state_timeout && green_t_ > red_t_;
-  if (!s_.committed && s_.line_tracked && red && s_.line_m > -0.05) s_.committed = true;
-  if (s_.committed && green) { s_.committed = false; s_.holding = false; }        // 초록불 → 출발
-  if (s_.committed && s_.line_tracked && s_.line_m < -p_.pass_overshoot) { s_.committed = false; s_.holding = false; }
-  // 정지 중 정지선을 놓친 채 빨간불도 안 보이는 상태가 오래가면(오검출이었던 정지선) 해제
-  if (s_.committed && !s_.line_tracked && !s_.holding && !red && t - lost_t_ > p_.line_lost_release) s_.committed = false;
+  if (red_fresh) { s_.red_pending = true; red_seen_dist_ = dist; }
+  if (green || dist - red_seen_dist_ > p_.red_memory_m) s_.red_pending = false;
+
+  // 통과 상태: 그 정지선을 지나거나(또는 놓치거나) 초록불이면 끝
+  if (s_.passing && (!s_.line_tracked || s_.line_m < -p_.pass_overshoot || green)) s_.passing = false;
+
+  // 정지 시작: 빨간불 + 추적 중인 정지선. 설 수 없는 거리면 통과
+  if (!s_.committed && !s_.passing && s_.red_pending && s_.line_tracked && s_.line_m > -0.05) {
+    if (stop_distance(v) <= s_.line_m + p_.pass_tolerance) s_.committed = true;
+    else s_.passing = true;
+  }
+  if (s_.committed && green) { s_.committed = false; s_.holding = false; s_.red_pending = false; }   // 초록불 → 바로 출발
+  if (s_.committed && s_.line_m < -p_.pass_overshoot) { s_.committed = false; s_.holding = false; }  // 다른 선이었음 (이미 한참 지남)
   if (!s_.committed) s_.holding = false;
   s_.cap = s_.committed ? cap_for(v) : std::numeric_limits<double>::infinity();
   return s_;
@@ -76,7 +93,6 @@ const TrafficState & TrafficStopper::update(double m, double t, double dist, dou
 
 double TrafficStopper::cap_for(double v) {
   if (s_.holding) return 0.0;
-  if (!s_.line_tracked) return p_.reapproach_speed;   // 정지 중 정지선을 놓침: 천천히 다가가며 다시 찾음
   const double bumper = s_.line_m;
   const double aim = bumper - p_.stop_margin;
   const bool stopped = std::abs(v) < 0.05;

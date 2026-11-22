@@ -290,7 +290,8 @@ function renderTraffic(f) {
   const name = SIGNAL_NAME[tr.signal] || "UNKNOWN";
   $("lamp").className = "lamp " + (tr.enabled ? name : "");
   const ir = f.tunnel && f.tunnel.source === "IR";
-  const phase = ir ? "터널 구간 (YOLO 쉼)" : !tr.enabled ? "꺼짐" : tr.holding ? "정지 유지 (초록 대기)" : tr.committed ? "정지 접근" : tr.line > -90 ? "정지선 추적" : "대기";
+  const phase = ir ? "터널 구간 (YOLO 쉼)" : !tr.enabled ? "꺼짐" : tr.holding ? "정지 유지 (초록 대기)" : tr.committed ? "정지 접근"
+    : tr.passing ? "통과 (못 설 거리)" : tr.red_pending ? "빨간불 · 정지선 찾는 중" : tr.line > -90 ? "정지선 추적" : "대기";
   kv($("trafficKv"), [["신호", tr.enabled ? SIGNAL_KO[tr.signal] + (tr.score ? ` (${tr.score.toFixed(2)})` : "") : "꺼짐"],
     ["단계", phase], ["정지선", tr.line > -90 ? tr.line.toFixed(2) + " m (앞범퍼)" : "-"],
     ["속도 상한", tr.committed && tr.cap >= 0 ? (tr.holding ? "0 (정지)" : tr.cap.toFixed(2) + " m/s") : "-"],

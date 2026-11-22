@@ -180,7 +180,14 @@ void DetectWorker::loop_() {
     std::vector<Detection> obstacles;
     const Detection * light = nullptr;
     for (const auto & det : res.detections) {
-      if (det.class_id == 3) { if (!light || det.score > light->score) light = &det; continue; }
+      if (det.class_id == 3) {   // 내 신호등: 크고(가깝고) 화면 가로 가운데에 가까운 것
+        auto weight = [w](const Detection & d) {
+          const double center = std::abs(d.box.x + d.box.width / 2.0 - w / 2.0) / (w / 2.0);
+          return double(d.box.area()) * std::max(0.1, 1.0 - center);
+        };
+        if (!light || weight(det) > weight(*light)) light = &det;
+        continue;
+      }
       if (det.box.y + det.box.height > roi.y) obstacles.push_back(det);
     }
     if (s.traffic.enabled) {

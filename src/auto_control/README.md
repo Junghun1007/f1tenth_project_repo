@@ -84,11 +84,21 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 
 ## 신호등 정지 (`traffic.*`)
 
-- 색: YOLO `traffic_light` 박스 중 점수가 가장 높은 것의 픽셀을 HSV로 보고 빨강/초록 에너지 비교
-- 정지선: line_detactor 정지선 거리, 연속 확인(`traffic.line_confirm_frames`) 후 추적, 안 보이는 동안·차 아래로 들어간 뒤에는 바퀴 이동 거리로 이어 감
-- RED + 정지선 추적 중이면 정지에 들어가고 앞범퍼가 정지선 앞 0~`traffic.stop_range_max_m` 안에 서도록 속도 상한.
-  들어간 뒤에는 빨간불이 안 보여도 유지, GREEN을 봐야 출발. UNKNOWN(신호등 안 보임)이면 정지하지 않음
-- 종방향은 duty-only(`drive.longitudinal_mode` 2): 전류 제동 없이 duty를 줄여 감속하고 관성으로 멈춤
+| 상황 | 동작 |
+|---|---|
+| 정지 조건 | **빨간불 + 정지선**. 빨간불만으로는 서지 않음 |
+| 빨간불, 정지선 아직 없음 | 정상 속도로 달리며 찾음 (빨간불을 본 뒤 `traffic.red_memory_m` 4 m 동안 기억). 찾으면 정지선 앞에 정차 |
+| 찾았는데 너무 가까움 | 통과 (예상 정지 거리 = 응답 지연 + v²/2·`traffic.max_decel_mps2`가 정지선까지 거리 + 0.05 m보다 길 때). 그 정지선을 지날 때까지 다시 서지 않음 |
+| 정지 중 신호등이 안 보임 | 초록불을 볼 때까지 정지 유지 |
+| 정지선이 안 보임 (차 아래 등) | 바퀴 이동 거리로 위치를 이어 가 그 앞에 정차 |
+| 색 판정 | 같은 색 연속 3프레임 (`traffic.signal_confirm_frames`) |
+| 신호등 여러 개 | 가장 크고 화면 가운데에 가까운 것 |
+| 초록불 | 바로 출발 |
+
+- 색: 고른 신호등 박스 픽셀을 HSV로 보고 빨강/초록 에너지 비교
+- 정지선: line_detactor 정지선 거리, 연속 확인(`traffic.line_confirm_frames`) 후 추적
+- 정차 위치: 앞범퍼가 정지선 앞 0~`traffic.stop_range_max_m`. 종방향은 duty-only(전류 제동 없이 duty를 줄이고 관성 정지)
+- 웹 신호등 패널 단계: 대기 / 빨간불·정지선 찾는 중 / 정지선 추적 / 정지 접근 / 정지 유지 / 통과(못 설 거리)
 
 ## 기존 auto_control에서 바뀐 것
 

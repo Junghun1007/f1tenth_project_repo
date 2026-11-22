@@ -64,7 +64,8 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
       .key("phase").value(f.lon_phase).end_object();
     w.key("traffic").begin_object().key("enabled").value(f.traffic_enabled).key("signal").value((long long)f.traffic.signal)
       .key("line").value(std::isfinite(f.traffic.line_m) ? f.traffic.line_m : -99.0).key("committed").value(f.traffic.committed)
-      .key("holding").value(f.traffic.holding).key("cap").value(std::isfinite(f.traffic.cap) ? f.traffic.cap : -1.0).end_object();
+      .key("holding").value(f.traffic.holding).key("cap").value(std::isfinite(f.traffic.cap) ? f.traffic.cap : -1.0)
+      .key("red_pending").value(f.traffic.red_pending).key("passing").value(f.traffic.passing).end_object();
     w.key("lead").begin_object();
     w.key("active").value(f.lead.active);
     w.key("seen").value(f.lead.seen);

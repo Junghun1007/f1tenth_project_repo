@@ -126,11 +126,15 @@ void register_params(ParamRegistry & r) {
   d("차량 추종 (ACC)", "acc.hold_near_m", "이 거리 안에서 놓치면 서 있다고 가정", "m", 0, 1.5, 0.6);
   d("차량 추종 (ACC)", "acc.lost_timeout_sec", "멀리서 놓친 앞차 유지 시간", "s", 0.05, 2, 0.3);
   t("신호등 검출", "yolo.traffic_light_threshold", "신호등 임계값", "", 0, 1, 0.70);
-  t("신호등·정지선", "traffic.enabled", "신호등 정지 (0=끔, 1=켬: 빨간불이면 정지선 앞에 정지, 초록불에 출발)", "", 0, 1, 1);
+  t("신호등·정지선", "traffic.enabled", "신호등 정지 (0=끔, 1=켬: 빨간불 + 정지선이면 정지선 앞에 정지, 초록불에 출발)", "", 0, 1, 1);
+  t("신호등·정지선", "traffic.signal_confirm_frames", "신호 색 인정: 같은 색 연속 관측 횟수", "회", 1, 10, 3);
+  t("신호등·정지선", "traffic.red_memory_m", "빨간불을 본 뒤 정지선을 찾으며 달리는 거리", "m", 0.5, 20, 4.0);
+  t("신호등·정지선", "traffic.max_decel_mps2", "통과 판정용 최대 감속도 (비상 제동 포함 실제로 낼 수 있는 값)", "m/s²", 0.2, 5, 1.0);
+  t("신호등·정지선", "traffic.pass_tolerance_m", "못 설 거리 판정 여유 (예상 정지 거리 > 정지선 + 이 값이면 통과)", "m", 0, 0.5, 0.05);
   t("신호등·정지선", "traffic.stop_range_max_m", "허용 정차 범위 (앞범퍼가 정지선 앞 0~이 거리)", "m", 0.05, 1.0, 0.25);
   t("신호등·정지선", "traffic.stop_margin_m", "목표 정차점 (정지선 앞 이 거리)", "m", 0, 0.5, 0.10);
   t("신호등·정지선", "traffic.decel_mps2", "감속 계획 (staged. duty-only는 duty_only 계획 감속도와 작은 쪽)", "m/s²", 0.1, 3, 0.8);
-  t("신호등·정지선", "traffic.reapproach_speed_mps", "짧게 섰거나 정지선을 놓쳤을 때 다가가는 속도", "m/s", 0.05, 1.0, 0.20);
+  t("신호등·정지선", "traffic.reapproach_speed_mps", "정차 범위보다 짧게 섰을 때 다시 다가가는 속도", "m/s", 0.05, 1.0, 0.20);
   t("신호등·정지선", "traffic.state_timeout_sec", "신호 관측 유효 시간", "s", 0.05, 3, 0.30);
   t("신호등·정지선", "traffic.line_timeout_sec", "정지선을 못 봐도 추적 유지", "s", 0.05, 3, 0.50);
   t("신호등·정지선", "traffic.line_confirm_frames", "정지선 확인 횟수", "", 1, 10, 3);
@@ -274,6 +278,10 @@ Settings settings_from(const ParamRegistry & r) {
   s.traffic.state_timeout = g("traffic.state_timeout_sec");
   s.traffic.line_timeout = g("traffic.line_timeout_sec");
   s.traffic.line_confirm = int(std::lround(g("traffic.line_confirm_frames")));
+  s.traffic.signal_confirm = int(std::lround(g("traffic.signal_confirm_frames")));
+  s.traffic.red_memory_m = g("traffic.red_memory_m");
+  s.traffic.pass_tolerance = g("traffic.pass_tolerance_m");
+  s.traffic.max_decel = g("traffic.max_decel_mps2");
   s.traffic_min_saturation = int(std::lround(g("traffic.color_min_saturation")));
   s.traffic_min_value = int(std::lround(g("traffic.color_min_value")));
   s.lead.enabled = g("acc.enabled") >= 0.5;
