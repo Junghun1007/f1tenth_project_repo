@@ -2,6 +2,7 @@
 #include "cone_drive_test/core/box_depth.hpp"
 #include "cone_drive_test/copied/bev_geometry.hpp"
 #include <cmath>
+#include <set>
 
 using namespace cone_drive_test;
 
@@ -88,4 +89,42 @@ TEST(box_depth_ground_check_passes_real_cone) {   // 정상 콘은 지면 거리
     CHECK(localize_box(render(x, 0.1).data(), K.width, K, M, box_of(x, 0.1), 0, 0.9f, {0.13, 0.13}, {}, true, &gc).has_value());
     CHECK(gc == GroundCheck::Passed);
   }
+}
+
+TEST(mask_depth_large_box_never_rechecks_a_pixel) {
+  const std::vector<std::uint16_t> depth(K.width * K.height, 0);
+  std::set<std::pair<int, int>> checked;
+  MaskDepthTarget big{{0, 0, 640, 400}, 0, .9f, {.13, .13}, false,
+    [&](int x, int y) { CHECK(checked.emplace(x, y).second); return false; }};
+  const auto f = localize_masks(depth.data(), K.width, K, M, {big}, {}, true);
+  CHECK(f.work.candidates == 256 && f.work.reads == 0);
+  CHECK(f.samples.size() == 256 && checked.size() == 256);
+  CHECK(f.objects.front().status == MaskDepthStatus::BudgetExhausted);
+}
+
+TEST(mask_depth_frame_cap_counts_zero_depth) {
+  const std::vector<std::uint16_t> depth(K.width * K.height, 0);
+  MaskDepthTarget big{{0, 0, 640, 400}, 0, .9f, {.13, .13}, false, [](int, int) { return true; }};
+  const std::vector<MaskDepthTarget> targets(40, big);
+  const auto f = localize_masks(depth.data(), K.width, K, M, targets, {});
+  CHECK(f.work.candidates == 2048 && f.work.reads == 2048);
+  for (const auto & item : f.objects) {
+    CHECK(item.work.candidates >= 25 && item.work.candidates <= 256);
+    CHECK(item.status == MaskDepthStatus::BudgetExhausted);
+  }
+}
+
+TEST(mask_depth_retains_small_cone_and_distinguishes_missing_depth) {
+  const auto d = render(1.2, .1);
+  MaskDepthTarget cone{box_of(1.2, .1), 0, .9f, {.13, .13}, false, [](int, int) { return true; }};
+  MaskDepthTarget empty{{0, 0, 2, 2}, 0, .9f, {.13, .13}, false, [](int, int) { return false; }};
+  const auto f = localize_masks(d.data(), K.width, K, M, {cone, empty}, {});
+  CHECK(f.objects[0].status == MaskDepthStatus::Ok);
+  CHECK(f.objects[1].status == MaskDepthStatus::Insufficient);
+  CHECK(f.objects[1].work.candidates == 4);
+  const auto & obs = *f.objects[0].observation;
+  CHECK_NEAR(obs.front.x, 1.2, .04);
+  CHECK_NEAR(obs.front.y, .1, .025);
+  const auto m = localize_masks(nullptr, K.width, K, M, {cone}, {});
+  CHECK(m.objects[0].status == MaskDepthStatus::NoDepth && m.work.candidates == 0);
 }

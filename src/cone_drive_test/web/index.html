@@ -13,6 +13,13 @@
     <button data-mode="detect">검출 테스트</button>
     <button data-mode="drive">추적 주행</button>
   </div>
+  <label class="detector-picker">객체 인식
+    <select id="detectorSelect" class="btn" disabled>
+      <option value="yolox">YOLOX Tiny</option>
+      <option value="yolo11seg">YOLO11n-seg</option>
+    </select>
+  </label>
+  <span class="reason" id="detectorState" role="status"></span>
   <div class="state" id="stateBadge">BOOT</div>
   <div class="sig" id="sigChip" hidden>신호 -</div>
   <div class="reason" id="reason"></div>
@@ -57,9 +64,10 @@
   </section>
 
   <section class="panel campanel" id="camPanel" hidden>
-    <h2>카메라 <small>YOLO 박스 · ROI</small></h2>
+    <h2>카메라 <small id="cameraOverlay">YOLO 박스 · ROI</small></h2>
     <img id="camImg" alt="">
-    <table class="dets" id="detTable"><thead><tr><th>클래스</th><th>점수</th><th>X m</th><th>Y m</th></tr></thead><tbody></tbody></table>
+    <table class="dets" id="detTable"><thead><tr><th>클래스</th><th>점수</th><th>X m</th><th>Y m</th><th>앞면 거리 m</th></tr></thead><tbody></tbody></table>
+    <div id="depthStatus" class="depth-status"></div>
   </section>
 
   <section class="side">
@@ -83,6 +91,22 @@
     </div>
    </div>
    <div class="col">
+    <div class="panel">
+      <h2>객체 인식 성능 <small>모델별 최근 1초</small></h2>
+      <table id="detectorPerf" class="detector-perf">
+        <thead><tr><th>측정 항목</th><th data-model="yolox">YOLOX Tiny</th><th data-model="yolo11seg">YOLO11n-seg</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">입력</th><td>512×320</td><td>640×320</td></tr>
+          <tr><th scope="row">모델 연산량</th><td>3.01 GMAC</td><td>2.40 GMAC</td></tr>
+          <tr data-metric="detect_p95"><th scope="row">검출 p95</th><td>—</td><td>—</td></tr>
+          <tr data-metric="mask_p95"><th scope="row">마스크 p95</th><td>—</td><td>—</td></tr>
+          <tr data-metric="distance_p95"><th scope="row">거리 계산 p95</th><td>—</td><td>—</td></tr>
+          <tr data-metric="total_p95"><th scope="row">전체 연산 p95</th><td>—</td><td>—</td></tr>
+          <tr data-metric="fps"><th scope="row">검출 FPS</th><td>—</td><td>—</td></tr>
+          <tr data-metric="candidates"><th scope="row">깊이 후보 / 읽기</th><td>—</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
     <div class="panel">
       <h2>단계별 연산 <small>최근 1초 평균</small></h2>
       <table class="stages" id="stages"><thead><tr><th>단계</th><th>ms</th><th>FPS</th></tr></thead><tbody></tbody></table>

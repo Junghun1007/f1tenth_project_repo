@@ -3,6 +3,7 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -85,7 +86,7 @@ public:
   void on_vesc_connected(bool connected, double t);
   void on_handover_mode(const std::string & mode, double t);
   void on_detections(const DetectionFrame & frame);
-  void on_traffic_signal(TrafficSignal signal, double capture_time);   // 신호등 색 (검출 스레드)
+  void on_traffic_signal(TrafficSignal signal, double capture_time, std::optional<DetectorModel> model = std::nullopt);
   // 점검
   void set_attitude(const AttitudeInfo & a);
   void set_camera_geometry(const CameraGeometry & g);
@@ -101,6 +102,10 @@ public:
   void request_stop(const std::string & reason, double now);
   std::pair<bool, std::string> request_refit(double now);
   std::pair<bool, std::string> request_mode(DriveMode m, double now);
+  std::pair<bool, std::string> request_detector(DetectorModel model);
+  void detector_progress(const std::string & stage);
+  void finish_detector(bool ok, const std::string & message, double elapsed);
+  DetectorModel detector_model() const;
   void on_heartbeat(const std::string & client, double now);
 
   bool cones_nearby() const;
@@ -117,6 +122,7 @@ public:
   double gyro_bias() const { return gyro_bias_.load(std::memory_order_relaxed); }
 
 private:
+  bool can_switch_detector() const;   // m_ held
   void clear_memories();   // 콘 기억(월드·차선 기준), 경로 고정, 보이는 콘, 계획 상태를 모두 비움. m_ 잡은 채로 호출
   Readiness readiness(double now) const;
   // 오도메트리는 400 Hz IMU 스레드가 갱신하므로 별도 락 (계획이 도는 동안 IMU·영상 안정화가 기다리지 않게).
@@ -150,6 +156,7 @@ private:
   std::vector<ConeObservation> new_vehicles_;   // 새 깊이 검출의 차량 (촬영 시점 좌표)
   double new_vehicles_dist_{0};                 // 그 촬영 시점 바퀴 누적 거리
   bool new_det_{false};
+  bool new_det_complete_{true};
   AvoidancePlanner planner_;
   Odometry odom_;
   LongitudinalController lon_;
@@ -157,6 +164,11 @@ private:
   StageStats stats_;
   AttitudeInfo attitude_;
   InspectionModel models_[2];
+  DetectorModel detector_{DetectorModel::Yolox};
+  std::optional<DetectorModel> requested_detector_;
+  std::string detector_stage_;
+  struct DetectorSample { double time; DetectorWork work; };
+  std::array<std::deque<DetectorSample>, 2> detector_samples_;
   bool vesc_connected_{false};
   double last_erpm_t_{-1e9}, last_lane_t_{-1e9}, last_control_t_{-1}, last_request_t_{-1e9}, last_yaw_t_{-1};
   double speed_{0};

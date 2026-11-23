@@ -171,7 +171,7 @@ std::vector<Vec2> ControlLoop::lane_memory_cones(const Pose2 & pose_lane, std::v
         }
         latest_sl_ = sl;
         latest_det_t_ = det.capture_time;
-        lane_mem_.update(sl, ranges);
+        lane_mem_.update(sl, ranges, det.observations_complete);
       }
     }
   }
@@ -201,7 +201,14 @@ void ControlLoop::on_vesc_connected(bool c, double) { std::lock_guard<std::mutex
 
 void ControlLoop::on_handover_mode(const std::string & mode, double t) { std::lock_guard<std::mutex> l(m_); sm_.on_handover_mode(mode, t); }
 
-void ControlLoop::on_detections(const DetectionFrame & f) { std::lock_guard<std::mutex> l(m_); pending_det_ = f; }
+void ControlLoop::on_detections(const DetectionFrame & f) {
+  std::lock_guard<std::mutex> l(m_);
+  if (f.model != detector_) return;
+  pending_det_ = f;
+  auto & samples = detector_samples_[int(f.model)];
+  samples.push_back({f.capture_time, f.work});
+  while (!samples.empty() && (samples.front().time < f.capture_time - 1 || samples.size() > 200)) samples.pop_front();
+}
 
 void ControlLoop::set_attitude(const AttitudeInfo & a) { std::lock_guard<std::mutex> l(m_); attitude_ = a; }
 
@@ -231,7 +238,7 @@ Readiness ControlLoop::readiness(double now) const {
   Readiness r;
   r.attitude_ok = attitude_.ok;
   r.lane_model_ready = models_[0].status == "READY";
-  r.yolo_model_ready = models_[1].status == "READY";
+  r.yolo_model_ready = models_[1].status == "READY" && !requested_detector_;
   r.vesc_connected = vesc_connected_;
   r.erpm_fresh = now - last_erpm_t_ <= rc_.erpm_timeout_sec;
   r.lane_fresh = lane_.valid && (rc_.lane_timeout_sec <= 0 || now - last_lane_t_ <= rc_.lane_timeout_sec);   // 0 = 제한 없음
@@ -255,7 +262,8 @@ void ControlLoop::integrate_detections() {
   const auto cam = rc_.camera;
   const double cone = s_.cone_size_m;
   std::vector<std::uint32_t> ids;
-  memory_.update(*pose, f.capture_time, cones, [cam, cone](const std::vector<Vec2> & centers, const Pose2 & p) {
+  memory_.update(*pose, f.capture_time, cones, [cam, cone, complete = f.observations_complete](const std::vector<Vec2> & centers, const Pose2 & p) {
+    if (!complete) return std::vector<int>{};
     std::vector<Vec2> local;
     local.reserve(centers.size());
     for (const auto & w : centers) local.push_back(to_local(w, p));
@@ -281,8 +289,9 @@ void ControlLoop::integrate_detections() {
   }
 }
 
-void ControlLoop::on_traffic_signal(TrafficSignal signal, double t) {
+void ControlLoop::on_traffic_signal(TrafficSignal signal, double t, std::optional<DetectorModel> model) {
   std::lock_guard<std::mutex> l(m_);
+  if (model && *model != detector_) return;
   traffic_.on_signal(signal, t);
 }
 
@@ -292,6 +301,7 @@ void ControlLoop::remember_vehicles(const DetectionFrame & det, std::optional<do
   for (const auto & c : det.cones) if (c.class_id == 1 || c.class_id == 2) new_vehicles_.push_back(c);
   new_vehicles_dist_ = *dist;
   new_det_ = true;
+  new_det_complete_ = det.observations_complete;
 }
 
 StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
@@ -323,7 +333,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
         const double shift = d_lane - new_vehicles_dist_;
         for (auto v : new_vehicles_) { v.center.x -= shift; v.front.x -= shift; vehicles.push_back(v); }
       }
-      lead_.update(plan_.path_local, vehicles, new_det_, lane_.capture_time, d_lane, speed_);
+      lead_.update(plan_.path_local, vehicles, new_det_, lane_.capture_time, d_lane, speed_, new_det_complete_);
       new_det_ = false;
       // 신호등 정지: 이번에 새로 들어온 차선 결과의 정지선만 관측으로 (재사용한 lane_은 NaN)
       traffic_.update(lane.valid ? lane.stop_line_m : std::numeric_limits<double>::quiet_NaN(), lane_.capture_time, d_lane, speed_);
@@ -429,8 +439,52 @@ std::pair<bool, std::string> ControlLoop::request_start(double now) {
   return res;
 }
 void ControlLoop::request_stop(const std::string & reason, double now) { std::lock_guard<std::mutex> l(m_); sm_.request_stop(reason, now); }
-std::pair<bool, std::string> ControlLoop::request_refit(double now) { std::lock_guard<std::mutex> l(m_); return sm_.request_refit(now); }
+std::pair<bool, std::string> ControlLoop::request_refit(double now) {
+  std::lock_guard<std::mutex> l(m_);
+  if (requested_detector_) return {false, "객체 모델 전환 중"};
+  return sm_.request_refit(now);
+}
 std::pair<bool, std::string> ControlLoop::request_mode(DriveMode m, double now) { std::lock_guard<std::mutex> l(m_); return sm_.request_mode(m, now); }
+bool ControlLoop::can_switch_detector() const {
+  return (sm_.state() == DriveState::Ready || sm_.state() == DriveState::Manual) && std::abs(speed_) < .03;
+}
+
+std::pair<bool, std::string> ControlLoop::request_detector(DetectorModel model) {
+  std::lock_guard<std::mutex> l(m_);
+  if (requested_detector_) return {false, "객체 모델 전환 중"};
+  if (!can_switch_detector()) return {false, "정차 상태에서만 모델을 바꿀 수 있습니다"};
+  if (model == detector_) return {true, ""};
+  requested_detector_ = model;
+  detector_stage_ = "모델 준비 중";
+  return {true, ""};
+}
+
+void ControlLoop::detector_progress(const std::string & stage) {
+  std::lock_guard<std::mutex> l(m_);
+  detector_stage_ = stage;
+}
+
+void ControlLoop::finish_detector(bool ok, const std::string & message, double elapsed) {
+  std::lock_guard<std::mutex> l(m_);
+  if (!requested_detector_) return;
+  if (ok && can_switch_detector()) {
+    detector_ = *requested_detector_;
+    pending_det_.reset();
+    last_det_ = {};
+    new_vehicles_.clear();
+    new_det_ = false;
+    detector_stage_.clear();
+    models_[1] = {detector_ == DetectorModel::Yolox ? "YOLOX Tiny 512×320" : "YOLO11n-seg 640×320", "READY", "ready", "", elapsed};
+  } else {
+    detector_stage_ = ok ? "정차 상태가 바뀌어 전환이 취소됐습니다" : message;
+  }
+  requested_detector_.reset();
+}
+
+DetectorModel ControlLoop::detector_model() const {
+  std::lock_guard<std::mutex> l(m_);
+  return detector_;
+}
 void ControlLoop::on_heartbeat(const std::string & c, double now) { std::lock_guard<std::mutex> l(m_); sm_.on_heartbeat(c, now); }
 bool ControlLoop::refit_pending() const { std::lock_guard<std::mutex> l(m_); return sm_.state() == DriveState::Refitting; }
 DriveState ControlLoop::state() const { std::lock_guard<std::mutex> l(m_); return sm_.state(); }
@@ -464,7 +518,27 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   f.inspection.roll_deg = attitude_.roll_deg;
   f.inspection.pitch_down_deg = attitude_.pitch_down_deg;
   f.inspection.models = {models_[0], models_[1]};
+  f.detector = detector_;
+  f.requested_detector = requested_detector_;
+  f.detector_switch_allowed = !requested_detector_ && can_switch_detector();
+  f.detector_stage = detector_stage_;
   if (!full) return f;
+  for (std::size_t i = 0; i < detector_samples_.size(); ++i) {
+    const auto & q = detector_samples_[i];
+    if (q.empty()) continue;
+    const auto p95 = [&](double DetectorWork::*field) {
+      std::vector<double> ms;
+      ms.reserve(q.size());
+      for (const auto & item : q) ms.push_back(item.work.*field);
+      auto at = ms.begin() + std::size_t(std::ceil(.95 * ms.size())) - 1;
+      std::nth_element(ms.begin(), at, ms.end());
+      return *at;
+    };
+    const double duration = q.back().time - q.front().time;
+    f.detector_perf[i] = DetectorPerformance{p95(&DetectorWork::detect_ms), p95(&DetectorWork::mask_ms),
+      p95(&DetectorWork::distance_ms), p95(&DetectorWork::total_ms), duration > 0 ? (q.size() - 1) / duration : 0.0,
+      q.back().work};
+  }
   f.vehicle = {speed_, target_, steer_.angle() * kRad2Deg, cte_, last_out_.duty, last_out_.brake_current};
   // 화면은 현재 자세 기준 (차선은 촬영 시점 기준이지만 지연이 작아 그대로 표시)
   f.lane_left = lane_.left;
@@ -476,7 +550,8 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   f.rollout_ok = plan_.rollout_ok;
   static const char * kNames[] = {"con", "truck", "sedan", "traffic_light"};
   for (const auto & c : last_det_.cones)
-    f.detections.push_back({kNames[std::clamp(c.class_id, 0, 3)], c.score, c.center.x, c.center.y, c.length, c.width, c.bearing});
+    f.detections.push_back({kNames[std::clamp(c.class_id, 0, 3)], c.score, c.center.x, c.center.y,
+      c.length, c.width, c.bearing, std::hypot(c.front.x, c.front.y)});
   const Pose2 p = odom_pose();
   if (s_.memory_mode >= 1) {
     f.memory = lane_mem_view_;   // 차선 촬영 시점 기준 (지연이 작아 그대로 표시)

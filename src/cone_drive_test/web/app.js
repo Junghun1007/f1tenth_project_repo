@@ -10,10 +10,11 @@ const BEV = { xMax: 3.0, xMin: -0.5, yHalf: 0.6, imageXMin: 0.0, pxPerM: 200 };
 const STAGE_LABEL = {
   cam_rgb: "카메라 RGB 수신", cam_depth: "카메라 Depth 수신",
   receive: "영상 지연(촬영→처리)", stabilize_bev: "안정화+BEV", lane_infer: "차선 추론", lane_post: "중앙선",
-  yolo_pre: "YOLO 전처리", yolo_infer: "YOLO 추론", yolo_post: "YOLO 후처리", box_depth: "Depth 정합",
+  yolo_pre: "YOLO 전처리", yolo_infer: "YOLO 추론", yolo_post: "검출 후처리", mask_post: "마스크 판정", box_depth: "거리 계산",
   memory_plan: "기억+회피계획", control: "제어", web: "웹 전송",
   lane_side_fix: "⚠ 차선 좌우 교정(회/s)", lane_side_drop: "⚠ 차선 조각 제외(회/s)",
   depth_miss: "⚠ 깊이 짝 없음(회/s)", loc_fail: "⚠ 위치 계산 실패(회/s)", ground_reject: "⚠ 지면 거리 불일치로 버림(회/s)",
+  depth_budget: "⚠ 깊이 후보 상한(회/s)",
 };
 const READY_LABEL = {
   attitude_ok: "카메라 자세", lane_model_ready: "차선 모델", yolo_model_ready: "YOLO 모델",
@@ -22,6 +23,8 @@ const READY_LABEL = {
 const PLAN_LABEL = { center: "중앙선 추종", lane: "차선 안 회피", "lane-tight": "차선 안(여유 0)", free: "차선 밖 회피", fallback: "대체 경로" };
 
 let latest = null;
+let detectorPosting = false;
+let detectorError = "";
 let params = [];
 let edits = {};
 let group = "obstacle";
@@ -143,7 +146,9 @@ function drawBev(f) {
   for (const d of f.detections) {
     box(d.x, d.y, d.length, d.width, d.yaw || 0, "rgba(251,146,60,.85)", "#fb923c");
     const [u, v] = P(d.x + d.length / 2, d.y);
-    ctx.fillStyle = "#fff"; ctx.font = "11px sans-serif"; ctx.fillText(d.score.toFixed(2), u + 8, v);
+    const label = Number.isFinite(d.distance) ? d.distance.toFixed(2) + " m" : d.score.toFixed(2);
+    ctx.fillStyle = "#fff"; ctx.font = "11px sans-serif";
+    ctx.fillText(label, Math.min(u + 8, cv.width - ctx.measureText(label).width - 2), v);
   }
   if (f.traffic && f.traffic.enabled && f.traffic.line > -90) {   // 정지선 (앞범퍼 기준 거리 → 앞차축 +5 cm)
     const [, v] = P(0.05 + f.traffic.line, 0);
@@ -183,6 +188,42 @@ function kv(el, rows) {
   el.innerHTML = rows.map(([k, v]) => `<span class="k">${k}</span><span class="v">${v}</span>`).join("");
 }
 
+function renderDetector(f) {
+  const status = f.detector || { active: "yolox", can_switch: false };
+  const select = $("detectorSelect");
+  select.value = status.requested || status.active;
+  select.disabled = detectorPosting || !status.can_switch;
+  const text = detectorError || (status.requested ? "전환 중 · " + status.stage : status.stage || "");
+  $("detectorState").textContent = text;
+  $("detectorState").title = text;
+  $("cameraOverlay").textContent = status.active === "yolo11seg" ? "마스크 윤곽 · 깊이 샘플점" : "YOLO 박스 · ROI";
+  if (!status.performance) return;
+  const modes = ["yolox", "yolo11seg"];
+  document.querySelectorAll("#detectorPerf thead [data-model]").forEach((el, i) => {
+    const active = modes[i] === status.active;
+    el.classList.toggle("active", active);
+    el.textContent = (i === 0 ? "YOLOX Tiny" : "YOLO11n-seg") + (active ? " · 사용 중" : status.performance[modes[i]] ? " · 마지막" : "");
+  });
+  document.querySelectorAll("#detectorPerf [data-metric]").forEach((row) => {
+    const metric = row.dataset.metric;
+    modes.forEach((mode, i) => {
+      const p = status.performance[mode];
+      let value = "—";
+      if (p) {
+        if (metric === "candidates") value = p.candidates + " / " + p.depth_reads;
+        else if (metric === "fps") value = p.fps.toFixed(1);
+        else if (metric !== "mask_p95" || mode === "yolo11seg") value = p[metric].toFixed(2) + " ms";
+      }
+      row.cells[i + 1].textContent = value;
+    });
+  });
+  const p = status.performance[status.active];
+  $("depthStatus").textContent = p ? [
+    [p.no_depth, "깊이 없음"], [p.insufficient, "유효 점 부족"],
+    [p.budget_exhausted, "예산 소진"], [p.ground_rejected, "지면 거리 불일치"],
+  ].filter(([count]) => count > 0).map(([count, name]) => name + " " + count + "개").join(" · ") : "";
+}
+
 function usageRow(name, value) {
   const ok = value !== null && value !== undefined;
   const pct = ok ? Math.max(0, Math.min(100, value)) : 0;
@@ -198,6 +239,7 @@ function render() {
   const st = $("stateBadge");
   st.textContent = f.state; st.className = "state " + f.state;
   $("reason").textContent = f.reason || "";
+  renderDetector(f);
   if (f.traffic) {   // 신호등 칩 (켜져 있을 때만)
     const chip = $("sigChip"), name = ["UNKNOWN", "RED", "GREEN"][f.traffic.signal] || "UNKNOWN";
     chip.hidden = !f.traffic.enabled;
@@ -246,7 +288,7 @@ function render() {
   const u = f.usage;
   $("usage").innerHTML = usageRow("CPU 전체", u.cpu) + usageRow("이 프로세스", u.proc_cpu) + usageRow("GPU", u.gpu) + usageRow("메모리", u.mem);
   $("detTable").querySelector("tbody").innerHTML = f.detections.map((d) =>
-    `<tr><td>${d.cls}</td><td>${d.score.toFixed(2)}</td><td>${d.x.toFixed(2)}</td><td>${d.y.toFixed(2)}</td></tr>`).join("");
+    `<tr><td>${d.cls}</td><td>${d.score.toFixed(2)}</td><td>${d.x.toFixed(2)}</td><td>${d.y.toFixed(2)}</td><td>${Number.isFinite(d.distance) ? d.distance.toFixed(2) : "—"}</td></tr>`).join("");
   drawBev(f);
 }
 
@@ -279,6 +321,15 @@ function bind() {
   document.querySelectorAll("#modeSeg button").forEach((b) => b.addEventListener("click", async () => {
     const r = await post("/api/mode", { mode: b.dataset.mode }); if (!r.ok) $("reason").textContent = r.reason;
   }));
+  $("detectorSelect").addEventListener("change", async (ev) => {
+    detectorPosting = true;
+    detectorError = "";
+    ev.target.disabled = true;
+    const r = await post("/api/detector", { model: ev.target.value });
+    detectorPosting = false;
+    if (!r.ok) detectorError = r.reason;
+    render();
+  });
   $("btnStart").addEventListener("click", async () => { const r = await post("/api/start"); if (!r.ok) $("reason").textContent = r.reason; });
   $("btnStop").addEventListener("click", () => post("/api/stop"));
   // 수동 주행 녹화: 사람이 달린 경로 + 같은 순간 계획기 경로·차선·콘을 남겨 파라미터를 찾는 데 쓴다

@@ -20,6 +20,10 @@ struct Fixture {
     cb.stop = [] {};
     cb.refit = [] { return std::make_pair(true, std::string()); };
     cb.mode = [](const std::string & m) { return std::make_pair(m == "drive" || m == "detect", std::string("bad mode")); };
+    cb.detector = [](const std::string & model) {
+      return model == "yolo11n-seg" ? std::make_pair(true, std::string("loading")) :
+             std::make_pair(false, std::string("unknown detector"));
+    };
     cb.params = [this](const std::map<std::string, double> & c) { return params.apply(c); };
     cb.params_save = [] { return std::make_pair(true, std::string("/tmp/x.yaml")); };
     cb.heartbeat = [this](const std::string & id) { ++heartbeats; last_client = id; };
@@ -65,6 +69,19 @@ TEST(start_returns_reason) {
   const auto j = nlohmann::json::parse(r->body);
   CHECK(j["ok"] == false && j["reason"] == "detect mode");
   CHECK(f.starts == 1);
+}
+
+TEST(detector_post_validates_and_passes_model) {
+  Fixture f;
+  auto c = f.client();
+  auto r = c.Post("/api/detector", R"({"model":"yolo11n-seg"})", "application/json");
+  CHECK(r && r->status == 200);
+  auto reply = nlohmann::json::parse(r->body);
+  CHECK(reply["ok"] == true && reply["reason"] == "loading");
+  r = c.Post("/api/detector", R"({"model":"unknown"})", "application/json");
+  CHECK(r && nlohmann::json::parse(r->body)["reason"] == "unknown detector");
+  r = c.Post("/api/detector", R"({"model":11})", "application/json");
+  CHECK(r && nlohmann::json::parse(r->body)["ok"] == false);
 }
 
 TEST(heartbeat_tracks_clients_and_preview_flag) {

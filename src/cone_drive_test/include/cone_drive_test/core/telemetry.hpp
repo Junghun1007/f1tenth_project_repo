@@ -3,6 +3,8 @@
 #include "cone_drive_test/core/lead_follower.hpp"
 #include "cone_drive_test/core/traffic_stop.hpp"
 #include <cstdint>
+#include <array>
+#include <optional>
 #include <string>
 #include <vector>
 #include "cone_drive_test/core/drive_state.hpp"
@@ -19,7 +21,11 @@ struct InspectionInfo {
   std::vector<InspectionModel> models;
 };
 struct VehicleInfo { double speed{0}, target{0}, steer_deg{0}, cte{0}, duty{0}, brake{0}; };
-struct DetectionInfo { std::string cls; float score{0}; double x{0}, y{0}, length{0}, width{0}, yaw{0}; };
+struct DetectionInfo { std::string cls; float score{0}; double x{0}, y{0}, length{0}, width{0}, yaw{0}, distance{0}; };
+struct DetectorPerformance {
+  double detect_p95{}, mask_p95{}, distance_p95{}, total_p95{}, fps{};
+  DetectorWork latest;
+};
 struct MemoryInfo { double x{0}, y{0}; bool confirmed{false}; std::uint32_t id{0}; };
 
 struct TelemetryFrame {
@@ -29,6 +35,11 @@ struct TelemetryFrame {
   Readiness readiness;
   InspectionInfo inspection;
   std::string stabilization{"측정 전"};   // IMU 영상 안정화 적용률 (프리뷰 꺼짐에서도 보냄)
+  DetectorModel detector{DetectorModel::Yolox};
+  std::optional<DetectorModel> requested_detector;
+  bool detector_switch_allowed{};
+  std::string detector_stage;
+  std::array<std::optional<DetectorPerformance>, 2> detector_perf;
   VehicleInfo vehicle;
   std::vector<Vec2> lane_left, lane_right, lane_center, lane_path, plan_path;
   std::string plan_mode{"center"};

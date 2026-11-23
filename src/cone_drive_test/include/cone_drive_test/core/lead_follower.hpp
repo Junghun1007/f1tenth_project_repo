@@ -44,7 +44,7 @@ public:
   // path: 이번 계획 경로, vehicles: 새 검출이 있으면 그 차량들(경로와 같은 좌표·시각으로 옮김), new_det: 새 깊이 검출 여부
   // t: 경로 시각, dist: 그 시각 바퀴 누적 거리, v_ego: 내 속도
   const LeadState & update(const std::vector<Vec2> & path, const std::vector<ConeObservation> & vehicles, bool new_det,
-                           double t, double dist, double v_ego);
+                           double t, double dist, double v_ego, bool complete = true);
   const LeadState & state() const { return s_; }
 
 private:

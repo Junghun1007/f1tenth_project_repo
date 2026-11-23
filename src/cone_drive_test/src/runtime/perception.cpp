@@ -1,5 +1,7 @@
 #include "cone_drive_test/runtime/perception.hpp"
 #include "cone_drive_test/core/rate_gate.hpp"
+#include "cone_drive_test/core/segmentation.hpp"
+#include "cone_drive_test/copied/tensorrt_yolox_backend.hpp"
 #include <depthai/depthai.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -28,6 +30,33 @@ bool bottom_visible(const Detection & d, const std::vector<Detection> & all) {
 
 namespace {
 const char * kClassNames[] = {"con", "truck", "sedan", "traffic_light"};
+
+Footprint footprint_for(int cls, const Settings & s) {
+  return cls == 0 ? Footprint{s.cone_size_m, s.cone_size_m}
+       : cls == 1 ? Footprint{0.60, 0.36} : cls == 2 ? Footprint{0.50, 0.30} : Footprint{};
+}
+
+void draw_mask_outline(cv::Mat & small, const SegDetection & det, const SegTransform & transform,
+                       const std::uint16_t * prototypes, int width, int height) {
+  // The optional preview traces the outline at one quarter of its display resolution.
+  constexpr int step = 4;
+  const int preview_w = small.cols / step, preview_h = small.rows / step;
+  const double sx = double(preview_w) / width, sy = double(preview_h) / height;
+  const auto & box = det.box;
+  const cv::Rect region = cv::Rect(cv::Point(int(std::floor(box.x * sx)), int(std::floor(box.y * sy))),
+    cv::Point(int(std::ceil((box.x + box.width) * sx)), int(std::ceil((box.y + box.height) * sy)))) &
+    cv::Rect(0, 0, preview_w, preview_h);
+  if (region.empty()) return;
+  cv::Mat mask(region.height, region.width, CV_8UC1);
+  for (int y = 0; y < region.height; ++y) for (int x = 0; x < region.width; ++x) {
+    const auto pixel = transform.model_pixel((region.x + x + .5) / sx, (region.y + y + .5) / sy);
+    mask.at<std::uint8_t>(y, x) = mask_contains(prototypes, det, pixel) ? 255 : 0;
+  }
+  std::vector<std::vector<cv::Point>> contours;
+  cv::findContours(mask, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE, region.tl());
+  for (auto & contour : contours) for (auto & p : contour) p = p * step + cv::Point(step / 2, step / 2);
+  cv::drawContours(small, contours, -1, cv::Scalar(245, 217, 55), 2, cv::LINE_AA);
+}
 }
 
 // ---------------------------------------------------------------- 차선
@@ -119,6 +148,10 @@ DetectWorker::DetectWorker(CameraPipeline & cam, ControlLoop & loop) : cam_(cam)
 DetectWorker::~DetectWorker() { stop(); }
 
 void DetectWorker::load_model(const ModelConfig & m, const std::function<void(const std::string &)> & progress) {
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (detector_) return;
+  }
   auto det = std::make_unique<YoloxDetector>(m.yolo_model, "TENSORRT", m.yolo_engine_cache, m.yolo_precision, 512, 320, 0.0f, 0.65f,
                                              m.workspace_bytes, progress, 100);
   if (progress) progress("시험 추론");
@@ -127,6 +160,23 @@ void DetectWorker::load_model(const ModelConfig & m, const std::function<void(co
   std::lock_guard<std::mutex> l(mutex_);
   detector_ = std::move(det);
   detector_->set_thresholds(s_.yolo_thresholds);
+}
+
+void DetectWorker::load_segmentation(const ModelConfig & m, const std::function<void(const std::string &)> & progress) {
+  {
+    std::lock_guard<std::mutex> l(mutex_);
+    if (segmentation_) return;
+  }
+  auto model = std::make_unique<TensorRtYoloxBackend>(m.seg_model, m.seg_engine_cache, "fp16", seg_width, seg_height,
+                                                     m.workspace_bytes, progress, true);
+  if (progress) progress("시험 추론");
+  std::vector<std::uint8_t> nv12(seg_width * seg_height * 3 / 2, 128);
+  std::vector<std::uint16_t> packed(seg_output_values);
+  model->infer_seg_nv12(nv12.data(), nv12.size(), seg_width, seg_width, seg_height,
+                       0, 0, seg_width, seg_height, packed.data(), packed.size());
+  std::lock_guard<std::mutex> l(mutex_);
+  segmentation_ = std::move(model);
+  packed_segmentation_ = std::move(packed);
 }
 
 void DetectWorker::set_settings(const Settings & s) {
@@ -154,7 +204,9 @@ void DetectWorker::loop_() {
   const auto & cc = cam_.config();
   while (running_) {
     const auto frame = cam_.frames().wait_newer(seen, 0.1);   // 최신 프레임만 (처리 중 들어온 프레임은 건너뜀)
-    if (!frame || !detector_) continue;
+    if (!frame) continue;
+    const auto model = ctl_.detector_model();
+    const bool use_seg = model == DetectorModel::Yolo11Seg;
     Settings s;
     CameraMount mount;
     { std::lock_guard<std::mutex> l(mutex_); s = s_; mount = mount_; }
@@ -166,18 +218,40 @@ void DetectWorker::loop_() {
     const cv::Rect roi(0, h - roi_h, w, roi_h);
     const auto & data = frame->rgb->getData();
     const std::size_t stride = frame->rgb->getStride() > 0 ? frame->rgb->getStride() : frame->rgb->getWidth();
+    const bool preview = camera_wanted && camera_wanted() && t0 - last_jpeg_t_ >= 0.1;
     YoloxDetectionResult res;
+    std::vector<SegDetection> seg;
+    SegTransform transform;
+    const std::uint16_t * prototypes = nullptr;
     {
       std::lock_guard<std::mutex> l(mutex_);
-      // 신호등을 켜면 화면 전체를 추론한다. 모델 입력(512×320)은 가로 기준 축소라 축소 비율·연산량은 그대로 (위쪽이 패딩 대신 영상)
-      res = detector_->detect_nv12(data.data(), data.size(), stride, w, h, s.traffic.enabled ? cv::Rect(0, 0, w, h) : roi);
+      if (use_seg) {
+        if (!segmentation_) continue;
+        // The checkpoint was trained on full-frame RGB with centered letterboxing.
+        transform = seg_transform({0, 0, w, h});
+        const auto t = segmentation_->infer_seg_nv12(data.data(), data.size(), stride, w, h,
+          0, 0, w, h, packed_segmentation_.data(), packed_segmentation_.size());
+        const double post_start = now_sec();
+        seg = decode_seg(packed_segmentation_.data(), transform, s.yolo_thresholds, float(s.nms_threshold));
+        prototypes = packed_segmentation_.data() + seg_prediction_values;
+        for (const auto & d : seg) res.detections.push_back({d.box, d.score, d.class_id});
+        res.timing = {t.preprocessing_nanoseconds, t.input_transfer_nanoseconds, t.execution_nanoseconds,
+                      t.output_transfer_nanoseconds, std::uint64_t((now_sec() - post_start) * 1e9)};
+      } else {
+        if (!detector_) continue;
+        res = detector_->detect_nv12(data.data(), data.size(), stride, w, h, s.traffic.enabled ? cv::Rect(0, 0, w, h) : roi);
+      }
     }
     // 콘·차량은 지금처럼 하단 ROI 안(박스 아래 끝 기준)만, 신호등은 점수가 가장 높은 것 하나의 색을 본다
     std::vector<Detection> obstacles;
+    std::vector<std::size_t> seg_indices;
     const Detection * light = nullptr;
     for (const auto & det : res.detections) {
       if (det.class_id == 3) { if (!light || det.score > light->score) light = &det; continue; }
-      if (det.box.y + det.box.height > roi.y) obstacles.push_back(det);
+      if (det.box.y + det.box.height > roi.y) {
+        obstacles.push_back(det);
+        if (use_seg) seg_indices.push_back(&det - res.detections.data());
+      }
     }
     if (s.traffic.enabled) {
       TrafficSignal sig = TrafficSignal::Unknown;
@@ -193,7 +267,7 @@ void DetectWorker::loop_() {
           sig = classify_traffic_color(bgr, s.traffic_min_saturation, s.traffic_min_value);
         }
       }
-      ctl_.on_traffic_signal(sig, frame->t);
+      ctl_.on_traffic_signal(sig, frame->t, model);
     }
     const double t1 = now_sec();
     stats.record("yolo_pre", t0, t0 + res.timing.preprocessing_nanoseconds * 1e-9);
@@ -201,6 +275,8 @@ void DetectWorker::loop_() {
     stats.record("yolo_post", t0, t0 + res.timing.postprocessing_nanoseconds * 1e-9);
     DetectionFrame out;
     out.capture_time = frame->t;
+    out.model = model;
+    out.work.detect_ms = (t1 - t0) * 1000;
     // 추론하는 동안 도착한 깊이까지 포함해 다시 짝짓기. 끝내 없으면 이 프레임은 관측으로 치지 않는다
     // 스테레오 깊이는 같은 시각 RGB보다 늦게 나온다. 추론 뒤에도 아직 없으면 잠깐(최대 depth_wait_ms) 기다린다.
     // 짝을 못 지은 프레임은 관측으로 치지 않으므로, 여기서 놓치면 BEV에서 콘이 깜빡이고 늦게 나타난다
@@ -210,7 +286,13 @@ void DetectWorker::loop_() {
       depth = cam_.nearest_depth(frame->t, cc.depth_sync_ms / 1000.0);
     }
     out.depth_valid = depth != nullptr;
-    if (!depth && !obstacles.empty()) stats.record("depth_miss", t1, t1);   // 진단: 박스는 있는데 깊이 짝이 없음 (FPS 칸 = 초당 횟수)
+    const double depth_started = now_sec();
+    std::vector<MaskDepthSample> samples;
+    if (!depth && !obstacles.empty()) {
+      out.work.no_depth = int(obstacles.size());
+      out.observations_complete = false;
+      stats.record("depth_miss", t1, t1);
+    }
     if (depth) {
       auto & d = *depth;
       out.depth_time = std::chrono::duration<double>(d.getTimestamp(dai::CameraExposureOffset::MIDDLE).time_since_epoch()).count();
@@ -219,32 +301,85 @@ void DetectWorker::loop_() {
       const DepthIntrinsics k{cc.fx * sx, cc.fy * sy, cc.cx * sx, cc.cy * sy, dw, dh};
       const auto * mm = reinterpret_cast<const std::uint16_t *>(d.getData().data());
       const int stride_px = d.getStride() > 0 ? int(d.getStride() / 2) : dw;
-      for (const auto & det : obstacles) {
-        const Footprint fp = det.class_id == 0 ? Footprint{s.cone_size_m, s.cone_size_m}
-                           : det.class_id == 1 ? Footprint{0.60, 0.36} : det.class_id == 2 ? Footprint{0.50, 0.30} : Footprint{};
-        const cv::Rect2f box(det.box.x * sx, det.box.y * sy, det.box.width * sx, det.box.height * sy);
-        GroundCheck gc = GroundCheck::Skipped;
-        if (auto o = localize_box(mm, stride_px, k, mount, box, det.class_id, det.score, fp, s.box, bottom_visible(det, obstacles), &gc))
-          out.cones.push_back(*o);
-        else if (gc == GroundCheck::Rejected) stats.record("ground_reject", t1, t1);   // 진단: 깊이 거리와 지면 거리가 크게 달라 버림
-        else stats.record("loc_fail", t1, t1);   // 진단: 깊이는 있는데 박스 안 유효 점이 모자람
+      const auto depth_box = [&](const Detection & det) {
+        return cv::Rect2f(det.box.x * sx, det.box.y * sy, det.box.width * sx, det.box.height * sy);
+      };
+      if (use_seg) {
+        std::vector<MaskDepthTarget> targets;
+        for (std::size_t i = 0; i < obstacles.size(); ++i) {
+          const auto & det = obstacles[i];
+          const auto * mask = &seg[seg_indices[i]];
+          targets.push_back({depth_box(det), det.class_id, det.score, footprint_for(det.class_id, s),
+            bottom_visible(det, obstacles), [&, mask](int x, int y) {
+              return mask_contains(prototypes, *mask, transform.model_pixel((x + .5) / sx, (y + .5) / sy));
+            }});
+        }
+        auto localized = localize_masks(mm, stride_px, k, mount, targets, s.box, preview);
+        samples = std::move(localized.samples);
+        out.work.candidates = localized.work.candidates;
+        out.work.depth_reads = localized.work.reads;
+        out.work.mask_ms = localized.mask_ms;
+        for (const auto & o : localized.objects) {
+          if (o.observation) { out.cones.push_back(*o.observation); continue; }
+          out.observations_complete = false;
+          if (o.status == MaskDepthStatus::BudgetExhausted) {
+            ++out.work.budget_exhausted;
+            stats.record("depth_budget", t1, t1);
+          } else if (o.status == MaskDepthStatus::GroundRejected) {
+            ++out.work.ground_rejected;
+            stats.record("ground_reject", t1, t1);
+          } else {
+            ++out.work.insufficient;
+            stats.record("loc_fail", t1, t1);
+          }
+        }
+      } else {
+        DepthWork work;
+        for (const auto & det : obstacles) {
+          GroundCheck gc = GroundCheck::Skipped;
+          if (auto o = localize_box(mm, stride_px, k, mount, depth_box(det), det.class_id, det.score,
+                                    footprint_for(det.class_id, s), s.box, bottom_visible(det, obstacles), &gc, &work)) {
+            out.cones.push_back(*o);
+          } else if (gc == GroundCheck::Rejected) {
+            ++out.work.ground_rejected;
+            stats.record("ground_reject", t1, t1);
+          } else {
+            ++out.work.insufficient;
+            stats.record("loc_fail", t1, t1);
+          }
+        }
+        out.work.candidates = work.candidates;
+        out.work.depth_reads = work.reads;
       }
     }
-    stats.record("box_depth", t1, now_sec());
+    out.work.distance_ms = std::max(0.0, (now_sec() - depth_started) * 1000 - out.work.mask_ms);
+    out.work.total_ms = out.work.detect_ms + out.work.mask_ms + out.work.distance_ms;
+    if (use_seg) stats.record("mask_post", depth_started, depth_started + out.work.mask_ms * .001);
+    stats.record("box_depth", depth_started, depth_started + out.work.distance_ms * .001);
     ctl_.on_detections(out);
-    if (camera_wanted && camera_wanted() && t0 - last_jpeg_t_ >= 0.1) {   // 검출 확인용 카메라 보기 (켰을 때만)
-      const cv::Mat nv12(h * 3 / 2, w, CV_8UC1, const_cast<std::uint8_t *>(data.data()), stride);
+    if (preview && ctl_.detector_model() == model) {
+      const cv::Mat yp(h, w, CV_8UC1, const_cast<std::uint8_t *>(data.data()), stride);
+      const cv::Mat uv(h / 2, w / 2, CV_8UC2, const_cast<std::uint8_t *>(data.data()) + h * stride, stride);
       cv::Mat bgr;
-      cv::cvtColor(nv12, bgr, cv::COLOR_YUV2BGR_NV12);
-      cv::line(bgr, {0, roi.y}, {w, roi.y}, {0, 220, 255}, 2);
-      for (const auto & det : res.detections) {
-        cv::rectangle(bgr, det.box, {60, 60, 255}, 2);
-        char label[48];
-        std::snprintf(label, sizeof(label), "%s %.2f", kClassNames[std::clamp(det.class_id, 0, 3)], det.score);
-        cv::putText(bgr, label, det.box.tl() + cv::Point2f(0, -4), cv::FONT_HERSHEY_SIMPLEX, 0.6, {255, 255, 255}, 2);
-      }
+      cv::cvtColorTwoPlane(yp, uv, bgr, cv::COLOR_YUV2BGR_NV12);
       cv::Mat small;
       cv::resize(bgr, small, {640, 400}, 0, 0, cv::INTER_AREA);
+      const float px = float(small.cols) / w, py = float(small.rows) / h;
+      cv::line(small, {0, int(roi.y * py)}, {small.cols, int(roi.y * py)}, {0, 220, 255}, 1);
+      if (use_seg) for (const auto & d : seg) draw_mask_outline(small, d, transform, prototypes, w, h);
+      for (const auto & det : res.detections) {
+        const cv::Rect2f box(det.box.x * px, det.box.y * py, det.box.width * px, det.box.height * py);
+        if (!use_seg) cv::rectangle(small, box, {60, 60, 255}, 1);
+        char label[48];
+        std::snprintf(label, sizeof(label), "%s %.2f", kClassNames[std::clamp(det.class_id, 0, 3)], det.score);
+        cv::putText(small, label, {int(box.x), std::max(10, int(box.y) - 3)}, cv::FONT_HERSHEY_SIMPLEX, 0.37, {255, 255, 255}, 1);
+      }
+      if (depth) for (const auto & sample : samples) {
+        const cv::Point p(int((sample.pixel.x + .5) * small.cols / depth->getWidth()),
+                          int((sample.pixel.y + .5) * small.rows / depth->getHeight()));
+        cv::circle(small, p, 2, !sample.in_mask ? cv::Scalar(227, 226, 226) :
+          sample.valid_depth ? cv::Scalar(253, 231, 59) : cv::Scalar(42, 175, 253), -1, cv::LINE_AA);
+      }
       std::vector<std::uint8_t> jpeg;
       if (cv::imencode(".jpg", small, jpeg, {cv::IMWRITE_JPEG_QUALITY, 70}) && publish_camera_jpeg) publish_camera_jpeg(std::move(jpeg));
       last_jpeg_t_ = t0;

@@ -44,6 +44,67 @@ TEST(detect_mode_never_publishes) {
   CHECK(!r.loop->request_start(r.t).first);
 }
 
+TEST(detector_switch_blocks_start_and_keeps_model_performance_separate) {
+  Rig r(DriveMode::Drive);
+  r.step();
+  DetectionFrame old;
+  old.capture_time = r.t;
+  old.work.detect_ms = 3.0;
+  r.loop->on_detections(old);
+  CHECK(r.loop->request_detector(DetectorModel::Yolo11Seg).first);
+  CHECK(!r.loop->request_start(r.t).first);
+  CHECK(!r.loop->request_refit(r.t).first);
+  r.loop->finish_detector(false, "bad engine", .1);
+  CHECK(r.loop->detector_model() == DetectorModel::Yolox);
+  CHECK(r.loop->telemetry(false, r.t).detector_stage == "bad engine");
+  CHECK(r.loop->request_detector(DetectorModel::Yolo11Seg).first);
+  r.loop->finish_detector(true, "", .1);
+  CHECK(r.loop->detector_model() == DetectorModel::Yolo11Seg);
+  old.work.detect_ms = 99;
+  r.loop->on_detections(old);  // in-flight frame from the previous model
+  old.model = DetectorModel::Yolo11Seg;
+  old.work.detect_ms = 4.0;
+  r.loop->on_detections(old);
+  const auto f = r.loop->telemetry(true, r.t);
+  CHECK(f.detector_perf[0]->detect_p95 == 3.0 && f.detector_perf[1]->detect_p95 == 4.0);
+}
+
+TEST(partial_mask_depth_does_not_age_cone_memory) {
+  for (double mode : {0.0, 1.0, 2.0}) {
+    Rig r(DriveMode::Detect);
+    CHECK(r.params.apply({{"memory.mode", mode}}).first);
+    r.loop->apply_settings(settings_from(r.params));
+    for (int i = 0; i < 5; ++i) {
+      r.step();
+      DetectionFrame d;
+      d.capture_time = r.t - .01;
+      ConeObservation c;
+      c.center = {1.2, .20};
+      c.front = {1.13, .20};
+      d.cones.push_back(c);
+      r.loop->on_detections(d);
+    }
+    r.step();
+    CHECK(!r.loop->telemetry(true, r.t).memory.empty());
+    for (int i = 0; i < 6; ++i) {
+      DetectionFrame d;
+      d.capture_time = r.t - .01;
+      d.observations_complete = false;
+      if (i == 5) {
+        ConeObservation seen;
+        seen.center = {.7, -.22};
+        seen.front = {.64, -.22};
+        d.cones.push_back(seen);
+      }
+      r.loop->on_detections(d);
+      r.step();
+    }
+    const auto frame = r.loop->telemetry(true, r.t);
+    CHECK(frame.memory.size() == 2 && frame.detections.size() == 1);
+    CHECK_NEAR(frame.detections[0].distance, std::hypot(.64, -.22), .001);
+  }
+}
+
 TEST(drive_flow_start_to_commands) {
   Rig r(DriveMode::Drive);
   r.step();

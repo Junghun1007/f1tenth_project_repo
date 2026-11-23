@@ -88,11 +88,13 @@ public:
     models_.lane_model = declare_parameter<std::string>("model.lane_path", share + (models_.lane_precision == "int8"
       ? "/models/fast_scnn_stop_line_120x300_batch_1.int8.qdq.onnx" : "/models/fast_scnn_stop_line_120x300_batch_1.onnx"));
     models_.yolo_model = declare_parameter<std::string>("model.yolo_path", share + "/models/multiclass_yolox_tiny_512x320_holdout10.onnx");
+    models_.seg_model = declare_parameter<std::string>("model.seg_path", share + "/models/yolo11n_640x320_mask_head_fp16.onnx");
     const auto cache = declare_parameter<std::string>("model.engine_cache_dir", std::string(std::getenv("HOME") ? std::getenv("HOME") : "/tmp") + "/.cache/cone_drive_test");
     std::filesystem::create_directories(cache);
     models_.yolo_precision = declare_parameter<std::string>("model.yolo_precision", "fp16");
     models_.lane_engine_cache = cache + "/lane_" + models_.lane_precision + ".engine";
     models_.yolo_engine_cache = cache + "/yolo_" + models_.yolo_precision + ".engine";
+    models_.seg_engine_cache = cache + "/yolo11n_seg_640x320_fp16.engine";
     params_save_path_ = declare_parameter<std::string>("params_save_path", cache + "/cone_drive_test_saved.yaml");
 
     loop_ = std::make_unique<cdt::ControlLoop>(mode == "drive" ? cdt::DriveMode::Drive : cdt::DriveMode::Detect, rc_);
@@ -141,6 +143,7 @@ public:
     };
     cb.stop = [this] { loop_->request_stop("stop button", cdt::now_sec()); };
     cb.refit = [this] { return loop_->request_refit(cdt::now_sec()); };
+    cb.detector = [this](const std::string & value) { return switch_detector(value); };
     cb.mode = [this](const std::string & m) {
       if (m != "drive" && m != "detect") return cdt::Reply{false, "mode must be drive or detect"};
       return loop_->request_mode(m == "drive" ? cdt::DriveMode::Drive : cdt::DriveMode::Detect, cdt::now_sec());
@@ -225,12 +228,41 @@ public:
 
   ~DriveNode() override {
     stopping_ = true;
+    web_->stop();
+    if (detector_thread_.joinable()) detector_thread_.join();
     if (inspect_thread_.joinable()) inspect_thread_.join();
     if (refit_thread_.joinable()) refit_thread_.join();
     lane_->stop();
     detect_->stop();
     camera_->close();
-    web_->stop();
+  }
+
+  cdt::Reply switch_detector(const std::string & value) {
+    std::lock_guard<std::mutex> l(detector_switch_m_);
+    if (stopping_) return {false, "종료 중"};
+    if (value != "yolox" && value != "yolo11seg") return {false, "알 수 없는 객체 모델"};
+    const auto model = value == "yolox" ? cdt::DetectorModel::Yolox : cdt::DetectorModel::Yolo11Seg;
+    const auto result = loop_->request_detector(model);
+    if (!result.first || model == loop_->detector_model()) return result;
+    if (detector_thread_.joinable()) detector_thread_.join();
+    try {
+      detector_thread_ = std::thread([this, model] {
+        const double start = cdt::now_sec();
+        try {
+          const auto progress = [this](const std::string & stage) { loop_->detector_progress(stage); };
+          if (model == cdt::DetectorModel::Yolo11Seg) detect_->load_segmentation(models_, progress);
+          else detect_->load_model(models_, progress);
+          loop_->finish_detector(true, "", cdt::now_sec() - start);
+        } catch (const std::exception & e) {
+          loop_->finish_detector(false, e.what(), cdt::now_sec() - start);
+          RCLCPP_ERROR(get_logger(), "detector switch failed: %s", e.what());
+        }
+      });
+    } catch (const std::exception & e) {
+      loop_->finish_detector(false, e.what(), 0);
+      return {false, e.what()};
+    }
+    return result;
   }
 
   static std::string time_string(const char * fmt) {
@@ -483,6 +515,8 @@ private:
   double last_usage_t_{0}, last_status_t_{0}, last_stab_t_{0};
   std::atomic<bool> stopping_{false}, refitting_{false};
   std::thread inspect_thread_, refit_thread_;
+  std::mutex detector_switch_m_;
+  std::thread detector_thread_;
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_, brake_pub_, servo_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr request_pub_;
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;

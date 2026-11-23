@@ -21,7 +21,7 @@ using Reply = std::pair<bool, std::string>;
 struct WebCallbacks {
   std::function<Reply()> start, refit, params_save;
   std::function<void()> stop;
-  std::function<Reply(const std::string &)> mode;
+  std::function<Reply(const std::string &)> mode, detector;
   std::function<Reply(const std::map<std::string, double> &)> params;
   std::function<void(const std::string &)> heartbeat;
   std::function<Reply(const std::string & label)> record_start;   // 수동 주행 녹화 시작 (label: 상황 이름)

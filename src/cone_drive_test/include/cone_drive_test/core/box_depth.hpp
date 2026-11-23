@@ -1,6 +1,7 @@
 // YOLO 박스 안 깊이 픽셀만 차량 좌표로 역투영해 콘 위치·크기 추정 (multiclass_yolo 방식, 전체 점구름 없음)
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <opencv2/core.hpp>
 #include "cone_drive_test/copied/object_localization.hpp"
@@ -32,6 +33,7 @@ struct BoxDepthOptions {
 
 // 지면 거리 검사 결과 (진단용)
 enum class GroundCheck { Passed, Skipped, Rejected };
+struct DepthWork { int candidates{}, reads{}; };
 
 // box는 깊이 영상 픽셀 좌표. 실패하면 nullopt
 // bottom_visible = false (박스 아래 끝이 다른 박스에 가려짐)이면 지면 거리 검사를 건너뛴다: 가려진 콘은 아래 끝이 위로 올라가
@@ -39,7 +41,34 @@ enum class GroundCheck { Passed, Skipped, Rejected };
 std::optional<ConeObservation> localize_box(const std::uint16_t * depth_mm, int stride_px, const DepthIntrinsics & k,
                                             const CameraMount & mount, const cv::Rect2f & box, int class_id, float score,
                                             const Footprint & footprint, const BoxDepthOptions & options,
-                                            bool bottom_visible = true, GroundCheck * ground = nullptr);
+                                            bool bottom_visible = true, GroundCheck * ground = nullptr,
+                                            DepthWork * work = nullptr);
+
+enum class MaskDepthStatus { Ok, NoDepth, Insufficient, BudgetExhausted, GroundRejected };
+struct MaskDepthTarget {
+  cv::Rect2f box;
+  int class_id{};
+  float score{};
+  Footprint footprint;
+  bool bottom_visible{};
+  std::function<bool(int, int)> contains;
+};
+struct MaskDepthSample { cv::Point pixel; bool in_mask{}, valid_depth{}; };
+struct MaskDepthObject {
+  std::optional<ConeObservation> observation;
+  MaskDepthStatus status{MaskDepthStatus::Insufficient};
+  DepthWork work;
+};
+struct MaskDepthFrame {
+  std::vector<MaskDepthObject> objects;
+  std::vector<MaskDepthSample> samples;
+  DepthWork work;
+  double mask_ms{};
+};
+
+MaskDepthFrame localize_masks(const std::uint16_t * depth_mm, int stride_px, const DepthIntrinsics & k,
+                              const CameraMount & mount, const std::vector<MaskDepthTarget> & targets,
+                              const BoxDepthOptions & options, bool trace = false);
 
 // 박스 아래 끝 가운데 픽셀의 시선이 지면(z = 0)에 닿는 곳까지 카메라 바닥 위치에서의 수평 거리. 지면에 안 닿으면 nullopt
 std::optional<double> ground_range_at_bottom(const DepthIntrinsics & k, const CameraMount & mount, const cv::Rect2f & box);

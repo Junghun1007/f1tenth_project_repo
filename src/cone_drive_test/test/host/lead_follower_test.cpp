@@ -70,3 +70,15 @@ TEST(disabled_follower_never_caps) {
   f.set_params(p);
   CHECK(!f.update(straight(), {car(0.3, 0.0)}, true, 0, 0, 1.0).active);
 }
+
+TEST(partial_detection_preserves_a_closer_unresolved_lead) {
+  LeadFollower f;
+  f.set_params(LeadParams{});
+  const auto path = straight();
+  f.update(path, {car(.3, 0)}, true, 0, 0, 0);
+  const auto unresolved = f.update(path, {car(1.2, 0), car(.35, .6)}, true, .2, 0, 0, false);
+  CHECK(unresolved.active && !unresolved.seen);
+  CHECK_NEAR(unresolved.gap, .25, .01);
+  CHECK_NEAR(unresolved.cap, 0, .01);
+  CHECK(!f.update(path, {car(.35, .6)}, true, .3, 0, 0).active);
+}

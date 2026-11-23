@@ -21,6 +21,7 @@ namespace cone_drive_test {
 struct ModelConfig {
   std::string lane_model, lane_engine_cache, lane_precision{"fp16"};
   std::string yolo_model, yolo_engine_cache, yolo_precision{"fp16"};
+  std::string seg_model, seg_engine_cache;
   std::size_t workspace_bytes{1024u * 1024u * 1024u};
   float lane_mask_threshold{0.5f};
 };
@@ -59,6 +60,7 @@ public:
   DetectWorker(CameraPipeline & cam, ControlLoop & loop);
   ~DetectWorker();
   void load_model(const ModelConfig & m, const std::function<void(const std::string &)> & progress);
+  void load_segmentation(const ModelConfig & m, const std::function<void(const std::string &)> & progress);
   void set_settings(const Settings & s);
   void set_mount(const CameraMount & m);
   void start();
@@ -71,6 +73,8 @@ private:
   CameraPipeline & cam_;
   ControlLoop & ctl_;
   std::unique_ptr<YoloxDetector> detector_;
+  std::unique_ptr<TensorRtYoloxBackend> segmentation_;
+  std::vector<std::uint16_t> packed_segmentation_;
   std::mutex mutex_;
   Settings s_;
   CameraMount mount_{};

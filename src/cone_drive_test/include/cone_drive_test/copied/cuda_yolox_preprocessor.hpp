@@ -23,6 +23,12 @@ cudaError_t launch_nv12_roi_to_bgr_nchw(
   int output_height,
   cudaStream_t stream) noexcept;
 
+cudaError_t launch_nv12_roi_to_rgb_nchw(
+  const std::uint8_t * device_nv12, std::size_t source_stride, int source_height,
+  int roi_left, int roi_top, int roi_width, int roi_height,
+  float * device_output, int output_width, int output_height,
+  int content_left, int content_top, int content_width, int content_height, cudaStream_t stream) noexcept;
+
 }  // namespace cone_drive_test
 
 #endif  // CONE_DRIVE_TEST_COPIED__CUDA_YOLOX_PREPROCESSOR_HPP_

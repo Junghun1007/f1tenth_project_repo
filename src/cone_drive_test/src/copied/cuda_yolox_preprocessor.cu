@@ -141,7 +141,7 @@ __global__ void nv12_roi_to_bgr_nchw_kernel(
   const int resized_height,
   float * output,
   const int output_width,
-  const int output_height)
+  const int output_height, const int pad_left, const int pad_top, const bool normalize_rgb)
 {
   const int x = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   const int y = static_cast<int>(blockIdx.y * blockDim.y + threadIdx.y);
@@ -159,18 +159,18 @@ __global__ void nv12_roi_to_bgr_nchw_kernel(
   float blue = 114.0F;
   float green = 114.0F;
   float red = 114.0F;
-  if (x < resized_width && y < resized_height) {
+  if (x >= pad_left && y >= pad_top && x - pad_left < resized_width && y - pad_top < resized_height) {
     const BgrPixel pixel = sample_nv12_roi(
       nv12, source_stride, source_height, roi_left, roi_top, roi_width,
-      roi_height, resized_width, resized_height, x, y);
+      roi_height, resized_width, resized_height, x - pad_left, y - pad_top);
     blue = pixel.blue;
     green = pixel.green;
     red = pixel.red;
   }
 
-  output[output_index] = blue;
-  output[plane_size + output_index] = green;
-  output[2U * plane_size + output_index] = red;
+  output[output_index] = normalize_rgb ? red / 255.0F : blue;
+  output[plane_size + output_index] = normalize_rgb ? green / 255.0F : green;
+  output[2U * plane_size + output_index] = normalize_rgb ? blue / 255.0F : red;
 }
 
 }  // namespace
@@ -214,7 +214,19 @@ cudaError_t launch_nv12_roi_to_bgr_nchw(
   nv12_roi_to_bgr_nchw_kernel<<<grid, block, 0U, stream>>>(
     device_nv12, source_stride, source_height, roi_left, roi_top, roi_width,
     roi_height, resized_width, resized_height, device_output, output_width,
-    output_height);
+    output_height, 0, 0, false);
+  return cudaGetLastError();
+}
+
+cudaError_t launch_nv12_roi_to_rgb_nchw(
+  const std::uint8_t * nv12, std::size_t stride, int height, int roi_left, int roi_top, int roi_width, int roi_height,
+  float * output, int output_width, int output_height, int left, int top, int width, int resized_height,
+  cudaStream_t stream) noexcept
+{
+  const dim3 block(16, 16), grid((output_width + 15) / 16, (output_height + 15) / 16);
+  nv12_roi_to_bgr_nchw_kernel<<<grid, block, 0U, stream>>>(
+    nv12, stride, height, roi_left, roi_top, roi_width, roi_height, width, resized_height, output,
+    output_width, output_height, left, top, true);
   return cudaGetLastError();
 }
 

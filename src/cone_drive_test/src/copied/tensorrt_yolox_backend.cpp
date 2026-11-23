@@ -3,6 +3,7 @@
 
 #include "cone_drive_test/copied/cuda_yolox_preprocessor.hpp"
 #include "cone_drive_test/copied/yolox_geometry.hpp"
+#include "cone_drive_test/core/segmentation.hpp"
 
 #include <NvInfer.h>
 #include <NvInferPlugin.h>
@@ -303,7 +304,7 @@ public:
     const int input_width,
     const int input_height,
     const std::size_t workspace_size_bytes,
-    std::function<void(const std::string &)> progress)
+    std::function<void(const std::string &)> progress, const bool packed_segmentation)
   : progress_(std::move(progress)),
     model_path_(model_path),
     engine_precision_(engine_precision),
@@ -313,7 +314,8 @@ public:
     input_width_(input_width),
     input_height_(input_height),
     expected_input_element_count_(
-      expected_input_elements(input_width, input_height))
+      expected_input_elements(input_width, input_height)),
+    packed_segmentation_(packed_segmentation)
   {
     if (
       engine_precision_ != "fp32" && engine_precision_ != "fp16" &&
@@ -344,7 +346,7 @@ public:
     inspect_engine(input_width, input_height);
 
     input_device_.allocate(expected_input_element_count_ * sizeof(float));
-    output_device_.allocate(output_element_count_ * sizeof(float));
+    output_device_.allocate(output_element_count_ * output_element_bytes());
     configure_execution_bindings();
   }
 
@@ -354,6 +356,7 @@ public:
     float * output,
     const std::size_t output_element_count)
   {
+    if (packed_segmentation_) throw std::logic_error("Use the packed segmentation NV12 binding");
     if (input == nullptr || output == nullptr) {
       throw std::invalid_argument("TensorRT input and output must not be null");
     }
@@ -391,9 +394,11 @@ public:
     const int roi_top,
     const int roi_width,
     const int roi_height,
-    float * output,
-    const std::size_t output_element_count)
+    void * output,
+    const std::size_t output_element_count,
+    bool packed_output = false)
   {
+    if (packed_output != packed_segmentation_) throw std::invalid_argument("Unexpected TensorRT output binding type");
     if (nv12 == nullptr || output == nullptr) {
       throw std::invalid_argument("TensorRT NV12 input and output are required");
     }
@@ -449,14 +454,19 @@ public:
       cudaEventRecord(input_finished_.get(), stream_.get()),
       "cudaEventRecord(NV12 input finish)");
 
-    check_cuda(
-      launch_nv12_roi_to_bgr_nchw(
-        static_cast<const std::uint8_t *>(nv12_device_.get()),
-        upload_width, upload_height, roi_left - upload_left, roi_top - upload_top, roi_width,
-        roi_height,
-        static_cast<float *>(input_device_.get()), input_width_, input_height_,
-        stream_.get()),
-      "launch NV12 to BGR NCHW kernel");
+    const auto * nv12_data = static_cast<const std::uint8_t *>(nv12_device_.get());
+    auto * input = static_cast<float *>(input_device_.get());
+    if (packed_segmentation_) {
+      const auto content = seg_transform({roi_left, roi_top, roi_width, roi_height}).content;
+      check_cuda(launch_nv12_roi_to_rgb_nchw(nv12_data, upload_width, upload_height,
+        roi_left - upload_left, roi_top - upload_top, roi_width, roi_height,
+        input, input_width_, input_height_, content.x, content.y, content.width, content.height, stream_.get()),
+        "launch NV12 to normalized RGB NCHW kernel");
+    } else {
+      check_cuda(launch_nv12_roi_to_bgr_nchw(nv12_data, upload_width, upload_height,
+        roi_left - upload_left, roi_top - upload_top, roi_width, roi_height,
+        input, input_width_, input_height_, stream_.get()), "launch NV12 to BGR NCHW kernel");
+    }
     check_cuda(
       cudaEventRecord(preprocessing_finished_.get(), stream_.get()),
       "cudaEventRecord(NV12 preprocess finish)");
@@ -481,10 +491,14 @@ public:
   }
 
 private:
+  std::size_t output_element_bytes() const noexcept {
+    return packed_segmentation_ ? sizeof(std::uint16_t) : sizeof(float);
+  }
+
   TensorRtInferenceTiming execute_and_copy_output(
     const cudaEvent_t execution_started,
     const bool preprocessing_enabled,
-    float * output,
+    void * output,
     const std::size_t output_element_count)
   {
     bool enqueued = false;
@@ -504,7 +518,7 @@ private:
     check_cuda(
       cudaMemcpyAsync(
         output, output_device_.get(),
-        output_element_count * sizeof(float),
+        output_element_count * output_element_bytes(),
         cudaMemcpyDeviceToHost, stream_.get()),
       "cudaMemcpyAsync(device to host)");
     check_cuda(
@@ -714,12 +728,11 @@ private:
     }
 #endif
 
-    if (input_type != nvinfer1::DataType::kFLOAT ||
-      output_type != nvinfer1::DataType::kFLOAT)
+    const auto expected_output_type = packed_segmentation_ ? nvinfer1::DataType::kHALF : nvinfer1::DataType::kFLOAT;
+    if (input_type != nvinfer1::DataType::kFLOAT || output_type != expected_output_type)
     {
       throw std::runtime_error(
-              "TensorRT engine I/O must be FP32; reduced-precision I/O is not "
-              "accepted");
+              "Unexpected TensorRT engine I/O precision");
     }
 
     const std::size_t input_volume = dimensions_volume(input_dimensions);
@@ -736,6 +749,13 @@ private:
     }
 
     output_element_count_ = dimensions_volume(output_dimensions);
+    if (packed_segmentation_) {
+      if (input_width != seg_width || input_height != seg_height || output_dimensions.nbDims != 3 ||
+          output_dimensions.d[0] != 1 || output_dimensions.d[1] != 1 || output_dimensions.d[2] != seg_output_values) {
+        throw std::runtime_error("Unexpected packed YOLO11n-seg output shape " + dimensions_string(output_dimensions));
+      }
+      return;
+    }
     const auto expected_rows = yolox_output_rows(input_width, input_height);
     if (output_dimensions.nbDims != 3 || output_dimensions.d[0] != 1 ||
       output_dimensions.d[1] != expected_rows || output_dimensions.d[2] != 9 || output_element_count_ % 9U != 0U)
@@ -776,6 +796,7 @@ private:
   std::size_t output_element_count_{0U};
   int output_row_count_{0};
   int output_column_count_{0};
+  bool packed_segmentation_{false};
 
   TensorRtLogger logger_;
   TensorRtUniquePtr<nvinfer1::IRuntime> runtime_;
@@ -808,10 +829,10 @@ TensorRtYoloxBackend::TensorRtYoloxBackend(
   const int input_width,
   const int input_height,
   const std::size_t workspace_size_bytes,
-  std::function<void(const std::string &)> progress)
+  std::function<void(const std::string &)> progress, const bool packed_segmentation)
 : impl_(std::make_unique<Impl>(
     model_path, engine_cache_path, engine_precision, input_width, input_height,
-    workspace_size_bytes, std::move(progress)))
+    workspace_size_bytes, std::move(progress), packed_segmentation))
 {
 }
 
@@ -847,6 +868,13 @@ TensorRtInferenceTiming TensorRtYoloxBackend::infer_nv12(
   return impl_->infer_nv12(
     nv12, data_size, source_stride, source_width, source_height, roi_left,
     roi_top, roi_width, roi_height, output, output_element_count);
+}
+
+TensorRtInferenceTiming TensorRtYoloxBackend::infer_seg_nv12(
+  const std::uint8_t * nv12, std::size_t size, std::size_t stride, int w, int h,
+  int left, int top, int roi_w, int roi_h, std::uint16_t * packed, std::size_t count)
+{
+  return impl_->infer_nv12(nv12, size, stride, w, h, left, top, roi_w, roi_h, packed, count, true);
 }
 
 int TensorRtYoloxBackend::output_row_count() const noexcept

@@ -30,7 +30,7 @@ public:
   void advance(double ds);                              // 차가 차선을 따라 ds 전진
   // 새 검출 프레임의 관측 (현재 차선 기준 s,l)과 각 관측의 카메라 거리. 거리 가중 평균으로 위치를 다듬어
   // 화면 끝·가림 때문에 한 번 크게 틀린 관측이 기억 위치를 끌고 가지 않게 한다 (ranges 비면 모두 1 m로 봄)
-  void update(const std::vector<Vec2> & observed_sl, const std::vector<double> & ranges = {});
+  void update(const std::vector<Vec2> & observed_sl, const std::vector<double> & ranges = {}, bool complete = true);
   std::vector<Vec2> cones_sl() const;                   // 계획에 쓸 콘 (확인된 것)
   const std::vector<LaneCone> & tracks() const { return tracks_; }
   bool confirmed(const LaneCone & c) const { return c.hits >= p_.confirm_hits; }

@@ -17,7 +17,7 @@ void LaneConeMemory::advance(double ds) {
   drop_behind();
 }
 
-void LaneConeMemory::update(const std::vector<Vec2> & obs, const std::vector<double> & ranges) {
+void LaneConeMemory::update(const std::vector<Vec2> & obs, const std::vector<double> & ranges, bool complete) {
   std::vector<char> used(tracks_.size(), 0);
   for (std::size_t i = 0; i < obs.size(); ++i) {
     const auto & o = obs[i];
@@ -44,7 +44,7 @@ void LaneConeMemory::update(const std::vector<Vec2> & obs, const std::vector<dou
     }
   }
   for (std::size_t k = 0; k < tracks_.size(); ++k)
-    if (!used[k] && tracks_[k].s >= p_.visible_s_min) ++tracks_[k].misses;   // 사각지대는 놓침으로 세지 않음
+    if (complete && !used[k] && tracks_[k].s >= p_.visible_s_min) ++tracks_[k].misses;
   drop_behind();
 }
 

@@ -26,6 +26,12 @@ button { font: inherit; color: inherit; }
 .btn.go { background: var(--go); border-color: var(--go); font-weight: 700; }
 .btn.stop { background: var(--stop); border-color: var(--stop); font-weight: 700; }
 .tog { display: flex; align-items: center; gap: 4px; color: var(--dim); cursor: pointer; }
+.detector-picker { display: flex; align-items: center; gap: 6px; color: var(--dim); }
+.detector-picker select { color: var(--text); font: inherit; }
+.detector-perf thead .active { color: var(--accent); font-weight: 700; }
+.detector-perf th[scope="row"] { border: 0; }
+.detector-perf td { white-space: nowrap; }
+.depth-status { color: var(--warn); margin-top: 4px; }
 .link { font-size: 12px; padding: 3px 8px; border-radius: 10px; background: var(--stop); }
 .link.ok { background: transparent; color: var(--dim); }
 .main { display: flex; gap: 10px; padding: 10px; align-items: flex-start; }

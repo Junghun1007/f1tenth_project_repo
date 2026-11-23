@@ -55,7 +55,7 @@ double LeadFollower::cap_for(double gap, double v_lead, double v_ego) {
 }
 
 const LeadState & LeadFollower::update(const std::vector<Vec2> & path, const std::vector<ConeObservation> & vehicles, bool new_det,
-                                       double t, double dist, double v_ego) {
+                                       double t, double dist, double v_ego, bool complete) {
   if (!p_.enabled) { reset(); return s_; }
   s_.seen = false;
   if (new_det) {
@@ -64,6 +64,9 @@ const LeadState & LeadFollower::update(const std::vector<Vec2> & path, const std
       const double gv = lead_gap_along_path(path, v, p_);
       if (gv >= 0 && (g < 0 || gv < g)) g = gv;
     }
+    const double predicted_gap = meas_gap_ - (dist - meas_dist_) + s_.lead_speed * (t - meas_t_);
+    // A farther vehicle does not clear a possibly unlocalized nearer lead.
+    if (!complete && s_.active && g > predicted_gap) g = -1;
     if (g >= 0) {
       if (s_.active && have_meas_ && t - meas_t_ > 0.01 && std::abs(g - (meas_gap_ - (dist - meas_dist_))) < 0.5) {
         const double dt = t - meas_t_;
@@ -77,8 +80,8 @@ const LeadState & LeadFollower::update(const std::vector<Vec2> & path, const std
       s_.seen = true;
       s_.gap = g;
       meas_gap_ = g; meas_t_ = t; meas_dist_ = dist; have_meas_ = true;
-    } else if (s_.active) {
-      const double pred = meas_gap_ - (dist - meas_dist_) + s_.lead_speed * (t - meas_t_);
+    } else if (s_.active && complete) {
+      const double pred = predicted_gap;
       if (!vehicles.empty()) {
         reset();                                   // 차량은 보이는데 경로 밖 → 비켜났음
       } else if (pred <= p_.hold_near) {

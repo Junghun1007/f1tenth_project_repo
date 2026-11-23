@@ -104,6 +104,12 @@ void WebServer::routes() {
     if (!m || m->kind != JsonValue::String) return send(res, {false, "body must be {\"mode\": \"drive\"|\"detect\"}"});
     send(res, cb_.mode ? cb_.mode(m->str) : Reply{false, "unavailable"});
   });
+  s.Post("/api/detector", [this, body](const httplib::Request & req, httplib::Response & res) {
+    const auto j = body(req);
+    const auto * m = j ? j->get("model") : nullptr;
+    if (!m || m->kind != JsonValue::String) return send(res, {false, "body must include a string model"});
+    send(res, cb_.detector ? cb_.detector(m->str) : Reply{false, "unavailable"});
+  });
   s.Post("/api/params", [this, body](const httplib::Request & req, httplib::Response & res) {
     const auto j = body(req);
     const auto * ch = j ? j->get("changes") : nullptr;

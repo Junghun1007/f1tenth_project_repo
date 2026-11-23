@@ -5,6 +5,8 @@
 namespace cone_drive_test {
 
 namespace {
+const char * detector_name(DetectorModel model) { return model == DetectorModel::Yolox ? "yolox" : "yolo11seg"; }
+
 void points(JsonWriter & w, const char * key, const std::vector<Vec2> & pts, std::size_t max_points) {
   w.key(key).begin_array();
   const std::size_t n = pts.size();
@@ -37,6 +39,26 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
      .key("elapsed_s").value(m.elapsed_s, 1).key("message").value(m.message).end_object();
   w.end_array().end_object();
   w.key("stabilization").value(f.stabilization);
+  w.key("detector").begin_object().key("active").value(detector_name(f.detector)).key("requested");
+  if (f.requested_detector) w.value(detector_name(*f.requested_detector)); else w.null();
+  w.key("can_switch").value(f.detector_switch_allowed).key("stage").value(f.detector_stage);
+  if (f.full) {
+    w.key("performance").begin_object();
+    for (std::size_t i = 0; i < f.detector_perf.size(); ++i) {
+      w.key(detector_name(static_cast<DetectorModel>(i)));
+      if (!f.detector_perf[i]) { w.null(); continue; }
+      const auto & p = *f.detector_perf[i];
+      const auto & latest = p.latest;
+      w.begin_object().key("detect_p95").value(p.detect_p95, 2).key("mask_p95").value(p.mask_p95, 2)
+        .key("distance_p95").value(p.distance_p95, 2).key("total_p95").value(p.total_p95, 2).key("fps").value(p.fps, 1)
+        .key("candidates").value((long long)latest.candidates).key("depth_reads").value((long long)latest.depth_reads)
+        .key("no_depth").value((long long)latest.no_depth).key("insufficient").value((long long)latest.insufficient)
+        .key("budget_exhausted").value((long long)latest.budget_exhausted)
+        .key("ground_rejected").value((long long)latest.ground_rejected).end_object();
+    }
+    w.end_object();
+  }
+  w.end_object();
   if (f.full) {
     const auto & v = f.vehicle;
     w.key("vehicle").begin_object().key("speed").value(v.speed, 3).key("target").value(v.target, 3)
@@ -54,7 +76,8 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
     w.key("detections").begin_array();
     for (const auto & d : f.detections)
       w.begin_object().key("cls").value(d.cls).key("score").value(double(d.score), 2).key("x").value(d.x, 3).key("y").value(d.y, 3)
-       .key("length").value(d.length, 3).key("width").value(d.width, 3).key("yaw").value(d.yaw, 3).end_object();
+       .key("length").value(d.length, 3).key("width").value(d.width, 3).key("yaw").value(d.yaw, 3)
+       .key("distance").value(d.distance, 3).end_object();
     w.end_array();
     w.key("memory_mode").value((long long)f.memory_mode);
     w.key("lock_m").value(f.lock_m);
