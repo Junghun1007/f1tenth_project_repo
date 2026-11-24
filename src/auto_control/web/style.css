@@ -69,7 +69,7 @@ th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); 
 .drawer-head .tabs { min-width: 0; }
 .drawer-foot { border-top: 1px solid var(--line); border-bottom: 0; flex-wrap: wrap; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 .drawer-foot span { flex: 1 1 120px; min-width: 0; color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
-.tabs { display: flex; gap: 4px; flex: 1; }
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
 .tabs button { background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 5px 14px; cursor: pointer; color: var(--dim); }
 .tabs button.on { background: var(--accent); color: #031418; border-color: var(--accent); font-weight: 700; }
 .plist { flex: 1; overflow: auto; padding: 6px 10px; }
@@ -108,3 +108,6 @@ th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); 
 .stopbar-zone { position: absolute; top: 0; bottom: 0; background: rgba(34,197,94,.45); }
 .stopbar-car { position: absolute; top: 1px; width: 12px; height: 12px; border-radius: 3px; background: #60a5fa; }
 .stopbar-label { margin-top: 4px; font-size: 12px; color: var(--dim); }
+.lane-param-section { border-bottom: 1px solid var(--line, #37404b); padding: 2px 0; }
+.lane-param-section > summary { padding: 10px 0; font-weight: 700; cursor: pointer; }
+.lane-preset { margin: 7px 0; }

@@ -131,8 +131,13 @@ function drawBev(f) {
   for (let y = -0.5; y <= 0.5; y += 0.25) { const [u] = P(0, y); ctx.beginPath(); ctx.moveTo(u, 0); ctx.lineTo(u, cv.height); ctx.stroke(); }
   ctx.restore();
   if (!f) return;
+  const lanePrefix = f.tunnel?.source === "IR" ? "ir_lane." : "lane.";
+  const laneOpacity = params.find((p) => p.name === lanePrefix + "overlay_alpha")?.value ?? 0.75;
+  ctx.save();
+  ctx.globalAlpha = laneOpacity;
   polyline(f.lane.left, "#3b82f6", 3);
   polyline(f.lane.right, "#ef4444", 3);
+  ctx.restore();
   polyline(f.lane.path, "#facc15", 2, [8, 6]);
   for (const m of f.memory) box(m.x, m.y, 0.13, 0.13, 0, null, "#f472b6", [4, 3]);
   // 화면 밖 기억 콘: 가장자리에 화살표 + 거리 (계획이 왜 켜졌는지 보이게)
@@ -330,26 +335,49 @@ function renderTraffic(f) {
 
 // ---------- 파라미터 창 ----------
 function renderParams() {
-  const list = params.filter((p) => p.group === group);
-  let html = "", section = null;
-  for (const p of list) {
-    if (p.section !== section) { section = p.section; html += `<h3>${section}</h3>`; }
+  const panel = $("plist");
+  const previouslyOpen = new Set([...panel.querySelectorAll("details[open]")].map((el) => el.dataset.section));
+  const sections = new Map();
+  for (const p of params.filter((p) => p.group === group)) {
+    if (!sections.has(p.section)) sections.set(p.section, []);
+    sections.get(p.section).push(p);
+  }
+  const parameterRow = (p) => {
     const val = p.name in edits ? edits[p.name] : p.value;
     const attrs = `id="p_${p.name}" data-name="${p.name}" class="${p.name in edits ? "changed" : ""}"`;
     const control = p.options
       ? `<select ${attrs}>${p.options.map((o) => `<option value="${o.value}"${o.value === val ? " selected" : ""}>${o.label}</option>`).join("")}</select>`
       : `<input ${attrs} value="${val}" inputmode="decimal">`;
-    html += `<div class="prow"><label for="p_${p.name}">${p.label}${p.live ? "" : '<span class="restart">재시작 필요</span>'}<small>${p.name}</small></label>` + control +
+    return `<div class="prow"><label for="p_${p.name}">${p.label}${p.live ? "" : '<span class="restart">재시작 필요</span>'}<small>${p.name}</small></label>` + control +
       (p.options ? "" : `<span class="unit">${p.unit || ""}</span>`) + "</div>";
-  }
-  $("plist").innerHTML = html;
-  $("plist").querySelectorAll("[data-name]").forEach((inp) => inp.addEventListener("input", () => {
+  };
+  panel.innerHTML = [...sections].map(([section, list]) => {
+    const rows = list.map(parameterRow).join("");
+    if (group !== "lane") return `<h3>${section}</h3>${rows}`;
+    const open = previouslyOpen.has(section) || (!previouslyOpen.size && section === "RGB · 검출");
+    const weight = list.find((p) => p.name.endsWith(".corner_outer_weight"));
+    const preset = weight ? `<button type="button" class="btn lane-preset" data-lane-preset="${weight.name.split(".")[0]}">곡률 반영 강화</button>` : "";
+    return `<details class="lane-param-section" data-section="${section}"${open ? " open" : ""}><summary>${section}</summary>${rows}${preset}</details>`;
+  }).join("");
+  panel.querySelectorAll("[data-name]").forEach((inp) => inp.addEventListener("input", () => {
     const p = params.find((q) => q.name === inp.dataset.name);
     const x = Number(inp.value);
     inp.classList.toggle("bad", !(isFinite(x) && x >= p.min && x <= p.max));
     if (x === p.value) delete edits[p.name]; else edits[p.name] = x;
     inp.classList.toggle("changed", p.name in edits);
     $("pmsg").textContent = Object.keys(edits).length ? `변경 ${Object.keys(edits).length}개 (적용 전)` : "";
+  }));
+  panel.querySelectorAll("[data-lane-preset]").forEach((button) => button.addEventListener("click", () => {
+    const prefix = button.dataset.lanePreset + ".";
+    for (const [key, value] of Object.entries({
+      corner_outer_weight: 1, corner_outer_min_turn_deg: 6, corner_outer_full_turn_deg: 18,
+    })) {
+      const name = prefix + key;
+      if (params.find((p) => p.name === name).value === value) delete edits[name];
+      else edits[name] = value;
+    }
+    $("pmsg").textContent = Object.keys(edits).length ? `변경 ${Object.keys(edits).length}개 (적용 전)` : "";
+    renderParams();
   }));
 }
 
@@ -492,4 +520,5 @@ try { if (localStorage.getItem("cdt_preview") === "0" || qs.get("preview") === "
 if (qs.get("bev") === "1") { $("togBev").checked = true; $("togBev").dispatchEvent(new Event("change")); }
 if (qs.get("cam") === "1") { $("togCam").checked = true; $("togCam").dispatchEvent(new Event("change")); }
 if (qs.get("params") === "1") openDrawer(true);
+else loadParams();
 if (DEMO) demo(); else connect();

@@ -43,6 +43,10 @@ ControlLoop::ControlLoop(DriveMode mode, const RuntimeConfig & rc)
 void ControlLoop::apply_settings(const Settings & s) {
   std::lock_guard<std::mutex> l(m_);
   if (s.memory_mode != s_.memory_mode) clear_memories();   // 방식을 바꾸면 두 기억 모두 새로 시작
+  const auto & active_lane = lane_source_ == LaneSource::IR ? s.ir_lane : s.rgb_lane;
+  if (!active_lane.connection_enabled || !active_lane.centerline_enabled) {
+    clear_lane_path();
+  }
   if (s.lane_check_mode != s_.lane_check_mode) {
     lane_departure_ = {};
     accepted_lane_pose_.reset();
@@ -245,13 +249,18 @@ void ControlLoop::on_refit_done(bool ok, const std::string & reason, double t) {
   clear_memories();   // 자세가 바뀌었으니 콘 기억을 모두 비우고 다시 쌓는다
   if (s_.lane_check_mode == 2) {
     lane_departure_ = {};
-    if (ok) {
-      lane_ = {};
-      accepted_lane_pose_.reset();
-      plan_ = {};
-      control_path_.clear();
-    }
+    if (ok) clear_lane_path();
   }
+}
+
+void ControlLoop::clear_lane_path() {
+  lane_ = {};
+  accepted_lane_pose_.reset();
+  lane_departure_ = {};
+  planner_.reset();
+  plan_ = {};
+  control_path_.clear();
+  last_lane_t_ = -1e9;
 }
 
 void ControlLoop::clear_memories() {
@@ -339,6 +348,11 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
   if (s_.memory_mode == 0) integrate_detections();
   const bool source_changed = lane_source_ != source;
   lane_source_ = source;
+  const auto & active_lane = source == LaneSource::IR ? s_.ir_lane : s_.rgb_lane;
+  if (!active_lane.connection_enabled || !active_lane.centerline_enabled) {
+    if (source_changed) clear_lane_path();
+    return control_step(now, false);
+  }
   const bool check_departure = s_.lane_check_mode == 2;
   std::optional<Pose2> observation_pose;
   LaneObservation checked;

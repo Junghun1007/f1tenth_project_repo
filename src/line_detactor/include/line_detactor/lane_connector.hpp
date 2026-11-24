@@ -4,6 +4,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <vector>
 
 #include <opencv2/core.hpp>
@@ -57,6 +58,12 @@ LaneConnectionResult connect_lane_fragments(
   const cv::Mat & labels, const LaneConnectionConfig & config,
   bool render_image = true, ProcessingProfile * profile = nullptr,
   bool render_bgr = true);
+
+// Rebuild geometry with accepted bridges joined to their lane marks. The original
+// labels and paths remain available for observation metrics and rendering.
+std::optional<LaneConnectionResult> lane_geometry_with_bridges(
+  const cv::Mat & labels, const LaneConnectionConfig & config,
+  ProcessingProfile * profile = nullptr);
 
 }  // namespace line_detactor
 

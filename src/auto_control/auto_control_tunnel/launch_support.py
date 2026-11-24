@@ -30,6 +30,14 @@ def integrated_nodes(rgb_detector, controller, context):
         return yaml.safe_load(path.read_text())['line_detactor']['ros__parameters']
     ir = parameters(shares['line_detactor'] / 'config/line_detactor.yaml')
     ir.update(parameters(shares['auto_control'] / 'config/tunnel_ir.yaml'))
+    precision = controller.get('ir_lane.engine_precision', 0)
+    if precision not in (0, 1, 2):
+        raise ValueError('ir_lane.engine_precision must be 0, 1 or 2')
+    if precision:
+        ir.update(engine_precision={1: 'fp32', 2: 'fp16'}[precision], engine_cache_path='')
+    padding = controller.get('ir_lane.result_padding_px', -1)
+    if padding >= 0:
+        ir['result_padding_px'] = int(padding)
     model = shares['line_detactor'] / 'models/ir_stereo_bev_120x300.onnx'
     report = json.loads(model.with_suffix('.json').read_text())
     if hashlib.sha256(model.read_bytes()).hexdigest() != report['onnx_sha256']:

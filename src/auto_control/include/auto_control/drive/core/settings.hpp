@@ -2,6 +2,7 @@
 // 실시간 조절 파라미터 정의(웹 파라미터 창 목록)와 각 모듈 설정으로의 변환
 #pragma once
 #include <array>
+#include "bev_handoff/lane_tuning.hpp"
 #include "auto_control/drive/core/avoidance_planner.hpp"
 #include "auto_control/drive/core/box_depth.hpp"
 #include "auto_control/drive/core/cone_memory.hpp"
@@ -33,20 +34,14 @@ struct Settings {
   double maximum_lateral_accel{1.6}, planning_decel{0.5};
   double stanley_gain{1.3}, stanley_softening{0.3}, heading_lookahead_m{0.05};
   double steering_current_weight{0.4}, steering_rate_rad_s{240.0 * 3.14159265358979323846 / 180.0};
-  double corner_outward_offset_m{0.08}, corner_entry_distance_m{2.2}, corner_entry_full_offset_m{0.6};
   double link_loss_stop_sec{1.0};
   int lane_check_mode{1};
-  bool lane_side_tracking{true};   // 차선 좌우 판정 고정
+  bev_handoff::LaneTuning rgb_lane, ir_lane;
   struct IrCameraProfile { int exposure_us{0}, iso{800}; double dot{0}, flood{0}; };   // 노출 0 = 자동
   struct IrCamera {   // 스테레오 흑백 카메라: 터널 안(차선) / 밖(장애물 깊이)
     IrCameraProfile inside{20000, 500, 0.0, 1.0}, outside{0, 400, 0.5, 0.0};
     bool use_400p_ir_output{false};
   } ir_camera;
-  struct IrLane {   // 터널 IR 차선 검출기 전용
-    double mask_threshold{0.5}, lane_width_m{0.65};
-    bool side_tracking{false};
-    double corner_outward_offset_m{0.08}, corner_entry_distance_m{2.2}, corner_entry_full_offset_m{0.6};
-  } ir_lane;
   bool avoid_vehicles{true};       // 트럭·세단도 회피 장애물로 (차량 추종이 켜져 있으면 회피 대신 추종)
   LeadParams lead;                 // 차량 추종 (acc.*)
   TrafficParams traffic;           // 신호등 정지 (traffic.*)

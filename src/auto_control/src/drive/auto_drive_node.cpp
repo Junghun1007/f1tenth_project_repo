@@ -670,16 +670,10 @@ private:
     publish_ir_camera(s.ir_camera);
     {
       std::lock_guard<std::mutex> l(status_m_);
-      hint_base_.side_tracking = s.lane_check_mode != 0 && s.lane_side_tracking;
-      hint_base_.corner_outward_offset_m = s.corner_outward_offset_m;
-      hint_base_.corner_entry_distance_m = s.corner_entry_distance_m;
-      hint_base_.corner_entry_full_offset_distance_m = s.corner_entry_full_offset_m;
-      hint_base_.ir.mask_threshold = s.ir_lane.mask_threshold;
-      hint_base_.ir.lane_width_m = s.ir_lane.lane_width_m;
+      hint_base_.rgb = s.rgb_lane;
+      hint_base_.ir = s.ir_lane;
+      hint_base_.rgb.side_tracking = s.lane_check_mode != 0 && s.rgb_lane.side_tracking;
       hint_base_.ir.side_tracking = s.lane_check_mode != 0 && s.ir_lane.side_tracking;
-      hint_base_.ir.corner_outward_offset_m = s.ir_lane.corner_outward_offset_m;
-      hint_base_.ir.corner_entry_distance_m = s.ir_lane.corner_entry_distance_m;
-      hint_base_.ir.corner_entry_full_offset_distance_m = s.ir_lane.corner_entry_full_offset_m;
       update_mount();   // ROI 비율이 바뀌었을 수 있음
     }
     hint_version_++;

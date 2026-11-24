@@ -20,6 +20,11 @@ void ParamRegistry::add_order_constraint(const std::string & lower, const std::s
   order_.emplace_back(lower, upper);
 }
 
+void ParamRegistry::add_validator(Validator validate) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  validators_.push_back(std::move(validate));
+}
+
 std::vector<ParamSpec> ParamRegistry::list() const { std::lock_guard<std::mutex> lock(mutex_); return specs_; }
 
 double ParamRegistry::get(const std::string & name) const {
@@ -54,6 +59,11 @@ std::pair<bool, std::string> ParamRegistry::apply(const std::map<std::string, do
     const auto a = index_.find(lo), b = index_.find(hi);
     if (a == index_.end() || b == index_.end()) continue;
     if (next[a->second].value >= next[b->second].value) return {false, lo + " must be below " + hi};
+  }
+  const ValueLookup value = [&](const std::string & name) { return next[index_.at(name)].value; };
+  for (const auto & validate : validators_) {
+    auto error = validate(value);
+    if (!error.empty()) return {false, std::move(error)};
   }
   if (changes.empty()) return {true, ""};
   specs_.swap(next);

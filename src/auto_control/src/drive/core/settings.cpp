@@ -1,8 +1,108 @@
 // Copied from src/cone_drive_test/src/core/settings.cpp (1113ML) — auto_control로 옮김
 #include "auto_control/drive/core/settings.hpp"
 #include <cmath>
+#include <type_traits>
 
 namespace auto_control::drive {
+namespace {
+
+template<class T>
+T lane_setting_value(double value) {
+  if constexpr (std::is_same_v<T, int>) return static_cast<int>(std::lround(value));
+  return static_cast<T>(value);
+}
+
+bev_handoff::LaneTuning read_lane_tuning(const ParamRegistry::ValueLookup & get, bool ir) {
+  const std::string prefix = ir ? "ir_lane." : "lane.";
+  bev_handoff::LaneTuning tuning;
+#define READ_SETTING(type, key, member, label, unit, lo, hi, rgb_default, ir_default) \
+  tuning.key = lane_setting_value<type>(get(prefix + #key));
+  BEV_LANE_DETECTION_SETTINGS(READ_SETTING)
+  BEV_LANE_CONNECTION_SETTINGS(READ_SETTING)
+  BEV_LANE_CENTERLINE_SETTINGS(READ_SETTING)
+  BEV_LANE_CORNER_SETTINGS(READ_SETTING)
+  BEV_LANE_SMOOTHING_SETTINGS(READ_SETTING)
+  BEV_LANE_STOP_SETTINGS(READ_SETTING)
+#undef READ_SETTING
+  if (ir) {
+    // Preserve the shared threshold written by existing IR tuning files.
+    const double common = get(prefix + "mask_threshold");
+    if (tuning.left_mask_threshold == -1.0) tuning.left_mask_threshold = common;
+    if (tuning.right_mask_threshold == -1.0) tuning.right_mask_threshold = common;
+  }
+  return tuning;
+}
+
+std::string validate_lane_tuning(const ParamRegistry::ValueLookup & get, bool ir) {
+  const auto c = read_lane_tuning(get, ir);
+  const std::string prefix = ir ? "ir_lane." : "lane.";
+  const double padding = get(prefix + "result_padding_px");
+  if (padding != std::trunc(padding))
+    return prefix + "result_padding_px must be a whole number";
+  if (c.left_mask_threshold < 0.0 || c.right_mask_threshold < 0.0)
+    return prefix + "left/right_mask_threshold: use -1 (inherit) or 0..1";
+  if (c.min_clearance_m + c.corner_outward_offset_m >= c.lane_width_m / 2.0 ||
+      c.width_tolerance_m >= c.lane_width_m)
+    return prefix + "lane_width_m: too narrow for the clearance, corner offset or width tolerance";
+  if (c.corner_entry_full_offset_m > 0.0 &&
+      c.corner_entry_full_offset_m >= c.corner_entry_distance_m)
+    return prefix + "corner_entry_full_offset_m must be below corner_entry_distance_m, or zero";
+  if (c.corner_outer_full_turn_deg <= c.corner_outer_min_turn_deg ||
+      c.corner_turn_deg <= c.straight_turn_deg)
+    return prefix + "corner turn thresholds must be in ascending order";
+  if (c.max_gap_m < 2.0 * c.sample_spacing_m || c.tangent_window_m < c.sample_spacing_m ||
+      c.corner_outer_tangent_window_m < 2.0 * c.sample_spacing_m ||
+      c.corner_outer_min_length_m < 3.0 * c.sample_spacing_m ||
+      c.smoothing_window_m < 5.0 * c.sample_spacing_m)
+    return prefix + "sample_spacing_m is too large for one of the path or corner windows";
+  if (c.corner_outer_window_m <= c.corner_outer_min_length_m ||
+      c.corner_outer_window_m < c.corner_outer_tangent_window_m)
+    return prefix + "corner_outer_window_m: too short for the observation or tangent window";
+  return {};
+}
+
+void register_lane_tuning(ParamRegistry & registry, bool ir) {
+  const std::string prefix = ir ? "ir_lane." : "lane.";
+  const std::string sensor = ir ? "IR (터널) · " : "RGB · ";
+  std::string section = sensor + "검출";
+  std::vector<std::pair<double, std::string>> precision{
+    {0, ir ? "기본값 (FP32)" : "기본값 (INT8 Q/DQ)"}, {1, "FP32"}, {2, "FP16"}};
+  if (!ir) precision.emplace_back(3, "INT8 Q/DQ");
+  registry.add({prefix + "engine_precision", "lane", section, "추론 방식 · YAML 저장 후 재시작", "",
+    0, ir ? 2.0 : 3.0, 0, false, std::move(precision)});
+  const auto add = [&](const char * key, const char * label, const char * unit,
+                       double low, double high, double value, bool toggle) {
+    const std::string name(key);
+    if (ir && (name == "left_mask_threshold" || name == "right_mask_threshold")) {
+      registry.add({prefix + key, "lane", section, std::string(label) + " (-1 = 공통값)", unit, -1, high, -1, true});
+      return;
+    }
+    const auto group = name == "bridge_centerline" ? sensor + "차선 연결" : section;
+    ParamSpec spec{prefix + key, "lane", group, label, unit, low, high, value, true};
+    if (toggle) spec.options = {{0, "끔"}, {1, "켬"}};
+    registry.add(spec);
+  };
+  if (ir) registry.add({prefix + "mask_threshold", "lane", section, "좌·우 차선 공통 임계값", "", .05, .95, .5, true});
+#define REGISTER_SETTING(type, key, member, label, unit, lo, hi, rgb_default, ir_default) \
+  add(#key, label, unit, lo, hi, ir ? ir_default : rgb_default, std::is_same_v<type, bool>);
+  BEV_LANE_DETECTION_SETTINGS(REGISTER_SETTING)
+  section = sensor + "차선 연결";
+  registry.add({prefix + "result_padding_px", "lane", section,
+    "영상 바깥쪽 보간 여백 (-1 = 기본값) · YAML 저장 후 재시작", "px", -1, 300, -1, false});
+  BEV_LANE_CONNECTION_SETTINGS(REGISTER_SETTING)
+  section = sensor + "중앙선";
+  BEV_LANE_CENTERLINE_SETTINGS(REGISTER_SETTING)
+  section = sensor + "코너 바깥 차선";
+  BEV_LANE_CORNER_SETTINGS(REGISTER_SETTING)
+  section = sensor + "경로 평활화";
+  BEV_LANE_SMOOTHING_SETTINGS(REGISTER_SETTING)
+  section = sensor + "정지선 거리";
+  BEV_LANE_STOP_SETTINGS(REGISTER_SETTING)
+#undef REGISTER_SETTING
+  registry.add_validator([ir](const auto & get) { return validate_lane_tuning(get, ir); });
+}
+
+}  // namespace
 
 void register_params(ParamRegistry & r) {
   auto o = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
@@ -91,27 +191,18 @@ void register_params(ParamRegistry & r) {
   d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.08);
   d("조향 (Stanley)", "drive.steering_current_weight", "조향 필터 현재 비중", "", 0.05, 1, 0.5);
   d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 260);
-  r.add({"lane.check_mode", "driving", "차선", "차선 검사 모드", "", 0, 2, 1, true,
+  r.add({"lane.check_mode", "lane", "공통", "차선 검사 모드", "", 0, 2, 1, true,
     {{0, "0 · 추가 검사 끔"}, {1, "1 · 기존 검사"}, {2, "2 · 회피 방향별 차선 복귀"}}});
-  d("차선", "lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 0);
-  d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
-  d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
-  d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
+  register_lane_tuning(r, false);
+  register_lane_tuning(r, true);
   // 스테레오 흑백 카메라 — 터널 안: IR 차선용 (tunnel_enabled:=true일 때만). 수동 노출 고정
   const auto ir_defaults = Settings::IrCamera{}.inside;
-  r.add({"ir_cam.inside_resolution", "driving", "IR 카메라 · 터널 안 (차선)",
+  r.add({"ir_cam.inside_resolution", "lane", "IR (터널) · 카메라",
     "IR 영상 해상도", "", 0, 400, 0, true, {{0, "시작값 (기본 800p)"}, {400, "400p (640×400)"}}});
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_exposure_us", "노출 시간", "µs", 1000, 33000, ir_defaults.exposure_us);
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_iso", "ISO", "", 100, 1600, ir_defaults.iso);
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_dot", "점 투사기 세기 (차선 영상에 점이 찍힘)", "", 0, 1, ir_defaults.dot);
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_flood", "IR 플러드 조명 세기 (0 = 끔)", "", 0, 1, ir_defaults.flood);
-  // 터널 IR 차선 (tunnel_enabled:=true일 때만 쓰임). RGB 차선과 따로 조절
-  d("IR 차선 (터널)", "ir_lane.mask_threshold", "차선 마스크 임계값 (낮을수록 흐린 선도 잡음)", "", 0.05, 0.95, 0.5);
-  d("IR 차선 (터널)", "ir_lane.lane_width_m", "차선 폭 (한쪽만 보일 때 중앙선 위치)", "m", 0.3, 1.2, 0.65);
-  d("IR 차선 (터널)", "ir_lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 0);
-  d("IR 차선 (터널)", "ir_lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
-  d("IR 차선 (터널)", "ir_lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
-  d("IR 차선 (터널)", "ir_lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
+  r.add({"ir_cam.inside_exposure_us", "lane", "IR (터널) · 카메라", "노출 시간", "µs", 1000, 33000, double(ir_defaults.exposure_us)});
+  r.add({"ir_cam.inside_iso", "lane", "IR (터널) · 카메라", "ISO", "", 100, 1600, double(ir_defaults.iso)});
+  r.add({"ir_cam.inside_dot", "lane", "IR (터널) · 카메라", "점 투사기 세기", "", 0, 1, ir_defaults.dot});
+  r.add({"ir_cam.inside_flood", "lane", "IR (터널) · 카메라", "IR 플러드 조명 세기", "", 0, 1, ir_defaults.flood});
   d("출력", "drive.maximum_duty", "최대 duty", "", 0, 0.5, 0.12);
   d("출력", "drive.start_duty", "정지 출발 duty", "", 0, 0.3, 0.05);
   d("종방향 모드", "drive.longitudinal_mode", "종방향 모드 (1=staged 전류 제동, 2=duty-only 회생 감속) · 정지했을 때 적용", "", 1, 2, 2.0);
@@ -173,14 +264,16 @@ void register_params(ParamRegistry & r) {
   r.add_order_constraint("plan.hard_clearance", "plan.soft_clearance");
   r.add_order_constraint("plan.free_hard_clearance", "plan.free_soft_clearance");
   r.add_order_constraint("plan.relaxed_hard_clearance", "plan.relaxed_soft_clearance");
-  r.add_order_constraint("lane.corner_entry_full_offset_m", "lane.corner_entry_distance_m");
-  r.add_order_constraint("ir_lane.corner_entry_full_offset_m", "ir_lane.corner_entry_distance_m");
   r.add_order_constraint("object.min_height_m", "object.max_height_m");
 }
 
 Settings settings_from(const ParamRegistry & r) {
   Settings s;
-  auto g = [&](const char * n) { return r.get(n); };
+  std::map<std::string, double> values;
+  for (const auto & spec : r.list()) values.emplace(spec.name, spec.value);
+  const ParamRegistry::ValueLookup g = [&](const std::string & name) { return values.at(name); };
+  s.rgb_lane = read_lane_tuning(g, false);
+  s.ir_lane = read_lane_tuning(g, true);
   s.yolo_thresholds = {float(g("yolo.con_threshold")), float(g("yolo.truck_threshold")), float(g("yolo.sedan_threshold")),
                        float(g("yolo.traffic_light_threshold"))};
   s.nms_threshold = g("yolo.nms_threshold");
@@ -286,24 +379,14 @@ Settings settings_from(const ParamRegistry & r) {
   l.brake_current_rise_amps_per_sec = g("drive.brake_current_rise_aps");
   l.brake_entry_speed_error_mps = g("drive.brake_entry_speed_error_mps");
   l.brake_exit_speed_error_mps = g("drive.brake_exit_speed_error_mps");
-  s.corner_outward_offset_m = g("lane.corner_outward_offset_m");
-  s.corner_entry_distance_m = g("lane.corner_entry_distance_m");
-  s.corner_entry_full_offset_m = g("lane.corner_entry_full_offset_m");
   s.link_loss_stop_sec = g("web.link_loss_stop_sec");
   s.lane_timeout_sec = g("drive.lane_timeout_sec");
   s.lane_check_mode = static_cast<int>(g("lane.check_mode"));
-  s.lane_side_tracking = g("lane.side_tracking") >= 0.5;
   s.ir_camera.inside = {int(std::lround(g("ir_cam.inside_exposure_us"))), int(std::lround(g("ir_cam.inside_iso"))),
                         g("ir_cam.inside_dot"), g("ir_cam.inside_flood")};
   s.ir_camera.outside = {int(std::lround(g("ir_cam.outside_exposure_us"))), int(std::lround(g("ir_cam.outside_iso"))),
                          g("ir_cam.outside_dot"), g("ir_cam.outside_flood")};
   s.ir_camera.use_400p_ir_output = g("ir_cam.inside_resolution") == 400;
-  s.ir_lane.mask_threshold = g("ir_lane.mask_threshold");
-  s.ir_lane.lane_width_m = g("ir_lane.lane_width_m");
-  s.ir_lane.side_tracking = g("ir_lane.side_tracking") >= 0.5;
-  s.ir_lane.corner_outward_offset_m = g("ir_lane.corner_outward_offset_m");
-  s.ir_lane.corner_entry_distance_m = g("ir_lane.corner_entry_distance_m");
-  s.ir_lane.corner_entry_full_offset_m = g("ir_lane.corner_entry_full_offset_m");
   s.avoid_vehicles = g("plan.avoid_vehicles") >= 0.5;
   s.traffic.enabled = g("traffic.enabled") >= 0.5;
   s.traffic.stop_range_max = g("traffic.stop_range_max_m");

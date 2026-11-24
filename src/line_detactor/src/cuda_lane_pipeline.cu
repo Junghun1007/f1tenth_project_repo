@@ -46,14 +46,14 @@ __global__ void bgr_to_rgb_nchw_kernel(
 
 __global__ void lane_labels_kernel(
   const float * logits, std::uint8_t * labels, const int width, const int height,
-  const float threshold, const float stop_threshold)
+  const float left_threshold, const float right_threshold, const float stop_threshold)
 {
   const int i = static_cast<int>(blockIdx.x * blockDim.x + threadIdx.x);
   if (i >= width * height) {return;}
   const float left = logits[i];
   const float right = logits[width * height + i];
-  labels[i] = left >= threshold && (!(right >= threshold) || left >= right) ? 1U :
-    (right >= threshold ? 2U : 0U);
+  labels[i] = left >= left_threshold && (!(right >= right_threshold) || left >= right) ? 1U :
+    (right >= right_threshold ? 2U : 0U);
   // Keep stop-line membership independent: crossing pixels can also be lanes.
   labels[width * height + i] = logits[2 * width * height + i] >= stop_threshold ? 255U : 0U;
 }
@@ -64,7 +64,8 @@ __global__ void lane_overlay_kernel(
   std::uint8_t * preview,
   const int width,
   const int height,
-  const float logit_threshold,
+  const float left_logit_threshold,
+  const float right_logit_threshold,
   const float stop_logit_threshold,
   const float alpha)
 {
@@ -82,8 +83,8 @@ __global__ void lane_overlay_kernel(
   const std::size_t bgr_index = pixel * 3U;
   const float left_logit = logits[pixel];
   const float right_logit = logits[plane + pixel];
-  const bool left = left_logit >= logit_threshold;
-  const bool right = right_logit >= logit_threshold;
+  const bool left = left_logit >= left_logit_threshold;
+  const bool right = right_logit >= right_logit_threshold;
   const bool stop_line = logits[2U * plane + pixel] >= stop_logit_threshold;
 
   float blue = static_cast<float>(bgr[bgr_index]);
@@ -159,11 +160,13 @@ float threshold_logit(const float threshold)
 
 cudaError_t launch_lane_labels(
   const float * device_logits, std::uint8_t * device_labels, const int width,
-  const int height, const float mask_threshold, const float stop_line_mask_threshold,
+  const int height, const float left_threshold, const float right_threshold,
+  const float stop_line_mask_threshold,
   const cudaStream_t stream) noexcept
 {
   lane_labels_kernel<<<(width * height + 255) / 256, 256, 0U, stream>>>(
-    device_logits, device_labels, width, height, threshold_logit(mask_threshold),
+    device_logits, device_labels, width, height,
+    threshold_logit(left_threshold), threshold_logit(right_threshold),
     threshold_logit(stop_line_mask_threshold));
   return cudaGetLastError();
 }
@@ -174,16 +177,17 @@ cudaError_t launch_lane_overlay(
   std::uint8_t * device_preview_bgr,
   const int width,
   const int height,
-  const float mask_threshold,
+  const float left_threshold,
+  const float right_threshold,
   const float stop_line_mask_threshold,
   const float overlay_alpha,
   const cudaStream_t stream) noexcept
 {
-  const float logit_threshold = threshold_logit(mask_threshold);
   const dim3 block(16U, 16U);
   lane_overlay_kernel<<<grid_for(width, height), block, 0U, stream>>>(
     device_bgr, device_logits, device_preview_bgr, width, height,
-    logit_threshold, threshold_logit(stop_line_mask_threshold), overlay_alpha);
+    threshold_logit(left_threshold), threshold_logit(right_threshold),
+    threshold_logit(stop_line_mask_threshold), overlay_alpha);
   return cudaGetLastError();
 }
 

@@ -26,5 +26,18 @@ int main() {
   auto result=connect_lane_fragments(mask,config,true);
   double length=measure(result.observed_paths);
   check(length>.25 && length<.45); // actual connector output, no far island/bridge
+  check(!lane_geometry_with_bridges(result.labels, config));
+
+  // The extended geometry connects the two right fragments across the BEV edge.
+  // The measured observation still ends at the nearest real component.
+  cv::Mat extended = cv::Mat::zeros(300, 180, CV_8UC1);
+  cv::line(extended, {148, 260}, {148, 299}, cv::Scalar(2), 3);
+  cv::line(extended, {148, 180}, {148, 100}, cv::Scalar(2), 3);
+  extended(cv::Rect(150, 0, 30, 300)).setTo(0);
+  cv::line(extended, {150, 180}, {150, 260}, cv::Scalar(4), 1);
+  const auto complete = lane_geometry_with_bridges(extended, config);
+  check(complete && complete->observed_paths[1].size() == 1);
+  check(cv::countNonZero(extended == 4) == 81);
+  check(cv::countNonZero(complete->labels == 4) == 0);
   std::cout << "Observed component length tests passed\n";
 }

@@ -51,6 +51,9 @@ public:
 
   // 차선(좌·우) 마스크 임계값을 다음 추론부터 바꾼다 (0..1, 추론과 같은 스레드에서 호출)
   void set_mask_threshold(float mask_threshold);
+  void set_postprocess(
+    float left_threshold, float right_threshold, float stop_threshold, float overlay_alpha,
+    bool export_labels);
 
   const std::uint8_t * preview_bgr_data() const noexcept;
   const std::uint8_t * label_data() const noexcept;

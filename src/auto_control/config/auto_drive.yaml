@@ -104,7 +104,19 @@
     # 차선
     lane.check_mode: 1.0               # 0=추가 검사 끔, 1=기존 검사, 2=회피 방향별 차선 복귀
     lane.side_tracking: 0             # 차선 좌우 판정 고정 (0=끔, 1=켬): 모델 라벨 대신 직전 프레임·차선 폭으로 좌우 재판정
-    lane.corner_outward_offset_m: 0.08  # 코너 바깥 이동 (m)
+    lane.left_mask_threshold: 0.8
+    lane.right_mask_threshold: 0.8
+    lane.stop_line_mask_threshold: 0.8
+    lane.overlay_alpha: 0.75
+    lane.connection_min_component_area_px: 30.0
+    lane.connection_max_gap_px: 90.0
+    lane.bridge_centerline: 1.0
+    lane.corner_outer_enabled: 1.0
+    lane.corner_outer_weight: 0.85
+    lane.corner_outer_min_turn_deg: 8.0
+    lane.corner_outer_full_turn_deg: 25.0
+    lane.corner_outward_offset_m: 0.0   # 코너 바깥 이동 (m)
+    lane.stop_line_min_pixels: 30.0
     lane.corner_entry_distance_m: 2.2   # 코너 진입 거리 (m)
     lane.corner_entry_full_offset_m: 0.6 # 최대 이동 시작 거리 (m)
     # 출력

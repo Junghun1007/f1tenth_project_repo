@@ -317,7 +317,8 @@ public:
       static_cast<std::size_t>(input_height)),
     image_byte_count_(pixel_count_ * 3U),
     input_element_count_(pixel_count_ * 3U),
-    mask_threshold_(mask_threshold),
+    left_threshold_(mask_threshold),
+    right_threshold_(mask_threshold),
     stop_line_mask_threshold_(stop_line_mask_threshold == -1.0F ? mask_threshold : stop_line_mask_threshold),
     overlay_alpha_(overlay_alpha),
     export_labels_(export_labels)
@@ -369,10 +370,8 @@ public:
     device_input_.allocate(input_element_count_ * sizeof(float));
     device_logits_.allocate(output_element_count_ * sizeof(float));
     device_preview_bgr_.allocate(image_byte_count_);
-    if (export_labels_) {
-      host_labels_.allocate(pixel_count_ * 2U);
-      device_labels_.allocate(pixel_count_ * 2U);
-    }
+    host_labels_.allocate(pixel_count_ * 2U);
+    device_labels_.allocate(pixel_count_ * 2U);
     configure_execution_bindings();
   }
 
@@ -461,7 +460,7 @@ public:
 
   const std::uint8_t * label_data() const noexcept
   {
-    return static_cast<const std::uint8_t *>(host_labels_.get());
+    return export_labels_ ? static_cast<const std::uint8_t *>(host_labels_.get()) : nullptr;
   }
 
   const std::uint8_t * stop_line_mask_data() const noexcept
@@ -484,7 +483,19 @@ public:
     return engine_cache_path_;
   }
 
-  void set_mask_threshold(const float value) noexcept {mask_threshold_ = value;}
+  void set_mask_threshold(const float value) noexcept
+  {
+    left_threshold_ = right_threshold_ = value;
+  }
+
+  void set_postprocess(float left, float right, float stop, float alpha, bool export_labels) noexcept
+  {
+    left_threshold_ = left;
+    right_threshold_ = right;
+    stop_line_mask_threshold_ = stop;
+    overlay_alpha_ = alpha;
+    export_labels_ = export_labels;
+  }
 
 private:
   LaneInferenceTiming finish_inference(const std::uint8_t * device_bgr)
@@ -508,7 +519,8 @@ private:
       check_cuda(
         launch_lane_labels(static_cast<const float *>(device_logits_.get()),
           static_cast<std::uint8_t *>(device_labels_.get()), input_width_, input_height_,
-          mask_threshold_, stop_line_mask_threshold_, stream_.get()), "extract lane labels");
+          left_threshold_, right_threshold_, stop_line_mask_threshold_, stream_.get()),
+        "extract lane labels");
       check_cuda(cudaMemcpyAsync(host_labels_.get(), device_labels_.get(), pixel_count_ * 2U,
           cudaMemcpyDeviceToHost, stream_.get()), "copy lane labels to host");
       check_cuda(cudaEventRecord(label_export_finished_.get(), stream_.get()), "label export finish");
@@ -524,7 +536,7 @@ private:
           device_bgr,
           static_cast<const float *>(device_logits_.get()),
           static_cast<std::uint8_t *>(device_preview_bgr_.get()),
-          input_width_, input_height_, mask_threshold_, stop_line_mask_threshold_, overlay_alpha_,
+          input_width_, input_height_, left_threshold_, right_threshold_, stop_line_mask_threshold_, overlay_alpha_,
           stream_.get()),
         "launch lane overlay kernel");
       check_cuda(
@@ -806,7 +818,8 @@ private:
   std::size_t image_byte_count_{0U};
   std::size_t input_element_count_{0U};
   std::size_t output_element_count_{0U};
-  float mask_threshold_{0.5F};
+  float left_threshold_{0.5F};
+  float right_threshold_{0.5F};
   float stop_line_mask_threshold_{0.5F};
   float overlay_alpha_{0.75F};
   bool export_labels_{false};
@@ -880,6 +893,18 @@ void TensorRtLaneBackend::set_mask_threshold(const float mask_threshold)
     throw std::invalid_argument("mask_threshold must be in [0,1]");
   }
   impl_->set_mask_threshold(mask_threshold);
+}
+
+void TensorRtLaneBackend::set_postprocess(
+  float left_threshold, float right_threshold, float stop_threshold, float overlay_alpha,
+  bool export_labels)
+{
+  for (const float value : {left_threshold, right_threshold, stop_threshold, overlay_alpha}) {
+    if (!std::isfinite(value) || value < 0.0F || value > 1.0F) {
+      throw std::invalid_argument("lane thresholds and overlay_alpha must be in [0,1]");
+    }
+  }
+  impl_->set_postprocess(left_threshold, right_threshold, stop_threshold, overlay_alpha, export_labels);
 }
 
 LaneInferenceTiming TensorRtLaneBackend::infer_device_bgr(

@@ -43,7 +43,7 @@ install(TARGETS auto_tunnel_selector_component LIBRARY DESTINATION lib)
 # ---- 주행부 (cone_drive_test에서 옮김): ROS 없는 판단부 + 웹 서버 ----
 include(cmake/drive_sources.cmake)
 add_library(auto_drive_core STATIC ${ACD_CORE_SOURCES} ${ACD_WEB_SOURCES})
-target_include_directories(auto_drive_core PUBLIC include third_party ${OpenCV_INCLUDE_DIRS})
+target_include_directories(auto_drive_core PUBLIC include third_party ${OpenCV_INCLUDE_DIRS} ${bev_handoff_INCLUDE_DIRS})
 target_link_libraries(auto_drive_core PUBLIC ${OpenCV_LIBS} Threads::Threads)
 target_compile_definitions(auto_drive_core PUBLIC ${ACD_WEB_DEFINITIONS})
 set_target_properties(auto_drive_core PROPERTIES POSITION_INDEPENDENT_CODE ON)

@@ -87,6 +87,57 @@ def _bool_arg(context, name):
     return value == "true"
 
 
+def _lane_web_overrides(explicit, detector):
+    """Keep explicitly supplied detector tuning effective once web hints arrive."""
+    overrides = {}
+    special = {
+        "centerline_enabled": "centerline_enabled",
+        "centerline_use_bridges": "bridge_centerline",
+        "centerline_line_width_px": "centerline_line_width_px",
+        "centerline_corner_entry_full_offset_distance_m": "corner_entry_full_offset_m",
+        "result_line_width_px": "connection_line_width_px",
+        "lane_side_tracking_enabled": "side_tracking",
+        "overlay_alpha": "overlay_alpha",
+    }
+    fixed = {"connection_ccl_serial_enabled", "centerline_bev_width_m", "centerline_bev_height_m"}
+    for name, value in explicit.items():
+        if name in fixed:
+            continue
+        key = special.get(name)
+        if key is None and name.startswith("centerline_"):
+            key = name.removeprefix("centerline_")
+        if key is None and name.startswith(("connection_", "stop_line_")):
+            key = name
+        if key is not None:
+            overrides["lane." + key] = float(value)
+    if "mask_threshold" in explicit:
+        threshold = float(explicit["mask_threshold"])
+        overrides.update({"lane.left_mask_threshold": threshold, "lane.right_mask_threshold": threshold})
+    if ("stop_line_mask_threshold" in explicit or "mask_threshold" in explicit) and \
+            float(detector.get("stop_line_mask_threshold", -1)) == -1:
+        overrides["lane.stop_line_mask_threshold"] = float(detector["mask_threshold"])
+    return overrides
+
+
+def _select_rgb_lane_engine(detector, choice):
+    precision = {0: None, 1: "fp32", 2: "fp16", 3: "int8"}
+    if choice not in precision:
+        raise RuntimeError("lane.engine_precision must be 0, 1, 2 or 3")
+    if precision[choice] is not None:
+        detector.update(
+            engine_precision=precision[choice],
+            model_path=("fast_scnn_stop_line_120x300_batch_1.int8.qdq.onnx" if choice == 3
+                        else "fast_scnn_stop_line_120x300_batch_1.onnx"),
+            engine_cache_path="",
+        )
+
+
+def _lane_padding(value):
+    if not isinstance(value, (int, float)) or not math.isfinite(value) or value != int(value) or not -1 <= value <= 300:
+        raise RuntimeError("lane result_padding_px must be -1 or a whole number from 0 to 300")
+    return int(value)
+
+
 def _setup(context, *, bev_config, line_detactor_config, bev_launch):
     bev = _merged_parameters(bev_config, LaunchConfiguration("bev_params_file").perform(context), "bev_processor")
     detector = _merged_parameters(line_detactor_config, LaunchConfiguration("line_detactor_params_file").perform(context),
@@ -99,6 +150,17 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
             hint = (" (웹 파라미터 창에서 [YAML 저장]을 눌러야 생기는 파일입니다. 처음에는 이 인자 없이 실행하세요)"
                     if argument == "drive_params_file" else "")
             raise RuntimeError(f"{argument} 파일이 없습니다: {path}{hint}")
+    drive_path = os.path.expanduser(LaunchConfiguration("drive_params_file").perform(context))
+    drive_tuning = _ros_parameters(drive_path, "auto_drive")
+    detector_path = os.path.abspath(os.path.expanduser(
+        LaunchConfiguration("line_detactor_params_file").perform(context)))
+    detector_custom = (_ros_parameters(detector_path, "line_detactor")
+                       if detector_path != os.path.abspath(line_detactor_config) else {})
+    _select_rgb_lane_engine(detector, drive_tuning.get("lane.engine_precision", 0))
+    rgb_padding = _lane_padding(drive_tuning.get("lane.result_padding_px", -1))
+    ir_padding = _lane_padding(drive_tuning.get("ir_lane.result_padding_px", -1))
+    if rgb_padding >= 0:
+        detector["result_padding_px"] = rgb_padding
     mode = LaunchConfiguration("mode").perform(context)
     if mode not in ("drive", "detect"):
         raise RuntimeError("mode must be drive or detect")
@@ -134,6 +196,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         "bev_theme_enable": False,
         "obstacles.overlay_enabled": False,
     })
+    detector_cli = {}
     for name, value_type in _DETECTOR_POSTPROCESS_OVERRIDES.items():
         value = LaunchConfiguration(name).perform(context)
         if value == _PARAMETER_FILE_DEFAULT:
@@ -144,6 +207,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
             detector[name] = value.lower() == "true"
         else:
             detector[name] = value_type(value)
+        detector_cli[name] = detector[name]
     context.launch_configurations["direct_host_copy_enabled"] = "true" if preview else "false"
     context.launch_configurations["ml_lane_frame_id"] = str(bev["output_frame_id"])
     context.launch_configurations["ml_bev_x_max_m"] = str(x_max)
@@ -162,7 +226,10 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
                 and math.isclose(mpp, .01) and bev["output_frame_id"] == "front_axle_bev"):
             raise RuntimeError("Tunnel IR model requires 120x300 front-axle BEV at 1cm/pixel")
         from auto_control_tunnel.launch_support import integrated_nodes
-        components, tunnel_actions = integrated_nodes(detector, {}, context)
+        components, tunnel_actions = integrated_nodes(detector, {
+            "ir_lane.engine_precision": drive_tuning.get("ir_lane.engine_precision", 0),
+            "ir_lane.result_padding_px": ir_padding,
+        }, context)
         # RGB 검출기 설명을 다시 만든다 (ComposableNode는 파라미터를 복사해 둔다)
         nodes[0] = ComposableNode(
             package="line_detactor", plugin="line_detactor::LineDetactorNode",
@@ -186,6 +253,11 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         "topics.startup_status": "/bev_processor/startup_status",
         **{"topics." + key: value for key, value in _HANDOVER.items()},
     }
+    drive_overrides.update({
+        key: value for key, value in _lane_web_overrides(detector_custom, detector).items()
+        if key not in drive_tuning
+    })
+    drive_overrides.update(_lane_web_overrides(detector_cli, detector))
     speed = LaunchConfiguration("speed_mps").perform(context)
     if speed != "inherit":
         speed = float(speed)
@@ -196,7 +268,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
     # → 실행하자마자 브라우저가 열리고 점검 영역에서 카메라 자세 측정 진행을 볼 수 있다
     context.launch_configurations["first_composable_nodes_json"] = json.dumps([{
         "package": "auto_control", "plugin": "auto_control::AutoDriveNode", "name": "auto_drive",
-        "parameters": [os.path.expanduser(LaunchConfiguration("drive_params_file").perform(context)), drive_overrides],
+        "parameters": [drive_path, drive_overrides],
     }])
 
     safety = Node(

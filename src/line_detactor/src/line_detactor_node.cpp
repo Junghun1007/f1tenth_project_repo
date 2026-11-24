@@ -40,6 +40,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -361,10 +362,84 @@ private:
     std_msgs::msg::Header header;
     LaneConnectionResult result;
     cv::Mat raw;
+    float overlay_alpha{0.75F};
     double average_inference_milliseconds{0.0};
     double average_postprocess_milliseconds{0.0};
     std::uint64_t generation{0U};
   };
+
+  struct FrameLaneSettings
+  {
+    LaneConnectionConfig connection;
+    CenterlineConfig centerline;
+    StopLineDistanceConfig stop_distance;
+    float left_threshold, right_threshold, stop_threshold, overlay_alpha;
+    int stop_min_present_pixels;
+    bool side_tracking, use_bridges;
+    double side_track_match_gate_m{0.15};
+    double side_track_max_age_sec{0.10};
+  };
+
+  FrameLaneSettings frame_lane_settings(const bev_handoff::LaneControlHints * hints) const
+  {
+    FrameLaneSettings settings{
+      connection_, centerline_, stop_line_distance_, mask_threshold_, mask_threshold_,
+      stop_line_mask_threshold_ == -1.0F ? mask_threshold_ : stop_line_mask_threshold_,
+      overlay_alpha_, stop_line_min_present_pixels_, side_tracking_enabled_, use_bridges_for_centerline_};
+    if (!hints) {return settings;}
+    const auto & tuning = ir_hints_ ? hints->ir : hints->rgb;
+    settings.left_threshold = static_cast<float>(tuning.left_mask_threshold);
+    settings.right_threshold = static_cast<float>(tuning.right_mask_threshold);
+    settings.stop_threshold = static_cast<float>(tuning.stop_line_mask_threshold);
+    settings.overlay_alpha = static_cast<float>(tuning.overlay_alpha);
+    settings.stop_min_present_pixels = tuning.stop_line_min_present_pixels;
+    settings.side_tracking = tuning.side_tracking;
+    settings.use_bridges = tuning.bridge_centerline;
+    settings.side_track_match_gate_m = tuning.side_track_match_gate_m;
+    settings.side_track_max_age_sec = tuning.side_track_max_age_sec;
+#define APPLY_CONNECTION(type, key, member, label, unit, lo, hi, rgb, ir) \
+    settings.connection.member = tuning.key;
+    BEV_LANE_CONNECTION_SETTINGS(APPLY_CONNECTION)
+#undef APPLY_CONNECTION
+#define APPLY_CENTERLINE(type, key, member, label, unit, lo, hi, rgb, ir) \
+    settings.centerline.member = tuning.key;
+    BEV_LANE_CENTERLINE_SETTINGS(APPLY_CENTERLINE)
+    BEV_LANE_CORNER_SETTINGS(APPLY_CENTERLINE)
+    BEV_LANE_SMOOTHING_SETTINGS(APPLY_CENTERLINE)
+#undef APPLY_CENTERLINE
+#define APPLY_STOP(type, key, member, label, unit, lo, hi, rgb, ir) \
+    settings.stop_distance.member = tuning.key;
+    BEV_LANE_STOP_SETTINGS(APPLY_STOP)
+#undef APPLY_STOP
+    return settings;
+  }
+
+  void track_lane_sides(
+    ObservedLanePaths & observed, ObservedLanePaths * completed,
+    const FrameLaneSettings & settings, double time)
+  {
+    LaneSideTrackerConfig config;
+    config.meter_per_pixel = settings.centerline.bev_width_m / model_input_width_;
+    config.lane_width_m = settings.centerline.lane_width_m;
+    config.width_tolerance_m = settings.centerline.width_tolerance_m;
+    config.match_gate_m = settings.side_track_match_gate_m;
+    config.max_age_sec = settings.side_track_max_age_sec;
+    if (!side_tracker_ || config.lane_width_m != side_tracker_config_.lane_width_m ||
+      config.width_tolerance_m != side_tracker_config_.width_tolerance_m ||
+      config.match_gate_m != side_tracker_config_.match_gate_m ||
+      config.max_age_sec != side_tracker_config_.max_age_sec)
+    {
+      side_tracker_ = std::make_unique<LaneSideTracker>(config);
+      side_tracker_config_ = config;
+    }
+    if (completed) {
+      // Use the same measured history for both paths; inferred pixels must not
+      // seed the tracker for the next frame.
+      auto tracker = *side_tracker_;
+      tracker.apply(*completed, model_input_height_, time);
+    }
+    side_tracker_->apply(observed, model_input_height_, time);
+  }
 
   void read_parameters()
   {
@@ -459,6 +534,7 @@ private:
     connection_.line_width_px = node_.declare_parameter<int>(
       "result_line_width_px", 2);
     centerline_.enabled = node_.declare_parameter<bool>("centerline_enabled", true);
+    use_bridges_for_centerline_ = node_.declare_parameter<bool>("centerline_use_bridges", false);
     centerline_.lane_width_m = node_.declare_parameter<double>("centerline_lane_width_m", 0.65);
     centerline_.bev_width_m = node_.declare_parameter<double>("centerline_bev_width_m", 1.2);
     centerline_.bev_height_m = node_.declare_parameter<double>("centerline_bev_height_m", 3.0);
@@ -487,15 +563,8 @@ private:
       "centerline_outside_margin_m", 0.12);
     centerline_.max_samples = node_.declare_parameter<int>("centerline_max_samples", 2000);
     side_tracking_enabled_ = node_.declare_parameter<bool>("lane_side_tracking_enabled", false);
-    // ir: 주행 컴포넌트 힌트 중 터널 IR 전용 값(LaneControlHints::ir)을 쓴다 (웹 "IR 차선 (터널)" 파라미터)
+    // Select the RGB or tunnel IR settings sent by the driving component.
     ir_hints_ = node_.declare_parameter<std::string>("lane_hints_profile", "rgb") == "ir";
-    {
-      LaneSideTrackerConfig tracker;
-      tracker.meter_per_pixel = centerline_.bev_width_m / std::max(1, model_input_width_);
-      tracker.lane_width_m = centerline_.lane_width_m;
-      tracker.width_tolerance_m = centerline_.width_tolerance_m;
-      side_tracker_ = std::make_unique<LaneSideTracker>(tracker);
-    }
     centerline_.line_width_px = node_.declare_parameter<int>("centerline_line_width_px", 2);
     centerline_.corner_outer_enabled = node_.declare_parameter<bool>(
       "centerline_corner_outer_enabled", true);
@@ -855,6 +924,7 @@ private:
   void publish_result(
     const LaneConnectionResult & result,
     const InputFrame & input,
+    const CenterlineConfig & centerline,
     const builtin_interfaces::msg::Time & input_received_stamp,
     const SteadyClock::time_point input_received_at,
     const SteadyClock::time_point processing_started_at,
@@ -877,9 +947,9 @@ private:
     message.label_export_nanoseconds = timing.label_export_nanoseconds;
     message.backend_postprocess_nanoseconds = timing.postprocessing_nanoseconds;
     message.lane_geometry_nanoseconds = lane_geometry_nanoseconds;
-    const double observed_length = observed_lane_length(result.observed_paths,
-      input.width, input.height, connection_.padding_px, centerline_.bev_width_m,
-      centerline_.bev_height_m, centerline_.max_start_distance_m);
+    const double observed_length = result.labels.empty() ? std::numeric_limits<double>::quiet_NaN() :
+      observed_lane_length(result.observed_paths, input.width, input.height, connection_.padding_px,
+      centerline.bev_width_m, centerline.bev_height_m, centerline.max_start_distance_m);
     message.observed_lane_length_valid = std::isfinite(observed_length);
     message.observed_lane_length_m = static_cast<float>(observed_length);
     message.state = result.state;
@@ -891,8 +961,8 @@ private:
     message.centerline_valid = result.centerline.points.size() >= 2U;
     message.centerline_sample_limit_reached = result.centerline.sample_limit_reached;
     message.centerline_support = result.centerline.support;
-    message.centerline_bev_width_m = static_cast<float>(centerline_.bev_width_m);
-    message.centerline_bev_height_m = static_cast<float>(centerline_.bev_height_m);
+    message.centerline_bev_width_m = static_cast<float>(centerline.bev_width_m);
+    message.centerline_bev_height_m = static_cast<float>(centerline.bev_height_m);
     for (const auto & point : result.centerline.points) {
       geometry_msgs::msg::Point32 output;
       output.x = point.x;
@@ -927,11 +997,11 @@ private:
       auto lane=std::make_shared<bev_handoff::PlanningLane>();
       lane->header=input.header; lane->received_at=input_received_at;
       lane->width=input.width; lane->height=input.height;
-      lane->x_max=centerline_.bev_height_m; lane->y_max=centerline_.bev_width_m/2;
-      lane->meter_per_pixel=centerline_.bev_width_m/input.width;
-      lane->lane_width_m=centerline_.lane_width_m;
+      lane->x_max=centerline.bev_height_m; lane->y_max=centerline.bev_width_m/2;
+      lane->meter_per_pixel=centerline.bev_width_m/input.width;
+      lane->lane_width_m=centerline.lane_width_m;
       const auto metric=[&](const cv::Point2f & p) {
-        return cv::Point2d(lane->x_max-(p.y+.5)*centerline_.bev_height_m/input.height,
+        return cv::Point2d(lane->x_max-(p.y+.5)*centerline.bev_height_m/input.height,
           lane->y_max-(p.x-connection_.padding_px+.5)*lane->meter_per_pixel);
       };
       // The existing centerline generator already supports a single observed side.
@@ -970,7 +1040,7 @@ private:
 
   cv::Mat result_overlay(
     const LaneConnectionResult & result,
-    const InputFrame & input) const
+    const InputFrame & input, float alpha) const
   {
     cv::Mat overlay;
     const auto bgr=input.bgr.empty() && input.download_bgr ? input.download_bgr() : input.bgr;
@@ -978,7 +1048,7 @@ private:
       connection_.padding_px, connection_.padding_px,
       cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
     cv::Mat blended;
-    cv::addWeighted(overlay, 1.0 - overlay_alpha_, result.image, overlay_alpha_, 0.0, blended);
+    cv::addWeighted(overlay, 1.0 - alpha, result.image, alpha, 0.0, blended);
     cv::Mat visible;
     cv::bitwise_or(result.labels, result.stop_line_mask, visible);
     blended.copyTo(overlay, visible);
@@ -1002,7 +1072,8 @@ private:
     const std::string & obstacle_status = "",
     const std::string & avoidance_status = "",
     const std::array<std::string,3> & tunnel_hud = {},
-    const std::array<std::string,2> & exposure_hud = std::array<std::string,2>()) const
+    const std::array<std::string,2> & exposure_hud = std::array<std::string,2>(),
+    bool connected = true) const
   {
     const int banner_base_height=kBannerHeight+(tunnel_enabled_ ? 56 : 0);
     // Daylight theme (BGR): white banner with dark text stays readable outdoors.
@@ -1020,7 +1091,7 @@ private:
     std::vector<std::pair<std::string, cv::Scalar>> lines{
       {cv::format("infer avg %.2fms %.1fFPS", average_inference_milliseconds, inference_fps),
         ink},
-      {connection_.enabled ?
+      {connected ?
         cv::format("post avg %.2fms %.1fFPS", average_postprocess_milliseconds, postprocess_fps) :
         "post OFF", ink},
       {std::isfinite(average_control_milliseconds) ?
@@ -1173,14 +1244,11 @@ private:
         const bool display_due=(preview_enabled_ || shared_ir_preview_output_enabled_) &&
           display_gate.accept(std::chrono::duration<double>(SteadyClock::now().time_since_epoch()).count(),display_fps);
         const auto hints = bev_handoff::laneControlHints();
+        const auto lane = frame_lane_settings(hints.get());
         try {
           validate_image(*message);
-          if (ir_hints_ && hints && hints->ir.mask_threshold > 0.0 &&
-            static_cast<float>(hints->ir.mask_threshold) != applied_mask_threshold_)
-          {   // 웹에서 바꾼 IR 차선 임계값: 다음 추론부터
-            applied_mask_threshold_ = static_cast<float>(hints->ir.mask_threshold);
-            backend_->set_mask_threshold(applied_mask_threshold_);
-          }
+          backend_->set_postprocess(lane.left_threshold, lane.right_threshold, lane.stop_threshold,
+            lane.overlay_alpha, lane.connection.enabled);
           ProfileTimer backend_timer(profile, ProfileStage::backend_wall);
           timing = message->device_bgr != nullptr ?
             backend_->infer_device_bgr(
@@ -1200,27 +1268,29 @@ private:
             profile_frame.gpu_label_export_ms = nanoseconds_to_milliseconds(timing.label_export_nanoseconds);
             profile_frame.gpu_postprocess_ms = nanoseconds_to_milliseconds(timing.postprocessing_nanoseconds);
           }
-          if (connection_.enabled) {
+          if (lane.connection.enabled) {
             const auto started = std::chrono::steady_clock::now();
             const bool image_subscribers = result_image_publisher_ &&
               (result_image_publisher_->get_subscription_count() > 0U ||
               result_image_publisher_->get_intra_process_subscription_count() > 0U);
-            // Keep the existing bridge/label policy independent of theme state.
-            // Only skip display buffers; control geometry remains identical.
-            const bool render_result = preview_enabled_ || shared_ir_preview_output_enabled_ || image_subscribers;
+            const bool use_bridges = lane.use_bridges && lane.centerline.enabled;
+            const bool render_result = use_bridges ||
+              preview_enabled_ || shared_ir_preview_output_enabled_ || image_subscribers;
             const bool render_legacy_image =
               (display_due && (shared_ir_preview_output_enabled_ || !bev_theme_enable_.load())) || image_subscribers;
             cv::Mat labels(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->label_data()));
             profile_frame.render_result = render_legacy_image;
             result = connect_lane_fragments(
-              labels, connection_, render_result, profile, render_legacy_image);
+              labels, lane.connection, render_result, profile, render_legacy_image);
+            auto completed = use_bridges ?
+              lane_geometry_with_bridges(result.labels, lane.connection, profile) : std::nullopt;
             ProfileTimer stop_mask_timer(profile, ProfileStage::stop_mask_render);
             // Stop lines never enter the left/right connector. Retain overlaps
             // in independent masks, painting green only in the display image.
             cv::Mat stop_mask(model_input_height_, model_input_width_, CV_8UC1,
               const_cast<std::uint8_t *>(backend_->stop_line_mask_data()));
-            result.stop_line_present = cv::countNonZero(stop_mask) >= stop_line_min_present_pixels_;
+            result.stop_line_present = cv::countNonZero(stop_mask) >= lane.stop_min_present_pixels;
             if (render_legacy_image) {
               cv::copyMakeBorder(stop_mask, result.stop_line_mask, 0, 0,
                 connection_.padding_px, connection_.padding_px,
@@ -1228,42 +1298,28 @@ private:
               result.image.setTo(cv::Scalar(0, 255, 0), result.stop_line_mask);
             }
             stop_mask_timer.stop();
-            // 주행 컴포넌트 힌트: 코너 바깥 이동 값(웹에서 실시간 변경), 좌우 재판정, 기준 중앙선 요청
-            CenterlineConfig centerline = centerline_;
-            bool side_tracking = side_tracking_enabled_;
-            if (hints && ir_hints_) {   // 터널 IR 검출기: IR 전용 값
-              centerline.corner_outward_offset_m = hints->ir.corner_outward_offset_m;
-              centerline.corner_entry_distance_m = hints->ir.corner_entry_distance_m;
-              centerline.corner_entry_full_offset_distance_m = hints->ir.corner_entry_full_offset_distance_m;
-              if (hints->ir.lane_width_m > 0.0) {centerline.lane_width_m = hints->ir.lane_width_m;}
-              side_tracking = hints->ir.side_tracking;
-            } else if (hints) {
-              centerline.corner_outward_offset_m = hints->corner_outward_offset_m;
-              centerline.corner_entry_distance_m = hints->corner_entry_distance_m;
-              centerline.corner_entry_full_offset_distance_m = hints->corner_entry_full_offset_distance_m;
-              side_tracking = hints->side_tracking;
-            }
-            if (side_tracking) {
-              // 모델이 붙인 좌우 라벨 대신 직전 프레임·차선 폭 기준으로 조각마다 좌우를 다시 정한다
+            if (lane.side_tracking) {
               const double t = message->header.stamp.sec + message->header.stamp.nanosec * 1e-9;
-              side_tracker_->apply(result.observed_paths, model_input_height_, t);
+              track_lane_sides(result.observed_paths, completed ? &completed->observed_paths : nullptr,
+                lane, t);
             }
+            const auto & geometry = completed ? *completed : result;
             result.centerline = generate_centerline(
-              result.labels, result.observed_paths,
-              model_input_width_, connection_.padding_px, centerline, render_legacy_image, profile);
-            if (hints && hints->want_reference && centerline.corner_outer_enabled &&
+              geometry.labels, geometry.observed_paths, model_input_width_, connection_.padding_px,
+              lane.centerline, render_legacy_image, profile);
+            if (hints && hints->want_reference && lane.centerline.corner_outer_enabled &&
               result.centerline.points.size() >= 2U)
             {
-              CenterlineConfig reference = centerline;
+              auto reference = lane.centerline;
               reference.corner_outer_enabled = false;
               result.reference_centerline = generate_centerline(
-                result.labels, result.observed_paths,
+                geometry.labels, geometry.observed_paths,
                 model_input_width_, connection_.padding_px, reference, false, nullptr).points;
             }
             ProfileTimer stop_distance_timer(profile, ProfileStage::stop_distance);
             result.stop_line_distance_m = estimate_stop_line_distance_m(
               stop_mask, result.centerline.points, connection_.padding_px,
-              centerline_.bev_width_m, centerline_.bev_height_m, stop_line_distance_);
+              lane.centerline.bev_width_m, lane.centerline.bev_height_m, lane.stop_distance);
             stop_distance_timer.stop();
             ProfileTimer centerline_render_timer(profile, ProfileStage::centerline_render);
             if (render_legacy_image) {
@@ -1281,9 +1337,11 @@ private:
             timing.correction_nanoseconds += timing.label_export_nanoseconds + connection_nanoseconds;
             if(monitor_->enabled())monitor_->sample("lane_postprocess",connection_nanoseconds/1.e6);
             profile_frame.correction_ms = nanoseconds_to_milliseconds(timing.correction_nanoseconds);
+          }
+          if (lane.connection.enabled || hints) {
             ProfileTimer publish_timer(profile, ProfileStage::publish);
             publish_result(
-              result, *message, input_received_stamp, input_received_at,
+              result, *message, lane.centerline, input_received_stamp, input_received_at,
               processing_started_at, timing, connection_nanoseconds,
               generation);
           }
@@ -1311,10 +1369,20 @@ private:
         preview_execution.record(timing.execution_nanoseconds);
         preview_postprocess.record(timing.correction_nanoseconds);
 
-        if (display_due && shared_ir_preview_output_enabled_ && !result.image.empty()) {
+        if (display_due && shared_ir_preview_output_enabled_ &&
+          (!lane.connection.enabled || !result.image.empty()))
+        {
           auto shared=std::make_shared<bev_handoff::IrLanePreview>();
           shared->header=message->header;
-          shared->image=preview_result_only_enabled_ ? result.image : result_overlay(result,*message);
+          if (lane.connection.enabled) {
+            shared->image=preview_result_only_enabled_ ? result.image :
+              result_overlay(result, *message, lane.overlay_alpha);
+          } else {
+            const cv::Mat raw(model_input_height_, model_input_width_, CV_8UC3,
+              const_cast<std::uint8_t *>(backend_->preview_bgr_data()));
+            cv::copyMakeBorder(raw, shared->image, 0, 0, connection_.padding_px,
+              connection_.padding_px, cv::BORDER_CONSTANT, cv::Scalar());
+          }
           shared->inference_ms=preview_execution.average_milliseconds();
           shared->postprocess_ms=preview_postprocess.average_milliseconds();
           shared->stop_distance_m=result.stop_line_distance_m;
@@ -1325,15 +1393,16 @@ private:
         if (display_due && preview_enabled_) {
           auto snapshot = std::make_shared<PreviewFrame>();
           snapshot->header=message->header;
-          if (connection_.enabled && !preview_result_only_enabled_) {
+          if (lane.connection.enabled && !preview_result_only_enabled_) {
             snapshot->input = message;
           }
           snapshot->result = std::move(result);
+          snapshot->overlay_alpha = lane.overlay_alpha;
           snapshot->average_inference_milliseconds = preview_execution.average_milliseconds();
           snapshot->average_postprocess_milliseconds =
             preview_postprocess.average_milliseconds();
           snapshot->generation = generation;
-          if (!connection_.enabled) {
+          if (!lane.connection.enabled) {
             // Backend buffers are reused by the next inference. The GUI owns this copy.
             const cv::Mat raw(model_input_height_, model_input_width_, CV_8UC3,
               const_cast<std::uint8_t *>(backend_->preview_bgr_data()));
@@ -1506,11 +1575,11 @@ private:
             display_fps,traffic_signal,theme_speed,target_speed,corner_state,duty,"","",tunnel_hud,exposure_hud);
           displayed_generation=fresh ? ir->generation : 0;
           draw=true;
-        } else if (frame && (theme || !connection_.enabled || !frame->result.image.empty()) &&
+        } else if (frame && (theme || !frame->raw.empty() || !frame->result.image.empty()) &&
           (obstacle_overlay_enabled_ || theme || displayed_theme || displayed_ir || frame->generation != displayed_generation ||
           traffic_signal != displayed_signal || hud != displayed_hud))
         {
-          if (theme) {
+          if (theme && frame->raw.empty()) {
             if (!theme_geometry_ready || theme_generation != frame->generation) {
               theme_renderer.update(frame->result);
               theme_generation = frame->generation;
@@ -1529,9 +1598,9 @@ private:
             if (tunnel_enabled_) {append_camera_exposure_hud(canvas,exposure_hud);}
           } else {
             cv::Mat overlay;
-            if (connection_.enabled) {
+            if (frame->raw.empty()) {
               overlay = preview_result_only_enabled_ ? frame->result.image :
-                result_overlay(frame->result, *frame->input);
+                result_overlay(frame->result, *frame->input, frame->overlay_alpha);
             } else {
               cv::copyMakeBorder(frame->raw, overlay, 0, 0,
                 connection_.padding_px, connection_.padding_px,
@@ -1552,7 +1621,8 @@ private:
               frame->average_postprocess_milliseconds,
               average_control_milliseconds,
               frame->result.stop_line_distance_m, display_fps, traffic_signal,
-              theme_speed, target_speed, corner_state, duty, obstacle_status, avoidance_status,tunnel_hud,exposure_hud);
+              theme_speed, target_speed, corner_state, duty, obstacle_status, avoidance_status,
+              tunnel_hud, exposure_hud, frame->raw.empty());
           }
           displayed_generation = frame->generation;
           draw=true;
@@ -1661,7 +1731,8 @@ private:
   // 차선 좌우 재판정 (cone_drive_test 방식). 주행 컴포넌트 힌트가 있으면 그 설정, 없으면 lane_side_tracking_enabled
   bool side_tracking_enabled_{false};
   bool ir_hints_{false};
-  float applied_mask_threshold_{-1.0F};
+  bool use_bridges_for_centerline_{false};
+  LaneSideTrackerConfig side_tracker_config_;
   std::unique_ptr<LaneSideTracker> side_tracker_;
   bool result_publish_enabled_{true};
   std::string result_topic_;

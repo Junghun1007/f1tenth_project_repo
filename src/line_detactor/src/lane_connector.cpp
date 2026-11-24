@@ -498,4 +498,18 @@ LaneConnectionResult connect_lane_fragments(
   return result;
 }
 
+std::optional<LaneConnectionResult> lane_geometry_with_bridges(
+  const cv::Mat & labels, const LaneConnectionConfig & config, ProcessingProfile * profile)
+{
+  const cv::Mat left_bridge = labels == 3;
+  const cv::Mat right_bridge = labels == 4;
+  if (!cv::countNonZero(left_bridge) && !cv::countNonZero(right_bridge)) {return std::nullopt;}
+  auto completed = labels.clone();
+  completed.setTo(1, left_bridge);
+  completed.setTo(2, right_bridge);
+  auto completed_config = config;
+  completed_config.padding_px = 0;  // Input already includes the source padding.
+  return connect_lane_fragments(completed, completed_config, false, profile, false);
+}
+
 }  // namespace line_detactor

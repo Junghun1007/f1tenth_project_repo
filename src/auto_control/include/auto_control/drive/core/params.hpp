@@ -2,6 +2,7 @@
 // 실시간 파라미터 레지스트리: 웹 파라미터 창의 목록·일괄 적용(원자적)·YAML 저장
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -23,8 +24,11 @@ struct ParamSpec {
 
 class ParamRegistry {
 public:
+  using ValueLookup = std::function<double(const std::string &)>;
+  using Validator = std::function<std::string(const ValueLookup &)>;
   void add(const ParamSpec & spec);
   void add_order_constraint(const std::string & lower, const std::string & upper);
+  void add_validator(Validator validate);
   std::vector<ParamSpec> list() const;
   double get(const std::string & name) const;   // 없으면 std::out_of_range
   bool has(const std::string & name) const;
@@ -39,6 +43,7 @@ private:
   std::vector<ParamSpec> specs_;
   std::map<std::string, std::size_t> index_;
   std::vector<std::pair<std::string, std::string>> order_;
+  std::vector<Validator> validators_;
   std::uint64_t version_{0};
 };
 

@@ -99,6 +99,41 @@ TEST(tunnel_ir_resolution_uses_supported_choices) {
   CHECK(!settings_from(r).ir_camera.use_400p_ir_output);
 }
 
+TEST(lane_tuning_uses_independent_rgb_and_ir_profiles) {
+  ParamRegistry r;
+  register_params(r);
+  const auto defaults = settings_from(r);
+  CHECK(defaults.rgb_lane.bridge_centerline);
+  CHECK(defaults.ir_lane.bridge_centerline);
+  CHECK_NEAR(defaults.rgb_lane.left_mask_threshold, .8, 1e-12);
+  CHECK_NEAR(defaults.rgb_lane.right_mask_threshold, .8, 1e-12);
+  CHECK_NEAR(defaults.rgb_lane.stop_line_mask_threshold, .8, 1e-12);
+  CHECK(defaults.rgb_lane.connection_min_component_area_px == 30);
+  CHECK(defaults.rgb_lane.connection_max_gap_px == 90.);
+  CHECK(defaults.rgb_lane.corner_outer_weight == .85);
+  CHECK(defaults.rgb_lane.corner_outward_offset_m == 0.);
+  CHECK(defaults.rgb_lane.stop_line_min_pixels == 30);
+  CHECK(!defaults.ir_lane.stop_line_distance_enabled);
+  CHECK_NEAR(defaults.ir_lane.left_mask_threshold, .5, 1e-12);
+  CHECK(!r.apply({{"lane.corner_outer_full_turn_deg", 7.}, {"ir_lane.mask_threshold", .6}}).first);
+  CHECK(!r.apply({{"ir_lane.left_mask_threshold", -.5}}).first);
+  CHECK(!r.apply({{"lane.result_padding_px", 2.5}}).first);
+  CHECK(!r.apply({{"ir_lane.engine_precision", 3.}}).first);
+  CHECK(r.apply({{"ir_lane.mask_threshold", .6}, {"ir_lane.right_mask_threshold", .72},
+    {"ir_lane.bridge_centerline", 0.}, {"lane.left_mask_threshold", .75}}).first);
+  const auto tuned = settings_from(r);
+  CHECK_NEAR(tuned.ir_lane.left_mask_threshold, .6, 1e-12);
+  CHECK_NEAR(tuned.ir_lane.right_mask_threshold, .72, 1e-12);
+  CHECK_NEAR(tuned.rgb_lane.left_mask_threshold, .75, 1e-12);
+  CHECK_NEAR(tuned.rgb_lane.right_mask_threshold, .8, 1e-12);
+  CHECK(tuned.rgb_lane.bridge_centerline);
+  CHECK(!tuned.ir_lane.bridge_centerline);
+  for (const auto & spec : r.list()) {
+    if (spec.name.rfind("lane.", 0) == 0 || spec.name.rfind("ir_lane.", 0) == 0)
+      CHECK(spec.group == "lane");
+  }
+}
+
 TEST(stage_stats_window) {
   StageStats s(1.0);
   for (int k = 0; k < 30; ++k) s.record("lane_infer", 10.0 + k * 0.03, 10.0 + k * 0.03 + 0.010);
