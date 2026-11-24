@@ -106,19 +106,33 @@ std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
   auto * left_output = left->requestOutput(size);
   auto * right_output = right->requestOutput(size);
   if (gate_control) {
-    // Both sensors run at the same rate; StereoDepth still pairs by sequence.
+    // The two queues can drop different frames under load. Keep the newer
+    // frame while catching up the other side so StereoDepth gets matched pairs.
     auto gate = pipeline.create<dai::node::Script>();
     gate->setScript(R"PY(
 active = True
+left = None
+right = None
 while True:
     control = node.io['control'].tryGet()
     if control is not None:
         active = bool(control.getData()[0])
-    left = node.io['left'].get()
-    right = node.io['right'].get()
-    if active:
-        node.io['left_out'].send(left)
-        node.io['right_out'].send(right)
+    if left is None:
+        left = node.io['left'].get()
+    if right is None:
+        right = node.io['right'].get()
+    left_seq = left.getSequenceNum()
+    right_seq = right.getSequenceNum()
+    if left_seq < right_seq:
+        left = None
+    elif right_seq < left_seq:
+        right = None
+    else:
+        if active:
+            node.io['left_out'].send(left)
+            node.io['right_out'].send(right)
+        left = None
+        right = None
 )PY");
     left_output->link(gate->inputs["left"]);
     right_output->link(gate->inputs["right"]);

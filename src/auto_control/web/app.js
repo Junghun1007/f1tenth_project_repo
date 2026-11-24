@@ -264,8 +264,14 @@ function render() {
     `<tr><td>${STAGE_LABEL[s.name] || s.name}</td><td>${s.ms.toFixed(1)}</td><td>${s.fps.toFixed(0)}</td></tr>`).join("");
   const u = f.usage;
   $("usage").innerHTML = usageRow("CPU 전체", u.cpu) + usageRow("이 프로세스", u.proc_cpu) + usageRow("GPU", u.gpu) + usageRow("메모리", u.mem);
-  $("detTable").querySelector("tbody").innerHTML = f.detections.map((d) =>
+  let detectionRows = f.detections.map((d) =>
     `<tr><td>${d.cls}</td><td>${d.score.toFixed(2)}</td><td>${d.x.toFixed(2)}</td><td>${d.y.toFixed(2)}</td></tr>`).join("");
+  if (!detectionRows && f.stages.some((s) => s.name === "depth_miss")) {
+    const receivingDepth = f.stages.some((s) => s.name === "cam_depth");
+    const reason = receivingDepth ? "RGB와 깊이 촬영 시각을 맞추지 못함" : "최근 1초간 스테레오 깊이 수신 없음";
+    detectionRows = `<tr><td colspan="4">거리 미측정 · ${reason}</td></tr>`;
+  }
+  $("detTable").querySelector("tbody").innerHTML = detectionRows;
   drawBev(f);
 }
 

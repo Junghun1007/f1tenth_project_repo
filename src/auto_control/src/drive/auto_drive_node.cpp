@@ -404,6 +404,7 @@ private:
       img->owner = d; img->data = d->data; img->stride = d->stride; img->width = d->width; img->height = d->height;
       img->t = steady_sec(d->captured_at);
       img->fx = d->intrinsics[0]; img->fy = d->intrinsics[1]; img->cx = d->intrinsics[2]; img->cy = d->intrinsics[3];
+      loop_->stats().record("cam_depth", img->t, acd::now_sec());
       detect_->push_depth(std::move(img));
     }
   }

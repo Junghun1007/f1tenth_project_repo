@@ -1960,6 +1960,9 @@ while True:
   void depth_loop()
   {
     auto last=std::chrono::steady_clock::time_point{};
+    auto report_at=std::chrono::steady_clock::now()+3s;
+    std::uint64_t received=0, published=0, profile_rejected=0, stamp_rejected=0;
+    bool reported_first_frame=false;
     while (!stop_requested_.load(std::memory_order_relaxed)) {
       try {
         if (!pipeline_->isRunning()) {break;}
@@ -1970,17 +1973,31 @@ while True:
           }
         }
         auto packet=depth_queue_->tryGet<dai::ImgFrame>();
+        const auto now=std::chrono::steady_clock::now();
+        const auto phase=rgb_tunnel_phase_.load();
+        const bool profile_ready=tunnel_profile_ready_.load();
+        if (now>=report_at) {
+          if ((!tunnel_enabled_ || phase==RgbTunnelPhase::outside) && published==0) {
+            RCLCPP_WARN(node_.get_logger(),
+              "Depth input: no usable frames; received=%llu profile_rejected=%llu stamp_rejected=%llu profile_ready=%s",
+              static_cast<unsigned long long>(received),static_cast<unsigned long long>(profile_rejected),
+              static_cast<unsigned long long>(stamp_rejected),(!tunnel_enabled_ || profile_ready) ? "yes" : "no");
+          }
+          received=published=profile_rejected=stamp_rejected=0;
+          report_at=now+5s;
+        }
         if (!packet) {std::this_thread::sleep_for(1ms); continue;}
-        if (tunnel_enabled_ && (!tunnel_profile_ready_.load() || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
-          rgb_tunnel_phase_.load()==RgbTunnelPhase::inside ||
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-            packet->getTimestamp(dai::CameraExposureOffset::MIDDLE).time_since_epoch()).count()<depth_resume_ns_.load())) {
+        ++received;
+        const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
+        if (tunnel_enabled_ && (!profile_ready || tunnel_requested_.load() || tunnel_profile_applied_.load() ||
+          phase==RgbTunnelPhase::inside ||
+          std::chrono::duration_cast<std::chrono::nanoseconds>(captured.time_since_epoch()).count()<depth_resume_ns_.load())) {
+          ++profile_rejected;
           bev_handoff::publishDirectDepth(nullptr);
           continue;
         }
-        const auto captured=packet->getTimestamp(dai::CameraExposureOffset::MIDDLE);
-        const double age=std::chrono::duration<double>(std::chrono::steady_clock::now()-captured).count();
-        if (age<0 || age>0.25 || captured<=last) {continue;}
+        const double age=std::chrono::duration<double>(now-captured).count();
+        if (age<0 || age>0.25 || captured<=last) {++stamp_rejected; continue;}
         last=captured;
         if (packet->getType()!=dai::ImgFrame::Type::RAW16) {throw std::runtime_error("Expected RAW16 stereo depth");}
         const auto transform=point_cloud::rgbFromFrame(*packet,*depth_calibration_);
@@ -1995,7 +2012,13 @@ while True:
         frame->rgb_from_depth_translation=transform.translation;
         frame->header.stamp=ros_timestamp_for(captured); frame->header.frame_id=frame_id_;
         frame->captured_at=captured;
+        if (!reported_first_frame) {
+          RCLCPP_INFO(node_.get_logger(),"Depth input: first frame %dx%d, capture age=%.1f ms",
+            frame->width,frame->height,age*1000.0);
+          reported_first_frame=true;
+        }
         bev_handoff::publishDirectDepth(std::move(frame));
+        ++published;
       } catch (const std::exception & e) {
         bev_handoff::publishDirectDepth(nullptr);
         RCLCPP_ERROR_THROTTLE(node_.get_logger(),*node_.get_clock(),1000,"Depth input: %s",e.what());
