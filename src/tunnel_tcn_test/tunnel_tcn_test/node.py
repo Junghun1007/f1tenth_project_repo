@@ -13,6 +13,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from ament_index_python.packages import get_package_share_directory
 from .features import FeatureStream, EventDecoder, sigmoid, FRAME_STATS
 from .backend import TensorRTBackend
@@ -70,6 +71,9 @@ class TunnelNode(Node):
         # 단독 실행은 지금처럼 영상(image_topic)을 받아 여기서 통계를 계산한다
         stats_topic = parameter('stats_topic', '')
         self.stats_input = bool(stats_topic)
+        self.accept_frames_after_ns = None
+        if self.stats_input and self.decoder.initial_state == 'outside':
+            self.reset_service = self.create_service(Trigger, '/tunnel_tcn/reset_outside', self.reset_outside)
         if self.stats_input:
             from camera_driver.msg import TunnelFrameStats
             self.subscription = self.create_subscription(TunnelFrameStats, stats_topic, self.on_image, qos)
@@ -105,6 +109,13 @@ class TunnelNode(Node):
         if new_drive:
             self.last_event = None
 
+    def reset_outside(self, _request, response):
+        self.accept_frames_after_ns = self.get_clock().now().nanoseconds
+        self.pending = None
+        self.clear_history(new_drive=True)
+        response.success = True
+        return response
+
     def process(self):
         if self.pending is None:
             if self.last_received is not None and time.monotonic() - self.last_received > .5:
@@ -113,6 +124,8 @@ class TunnelNode(Node):
             return
         message, self.pending = self.pending, None
         stamp = message.header.stamp.sec * 1_000_000_000 + message.header.stamp.nanosec
+        if self.accept_frames_after_ns is not None and stamp <= self.accept_frames_after_ns:
+            return
         age = (self.get_clock().now().nanoseconds - stamp) / 1e9
         if age > self.max_age or age < -.1:
             self.status = 'STALE IMAGE / CHECK CAMERA CLOCK'

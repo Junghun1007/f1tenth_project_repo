@@ -220,7 +220,11 @@ public:
     }
     if (kind == "entry" && ir_exit_latched_at) {return false;}
     last_event_ns = stamp;
-    const std::string target = kind == "entry" ? "IR" : "RGB";
+    return request_source(kind == "entry" ? "IR" : "RGB", now_ns);
+  }
+
+  bool request_source(std::string target, std::int64_t now_ns)
+  {
     if (target == requested) {return false;}
     if (target == "IR") {ir_length_exit.reset();}
     transition_trigger.clear();
@@ -237,14 +241,17 @@ public:
 
   // True when this message is the selected source and should be forwarded.
   template<typename Msg>
-  bool lane(const std::string & source, const Msg & m, std::int64_t now_ns)
+  bool lane(
+    const std::string & source, const Msg & m, std::int64_t now_ns, bool allow_length_exit = true)
   {
     auto last = last_input_ns.find(source);
     if (last == last_input_ns.end()) {return false;}
     const auto stamp = stamp_ns(m);
     const double age = (now_ns - stamp) / 1e9;
     const bool fresh = (validation_mode && source == "IR" && !transitioning()) || (0 <= age && age <= max_age);
-    if (source == "IR" && state == "INSIDE" && ir_length_exit.observe(m, now_ns, max_age, rules)) {
+    if (allow_length_exit && source == "IR" && state == "INSIDE" &&
+      ir_length_exit.observe(m, now_ns, max_age, rules))
+    {
       if (event("exit", now_ns, now_ns)) {
         ir_exit_latched_at = now_ns;
         transition_trigger = reason = "ir_length_drop";

@@ -30,6 +30,8 @@ const SIGNAL_KO = ["없음", "빨강", "초록"];
 const PLAN_LABEL = { center: "중앙선 추종", lane: "차선 안 회피", "lane-tight": "차선 안(여유 0)", free: "차선 밖 회피", fallback: "대체 경로" };
 
 let latest = null;
+let forceIrRequest = false;
+let connected = false;
 let params = [];
 let edits = {};
 let group = "obstacle";
@@ -62,6 +64,8 @@ function connect() {
 }
 
 function setLink(ok) {
+  connected = ok;
+  if (!ok) $("btnForceIr").disabled = true;
   const el = $("link");
   el.textContent = ok ? "연결됨" : "연결 끊김";
   el.className = "link" + (ok ? " ok" : "");
@@ -217,15 +221,25 @@ function render() {
     const h = $("handoverChip"); h.className = "chipx " + f.handover;
     h.textContent = "전환 " + ({ AUTO: "AUTO", STOPPING: "제동 중", MANUAL: "MANUAL" }[f.handover] || f.handover);
   }
-  const src = (f.tunnel && f.tunnel.source) || "RGB";
+  const tunnel = f.tunnel || {};
+  const src = tunnel.source || "RGB";
+  const forceIr = $("btnForceIr");
+  const stopped = ["READY", "MANUAL"].includes(f.state);
+  const irPreparing = tunnel.force_ir && (src !== "IR" || tunnel.state !== "INSIDE");
+  forceIr.hidden = $("forceIrStatus").hidden = !tunnel.enabled;
+  forceIr.disabled = !connected || !stopped || forceIrRequest || !tunnel.force_ir_change_allowed;
+  forceIr.setAttribute("aria-pressed", Boolean(tunnel.force_ir));
+  forceIr.classList.toggle("go", Boolean(tunnel.force_ir));
+  forceIr.textContent = forceIrRequest ? "터널 IR 요청 중" : irPreparing ? "터널 IR 준비 중" :
+    tunnel.force_ir ? "터널 IR 강제 ON" : "터널 IR 강제 OFF";
   $("sourceChip").className = "chipx " + src;
   $("sourceChip").textContent = src === "IR" ? "IR 터널" : "RGB";
   document.querySelectorAll("#modeSeg button").forEach((b) => {
     b.classList.toggle("on", b.dataset.mode === f.mode);
-    b.disabled = !["READY", "MANUAL"].includes(f.state);
+    b.disabled = !stopped;
   });
-  const stopped = ["READY", "MANUAL"].includes(f.state);
-  $("btnStart").disabled = !(f.mode === "drive" && stopped && Object.values(f.readiness).every(Boolean));
+  $("btnStart").disabled = forceIrRequest || irPreparing ||
+    !(f.mode === "drive" && stopped && Object.values(f.readiness).every(Boolean));
   $("btnStop").disabled = !["DRIVING", "STOPPING"].includes(f.state);
   $("btnRefit").disabled = !["READY", "MANUAL", "DRIVING"].includes(f.state);
   $("btnRefit").hidden = f.refit_supported === false;   // auto_control: 카메라 자세는 시작할 때 bev_processor가 측정
@@ -351,6 +365,18 @@ function bind() {
   }));
   $("btnStart").addEventListener("click", async () => { const r = await post("/api/start"); if (!r.ok) $("reason").textContent = r.reason; });
   $("btnStop").addEventListener("click", () => post("/api/stop"));
+  $("btnForceIr").addEventListener("click", async () => {
+    if ($("btnForceIr").disabled) return;
+    const enabled = !latest.tunnel.force_ir;
+    forceIrRequest = true;
+    $("forceIrStatus").textContent = "";
+    render();
+    const reply = await post("/api/tunnel/force-ir", { enabled });
+    forceIrRequest = false;
+    if (reply.ok) latest.tunnel.force_ir = enabled;
+    else $("forceIrStatus").textContent = reply.reason;
+    render();
+  });
   // 수동 주행 녹화: 사람이 달린 경로 + 같은 순간 계획기 경로·차선·콘을 남겨 파라미터를 찾는 데 쓴다
   $("btnRec").addEventListener("click", async () => {
     const r = await post("/api/record/start", { label: $("recLabel").value });

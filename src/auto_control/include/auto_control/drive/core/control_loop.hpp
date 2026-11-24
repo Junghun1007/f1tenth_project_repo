@@ -109,6 +109,7 @@ public:
 
   bool cones_nearby() const;
   bool refit_pending() const;
+  bool tunnel_override_allowed(double now) const;
   DriveState state() const;
   double speed() const { return speed_atomic_.load(std::memory_order_relaxed); }   // 락 없음 (IMU 스레드에서 호출)
   std::uint64_t dropped_detections() const { std::lock_guard<std::mutex> l(m_); return dropped_; }
@@ -164,7 +165,7 @@ private:
   InspectionModel models_[3];   // 0=차선, 1=YOLO, 2=터널 IR 차선 (이름이 비면 안 씀)
   bool vesc_connected_{false};
   double last_erpm_t_{-1e9}, last_lane_t_{-1e9}, last_control_t_{-1}, last_request_t_{-1e9}, last_yaw_t_{-1};
-  double speed_{0};
+  double speed_{0}, measured_speed_{0};
   double odom_speed_{0};
   std::atomic<double> speed_atomic_{0.0};
   std::vector<Vec2> rec_cones_;   // 녹화용: 이번 계획에 쓴 콘

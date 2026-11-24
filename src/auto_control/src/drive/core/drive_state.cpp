@@ -118,6 +118,10 @@ void DriveStateMachine::on_handover_mode(const std::string & m, double now) {
   (void)now;
 }
 
+bool DriveStateMachine::is_standstill(double speed) const {
+  return std::abs(speed) < standstill_speed_;
+}
+
 void DriveStateMachine::tick(const Readiness & r, double speed, double now) {
   now_ = now;
   if (state_ == DriveState::Arming && now - arming_since_ > arming_timeout_) {
@@ -129,7 +133,7 @@ void DriveStateMachine::tick(const Readiness & r, double speed, double now) {
     if (!problem.empty()) to_stopping(problem == "no browser heartbeat" ? "browser link lost" : problem);
   }
   if (state_ == DriveState::Stopping) {
-    if (std::abs(speed) < standstill_speed_) { if (still_since_ < 0) still_since_ = now; }
+    if (is_standstill(speed)) { if (still_since_ < 0) still_since_ = now; }
     else still_since_ = -1;
   }
 }

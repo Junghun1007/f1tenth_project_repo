@@ -87,6 +87,12 @@ void WebServer::routes() {
   s.Get("/api/params", [this](const httplib::Request &, httplib::Response & res) { res.set_content(params_.to_json(), "application/json"); });
   s.Post("/api/start", [this](const httplib::Request &, httplib::Response & res) { send(res, cb_.start ? cb_.start() : Reply{false, "unavailable"}); });
   s.Post("/api/stop", [this](const httplib::Request &, httplib::Response & res) { if (cb_.stop) cb_.stop(); send(res, {true, ""}); });
+  s.Post("/api/tunnel/force-ir", [this, body](const httplib::Request & req, httplib::Response & res) {
+    const auto j = body(req);
+    const auto * enabled = j ? j->get("enabled") : nullptr;
+    if (!enabled || enabled->kind != JsonValue::Bool) return send(res, {false, "enabled must be a boolean"});
+    send(res, cb_.force_ir ? cb_.force_ir(enabled->b) : Reply{false, "unavailable"});
+  });
   s.Post("/api/refit", [this](const httplib::Request &, httplib::Response & res) { send(res, cb_.refit ? cb_.refit() : Reply{false, "unavailable"}); });
   s.Post("/api/record/start", [this, body](const httplib::Request & req, httplib::Response & res) {
     const auto j = body(req);

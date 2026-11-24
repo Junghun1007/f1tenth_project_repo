@@ -10,16 +10,13 @@ namespace manual_capture
 {
 
 CaptureWriter::CaptureWriter(
-  std::filesystem::path session_directory, std::string meta_header,
-  const std::size_t maximum_queued_events)
-: session_directory_(std::move(session_directory)),
-  meta_header_(std::move(meta_header)),
+  std::string meta_header, const std::size_t maximum_queued_events)
+: meta_header_(std::move(meta_header)),
   maximum_queued_events_(std::max<std::size_t>(1U, maximum_queued_events))
 {
   for (auto & count : written_) {
     count.store(0U);
   }
-  std::filesystem::create_directories(session_directory_);
   thread_ = std::thread(&CaptureWriter::run, this);
 }
 
@@ -103,7 +100,7 @@ void CaptureWriter::write(const CaptureEvent & event)
   const std::vector<int> parameters{cv::IMWRITE_JPEG_QUALITY, jpeg_quality_.load()};
   for (const auto & image : event.images) {
     try {
-      const auto directory = session_directory_ / viewKey(image.view);
+      const auto directory = event.session_directory / viewKey(image.view);
       std::filesystem::create_directories(directory);
       const auto path = directory / frameFileName(event.index);
       if (!image.image.empty() && cv::imwrite(path.string(), image.image, parameters)) {
@@ -118,12 +115,15 @@ void CaptureWriter::write(const CaptureEvent & event)
   if (event.meta_row.empty()) {
     return;
   }
-  std::ofstream meta(session_directory_ / "meta.csv", std::ios::app);
-  if (!meta_header_written_) {
+  std::ofstream meta(event.session_directory / "meta.csv", std::ios::app | std::ios::ate);
+  if (meta.tellp() == std::streampos(0)) {
     meta << meta_header_ << '\n';
-    meta_header_written_ = true;
   }
   meta << event.meta_row << '\n';
+  meta.close();
+  if (!meta) {
+    failed_.fetch_add(1U);
+  }
 }
 
 }  // namespace manual_capture

@@ -26,6 +26,7 @@ struct CaptureImage
 
 struct CaptureEvent
 {
+  std::filesystem::path session_directory;
   std::uint64_t index{0U};
   std::vector<CaptureImage> images;
   std::string meta_row;  // CSV row without newline, written after the images
@@ -36,8 +37,7 @@ struct CaptureEvent
 class CaptureWriter
 {
 public:
-  CaptureWriter(std::filesystem::path session_directory, std::string meta_header,
-    std::size_t maximum_queued_events);
+  CaptureWriter(std::string meta_header, std::size_t maximum_queued_events);
   ~CaptureWriter();
 
   CaptureWriter(const CaptureWriter &) = delete;
@@ -48,7 +48,6 @@ public:
   bool enqueue(CaptureEvent event);
   void flush();
 
-  const std::filesystem::path & sessionDirectory() const {return session_directory_;}
   std::uint64_t written(View view) const {return written_[index(view)].load();}
   std::uint64_t writtenTotal() const;
   std::uint64_t dropped() const {return dropped_.load();}
@@ -60,11 +59,9 @@ private:
   void run();
   void write(const CaptureEvent & event);
 
-  std::filesystem::path session_directory_;
   std::string meta_header_;
   std::size_t maximum_queued_events_;
   std::atomic<int> jpeg_quality_{95};
-  bool meta_header_written_{false};
 
   mutable std::mutex mutex_;
   std::condition_variable wake_;

@@ -22,6 +22,7 @@ using Reply = std::pair<bool, std::string>;
 struct WebCallbacks {
   std::function<Reply()> start, refit, params_save;
   std::function<void()> stop;
+  std::function<Reply(bool)> force_ir;
   std::function<Reply(const std::string &)> mode;
   std::function<Reply(const std::map<std::string, double> &)> params;
   std::function<void(const std::string &)> heartbeat;

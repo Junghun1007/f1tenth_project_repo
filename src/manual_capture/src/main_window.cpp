@@ -7,6 +7,7 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QGridLayout>
+#include <QGuiApplication>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QImage>
@@ -15,6 +16,8 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScreen>
+#include <QScrollArea>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStyle>
@@ -180,8 +183,7 @@ double steadyNowSec()
 // ---------------------------------------------------------------- ViewPane
 
 ViewPane::ViewPane(
-  const View view, const QString & title, const bool compact, const int preview_fps,
-  QWidget * parent)
+  const View view, const QString & title, const int preview_fps, QWidget * parent)
 : QFrame(parent), view_(view)
 {
   setObjectName("pane");
@@ -194,7 +196,7 @@ ViewPane::ViewPane(
   count_ = styled(QStringLiteral("📷 0장"), "count");
   preview_button_ = new QPushButton(QStringLiteral("프리뷰"));
   preview_button_->setCheckable(true);
-  capture_button_ = new QPushButton(compact ? QStringLiteral("캡처") : QStringLiteral("이 화면만 캡처"));
+  capture_button_ = new QPushButton(QStringLiteral("캡처"));
   capture_button_->setObjectName("one");
   capture_button_->setToolTip(QStringLiteral("이 화면 1장만 저장 (자동 캡처 중에는 불가)"));
   fps_ = new QSpinBox;
@@ -207,21 +209,13 @@ ViewPane::ViewPane(
   head->addWidget(lock_tag_);
   head->addStretch(1);
   head->addWidget(count_);
-  if (compact) {
-    layout->addLayout(head);
-    auto * row = new QHBoxLayout;
-    row->addWidget(preview_button_);
-    row->addWidget(capture_button_);
-    row->addWidget(new QLabel(QStringLiteral("FPS")));
-    row->addWidget(fps_);
-    layout->addLayout(row);
-  } else {
-    head->addWidget(preview_button_);
-    head->addWidget(capture_button_);
-    head->addWidget(new QLabel(QStringLiteral("프리뷰 FPS")));
-    head->addWidget(fps_);
-    layout->addLayout(head);
-  }
+  layout->addLayout(head);
+  auto * row = new QHBoxLayout;
+  row->addWidget(preview_button_);
+  row->addWidget(capture_button_);
+  row->addWidget(new QLabel(QStringLiteral("FPS")));
+  row->addWidget(fps_);
+  layout->addLayout(row);
 
   image_ = new QLabel;
   image_->setObjectName("image");
@@ -354,7 +348,17 @@ MainWindow::MainWindow(AppParams params, std::shared_ptr<VehicleTelemetry> telem
   outer->addWidget(body_, 1);
   outer->addWidget(buildStatusBar());
   setCentralWidget(root);
-  resize(1920, 1040);
+  const auto * screen = QGuiApplication::primaryScreen();
+  const QSize preferred(1600, 940);
+  const QSize available = screen ? screen->availableGeometry().size() - QSize(32, 64) : preferred;
+  resize(preferred.boundedTo(available));
+
+  writer_ = std::make_unique<CaptureWriter>(
+    "event,unix_time_ns,local_time,trigger,views,stereo_mode,rgb_size,rgb_format,"
+    "stereo_size,rgb_exposure_us,rgb_iso,left_exposure_us,left_iso,right_exposure_us,"
+    "right_iso,flood,dot,erpm,servo,bev_height_m,bev_roll_deg,bev_pitch_down_deg,bev_pose",
+    static_cast<std::size_t>(params_.writer_queue_events));
+  writer_->setJpegQuality(jpeg_quality_->value());
 
   try {
     reprojector_ = std::make_unique<CudaCenterReprojector>();
@@ -469,7 +473,7 @@ QWidget * MainWindow::buildViews()
   const std::array<std::pair<View, std::pair<int, int>>, 4> positions{{
     {View::RGB, {0, 0}}, {View::CENTER, {0, 1}}, {View::LEFT, {1, 0}}, {View::RIGHT, {1, 1}}}};
   for (const auto & [view, cell] : positions) {
-    auto * pane = new ViewPane(view, viewTitle(view), false, params_.camera_preview_fps, area);
+    auto * pane = new ViewPane(view, viewTitle(view), params_.camera_preview_fps, area);
     panes_[index(view)] = pane;
     grid->addWidget(pane, cell.first, cell.second);
   }
@@ -484,13 +488,13 @@ QWidget * MainWindow::buildViews()
   auto * column = new QVBoxLayout;
   column->setSpacing(6);
   for (const auto view : {View::RGB_BEV, View::LEFT_BEV}) {
-    auto * pane = new ViewPane(view, viewTitle(view), true, params_.bev_preview_fps, area);
+    auto * pane = new ViewPane(view, viewTitle(view), params_.bev_preview_fps, area);
     panes_[index(view)] = pane;
     column->addWidget(pane, 1);
   }
   auto * column_widget = new QWidget;
   column_widget->setLayout(column);
-  column_widget->setFixedWidth(250);
+  column_widget->setFixedWidth(216);
   layout->addWidget(column_widget);
 
   for (auto * pane : panes_) {
@@ -517,12 +521,19 @@ QWidget * MainWindow::buildSidePanel()
   layout->setSpacing(6);
   layout->addWidget(buildTargetBox());
   auto * tabs = new QTabWidget;
-  tabs->addTab(buildRgbTab(), QStringLiteral("컬러"));
-  tabs->addTab(buildStereoTab(), QStringLiteral("스테레오"));
-  tabs->addTab(buildBevTab(), QStringLiteral("BEV / Refit"));
-  tabs->addTab(buildSaveTab(), QStringLiteral("저장"));
+  const auto add_tab = [tabs](QWidget * content, const QString & title) {
+      auto * scroll = new QScrollArea;
+      scroll->setWidgetResizable(true);
+      scroll->setFrameShape(QFrame::NoFrame);
+      scroll->setWidget(content);
+      tabs->addTab(scroll, title);
+    };
+  add_tab(buildRgbTab(), QStringLiteral("컬러"));
+  add_tab(buildStereoTab(), QStringLiteral("스테레오"));
+  add_tab(buildBevTab(), QStringLiteral("BEV / Refit"));
+  add_tab(buildSaveTab(), QStringLiteral("저장"));
   layout->addWidget(tabs, 1);
-  panel->setFixedWidth(430);
+  panel->setFixedWidth(400);
   return panel;
 }
 
@@ -799,6 +810,7 @@ QWidget * MainWindow::buildStatusBar()
   disk_label_ = styled(QString(), "dim");
   fps_label_ = styled(QString(), "dim");
   message_label_ = styled(QString(), "warn");
+  message_label_->setWordWrap(true);
   for (auto * label : {rec_label_, total_label_, queue_label_, disk_label_, fps_label_}) {
     layout->addWidget(label);
   }
@@ -943,8 +955,11 @@ void MainWindow::finishJob()
     pane->next_preview_sec = 0.0;
   }
   refreshControls();
-  if (resume_auto_after_job_ && engine_.running()) {
-    handleAction(controller_.start());
+  if (resume_auto_after_job_ && engine_.running() &&
+    controller_.start() == CaptureAction::START_AUTO)
+  {
+    startAutoScheduler();
+    refreshControls();
   }
   resume_auto_after_job_ = false;
 }
@@ -1305,8 +1320,12 @@ void MainWindow::handleAction(const CaptureAction action)
       captureViews(selection_.captureTargets(), Trigger::SINGLE);
       break;
     case CaptureAction::START_AUTO:
-      recording_started_sec_ = steadyNowSec();
-      auto_scheduler_.reset(recording_started_sec_, capture_fps_->value());
+      auto_session_ = {};
+      if (createSession(auto_session_, "auto", std::time(nullptr))) {
+        startAutoScheduler();
+      } else {
+        controller_.stop();
+      }
       break;
     case CaptureAction::STOP_AUTO:
     case CaptureAction::NONE:
@@ -1315,29 +1334,34 @@ void MainWindow::handleAction(const CaptureAction action)
   refreshControls();
 }
 
-bool MainWindow::ensureWriter()
+void MainWindow::startAutoScheduler()
 {
-  if (writer_) {
-    return true;
-  }
+  recording_started_sec_ = steadyNowSec();
+  auto_scheduler_.reset(recording_started_sec_, capture_fps_->value());
+}
+
+bool MainWindow::createSession(
+  CaptureSession & session, const char * category, const std::time_t start_time)
+{
   try {
-    const auto session = std::filesystem::path(params_.capture_root) /
-      sessionDirectoryName(std::time(nullptr));
-    writer_ = std::make_unique<CaptureWriter>(
-      session,
-      "event,unix_time_ns,local_time,trigger,views,stereo_mode,rgb_size,rgb_format,"
-      "stereo_size,rgb_exposure_us,rgb_iso,left_exposure_us,left_iso,right_exposure_us,"
-      "right_iso,flood,dot,erpm,servo,bev_height_m,bev_roll_deg,bev_pitch_down_deg,bev_pose",
-      static_cast<std::size_t>(params_.writer_queue_events));
-    writer_->setJpegQuality(jpeg_quality_->value());
-    session_label_->setText(QString::fromStdString(session.string()));
-    std::ofstream settings(session / "settings.yaml");
+    const auto parent = std::filesystem::path(params_.capture_root) / category;
+    std::filesystem::create_directories(parent);
+    const auto name = sessionDirectoryName(start_time);
+    auto directory = parent / name;
+    for (unsigned suffix = 2; !std::filesystem::create_directory(directory); ++suffix) {
+      directory = parent / (name + "_" + std::to_string(suffix));
+    }
+    std::ofstream settings(directory / "settings.yaml");
+    settings.exceptions(std::ios::badbit | std::ios::failbit);
     settings << "device_id: \"" << engine_.deviceId() << "\"\n"
              << "bev_grid: {x_min_m: " << params_.grid.x_min_m << ", x_max_m: " << params_.grid.x_max_m
              << ", y_min_m: " << params_.grid.y_min_m << ", y_max_m: " << params_.grid.y_max_m
              << ", meter_per_pixel: " << params_.grid.meter_per_pixel
              << ", camera_x_m: " << params_.grid.camera_x_m << "}\n"
              << "folders: [rgb, stereo_center, stereo_left, stereo_right, rgb_bev, stereo_left_bev]\n";
+    settings.close();
+    session.directory = std::move(directory);
+    session_label_->setText(QString::fromStdString(session.directory.string()));
     return true;
   } catch (const std::exception & exception) {
     message_label_->setText(QStringLiteral("세션 폴더 생성 실패: %1").arg(exception.what()));
@@ -1385,14 +1409,17 @@ void MainWindow::captureViews(const std::vector<View> & views, const Trigger tri
     }
     return;
   }
-  if (!ensureWriter()) {
+  auto & session = trigger == Trigger::AUTO ? auto_session_ : manual_session_;
+  if (session.directory.empty() &&
+    (trigger == Trigger::AUTO || !createSession(session, "manual", launched_at_)))
+  {
     return;
   }
   const auto rgb = engine_.latestRgb();
   const auto stereo = engine_.latestStereo();
   auto images = computeViews(views, rgb, stereo);
   CaptureEvent event;
-  event.index = next_event_index_;
+  event.index = session.next_index;
   std::vector<View> saved;
   for (const auto view : views) {
     auto found = images.find(view);
@@ -1406,9 +1433,13 @@ void MainWindow::captureViews(const std::vector<View> & views, const Trigger tri
   if (saved.empty()) {
     return;
   }
+  event.session_directory = session.directory;
   event.meta_row = metaRow(event.index, trigger, saved, rgb, stereo);
   if (writer_->enqueue(std::move(event))) {
-    ++next_event_index_;
+    ++session.next_index;
+    if (trigger != Trigger::AUTO) {
+      session_label_->setText(QString::fromStdString(session.directory.string()));
+    }
   }
 }
 

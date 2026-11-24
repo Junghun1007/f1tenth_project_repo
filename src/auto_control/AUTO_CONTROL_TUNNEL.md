@@ -204,6 +204,8 @@ ENTERING/EXITING 중 외부 장애물·신호등 제어는 중지하고 OUTSIDE�
 `false` 모드는 TCN이 WARMUP 중이거나 0.5초 넘게 보고가 없으면 차선 전달을 보류한다.
 TCN 이벤트 한 개가 유실되어도 이후 보고에 유지되는 inside/outside 상태로 요청을 복구한다.
 
+웹의 `터널 IR 강제 전환`은 VESC가 연결되어 있고 최신 ERPM으로 정지가 확인된 대기/수동 상태에서만 켜고 끌 수 있다. 켜면 TCN 인식을 `OUTSIDE`부터 다시 시작하고, 새 유효한 IR 경로가 준비되면 IR 차선으로 넘어간다. 켜져 있는 동안에는 TCN과 IR 경로 길이의 출구 판단으로 차선 소스가 바뀌지 않는다. 끄면 최신 TCN 보고에 따라 자동 전환을 재개한다. 유효한 보고가 아직 없으면 현재 차선을 유지하고 다음 LIVE 보고를 기다린다.
+
 혼합 전용 `tunnel_handover.yaml`과 해당 파라미터를 제거했다. 별도 전환 설정 없이
 기존 제어 YAML/CLI의 경로 기하 조건과 최신성 기준을 선택기에 전달한다.
 완료 로그 `Tunnel handover {target, reason, total_ms}`에서

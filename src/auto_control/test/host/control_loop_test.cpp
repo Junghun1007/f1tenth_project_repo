@@ -44,6 +44,26 @@ TEST(detect_mode_never_publishes) {
   CHECK(!r.loop->request_start(r.t).first);
 }
 
+TEST(tunnel_override_requires_fresh_standstill_and_manual_handover) {
+  Rig r(DriveMode::Drive);
+  CHECK(!r.loop->tunnel_override_allowed(r.t));
+  r.step();
+  CHECK(r.loop->tunnel_override_allowed(r.t));
+  CHECK(!r.loop->tunnel_override_allowed(r.t + r.rc.erpm_timeout_sec + 0.01));
+  r.step(0.5);
+  CHECK(!r.loop->tunnel_override_allowed(r.t));
+  for (int k = 0; k < 15; ++k) r.step();
+  CHECK(r.loop->tunnel_override_allowed(r.t));
+  CHECK(r.loop->request_start(r.t).first);
+  CHECK(!r.loop->tunnel_override_allowed(r.t));
+  r.loop->on_handover_mode("AUTO", r.t);
+  CHECK(!r.loop->tunnel_override_allowed(r.t));
+  r.loop->request_stop("test", r.t);
+  CHECK(!r.loop->tunnel_override_allowed(r.t));
+  r.loop->on_handover_mode("MANUAL", r.t);
+  CHECK(r.loop->tunnel_override_allowed(r.t));
+}
+
 TEST(drive_flow_start_to_commands) {
   Rig r(DriveMode::Drive);
   r.step();

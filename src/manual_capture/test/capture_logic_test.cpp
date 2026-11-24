@@ -114,25 +114,45 @@ TEST(CaptureWriter, WritesJpegsPerViewAndMeta)
   const auto session = std::filesystem::temp_directory_path() / "manual_capture_writer_test";
   std::filesystem::remove_all(session);
   {
-    CaptureWriter writer(session, "event,views", 4);
+    CaptureWriter writer("event,views", 4);
     CaptureEvent event;
+    event.session_directory = session / "manual";
     event.index = 7;
     event.images.push_back({View::RGB, cv::Mat(8, 8, CV_8UC3, cv::Scalar(10, 20, 30))});
     event.images.push_back({View::LEFT, cv::Mat(8, 8, CV_8UC1, cv::Scalar(99))});
     event.meta_row = "7,rgb;stereo_left";
+    ASSERT_TRUE(writer.enqueue(event));
+    auto auto_event = event;
+    auto_event.session_directory = session / "auto" / "first";
+    auto_event.images = {{View::RGB_BEV, cv::Mat(8, 8, CV_8UC3, cv::Scalar(10, 20, 30))}};
+    auto_event.meta_row = "7,rgb_bev";
+    ASSERT_TRUE(writer.enqueue(auto_event));
+    auto_event.session_directory = session / "auto" / "second";
+    ASSERT_TRUE(writer.enqueue(std::move(auto_event)));
+    event.index = 8;
+    event.meta_row = "8,rgb;stereo_left";
     ASSERT_TRUE(writer.enqueue(std::move(event)));
     writer.flush();
-    EXPECT_EQ(writer.written(View::RGB), 1U);
-    EXPECT_EQ(writer.written(View::LEFT), 1U);
-    EXPECT_EQ(writer.writtenTotal(), 2U);
+    EXPECT_EQ(writer.written(View::RGB), 2U);
+    EXPECT_EQ(writer.written(View::LEFT), 2U);
+    EXPECT_EQ(writer.written(View::RGB_BEV), 2U);
+    EXPECT_EQ(writer.writtenTotal(), 6U);
   }
-  EXPECT_TRUE(std::filesystem::exists(session / "rgb" / "000007.jpg"));
-  EXPECT_TRUE(std::filesystem::exists(session / "stereo_left" / "000007.jpg"));
-  std::ifstream meta(session / "meta.csv");
-  std::string header, row;
-  std::getline(meta, header);
-  std::getline(meta, row);
-  EXPECT_EQ(header, "event,views");
-  EXPECT_EQ(row, "7,rgb;stereo_left");
+  EXPECT_TRUE(std::filesystem::exists(session / "manual" / "rgb" / "000007.jpg"));
+  EXPECT_TRUE(std::filesystem::exists(session / "manual" / "stereo_left" / "000007.jpg"));
+  EXPECT_TRUE(std::filesystem::exists(session / "auto" / "first" / "rgb_bev" / "000007.jpg"));
+  EXPECT_TRUE(std::filesystem::exists(session / "auto" / "second" / "rgb_bev" / "000007.jpg"));
+  const auto check_meta = [](const std::filesystem::path & directory,
+      const std::vector<std::string> & expected) {
+      std::ifstream meta(directory / "meta.csv");
+      std::vector<std::string> rows;
+      for (std::string row; std::getline(meta, row);) {
+        rows.push_back(row);
+      }
+      EXPECT_EQ(rows, expected);
+    };
+  check_meta(session / "manual", {"event,views", "7,rgb;stereo_left", "8,rgb;stereo_left"});
+  check_meta(session / "auto" / "first", {"event,views", "7,rgb_bev"});
+  check_meta(session / "auto" / "second", {"event,views", "7,rgb_bev"});
   std::filesystem::remove_all(session);
 }

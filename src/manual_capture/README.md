@@ -48,7 +48,8 @@ ros2 launch manual_capture manual_capture.launch.py \
   하단: REC·경과시간 │ 총 장수 │ 저장 큐·드롭 │ 디스크 여유 │ 실제 FPS
 ```
 
-- 화면마다 `프리뷰` on/off, `이 화면만 캡처`, 프리뷰 FPS, 실행 후 누적 캡처 장수.
+- 기본 창 크기는 최대 1600×940이며 화면의 작업 영역에 맞춰 줄어든다. 설정 탭은 스크롤할 수 있다.
+- 화면마다 `프리뷰` on/off, 해당 화면만 저장하는 `캡처` 버튼, 프리뷰 FPS, 실행 후 누적 캡처 장수가 있다.
 - 초기 상태: 컬러 프리뷰만 ON, IR flood/도트 모두 0.
 
 ## 캡처 규칙
@@ -86,18 +87,22 @@ ros2 launch manual_capture manual_capture.launch.py \
 ## 저장 구조
 
 ```text
-captures/session_YYYYMMDD_HHMMSS/
-├── rgb/000001.jpg
-├── stereo_center/000001.jpg
-├── stereo_left/000001.jpg
-├── stereo_right/000001.jpg
-├── rgb_bev/000001.jpg
-├── stereo_left_bev/000001.jpg
-├── meta.csv
-└── settings.yaml
+captures/
+├── manual/session_YYYYMMDD_HHMMSS/  ← 패키지 시작 시각
+│   ├── rgb/000001.jpg
+│   ├── rgb_bev/000001.jpg
+│   ├── meta.csv
+│   └── settings.yaml
+└── auto/session_YYYYMMDD_HHMMSS/    ← 자동 캡처 시작 시각
+    ├── rgb/000001.jpg
+    ├── rgb_bev/000001.jpg
+    ├── meta.csv
+    └── settings.yaml
 ```
 
-- 한 번의 캡처(이벤트)는 모든 화면에서 같은 번호를 쓴다. 이 화면만 캡처도 새 번호를 받는다.
+- 수동 폴더는 패키지 실행 시각을 기준으로 첫 수동 캡처 때 만든다. 자동 폴더는 GUI 또는 A 버튼으로 자동 캡처를 시작할 때마다 만든다. 같은 초에 여러 번 시작하면 이름에 번호를 붙인다. Refit이나 카메라 재시작 후에는 기존 자동 폴더에 이어서 저장한다.
+- 선택한 화면의 폴더만 생긴다. 컬러와 컬러 BEV 외에 `stereo_center`, `stereo_left`, `stereo_right`, `stereo_left_bev`를 쓸 수 있다.
+- 한 번의 캡처는 모든 화면에서 같은 파일 번호를 쓴다. 번호는 세션별로 시작하고, 이 화면만 캡처도 새 번호를 받는다.
 - 모든 이미지는 JPEG(품질 기본 95, 저장 탭에서 변경)이며 오버레이 없는 원본이다.
 - `meta.csv`: event, 시각, 트리거(single/auto/view), 저장 화면, 모드, 해상도·포맷,
   실제 노출·ISO(컬러/L/R), flood·dot, ERPM, 서보, BEV 높이·roll·pitch, 자세 출처.

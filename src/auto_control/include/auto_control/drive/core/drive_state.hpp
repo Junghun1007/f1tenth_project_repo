@@ -42,6 +42,7 @@ public:
   bool auto_output_allowed() const;     // 자동 명령(구동·제동·조향) 발행 허용
   bool wants_manual_handover() const;   // 안전 프로세스에 "manual" 요청
   bool wants_auto_rearm() const { return state_ == DriveState::Arming; }   // 안전 프로세스에 "auto" 요청
+  bool is_standstill(double speed) const;
   bool refit_pending() const { return refit_pending_; }
   bool client_alive(double now) const;
   int alive_clients(double now) const;

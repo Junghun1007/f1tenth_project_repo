@@ -13,6 +13,7 @@
 #include <std_msgs/msg/float32.hpp>
 #include <std_msgs/msg/int32.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <line_detactor_msgs/msg/lane_result.hpp>
 #include <bev_handoff/direct_bev_handoff.hpp>
@@ -28,6 +29,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iomanip>
 #include <optional>
 #include <regex>
@@ -54,6 +56,8 @@ std::string json_escape(const std::string & s) {
 }  // namespace
 
 class AutoDriveNode : public rclcpp::Node {
+  using ForceIr = std_srvs::srv::SetBool;
+
 public:
   static double as_number(const rclcpp::Parameter & p) {   // 실수·정수·bool 모두 숫자로 (YAML에 1, 1.0, true 어느 쪽으로 써도 됨)
     switch (p.get_type()) {
@@ -191,6 +195,9 @@ public:
         [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, acd::LaneSource::IR); }, control);
       tunnel_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.tunnel_state", "/tunnel/state"), state_qos,
         [this](std_msgs::msg::String::ConstSharedPtr m) { on_tunnel_state(m->data); }, status_latched);
+      force_ir_sub_ = create_subscription<std_msgs::msg::Bool>("/tunnel/force_ir_enabled", state_qos,
+        [this](std_msgs::msg::Bool::ConstSharedPtr m) { force_ir_enabled_.store(m->data); }, status_latched);
+      force_ir_client_ = create_client<ForceIr>("/tunnel/set_force_ir");
       // 터널 안 웹 "BEV 원본": RGB BEV 대신 IR BEV (shared_ir_bev, mono8 120×300). 켰을 때만 1/15 s 복사
       ir_bev_sub_ = create_subscription<sensor_msgs::msg::Image>(declare_parameter<std::string>("topics.ir_bev_image", "/camera/image_bev_ir"),
         sensor_qos, [this](sensor_msgs::msg::Image::ConstSharedPtr m) { on_ir_bev(*m); }, in(status_group_));
@@ -213,11 +220,8 @@ public:
 
     // ---- 웹 ----
     acd::WebCallbacks cb;
-    cb.start = [this] {
-      auto r = loop_->request_start(acd::now_sec());
-      if (r.first && !recording()) open_cone_log(log_dir_, "");
-      return r;
-    };
+    cb.start = [this] { return start_drive(acd::now_sec()); };
+    cb.force_ir = [this](bool enabled) { return request_force_ir(enabled); };
     cb.stop = [this] { loop_->request_stop("stop button", acd::now_sec()); };
     // Refit: 정지(주행 중이면 먼저 세움) → 실시간 깊이로 카메라 높이·기울기 다시 측정(bev_processor) → BEV·영상 안정화 기준 갱신,
     // 끝나면 콘·차량 기억을 모두 비운다 (실패해도 이전 보정 유지 + 기억 비움)
@@ -363,6 +367,47 @@ private:
     publish_hints();   // 다음 프레임의 기준 중앙선 요청 (콘이 근처일 때만)
   }
 
+  // Web and joystick cannot arm the car while a tunnel override request is in flight.
+  bool force_ir_request_pending() {
+    if (!force_ir_request_) return false;
+    if (force_ir_request_->wait_for(0s) != std::future_status::ready) return true;
+    const auto response = force_ir_request_->get();
+    force_ir_request_.reset();
+    if (response->success) force_ir_enabled_.store(force_ir_requested_value_);
+    return false;
+  }
+
+  acd::Reply request_force_ir(bool enabled) {
+    if (!force_ir_client_) return {false, "터널 기능이 꺼져 있습니다"};
+    std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
+    if (!command || force_ir_request_pending()) return {false, "터널 전환 요청 처리 중"};
+    if (!loop_->tunnel_override_allowed(acd::now_sec())) return {false, "정지 상태에서만 변경할 수 있습니다"};
+    if (!force_ir_client_->service_is_ready()) return {false, "터널 차선 선택기가 준비 중입니다"};
+    auto request = std::make_shared<ForceIr::Request>();
+    request->data = enabled;
+    force_ir_requested_value_ = enabled;
+    force_ir_request_.emplace(force_ir_client_->async_send_request(request));
+    if (force_ir_request_->wait_for(2s) != std::future_status::ready) {
+      return {false, "터널 차선 선택기의 응답을 기다리는 중입니다"};
+    }
+    const auto response = force_ir_request_->get();
+    force_ir_request_.reset();
+    if (response->success) force_ir_enabled_.store(enabled);
+    return {response->success, response->message};
+  }
+
+  acd::Reply start_drive(double now) {
+    std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
+    if (!command || force_ir_request_pending()) return {false, "터널 전환 요청 처리 중"};
+    if (force_ir_enabled_.load()) {
+      std::lock_guard<std::mutex> l(status_m_);
+      if (tunnel_state_ != "INSIDE" || lane_source_ != "IR") return {false, "터널 IR 차선 준비 중"};
+    }
+    auto result = loop_->request_start(now);
+    if (result.first && !recording()) open_cone_log(log_dir_, "");
+    return result;
+  }
+
   void on_joy(const sensor_msgs::msg::Joy & m) {
     const double now = acd::now_sec();
     last_joy_t_ = now;
@@ -377,8 +422,7 @@ private:
       RCLCPP_INFO(get_logger(), "joystick X: stop");
     }
     if (rising(joy_start_button_, joy_start_was_)) {
-      const auto r = loop_->request_start(now);
-      if (r.first && !recording()) open_cone_log(log_dir_, "");
+      const auto r = start_drive(now);
       RCLCPP_INFO(get_logger(), "joystick A: start -> %s %s", r.first ? "ok" : "refused", r.second.c_str());
     }
     if (rising(joy_refit_button_, joy_refit_was_)) {
@@ -704,13 +748,16 @@ private:
     }
     const double t0 = acd::now_sec();
     std::string j = acd::telemetry_json(f);
+    const bool can_force_ir = tunnel_enabled_ && loop_->tunnel_override_allowed(now);
     if (!j.empty() && j.back() == '}') {   // auto_control 추가 항목
       std::ostringstream x;
       {
         std::lock_guard<std::mutex> l(status_m_);
         x << ",\"handover\":\"" << json_escape(handover_mode_) << "\",\"joystick\":" << (now - last_joy_t_.load() < 1.0 ? "true" : "false")
           << ",\"tunnel\":{\"enabled\":" << (tunnel_enabled_ ? "true" : "false") << ",\"source\":\"" << lane_source_
-          << "\",\"state\":\"" << json_escape(tunnel_state_) << "\"}"
+          << "\",\"state\":\"" << json_escape(tunnel_state_) << "\""
+          << ",\"force_ir\":" << (force_ir_enabled_.load() ? "true" : "false")
+          << ",\"force_ir_change_allowed\":" << (can_force_ir ? "true" : "false") << "}"
           << ",\"yolo\":{\"fps\":" << detect_->fps() << ",\"signal_score\":" << detect_->last_signal_score() << "}"
           << ",\"refit_supported\":true";
       }
@@ -848,6 +895,10 @@ private:
   // 점검·상태 (status_m_)
   std::mutex status_m_;
   std::mutex apply_settings_m_;
+  std::mutex drive_command_m_;
+  std::optional<rclcpp::Client<ForceIr>::FutureAndRequestId> force_ir_request_;
+  bool force_ir_requested_value_{false};
+  std::atomic<bool> force_ir_enabled_{false};
   std::optional<Pose> pose_;
   std::shared_ptr<const bev_handoff::ObstacleReference> reference_;
   bool yolo_ready_{false}, inspection_done_{false}, tunnel_inside_{false};
@@ -892,7 +943,8 @@ private:
   double refit_t0_{0};
   std::string refit_failure_;   // status_m_
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connected_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connected_sub_, force_ir_sub_;
+  rclcpp::Client<ForceIr>::SharedPtr force_ir_client_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_, startup_sub_, lane_model_sub_, tunnel_sub_;
   std::vector<rclcpp::Subscription<std_msgs::msg::String>::SharedPtr> ir_model_subs_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;

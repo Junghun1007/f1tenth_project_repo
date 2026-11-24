@@ -15,13 +15,15 @@ from tunnel_tcn_test.features import FeatureStream, EventDecoder
 def load_node():
     modules = {}
     for name in ['rclpy', 'rclpy.node', 'rclpy.qos', 'sensor_msgs', 'sensor_msgs.msg',
-                 'std_msgs', 'std_msgs.msg', 'ament_index_python', 'ament_index_python.packages']:
+                 'std_msgs', 'std_msgs.msg', 'std_srvs', 'std_srvs.srv',
+                 'ament_index_python', 'ament_index_python.packages']:
         modules[name] = ModuleType(name)
     modules['rclpy.node'].Node = object
     for name in ['QoSProfile', 'ReliabilityPolicy', 'DurabilityPolicy', 'HistoryPolicy']:
         setattr(modules['rclpy.qos'], name, object)
     modules['sensor_msgs.msg'].Image = object
     modules['std_msgs.msg'].String = SimpleNamespace
+    modules['std_srvs.srv'].Trigger = object
     modules['ament_index_python.packages'].get_package_share_directory = lambda _: ''
     path = Path(__file__).resolve().parents[1] / 'tunnel_tcn_test/node.py'
     spec = importlib.util.spec_from_file_location('tunnel_tcn_test._node_under_test', path)
@@ -101,6 +103,7 @@ class NodeTests(unittest.TestCase):
         n.fps, n.max_age = 30., .25
         n.stream, n.decoder = FeatureStream(), EventDecoder()
         n.origin_ns = n.last_stamp = n.last_received = None
+        n.accept_frames_after_ns = None
         n.next_inference = 0.
         n.model_id = "20261023_140042_191723_aug"
         n.last_event = None
@@ -177,6 +180,26 @@ class NodeTests(unittest.TestCase):
         n.clear_history(new_drive=True)
         self.assertEqual(n.decoder.state, 'unknown')
         self.assertIsNone(n.last_event)
+
+    def test_override_reset_starts_outside_and_discards_pre_reset_frames(self):
+        n = self.node
+        n.decoder = EventDecoder(initial_state='outside')
+        for frame in range(80):
+            self.frame(frame)
+        self.assertEqual(n.decoder.state, 'inside')
+        n.pending = object()
+        response = n.reset_outside(None, SimpleNamespace())
+        self.assertTrue(response.success)
+        self.assertEqual(n.decoder.state, 'outside')
+        self.assertIsNone(n.pending)
+        self.assertIsNone(n.stream.started)
+        self.assertIsNone(n.last_event)
+        outputs_before_reset = len(self.outputs)
+        self.frame(79)
+        self.assertEqual(len(self.outputs), outputs_before_reset)
+        self.frame(80)
+        self.assertEqual(self.outputs[-1]['state'], 'outside')
+        self.assertTrue(self.outputs[-1]['status'].startswith('WARMUP'))
 
     def test_stale_and_duplicate_images_do_not_infer(self):
         self.frame(0)

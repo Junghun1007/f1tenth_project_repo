@@ -112,6 +112,7 @@ void ControlLoop::on_erpm(int erpm, double t) {
 
 void ControlLoop::on_speed(double v, double t) {
   std::lock_guard<std::mutex> l(m_);
+  measured_speed_ = v;
   lon_.on_speed(v, t);
   speed_ = lon_.speed();
   speed_atomic_.store(speed_, std::memory_order_relaxed);
@@ -498,6 +499,14 @@ std::pair<bool, std::string> ControlLoop::request_refit(double now) { std::lock_
 std::pair<bool, std::string> ControlLoop::request_mode(DriveMode m, double now) { std::lock_guard<std::mutex> l(m_); return sm_.request_mode(m, now); }
 void ControlLoop::on_heartbeat(const std::string & c, double now) { std::lock_guard<std::mutex> l(m_); sm_.on_heartbeat(c, now); }
 bool ControlLoop::refit_pending() const { std::lock_guard<std::mutex> l(m_); return sm_.state() == DriveState::Refitting; }
+bool ControlLoop::tunnel_override_allowed(double now) const {
+  std::lock_guard<std::mutex> l(m_);
+  const auto state = sm_.state();
+  return (state == DriveState::Ready || state == DriveState::Manual) &&
+    sm_.safety_mode() == "MANUAL" && vesc_connected_ &&
+    now >= last_erpm_t_ && now - last_erpm_t_ <= rc_.erpm_timeout_sec &&
+    sm_.is_standstill(measured_speed_) && sm_.is_standstill(speed_);
+}
 DriveState ControlLoop::state() const { std::lock_guard<std::mutex> l(m_); return sm_.state(); }
 
 bool ControlLoop::cones_nearby() const {

@@ -8,6 +8,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <map>
@@ -75,7 +77,7 @@ class ViewPane : public QFrame
   Q_OBJECT
 
 public:
-  ViewPane(View view, const QString & title, bool compact, int preview_fps, QWidget * parent);
+  ViewPane(View view, const QString & title, int preview_fps, QWidget * parent);
 
   View view() const {return view_;}
   int previewFps() const;
@@ -158,8 +160,14 @@ private:
   // Capture
   enum class Trigger {SINGLE, AUTO, VIEW};
   void handleAction(CaptureAction action);
+  void startAutoScheduler();
   void captureViews(const std::vector<View> & views, Trigger trigger);
-  bool ensureWriter();
+  struct CaptureSession
+  {
+    std::filesystem::path directory;
+    std::uint64_t next_index{1U};
+  };
+  bool createSession(CaptureSession & session, const char * category, std::time_t start_time);
   std::string metaRow(
     std::uint64_t event, Trigger trigger, const std::vector<View> & views,
     const std::shared_ptr<const RgbFrame> & rgb,
@@ -184,7 +192,8 @@ private:
   CaptureController controller_;
   IntervalScheduler auto_scheduler_;
   std::unique_ptr<CaptureWriter> writer_;
-  std::uint64_t next_event_index_{1U};
+  const std::time_t launched_at_{std::time(nullptr)};
+  CaptureSession manual_session_, auto_session_;
   double recording_started_sec_{0.0};
 
   std::unique_ptr<CudaCenterReprojector> reprojector_;

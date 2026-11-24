@@ -11,6 +11,7 @@ using namespace auto_control::drive;
 struct Fixture {
   ParamRegistry params;
   std::atomic<int> heartbeats{0}, starts{0};
+  std::atomic<bool> force_ir{false};
   std::string last_client;
   std::unique_ptr<WebServer> server;
   Fixture() {
@@ -18,6 +19,7 @@ struct Fixture {
     WebCallbacks cb;
     cb.start = [this] { ++starts; return std::make_pair(false, std::string("detect mode")); };
     cb.stop = [] {};
+    cb.force_ir = [this](bool enabled) { force_ir = enabled; return Reply{true, ""}; };
     cb.refit = [] { return std::make_pair(true, std::string()); };
     cb.mode = [](const std::string & m) { return std::make_pair(m == "drive" || m == "detect", std::string("bad mode")); };
     cb.params = [this](const std::map<std::string, double> & c) { return params.apply(c); };
@@ -65,6 +67,22 @@ TEST(start_returns_reason) {
   const auto j = nlohmann::json::parse(r->body);
   CHECK(j["ok"] == false && j["reason"] == "detect mode");
   CHECK(f.starts == 1);
+}
+
+TEST(tunnel_override_accepts_only_boolean_requests) {
+  Fixture f;
+  auto c = f.client();
+  const auto post = [&c](const char * body) {
+    const auto r = c.Post("/api/tunnel/force-ir", body, "application/json");
+    CHECK(r && r->status == 200);
+    return nlohmann::json::parse(r->body);
+  };
+  CHECK(post(R"({"enabled":true})")["ok"] == true);
+  CHECK(f.force_ir.load());
+  CHECK(post(R"({"enabled":"false"})")["ok"] == false);
+  CHECK(f.force_ir.load());
+  CHECK(post(R"({"enabled":false})")["ok"] == true);
+  CHECK(!f.force_ir.load());
 }
 
 TEST(heartbeat_tracks_clients_and_preview_flag) {
