@@ -186,9 +186,9 @@ public:
     const auto sensor_qos = rclcpp::SensorDataQoS().keep_last(1);
     if (tunnel_enabled_) {   // 터널 선택기가 카메라별 결과를 따로 낸다 (/rgb, /ir)
       lane_sub_ = create_subscription<line_detactor_msgs::msg::LaneResult>(lane_topic + "/rgb", sensor_qos,
-        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
+        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, acd::LaneSource::RGB); }, control);
       ir_lane_sub_ = create_subscription<line_detactor_msgs::msg::LaneResult>(lane_topic + "/ir", sensor_qos,
-        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "IR"); }, control);
+        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, acd::LaneSource::IR); }, control);
       tunnel_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.tunnel_state", "/tunnel/state"), state_qos,
         [this](std_msgs::msg::String::ConstSharedPtr m) { on_tunnel_state(m->data); }, status_latched);
       // 터널 안 웹 "BEV 원본": RGB BEV 대신 IR BEV (shared_ir_bev, mono8 120×300). 켰을 때만 1/15 s 복사
@@ -196,7 +196,7 @@ public:
         sensor_qos, [this](sensor_msgs::msg::Image::ConstSharedPtr m) { on_ir_bev(*m); }, in(status_group_));
     } else {
       lane_sub_ = create_subscription<line_detactor_msgs::msg::LaneResult>(lane_topic, sensor_qos,
-        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, "RGB"); }, control);
+        [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, acd::LaneSource::RGB); }, control);
     }
 
     // ---- 출발 전 점검: 카메라 자세(bev_processor 시작 측정), 모델 상태 ----
@@ -326,14 +326,15 @@ private:
     return acd::now_sec() - std::max(0.0, ros_now - ros_t);
   }
 
-  void on_lane(const line_detactor_msgs::msg::LaneResult & m, const char * source) {
+  void on_lane(const line_detactor_msgs::msg::LaneResult & m, acd::LaneSource source) {
     const double t_in = acd::now_sec();
     const double capture = steady_from_stamp(m.header.stamp);
+    const char * source_name = source == acd::LaneSource::IR ? "IR" : "RGB";
     {
       std::lock_guard<std::mutex> l(status_m_);
-      if (lane_source_ != source) {
-        lane_source_ = source;
-        RCLCPP_INFO(get_logger(), "lane source: %s", source);
+      if (lane_source_ != source_name) {
+        lane_source_ = source_name;
+        RCLCPP_INFO(get_logger(), "lane source: %s", source_name);
       }
     }
     acd::LanePixels px;
@@ -358,7 +359,7 @@ private:
     stats.record("lane_infer", t_in, t_in + m.pure_inference_nanoseconds * 1e-9);
     stats.record("lane_geom", t_in, t_in + m.lane_geometry_nanoseconds * 1e-9);
     last_lane_t_ = acd::now_sec();
-    publish(loop_->on_lane(lane, acd::now_sec()));
+    publish(loop_->on_lane(lane, acd::now_sec(), source));
     publish_hints();   // 다음 프레임의 기준 중앙선 요청 (콘이 근처일 때만)
   }
 

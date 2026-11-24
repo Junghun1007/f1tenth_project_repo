@@ -11,6 +11,7 @@
 #include <utility>
 #include "auto_control/drive/copied/control_core.hpp"
 #include "auto_control/drive/core/drive_state.hpp"
+#include "auto_control/drive/core/lane_input.hpp"
 #include "auto_control/drive/core/lane_memory.hpp"
 #include "auto_control/drive/core/path_utils.hpp"
 #include "auto_control/drive/core/odometry.hpp"
@@ -97,7 +98,7 @@ public:
   void on_inspection_done(bool ok, const std::string & reason, double t);
   void on_refit_done(bool ok, const std::string & reason, double t);
   // 제어 (차선 결과마다) / 감시 (차선이 오지 않을 때 주기적으로)
-  StepOutput on_lane(const LaneObservation & lane, double now);
+  StepOutput on_lane(const LaneObservation & lane, double now, LaneSource source = LaneSource::RGB);
   StepOutput tick(double now);
   // 웹 요청
   std::pair<bool, std::string> request_start(double now);
@@ -125,7 +126,7 @@ private:
   // 오도메트리는 400 Hz IMU 스레드가 갱신하므로 별도 락 (계획이 도는 동안 IMU·영상 안정화가 기다리지 않게).
   // 락 순서는 항상 m_ → odom_m_
   Pose2 odom_pose() const;
-  std::optional<Pose2> odom_pose_at(double t) const;
+  std::optional<Pose2> odom_pose_at(double t, double latest_tolerance = 0.0) const;
   double odom_distance() const;
   std::optional<double> odom_distance_at(double t) const;
   // memory.mode = 1, 2: 차선 기준 단기 기억 갱신 → 계획에 쓸 콘(월드 좌표, pose_lane 기준).
@@ -173,6 +174,9 @@ private:
   std::optional<DetectionFrame> pending_det_;
   DetectionFrame last_det_;
   LaneObservation lane_;
+  LaneSource lane_source_{LaneSource::RGB};
+  LaneContinuity lane_continuity_;
+  std::optional<Pose2> accepted_lane_pose_;
   PlanResult plan_;
   Pose2 plan_pose_;
   std::vector<Vec2> control_path_;

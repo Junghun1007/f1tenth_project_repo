@@ -1,6 +1,8 @@
 // line_detactor LaneResult(BEV 패딩 픽셀 좌표) → 주행부 LaneObservation(앞차축 기준 차량 좌표, m).
 // 픽셀 → 차량 변환은 cone_drive_test lane_post와 같다: x = x_max − (v + 0.5)·mpp, y = y_max − (u − pad + 0.5)·mpp
 #pragma once
+#include <limits>
+#include <optional>
 #include <vector>
 #include "auto_control/drive/core/types.hpp"
 
@@ -16,5 +18,25 @@ struct LanePixels {
 };
 
 LaneObservation lane_from_pixels(const LanePixels & in, double capture_time);
+
+enum class LaneSource { RGB, IR };
+
+class LaneContinuity {
+public:
+  // Keep the last observed geometry as a fixed reference during avoidance.
+  // Matching frames may extend the control path without moving that reference.
+  bool accept(const LaneObservation & lane, const std::optional<Pose2> & pose,
+              bool avoiding, double inside_half_width, double wheelbase);
+
+private:
+  struct Reference {
+    LaneObservation lane;
+    Pose2 pose;
+  };
+  std::optional<Reference> reference_;
+  double last_capture_{-std::numeric_limits<double>::infinity()};
+  bool holding_{false};
+  int matching_frames_{0};
+};
 
 }  // namespace auto_control::drive

@@ -1,4 +1,5 @@
 #include "check.hpp"
+#include "auto_control/drive/core/cone_memory.hpp"
 #include "auto_control/drive/core/lane_input.hpp"
 #include "auto_control/drive/runtime/detector.hpp"
 
@@ -31,6 +32,45 @@ TEST(invalid_centerline_gives_invalid_lane) {
   auto p = straight();
   p.centerline_valid = false;
   CHECK(!lane_from_pixels(p, 1.0).valid);
+}
+
+TEST(avoidance_continuity_reacquires_either_boundary_after_motion_and_noise) {
+  constexpr double inside = 0.175, wheelbase = 0.33;
+  for (const int side : {-1, 1}) {
+    LaneContinuity continuity;
+    const Pose2 initial{0.0, 0.0, 0.0}, outside{0.65, side * 0.42, side * 0.30};
+    const Pose2 returning{0.9, side * 0.10, 0.0};
+    const auto reference = lane_from_pixels(straight(), 1.0);
+    CHECK(continuity.accept(reference, initial, false, inside, wheelbase));
+    CHECK(!continuity.accept(LaneObservation{}, outside, true, inside, wheelbase));
+
+    auto observe = [&](const Pose2 & pose, double t, double noise, bool correct_side) {
+      auto lane = reference;   // Same world lane, viewed from a new vehicle pose.
+      lane.capture_time = t;
+      if ((side > 0) == correct_side) lane.right.clear();
+      else lane.left.clear();
+      for (auto * line : {&lane.path, &lane.left, &lane.right}) {
+        for (auto & p : *line) {
+          p.y += noise;
+          p = to_local(p, pose);
+        }
+      }
+      return lane;
+    };
+    CHECK(!continuity.accept(observe(outside, 1.04, 0.32, true), outside, true, inside, wheelbase));
+    CHECK(!continuity.accept(observe(outside, 1.08, 0.0, true), std::nullopt, true, inside, wheelbase));
+    CHECK(!continuity.accept(observe(outside, 1.10, 0.0, true), outside, true, inside, wheelbase));
+    CHECK(!continuity.accept(observe(outside, 1.12, 0.0, true), outside, true, inside, wheelbase));
+    CHECK(continuity.accept(observe(outside, 1.14, 0.0, true), outside, true, inside, wheelbase));
+
+    auto mislabeled = observe(returning, 1.16, 0.0, true);
+    std::swap(mislabeled.left, mislabeled.right);
+    CHECK(!continuity.accept(mislabeled, returning, false, inside, wheelbase));
+    CHECK(!continuity.accept(observe(returning, 1.18, 0.0, true), returning, false, inside, wheelbase));
+    CHECK(!continuity.accept(observe(returning, 1.20, 0.0, true), returning, false, inside, wheelbase));
+    CHECK(continuity.accept(observe(returning, 1.22, 0.0, true), returning, false, inside, wheelbase));
+    CHECK(continuity.accept(observe(returning, 1.24, 0.0, false), returning, false, inside, wheelbase));
+  }
 }
 
 TEST(rgb_box_maps_through_intrinsics_to_depth) {   // 1.25배 확대 RGB(1280×800) → CAM_A 정렬 깊이(640×400, 확대 없음)

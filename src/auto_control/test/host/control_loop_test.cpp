@@ -263,6 +263,42 @@ static void see_cone(Rig & r, Vec2 at, int frames) {
   r.step(0.0);
 }
 
+TEST(lane_check_modes_choose_whether_avoidance_can_replace_the_lane) {
+  for (const int mode : {1, 2}) {
+    Rig r(DriveMode::Detect);
+    CHECK(!r.params.apply({{"lane.check_mode", 1.5}}).first);
+    CHECK(r.params.apply({{"lane.check_mode", double(mode)}, {"drive.lane_timeout_sec", 0.15}}).first);
+    r.loop->apply_settings(settings_from(r.params));
+    see_cone(r, {1.1, 0.21}, 5);
+    CHECK(r.loop->telemetry(true, r.t).plan_mode != "center");
+
+    for (int i = 0; i < 8; ++i) {
+      r.t += 0.025;
+      r.loop->on_speed(0.0, r.t);
+      r.loop->on_yaw_rate(0.0, r.t);
+      auto noise = lane_at(r.t - 0.005);
+      noise.right.clear();
+      for (auto * points : {&noise.path, &noise.left})
+        for (auto & p : *points) p.y += 0.45;
+      CHECK(!r.loop->on_lane(noise, r.t).publish);
+    }
+    const auto frame = r.loop->telemetry(true, r.t);
+    CHECK_NEAR(frame.lane_path.front().y, mode == 1 ? 0.45 : 0.0, 1e-12);
+    CHECK(frame.readiness.lane_fresh == (mode == 1));
+
+    if (mode == 2) {
+      r.t += 0.025;
+      r.loop->on_yaw_rate(0.0, r.t);
+      auto ir_lane = lane_at(r.t - 0.005);
+      for (auto & point : ir_lane.path) point.y -= 0.3;
+      r.loop->on_lane(ir_lane, r.t, LaneSource::IR);
+      const auto switched = r.loop->telemetry(true, r.t);
+      CHECK_NEAR(switched.lane_path.front().y, -0.3, 1e-12);
+      CHECK(switched.readiness.lane_fresh);
+    }
+  }
+}
+
 static void drive_blind(Rig & r, int frames) {   // 1 m/s 전진, 콘 검출 없음
   for (int k = 0; k < frames; ++k) {
     r.t += 0.025;

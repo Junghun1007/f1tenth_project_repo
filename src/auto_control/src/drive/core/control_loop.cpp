@@ -9,6 +9,7 @@
 namespace auto_control::drive {
 
 namespace {
+constexpr double kLanePoseToleranceSec = 0.02;
 constexpr double kRad2Deg = 180.0 / 3.14159265358979323846;
 }
 
@@ -42,6 +43,15 @@ ControlLoop::ControlLoop(DriveMode mode, const RuntimeConfig & rc)
 void ControlLoop::apply_settings(const Settings & s) {
   std::lock_guard<std::mutex> l(m_);
   if (s.memory_mode != s_.memory_mode) clear_memories();   // 방식을 바꾸면 두 기억 모두 새로 시작
+  if (s.lane_check_mode != s_.lane_check_mode) {
+    lane_continuity_ = {};
+    accepted_lane_pose_.reset();
+    if (s.lane_check_mode == 2 && lane_.valid) {
+      const auto pose = odom_pose_at(lane_.capture_time, kLanePoseToleranceSec);
+      if (lane_continuity_.accept(lane_, pose, false, s.planner.lane_half - s.planner.width / 2, rc_.wheelbase))
+        accepted_lane_pose_ = pose;
+    }
+  }
   s_ = s;
   auto lp = s.lane_memory;
   lp.front_axle_to_rear_bumper = rc_.wheelbase + s.planner.rear_overhang;
@@ -128,7 +138,14 @@ void ControlLoop::on_yaw_rate(double w, double t) {
 
 Pose2 ControlLoop::odom_pose() const { std::lock_guard<std::mutex> lo(odom_m_); return odom_.pose(); }
 
-std::optional<Pose2> ControlLoop::odom_pose_at(double t) const { std::lock_guard<std::mutex> lo(odom_m_); return odom_.pose_at(t); }
+std::optional<Pose2> ControlLoop::odom_pose_at(double t, double latest_tolerance) const {
+  std::lock_guard<std::mutex> lo(odom_m_);
+  const auto pose = odom_.pose_at(t);
+  const double latest = odom_.last_time();
+  if (!pose && latest_tolerance > 0.0 && last_yaw_t_ >= 0.0 && t > latest && t - latest <= latest_tolerance)
+    return odom_.pose();
+  return pose;
+}
 
 double ControlLoop::odom_distance() const { std::lock_guard<std::mutex> lo(odom_m_); return odom_.distance(); }
 
@@ -224,6 +241,15 @@ void ControlLoop::on_refit_done(bool ok, const std::string & reason, double t) {
   std::lock_guard<std::mutex> l(m_);
   sm_.on_refit_done(ok, t, reason);
   clear_memories();   // 자세가 바뀌었으니 콘 기억을 모두 비우고 다시 쌓는다
+  if (s_.lane_check_mode == 2) {
+    lane_continuity_ = {};
+    if (ok) {
+      lane_ = {};
+      accepted_lane_pose_.reset();
+      plan_ = {};
+      control_path_.clear();
+    }
+  }
 }
 
 void ControlLoop::clear_memories() {
@@ -305,14 +331,35 @@ void ControlLoop::remember_vehicles(const DetectionFrame & det, std::optional<do
   new_det_ = true;
 }
 
-StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
+StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSource source) {
   std::lock_guard<std::mutex> l(m_);
   const double t0 = now_sec();
   if (s_.memory_mode == 0) integrate_detections();
-  if (lane.valid) { lane_ = lane; last_lane_t_ = now; }
+  const bool source_changed = lane_source_ != source;
+  lane_source_ = source;
+  const bool check_continuity = s_.lane_check_mode == 2;
+  std::optional<Pose2> observation_pose;
+  bool accepted = lane.valid;
+  if (check_continuity) {
+    if (source_changed) {
+      lane_continuity_ = {};
+      planner_.reset();
+    }
+    if (lane.valid) observation_pose = odom_pose_at(lane.capture_time, kLanePoseToleranceSec);
+    const bool avoiding = !source_changed && !obstacles_suspended_ &&
+      (plan_.obstacle_active || plan_.mode == PlanMode::Free);
+    accepted = lane_continuity_.accept(lane, observation_pose, avoiding,
+      s_.planner.lane_half - s_.planner.width / 2, rc_.wheelbase);
+    if (lane.valid && !accepted) stats_.record("lane_reject", t0, t0);
+  }
+  if (accepted) {
+    lane_ = lane;
+    last_lane_t_ = now;
+    accepted_lane_pose_ = observation_pose;
+  }
   bool have_path = false;
   if (lane_.valid) {
-    const auto pose_lane = odom_pose_at(lane_.capture_time).value_or(odom_pose());
+    const auto pose_lane = accepted_lane_pose_ ? *accepted_lane_pose_ : odom_pose_at(lane_.capture_time).value_or(odom_pose());
     const bool commit = s_.memory_mode == 2;
     std::vector<Vec2> blind;
     double blind_end = -1;
@@ -337,7 +384,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
       lead_.update(plan_.path_local, vehicles, new_det_, lane_.capture_time, d_lane, speed_);
       new_det_ = false;
       // 신호등 정지: 이번에 새로 들어온 차선 결과의 정지선만 관측으로 (재사용한 lane_은 NaN)
-      traffic_.update(lane.valid ? lane.stop_line_m : std::numeric_limits<double>::quiet_NaN(), lane_.capture_time, d_lane, speed_);
+      traffic_.update(accepted ? lane.stop_line_m : std::numeric_limits<double>::quiet_NaN(), lane_.capture_time, d_lane, speed_);
     }
     // 계획 자세 → 현재 자세로 옮겨 제어
     const Pose2 now_pose = odom_pose();
@@ -346,19 +393,22 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now) {
     have_path = control_path_.size() >= 2;
   }
   stats_.record("memory_plan", t0, now_sec());
-  if (on_record && lane.valid) {
+  if (on_record && lane.valid && (!check_continuity || observation_pose)) {
     RecordFrame r;
-    r.t = lane_.capture_time;
-    r.pose = plan_pose_;
+    r.t = lane.capture_time;
+    r.pose = observation_pose.value_or(plan_pose_);
     r.speed = speed_;
     r.yaw_rate = last_yaw_rate_.load(std::memory_order_relaxed);
     r.state = state_name(sm_.state());
     r.lane_valid = lane.valid;
-    r.left = lane_.left; r.right = lane_.right; r.path = lane_.path; r.center = lane_.center;
+    r.left = lane.left; r.right = lane.right; r.path = lane.path; r.center = lane.center;
     r.plan_mode = plan_mode_name(plan_.mode);
     r.rollout_ok = plan_.rollout_ok;
     r.obstacle_active = plan_.obstacle_active;
     r.plan_path = plan_.path_local;
+    if (check_continuity && !accepted) {
+      for (auto & point : r.plan_path) point = to_local(to_world(point, plan_pose_), r.pose);
+    }
     r.cones_world = rec_cones_;
     on_record(r);
   }
@@ -478,18 +528,23 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   if (!models_[2].name.empty()) f.inspection.models.push_back(models_[2]);
   if (!full) return f;
   f.vehicle = {speed_, target_, steer_.angle() * kRad2Deg, cte_, last_out_.duty, last_out_.brake_current};
-  // 화면은 현재 자세 기준 (차선은 촬영 시점 기준이지만 지연이 작아 그대로 표시)
-  f.lane_left = lane_.left;
-  f.lane_right = lane_.right;
-  f.lane_center = lane_.center;
-  f.lane_path = lane_.path;
+  const Pose2 p = odom_pose();
+  const auto display_lane = [&](std::vector<Vec2> points) {
+    if (accepted_lane_pose_) {
+      for (auto & point : points) point = to_local(to_world(point, *accepted_lane_pose_), p);
+    }
+    return points;
+  };
+  f.lane_left = display_lane(lane_.left);
+  f.lane_right = display_lane(lane_.right);
+  f.lane_center = display_lane(lane_.center);
+  f.lane_path = display_lane(lane_.path);
   f.plan_path = plan_.mode == PlanMode::Center ? std::vector<Vec2>{} : control_path_;
   f.plan_mode = plan_mode_name(plan_.mode);
   f.rollout_ok = plan_.rollout_ok;
   static const char * kNames[] = {"con", "truck", "sedan", "traffic_light"};
   for (const auto & c : last_det_.cones)
     f.detections.push_back({kNames[std::clamp(c.class_id, 0, 3)], c.score, c.center.x, c.center.y, c.length, c.width, c.bearing});
-  const Pose2 p = odom_pose();
   if (s_.memory_mode >= 1) {
     f.memory = lane_mem_view_;   // 차선 촬영 시점 기준 (지연이 작아 그대로 표시)
   } else {

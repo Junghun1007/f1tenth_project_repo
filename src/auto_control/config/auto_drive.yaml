@@ -102,6 +102,7 @@
     drive.steering_current_weight: 0.5  # 조향 필터 현재 비중
     drive.steering_rate_deg_s: 260      # 조향 변화율 한계 (°/s)
     # 차선
+    lane.check_mode: 1.0               # 1=기존 검사, 2=회피 중 오도메트리 기준 차선 연속성 검사
     lane.side_tracking: 0             # 차선 좌우 판정 고정 (0=끔, 1=켬): 모델 라벨 대신 직전 프레임·차선 폭으로 좌우 재판정
     lane.corner_outward_offset_m: 0.08  # 코너 바깥 이동 (m)
     lane.corner_entry_distance_m: 2.2   # 코너 진입 거리 (m)
