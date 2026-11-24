@@ -48,7 +48,8 @@ void ControlLoop::apply_settings(const Settings & s) {
     accepted_lane_pose_.reset();
     if (s.lane_check_mode == 2 && lane_.valid) {
       const auto pose = odom_pose_at(lane_.capture_time, kLanePoseToleranceSec);
-      if (lane_continuity_.accept(lane_, pose, false, s.planner.lane_half - s.planner.width / 2, rc_.wheelbase))
+      auto checked = lane_;
+      if (lane_continuity_.accept(checked, pose, false, s.planner.lane_half, s.planner.width / 2, rc_.wheelbase))
         accepted_lane_pose_ = pose;
     }
   }
@@ -339,21 +340,24 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
   lane_source_ = source;
   const bool check_continuity = s_.lane_check_mode == 2;
   std::optional<Pose2> observation_pose;
+  LaneObservation checked;
   bool accepted = lane.valid;
   if (check_continuity) {
     if (source_changed) {
       lane_continuity_ = {};
       planner_.reset();
     }
-    if (lane.valid) observation_pose = odom_pose_at(lane.capture_time, kLanePoseToleranceSec);
+    observation_pose = odom_pose_at(lane.capture_time, kLanePoseToleranceSec);
     const bool avoiding = !source_changed && !obstacles_suspended_ &&
       (plan_.obstacle_active || plan_.mode == PlanMode::Free);
-    accepted = lane_continuity_.accept(lane, observation_pose, avoiding,
-      s_.planner.lane_half - s_.planner.width / 2, rc_.wheelbase);
+    checked = lane;
+    accepted = lane_continuity_.accept(checked, observation_pose, avoiding,
+      s_.planner.lane_half, s_.planner.width / 2, rc_.wheelbase);
     if (lane.valid && !accepted) stats_.record("lane_reject", t0, t0);
   }
   if (accepted) {
-    lane_ = lane;
+    if (check_continuity) lane_ = std::move(checked);
+    else lane_ = lane;
     last_lane_t_ = now;
     accepted_lane_pose_ = observation_pose;
   }
@@ -384,7 +388,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
       lead_.update(plan_.path_local, vehicles, new_det_, lane_.capture_time, d_lane, speed_);
       new_det_ = false;
       // 신호등 정지: 이번에 새로 들어온 차선 결과의 정지선만 관측으로 (재사용한 lane_은 NaN)
-      traffic_.update(accepted ? lane.stop_line_m : std::numeric_limits<double>::quiet_NaN(), lane_.capture_time, d_lane, speed_);
+      traffic_.update(accepted ? lane_.stop_line_m : std::numeric_limits<double>::quiet_NaN(), lane_.capture_time, d_lane, speed_);
     }
     // 계획 자세 → 현재 자세로 옮겨 제어
     const Pose2 now_pose = odom_pose();

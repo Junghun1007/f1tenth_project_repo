@@ -91,8 +91,8 @@ void register_params(ParamRegistry & r) {
   d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.08);
   d("조향 (Stanley)", "drive.steering_current_weight", "조향 필터 현재 비중", "", 0.05, 1, 0.5);
   d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 260);
-  r.add({"lane.check_mode", "driving", "차선", "차선 검사 모드", "", 1, 2, 1, true,
-    {{1, "1 · 기존 검사"}, {2, "2 · 회피 중 차선 연속성 검사"}}});
+  r.add({"lane.check_mode", "driving", "차선", "차선 검사 모드", "", 0, 2, 1, true,
+    {{0, "0 · 추가 검사 끔"}, {1, "1 · 기존 검사"}, {2, "2 · 회피 중 차선 연속성 검사"}}});
   d("차선", "lane.side_tracking", "좌우 판정 고정 (0=끔, 1=켬)", "", 0, 1, 0);
   d("차선", "lane.corner_outward_offset_m", "코너 바깥 이동", "m", 0, 0.2, 0.08);
   d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);

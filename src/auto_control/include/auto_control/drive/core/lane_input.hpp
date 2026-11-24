@@ -25,8 +25,8 @@ class LaneContinuity {
 public:
   // Keep the last observed geometry as a fixed reference during avoidance.
   // Matching frames may extend the control path without moving that reference.
-  bool accept(const LaneObservation & lane, const std::optional<Pose2> & pose,
-              bool avoiding, double inside_half_width, double wheelbase);
+  bool accept(LaneObservation & lane, const std::optional<Pose2> & pose,
+              bool avoiding, double lane_half_width, double vehicle_half_width, double wheelbase);
 
 private:
   struct Reference {
@@ -36,6 +36,7 @@ private:
   std::optional<Reference> reference_;
   double last_capture_{-std::numeric_limits<double>::infinity()};
   bool holding_{false};
+  int departure_side_{0};  // +1 left, -1 right
   int matching_frames_{0};
 };
 

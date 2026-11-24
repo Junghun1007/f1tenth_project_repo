@@ -34,43 +34,81 @@ TEST(invalid_centerline_gives_invalid_lane) {
   CHECK(!lane_from_pixels(p, 1.0).valid);
 }
 
-TEST(avoidance_continuity_reacquires_either_boundary_after_motion_and_noise) {
-  constexpr double inside = 0.175, wheelbase = 0.33;
+TEST(avoidance_recovers_departure_side_first_even_when_model_changes_its_label) {
+  constexpr double lane_half = 0.325, vehicle_half = 0.15, wheelbase = 0.33;
   for (const int side : {-1, 1}) {
     LaneContinuity continuity;
     const Pose2 initial{0.0, 0.0, 0.0}, outside{0.65, side * 0.42, side * 0.30};
     const Pose2 returning{0.9, side * 0.10, 0.0};
-    const auto reference = lane_from_pixels(straight(), 1.0);
-    CHECK(continuity.accept(reference, initial, false, inside, wheelbase));
-    CHECK(!continuity.accept(LaneObservation{}, outside, true, inside, wheelbase));
-
-    auto observe = [&](const Pose2 & pose, double t, double noise, bool correct_side) {
-      auto lane = reference;   // Same world lane, viewed from a new vehicle pose.
-      lane.capture_time = t;
-      if ((side > 0) == correct_side) lane.right.clear();
-      else lane.left.clear();
-      for (auto * line : {&lane.path, &lane.left, &lane.right}) {
-        for (auto & p : *line) {
-          p.y += noise;
-          p = to_local(p, pose);
-        }
-      }
-      return lane;
+    auto reference = lane_from_pixels(straight(), 1.0);
+    auto accept = [&](LaneObservation & lane, const Pose2 & pose, bool avoiding) {
+      return continuity.accept(lane, pose, avoiding, lane_half, vehicle_half, wheelbase);
     };
-    CHECK(!continuity.accept(observe(outside, 1.04, 0.32, true), outside, true, inside, wheelbase));
-    CHECK(!continuity.accept(observe(outside, 1.08, 0.0, true), std::nullopt, true, inside, wheelbase));
-    CHECK(!continuity.accept(observe(outside, 1.10, 0.0, true), outside, true, inside, wheelbase));
-    CHECK(!continuity.accept(observe(outside, 1.12, 0.0, true), outside, true, inside, wheelbase));
-    CHECK(continuity.accept(observe(outside, 1.14, 0.0, true), outside, true, inside, wheelbase));
+    auto observed = [&](bool departure_side, const Pose2 & pose, double noise = 0.0) {
+      const auto & boundary = (side > 0) == departure_side ? reference.left : reference.right;
+      std::vector<Vec2> points;
+      for (auto p : boundary) {
+        p.y += noise;
+        p = to_local(p, pose);
+        if (p.x >= 0.0) points.push_back(p);
+      }
+      return points;
+    };
+    CHECK(accept(reference, initial, false));
+    LaneObservation blind;
+    blind.capture_time = 1.02;
+    CHECK(!accept(blind, outside, true));
 
-    auto mislabeled = observe(returning, 1.16, 0.0, true);
-    std::swap(mislabeled.left, mislabeled.right);
-    CHECK(!continuity.accept(mislabeled, returning, false, inside, wheelbase));
-    CHECK(!continuity.accept(observe(returning, 1.18, 0.0, true), returning, false, inside, wheelbase));
-    CHECK(!continuity.accept(observe(returning, 1.20, 0.0, true), returning, false, inside, wheelbase));
-    CHECK(continuity.accept(observe(returning, 1.22, 0.0, true), returning, false, inside, wheelbase));
-    CHECK(continuity.accept(observe(returning, 1.24, 0.0, false), returning, false, inside, wheelbase));
+    LaneObservation outside_noise;
+    outside_noise.capture_time = 1.04;
+    outside_noise.left = observed(true, outside, side * 0.22);
+    CHECK(!accept(outside_noise, outside, true));
+
+    LaneObservation wrong_first;
+    wrong_first.capture_time = 1.06;
+    wrong_first.right = observed(false, returning);
+    CHECK(!accept(wrong_first, returning, false));
+
+    for (int frame = 0; frame < 3; ++frame) {
+      LaneObservation mislabeled;
+      mislabeled.capture_time = 1.08 + frame * 0.02;
+      (side > 0 ? mislabeled.right : mislabeled.left) = observed(true, returning);
+      (side > 0 ? mislabeled.left : mislabeled.right) = observed(true, returning, side * 0.22);
+      CHECK(accept(mislabeled, returning, false) == (frame == 2));
+      if (frame == 2) {
+        CHECK((side > 0 ? mislabeled.left : mislabeled.right).size() >= 4);
+        CHECK((side > 0 ? mislabeled.right : mislabeled.left).empty());
+        CHECK_NEAR(to_world(mislabeled.path.back(), returning).y, 0.0, 1e-9);
+      }
+    }
+    auto both = lane_from_pixels(straight(), 1.14);
+    for (auto * points : {&both.path, &both.left, &both.right})
+      for (auto & p : *points) p = to_local(p, returning);
+    CHECK(accept(both, returning, false));
   }
+}
+
+TEST(lane_continuity_rejects_narrow_pairs_and_duplicate_boundaries) {
+  LaneContinuity continuity;
+  const Pose2 pose{};
+  auto narrow = lane_from_pixels(straight(), 1.0);
+  for (auto & point : narrow.left) point.y = 0.245;
+  for (auto & point : narrow.right) point.y = -0.245;
+  CHECK(!continuity.accept(narrow, pose, false, 0.325, 0.15, 0.33));
+  auto exactly = narrow;
+  exactly.capture_time = 1.02;
+  for (auto & point : exactly.left) point.y = 0.25;
+  for (auto & point : exactly.right) point.y = -0.25;
+  CHECK(continuity.accept(exactly, pose, false, 0.325, 0.15, 0.33));
+
+  auto shared = exactly;
+  shared.capture_time = 1.04;
+  shared.right = shared.left;
+  CHECK(!continuity.accept(shared, pose, false, 0.325, 0.15, 0.33));
+  auto duplicate = exactly;
+  duplicate.capture_time = 1.06;
+  for (const auto & point : exactly.left) duplicate.left.push_back({point.x, point.y + 0.10});
+  CHECK(!continuity.accept(duplicate, pose, false, 0.325, 0.15, 0.33));
 }
 
 TEST(rgb_box_maps_through_intrinsics_to_depth) {   // 1.25배 확대 RGB(1280×800) → CAM_A 정렬 깊이(640×400, 확대 없음)
