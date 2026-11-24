@@ -9,76 +9,14 @@ namespace auto_control::drive {
 
 namespace {
 constexpr double kMaximumSegmentGap = 0.25;
-constexpr double kMinimumCenterOverlap = 0.30;
-constexpr double kMinimumBoundaryOverlap = 0.18;
-constexpr double kMaximumLateralDifference = 0.12;
-constexpr double kMinimumHeadingCosine = 0.906307787;  // 25 degrees
-constexpr double kMinimumMatchFraction = 0.75;
-constexpr double kMaximumConfirmationGap = 0.15;
 constexpr double kMinimumLaneWidth = 0.50;
 constexpr double kWidthStationTolerance = 0.08;
 constexpr double kBoundaryStationSpacing = 0.04;
 constexpr double kSameBoundarySpread = 0.08;
-constexpr int kConfirmationFrames = 3;
+constexpr double kReturnProgress = 0.02;
 
 const std::vector<Vec2> & reference_center(const LaneObservation & lane) {
   return lane.center.size() >= 4 ? lane.center : lane.path;
-}
-
-struct Segment {
-  Vec2 start;
-  Vec2 direction;
-  double length;
-};
-
-std::vector<Segment> segments(const std::vector<Vec2> & points) {
-  std::vector<Segment> out;
-  for (std::size_t i = 1; i < points.size(); ++i) {
-    const auto start = points[i - 1];
-    const Vec2 delta{points[i].x - start.x, points[i].y - start.y};
-    const double length = std::hypot(delta.x, delta.y);
-    if (length >= 1e-5 && length <= kMaximumSegmentGap)
-      out.push_back({start, {delta.x / length, delta.y / length}, length});
-  }
-  return out;
-}
-
-double observed_span(const std::vector<Vec2> & points) {
-  double span = 0.0;
-  for (const auto & segment : segments(points)) span += segment.length;
-  return span;
-}
-
-bool matches(const std::vector<Vec2> & points, const Pose2 & pose,
-             const std::vector<Vec2> & reference, const Pose2 & reference_pose, double minimum_overlap) {
-  const auto old_segments = segments(reference);
-  if (old_segments.empty()) return false;
-  const double yaw = pose.yaw - reference_pose.yaw;
-  const double c = std::cos(yaw), s = std::sin(yaw);
-  double overlap = 0.0, matched = 0.0;
-  for (const auto & segment : segments(points)) {
-    const Vec2 mid{segment.start.x + segment.direction.x * segment.length / 2,
-                   segment.start.y + segment.direction.y * segment.length / 2};
-    const Vec2 q = to_local(to_world(mid, pose), reference_pose);
-    const Vec2 direction{c * segment.direction.x - s * segment.direction.y,
-                         s * segment.direction.x + c * segment.direction.y};
-    double nearest = std::numeric_limits<double>::infinity(), alignment = 0.0;
-    for (const auto & old : old_segments) {
-      const Vec2 delta{q.x - old.start.x, q.y - old.start.y};
-      const double along = delta.x * old.direction.x + delta.y * old.direction.y;
-      if (along < 0.0 || along > old.length) continue;  // Compare only where the old line was observed.
-      const double lateral = std::abs(delta.x * old.direction.y - delta.y * old.direction.x);
-      if (lateral < nearest) {
-        nearest = lateral;
-        alignment = direction.x * old.direction.x + direction.y * old.direction.y;
-      }
-    }
-    if (!std::isfinite(nearest)) continue;
-    overlap += segment.length;
-    if (nearest <= kMaximumLateralDifference && alignment >= kMinimumHeadingCosine)
-      matched += segment.length;
-  }
-  return matched >= minimum_overlap && matched >= kMinimumMatchFraction * overlap;
 }
 
 std::vector<Vec2> boundary_stations(const std::vector<Vec2> & points, const FrenetFrame & center) {
@@ -115,22 +53,22 @@ bool boundaries_consistent(const LaneObservation & lane, bool require_pair = fal
       paired = true;
     }
   }
-  return paired || !require_pair;
+  return paired || (!require_pair && (left.empty() || right.empty()));
 }
 
-std::vector<Vec2> recover_boundary(const LaneObservation & lane, const Pose2 & pose,
-                                   const std::vector<Vec2> & old, const Pose2 & old_pose) {
-  if (old.size() < 2) return {};
-  const auto line = frenet_frame(old);
-  std::map<int, std::pair<double, Vec2>> nearest;
-  // Model labels may flip when reacquiring the same physical boundary.
+std::vector<Vec2> innermost_boundary(const LaneObservation & lane, const Pose2 & pose,
+                                     const FrenetFrame & road, const Pose2 & road_pose, int side,
+                                     bool assign_single = false) {
+  std::map<double, std::pair<double, Vec2>> nearest;
+  // Select at most one candidate per station on the requested side. Farther
+  // outward markings lose to the line closest to the lane interior.
   for (const auto * points : {&lane.left, &lane.right}) {
     for (const auto & point : *points) {
       if (!std::isfinite(point.x) || !std::isfinite(point.y)) continue;
-      const auto sl = project_sl(to_local(to_world(point, pose), old_pose), line);
-      const double lateral = std::abs(sl.y);
-      if (sl.x < 0.0 || sl.x > line.arc.back() || lateral > kMaximumLateralDifference) continue;
-      const int station = static_cast<int>(std::lround(sl.x / kBoundaryStationSpacing));
+      const auto sl = project_sl(to_local(to_world(point, pose), road_pose), road);
+      const double lateral = side * sl.y;
+      if (!assign_single && lateral <= 0.0) continue;
+      const double station = std::round(sl.x / kBoundaryStationSpacing);
       auto [it, inserted] = nearest.try_emplace(station, lateral, point);
       if (!inserted && lateral < it->second.first) it->second = {lateral, point};
     }
@@ -153,10 +91,8 @@ std::vector<Vec2> recover_boundary(const LaneObservation & lane, const Pose2 & p
       best_length = length;
     }
   }
-  if (best_end - best_start < 4 || best_length < kMinimumBoundaryOverlap) return {};
-  std::vector<Vec2> best(ordered.begin() + best_start, ordered.begin() + best_end);
-  if (!matches(best, pose, old, old_pose, kMinimumBoundaryOverlap)) return {};
-  return best;
+  if (best_end - best_start < 4) return {};
+  return {ordered.begin() + best_start, ordered.begin() + best_end};
 }
 
 void center_from_boundary(LaneObservation & lane, int side, double half_width) {
@@ -172,64 +108,57 @@ void center_from_boundary(LaneObservation & lane, int side, double half_width) {
 }
 }  // namespace
 
-bool LaneContinuity::accept(LaneObservation & lane, const std::optional<Pose2> & pose,
-                            bool avoiding, double lane_half_width, double vehicle_half_width, double wheelbase) {
-  if (avoiding && reference_) holding_ = true;
-  const auto finite = [](const Vec2 & p) { return std::isfinite(p.x) && std::isfinite(p.y); };
-  if (!pose || !std::isfinite(lane.capture_time) || lane.capture_time <= last_capture_ ||
-      !std::all_of(lane.path.begin(), lane.path.end(), finite) ||
-      !std::all_of(lane.center.begin(), lane.center.end(), finite)) {
-    matching_frames_ = 0;
-    return false;
-  }
-  if (lane.capture_time - last_capture_ > kMaximumConfirmationGap) matching_frames_ = 0;
+bool LaneDepartureCheck::accept(LaneObservation & lane, const std::optional<Pose2> & pose,
+                                 bool avoiding, double lane_half_width, double vehicle_half_width, double wheelbase) {
+  if (!pose || !std::isfinite(pose->x) || !std::isfinite(pose->y) || !std::isfinite(pose->yaw) ||
+      !std::isfinite(lane.capture_time) || lane.capture_time <= last_capture_) return false;
   last_capture_ = lane.capture_time;
-  if (holding_) {
-    const auto & old = *reference_;
-    const auto & old_center = reference_center(old.lane);
-    const auto old_line = frenet_frame(old_center);
-    const auto front = project_sl(to_local(to_world({0.0, 0.0}, *pose), old.pose), old_line);
-    const auto rear = project_sl(to_local(to_world({-wheelbase, 0.0}, *pose), old.pose), old_line);
+  bool restored_pair = false;
+  if (road_ && (avoiding || departure_side_ != 0)) {
+    const auto road = frenet_frame(road_->center);
+    const auto front = project_sl(to_local({pose->x, pose->y}, road_->pose), road);
+    const auto rear = project_sl(to_local(to_world({-wheelbase, 0.0}, *pose), road_->pose), road);
     const double outer_axle = std::abs(front.y) >= std::abs(rear.y) ? front.y : rear.y;
     const bool inside = std::abs(outer_axle) + vehicle_half_width <= lane_half_width;
     if (departure_side_ == 0 && !inside) departure_side_ = outer_axle > 0.0 ? 1 : -1;
-
-    bool agreed = false;
     if (departure_side_ != 0) {
+      const double outward = departure_side_ * front.y;
+      peak_outward_m_ = std::max(peak_outward_m_, outward);
+      returning_ = returning_ || inside || peak_outward_m_ - outward >= kReturnProgress;
       const bool left_first = departure_side_ > 0;
-      auto first = recover_boundary(lane, *pose, left_first ? old.lane.left : old.lane.right, old.pose);
-      if (!first.empty()) {
-        auto opposite = inside ? recover_boundary(lane, *pose,
-          left_first ? old.lane.right : old.lane.left, old.pose) : std::vector<Vec2>{};
-        if (!lane.valid || !matches(reference_center(lane), *pose, old_center, old.pose, kMinimumCenterOverlap))
-          lane.stop_line_m = std::numeric_limits<double>::quiet_NaN();
-        (left_first ? lane.left : lane.right) = std::move(first);
-        (left_first ? lane.right : lane.left) = std::move(opposite);
-        center_from_boundary(lane, departure_side_, lane_half_width);
-        if (!boundaries_consistent(lane, true)) (left_first ? lane.right : lane.left).clear();
-        agreed = matches(lane.path, *pose, old_center, old.pose, kMinimumCenterOverlap);
+      const bool assign_single = boundary_lost_ && returning_ && (lane.left.empty() != lane.right.empty());
+      const auto recovered = recovered_road_ ? std::optional<FrenetFrame>{frenet_frame(recovered_road_->center)} : std::nullopt;
+      const auto & boundary_frame = recovered ? *recovered : road;
+      const auto & boundary_pose = recovered_road_ ? recovered_road_->pose : road_->pose;
+      auto first = innermost_boundary(lane, *pose, boundary_frame, boundary_pose, departure_side_, assign_single);
+      if (first.empty()) {
+        boundary_lost_ = true;
+        first_recovered_ = false;
+        return false;
       }
-    } else if (lane.valid && observed_span(lane.path) >= kMinimumCenterOverlap &&
-               matches(reference_center(lane), *pose, old_center, old.pose, kMinimumCenterOverlap)) {
-      const bool left = matches(lane.left, *pose, old.lane.left, old.pose, kMinimumBoundaryOverlap);
-      const bool right = matches(lane.right, *pose, old.lane.right, old.pose, kMinimumBoundaryOverlap);
-      agreed = (left || right) && boundaries_consistent(lane);
+      if (boundary_lost_ && !returning_) return false;
+      auto opposite = inside && first_recovered_ ?
+        innermost_boundary(lane, *pose, boundary_frame, boundary_pose, -departure_side_) : std::vector<Vec2>{};
+      (left_first ? lane.left : lane.right) = std::move(first);
+      (left_first ? lane.right : lane.left) = std::move(opposite);
+      center_from_boundary(lane, departure_side_, lane_half_width);
+      restored_pair = boundaries_consistent(lane, true);
+      if (!restored_pair) (left_first ? lane.right : lane.left).clear();
     }
-    if (!agreed) {
-      matching_frames_ = 0;
-      return false;
-    }
-    matching_frames_ = std::min(matching_frames_ + 1, kConfirmationFrames);
-    if (matching_frames_ < kConfirmationFrames) return false;
-    if (avoiding || !inside) return true;
-    holding_ = false;
-    departure_side_ = 0;
-    matching_frames_ = 0;
   }
-  if (!lane.valid || !boundaries_consistent(lane)) return false;
-  if (observed_span(reference_center(lane)) >= kMinimumCenterOverlap &&
-      (observed_span(lane.left) >= kMinimumBoundaryOverlap || observed_span(lane.right) >= kMinimumBoundaryOverlap))
-    reference_ = Reference{lane, *pose};
+  const auto finite = [](const Vec2 & p) { return std::isfinite(p.x) && std::isfinite(p.y); };
+  if (!lane.valid || !std::all_of(lane.path.begin(), lane.path.end(), finite) ||
+      !std::all_of(lane.center.begin(), lane.center.end(), finite) || !boundaries_consistent(lane)) return false;
+  if (restored_pair) {
+    departure_side_ = 0;
+    peak_outward_m_ = 0.0;
+    boundary_lost_ = returning_ = first_recovered_ = false;
+    recovered_road_.reset();
+  } else if (departure_side_ != 0) {
+    first_recovered_ = true;
+    if (returning_) recovered_road_ = Road{reference_center(lane), *pose};
+  }
+  if (!road_ || (!avoiding && departure_side_ == 0) || restored_pair) road_ = Road{reference_center(lane), *pose};
   return true;
 }
 

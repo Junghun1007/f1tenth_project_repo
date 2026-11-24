@@ -21,23 +21,24 @@ LaneObservation lane_from_pixels(const LanePixels & in, double capture_time);
 
 enum class LaneSource { RGB, IR };
 
-class LaneContinuity {
+class LaneDepartureCheck {
 public:
-  // Keep the last observed geometry as a fixed reference during avoidance.
-  // Matching frames may extend the control path without moving that reference.
   bool accept(LaneObservation & lane, const std::optional<Pose2> & pose,
               bool avoiding, double lane_half_width, double vehicle_half_width, double wheelbase);
 
 private:
-  struct Reference {
-    LaneObservation lane;
+  struct Road {
+    std::vector<Vec2> center;
     Pose2 pose;
   };
-  std::optional<Reference> reference_;
+  std::optional<Road> road_;
+  std::optional<Road> recovered_road_;
   double last_capture_{-std::numeric_limits<double>::infinity()};
-  bool holding_{false};
+  double peak_outward_m_{0.0};
   int departure_side_{0};  // +1 left, -1 right
-  int matching_frames_{0};
+  bool boundary_lost_{false};
+  bool returning_{false};
+  bool first_recovered_{false};
 };
 
 }  // namespace auto_control::drive

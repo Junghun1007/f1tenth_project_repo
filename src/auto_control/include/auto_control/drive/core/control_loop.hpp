@@ -175,7 +175,7 @@ private:
   DetectionFrame last_det_;
   LaneObservation lane_;
   LaneSource lane_source_{LaneSource::RGB};
-  LaneContinuity lane_continuity_;
+  LaneDepartureCheck lane_departure_;
   std::optional<Pose2> accepted_lane_pose_;
   PlanResult plan_;
   Pose2 plan_pose_;

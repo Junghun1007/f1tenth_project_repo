@@ -44,12 +44,12 @@ void ControlLoop::apply_settings(const Settings & s) {
   std::lock_guard<std::mutex> l(m_);
   if (s.memory_mode != s_.memory_mode) clear_memories();   // 방식을 바꾸면 두 기억 모두 새로 시작
   if (s.lane_check_mode != s_.lane_check_mode) {
-    lane_continuity_ = {};
+    lane_departure_ = {};
     accepted_lane_pose_.reset();
     if (s.lane_check_mode == 2 && lane_.valid) {
       const auto pose = odom_pose_at(lane_.capture_time, kLanePoseToleranceSec);
       auto checked = lane_;
-      if (lane_continuity_.accept(checked, pose, false, s.planner.lane_half, s.planner.width / 2, rc_.wheelbase))
+      if (lane_departure_.accept(checked, pose, false, s.planner.lane_half, s.planner.width / 2, rc_.wheelbase))
         accepted_lane_pose_ = pose;
     }
   }
@@ -243,7 +243,7 @@ void ControlLoop::on_refit_done(bool ok, const std::string & reason, double t) {
   sm_.on_refit_done(ok, t, reason);
   clear_memories();   // 자세가 바뀌었으니 콘 기억을 모두 비우고 다시 쌓는다
   if (s_.lane_check_mode == 2) {
-    lane_continuity_ = {};
+    lane_departure_ = {};
     if (ok) {
       lane_ = {};
       accepted_lane_pose_.reset();
@@ -338,25 +338,25 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
   if (s_.memory_mode == 0) integrate_detections();
   const bool source_changed = lane_source_ != source;
   lane_source_ = source;
-  const bool check_continuity = s_.lane_check_mode == 2;
+  const bool check_departure = s_.lane_check_mode == 2;
   std::optional<Pose2> observation_pose;
   LaneObservation checked;
   bool accepted = lane.valid;
-  if (check_continuity) {
+  if (check_departure) {
     if (source_changed) {
-      lane_continuity_ = {};
+      lane_departure_ = {};
       planner_.reset();
     }
     observation_pose = odom_pose_at(lane.capture_time, kLanePoseToleranceSec);
     const bool avoiding = !source_changed && !obstacles_suspended_ &&
       (plan_.obstacle_active || plan_.mode == PlanMode::Free);
     checked = lane;
-    accepted = lane_continuity_.accept(checked, observation_pose, avoiding,
+    accepted = lane_departure_.accept(checked, observation_pose, avoiding,
       s_.planner.lane_half, s_.planner.width / 2, rc_.wheelbase);
     if (lane.valid && !accepted) stats_.record("lane_reject", t0, t0);
   }
   if (accepted) {
-    if (check_continuity) lane_ = std::move(checked);
+    if (check_departure) lane_ = std::move(checked);
     else lane_ = lane;
     last_lane_t_ = now;
     accepted_lane_pose_ = observation_pose;
@@ -397,7 +397,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
     have_path = control_path_.size() >= 2;
   }
   stats_.record("memory_plan", t0, now_sec());
-  if (on_record && lane.valid && (!check_continuity || observation_pose)) {
+  if (on_record && lane.valid && (!check_departure || observation_pose)) {
     RecordFrame r;
     r.t = lane.capture_time;
     r.pose = observation_pose.value_or(plan_pose_);
@@ -410,7 +410,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
     r.rollout_ok = plan_.rollout_ok;
     r.obstacle_active = plan_.obstacle_active;
     r.plan_path = plan_.path_local;
-    if (check_continuity && !accepted) {
+    if (check_departure && !accepted) {
       for (auto & point : r.plan_path) point = to_local(to_world(point, plan_pose_), r.pose);
     }
     r.cones_world = rec_cones_;

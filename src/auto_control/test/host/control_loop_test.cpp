@@ -263,7 +263,7 @@ static void see_cone(Rig & r, Vec2 at, int frames) {
   r.step(0.0);
 }
 
-TEST(lane_check_modes_choose_whether_avoidance_can_replace_the_lane) {
+TEST(lane_check_modes_apply_the_width_rule_only_in_mode_two) {
   for (const int mode : {0, 1, 2}) {
     Rig r(DriveMode::Detect);
     CHECK(!r.params.apply({{"lane.check_mode", 1.5}}).first);
@@ -277,9 +277,9 @@ TEST(lane_check_modes_choose_whether_avoidance_can_replace_the_lane) {
       r.loop->on_speed(0.0, r.t);
       r.loop->on_yaw_rate(0.0, r.t);
       auto noise = lane_at(r.t - 0.005);
-      noise.right.clear();
-      for (auto * points : {&noise.path, &noise.left})
-        for (auto & p : *points) p.y += 0.45;
+      for (auto & p : noise.path) p.y = 0.45;
+      for (auto & p : noise.left) p.y = 0.60;
+      for (auto & p : noise.right) p.y = 0.30;
       CHECK(!r.loop->on_lane(noise, r.t).publish);
     }
     const auto frame = r.loop->telemetry(true, r.t);

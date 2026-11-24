@@ -34,20 +34,21 @@ TEST(invalid_centerline_gives_invalid_lane) {
   CHECK(!lane_from_pixels(p, 1.0).valid);
 }
 
-TEST(avoidance_recovers_departure_side_first_even_when_model_changes_its_label) {
+TEST(avoidance_uses_first_return_boundary_without_matching_the_old_geometry) {
   constexpr double lane_half = 0.325, vehicle_half = 0.15, wheelbase = 0.33;
   for (const int side : {-1, 1}) {
-    LaneContinuity continuity;
+    LaneDepartureCheck departure;
     const Pose2 initial{0.0, 0.0, 0.0}, outside{0.65, side * 0.42, side * 0.30};
-    const Pose2 returning{0.9, side * 0.10, 0.0};
+    const Pose2 returning{3.1, side * 0.10, 0.0};
     auto reference = lane_from_pixels(straight(), 1.0);
     auto accept = [&](LaneObservation & lane, const Pose2 & pose, bool avoiding) {
-      return continuity.accept(lane, pose, avoiding, lane_half, vehicle_half, wheelbase);
+      return departure.accept(lane, pose, avoiding, lane_half, vehicle_half, wheelbase);
     };
     auto observed = [&](bool departure_side, const Pose2 & pose, double noise = 0.0) {
       const auto & boundary = (side > 0) == departure_side ? reference.left : reference.right;
       std::vector<Vec2> points;
       for (auto p : boundary) {
+        if (pose.x > 3.0) p.x += 3.2;
         p.y += noise;
         p = to_local(p, pose);
         if (p.x >= 0.0) points.push_back(p);
@@ -64,51 +65,69 @@ TEST(avoidance_recovers_departure_side_first_even_when_model_changes_its_label) 
     outside_noise.left = observed(true, outside, side * 0.22);
     CHECK(!accept(outside_noise, outside, true));
 
-    LaneObservation wrong_first;
-    wrong_first.capture_time = 1.06;
-    wrong_first.right = observed(false, returning);
-    CHECK(!accept(wrong_first, returning, false));
+    // The true line is 20 cm from the old edge and beyond its observed extent.
+    LaneObservation mislabeled;
+    mislabeled.capture_time = 1.08;
+    (side > 0 ? mislabeled.right : mislabeled.left) = observed(true, returning, side * 0.20);
+    auto & extra = side > 0 ? mislabeled.left : mislabeled.right;
+    extra = observed(true, returning, side * 0.40);
+    const auto opposite = observed(false, returning, side * 0.20);
+    extra.insert(extra.end(), opposite.begin(), opposite.end());
+    CHECK(accept(mislabeled, returning, false));
+    CHECK((side > 0 ? mislabeled.left : mislabeled.right).size() >= 4);
+    CHECK((side > 0 ? mislabeled.right : mislabeled.left).empty());
+    CHECK_NEAR(to_world(mislabeled.path.back(), returning).y, side * 0.20, 1e-9);
 
-    for (int frame = 0; frame < 3; ++frame) {
-      LaneObservation mislabeled;
-      mislabeled.capture_time = 1.08 + frame * 0.02;
-      (side > 0 ? mislabeled.right : mislabeled.left) = observed(true, returning);
-      (side > 0 ? mislabeled.left : mislabeled.right) = observed(true, returning, side * 0.22);
-      CHECK(accept(mislabeled, returning, false) == (frame == 2));
-      if (frame == 2) {
-        CHECK((side > 0 ? mislabeled.left : mislabeled.right).size() >= 4);
-        CHECK((side > 0 ? mislabeled.right : mislabeled.left).empty());
-        CHECK_NEAR(to_world(mislabeled.path.back(), returning).y, 0.0, 1e-9);
-      }
-    }
-    auto both = lane_from_pixels(straight(), 1.14);
-    for (auto * points : {&both.path, &both.left, &both.right})
-      for (auto & p : *points) p = to_local(p, returning);
+    LaneObservation both;
+    both.capture_time = 1.10;
+    (side > 0 ? both.left : both.right) = observed(true, returning, side * 0.20);
+    (side > 0 ? both.right : both.left) = opposite;
     CHECK(accept(both, returning, false));
+    CHECK(!both.left.empty() && !both.right.empty());
   }
 }
 
-TEST(lane_continuity_rejects_narrow_pairs_and_duplicate_boundaries) {
-  LaneContinuity continuity;
+TEST(single_return_boundary_gets_departure_label_even_across_the_old_center) {
+  LaneDepartureCheck departure;
+  const Pose2 centered{}, outside{0.6, 0.42, 0.0}, returning{0.9, 0.10, 0.0};
+  auto before = lane_from_pixels(straight(), 1.0);
+  CHECK(departure.accept(before, centered, false, 0.325, 0.15, 0.33));
+  LaneObservation missing;
+  missing.capture_time = 1.02;
+  CHECK(!departure.accept(missing, outside, true, 0.325, 0.15, 0.33));
+  LaneObservation recovered;
+  recovered.capture_time = 1.04;
+  for (double x = 0.1; x < 1.0; x += 0.05) recovered.right.push_back({x, -0.30});
+  CHECK(departure.accept(recovered, returning, false, 0.325, 0.15, 0.33));
+  CHECK(recovered.right.empty() && !recovered.left.empty());
+  CHECK_NEAR(recovered.path.back().y, -0.625, 1e-9);
+}
+
+TEST(lane_departure_check_rejects_narrow_pairs_and_duplicate_boundaries) {
+  LaneDepartureCheck departure;
   const Pose2 pose{};
   auto narrow = lane_from_pixels(straight(), 1.0);
   for (auto & point : narrow.left) point.y = 0.245;
   for (auto & point : narrow.right) point.y = -0.245;
-  CHECK(!continuity.accept(narrow, pose, false, 0.325, 0.15, 0.33));
+  CHECK(!departure.accept(narrow, pose, false, 0.325, 0.15, 0.33));
   auto exactly = narrow;
   exactly.capture_time = 1.02;
   for (auto & point : exactly.left) point.y = 0.25;
   for (auto & point : exactly.right) point.y = -0.25;
-  CHECK(continuity.accept(exactly, pose, false, 0.325, 0.15, 0.33));
+  CHECK(departure.accept(exactly, pose, false, 0.325, 0.15, 0.33));
 
   auto shared = exactly;
   shared.capture_time = 1.04;
   shared.right = shared.left;
-  CHECK(!continuity.accept(shared, pose, false, 0.325, 0.15, 0.33));
+  CHECK(!departure.accept(shared, pose, false, 0.325, 0.15, 0.33));
   auto duplicate = exactly;
   duplicate.capture_time = 1.06;
   for (const auto & point : exactly.left) duplicate.left.push_back({point.x, point.y + 0.10});
-  CHECK(!continuity.accept(duplicate, pose, false, 0.325, 0.15, 0.33));
+  CHECK(!departure.accept(duplicate, pose, false, 0.325, 0.15, 0.33));
+  auto disjoint = exactly;
+  disjoint.capture_time = 1.08;
+  for (auto & point : disjoint.right) point.x += 4.0;
+  CHECK(!departure.accept(disjoint, pose, false, 0.325, 0.15, 0.33));
 }
 
 TEST(rgb_box_maps_through_intrinsics_to_depth) {   // 1.25배 확대 RGB(1280×800) → CAM_A 정렬 깊이(640×400, 확대 없음)
