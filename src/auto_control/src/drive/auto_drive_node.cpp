@@ -428,7 +428,10 @@ private:
     const double scale = 640.0 / f->mono.cols;
     cv::resize(f->mono, view, {}, scale, scale, cv::INTER_AREA);
     cv::cvtColor(view, view, cv::COLOR_GRAY2BGR);
-    cv::putText(view, "IR (CAM_B left)", {8, 22}, cv::FONT_HERSHEY_SIMPLEX, 0.6, {0, 255, 255}, 2);
+    std::ostringstream label;
+    label << "IR (CAM_B) " << f->mono.cols << 'x' << f->mono.rows << " | "
+          << std::fixed << std::setprecision(2) << f->exposure_us / 1000.0 << " ms | ISO " << f->sensitivity_iso;
+    cv::putText(view, label.str(), {8, 22}, cv::FONT_HERSHEY_SIMPLEX, 0.6, {0, 255, 255}, 2);
     std::vector<std::uint8_t> jpeg;
     if (cv::imencode(".jpg", view, jpeg, {cv::IMWRITE_JPEG_QUALITY, 70})) web_->publish_jpeg("camera", std::move(jpeg));
   }
@@ -611,6 +614,7 @@ private:
 
   // ------------------------------------------------------------------ 설정·출력
   void apply_settings() {
+    std::lock_guard<std::mutex> settings_lock(apply_settings_m_);
     auto s = acd::settings_from(registry_);
     bool inside;
     { std::lock_guard<std::mutex> l(status_m_); inside = tunnel_inside_; }
@@ -643,13 +647,11 @@ private:
     };
     const auto cur = bev_handoff::irCameraSettings();
     const auto in = conv(c.inside), out = conv(c.outside);
-    auto same = [](const bev_handoff::IrCameraProfile & a, const bev_handoff::IrCameraProfile & b) {
-      return a.exposure_us == b.exposure_us && a.iso == b.iso && a.dot_intensity == b.dot_intensity && a.flood_intensity == b.flood_intensity;
-    };
-    if (cur && same(cur->inside, in) && same(cur->outside, out)) return;
+    if (cur && cur->inside == in && cur->outside == out && cur->use_400p_ir_output == c.use_400p_ir_output) return;
     auto s = std::make_shared<bev_handoff::IrCameraSettings>();
     s->inside = in;
     s->outside = out;
+    s->use_400p_ir_output = c.use_400p_ir_output;
     bev_handoff::publishIrCameraSettings(std::move(s));
     const std::string out_exposure = out.exposure_us > 0 ? std::to_string(out.exposure_us) + "us" : std::string("AE");
     RCLCPP_INFO(get_logger(), "IR camera: inside %dus ISO%d dot%.2f flood%.2f | outside %s ISO%d dot%.2f flood%.2f",
@@ -843,6 +845,7 @@ private:
   const double t_start_{acd::now_sec()};
   // 점검·상태 (status_m_)
   std::mutex status_m_;
+  std::mutex apply_settings_m_;
   std::optional<Pose> pose_;
   std::shared_ptr<const bev_handoff::ObstacleReference> reference_;
   bool yolo_ready_{false}, inspection_done_{false}, tunnel_inside_{false};

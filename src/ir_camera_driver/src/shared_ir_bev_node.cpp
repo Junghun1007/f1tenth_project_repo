@@ -77,7 +77,7 @@ private:
     if (!validation_ && inside_ && !frame->tunnel_profile) {wait_reason_="waiting_tunnel_exposure"; return;}
     if (frame->captured_at<=last_) {return;}
     try {
-      if (!projector_) {
+      if (!projector_ || frame->mono.size()!=projector_input_size_) {
         if (reference->width!=120 || reference->height!=300 ||
           std::abs(reference->x_min)>1e-8 || std::abs(reference->x_max-3.0)>1e-8 ||
           std::abs(reference->y_min+.6)>1e-8 || std::abs(reference->y_max-.6)>1e-8 ||
@@ -89,6 +89,7 @@ private:
         projector_->configure(k[0],k[1],k[2],k[3],frame->mono.cols,frame->mono.rows,
           frame->rgb_from_view,frame->view_center_rgb_m,frame->distortion);
         projector_->setMountPose(reference->rotation_vehicle_from_camera,reference->position_vehicle_m);
+        projector_input_size_=frame->mono.size();
       }
       if (!inside_ && standby_==0.0) {return;}
       if (!rate_gate_.accept(std::chrono::duration<double>(frame->captured_at.time_since_epoch()).count(),
@@ -129,6 +130,7 @@ private:
   std::uint64_t output_count_{0};
   std::string wait_reason_{"waiting_camera_frame"};
   std::unique_ptr<IrBevProjector> projector_;
+  cv::Size projector_input_size_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr publisher_;
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr bgr_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_;

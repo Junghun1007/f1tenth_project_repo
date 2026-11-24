@@ -1,5 +1,6 @@
 #include "check.hpp"
 #include "auto_control/drive/core/params.hpp"
+#include "auto_control/drive/core/settings.hpp"
 #include "auto_control/drive/core/stage_stats.hpp"
 #include "auto_control/drive/core/system_monitor.hpp"
 #include <filesystem>
@@ -68,6 +69,34 @@ TEST(params_json_lists_specs) {
   CHECK(j.find("\"name\":\"drive.maximum_speed_mps\"") != std::string::npos);
   CHECK(j.find("\"group\":\"obstacle\"") != std::string::npos);
   CHECK(j.find("\"live\":true") != std::string::npos);
+}
+
+TEST(tunnel_ir_resolution_uses_supported_choices) {
+  ParamRegistry r;
+  register_params(r);
+  const auto defaults = settings_from(r).ir_camera;
+  CHECK(!defaults.use_400p_ir_output);
+  CHECK(defaults.inside.exposure_us == 20000);
+  CHECK(defaults.inside.iso == 500);
+  CHECK(defaults.inside.dot == 0.0);
+  CHECK(defaults.inside.flood == 1.0);
+  CHECK(r.to_json().find("\"options\":[{\"value\":0") != std::string::npos);
+
+  CHECK(!r.apply({{"ir_cam.inside_resolution", 200}, {"ir_cam.inside_iso", 600}}).first);
+  CHECK(settings_from(r).ir_camera.inside.iso == 500);
+  CHECK(r.apply({{"ir_cam.inside_resolution", 400}, {"ir_cam.inside_iso", 600},
+                 {"ir_cam.inside_exposure_us", 18000}, {"ir_cam.inside_flood", 0.25},
+                 {"ir_cam.inside_dot", 0.125}}).first);
+  const auto updated = settings_from(r).ir_camera;
+  CHECK(updated.use_400p_ir_output);
+  CHECK(updated.inside.iso == 600);
+  CHECK(updated.inside.exposure_us == 18000);
+  CHECK_NEAR(updated.inside.flood, 0.25, 1e-12);
+  CHECK_NEAR(updated.inside.dot, 0.125, 1e-12);
+  CHECK(r.to_yaml("auto_drive").find("ir_cam.inside_resolution: 400.0") != std::string::npos);
+
+  CHECK(r.apply({{"ir_cam.inside_resolution", 0}}).first);
+  CHECK(!settings_from(r).ir_camera.use_400p_ir_output);
 }
 
 TEST(stage_stats_window) {

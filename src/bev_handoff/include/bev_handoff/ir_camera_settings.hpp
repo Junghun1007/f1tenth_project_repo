@@ -12,12 +12,19 @@ struct IrCameraProfile
   int iso{800};
   double dot_intensity{0.0};     // 점 투사기 0..1
   double flood_intensity{0.0};   // 플러드 조명 0..1
+
+  bool operator==(const IrCameraProfile & other) const
+  {
+    return exposure_us == other.exposure_us && iso == other.iso &&
+      dot_intensity == other.dot_intensity && flood_intensity == other.flood_intensity;
+  }
 };
 
 struct IrCameraSettings
 {
-  IrCameraProfile inside{30000, 800, 0.0, 0.5};   // 터널 안: IR 차선
+  IrCameraProfile inside{20000, 500, 0.0, 1.0};   // 터널 안: IR 차선
   IrCameraProfile outside{0, 400, 0.5, 0.0};      // 터널 밖: 장애물 스테레오 깊이
+  bool use_400p_ir_output{false};                 // false: camera_driver의 시작 해상도
 };
 
 void publishIrCameraSettings(std::shared_ptr<const IrCameraSettings> settings);

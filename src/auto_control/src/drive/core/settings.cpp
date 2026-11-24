@@ -96,10 +96,13 @@ void register_params(ParamRegistry & r) {
   d("차선", "lane.corner_entry_distance_m", "코너 진입 거리", "m", 0, 4, 2.2);
   d("차선", "lane.corner_entry_full_offset_m", "최대 이동 시작 거리", "m", 0, 4, 0.6);
   // 스테레오 흑백 카메라 — 터널 안: IR 차선용 (tunnel_enabled:=true일 때만). 수동 노출 고정
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_exposure_us", "노출", "µs", 1000, 33000, 30000);
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_iso", "ISO", "", 100, 1600, 800);
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_dot", "점 투사기 세기 (차선 영상에 점이 찍힘)", "", 0, 1, 0);
-  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_flood", "플러드 조명 세기", "", 0, 1, 0.5);
+  const auto ir_defaults = Settings::IrCamera{}.inside;
+  r.add({"ir_cam.inside_resolution", "driving", "IR 카메라 · 터널 안 (차선)",
+    "IR 영상 해상도", "", 0, 400, 0, true, {{0, "시작값 (기본 800p)"}, {400, "400p (640×400)"}}});
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_exposure_us", "노출 시간", "µs", 1000, 33000, ir_defaults.exposure_us);
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_iso", "ISO", "", 100, 1600, ir_defaults.iso);
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_dot", "점 투사기 세기 (차선 영상에 점이 찍힘)", "", 0, 1, ir_defaults.dot);
+  d("IR 카메라 · 터널 안 (차선)", "ir_cam.inside_flood", "IR 플러드 조명 세기 (0 = 끔)", "", 0, 1, ir_defaults.flood);
   // 터널 IR 차선 (tunnel_enabled:=true일 때만 쓰임). RGB 차선과 따로 조절
   d("IR 차선 (터널)", "ir_lane.mask_threshold", "차선 마스크 임계값 (낮을수록 흐린 선도 잡음)", "", 0.05, 0.95, 0.5);
   d("IR 차선 (터널)", "ir_lane.lane_width_m", "차선 폭 (한쪽만 보일 때 중앙선 위치)", "m", 0.3, 1.2, 0.65);
@@ -291,6 +294,7 @@ Settings settings_from(const ParamRegistry & r) {
                         g("ir_cam.inside_dot"), g("ir_cam.inside_flood")};
   s.ir_camera.outside = {int(std::lround(g("ir_cam.outside_exposure_us"))), int(std::lround(g("ir_cam.outside_iso"))),
                          g("ir_cam.outside_dot"), g("ir_cam.outside_flood")};
+  s.ir_camera.use_400p_ir_output = g("ir_cam.inside_resolution") == 400;
   s.ir_lane.mask_threshold = g("ir_lane.mask_threshold");
   s.ir_lane.lane_width_m = g("ir_lane.lane_width_m");
   s.ir_lane.side_tracking = g("ir_lane.side_tracking") >= 0.5;

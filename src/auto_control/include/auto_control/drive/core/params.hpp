@@ -18,6 +18,7 @@ struct ParamSpec {
   std::string unit;
   double min{0}, max{1}, value{0};
   bool live{true};      // false = 재시작해야 반영
+  std::vector<std::pair<double, std::string>> options{};
 };
 
 class ParamRegistry {

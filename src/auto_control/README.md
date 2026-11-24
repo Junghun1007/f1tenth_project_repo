@@ -76,6 +76,9 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 ## 화면
 - 파라미터 "IR 카메라 · 터널 안 (차선)" / "IR 카메라 · 터널 밖 (장애물 깊이)": 스테레오 흑백 카메라 노출(µs, 밖은 0=자동노출)·ISO·점 투사기·플러드 조명.
   바꾸면 camera_driver가 바로 다시 적용한다 (터널 안 IR 프레임 노출 검사 기준도 같이 바뀜)
+- **주행 → IR 카메라 · 터널 안 (차선)**에서 IR 영상 해상도를 시작값(기본 800p)과 400p 사이에 바꿀 수 있다. **적용**을 누르면 OAK가 전송하는 CAM_B 영상이 전환되며, 카메라 화면에 실제 해상도·노출·ISO가 표시된다.
+  터널 안 기본값은 노출 20,000 µs, ISO 500, 점 투사기 0, 플러드 조명 1이다.
+  센서 구동 해상도까지 낮추려면 camera YAML의 `tunnel.ir_resolution`을 `400p`로 바꾸고 다시 시작한다.
 - 조이스틱 버튼 (8BitDo): **A** 주행 시작, **B** Refit, **X** 정지 (X는 safety_node에서도 제동 → MANUAL). `joy.start_button`/`joy.refit_button`/`joy.stop_button`
 - 차량 추종: 앞차가 `acc.lost_timeout_sec`(0.3 s) 넘게 안 보이면 크루즈를 끝내고 정상 주행
 

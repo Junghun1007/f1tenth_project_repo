@@ -68,7 +68,7 @@ function setLink(ok) {
 
 async function loadParams() {
   const url = DEMO ? "demo/params.json" : "/api/params";
-  try { params = (await (await fetch(url)).json()).params; } catch (e) { params = []; }
+  try { params = (await (await fetch(url, { cache: "no-store" })).json()).params; } catch (e) { params = []; }
   renderParams();
 }
 
@@ -314,12 +314,15 @@ function renderParams() {
   for (const p of list) {
     if (p.section !== section) { section = p.section; html += `<h3>${section}</h3>`; }
     const val = p.name in edits ? edits[p.name] : p.value;
-    html += `<div class="prow"><label for="p_${p.name}">${p.label}${p.live ? "" : '<span class="restart">재시작 필요</span>'}<small>${p.name}</small></label>` +
-      `<input id="p_${p.name}" data-name="${p.name}" value="${val}" class="${p.name in edits ? "changed" : ""}" inputmode="decimal">` +
-      `<span class="unit">${p.unit || ""}</span></div>`;
+    const attrs = `id="p_${p.name}" data-name="${p.name}" class="${p.name in edits ? "changed" : ""}"`;
+    const control = p.options
+      ? `<select ${attrs}>${p.options.map((o) => `<option value="${o.value}"${o.value === val ? " selected" : ""}>${o.label}</option>`).join("")}</select>`
+      : `<input ${attrs} value="${val}" inputmode="decimal">`;
+    html += `<div class="prow"><label for="p_${p.name}">${p.label}${p.live ? "" : '<span class="restart">재시작 필요</span>'}<small>${p.name}</small></label>` + control +
+      (p.options ? "" : `<span class="unit">${p.unit || ""}</span>`) + "</div>";
   }
   $("plist").innerHTML = html;
-  $("plist").querySelectorAll("input").forEach((inp) => inp.addEventListener("input", () => {
+  $("plist").querySelectorAll("[data-name]").forEach((inp) => inp.addEventListener("input", () => {
     const p = params.find((q) => q.name === inp.dataset.name);
     const x = Number(inp.value);
     inp.classList.toggle("bad", !(isFinite(x) && x >= p.min && x <= p.max));
@@ -329,7 +332,10 @@ function renderParams() {
   }));
 }
 
-function openDrawer(open) { $("drawer").hidden = !open; }
+function openDrawer(open) {
+  $("drawer").hidden = !open;
+  if (open) loadParams();
+}
 
 // ---------- 이벤트 ----------
 function bind() {
@@ -452,5 +458,5 @@ $("bevImg").addEventListener("load", () => render());   // 첫 영상이 늦게 
 try { if (localStorage.getItem("cdt_preview") === "0" || qs.get("preview") === "0") $("togPreview").checked = false; } catch (e) { /* 저장소 없음 */ }
 if (qs.get("bev") === "1") { $("togBev").checked = true; $("togBev").dispatchEvent(new Event("change")); }
 if (qs.get("cam") === "1") { $("togCam").checked = true; $("togCam").dispatchEvent(new Event("change")); }
-loadParams().then(() => { if (qs.get("params") === "1") openDrawer(true); });
+if (qs.get("params") === "1") openDrawer(true);
 if (DEMO) demo(); else connect();

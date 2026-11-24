@@ -18,6 +18,8 @@ struct DirectIrFrame
   std::shared_ptr<const void> owner;
   std_msgs::msg::Header header;
   std::chrono::steady_clock::time_point captured_at;
+  int exposure_us{0};
+  int sensitivity_iso{0};
   std::array<double, 4> intrinsics{};
   // OpenCV 원근 왜곡 계수 (k1,k2,p1,p2,k3,...). 비어 있으면 mono는 이미 왜곡 보정된 영상
   std::vector<double> distortion;

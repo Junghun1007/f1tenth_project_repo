@@ -78,6 +78,8 @@ th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); 
 .prow label { font-size: 12px; } .prow label small { display: block; color: var(--dim); font-size: 11px; }
 .prow input { width: 96px; background: #0f1317; border: 1px solid var(--line); color: var(--text); border-radius: 4px; padding: 3px 6px; text-align: right; }
 .prow input.changed { border-color: var(--warn); } .prow input.bad { border-color: var(--stop); }
+.prow select { grid-column: 2 / 4; width: 100%; background: #0f1317; border: 1px solid var(--line); color: var(--text); border-radius: 4px; padding: 3px 6px; }
+.prow select.changed { border-color: var(--warn); }
 .prow .unit { color: var(--dim); font-size: 11px; }
 .restart { color: var(--warn); font-size: 10px; margin-left: 4px; }
 
