@@ -11,12 +11,14 @@ namespace cone_drive_test {
 
 struct ParamSpec {
   std::string name;     // ROS 파라미터 이름 (예: drive.maximum_speed_mps)
-  std::string group;    // "obstacle" | "driving"
+  std::string group;    // "obstacle" | "driving" | "camera"
   std::string section;  // 창 안의 소제목
   std::string label;
   std::string unit;
   double min{0}, max{1}, value{0};
   bool live{true};      // false = 재시작해야 반영
+  bool integer{false};
+  std::map<int, std::string> choices{};
 };
 
 class ParamRegistry {

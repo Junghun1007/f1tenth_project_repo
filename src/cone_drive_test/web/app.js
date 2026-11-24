@@ -299,15 +299,19 @@ function renderParams() {
   for (const p of list) {
     if (p.section !== section) { section = p.section; html += `<h3>${section}</h3>`; }
     const val = p.name in edits ? edits[p.name] : p.value;
+    const attrs = `id="p_${p.name}" data-name="${p.name}" class="${p.name in edits ? "changed" : ""}"`;
+    const control = p.choices
+      ? `<select ${attrs}>${p.choices.map((c) =>
+        `<option value="${c.value}"${val === c.value ? " selected" : ""}>${c.label}</option>`).join("")}</select>`
+      : `<input ${attrs} value="${val}" inputmode="${p.integer ? "numeric" : "decimal"}">`;
     html += `<div class="prow"><label for="p_${p.name}">${p.label}${p.live ? "" : '<span class="restart">재시작 필요</span>'}<small>${p.name}</small></label>` +
-      `<input id="p_${p.name}" data-name="${p.name}" value="${val}" class="${p.name in edits ? "changed" : ""}" inputmode="decimal">` +
-      `<span class="unit">${p.unit || ""}</span></div>`;
+      control + `<span class="unit">${p.unit || ""}</span></div>`;
   }
   $("plist").innerHTML = html;
-  $("plist").querySelectorAll("input").forEach((inp) => inp.addEventListener("input", () => {
+  $("plist").querySelectorAll("[data-name]").forEach((inp) => inp.addEventListener("input", () => {
     const p = params.find((q) => q.name === inp.dataset.name);
-    const x = Number(inp.value);
-    inp.classList.toggle("bad", !(isFinite(x) && x >= p.min && x <= p.max));
+    const x = inp.value.trim() ? Number(inp.value) : NaN;
+    inp.classList.toggle("bad", !(Number.isFinite(x) && x >= p.min && x <= p.max && (!p.integer || Number.isInteger(x))));
     if (x === p.value) delete edits[p.name]; else edits[p.name] = x;
     inp.classList.toggle("changed", p.name in edits);
     $("pmsg").textContent = Object.keys(edits).length ? `변경 ${Object.keys(edits).length}개 (적용 전)` : "";
@@ -371,8 +375,9 @@ function bind() {
   }));
   $("btnReset").addEventListener("click", () => { edits = {}; $("pmsg").textContent = ""; renderParams(); });
   $("btnApply").addEventListener("click", async () => {
+    const restart = params.some((p) => !p.live && p.name in edits);
     const r = await post("/api/params", { changes: edits });
-    $("pmsg").textContent = r.ok ? "적용됨" : "거부: " + r.reason;
+    $("pmsg").textContent = r.ok ? (restart ? "재시작 항목은 YAML 저장 후 재시작하면 반영됩니다." : "적용됨") : "거부: " + r.reason;
     if (r.ok) { edits = {}; await loadParams(); }
   });
   $("btnSave").addEventListener("click", async () => {

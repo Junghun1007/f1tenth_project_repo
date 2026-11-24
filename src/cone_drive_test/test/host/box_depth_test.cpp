@@ -1,5 +1,6 @@
 #include "check.hpp"
 #include "cone_drive_test/core/box_depth.hpp"
+#include "cone_drive_test/core/settings.hpp"
 #include "cone_drive_test/copied/bev_geometry.hpp"
 #include <cmath>
 #include <set>
@@ -127,4 +128,24 @@ TEST(mask_depth_retains_small_cone_and_distinguishes_missing_depth) {
   CHECK_NEAR(obs.front.y, .1, .025);
   const auto m = localize_masks(nullptr, K.width, K, M, {cone}, {});
   CHECK(m.objects[0].status == MaskDepthStatus::NoDepth && m.work.candidates == 0);
+}
+
+TEST(minimum_depth_setting_applies_to_box_and_mask) {
+  ParamRegistry r;
+  register_params(r);
+  const auto d = render(1.2, .1);
+  const MaskDepthTarget cone{box_of(1.2, .1), 0, .9f, {.13, .13}, false, [](int, int) { return true; }};
+  const auto box = [&](const BoxDepthOptions & options) {
+    return localize_box(d.data(), K.width, K, M, cone.box, 0, .9f, {.13, .13}, options, false);
+  };
+  const auto mask = [&](const BoxDepthOptions & options) {
+    return localize_masks(d.data(), K.width, K, M, {cone}, options).objects.front().observation;
+  };
+  const auto before = settings_from(r).box;
+  CHECK(box(before).has_value());
+  CHECK(mask(before).has_value());
+  CHECK(r.apply({{"object.min_depth_m", 2.0}}).first);
+  const auto after = settings_from(r).box;
+  CHECK(!box(after).has_value());
+  CHECK(!mask(after).has_value());
 }

@@ -24,10 +24,10 @@ cv::Matx33d matrix3(const std::vector<std::vector<float>> & rows, const char * l
   return m;
 }
 
-dai::node::StereoDepth::PresetMode preset(const std::string & v) {
+dai::node::StereoDepth::PresetMode preset(StereoPreset value) {
   using Mode = dai::node::StereoDepth::PresetMode;
-  if (v == "default") return Mode::DEFAULT;
-  if (v == "high_accuracy") return Mode::FAST_ACCURACY;
+  if (value == StereoPreset::Default) return Mode::DEFAULT;
+  if (value == StereoPreset::FastAccuracy) return Mode::FAST_ACCURACY;
   return Mode::FAST_DENSITY;
 }
 }  // namespace
@@ -73,6 +73,17 @@ void CameraPipeline::open(const OakStartupMeasurement & pose, double camera_yaw_
   stereo->initialConfig->setDepthUnit(dai::StereoDepthConfig::AlgorithmControl::DepthUnit::MILLIMETER);
   stereo->setDepthAlign(dai::CameraBoardSocket::CAM_A);
   stereo->setOutputSize(c_.depth_width, c_.depth_height);
+  if (c_.stereo_extended_disparity >= 0) stereo->setExtendedDisparity(c_.stereo_extended_disparity == 1);
+  if (c_.stereo_subpixel_bits >= 0) {
+    if (device_->getPlatform() == dai::Platform::RVC2) {
+      stereo->setSubpixel(c_.stereo_subpixel_bits > 0);
+      if (c_.stereo_subpixel_bits > 0) stereo->setSubpixelFractionalBits(c_.stereo_subpixel_bits);
+      if (c_.stereo_subpixel_bits > 3)
+        stereo->initialConfig->setMedianFilter(dai::StereoDepthConfig::MedianFilter::MEDIAN_OFF);
+    } else {
+      std::fprintf(stderr, "[cone_drive_test] camera.stereo_subpixel_bits override is only supported on RVC2\n");
+    }
+  }
   stereo->initialConfig->setConfidenceThreshold(c_.stereo_confidence);
   stereo->setLeftRightCheck(true);
   depth_q_ = stereo->depth.createOutputQueue(1U, false);

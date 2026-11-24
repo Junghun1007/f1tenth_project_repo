@@ -73,7 +73,11 @@ public:
     cam_cfg_.cx = declare_parameter<double>("camera.cx", cam_cfg_.cx);
     cam_cfg_.cy = declare_parameter<double>("camera.cy", cam_cfg_.cy);
     cam_cfg_.stabilization_enabled = declare_parameter<bool>("camera.stabilization_enabled", true);
-    cam_cfg_.dot_intensity = declare_parameter<double>("camera.ir_dot_intensity", 0.5);
+    cam_cfg_.stereo_preset = static_cast<cdt::StereoPreset>(int(start.at("camera.stereo_preset")));
+    cam_cfg_.stereo_confidence = int(start.at("camera.stereo_confidence"));
+    cam_cfg_.stereo_extended_disparity = int(start.at("camera.stereo_extended_disparity"));
+    cam_cfg_.stereo_subpixel_bits = int(start.at("camera.stereo_subpixel_bits"));
+    cam_cfg_.dot_intensity = start.at("camera.ir_dot_intensity");
     camera_x_ = declare_parameter<double>("camera.x_m", -0.08);   // 실측: 렌즈가 앞차축 8 cm 뒤
     camera_y_ = declare_parameter<double>("camera.y_m", 0.0);
     camera_yaw_deg_ = declare_parameter<double>("camera.yaw_deg", 0.0);

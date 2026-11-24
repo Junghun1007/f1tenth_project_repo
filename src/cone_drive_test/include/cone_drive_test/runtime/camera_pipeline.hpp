@@ -20,6 +20,8 @@ namespace dai { class Device; class Pipeline; class MessageQueue; class ImgFrame
 
 namespace cone_drive_test {
 
+enum class StereoPreset { FastDensity = 0, FastAccuracy = 1, Default = 2 };
+
 struct CameraConfig {
   std::string device_id;
   int width{1280}, height{800};
@@ -30,8 +32,10 @@ struct CameraConfig {
   // 들어간 값이라 원본 영상에 쓰면 BEV·깊이 투영이 1.25배 어긋난다 → drive_node가 camera.fx / camera.fixed_view_zoom으로 넣는다
   double fx{701.751174926 / 1.25}, fy{701.420440674 / 1.25}, cx{643.032653809}, cy{392.621124268};
   int depth_width{640}, depth_height{400};
-  std::string stereo_preset{"high_density"};
+  StereoPreset stereo_preset{StereoPreset::FastDensity};
   int stereo_confidence{200};
+  int stereo_extended_disparity{-1};  // -1이면 프리셋 설정 사용
+  int stereo_subpixel_bits{-1};       // -1이면 프리셋 설정, 0이면 끔
   double dot_intensity{0.5};
   double imu_rate_hz{400.0};
   double depth_sync_ms{25.0};  // 30 FPS 깊이면 가장 가까운 깊이는 항상 ±17 ms 안

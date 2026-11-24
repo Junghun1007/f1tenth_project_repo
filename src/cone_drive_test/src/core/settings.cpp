@@ -10,6 +10,15 @@ void register_params(ParamRegistry & r) {
   auto d = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
     r.add({name, "driving", sec, label, unit, lo, hi, v, live});
   };
+  r.add({"camera.stereo_preset", "camera", "스테레오 깊이", "스테레오 프리셋", "", 0, 2, 0, false, false,
+         {{0, "Fast Density"}, {1, "Fast Accuracy"}, {2, "Default"}}});
+  r.add({"camera.stereo_confidence", "camera", "스테레오 깊이", "매칭 신뢰도 임계값 (낮을수록 엄격)", "", 0, 255, 200, false, true});
+  r.add({"camera.stereo_extended_disparity", "camera", "스테레오 깊이", "확장 시차 (더 가까운 거리 측정)", "", -1, 1, -1, false, false,
+         {{-1, "프리셋 설정"}, {0, "끔"}, {1, "켬"}}});
+  r.add({"camera.stereo_subpixel_bits", "camera", "스테레오 깊이", "서브픽셀 정밀도 (RVC2, 비트 수)", "", -1, 5, -1, false, false,
+         {{-1, "프리셋 설정"}, {0, "끔"}, {3, "3"}, {4, "4"}, {5, "5"}}});
+  r.add({"camera.ir_dot_intensity", "camera", "스테레오 깊이", "IR 도트 강도 (0=끔, 1=최대)", "", 0, 1, 0.5, false});
+  r.add({"object.min_depth_m", "camera", "깊이 필터", "최소 유효 깊이 (카메라 기준)", "m", 0.01, 3.99, BoxDepthOptions{}.min_depth_m});
   o("YOLO 검출", "yolo.con_threshold", "콘 임계값", "", 0, 1, 0.83);
   o("YOLO 검출", "yolo.truck_threshold", "트럭 임계값", "", 0, 1, 0.70);
   o("YOLO 검출", "yolo.sedan_threshold", "세단 임계값", "", 0, 1, 0.70);
@@ -171,6 +180,7 @@ Settings settings_from(const ParamRegistry & r) {
   s.box.loc.window_per_m = g("object.window_per_m");
   s.box.min_height_m = g("object.min_height_m");
   s.box.max_height_m = g("object.max_height_m");
+  s.box.min_depth_m = g("object.min_depth_m");
   s.memory.gate_radial_max = g("memory.gate_radial_max");
   s.memory.gate_lateral = g("memory.gate_lateral");
   s.memory.merge_distance = g("memory.merge_distance");

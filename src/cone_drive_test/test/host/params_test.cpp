@@ -1,5 +1,6 @@
 #include "check.hpp"
 #include "cone_drive_test/core/params.hpp"
+#include "cone_drive_test/core/settings.hpp"
 #include "cone_drive_test/core/stage_stats.hpp"
 #include "cone_drive_test/core/system_monitor.hpp"
 #include <filesystem>
@@ -68,6 +69,22 @@ TEST(params_json_lists_specs) {
   CHECK(j.find("\"name\":\"drive.maximum_speed_mps\"") != std::string::npos);
   CHECK(j.find("\"group\":\"obstacle\"") != std::string::npos);
   CHECK(j.find("\"live\":true") != std::string::npos);
+}
+
+TEST(stereo_params_validate_and_save) {
+  ParamRegistry r;
+  register_params(r);
+  CHECK_NEAR(r.get("camera.stereo_confidence"), 200, 1e-12);
+  CHECK(!r.apply({{"camera.stereo_subpixel_bits", 2}, {"object.min_depth_m", 0.2}}).first);
+  CHECK(!r.apply({{"camera.stereo_confidence", 200.5}}).first);
+  CHECK(!r.apply({{"camera.stereo_extended_disparity", 0.5}}).first);
+  CHECK_NEAR(r.get("object.min_depth_m"), 0.15, 1e-12);
+  CHECK(r.apply({{"camera.stereo_preset", 1}, {"camera.stereo_extended_disparity", 1},
+                 {"camera.stereo_subpixel_bits", 4}, {"object.min_depth_m", 0.12}}).first);
+  const auto yaml = r.to_yaml("cone_drive_test");
+  CHECK(yaml.find("camera.stereo_extended_disparity: 1.0") != std::string::npos);
+  CHECK(yaml.find("camera.stereo_subpixel_bits: 4.0") != std::string::npos);
+  CHECK(yaml.find("object.min_depth_m: 0.12") != std::string::npos);
 }
 
 TEST(stage_stats_window) {

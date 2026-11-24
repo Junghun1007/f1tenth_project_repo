@@ -1,6 +1,123 @@
 {
 "params": [
 {
+"name": "camera.stereo_preset",
+"group": "camera",
+"section": "스테레오 깊이",
+"label": "스테레오 프리셋",
+"unit": "",
+"min": 0.0,
+"max": 2.0,
+"value": 0.0,
+"live": false,
+"choices": [
+{
+"value": 0,
+"label": "Fast Density"
+},
+{
+"value": 1,
+"label": "Fast Accuracy"
+},
+{
+"value": 2,
+"label": "Default"
+}
+]
+},
+{
+"name": "camera.stereo_confidence",
+"group": "camera",
+"section": "스테레오 깊이",
+"label": "매칭 신뢰도 임계값 (낮을수록 엄격)",
+"unit": "",
+"min": 0.0,
+"max": 255.0,
+"value": 200.0,
+"live": false,
+"integer": true
+},
+{
+"name": "camera.stereo_extended_disparity",
+"group": "camera",
+"section": "스테레오 깊이",
+"label": "확장 시차 (더 가까운 거리 측정)",
+"unit": "",
+"min": -1.0,
+"max": 1.0,
+"value": -1.0,
+"live": false,
+"choices": [
+{
+"value": -1,
+"label": "프리셋 설정"
+},
+{
+"value": 0,
+"label": "끔"
+},
+{
+"value": 1,
+"label": "켬"
+}
+]
+},
+{
+"name": "camera.stereo_subpixel_bits",
+"group": "camera",
+"section": "스테레오 깊이",
+"label": "서브픽셀 정밀도 (RVC2, 비트 수)",
+"unit": "",
+"min": -1.0,
+"max": 5.0,
+"value": -1.0,
+"live": false,
+"choices": [
+{
+"value": -1,
+"label": "프리셋 설정"
+},
+{
+"value": 0,
+"label": "끔"
+},
+{
+"value": 3,
+"label": "3"
+},
+{
+"value": 4,
+"label": "4"
+},
+{
+"value": 5,
+"label": "5"
+}
+]
+},
+{
+"name": "camera.ir_dot_intensity",
+"group": "camera",
+"section": "스테레오 깊이",
+"label": "IR 도트 강도 (0=끔, 1=최대)",
+"unit": "",
+"min": 0.0,
+"max": 1.0,
+"value": 0.5,
+"live": false
+},
+{
+"name": "object.min_depth_m",
+"group": "camera",
+"section": "깊이 필터",
+"label": "최소 유효 깊이 (카메라 기준)",
+"unit": "m",
+"min": 0.01,
+"max": 3.99,
+"value": 0.15,
+"live": true
+},
+{
 "group": "obstacle",
 "section": "YOLO 검출",
 "name": "yolo.con_threshold",

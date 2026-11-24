@@ -1,5 +1,6 @@
 #include "cone_drive_test/core/params.hpp"
 #include "cone_drive_test/core/json_writer.hpp"
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <stdexcept>
@@ -42,6 +43,11 @@ std::pair<bool, std::string> ParamRegistry::apply(const std::map<std::string, do
       std::snprintf(buf, sizeof(buf), ": %g outside [%g, %g]", v, s.min, s.max);
       return {false, name + buf};
     }
+    if (s.integer && v != std::trunc(v))
+      return {false, name + ": must be an integer"};
+    if (!s.choices.empty() && std::none_of(s.choices.begin(), s.choices.end(),
+        [value = v](const auto & choice) { return choice.first == value; }))
+      return {false, name + ": unsupported choice"};
     next[it->second].value = v;
   }
   for (const auto & [lo, hi] : order_) {
@@ -76,7 +82,15 @@ std::string ParamRegistry::to_json() const {
   for (const auto & s : specs_) {
     w.begin_object().key("name").value(s.name).key("group").value(s.group).key("section").value(s.section)
      .key("label").value(s.label).key("unit").value(s.unit).key("min").value(s.min, 6).key("max").value(s.max, 6)
-     .key("value").value(s.value, 6).key("live").value(s.live).end_object();
+     .key("value").value(s.value, 6).key("live").value(s.live);
+    if (s.integer) w.key("integer").value(true);
+    if (!s.choices.empty()) {
+      w.key("choices").begin_array();
+      for (const auto & [value, label] : s.choices)
+        w.begin_object().key("value").value(static_cast<long long>(value)).key("label").value(label).end_object();
+      w.end_array();
+    }
+    w.end_object();
   }
   w.end_array().end_object();
   return w.str();

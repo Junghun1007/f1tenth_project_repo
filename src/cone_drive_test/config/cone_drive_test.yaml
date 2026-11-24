@@ -14,6 +14,10 @@
     camera.cx: 643.032653809
     camera.cy: 392.621124268
     camera.stabilization_enabled: true
+    camera.stereo_preset: 0           # 0=Fast Density, 1=Fast Accuracy, 2=Default
+    camera.stereo_confidence: 200     # 0~255, 낮을수록 매칭 필터가 엄격
+    camera.stereo_extended_disparity: -1 # -1=프리셋 설정, 0=끔, 1=켬 (근거리)
+    camera.stereo_subpixel_bits: -1   # RVC2: -1=프리셋 설정, 0=끔, 3/4/5=비트 수
     camera.ir_dot_intensity: 0.5
     camera.manual_height_enabled: false
     camera.manual_height_m: 0.20
@@ -55,6 +59,7 @@
     object.window_per_m: 0.03           # 거리 창 증가 (/m)
     object.min_height_m: 0.03           # 지면 제거 높이 (m)
     object.max_height_m: 1.0            # 최대 높이 (m)
+    object.min_depth_m: 0.15            # 위치 추정에 쓸 최소 유효 깊이 (m, 카메라 기준)
     object.cone_size_m: 0.13            # 콘 크기 (m)
     object.range_gain: 0.971                # 검출 거리 배율 (정답 배치 녹화: 거리를 약 3% 길게 잼)
     object.range_offset_m: -0.046           # 검출 거리 오프셋 (m)
