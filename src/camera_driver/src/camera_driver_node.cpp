@@ -1359,6 +1359,7 @@ private:
       bev_handoff::publishDirectDepth(nullptr);
     }
 
+    dai::Node::Output * ir_gate_output=nullptr;
     if (tunnel_enabled_) {
       if (!tunnel_cameras_.left) {
         tunnel_cameras_.left=pipeline_->create<dai::node::Camera>()->build(
@@ -1375,7 +1376,7 @@ private:
       const bool ir_device_undistort=ir_distortion_.empty();
       RCLCPP_INFO(node_.get_logger(),"Tunnel IR undistort: %s",
         ir_device_undistort ? "device (warp)" : "host BEV LUT");
-      auto * ir_output=tunnel_cameras_.left->requestOutput(
+      auto * ir_camera_output=tunnel_cameras_.left->requestOutput(
         tunnel_ir_size_,dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,ir_device_undistort);
       // Send only the selected CAM_B output over USB. The sensor mode and
       // StereoDepth inputs are fixed when the pipeline is built.
@@ -1398,7 +1399,7 @@ while True:
     if route != 0:
         node.io['out'].send(frame)
 )PY");
-      ir_output->link(ir_gate->inputs["image"]);
+      ir_camera_output->link(ir_gate->inputs["image"]);
       if (tunnel_ir_size_!=kLowIrOutputSize) {
         auto * low_output=tunnel_cameras_.left->requestOutput(
           kLowIrOutputSize,dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,ir_device_undistort);
@@ -1411,7 +1412,8 @@ while True:
         ir_gate->inputs[name].setBlocking(false);
       }
       ir_gate_control_=ir_gate->inputs["control"].createInputQueue();
-      ir_queue_=ir_gate->outputs["out"].createOutputQueue(1,false);
+      ir_gate_output=&ir_gate->outputs["out"];
+      ir_queue_=ir_gate_output->createOutputQueue(1,false);
     }
     // 스테레오 흑백 카메라 노출 제어 (터널 IR 프로필 + 웹 "IR 카메라" 값)
     if (tunnel_cameras_.left) {ir_controls_.push_back(tunnel_cameras_.left->inputControl.createInputQueue());}
@@ -1513,8 +1515,8 @@ while True:
     xlink_bridge->xLinkOut->input.setMaxSize(1);
     xlink_bridge->xLinkOut->input.setBlocking(false);
 
-    if (ir_output) {
-      const auto bridge=ir_output->getXLinkBridge();
+    if (ir_gate_output) {
+      const auto bridge=ir_gate_output->getXLinkBridge();
       if (!bridge || !bridge->xLinkOut) {throw std::runtime_error("Missing IR XLink bridge");}
       bridge->xLinkOut->input.setMaxSize(1);
       bridge->xLinkOut->input.setBlocking(false);
