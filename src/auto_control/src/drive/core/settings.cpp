@@ -216,6 +216,13 @@ void register_params(ParamRegistry & r) {
     {{0, "0 · 추가 검사 끔"}, {1, "1 · 기존 검사"}, {2, "2 · 회피 방향별 차선 복귀"}}});
   register_lane_tuning(r, false);
   register_lane_tuning(r, true);
+  const bev_handoff::RgbCameraSettings rgb_defaults;
+  r.add({"rgb_cam.auto_exposure", "lane", "RGB · 카메라", "노출·ISO 모드", "", 0, 1,
+    static_cast<double>(rgb_defaults.auto_exposure), true, {{1, "자동"}, {0, "수동"}}});
+  r.add({"rgb_cam.exposure_us", "lane", "RGB · 카메라", "수동 노출 시간", "µs",
+    rgb_defaults.min_exposure_us, rgb_defaults.max_exposure_us, static_cast<double>(rgb_defaults.exposure_us)});
+  r.add({"rgb_cam.iso", "lane", "RGB · 카메라", "수동 ISO", "",
+    rgb_defaults.min_iso, rgb_defaults.max_iso, static_cast<double>(rgb_defaults.iso)});
   // 스테레오 흑백 카메라 — 터널 안: IR 차선용 (tunnel_enabled:=true일 때만). 수동 노출 고정
   const auto ir_defaults = Settings::IrCamera{}.inside;
   r.add({"ir_cam.inside_resolution", "lane", "IR (터널) · 카메라",
@@ -403,6 +410,8 @@ Settings settings_from(const ParamRegistry & r) {
   s.link_loss_stop_sec = g("web.link_loss_stop_sec");
   s.lane_timeout_sec = g("drive.lane_timeout_sec");
   s.lane_check_mode = static_cast<int>(g("lane.check_mode"));
+  s.rgb_camera = {g("rgb_cam.auto_exposure") == 1, int(std::lround(g("rgb_cam.exposure_us"))),
+                  int(std::lround(g("rgb_cam.iso")))};
   s.ir_camera.inside = {int(std::lround(g("ir_cam.inside_exposure_us"))), int(std::lround(g("ir_cam.inside_iso"))),
                         g("ir_cam.inside_dot"), g("ir_cam.inside_flood")};
   s.ir_camera.outside = {int(std::lround(g("ir_cam.outside_exposure_us"))), int(std::lround(g("ir_cam.outside_iso"))),

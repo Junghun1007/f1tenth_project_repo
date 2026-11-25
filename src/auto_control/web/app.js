@@ -360,7 +360,7 @@ function renderTunnel(tunnel, chart, laneFresh) {
 }
 
 function renderCameraExposure(values) {
-  const rgbModes = { auto: "자동", manual: "수동", auto_pending: "자동 복귀 중" };
+  const rgbModes = { auto: "자동", manual: "수동", restoring: "출구 노출 복원 중", auto_pending: "자동 복귀 중" };
   for (const [id, reading, infrared] of [
     ["exposureRgb", values?.rgb, false],
     ["exposureIrLeft", values?.ir_left, true],

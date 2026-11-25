@@ -25,7 +25,7 @@ std::shared_ptr<const CameraExposureObservation> latestRightIrExposure();
 // Most recent flood command accepted by the device. The emitter is shared.
 void publishIrFloodIntensity(std::optional<double> intensity);
 std::optional<double> latestIrFloodIntensity();
-enum class RgbExposureControl {automatic, restoring, auto_pending};
+enum class RgbExposureControl {automatic, restoring, auto_pending, manual};
 // Requested control mode; sensor metadata above independently shows actual values.
 void publishRgbExposureControl(RgbExposureControl mode);
 RgbExposureControl latestRgbExposureControl();

@@ -73,8 +73,13 @@ std::string camera_exposure_json() {
     w.end_object();
   };
   const auto rgb_mode = bev_handoff::latestRgbExposureControl();
-  const char * mode = rgb_mode == bev_handoff::RgbExposureControl::restoring ? "manual" :
-    rgb_mode == bev_handoff::RgbExposureControl::auto_pending ? "auto_pending" : "auto";
+  const char * mode = "auto";
+  switch (rgb_mode) {
+    case bev_handoff::RgbExposureControl::automatic: break;
+    case bev_handoff::RgbExposureControl::manual: mode = "manual"; break;
+    case bev_handoff::RgbExposureControl::restoring: mode = "restoring"; break;
+    case bev_handoff::RgbExposureControl::auto_pending: mode = "auto_pending"; break;
+  }
   w.begin_object().key("rgb").begin_object().key("mode").value(mode);
   exposure(bev_handoff::latestCameraExposure(false));
   w.end_object();
@@ -751,6 +756,9 @@ private:
     if (inside) { s.traffic.enabled = false; s.lead.enabled = false; }
     loop_->apply_settings(s);
     detect_->set_settings(s);
+    const auto rgb_camera = bev_handoff::rgbCameraSettings();
+    if (!rgb_camera || !(*rgb_camera == s.rgb_camera))
+      bev_handoff::publishRgbCameraSettings(std::make_shared<const bev_handoff::RgbCameraSettings>(s.rgb_camera));
     publish_ir_camera(s.ir_camera);
     {
       std::lock_guard<std::mutex> l(status_m_);

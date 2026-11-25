@@ -31,7 +31,8 @@ inline std::array<std::string,2> camera_exposure_hud(
     return text.str();
   };
   const std::string status=mode==bev_handoff::RgbExposureControl::restoring ? " RESTORE" :
-    mode==bev_handoff::RgbExposureControl::auto_pending ? " AE PENDING" : " AE";
+    mode==bev_handoff::RgbExposureControl::auto_pending ? " AE PENDING" :
+    mode==bev_handoff::RgbExposureControl::manual ? " MANUAL" : " AE";
   return {line("RGB",rgb,status),line("IR",ir,"")};
 }
 

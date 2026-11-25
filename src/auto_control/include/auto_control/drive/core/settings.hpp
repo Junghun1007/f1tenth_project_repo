@@ -3,6 +3,7 @@
 #pragma once
 #include <array>
 #include "bev_handoff/lane_tuning.hpp"
+#include "bev_handoff/rgb_camera_settings.hpp"
 #include "auto_control/drive/core/avoidance_planner.hpp"
 #include "auto_control/drive/core/box_depth.hpp"
 #include "auto_control/drive/core/cone_memory.hpp"
@@ -37,6 +38,7 @@ struct Settings {
   double link_loss_stop_sec{1.0};
   int lane_check_mode{1};
   bev_handoff::LaneTuning rgb_lane, ir_lane;
+  bev_handoff::RgbCameraSettings rgb_camera;
   struct IrCameraProfile { int exposure_us{0}, iso{800}; double dot{0}, flood{0}; };   // 노출 0 = 자동
   struct IrCamera {   // 스테레오 흑백 카메라: 터널 안(차선) / 밖(장애물 깊이)
     IrCameraProfile inside{20000, 500, 0.0, 1.0}, outside{0, 400, 0.5, 0.0};

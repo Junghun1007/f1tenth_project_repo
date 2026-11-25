@@ -1,4 +1,5 @@
 #include "bev_handoff/direct_camera_handoff.hpp"
+#include "bev_handoff/rgb_camera_settings.hpp"
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -11,6 +12,7 @@ namespace bev_handoff
 namespace
 {
 std::shared_ptr<const CameraExposureObservation> rgb_exposure, ir_exposure, right_ir_exposure;
+std::shared_ptr<const RgbCameraSettings> rgb_camera_settings;
 std::atomic<double> ir_flood_intensity{-1.0};
 std::atomic<RgbExposureControl> rgb_exposure_control{RgbExposureControl::automatic};
 struct State
@@ -36,6 +38,10 @@ struct InferenceFps
 };
 InferenceFps & inference_fps() {static InferenceFps value; return value;}
 }
+void publishRgbCameraSettings(std::shared_ptr<const RgbCameraSettings> settings)
+{std::atomic_store(&rgb_camera_settings, std::move(settings));}
+std::shared_ptr<const RgbCameraSettings> rgbCameraSettings()
+{return std::atomic_load(&rgb_camera_settings);}
 void publishCameraExposure(bool infrared, std::shared_ptr<const CameraExposureObservation> value)
 {std::atomic_store(infrared ? &ir_exposure : &rgb_exposure, std::move(value));}
 std::shared_ptr<const CameraExposureObservation> latestCameraExposure(bool infrared)
