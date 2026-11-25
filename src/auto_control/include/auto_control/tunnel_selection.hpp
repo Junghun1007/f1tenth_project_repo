@@ -183,7 +183,7 @@ private:
   std::optional<std::int64_t> last_stamp_;
 };
 
-// TCN entry selects IR immediately. Other requests can wait for a usable path.
+// Automatic events select their source immediately. Forced IR entry can wait for a usable path.
 class LaneSelector
 {
 public:
@@ -210,7 +210,7 @@ public:
     return false;
   }
 
-  bool event(const std::string & kind, std::int64_t stamp, std::int64_t now_ns)
+  bool event(const std::string & kind, std::int64_t stamp, std::int64_t now_ns, bool by_length = false)
   {
     const double age = (now_ns - stamp) / 1e9;
     if ((kind != "entry" && kind != "exit") || stamp <= last_event_ns ||
@@ -221,24 +221,28 @@ public:
     if (kind == "entry" && ir_exit_latched_at) {return false;}
     last_event_ns = stamp;
     const bool entry = kind == "entry";
-    if (!request_source(entry ? "IR" : "RGB", now_ns)) {return false;}
-    if (entry && transitioning()) {finish(now_ns, "tcn_entry");}
-    return true;
+    return request_source(entry ? "IR" : "RGB", now_ns,
+      by_length ? "ir_length_drop" : entry ? "tcn_entry" : "tcn_exit",
+      by_length ? "ir_length_drop" : nullptr);
   }
 
-  bool request_source(std::string target, std::int64_t now_ns)
+  bool request_source(std::string target, std::int64_t now_ns,
+    const char * immediate_reason = nullptr, const char * trigger = nullptr)
   {
     if (target == requested) {return false;}
     if (target == "IR") {ir_length_exit.reset();}
-    transition_trigger.clear();
     requested = target;
     if (target == selected) {
       finish(now_ns, "reversed_request");
       return true;
     }
+    if (immediate_reason || target == "RGB") {
+      finish(now_ns, immediate_reason ? immediate_reason : "force_ir_off", trigger);
+      return true;
+    }
     started_ns = now_ns;
     reason = "waiting_target_path";
-    state = target == "IR" ? "ENTERING" : "EXITING";
+    state = "ENTERING";
     return true;
   }
 
@@ -255,9 +259,8 @@ public:
     if (allow_length_exit && source == "IR" && state == "INSIDE" &&
       ir_length_exit.observe(m, now_ns, max_age, rules))
     {
-      if (event("exit", now_ns, now_ns)) {
+      if (event("exit", now_ns, now_ns, true)) {
         ir_exit_latched_at = now_ns;
-        transition_trigger = reason = "ir_length_drop";
       }
     }
     if (stamp <= last->second || !fresh) {return false;}
@@ -275,18 +278,17 @@ public:
   IrLengthExit ir_length_exit;
   std::string state{"OUTSIDE"}, selected{"RGB"}, requested{"RGB"}, reason{"steady"};
   std::string last_handover;  // JSON text for the log
-  std::string transition_trigger;
   std::int64_t last_event_ns{0};
   std::map<std::string, std::int64_t> last_input_ns{{"RGB", 0}, {"IR", 0}};
   std::optional<std::int64_t> started_ns, ir_exit_latched_at;
 
 private:
-  void finish(std::int64_t now_ns, const std::string & why)
+  void finish(std::int64_t now_ns, const std::string & why, const char * trigger = nullptr)
   {
     const double total_ms = started_ns ? (now_ns - *started_ns) / 1e6 : 0.;
     std::ostringstream out;
     out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": " << total_ms;
-    if (!transition_trigger.empty()) {out << ", \"trigger\": \"" << transition_trigger << "\"";}
+    if (trigger) {out << ", \"trigger\": \"" << trigger << "\"";}
     out << "}";
     last_handover = out.str();
     selected = requested;

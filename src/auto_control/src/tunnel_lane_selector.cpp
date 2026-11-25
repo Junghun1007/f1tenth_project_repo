@@ -93,11 +93,8 @@ private:
       policy_.ir_exit_latched_at.reset();
       policy_.ir_length_exit.reset();
       policy_.request_source(enable ? "IR" : "RGB", now_ns);
-      forced_exit_ = !enable && policy_.transitioning();
       if (enable) {
         set_tcn_override("inside");
-      } else if (forced_exit_) {
-        set_tcn_override("outside");
       } else {
         resume_tcn_outside(now_ns);
       }
@@ -111,7 +108,6 @@ private:
 
   void resume_tcn_outside(std::int64_t now_ns)
   {
-    forced_exit_ = false;
     tcn_report_after_ns_ = now_ns;
     set_tcn_override("resume_outside");
   }
@@ -217,7 +213,7 @@ private:
         const auto type = tunnel::json_string(tunnel::json_object(event->second), "type");
         if (type && *type != kind) {return;}
       }
-      if (force_ir_ || forced_exit_) {return;}
+      if (force_ir_) {return;}
       // Later LIVE reports retain the state if an event packet was lost.
       if (apply_tcn_state(state, *stamp, now_ns)) {publish_status();}
     } catch (const std::exception &) {
@@ -229,7 +225,7 @@ private:
   {
     refresh_runtime_settings();
     // Validation follows the last selected source independently of TCN health. TCN only switches.
-    const bool follow_auto = !force_ir_ && !forced_exit_;
+    const bool follow_auto = !force_ir_;
     if (follow_auto && !policy_.validation_mode &&
       (!tcn_live_ || !last_tcn_received_ || monotonic() - *last_tcn_received_ > .5))
     {
@@ -238,7 +234,6 @@ private:
     const bool previous_latch = policy_.ir_exit_latched_at.has_value();
     const auto now_ns = now().nanoseconds();
     const bool forward = policy_.lane(source, *message, now_ns, follow_auto);
-    if (forced_exit_ && policy_.state == "OUTSIDE") {resume_tcn_outside(now_ns);}
     const auto & monitor = policy_.ir_length_exit;
     const bool triggered = !previous_latch && policy_.ir_exit_latched_at.has_value();
     if (follow_auto && monitor.enabled() && source == "IR" &&
@@ -270,7 +265,7 @@ private:
   std::optional<double> last_tcn_received_;
   std::shared_ptr<const bev_handoff::TunnelRuntimeSettings> runtime_settings_;
   std::optional<std::int64_t> tcn_report_after_ns_;
-  bool force_ir_{false}, forced_exit_{false}, tcn_live_{false};
+  bool force_ir_{false}, tcn_live_{false};
   double last_ir_length_log_{0.};
   rclcpp::Publisher<LaneResult>::SharedPtr rgb_output_, ir_output_;
   std::vector<rclcpp::Publisher<String>::SharedPtr> status_;

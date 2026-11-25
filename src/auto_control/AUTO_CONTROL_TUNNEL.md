@@ -10,7 +10,7 @@
 ## 현재 기본: 독립 IR 테스트와 맞춘 파이프라인 검증
 
 `tunnel_validation_mode:=true`가 기본 동작이다. TCN ENTRY에서 IR을 즉시 선택하고,
-TCN EXIT에서는 첫 유효 RGB 경로에서 RGB로 돌아간다. 노출 적용과 프레임 시각을
+TCN EXIT에서 RGB를 즉시 선택한다. 노출 적용과 프레임 시각을
 검사하려면 `tunnel_validation_mode:=false`로 실행한다.
 
 웹의 **파라미터 → 터널**에서 RGB TCN 임계값, 같은 이벤트 재검출 간격, 워밍업 시간,
@@ -99,15 +99,15 @@ RGB BEV 차선과 함께 RGB를 공유하는 TCN 및 신호등 입력 영상에�
 저장된 수동 또는 고정 ISO 설정은 이 측정이 끝나면 적용한다.
 웹 **카메라 노출 → RGB 시작 측정값**은 저장한 실측값을 실행 중 계속 표시한다.
 
-자동 모드에서 `/tunnel/state=EXITING`을 받으면 시작 시 저장한 노출·ISO를
+자동 모드에서 터널 밖으로 상태가 바뀌면 시작 시 저장한 노출·ISO를
 CAM_A에 한 번 적용한다. 실행 중 여러 터널을 통과해도 같은 기준값을 사용한다.
 측정된 기준이나 최근 RGB 프레임이 없거나 현재 값이 기준과 같으면 자동 모드를 유지한다.
 고정 ISO와 전체 수동 모드는 출구에서도 사용자가 정한 ISO를 사용한다.
 카메라 제어는 별도 스레드에서 수행하고 영상 및 차선 처리는 계속 실행된다.
 
 복원값이 확인된 **새 촬영 프레임 2개**를 받거나 기본 **200ms** 상한에 도달하면
-`setAutoExposureEnable()`을 보내 자동노출로 복귀한다. OUTSIDE/재진입으로 바뀌어도
-즉시 AE 복귀를 요청한다. 같은 EXITING 보고가 반복되어도 수동 노출을 다시 걸지 않는다.
+`setAutoExposureEnable()`을 보내 자동노출로 복귀한다. 복원 구간에서 재진입하면
+즉시 AE 복귀를 요청한다. OUTSIDE를 유지하는 동안 복원 명령은 한 번만 보낸다.
 카메라 입력이 끊겨도 호스트 시간으로 복귀 명령을 보내며, 명령 전송 실패 시에는
 수동 복원을 반복하지 않고 AE 명령을 재시도한다. 200ms는 호스트 복귀 요청 상한이며
 실제 센서 반영 시각은 장치 제어 큐와 ISP 지연에 따라 달라질 수 있다.
@@ -145,7 +145,6 @@ IR 플러드 수치는 두 카메라가 공유하는 장치에 마지막으로 �
 |---|---:|---:|---|
 | OUTSIDE | 최대 70 FPS | 대기 0 FPS | RGB |
 | ENTERING (강제 IR) | 최대 70 FPS | 최대 30 FPS | 첫 유효 IR 경로까지 RGB 전달 |
-| EXITING | 최대 70 FPS | 최대 30 FPS | 첫 유효 RGB 경로까지 IR 전달 |
 | INSIDE | 최대 5 FPS | 최대 30 FPS | IR |
 
 OAK 장치에서 단계별로 호스트 전달을 바꾼다(센서 촬영 FPS는 그대로). 로그 `OAK routes`로 확인한다.
@@ -153,7 +152,7 @@ OAK 장치에서 단계별로 호스트 전달을 바꾼다(센서 촬영 FPS는
 | 상태 | IR 차선 영상(CAM_B) | 장애물 스테레오 입력 | RGB 호스트 전달 |
 |---|---|---|---|
 | OUTSIDE | 장치에서 차단 | 전달 | 70 FPS 전체 |
-| ENTERING / EXITING | 30 FPS | 전달 | 70 FPS 전체 |
+| ENTERING | 30 FPS | 전달 | 70 FPS 전체 |
 | INSIDE | 30 FPS | 장치에서 차단(StereoDepth 계산 정지) | 약 30 FPS로 솎음 |
 
 INSIDE의 RGB는 센서 70 FPS를 유지하고 장치 Script가 순번 기준으로 약 30 FPS만 보낸다.
@@ -179,8 +178,8 @@ ENTRY 요청 시 웹의 터널 안 IR 프로필을 적용한다. 기본값은 �
 기본 검증 모드는 설정 명령 전후의 새 프레임도 즉시 투영하며, 노출 메타데이터가
 일치할 때까지 기다리지 않는다. 따라서 전환 직후 짧게 외부 노출의 이미지가 포함될 수 있다.
 `false` 모드에서는 150ms 대기와 실제 노출·ISO 일치 검사를 적용한다.
-EXIT 수신 시 RGB를 70 FPS로 복귀시키고 IR 노출·조명과 IR 추론을 유지한다.
-첫 유효 RGB 경로로 전환한 뒤 IR 자동 노출과 외부 장애물 dot/flood 설정을 복원한다.
+EXIT 수신 시 RGB를 70 FPS로 복귀시키고 IR 차선 추론을 멈춘다.
+IR 카메라를 외부 장애물용 노출과 dot/flood 설정으로 복원한다.
 
 외부 장애물 기능을 켠 경우 같은 CAM_B/C를 공유한다. 통합 모드의 스테레오 센서와
 depth 요청도 **30 FPS**로 설정해 터널의 30ms 노출을 지원한다. 외부 RGB 70 FPS와는
@@ -197,11 +196,11 @@ TCN ENTRY는 `OUTSIDE → INSIDE`로 즉시 전환한다. 같은 콜백에서 IR
 제어기에 전달한다. 제어기는 유효한 IR 경로가 들어올 때까지 자체 경로 유지와 수신
 timeout을 적용한다.
 
-TCN EXIT는 `INSIDE → EXITING → OUTSIDE` 순서다. `EXITING` 동안
-`/tunnel/compute_source`는 `BOTH`이며, 첫 유효 RGB 경로까지 IR 노출·조명과
-기존 제어 입력을 유지한다. 목표 RGB 결과는 프레임·스케일·지지점·연속 점
-개수/길이/간격 기준을 통과해야 한다. 통과한 첫 결과를 같은 콜백에서 원본 그대로
-전달하고 전환을 완료한다. 다시 진입 판정이 오면 출구 대기를 취소한다.
+TCN EXIT는 `INSIDE → OUTSIDE`로 즉시 전환한다. 같은 콜백에서
+`/tunnel/selected_source`와 `/tunnel/compute_source`를 RGB로 갱신한다.
+RGB 중앙선 길이·점 개수·간격과 첫 프레임의 수신 여부는 소스 선택에 사용하지 않는다.
+전환 뒤 들어오는 RGB 결과는 일반 프레임 검사를 거쳐 원본 그대로 전달한다.
+제어기는 유효 경로가 들어올 때까지 자체 경로 유지와 수신 timeout을 적용한다.
 
 카메라마다 노출·전송 지연이 다르므로 출구의 유효 RGB 촬영 시각이 마지막 IR보다
 앞설 수 있다. 선택기는 검출기 출력 바이트를 수정 없이 카메라별 토픽
@@ -210,24 +209,24 @@ TCN EXIT는 `INSIDE → EXITING → OUTSIDE` 순서다. `EXITING` 동안
 구분하므로 `lane_source` 필드는 쓰지 않는다. C++ 제어기는 카메라별로 중복·역순을 검사하며
 실제 헤더 나이 검사는 계속 적용한다. 일반/독립 실행은 기존 단일 스트림 검사를 쓴다.
 기본 검증 모드의 IR 헤더는 기존처럼 BEV 발행 시각이므로 촬영→BEV 변환 지연을
-포함하지 않는다. 출구 대기 또는 강제 IR 진입 중 목표 소스에는 검증 모드에서도 헤더
+포함하지 않는다. 강제 IR 진입 중 목표 소스에는 검증 모드에서도 헤더
 최신성을 검사한다.
 
-ENTERING/EXITING 중 외부 장애물·신호등 제어는 중지하고 OUTSIDE에서 복원한다.
+ENTERING/INSIDE 중 외부 장애물·신호등 제어는 중지하고 OUTSIDE에서 복원한다.
 기본 검증 모드는 TCN 워밍업·보고 유실 중에도 마지막 요청에 따른 처리를 계속한다.
 `false` 모드는 TCN이 WARMUP 중이거나 0.5초 넘게 보고가 없으면 차선 전달을 보류한다.
 TCN 이벤트 한 개가 유실되어도 이후 보고에 유지되는 inside/outside 상태로 요청을 복구한다.
 
 웹의 `터널 IR 강제 전환`은 VESC가 연결되어 있고 최신 ERPM으로 정지가 확인된 대기/수동 상태에서 켜고 끌 수 있다.
-ON은 TCN 상태를 `inside`로 고정하고 첫 유효 IR 경로로 넘어간다. OFF는 TCN 상태를 `outside`로
-전환하고 첫 유효 RGB 경로를 받을 때까지 해당 상태를 유지한다. RGB 복귀 후 TCN 자동 판정을 재개한다.
+ON은 TCN 상태를 `inside`로 고정하고 첫 유효 IR 경로로 넘어간다. OFF는 RGB를 즉시 선택하고
+TCN 상태를 `outside`로 전환해 자동 판정을 재개한다.
 그래프에서 빈 마름모는 버튼이 만든 진입·이탈 이벤트를 표시한다.
 
 혼합 전용 `tunnel_handover.yaml`과 해당 파라미터를 제거했다. 별도 전환 설정 없이
 기존 제어 YAML/CLI의 경로 기하 조건과 최신성 기준을 선택기에 전달한다.
 완료 로그 `Tunnel handover {target, reason, total_ms}`에서
-`tcn_entry`는 TCN 진입 수락과 동시에 IR을 선택한 경우다. `first_valid_target`은 첫 유효
-목표 경로를 수신한 전환, `reversed_request`는 준비 취소를 뜻한다. `total_ms`는 요청
+`tcn_entry`와 `tcn_exit`는 TCN 수락과 동시에 IR 또는 RGB를 선택한 경우다.
+`first_valid_target`은 강제 IR의 첫 유효 경로 수신, `reversed_request`는 강제 IR 준비 취소를 뜻한다. `total_ms`는 요청
 수신부터 소스 선택까지의 시간이다.
 
 X 버튼의 AUTO → STOPPING → MANUAL 전환은 기존 방식 그대로다.
@@ -236,7 +235,7 @@ X 버튼의 AUTO → STOPPING → MANUAL 전환은 기존 방식 그대로다.
 ## 실험 옵션: IR 관측 길이 감소로 출구 전환 요청 (기본 OFF)
 
 기존 실행 명령에서 옵션을 생략하면 이전 TCN 정책을 유지한다. ON일 때만 `INSIDE`에서
-IR 검출기의 실제 관측 길이를 비교해 `EXITING`을 요청한다. 비율은 퍼센트 숫자가 아닌
+IR 검출기의 실제 관측 길이를 비교해 RGB로 즉시 전환한다. 비율은 퍼센트 숫자가 아닌
 0~1 사이의 값이다. `0.15`는 기준 최대 길이의 15% 이하(85% 이상 감소)를 뜻한다.
 
 ```bash
@@ -274,10 +273,8 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
 스케일·측정 불가를 길이 0으로 간주하지 않는다. 수신 공백이 선택기의 최신성 상한보다 길면
 연속 확인을 초기화한다. 기본 검증 모드에서도 이 실험 판정에는 최신성 검사를 적용한다.
 
-전환 시 `EXITING`, `compute=BOTH`, 기존 IR 프로필을 유지하고 **첫 유효한 새 RGB 경로를
-받으면 그 결과를 즉시 전달하며 OUTSIDE로 전환**한다. IR 경로가 없어져도 RGB를 강제 선택하거나
-보관 경로를 재발행하지 않는다. RGB 준비가 늦으면 기존 경로 유실 정지 조건은 유지된다.
-이 실험 옵션에는 별도 사전 RGB 준비 임계값을 추가하지 않았다.
+길이 조건이 충족되면 `OUTSIDE`로 즉시 전환하고 RGB 결과를 전달한다.
+유효한 RGB 경로의 수신이 늦으면 제어기의 경로 유실 정지 조건이 적용된다.
 
 길이로 전환한 후 TCN의 반복 `inside` 보고가 즉시 IR로 되돌리는 것을 막는다.
 트리거 이후 촬영된 최신 `outside` 보고를 확인하면 재진입을 다시 허용한다. TCN이 계속
@@ -324,7 +321,7 @@ preview_result_only_enabled: true
 초기 지면 보정 ROI 창은 별개이며 `bev_config_test.yaml`의
 `measurement_roi_preview_enabled: false`로 끌 수 있다.
 
-신호등 상태 옆에 `Tunnel: OUTSIDE / ENTERING / INSIDE / EXITING`을 표시한다.
+신호등 상태 옆에 `Tunnel: OUTSIDE / ENTERING / INSIDE`를 표시한다.
 바로 아래에는 TCN `avg … FPS`, LIVE/WARMUP/STALE 상태와
 ENTRY/EXIT 점수를 표시한다. 평균 FPS는 LIVE 보고의 TensorRT+전송 wall time을 평균한 뒤
 `1000 / 평균 ms`로 계산한다. 주행 루프나 실제 실행 주기를 의미하지 않는다.

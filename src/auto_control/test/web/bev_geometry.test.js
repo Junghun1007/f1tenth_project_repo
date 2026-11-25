@@ -34,6 +34,10 @@ server.listen(0, async () => {
     drawBev({ lane: { left, right, path: [] }, memory: [], detections: [], vehicle: {} });
     return { left: left.map(pixel), right: pixel(right[0]), gapBefore, gapAfter: pixel(gap) };
   });
+  const exitStatus = await p.evaluate(() => {
+    renderTunnel({ enabled: true, state: "OUTSIDE", source: "IR" }, null, false);
+    return document.getElementById("tcnLane").textContent;
+  });
   await b.close();
   server.close();
   const fails = [];
@@ -50,6 +54,8 @@ server.listen(0, async () => {
   if (lane.right[0] <= lane.right[2] + 50) fails.push("single right boundary point was not drawn");
   if (!lane.gapBefore.every((channel, i) => channel === lane.gapAfter[i]))
     fails.push("the renderer drew between unconnected left boundary points");
+  if (!exitStatus.includes("차선 선택 RGB") || !exitStatus.includes("첫 RGB 결과 수신 대기"))
+    fails.push("the selected source did not update before the first RGB result");
   console.log(fails.length ? "FAIL\n" + fails.join("\n") : "PASS", JSON.stringify(g));
   process.exit(fails.length ? 1 : 0);
 });

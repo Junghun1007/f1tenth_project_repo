@@ -109,6 +109,22 @@ void test_restore_returns_to_auto()
     "valid consecutive confirmation returns to AE");
 }
 
+void test_immediate_exit_restores_rgb_in_outside()
+{
+  Policy p;
+  measure(p);
+  enter(p);
+  const auto action = send(p, Phase::outside, 3000, sample(2990, 12000, 800));
+  require(action.command == Command::restore && action.exposure_us == 2000 && action.iso == 200,
+    "direct INSIDE to OUTSIDE still applies the startup reference");
+  require(send(p, Phase::outside, 3020, sample(3010)).command == Command::none,
+    "the first matching frame keeps the restore active");
+  require(send(p, Phase::outside, 3040, sample(3030)).command == Command::automatic,
+    "a second matching frame restores sensor AE in OUTSIDE");
+  require(send(p, Phase::outside, 3060, sample(3050, 3000, 300)).command == Command::none,
+    "staying OUTSIDE does not repeat the restore");
+}
+
 void test_missing_reference()
 {
   Policy p;
@@ -223,6 +239,7 @@ int main()
 {
   test_exit_restore();
   test_restore_returns_to_auto();
+  test_immediate_exit_restores_rgb_in_outside();
   test_missing_reference();
   test_manual_mode();
   test_automatic_shutter_fixed_iso();

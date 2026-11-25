@@ -66,7 +66,7 @@ class TunnelLaneSelector(Node):
         self.published = values
         self.get_logger().info(f'Tunnel {values[0]} | selected={values[2]} compute={values[3]} '
                               f'camera={values[1]} reason={self.policy.reason}')
-        if self.policy.last_handover and not self.policy.transitioning:
+        if self.policy.last_handover:
             self.get_logger().info('Tunnel handover ' + json.dumps(self.policy.last_handover))
         self.publish_preview()
 

@@ -37,7 +37,7 @@ class LengthExitTests(unittest.TestCase):
         self.assertEqual(s.ir_length_exit.reference, 0.)
         self.assertTrue(s.event('exit', ns(2), ns(2)))
 
-    def test_exact_threshold_starts_exit_but_only_valid_rgb_finishes(self):
+    def test_exact_threshold_selects_rgb_before_any_rgb_result(self):
         s = self.create(enabled=True)
         self.baseline()
         self.assertEqual(s.ir_length_exit.reference, 2.)
@@ -45,10 +45,9 @@ class LengthExitTests(unittest.TestCase):
         self.send(.3, valid=False)
         self.assertEqual(s.state, 'INSIDE')
         self.send(.3, valid=False)
-        self.assertEqual((s.state,s.selected,s.camera,s.compute), ('EXITING','IR','IR','BOTH'))
+        self.assertEqual((s.state,s.selected,s.camera,s.compute), ('OUTSIDE','RGB','RGB','RGB'))
         self.assertEqual(s.reason, 'ir_length_drop')
-        self.assertIsNone(s.lane('RGB', lane(self.t+.01,valid=False), ns(self.t+.015)))
-        self.assertEqual(s.state, 'EXITING')
+        self.assertFalse(s.lane('RGB', lane(self.t+.01,valid=False), ns(self.t+.015)).centerline_valid)
         rgb = lane(self.t+.02)
         self.assertIs(s.lane('RGB',rgb,ns(self.t+.025)),rgb)
         self.assertEqual((s.state,s.selected), ('OUTSIDE','RGB'))
@@ -60,7 +59,7 @@ class LengthExitTests(unittest.TestCase):
         self.send(.9); self.send(1.1); self.send(.9); self.send(.9)
         self.assertEqual(s.state,'INSIDE')
         self.send(.9)
-        self.assertEqual(s.state,'EXITING')
+        self.assertEqual(s.state,'OUTSIDE')
 
     def test_reference_ignores_single_long_outlier_and_tiny_initial_length(self):
         s = self.create(enabled=True)
@@ -92,7 +91,7 @@ class LengthExitTests(unittest.TestCase):
                 self.send(0.); self.send(0.)
                 self.assertEqual(s.state,'INSIDE')
                 self.send(0.)
-                self.assertEqual(s.state,'EXITING')
+                self.assertEqual(s.state,'OUTSIDE')
 
     def test_duplicates_and_long_gap_cannot_fill_confirmation(self):
         s=self.create(enabled=True); self.baseline(); self.send(0.)
@@ -103,7 +102,7 @@ class LengthExitTests(unittest.TestCase):
         self.send(0.); self.send(0.)
         self.assertEqual(s.state,'INSIDE')
         self.send(0.)
-        self.assertEqual(s.state,'EXITING')
+        self.assertEqual(s.state,'OUTSIDE')
 
     def test_inside_reports_cannot_reverse_forced_exit_and_next_visit_resets_max(self):
         s=self.create(enabled=True); self.baseline()

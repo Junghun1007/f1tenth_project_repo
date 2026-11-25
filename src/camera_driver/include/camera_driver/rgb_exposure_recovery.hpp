@@ -50,7 +50,8 @@ public:
     std::optional<Exposure> manual = std::nullopt)
   {
     using namespace std::chrono_literals;
-    const bool changed = phase != phase_;
+    const bool exiting = phase != phase_ && (phase == RgbTunnelPhase::exiting ||
+      (phase == RgbTunnelPhase::outside && phase_ == RgbTunnelPhase::inside));
     phase_ = phase;
     const bool new_sample = sample && (!latest_ || sample->captured > latest_->captured) &&
       sample->captured <= now && now - sample->captured <= 250ms &&
@@ -71,7 +72,7 @@ public:
       return {Command::automatic};
     }
     if (applied_->command == Command::restore) {
-      if (phase != RgbTunnelPhase::exiting || now - restore_at_ >= max_hold_) {return {Command::automatic};}
+      if (phase != restore_phase_ || now - restore_at_ >= max_hold_) {return {Command::automatic};}
       if (new_sample && sample->captured > restore_at_) {
         const bool matches = std::abs(sample->exposure_us - applied_->exposure_us) <=
           std::max(100., applied_->exposure_us * .05) && sample->iso == applied_->iso;
@@ -79,12 +80,13 @@ public:
       }
       return matched_ >= 2 ? Action{Command::automatic} : Action{};
     }
-    if (recover_on_exit_ && changed && phase == RgbTunnelPhase::exiting && saved_ && latest_ &&
+    if (recover_on_exit_ && exiting && saved_ && latest_ &&
       now - latest_->captured <= 250ms &&
       (latest_->exposure_us != saved_->exposure_us || latest_->iso != saved_->iso))
     {
       matched_ = 0;
       restore_at_ = now;
+      restore_phase_ = phase;
       return {Command::restore, saved_->exposure_us, saved_->iso};
     }
     return {};
@@ -175,6 +177,7 @@ private:
   }
 
   RgbTunnelPhase phase_{RgbTunnelPhase::outside};
+  RgbTunnelPhase restore_phase_{RgbTunnelPhase::outside};
   Clock::duration max_hold_;
   const bool recover_on_exit_;
   const long max_exposure_us_;

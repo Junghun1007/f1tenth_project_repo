@@ -367,6 +367,12 @@ function drawTunnelChart(threshold) {
   c.restore();
 }
 
+function selectedLaneSource(tunnel) {
+  if (tunnel.state === "INSIDE") return "IR";
+  if (tunnel.state === "OUTSIDE") return "RGB";
+  return tunnel.source || "RGB";
+}
+
 function renderTunnel(tunnel, chart, laneFresh) {
   $("tcnPanel").hidden = !tunnel.enabled;
   if (!tunnel.enabled) return;
@@ -395,16 +401,16 @@ function renderTunnel(tunnel, chart, laneFresh) {
   $("tcnDecision").textContent = "TCN 판정 " + decision + (fresh && chart?.state_override ? " (강제)" : "");
 
   const source = tunnel.source || "RGB";
+  const selected = selectedLaneSource(tunnel);
   const waiting = tunnel.state === "ENTERING" && source !== "IR" ? "유효 IR 경로 대기"
-    : tunnel.state === "INSIDE" && source !== "IR" ? "IR 선택 · 첫 결과 수신 대기"
-    : tunnel.state === "EXITING" && source !== "RGB" ? "유효 RGB 경로 대기" : "";
+    : selected !== source ? `첫 ${selected} 결과 수신 대기` : "";
   const lane = $("tcnLane");
-  const irStatus = source === "IR" ? tunnel.ir_lane : null;
+  const irStatus = source === "IR" && selected === "IR" ? tunnel.ir_lane : null;
   const detail = waiting || ({
     stale: "IR 결과 수신 끊김", invalid: "IR 중앙선 무효", valid: laneFresh ? "IR 중앙선 유효" : "유효 제어 경로 없음",
   }[irStatus] || "");
   lane.dataset.pending = Boolean(waiting || (irStatus && (irStatus !== "valid" || !laneFresh)));
-  lane.textContent = [tunnel.state || "—", `제어 입력 ${source}`, detail].filter(Boolean).join(" · ");
+  lane.textContent = [tunnel.state || "—", `차선 선택 ${selected}`, detail].filter(Boolean).join(" · ");
   drawTunnelChart(chart?.threshold);
 }
 
@@ -461,8 +467,9 @@ function render() {
   forceIr.classList.toggle("go", Boolean(tunnel.force_ir));
   forceIr.textContent = forceIrRequest ? "터널 IR 요청 중" : irPreparing ? "터널 IR 준비 중" :
     tunnel.force_ir ? "터널 IR 강제 ON" : "터널 IR 강제 OFF";
-  $("sourceChip").className = "chipx " + src;
-  $("sourceChip").textContent = src === "IR" ? "IR 터널" : "RGB";
+  const selected = selectedLaneSource(tunnel);
+  $("sourceChip").className = "chipx " + selected;
+  $("sourceChip").textContent = selected === "IR" ? "IR 터널" : "RGB";
   renderTunnel(tunnel, f.tcn, f.readiness.lane_fresh);
   $("cameraExposurePanel").hidden = !f.camera_exposure;
   renderCameraExposure(f.camera_exposure, tunnel.enabled);
@@ -544,7 +551,7 @@ function renderDriveState(f) {
   $("dsReason").textContent = f.reason || (cap.length ? "속도 제한: " + cap.join(" · ") : "");
   const t = f.tunnel || {};
   kv($("driveKv"), [["모드", f.mode === "drive" ? "자동 주행" : "검출 테스트"], ["안전 전환", f.handover || "-"],
-    ["차선 입력", t.source === "IR" ? "IR (터널)" : "RGB"], ["터널", t.enabled ? (t.state || "-") : "꺼짐"],
+    ["차선 입력", selectedLaneSource(t) === "IR" ? "IR (터널)" : "RGB"], ["터널", t.enabled ? (t.state || "-") : "꺼짐"],
     ["조이스틱", f.joystick ? "연결됨" : "없음 (X 정지 불가)"], ["주행 시간", f.drive_s !== undefined ? f.drive_s.toFixed(0) + " s" : "-"]]);
 }
 
@@ -798,9 +805,9 @@ async function demo() {
       g.vehicle.speed = 0.57; g.vehicle.target = 0.52;
     } else if (scene === "tunnel") {
       const tick = 50 + Math.floor(i / 2), now = tick / 10;
-      const state = tick < 62 ? "OUTSIDE" : tick < 91 ? "INSIDE" : tick < 96 ? "EXITING" : "OUTSIDE";
-      g.tunnel = { enabled: true, source: tick >= 63 && tick < 96 ? "IR" : "RGB", state, ir_lane: "valid", validation_mode: true,
-        source_changed_s: tick >= 96 ? 9.6 : tick >= 63 ? 6.3 : null };
+      const state = tick < 62 || tick >= 91 ? "OUTSIDE" : "INSIDE";
+      g.tunnel = { enabled: true, source: tick >= 63 && tick < 92 ? "IR" : "RGB", state, ir_lane: "valid", validation_mode: true,
+        source_changed_s: tick >= 92 ? 9.2 : tick >= 63 ? 6.3 : null };
       const peak = (j, center, width) => Math.exp(-0.5 * ((j - center) / width) ** 2);
       const samples = Array.from({ length: tick + 1 }, (_, j) => [
         j / 10, 0.06 + 0.87 * peak(j, 63, 1.6), 0.04 + 0.83 * peak(j, 92, 1.5),

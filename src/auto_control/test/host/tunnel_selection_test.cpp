@@ -52,25 +52,48 @@ TEST(tcn_entry_selects_ir_before_any_lane_result) {
   }
 }
 
-TEST(tcn_exit_waits_for_rgb_and_reentry_cancels_exit) {
-  LaneSelector selector(.2, true, PathRules{}, IrLengthExit{});
-  CHECK(selector.event("entry", kEntry, kEntry));
-  CHECK(selector.event("exit", kEntry + 1, kEntry + 1));
-  CHECK(selector.state == "EXITING" && selector.compute() == "BOTH");
-  CHECK(!selector.lane("RGB", lane_at(kEntry + 2, 5), kEntry + 3));
-  CHECK(selector.selected == "IR");
-  CHECK(selector.event("entry", kEntry + 4, kEntry + 4));
-  CHECK(selector.state == "INSIDE" && selector.reason == "reversed_request");
-  CHECK(selector.event("exit", kEntry + 5, kEntry + 5));
-  CHECK(selector.lane("RGB", lane_at(kEntry + 6, 9), kEntry + 7));
-  CHECK(selector.state == "OUTSIDE" && selector.reason == "first_valid_target");
+TEST(tcn_exit_selects_rgb_before_any_lane_result) {
+  for (bool validation : {true, false}) {
+    LaneSelector selector(.2, validation, PathRules{}, IrLengthExit{});
+    CHECK(selector.event("entry", kEntry, kEntry));
+    CHECK(selector.event("exit", 2 * kEntry, 2 * kEntry));
+    CHECK(selector.state == "OUTSIDE" && selector.reason == "tcn_exit");
+    CHECK(selector.selected == "RGB" && selector.compute() == "RGB" && selector.camera() == "RGB");
+    CHECK(!selector.transitioning());
+    CHECK(!selector.lane("IR", lane_at(2 * kEntry + 1, 9), 2 * kEntry + 2));
+    CHECK(!selector.lane("RGB", lane_at(kEntry + 1, 9), 2 * kEntry + 2));
+    CHECK(selector.selected == "RGB");
+    auto invalid = lane_at(2 * kEntry + 3, 0);
+    invalid.centerline_valid = false;
+    invalid.header.frame_id = "wrong_frame";
+    CHECK(selector.lane("RGB", invalid, 2 * kEntry + 4));
+    CHECK(!selector.lane("RGB", invalid, 2 * kEntry + 5));
+  }
 }
 
-TEST(manual_ir_request_waits_for_a_valid_path) {
+TEST(ir_length_exit_selects_rgb_and_reports_its_trigger) {
+  LaneSelector selector(.2, true, PathRules{}, IrLengthExit{true});
+  CHECK(selector.event("entry", kEntry, kEntry));
+  for (int i = 0; i < 6; ++i) {
+    const auto stamp = kEntry + (i + 1) * 40'000'000;
+    auto ir = lane_at(stamp, 9);
+    ir.observed_lane_length_valid = true;
+    ir.observed_lane_length_m = i < 3 ? 2.0 : 0.1;
+    CHECK(selector.lane("IR", ir, stamp + 1) == (i < 5));
+  }
+  CHECK(selector.state == "OUTSIDE" && selector.selected == "RGB");
+  CHECK(selector.last_handover.find("\"trigger\": \"ir_length_drop\"") != std::string::npos);
+  CHECK(!selector.observe_tcn_state("inside", kEntry + 250'000'000, kEntry + 250'000'001));
+}
+
+TEST(manual_ir_request_waits_for_a_valid_path_but_release_is_immediate) {
   LaneSelector selector(.2, true, PathRules{}, IrLengthExit{});
   CHECK(selector.request_source("IR", kEntry));
   CHECK(selector.state == "ENTERING" && selector.selected == "RGB");
   CHECK(!selector.lane("IR", lane_at(kEntry + 1, 5), kEntry + 2));
   CHECK(selector.lane("IR", lane_at(kEntry + 3, 9), kEntry + 4));
   CHECK(selector.state == "INSIDE" && selector.reason == "first_valid_target");
+  CHECK(selector.request_source("RGB", kEntry + 5));
+  CHECK(selector.state == "OUTSIDE" && selector.reason == "force_ir_off");
+  CHECK(!selector.transitioning());
 }

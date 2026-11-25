@@ -29,7 +29,6 @@ class HandoffTests(unittest.TestCase):
                           self.selector.compute), ('INSIDE', 'IR', 'IR', 'IR'))
         for t in (1.01, 1.04, 1.08, 1.12, 1.16, 1.20):
             self.assertIsNone(self.send('RGB', t))
-        self.assertFalse(self.selector.transitioning)
         self.assertEqual(self.selector.last_handover,
                          dict(target='IR', reason='tcn_entry', total_ms=0.))
 
@@ -49,19 +48,15 @@ class HandoffTests(unittest.TestCase):
                          ('INSIDE', 'IR', 'IR'))
         self.assertIsNone(self.send('RGB', 1.05))
 
-    def test_exit_keeps_ir_profile_and_control_until_first_valid_rgb(self):
+    def test_exit_selects_rgb_and_cuts_ir_before_any_rgb_result(self):
         self.entry()
         self.send('IR', 1.01)
         self.selector.event('exit', ns(2), ns(2))
         self.assertEqual((self.selector.state, self.selector.selected, self.selector.compute,
-                          self.selector.camera), ('EXITING', 'IR', 'BOTH', 'IR'))
-        self.assertIsNotNone(self.send('IR', 2.01))
-        self.assertIsNone(self.send('RGB', 2.02, valid=False))
-        self.assertEqual(self.selector.camera, 'IR')
-        self.assertIsNotNone(self.send('RGB', 2.03, lateral=.05))
-        self.assertEqual((self.selector.state, self.selector.camera, self.selector.compute),
-                         ('OUTSIDE', 'RGB', 'RGB'))
-        self.assertIsNone(self.send('IR', 2.04))
+                          self.selector.camera), ('OUTSIDE', 'RGB', 'RGB', 'RGB'))
+        self.assertIsNone(self.send('IR', 2.01))
+        self.assertEqual(self.selector.last_handover,
+                         dict(target='RGB', reason='tcn_exit', total_ms=0.))
 
     def test_first_ir_result_is_forwarded_even_if_centerline_invalid(self):
         self.entry()
@@ -69,32 +64,20 @@ class HandoffTests(unittest.TestCase):
         self.assertFalse(result.centerline_valid)
         self.assertIsNone(self.send('RGB', 1.04))
 
-    def test_only_rgb_exit_target_must_pass_handover_geometry(self):
+    def test_first_rgb_result_is_forwarded_even_if_centerline_invalid(self):
         self.entry()
         self.assertIsNotNone(self.send('IR', 1.03, count=5))
         self.selector.event('exit', ns(2), ns(2))
-        self.assertIsNone(self.send('RGB', 2.01, count=5))
-        self.assertEqual(self.selector.selected, 'IR')
-        self.assertIsNotNone(self.send('RGB', 2.02))
-        self.assertEqual(self.selector.last_handover['reason'], 'first_valid_target')
-
-    def test_exit_has_no_forced_timeout_or_replay(self):
-        self.entry()
-        self.selector.event('exit', ns(2), ns(2))
-        self.assertIsNotNone(self.send('IR', 3.0))
-        self.assertIsNone(self.send('RGB', 3.01, valid=False))
-        self.assertEqual(self.selector.compute, 'BOTH')
-        self.assertEqual(self.selector.selected, 'IR')
-        self.assertIsNone(self.send('IR', 3.0))
-        self.assertIsNotNone(self.send('RGB', 3.02))
+        result = self.send('RGB', 2.01, valid=False, count=5)
+        self.assertFalse(result.centerline_valid)
         self.assertEqual(self.selector.selected, 'RGB')
 
     def test_duplicate_entry_does_not_repeat_switch(self):
         self.entry()
         self.assertFalse(self.selector.event('entry', ns(1.1), ns(1.1)))
-        self.assertFalse(self.selector.transitioning)
+        self.assertEqual(self.selector.selected, 'IR')
 
-    def test_reentry_cancels_exit_preparation_immediately(self):
+    def test_reentry_selects_ir_without_any_intervening_rgb_results(self):
         self.entry()
         self.selector.event('exit', ns(2), ns(2))
         self.entry(2.1)
@@ -124,12 +107,12 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.selector.state, 'OUTSIDE')
         self.assertIsNone(self.selector.lane('RGB', lane(1.94), ns(2.04)))
 
-    def test_stale_and_future_rgb_cannot_finish_exit(self):
+    def test_stale_and_future_rgb_do_not_undo_immediate_exit(self):
         self.entry()
         self.selector.event('exit', ns(2), ns(2))
         for stamp, now in ((1.8, 2.1), (2.2, 2.1)):
             self.assertIsNone(self.selector.lane('RGB', lane(stamp), ns(now)))
-            self.assertEqual(self.selector.state, 'EXITING')
+            self.assertEqual(self.selector.state, 'OUTSIDE')
         self.assertIsNotNone(self.send('RGB', 2.15))
 
     def test_disagreement_does_not_create_a_third_path_or_add_confirmation(self):

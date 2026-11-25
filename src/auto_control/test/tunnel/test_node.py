@@ -140,9 +140,9 @@ class CallbackTests(unittest.TestCase):
             message.observed_lane_length_valid=True
             message.observed_lane_length_m=length
             self.node.on_lane('IR',message)
-        self.assertEqual(self.node.policy.state,'EXITING')
+        self.assertEqual(self.node.policy.state,'OUTSIDE')
         self.report(state='inside',source_stamp_ns=ns(10.17))
-        self.assertEqual(self.node.policy.state,'EXITING')
+        self.assertEqual(self.node.policy.state,'OUTSIDE')
         rgb=lane(10.171)
         self.node.on_lane('RGB',rgb)
         self.assertIs(self.outputs[-1],rgb)

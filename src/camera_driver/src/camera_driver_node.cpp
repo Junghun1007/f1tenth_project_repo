@@ -1749,7 +1749,7 @@ while True:
             bev_handoff::publishRgbExposureControl(restore ? Control::restoring : fixed ? Control::fixed_iso : Control::manual);
             if (mode_changed || !fixed) {
               RCLCPP_INFO(node_.get_logger(), "[RGB EXPOSURE] %s: %ldus ISO%d",
-                restore ? "EXITING restore" : fixed ? "auto exposure with fixed ISO" : "manual", action.exposure_us, action.iso);
+                restore ? "tunnel exit restore" : fixed ? "auto exposure with fixed ISO" : "manual", action.exposure_us, action.iso);
             }
           }
         }
