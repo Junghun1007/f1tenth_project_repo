@@ -102,6 +102,19 @@ function polyline(pts, color, width, dash) {
   ctx.stroke(); ctx.restore();
 }
 
+function lanePoints(points, color) {
+  if (!points?.length) return;
+  const radius = 2;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (const [x, y] of points) {
+    const [u, v] = P(x, y);
+    ctx.moveTo(u + radius, v);
+    ctx.arc(u, v, radius, 0, 2 * Math.PI);
+  }
+  ctx.fill();
+}
+
 function box(x, y, len, wid, yaw, fill, stroke, dash) {
   const c = Math.cos(yaw), s = Math.sin(yaw);
   const pts = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => [x + a * len / 2 * c - b * wid / 2 * s, y + a * len / 2 * s + b * wid / 2 * c]);
@@ -138,8 +151,8 @@ function drawBev(f) {
   const laneOpacity = params.find((p) => p.name === lanePrefix + "overlay_alpha")?.value ?? 0.75;
   ctx.save();
   ctx.globalAlpha = laneOpacity;
-  polyline(f.lane.left, "#3b82f6", 3);
-  polyline(f.lane.right, "#ef4444", 3);
+  lanePoints(f.lane.left, "#3b82f6");
+  lanePoints(f.lane.right, "#ef4444");
   ctx.restore();
   polyline(f.lane.path, "#facc15", 2, [8, 6]);
   for (const m of f.memory) box(m.x, m.y, 0.13, 0.13, 0, null, "#f472b6", [4, 3]);

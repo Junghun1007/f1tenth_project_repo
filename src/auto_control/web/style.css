@@ -39,6 +39,7 @@ button { font: inherit; color: inherit; }
 .offscreen { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .legend { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; margin-top: 8px; color: var(--dim); font-size: 12px; }
 .legend i { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; }
+.legend i.l-left, .legend i.l-right { width: 6px; height: 6px; border-radius: 50%; }
 .l-left { background: var(--left); } .l-right { background: var(--right); } .l-center { background: var(--center); }
 .l-plan { background: var(--plan); } .l-det { background: var(--det); height: 9px !important; width: 9px !important; }
 .l-mem { border: 1px dashed var(--mem); height: 9px !important; width: 9px !important; }

@@ -20,6 +20,20 @@ server.listen(0, async () => {
     return { w: cv.width, h: cv.height, cssW: cv.getBoundingClientRect().width, cssH: cv.getBoundingClientRect().height,
              far: P(3.0, 0.6), near: P(0.0, -0.6), rect: bevImageRect(), scale };
   });
+  const lane = await p.evaluate(() => {
+    document.getElementById("togBev").checked = false;
+    const left = [[0.6, 0.3], [2.2, 0.1]];
+    const right = [[0.8, -0.3]];
+    const gap = [1.4, 0.2];
+    const pixel = (point) => {
+      const [u, v] = P(...point);
+      return Array.from(ctx.getImageData(u, v, 1, 1).data);
+    };
+    drawBev(null);
+    const gapBefore = pixel(gap);
+    drawBev({ lane: { left, right, path: [] }, memory: [], detections: [], vehicle: {} });
+    return { left: left.map(pixel), right: pixel(right[0]), gapBefore, gapAfter: pixel(gap) };
+  });
   await b.close();
   server.close();
   const fails = [];
@@ -32,6 +46,10 @@ server.listen(0, async () => {
   // 캔버스가 표시 범위를 다 담고 CSS로 늘어나지 않음
   if (!near(g.cssW, g.w) || !near(g.cssH, g.h)) fails.push(`canvas css ${g.cssW}x${g.cssH} != ${g.w}x${g.h}`);
   if (g.near[1] > g.h) fails.push(`x=0 at ${g.near[1]}px is below canvas height ${g.h}`);
+  if (!lane.left.every(([r, , b]) => b > r + 50)) fails.push("left boundary points were not drawn");
+  if (lane.right[0] <= lane.right[2] + 50) fails.push("single right boundary point was not drawn");
+  if (!lane.gapBefore.every((channel, i) => channel === lane.gapAfter[i]))
+    fails.push("the renderer drew between unconnected left boundary points");
   console.log(fails.length ? "FAIL\n" + fails.join("\n") : "PASS", JSON.stringify(g));
   process.exit(fails.length ? 1 : 0);
 });
