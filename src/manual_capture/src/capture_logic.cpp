@@ -156,6 +156,31 @@ int maximumExposureUs(const double fps)
   return static_cast<int>(std::floor(1.0e6 / fps));
 }
 
+ExposureFeedback exposureFeedback(
+  const ExposureSetting & request, const double sent_at_sec, const double now_sec,
+  const double fps, std::optional<ExposureReading> reading)
+{
+  // Low frame rates need more time for a device control and its next frame.
+  const double settle_sec = std::max(0.75, 3.0 / std::max(1.0, fps));
+  const bool settling = now_sec - sent_at_sec < settle_sec;
+  if (reading && (reading->exposure_us <= 0 || reading->iso <= 0 ||
+    !std::isfinite(reading->capture_start_sec) || now_sec - reading->capture_start_sec > settle_sec))
+  {
+    reading.reset();
+  }
+  if (!reading || reading->capture_start_sec <= sent_at_sec) {
+    return settling ? ExposureFeedback{ExposureStatus::WAITING_FOR_FRAME, reading} :
+           ExposureFeedback{ExposureStatus::FRAME_MISSING, std::nullopt};
+  }
+  if (request.automatic) {
+    return {ExposureStatus::AUTOMATIC, reading};
+  }
+  if (request.exposure_us == reading->exposure_us && request.iso == reading->iso) {
+    return {ExposureStatus::CONFIRMED, reading};
+  }
+  return {settling ? ExposureStatus::WAITING_FOR_FRAME : ExposureStatus::MISMATCH, reading};
+}
+
 std::string sessionDirectoryName(const std::time_t time)
 {
   std::tm local{};

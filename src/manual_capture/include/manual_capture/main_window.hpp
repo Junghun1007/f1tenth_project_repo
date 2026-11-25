@@ -179,7 +179,9 @@ private:
 
   // Live controls
   void applyRgbExposure();
-  void applyStereoExposure(bool left_changed);
+  void applyStereoExposure();
+  void refreshStereoInputs();
+  void refreshStereoFeedback(double now, const LiveControls & controls);
   void updateExposureRanges();
   CameraConfig pendingRgbConfig() const;
   CameraConfig pendingStereoConfig() const;
@@ -238,24 +240,25 @@ private:
   QLabel * rgb_actual_{nullptr};
 
   // Stereo tab
+  struct StereoExposureWidgets
+  {
+    QSpinBox * exposure{nullptr};
+    QSpinBox * iso{nullptr};
+    QLabel * actual_exposure{nullptr};
+    QLabel * actual_iso{nullptr};
+    QLabel * status{nullptr};
+  };
   QComboBox * stereo_resolution_{nullptr};
   QDoubleSpinBox * stereo_fps_{nullptr};
-  QCheckBox * stereo_auto_exposure_{nullptr};
+  QComboBox * stereo_exposure_mode_{nullptr};
   QCheckBox * stereo_link_{nullptr};
-  QSpinBox * left_exposure_{nullptr};
-  QSlider * left_exposure_slider_{nullptr};
-  QSpinBox * left_iso_{nullptr};
-  QSlider * left_iso_slider_{nullptr};
-  QSpinBox * right_exposure_{nullptr};
-  QSlider * right_exposure_slider_{nullptr};
-  QSpinBox * right_iso_{nullptr};
-  QSlider * right_iso_slider_{nullptr};
+  QPushButton * stereo_exposure_apply_{nullptr};
+  std::array<StereoExposureWidgets, 2> stereo_exposure_;
   QSpinBox * flood_{nullptr};
   QSlider * flood_slider_{nullptr};
   QSpinBox * dot_{nullptr};
   QSlider * dot_slider_{nullptr};
   QLabel * dot_state_{nullptr};
-  QLabel * stereo_actual_{nullptr};
 
   // BEV tab
   QPushButton * left_bev_mode_{nullptr};

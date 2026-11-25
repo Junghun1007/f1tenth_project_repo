@@ -141,6 +141,39 @@ RefitDecision decideRefit(
 // Exposure must fit inside one frame period.
 int maximumExposureUs(double fps);
 
+struct ExposureSetting
+{
+  bool automatic{true};
+  int exposure_us{8000};
+  int iso{400};
+};
+
+struct ExposureReading
+{
+  int exposure_us;
+  int iso;
+  double capture_start_sec;
+};
+
+enum class ExposureStatus
+{
+  WAITING_FOR_FRAME,
+  FRAME_MISSING,
+  AUTOMATIC,
+  CONFIRMED,
+  MISMATCH,
+};
+
+struct ExposureFeedback
+{
+  ExposureStatus status;
+  std::optional<ExposureReading> actual;
+};
+
+ExposureFeedback exposureFeedback(
+  const ExposureSetting & request, double sent_at_sec, double now_sec, double fps,
+  std::optional<ExposureReading> reading);
+
 // session_YYYYMMDD_HHMMSS (local time).
 std::string sessionDirectoryName(std::time_t time);
 // 000042.jpg

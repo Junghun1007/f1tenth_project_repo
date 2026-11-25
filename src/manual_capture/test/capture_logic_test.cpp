@@ -9,6 +9,54 @@
 
 using namespace manual_capture;
 
+TEST(ExposureFeedback, RequiresAFrameCapturedAfterTheRequest)
+{
+  const ExposureSetting manual{false, 5000, 800};
+  const ExposureReading previous{5000, 800, 9.99};
+  const auto waiting = exposureFeedback(manual, 10.0, 10.2, 30.0, previous);
+  EXPECT_EQ(waiting.status, ExposureStatus::WAITING_FOR_FRAME);
+  ASSERT_TRUE(waiting.actual);
+  EXPECT_EQ(waiting.actual->exposure_us, 5000);
+
+  const auto missing = exposureFeedback(manual, 10.0, 10.9, 30.0, previous);
+  EXPECT_EQ(missing.status, ExposureStatus::FRAME_MISSING);
+  EXPECT_FALSE(missing.actual);
+  EXPECT_EQ(
+    exposureFeedback(manual, 10.0, 10.2, 30.0, ExposureReading{5000, 800, 10.1}).status,
+    ExposureStatus::CONFIRMED);
+}
+
+TEST(ExposureFeedback, ShowsLensMismatchAndDetectsStaleFrames)
+{
+  const ExposureSetting manual{false, 5000, 800};
+  const ExposureReading different{5000, 720, 10.15};
+  EXPECT_EQ(
+    exposureFeedback(manual, 10.0, 10.2, 30.0, different).status,
+    ExposureStatus::WAITING_FOR_FRAME);
+
+  const auto mismatch = exposureFeedback(manual, 10.0, 10.85, 30.0, different);
+  EXPECT_EQ(mismatch.status, ExposureStatus::MISMATCH);
+  ASSERT_TRUE(mismatch.actual);
+  EXPECT_EQ(mismatch.actual->iso, 720);
+  EXPECT_EQ(
+    exposureFeedback(manual, 10.0, 11.0, 30.0, different).status,
+    ExposureStatus::FRAME_MISSING);
+}
+
+TEST(ExposureFeedback, HandlesAutoAndSlowOrInvalidReadback)
+{
+  const ExposureSetting automatic{true, 5000, 800};
+  EXPECT_EQ(
+    exposureFeedback(automatic, 10.0, 11.5, 1.0, std::nullopt).status,
+    ExposureStatus::WAITING_FOR_FRAME);
+  EXPECT_EQ(
+    exposureFeedback(automatic, 10.0, 11.5, 1.0, ExposureReading{4350, 700, 11.0}).status,
+    ExposureStatus::AUTOMATIC);
+  const auto invalid = exposureFeedback(automatic, 10.0, 13.1, 1.0, ExposureReading{0, 700, 13.0});
+  EXPECT_EQ(invalid.status, ExposureStatus::FRAME_MISSING);
+  EXPECT_FALSE(invalid.actual);
+}
+
 TEST(ViewSelection, StartsWithColorOnly)
 {
   ViewSelection selection;

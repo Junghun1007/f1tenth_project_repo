@@ -18,6 +18,7 @@
 #include <QRadioButton>
 #include <QScreen>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSlider>
 #include <QSpinBox>
 #include <QStyle>
@@ -639,27 +640,70 @@ QWidget * MainWindow::buildStereoTab()
   form->addRow(apply);
   layout->addWidget(restart);
 
-  auto * exposure = new QGroupBox(QStringLiteral("노출 / ISO  (실시간)"));
-  auto * exposure_form = new QFormLayout(exposure);
-  stereo_auto_exposure_ = new QCheckBox(QStringLiteral("자동 노출"));
-  stereo_auto_exposure_->setChecked(params_.controls.left.automatic);
-  stereo_link_ = new QCheckBox(QStringLiteral("왼쪽·오른쪽 동일하게 (연동)"));
+  auto * exposure = new QGroupBox(QStringLiteral("노출 / ISO"));
+  auto * exposure_grid = new QGridLayout(exposure);
+  auto * options = new QHBoxLayout;
+  auto * mode_label = new QLabel(QStringLiteral("노출 모드"));
+  stereo_exposure_mode_ = new QComboBox;
+  stereo_exposure_mode_->addItem(QStringLiteral("수동 고정"), false);
+  stereo_exposure_mode_->addItem(QStringLiteral("자동 노출"), true);
+  stereo_exposure_mode_->setCurrentIndex(params_.controls.left.automatic ? 1 : 0);
+  stereo_exposure_mode_->setAccessibleName(mode_label->text());
+  stereo_link_ = new QCheckBox(QStringLiteral("L/R 연동"));
   stereo_link_->setChecked(true);
-  exposure_form->addRow(stereo_auto_exposure_);
-  exposure_form->addRow(stereo_link_);
+  options->addWidget(mode_label);
+  options->addWidget(stereo_exposure_mode_);
+  options->addWidget(stereo_link_);
+  options->addStretch();
+  exposure_grid->addLayout(options, 0, 0, 1, 4);
+
+  exposure_grid->addWidget(styled(QStringLiteral("렌즈"), "dim"), 1, 0);
+  exposure_grid->addWidget(styled(QStringLiteral("노출 (µs)"), "dim"), 1, 1);
+  exposure_grid->addWidget(styled(QStringLiteral("ISO"), "dim"), 1, 2);
+  exposure_grid->addWidget(styled(QStringLiteral("센서 확인"), "dim"), 1, 3);
+  exposure_grid->setColumnStretch(1, 1);
+  exposure_grid->setColumnStretch(2, 1);
+  exposure_grid->setColumnStretch(3, 1);
+  const std::array<ExposureSetting, 2> defaults{params_.controls.left, params_.controls.right};
   const int max_exposure = maximumExposureUs(params_.camera.stereo_fps);
-  exposure_form->addRow(QStringLiteral("L 노출"), sliderRow(
-      20, max_exposure, params_.controls.left.exposure_us, QStringLiteral(" µs"),
-      &left_exposure_slider_, &left_exposure_));
-  exposure_form->addRow(QStringLiteral("L ISO"), sliderRow(
-      100, 1600, params_.controls.left.iso, QString(), &left_iso_slider_, &left_iso_));
-  exposure_form->addRow(QStringLiteral("R 노출"), sliderRow(
-      20, max_exposure, params_.controls.right.exposure_us, QStringLiteral(" µs"),
-      &right_exposure_slider_, &right_exposure_));
-  exposure_form->addRow(QStringLiteral("R ISO"), sliderRow(
-      100, 1600, params_.controls.right.iso, QString(), &right_iso_slider_, &right_iso_));
-  stereo_actual_ = styled(QString(), "dim");
-  exposure_form->addRow(stereo_actual_);
+  for (std::size_t lens = 0; lens < stereo_exposure_.size(); ++lens) {
+    auto & row = stereo_exposure_[lens];
+    const auto & setting = defaults[lens];
+    const QString name = lens == 0 ? QStringLiteral("L") : QStringLiteral("R");
+    row.exposure = new QSpinBox;
+    row.exposure->setRange(20, max_exposure);
+    row.exposure->setValue(setting.exposure_us);
+    row.exposure->setSingleStep(100);
+    row.exposure->setGroupSeparatorShown(true);
+    row.exposure->setAccessibleName(name + QStringLiteral(" 요청 노출 (µs)"));
+    row.iso = new QSpinBox;
+    row.iso->setRange(100, 1600);
+    row.iso->setValue(setting.iso);
+    row.iso->setSingleStep(10);
+    row.iso->setAccessibleName(name + QStringLiteral(" 요청 ISO"));
+    row.actual_exposure = styled(QStringLiteral("실제 —"), "dim");
+    row.actual_iso = styled(QStringLiteral("실제 —"), "dim");
+    row.status = styled(QStringLiteral("프레임 없음"), "dim");
+    const int input_row = 2 + 2 * static_cast<int>(lens);
+    exposure_grid->addWidget(new QLabel(name), input_row, 0);
+    exposure_grid->addWidget(row.exposure, input_row, 1);
+    exposure_grid->addWidget(row.iso, input_row, 2);
+    exposure_grid->addWidget(row.status, input_row, 3, 2, 1);
+    exposure_grid->addWidget(row.actual_exposure, input_row + 1, 1);
+    exposure_grid->addWidget(row.actual_iso, input_row + 1, 2);
+    for (auto * spin : {row.exposure, row.iso}) {
+      connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this, [this]() {
+          refreshStereoInputs();
+        });
+    }
+  }
+  auto * actions = new QHBoxLayout;
+  stereo_exposure_apply_ = new QPushButton(QStringLiteral("설정 적용"));
+  stereo_exposure_apply_->setObjectName("apply");
+  actions->addWidget(stereo_exposure_apply_);
+  actions->addWidget(styled(QStringLiteral("카메라 재시작 없이 적용"), "dim"));
+  actions->addStretch();
+  exposure_grid->addLayout(actions, 6, 0, 1, 4);
   layout->addWidget(exposure);
 
   auto * ir = new QGroupBox(QStringLiteral("IR 조명  (실시간)"));
@@ -679,22 +723,10 @@ QWidget * MainWindow::buildStereoTab()
   layout->addStretch(1);
 
   connect(apply, &QPushButton::clicked, this, [this]() {requestRestart(pendingStereoConfig());});
-  connect(stereo_auto_exposure_, &QCheckBox::toggled, this, [this]() {
-      applyStereoExposure(true);
-      refreshControls();
-    });
-  connect(stereo_link_, &QCheckBox::toggled, this, [this]() {
-      applyStereoExposure(true);
-      refreshControls();
-    });
-  for (auto * spin : {left_exposure_, left_iso_}) {
-    connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this,
-      [this]() {applyStereoExposure(true);});
-  }
-  for (auto * spin : {right_exposure_, right_iso_}) {
-    connect(spin, QOverload<int>::of(&QSpinBox::valueChanged), this,
-      [this]() {applyStereoExposure(false);});
-  }
+  connect(stereo_exposure_mode_, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+    [this]() {refreshStereoInputs();});
+  connect(stereo_link_, &QCheckBox::toggled, this, [this]() {refreshStereoInputs();});
+  connect(stereo_exposure_apply_, &QPushButton::clicked, this, &MainWindow::applyStereoExposure);
   connect(flood_, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int percent) {
       engine_.setFlood(percent / 100.0);
     });
@@ -1168,13 +1200,7 @@ void MainWindow::statusTick()
   if (const auto rgb = engine_.latestRgb()) {
     rgb_actual_->setText(QStringLiteral("실제: %1 µs · ISO %2").arg(rgb->exposure_us).arg(rgb->iso));
   }
-  if (const auto stereo = engine_.latestStereo()) {
-    QString text = QStringLiteral("실제 L: %1 µs · ISO %2").arg(stereo->left_exposure_us).arg(stereo->left_iso);
-    if (!stereo->right.empty()) {
-      text += QStringLiteral("  /  R: %1 µs · ISO %2").arg(stereo->right_exposure_us).arg(stereo->right_iso);
-    }
-    stereo_actual_->setText(text);
-  }
+  refreshStereoFeedback(now, controls);
   const auto error_text = engine_.lastError();
   if (!error_text.empty() && !job_running_) {
     message_label_->setText(QString::fromStdString(error_text));
@@ -1211,18 +1237,7 @@ void MainWindow::refreshControls()
   left_bev_mode_->setChecked(left_only);
   left_bev_mode_->setText(left_only ? QStringLiteral("왼쪽 렌즈 BEV  ON") :
     QStringLiteral("왼쪽 렌즈 BEV  OFF"));
-  const bool manual = !stereo_auto_exposure_->isChecked();
-  for (QWidget * widget : std::initializer_list<QWidget *>{
-      left_exposure_, left_exposure_slider_, left_iso_, left_iso_slider_})
-  {
-    widget->setEnabled(manual);
-  }
-  const bool right_editable = manual && !left_only && !stereo_link_->isChecked();
-  for (QWidget * widget : std::initializer_list<QWidget *>{
-      right_exposure_, right_exposure_slider_, right_iso_, right_iso_slider_})
-  {
-    widget->setEnabled(right_editable);
-  }
+  refreshStereoInputs();
   const bool rgb_manual = !rgb_auto_exposure_->isChecked();
   for (QWidget * widget : std::initializer_list<QWidget *>{
       rgb_exposure_, rgb_exposure_slider_, rgb_iso_, rgb_iso_slider_})
@@ -1252,8 +1267,10 @@ void MainWindow::updateExposureRanges()
 {
   setRange(rgb_exposure_slider_, rgb_exposure_, maximumExposureUs(applied_config_.rgb_fps));
   const int stereo_max = maximumExposureUs(applied_config_.stereo_fps);
-  setRange(left_exposure_slider_, left_exposure_, stereo_max);
-  setRange(right_exposure_slider_, right_exposure_, stereo_max);
+  for (const auto & row : stereo_exposure_) {
+    const QSignalBlocker block(row.exposure);
+    row.exposure->setMaximum(stereo_max);
+  }
 }
 
 void MainWindow::applyRgbExposure()
@@ -1265,21 +1282,106 @@ void MainWindow::applyRgbExposure()
   refreshControls();
 }
 
-void MainWindow::applyStereoExposure(const bool left_changed)
+void MainWindow::applyStereoExposure()
 {
-  if (updating_ui_) {
+  if (job_running_ || !engine_.running()) {
     return;
   }
-  const bool automatic = stereo_auto_exposure_->isChecked();
-  if (stereo_link_->isChecked() && left_changed) {
-    updating_ui_ = true;
-    right_exposure_->setValue(left_exposure_->value());
-    right_iso_->setValue(left_iso_->value());
-    updating_ui_ = false;
+  const bool automatic = stereo_exposure_mode_->currentData().toBool();
+  const auto & left = stereo_exposure_[0];
+  const auto & right = stereo_exposure_[1];
+  engine_.setStereoExposure(
+    {automatic, left.exposure->value(), left.iso->value()},
+    {automatic, right.exposure->value(), right.iso->value()});
+  refreshStereoFeedback(steadyNowSec(), engine_.controls());
+}
+
+void MainWindow::refreshStereoInputs()
+{
+  const bool ready = !job_running_ && engine_.running();
+  const bool manual = !stereo_exposure_mode_->currentData().toBool();
+  const bool linked = stereo_link_->isChecked();
+  const bool both = applied_config_.stereo_mode == StereoMode::LEFT_RIGHT;
+  const auto & left = stereo_exposure_[0];
+  const auto & right = stereo_exposure_[1];
+  if (linked) {
+    const QSignalBlocker exposure_block(right.exposure);
+    const QSignalBlocker iso_block(right.iso);
+    right.exposure->setValue(left.exposure->value());
+    right.iso->setValue(left.iso->value());
   }
-  engine_.setStereoExposure(true, {automatic, left_exposure_->value(), left_iso_->value()});
-  if (applied_config_.stereo_mode == StereoMode::LEFT_RIGHT) {
-    engine_.setStereoExposure(false, {automatic, right_exposure_->value(), right_iso_->value()});
+  stereo_exposure_mode_->setEnabled(ready);
+  stereo_link_->setEnabled(ready && manual && both);
+  stereo_exposure_apply_->setEnabled(ready);
+  left.exposure->setEnabled(ready && manual);
+  left.iso->setEnabled(ready && manual);
+  right.exposure->setEnabled(ready && manual && both && !linked);
+  right.iso->setEnabled(ready && manual && both && !linked);
+  refreshStereoFeedback(steadyNowSec(), engine_.controls());
+}
+
+void MainWindow::refreshStereoFeedback(const double now, const LiveControls & controls)
+{
+  const auto readbacks = engine_.stereoExposureReadback();
+  const std::array<ExposureSetting, 2> requests{controls.left, controls.right};
+  const bool automatic = stereo_exposure_mode_->currentData().toBool();
+  const bool ready = !job_running_ && engine_.running();
+  for (std::size_t lens = 0; lens < stereo_exposure_.size(); ++lens) {
+    const auto & row = stereo_exposure_[lens];
+    const auto & request = requests[lens];
+    const auto & readback = readbacks[lens];
+    const bool active = lens == 0 || applied_config_.stereo_mode == StereoMode::LEFT_RIGHT;
+    const bool dirty = automatic != request.automatic || (!automatic &&
+      (row.exposure->value() != request.exposure_us || row.iso->value() != request.iso));
+    const auto feedback = exposureFeedback(
+      request, readback.sent_at_sec, now, applied_config_.stereo_fps,
+      ready && active ? readback.latest : std::nullopt);
+    const auto actualText = [](int value) {
+        return QStringLiteral("실제 %1").arg(QLocale().toString(value));
+      };
+    row.actual_exposure->setText(
+      feedback.actual ? actualText(feedback.actual->exposure_us) : QStringLiteral("실제 —"));
+    row.actual_iso->setText(
+      feedback.actual ? actualText(feedback.actual->iso) : QStringLiteral("실제 —"));
+    QString label;
+    QString style;
+    QString detail;
+    if (!active) {
+      label = QStringLiteral("렌즈 꺼짐");
+      style = QStringLiteral("dim");
+    } else if (!ready) {
+      label = QStringLiteral("프레임 없음");
+      style = QStringLiteral("dim");
+    } else if (!readback.send_error.empty()) {
+      label = QStringLiteral("전송 실패");
+      style = QStringLiteral("err");
+      detail = QString::fromStdString(readback.send_error);
+    } else if (dirty) {
+      label = QStringLiteral("변경 대기");
+      style = QStringLiteral("warn");
+    } else {
+      style = QStringLiteral("warn");
+      switch (feedback.status) {
+        case ExposureStatus::WAITING_FOR_FRAME: label = QStringLiteral("프레임 대기"); break;
+        case ExposureStatus::FRAME_MISSING: label = QStringLiteral("프레임 없음"); break;
+        case ExposureStatus::MISMATCH: label = QStringLiteral("요청값과 다름"); break;
+        case ExposureStatus::AUTOMATIC:
+          label = QStringLiteral("자동 노출");
+          style = QStringLiteral("ok");
+          break;
+        case ExposureStatus::CONFIRMED:
+          label = QStringLiteral("적용 확인");
+          style = QStringLiteral("ok");
+          break;
+      }
+    }
+    row.status->setText(label);
+    row.status->setToolTip(detail);
+    if (row.status->objectName() != style) {
+      row.status->setObjectName(style);
+      row.status->style()->unpolish(row.status);
+      row.status->style()->polish(row.status);
+    }
   }
 }
 

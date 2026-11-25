@@ -150,7 +150,14 @@ void applyInitialExposure(dai::node::Camera & camera, const ExposureSetting & se
   }
 }
 
-void limitBridge(dai::Node::Output * output)
+ExposureSetting limitStereoExposure(ExposureSetting setting, double fps)
+{
+  setting.exposure_us = std::clamp(setting.exposure_us, 20, maximumExposureUs(fps));
+  setting.iso = std::clamp(setting.iso, 100, 1600);
+  return setting;
+}
+
+void limitBridge(dai::Node::Output * output, bool metadata_only = false)
 {
   const auto bridge = output->getXLinkBridge();
   if (!bridge || !bridge->xLinkOut) {
@@ -158,6 +165,9 @@ void limitBridge(dai::Node::Output * output)
   }
   bridge->xLinkOut->input.setMaxSize(1);
   bridge->xLinkOut->input.setBlocking(false);
+  if (metadata_only) {
+    bridge->xLinkOut->setMetadataOnly(true);
+  }
 }
 
 class RateMeter
@@ -200,6 +210,7 @@ struct CameraEngine::Impl
   std::unique_ptr<dai::CalibrationHandler> calibration;
   std::shared_ptr<dai::MessageQueue> rgb_queue;
   std::shared_ptr<dai::MessageQueue> stereo_queue;
+  std::array<std::shared_ptr<dai::MessageQueue>, 2> stereo_metadata_queues;
   std::shared_ptr<dai::InputQueue> rgb_control;
   std::shared_ptr<dai::InputQueue> left_control;
   std::shared_ptr<dai::InputQueue> right_control;
@@ -209,6 +220,7 @@ struct CameraEngine::Impl
   mutable std::mutex mutex;  // frames, calibrations, controls, error
   std::shared_ptr<const RgbFrame> latest_rgb;
   std::shared_ptr<const StereoFrame> latest_stereo;
+  std::array<StereoExposureReadback, 2> stereo_readback;
   std::optional<LensCalibration> rgb_calibration;
   std::optional<LensCalibration> left_calibration;
   std::string last_error;
@@ -258,6 +270,15 @@ struct CameraEngine::Impl
     }
   }
 
+  void readExposure(std::size_t lens, const dai::ImgFrame & frame)
+  {
+    const ExposureReading reading{
+      static_cast<int>(frame.getExposureTime().count()), frame.getSensitivity(),
+      seconds(frame.getTimestamp(dai::CameraExposureOffset::START))};
+    std::lock_guard<std::mutex> lock(mutex);
+    stereo_readback[lens].latest = reading;
+  }
+
   void stereoLoop()
   {
     std::uint64_t sequence = 0U;
@@ -267,6 +288,11 @@ struct CameraEngine::Impl
         auto output = std::make_shared<StereoFrame>();
         std::shared_ptr<dai::ImgFrame> left;
         if (both) {
+          for (std::size_t lens = 0; lens < stereo_metadata_queues.size(); ++lens) {
+            if (const auto frame = stereo_metadata_queues[lens]->tryGet<dai::ImgFrame>()) {
+              readExposure(lens, *frame);
+            }
+          }
           auto group = stereo_queue->tryGet<dai::MessageGroup>();
           if (!group) {
             std::this_thread::sleep_for(200us);
@@ -288,6 +314,7 @@ struct CameraEngine::Impl
             std::this_thread::sleep_for(200us);
             continue;
           }
+          readExposure(0, *left);
         }
         output->left = left->getFrame(false).clone();
         if (output->left.empty() || output->left.type() != CV_8UC1) {
@@ -347,18 +374,24 @@ struct CameraEngine::Impl
     auto left_camera = pipeline->create<dai::node::Camera>()->build(
       dai::CameraBoardSocket::CAM_B, std::make_pair(kSensorWidth, kSensorHeight), stereo_fps);
     applyInitialExposure(*left_camera, controls.left);
-    left_control = left_camera->inputControl.createInputQueue();
+    left_control = left_camera->inputControl.createInputQueue(1U, false);
 
     dai::Node::Output * stereo_output = nullptr;
+    std::array<dai::Node::Output *, 2> raw_outputs{};
     if (config.stereo_mode == StereoMode::LEFT_RIGHT) {
       auto right_camera = pipeline->create<dai::node::Camera>()->build(
         dai::CameraBoardSocket::CAM_C, std::make_pair(kSensorWidth, kSensorHeight), stereo_fps);
       applyInitialExposure(*right_camera, controls.right);
-      right_control = right_camera->inputControl.createInputQueue();
+      right_control = right_camera->inputControl.createInputQueue(1U, false);
       auto * left_raw = left_camera->requestOutput(
         stereo_size, dai::ImgFrame::Type::GRAY8, dai::ImgResizeMode::CROP, stereo_fps);
       auto * right_raw = right_camera->requestOutput(
         stereo_size, dai::ImgFrame::Type::GRAY8, dai::ImgResizeMode::CROP, stereo_fps);
+      // Independent exposure readback even when a synchronized depth group is missing.
+      raw_outputs = {left_raw, right_raw};
+      for (std::size_t lens = 0; lens < raw_outputs.size(); ++lens) {
+        stereo_metadata_queues[lens] = raw_outputs[lens]->createOutputQueue(1U, false);
+      }
 
       // Same light center-aligned disparity setup as the IR center preview.
       auto stereo = pipeline->create<dai::node::StereoDepth>();
@@ -402,6 +435,11 @@ struct CameraEngine::Impl
     pipeline->build();
     limitBridge(rgb_output);
     limitBridge(stereo_output);
+    for (auto * raw : raw_outputs) {
+      if (raw) {
+        limitBridge(raw, true);  // keep the raw images on the device
+      }
+    }
     pipeline->start();
   }
 
@@ -429,6 +467,7 @@ struct CameraEngine::Impl
     }
     rgb_queue.reset();
     stereo_queue.reset();
+    stereo_metadata_queues = {};
     rgb_control.reset();
     left_control.reset();
     right_control.reset();
@@ -467,8 +506,11 @@ void CameraEngine::start(const CameraConfig & config, const LiveControls & contr
     std::lock_guard<std::mutex> lock(impl.mutex);
     impl.config = config;
     impl.controls = controls;
+    impl.controls.left = limitStereoExposure(controls.left, config.stereo_fps);
+    impl.controls.right = limitStereoExposure(controls.right, config.stereo_fps);
     impl.latest_rgb.reset();
     impl.latest_stereo.reset();
+    impl.stereo_readback = {};
     impl.rgb_calibration.reset();
     impl.left_calibration.reset();
     impl.last_error.clear();
@@ -484,6 +526,13 @@ void CameraEngine::start(const CameraConfig & config, const LiveControls & contr
     throw;
   }
   impl.config.device_id = impl.device_id;  // reopen the same device next time
+  {
+    std::lock_guard<std::mutex> lock(impl.mutex);
+    const double now = seconds(std::chrono::steady_clock::now());
+    for (auto & readback : impl.stereo_readback) {
+      readback.sent_at_sec = now;
+    }
+  }
   impl.running.store(true);
   impl.generation.fetch_add(1U);
   impl.rgb_thread = std::thread(&Impl::rgbLoop, &impl);
@@ -533,14 +582,43 @@ void CameraEngine::setRgbExposure(const ExposureSetting & setting)
   }
 }
 
-void CameraEngine::setStereoExposure(const bool left, const ExposureSetting & setting)
+void CameraEngine::setStereoExposure(const ExposureSetting & left, const ExposureSetting & right)
+{
+  auto & impl = *impl_;
+  std::lock_guard<std::mutex> lock(impl.mutex);
+  const auto send = [&](std::size_t lens, const std::shared_ptr<dai::InputQueue> & queue,
+      const ExposureSetting & request, ExposureSetting & applied) {
+      auto & readback = impl.stereo_readback[lens];
+      if (!impl.running.load() || !queue) {
+        readback.send_error = "camera control queue unavailable";
+        return false;
+      }
+      try {
+        queue->send(exposureControl(request));
+      } catch (const std::exception & error) {
+        readback.send_error = error.what();
+        return false;
+      }
+      applied = request;
+      readback.sent_at_sec = seconds(std::chrono::steady_clock::now());
+      readback.send_error.clear();
+      return true;
+    };
+  const auto left_request = limitStereoExposure(left, impl.config.stereo_fps);
+  const auto right_request = limitStereoExposure(right, impl.config.stereo_fps);
+  const bool left_sent = send(0, impl.left_control, left_request, impl.controls.left);
+  if (impl.config.stereo_mode == StereoMode::LEFT_RIGHT) {
+    send(1, impl.right_control, right_request, impl.controls.right);
+  } else if (left_sent) {
+    // Keep the selected mode and linked values for when CAM_C is started again.
+    impl.controls.right = right_request;
+  }
+}
+
+std::array<StereoExposureReadback, 2> CameraEngine::stereoExposureReadback() const
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
-  (left ? impl_->controls.left : impl_->controls.right) = setting;
-  const auto & queue = left ? impl_->left_control : impl_->right_control;
-  if (impl_->running.load() && queue) {
-    queue->send(exposureControl(setting));
-  }
+  return impl_->stereo_readback;
 }
 
 void CameraEngine::setFlood(const double intensity)

@@ -4,6 +4,7 @@
 // Owns the OAK device. The header is DepthAI free so the GUI does not depend
 // on the SDK headers.
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -39,11 +40,11 @@ struct CameraConfig
   double sync_threshold_ms{2.0};
 };
 
-struct ExposureSetting
+struct StereoExposureReadback
 {
-  bool automatic{true};
-  int exposure_us{8000};
-  int iso{400};
+  double sent_at_sec{0.0};
+  std::optional<ExposureReading> latest;
+  std::string send_error;
 };
 
 // Values that change while the pipeline runs.
@@ -103,7 +104,8 @@ public:
   std::optional<LensCalibration> leftCalibration() const;
 
   void setRgbExposure(const ExposureSetting & setting);
-  void setStereoExposure(bool left, const ExposureSetting & setting);
+  void setStereoExposure(const ExposureSetting & left, const ExposureSetting & right);
+  std::array<StereoExposureReadback, 2> stereoExposureReadback() const;  // CAM_B, CAM_C
   void setFlood(double intensity);
   void setDot(double intensity);
   LiveControls controls() const;
