@@ -613,12 +613,6 @@ function renderParams() {
         <p>적용을 누르면 실행 중에 반영됩니다. 다음 실행에서도 쓰려면 YAML을 저장하고 <code>drive_params_file</code>로 지정합니다.</p>
       </div>`;
     }
-    if (list.some((p) => p.name === "tunnel.ir_length_exit_enabled")) {
-      return `<h3>${section}</h3>${rows}<div class="param-help">
-        <p>터널 안에서 IR 관측 길이가 기준 대비 설정 비율 이하로 연속 유지되면 RGB 복귀를 시작합니다.</p>
-        <p>이 항목을 바꾸면 기준 길이와 연속 횟수를 다시 측정합니다.</p>
-      </div>`;
-    }
     if (group !== "lane") return `<h3>${section}</h3>${rows}`;
     const open = previouslyOpen.has(section) || (!previouslyOpen.size && section === "RGB · 검출");
     const weight = list.find((p) => p.name.endsWith(".corner_outer_weight"));

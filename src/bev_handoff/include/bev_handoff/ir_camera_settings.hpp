@@ -34,10 +34,6 @@ std::uint64_t irCameraSettingsRevision();                     // 바뀔 때마�
 struct TunnelRuntimeSettings
 {
   bool validation_mode{true};
-  bool ir_length_exit_enabled{false};
-  double ir_length_exit_ratio{0.15};
-  int ir_length_exit_confirm_frames{3};
-  double ir_length_exit_minimum_reference_m{0.5};
 };
 
 void publishTunnelRuntimeSettings(std::shared_ptr<const TunnelRuntimeSettings> settings);

@@ -26,17 +26,13 @@
     web.bind: 0.0.0.0
     web.port: 8765
     # ---- 브라우저 파라미터 창에서 실시간으로 바꿀 수 있는 값 ----
-    # 터널 판정과 IR 이탈
+    # 터널 판정
     tcn.threshold: 0.5
     tcn.cooldown_seconds: 1.0
     tcn.warmup_seconds: 2.5
     tcn.max_gap_seconds: 0.5
     tcn.max_image_age_seconds: 0.25
     tunnel.validation_mode: true        # false: IR 노출 변경 대기 및 촬영 프레임 검사
-    tunnel.ir_length_exit_enabled: 0.0
-    tunnel.ir_length_exit_ratio: 0.15
-    tunnel.ir_length_exit_confirm_frames: 3.0
-    tunnel.ir_length_exit_minimum_reference_m: 0.5
     # YOLO 검출
     yolo.con_threshold: 0.83            # 콘 임계값
     yolo.truck_threshold: 0.70          # 트럭 임계값

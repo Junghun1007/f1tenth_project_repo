@@ -2,7 +2,6 @@
 #include "auto_control/tunnel_selection.hpp"
 
 namespace {
-using auto_control::tunnel::IrLengthExit;
 using auto_control::tunnel::LaneSelector;
 using auto_control::tunnel::PathRules;
 
@@ -17,8 +16,6 @@ struct Lane {
   int source_width{120}, source_height{300}, padding_left{0}, padding_right{0}, state{3};
   double centerline_bev_width_m{1.2}, centerline_bev_height_m{3.0};
   bool centerline_valid{true}, centerline_sample_limit_reached{false};
-  bool observed_lane_length_valid{false};
-  double observed_lane_length_m{0.0};
   std::vector<Point> centerline_points;
   std::vector<std::uint8_t> centerline_support;
 };
@@ -37,7 +34,7 @@ Lane lane_at(std::int64_t stamp, int points) {
 
 TEST(tcn_entry_selects_ir_before_any_lane_result) {
   for (bool validation : {true, false}) {
-    LaneSelector selector(.2, validation, PathRules{}, IrLengthExit{});
+    LaneSelector selector(.2, validation, PathRules{});
     CHECK(selector.event("entry", kEntry, kEntry));
     CHECK(selector.state == "INSIDE");
     CHECK(selector.selected == "IR");
@@ -54,7 +51,7 @@ TEST(tcn_entry_selects_ir_before_any_lane_result) {
 
 TEST(tcn_exit_selects_rgb_before_any_lane_result) {
   for (bool validation : {true, false}) {
-    LaneSelector selector(.2, validation, PathRules{}, IrLengthExit{});
+    LaneSelector selector(.2, validation, PathRules{});
     CHECK(selector.event("entry", kEntry, kEntry));
     CHECK(selector.event("exit", 2 * kEntry, 2 * kEntry));
     CHECK(selector.state == "OUTSIDE" && selector.reason == "tcn_exit");
@@ -71,23 +68,8 @@ TEST(tcn_exit_selects_rgb_before_any_lane_result) {
   }
 }
 
-TEST(ir_length_exit_selects_rgb_and_reports_its_trigger) {
-  LaneSelector selector(.2, true, PathRules{}, IrLengthExit{true});
-  CHECK(selector.event("entry", kEntry, kEntry));
-  for (int i = 0; i < 6; ++i) {
-    const auto stamp = kEntry + (i + 1) * 40'000'000;
-    auto ir = lane_at(stamp, 9);
-    ir.observed_lane_length_valid = true;
-    ir.observed_lane_length_m = i < 3 ? 2.0 : 0.1;
-    CHECK(selector.lane("IR", ir, stamp + 1) == (i < 5));
-  }
-  CHECK(selector.state == "OUTSIDE" && selector.selected == "RGB");
-  CHECK(selector.last_handover.find("\"trigger\": \"ir_length_drop\"") != std::string::npos);
-  CHECK(!selector.observe_tcn_state("inside", kEntry + 250'000'000, kEntry + 250'000'001));
-}
-
 TEST(manual_ir_request_waits_for_a_valid_path_but_release_is_immediate) {
-  LaneSelector selector(.2, true, PathRules{}, IrLengthExit{});
+  LaneSelector selector(.2, true, PathRules{});
   CHECK(selector.request_source("IR", kEntry));
   CHECK(selector.state == "ENTERING" && selector.selected == "RGB");
   CHECK(!selector.lane("IR", lane_at(kEntry + 1, 5), kEntry + 2));

@@ -764,10 +764,6 @@
 {"name":"tcn.warmup_seconds","group":"tunnel","section":"RGB TCN","label":"워밍업 시간","unit":"s","min":0,"max":86400,"value":2.5,"live":true},
 {"name":"tcn.max_gap_seconds","group":"tunnel","section":"RGB TCN","label":"프레임 간 최대 간격","unit":"s","min":0.000001,"max":86400,"value":0.5,"live":true},
 {"name":"tcn.max_image_age_seconds","group":"tunnel","section":"RGB TCN","label":"RGB 프레임 최대 지연","unit":"s","min":0,"max":86400,"value":0.25,"live":true},
-{"name":"tunnel.validation_mode","group":"tunnel","section":"IR 입력 검증","label":"터널 검증 모드","unit":"","min":0,"max":1,"value":1,"live":true,"options":[{"value":1,"label":"true · 독립 IR 테스트 기준"},{"value":0,"label":"false · 노출 적용 확인"}]},
-{"name":"tunnel.ir_length_exit_enabled","group":"tunnel","section":"IR 차선 길이 기반 이탈","label":"길이 기반 자동 이탈","unit":"","min":0,"max":1,"value":0,"live":true,"options":[{"value":0,"label":"끔"},{"value":1,"label":"켬"}]},
-{"name":"tunnel.ir_length_exit_ratio","group":"tunnel","section":"IR 차선 길이 기반 이탈","label":"기준 대비 남은 길이 비율","unit":"","min":0,"max":1,"value":0.15,"live":true},
-{"name":"tunnel.ir_length_exit_confirm_frames","group":"tunnel","section":"IR 차선 길이 기반 이탈","label":"연속 확인 프레임","unit":"장","min":1,"max":300,"value":3,"live":true},
-{"name":"tunnel.ir_length_exit_minimum_reference_m","group":"tunnel","section":"IR 차선 길이 기반 이탈","label":"최소 기준 길이","unit":"m","min":0,"max":300,"value":0.5,"live":true}
+{"name":"tunnel.validation_mode","group":"tunnel","section":"IR 입력 검증","label":"터널 검증 모드","unit":"","min":0,"max":1,"value":1,"live":true,"options":[{"value":1,"label":"true · 독립 IR 테스트 기준"},{"value":0,"label":"false · 노출 적용 확인"}]}
 ]
 }

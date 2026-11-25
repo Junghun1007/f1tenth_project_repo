@@ -3,7 +3,6 @@
 // forwarded result crosses to the controller process.
 #include <array>
 #include <chrono>
-#include <cstdio>
 #include <functional>
 #include <optional>
 #include <vector>
@@ -34,10 +33,6 @@ public:
   : rclcpp::Node("tunnel_lane_selector", options),
     policy_(make_policy())
   {
-    const auto & exit = policy_.ir_length_exit;
-    RCLCPP_INFO(get_logger(), "IR length exit: enabled=%s ratio=%.3f confirm_frames=%d minimum_reference_m=%.2f",
-      exit.enabled() ? "True" : "False", exit.threshold(), exit.confirm_frames(), exit.minimum_reference());
-
     const auto sensor = rclcpp::QoS(1).best_effort();
     // Humble intra-process cannot carry transient_local; latched status stays inter-process.
     rclcpp::PublisherOptions latched_options;
@@ -90,8 +85,6 @@ private:
     if (enable != force_ir_) {
       const auto now_ns = now().nanoseconds();
       force_ir_ = enable;
-      policy_.ir_exit_latched_at.reset();
-      policy_.ir_length_exit.reset();
       policy_.request_source(enable ? "IR" : "RGB", now_ns);
       if (enable) {
         set_tcn_override("inside");
@@ -118,22 +111,10 @@ private:
     if (!settings || settings == runtime_settings_) {return;}
     runtime_settings_ = settings;
     policy_.validation_mode = settings->validation_mode;
-    auto & length = policy_.ir_length_exit;
-    if (length.enabled() != settings->ir_length_exit_enabled ||
-      length.threshold() != settings->ir_length_exit_ratio ||
-      length.confirm_frames() != settings->ir_length_exit_confirm_frames ||
-      length.minimum_reference() != settings->ir_length_exit_minimum_reference_m)
-    {
-      length = tunnel::IrLengthExit(settings->ir_length_exit_enabled, settings->ir_length_exit_ratio,
-        settings->ir_length_exit_confirm_frames, settings->ir_length_exit_minimum_reference_m);
-      if (!length.enabled()) {policy_.ir_exit_latched_at.reset();}
-      last_ir_length_log_ = 0.0;
-    }
   }
 
   bool apply_tcn_state(const std::string & state, std::int64_t stamp, std::int64_t now_ns)
   {
-    if (!policy_.observe_tcn_state(state, stamp, now_ns)) {return false;}
     const std::string requested = state == "inside" ? "IR" : "RGB";
     if (requested == policy_.requested) {return false;}
     return policy_.event(requested == "IR" ? "entry" : "exit", stamp, now_ns);
@@ -151,14 +132,9 @@ private:
     rules.x_max = declare_parameter<double>("bev_x_max_m", 3.);
     rules.y_max = declare_parameter<double>("bev_y_max_m", .6);
     rules.mpp = declare_parameter<double>("bev_meter_per_pixel", .01);
-    tunnel::IrLengthExit exit(
-      declare_parameter<bool>("ir_length_exit_enabled", false),
-      declare_parameter<double>("ir_length_exit_ratio", .15),
-      declare_parameter<int>("ir_length_exit_confirm_frames", 3),
-      declare_parameter<double>("ir_length_exit_minimum_reference_m", .5));
     rgb_topic_ = declare_parameter<std::string>("rgb_result_topic", "/line_detactor/result");
     return tunnel::LaneSelector(declare_parameter<double>("max_age_sec", .2),
-      declare_parameter<bool>("validation_mode", false), rules, exit);
+      declare_parameter<bool>("validation_mode", false), rules);
   }
 
   static double monotonic()
@@ -225,32 +201,13 @@ private:
   {
     refresh_runtime_settings();
     // Validation follows the last selected source independently of TCN health. TCN only switches.
-    const bool follow_auto = !force_ir_;
-    if (follow_auto && !policy_.validation_mode &&
+    if (!force_ir_ && !policy_.validation_mode &&
       (!tcn_live_ || !last_tcn_received_ || monotonic() - *last_tcn_received_ > .5))
     {
       return;
     }
-    const bool previous_latch = policy_.ir_exit_latched_at.has_value();
     const auto now_ns = now().nanoseconds();
-    const bool forward = policy_.lane(source, *message, now_ns, follow_auto);
-    const auto & monitor = policy_.ir_length_exit;
-    const bool triggered = !previous_latch && policy_.ir_exit_latched_at.has_value();
-    if (follow_auto && monitor.enabled() && source == "IR" &&
-      (triggered || monotonic() - last_ir_length_log_ >= 1.))
-    {
-      last_ir_length_log_ = monotonic();
-      const auto fmt = [](std::optional<double> v) {
-          if (!v) {return std::string("--");}
-          char text[32];
-          std::snprintf(text, sizeof(text), "%.3f", *v);
-          return std::string(text);
-        };
-      RCLCPP_INFO(get_logger(), "[IR LENGTH EXIT] current_m=%s max_m=%.3f ratio=%s threshold=%.3f "
-        "low_frames=%d/%d triggered=%s", fmt(monitor.current()).c_str(), monitor.reference(),
-        fmt(monitor.ratio()).c_str(), monitor.threshold(), monitor.below_count(), monitor.confirm_frames(),
-        triggered ? "True" : "False");
-    }
+    const bool forward = policy_.lane(source, *message, now_ns);
     publish_status();
     if (forward) {
       // Unmodified detector output; the controller learns the source from the topic.
@@ -266,7 +223,6 @@ private:
   std::shared_ptr<const bev_handoff::TunnelRuntimeSettings> runtime_settings_;
   std::optional<std::int64_t> tcn_report_after_ns_;
   bool force_ir_{false}, tcn_live_{false};
-  double last_ir_length_log_{0.};
   rclcpp::Publisher<LaneResult>::SharedPtr rgb_output_, ir_output_;
   std::vector<rclcpp::Publisher<String>::SharedPtr> status_;
   rclcpp::Publisher<String>::SharedPtr preview_pub_, tcn_state_override_pub_;

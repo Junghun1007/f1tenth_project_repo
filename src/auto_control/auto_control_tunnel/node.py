@@ -7,8 +7,6 @@ from rclpy.serialization import deserialize_message
 from std_msgs.msg import String
 from line_detactor_msgs.msg import LaneResult
 from .selection import LaneSelector
-from .ir_length_exit import IrLengthExit
-from .path_validation import PathRules
 from .telemetry import TunnelPreviewTelemetry
 from .raw_lane import RawLane
 
@@ -17,23 +15,7 @@ class TunnelLaneSelector(Node):
     def __init__(self):
         super().__init__('tunnel_lane_selector')
         param = lambda key, default: self.declare_parameter(key, default).value
-        rules = PathRules(
-            frame_id=param('lane_result_frame_id', 'front_axle_bev'),
-            minimum_points=param('path_minimum_points', 8), minimum_span=param('path_minimum_span_m', .12),
-            minimum_x=param('path_minimum_x_m', .05), maximum_x=param('path_maximum_x_m', 2.20),
-            maximum_gap=param('path_maximum_gap_m', .15), x_max=param('bev_x_max_m', 3.),
-            y_max=param('bev_y_max_m', .6), mpp=param('bev_meter_per_pixel', .01))
-        length_exit = IrLengthExit(
-            enabled=param('ir_length_exit_enabled', False),
-            ratio=param('ir_length_exit_ratio', .15),
-            confirm_frames=param('ir_length_exit_confirm_frames', 3),
-            minimum_reference_m=param('ir_length_exit_minimum_reference_m', .5))
-        self.policy = LaneSelector(param('max_age_sec', .2), param('validation_mode', False),
-                                   rules=rules, ir_length_exit=length_exit)
-        self.last_ir_length_log = 0.
-        self.get_logger().info(f'IR length exit: enabled={length_exit.enabled} '
-            f'ratio={length_exit.threshold:.3f} confirm_frames={length_exit.confirm_frames} '
-            f'minimum_reference_m={length_exit.minimum_reference:.2f}')
+        self.policy = LaneSelector(param('max_age_sec', .2), param('validation_mode', False))
         sensor = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         status = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                             durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -88,8 +70,6 @@ class TunnelLaneSelector(Node):
             event = report.get('event')
             if not self.tcn_live:
                 return
-            if not self.policy.observe_tcn_state(state, stamp, self.get_clock().now().nanoseconds):
-                return
             requested = 'IR' if state == 'inside' else 'RGB'
             # Event packets may be lost with sensor QoS. The TCN retains its
             # accepted state in subsequent reports, so reconcile that state too.
@@ -118,19 +98,7 @@ class TunnelLaneSelector(Node):
         if not self.policy.validation_mode and (not self.tcn_live or self.last_tcn_received is None or
                 time.monotonic() - self.last_tcn_received > .5):
             return
-        previous_latch = self.policy.ir_exit_latched_at
         result = self.policy.lane(source, message, self.get_clock().now().nanoseconds)
-        monitor = self.policy.ir_length_exit
-        triggered = previous_latch is None and self.policy.ir_exit_latched_at is not None
-        if monitor.enabled and source == 'IR' and (triggered or
-                time.monotonic() - getattr(self, 'last_ir_length_log', 0.) >= 1.):
-            self.last_ir_length_log = time.monotonic()
-            current = '--' if monitor.current is None else f'{monitor.current:.3f}'
-            ratio = '--' if monitor.ratio is None else f'{monitor.ratio:.3f}'
-            self.get_logger().info(f'[IR LENGTH EXIT] current_m={current} '
-                f'max_m={monitor.reference:.3f} ratio={ratio} threshold={monitor.threshold:.3f} '
-                f'low_frames={monitor.below_count}/{monitor.confirm_frames} triggered={triggered}')
-        self.publish_status()
         if result is not None:
             # RawLane forwards the detector's own bytes; plain messages (tests,
             # non-raw transports) are published as they are.

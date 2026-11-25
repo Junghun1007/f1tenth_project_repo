@@ -1,7 +1,7 @@
 from copy import deepcopy
 import unittest
 from auto_control_tunnel.selection import LaneSelector
-from auto_control_tunnel.path_validation import metric_path, stamp_ns
+from auto_control_tunnel.path_validation import PathRules, metric_path, stamp_ns
 from lane_fixture import lane, ns
 
 
@@ -43,7 +43,7 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(result.header, before.header)
         self.assertEqual(result.stop_line_present, before.stop_line_present)
         self.assertEqual(result.stop_line_distance_m, before.stop_line_distance_m)
-        self.assertAlmostEqual(metric_path(result, self.selector.rules)[0][1], .1)
+        self.assertAlmostEqual(metric_path(result, PathRules())[0][1], .1)
         self.assertEqual((self.selector.state, self.selector.selected, self.selector.compute),
                          ('INSIDE', 'IR', 'IR'))
         self.assertIsNone(self.send('RGB', 1.05))

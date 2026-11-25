@@ -79,17 +79,10 @@ TEST(tunnel_tuning_validates_and_saves_detector_and_live_tunnel_settings) {
   CHECK(!r.apply({{"tcn.threshold", 0.65}, {"tcn.max_gap_seconds", 0}}).first);
   CHECK(r.get("tcn.threshold") == 0.5);
   CHECK(!r.apply({{"tunnel.validation_mode", 0.5}}).first);
-  CHECK(!r.apply({{"tunnel.ir_length_exit_confirm_frames", 3.5}, {"tunnel.ir_length_exit_enabled", 1}}).first);
-  CHECK(r.get("tunnel.ir_length_exit_enabled") == 0);
-  CHECK(!r.apply({{"tunnel.ir_length_exit_ratio", 1}}).first);
-  CHECK(!r.apply({{"tunnel.ir_length_exit_minimum_reference_m", 0}}).first);
-  CHECK(r.apply({{"tcn.threshold", 0.65}, {"tunnel.validation_mode", 0}, {"tunnel.ir_length_exit_enabled", 1},
-    {"tunnel.ir_length_exit_ratio", .25}, {"tunnel.ir_length_exit_confirm_frames", 4}}).first);
+  CHECK(r.apply({{"tcn.threshold", 0.65}, {"tunnel.validation_mode", 0}}).first);
   const auto yaml = r.to_yaml("auto_drive");
   CHECK(yaml.find("tcn.threshold: 0.65") != std::string::npos);
   CHECK(yaml.find("tunnel.validation_mode: 0.0") != std::string::npos);
-  CHECK(yaml.find("tunnel.ir_length_exit_enabled: 1.0") != std::string::npos);
-  CHECK(yaml.find("tunnel.ir_length_exit_confirm_frames: 4.0") != std::string::npos);
 }
 
 TEST(restart_yaml_validates_preset_without_changing_running_parameters) {

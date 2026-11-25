@@ -798,10 +798,6 @@ private:
     if (!tunnel_enabled_) return;
     auto settings = std::make_shared<bev_handoff::TunnelRuntimeSettings>();
     settings->validation_mode = registry_.get("tunnel.validation_mode") == 1;
-    settings->ir_length_exit_enabled = registry_.get("tunnel.ir_length_exit_enabled") == 1;
-    settings->ir_length_exit_ratio = registry_.get("tunnel.ir_length_exit_ratio");
-    settings->ir_length_exit_confirm_frames = static_cast<int>(registry_.get("tunnel.ir_length_exit_confirm_frames"));
-    settings->ir_length_exit_minimum_reference_m = registry_.get("tunnel.ir_length_exit_minimum_reference_m");
     bev_handoff::publishTunnelRuntimeSettings(std::move(settings));
   }
 

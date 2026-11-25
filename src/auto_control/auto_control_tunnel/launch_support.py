@@ -1,7 +1,6 @@
 """Optional integration used only by vehicle_bringup tunnel_enabled:=true."""
 import hashlib
 import json
-from .ir_length_exit import IrLengthExit
 from pathlib import Path
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -17,23 +16,6 @@ def integrated_nodes(rgb_detector, controller, context):
     if validation_text not in ('true', 'false'):
         raise ValueError('tunnel_validation_mode must be true or false')
     validation = validation_text == 'true'
-    cfg = context.launch_configurations
-
-    def length_setting(name, default):
-        value = str(cfg.get('tunnel_' + name, 'inherit')).lower()
-        return controller.get('tunnel.' + name, default) if value == 'inherit' else value
-
-    enabled = length_setting('ir_length_exit_enabled', False)
-    if isinstance(enabled, str):
-        enabled = enabled.lower()
-    if enabled not in (True, False) and enabled not in ('true', 'false'):
-        raise ValueError('tunnel_ir_length_exit_enabled must be true, false or inherit')
-    frames = float(length_setting('ir_length_exit_confirm_frames', 3))
-    if not frames.is_integer():
-        raise ValueError('tunnel_ir_length_exit_confirm_frames must be a whole number')
-    length = IrLengthExit(enabled in (True, 'true'),
-        float(length_setting('ir_length_exit_ratio', .15)), int(frames),
-        float(length_setting('ir_length_exit_minimum_reference_m', .5)))
     shares = {p: Path(get_package_share_directory(p)) for p in (
         'ir_camera_driver', 'line_detactor', 'auto_control', 'tunnel_tcn_test')}
     # Perception assets are shared by production and standalone tests. The
@@ -64,11 +46,7 @@ def integrated_nodes(rgb_detector, controller, context):
     age = controller.get('path_capture_maximum_age_sec', .2)
     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)
     selector_parameters = dict(validation_mode=validation, max_age_sec=min(.25, float(rule_age)),
-                               rgb_result_topic=rgb_detector['result_topic'],
-                               ir_length_exit_enabled=length.enabled,
-                               ir_length_exit_ratio=length.threshold,
-                               ir_length_exit_confirm_frames=length.confirm_frames,
-                               ir_length_exit_minimum_reference_m=length.minimum_reference)
+                               rgb_result_topic=rgb_detector['result_topic'])
     # Match the actual controller YAML and resolved CLI geometry overrides.
     for name, fallback, cast in (
         ('path_minimum_points', 8, int), ('path_minimum_span_m', .12, float),
@@ -101,10 +79,6 @@ def integrated_nodes(rgb_detector, controller, context):
                                            'tuning_topic': '/tunnel/tcn_tuning',
                                            'preview_enabled': False}])]
     controller_overrides = {'tcn.' + name: value for name, value in tcn_tuning.items()}
-    controller_overrides.update({
-        'tunnel.' + name: value for name, value in selector_parameters.items()
-        if name.startswith('ir_length_exit_')
-    })
     return components, processes, controller_overrides
 
 

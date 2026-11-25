@@ -1,11 +1,10 @@
 #pragma once
-// C++ port of auto_control_tunnel/{path_validation,ir_length_exit,selection,telemetry}.py.
+// C++ port of auto_control_tunnel/{path_validation,selection,telemetry}.py.
 // Templated on the lane message so the policy has no ROS dependency (LaneResult in production).
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
-#include <deque>
 #include <map>
 #include <optional>
 #include <sstream>
@@ -92,103 +91,12 @@ bool metric_path_ready(const Msg & m, const PathRules & rules)
   return static_cast<int>(points.size()) >= rules.minimum_points && span >= rules.minimum_span;
 }
 
-class IrLengthExit
-{
-public:
-  IrLengthExit(bool enabled = false, double ratio = .15, int confirm_frames = 3, double minimum_reference_m = .5)
-  : enabled_(enabled), threshold_(ratio), confirm_frames_(confirm_frames), minimum_reference_(minimum_reference_m)
-  {
-    if (!std::isfinite(ratio) || ratio <= 0 || ratio >= 1 || confirm_frames < 1 || confirm_frames > 300 ||
-      !std::isfinite(minimum_reference_m) || minimum_reference_m <= 0)
-    {
-      throw std::invalid_argument("Invalid IR length exit settings");
-    }
-    reset();
-  }
-
-  void reset()
-  {
-    window_.clear();
-    reference_ = 0.;
-    current_.reset();
-    ratio_.reset();
-    below_count_ = 0;
-    last_stamp_.reset();
-  }
-
-  template<typename Msg>
-  bool observe(const Msg & m, std::int64_t now_ns, double max_age, const PathRules & rules)
-  {
-    if (!enabled_) {return false;}
-    const auto stamp = stamp_ns(m);
-    if (last_stamp_ && stamp <= *last_stamp_) {return false;}
-    const double age = (now_ns - stamp) / 1e9;
-    const bool geometry = m.source_width > 0 && m.source_height > 0 &&
-      close_rel(m.centerline_bev_width_m / m.source_width, rules.mpp) &&
-      close_rel(m.centerline_bev_height_m / m.source_height, rules.mpp) &&
-      close_rel(m.centerline_bev_height_m, rules.x_max) && close_rel(m.centerline_bev_width_m, 2 * rules.y_max);
-    if (!(0 <= age && age <= max_age) || !m.observed_lane_length_valid || m.header.frame_id != rules.frame_id ||
-      !geometry)
-    {
-      break_sequence();
-      return false;
-    }
-    const double length = m.observed_lane_length_m;
-    if (!std::isfinite(length) || length < 0) {
-      break_sequence();
-      return false;
-    }
-    if (last_stamp_ && (stamp - *last_stamp_) / 1e9 > max_age) {break_sequence();}
-    last_stamp_ = stamp;
-    current_ = length;
-    window_.push_back(length);
-    while (static_cast<int>(window_.size()) > confirm_frames_) {window_.pop_front();}
-    // A single long false detection cannot increase the reference.
-    if (static_cast<int>(window_.size()) == confirm_frames_) {
-      const double stable = *std::min_element(window_.begin(), window_.end());
-      if (stable >= minimum_reference_) {reference_ = std::max(reference_, stable);}
-    }
-    if (reference_ > 0) {ratio_ = length / reference_;} else {ratio_.reset();}
-    const bool low = ratio_ && *ratio_ <= threshold_ + 1e-8;
-    below_count_ = low ? below_count_ + 1 : 0;
-    return below_count_ >= confirm_frames_;
-  }
-
-  bool enabled() const {return enabled_;}
-  double threshold() const {return threshold_;}
-  int confirm_frames() const {return confirm_frames_;}
-  double minimum_reference() const {return minimum_reference_;}
-  double reference() const {return reference_;}
-  std::optional<double> current() const {return current_;}
-  std::optional<double> ratio() const {return ratio_;}
-  int below_count() const {return below_count_;}
-
-private:
-  void break_sequence()
-  {
-    window_.clear();
-    below_count_ = 0;
-    current_.reset();
-    ratio_.reset();
-  }
-
-  bool enabled_;
-  double threshold_;
-  int confirm_frames_;
-  double minimum_reference_;
-  std::deque<double> window_;
-  double reference_{0.};
-  std::optional<double> current_, ratio_;
-  int below_count_{0};
-  std::optional<std::int64_t> last_stamp_;
-};
-
 // Automatic events select their source immediately. Forced IR entry can wait for a usable path.
 class LaneSelector
 {
 public:
-  LaneSelector(double max_age, bool validation_mode, PathRules rules, IrLengthExit length_exit)
-  : validation_mode(validation_mode), max_age(max_age), rules(std::move(rules)), ir_length_exit(length_exit)
+  LaneSelector(double max_age, bool validation_mode, PathRules rules)
+  : validation_mode(validation_mode), max_age(max_age), rules(std::move(rules))
   {
     if (!std::isfinite(max_age) || max_age <= 0) {throw std::invalid_argument("Invalid lane freshness setting");}
     this->rules.validate();
@@ -198,19 +106,7 @@ public:
   std::string compute() const {return transitioning() ? "BOTH" : selected;}
   std::string camera() const {return transitioning() ? "IR" : selected;}
 
-  bool observe_tcn_state(const std::string & tcn_state, std::int64_t stamp, std::int64_t now_ns)
-  {
-    // Retained TCN inside reports must not undo a length-triggered exit.
-    if (!ir_exit_latched_at) {return true;}
-    const double age = (now_ns - stamp) / 1e9;
-    if (tcn_state == "outside" && stamp > *ir_exit_latched_at && 0 <= age && age <= max_age) {
-      ir_exit_latched_at.reset();
-      return true;
-    }
-    return false;
-  }
-
-  bool event(const std::string & kind, std::int64_t stamp, std::int64_t now_ns, bool by_length = false)
+  bool event(const std::string & kind, std::int64_t stamp, std::int64_t now_ns)
   {
     const double age = (now_ns - stamp) / 1e9;
     if ((kind != "entry" && kind != "exit") || stamp <= last_event_ns ||
@@ -218,26 +114,22 @@ public:
     {
       return false;
     }
-    if (kind == "entry" && ir_exit_latched_at) {return false;}
     last_event_ns = stamp;
     const bool entry = kind == "entry";
-    return request_source(entry ? "IR" : "RGB", now_ns,
-      by_length ? "ir_length_drop" : entry ? "tcn_entry" : "tcn_exit",
-      by_length ? "ir_length_drop" : nullptr);
+    return request_source(entry ? "IR" : "RGB", now_ns, entry ? "tcn_entry" : "tcn_exit");
   }
 
   bool request_source(std::string target, std::int64_t now_ns,
-    const char * immediate_reason = nullptr, const char * trigger = nullptr)
+    const char * immediate_reason = nullptr)
   {
     if (target == requested) {return false;}
-    if (target == "IR") {ir_length_exit.reset();}
     requested = target;
     if (target == selected) {
       finish(now_ns, "reversed_request");
       return true;
     }
     if (immediate_reason || target == "RGB") {
-      finish(now_ns, immediate_reason ? immediate_reason : "force_ir_off", trigger);
+      finish(now_ns, immediate_reason ? immediate_reason : "force_ir_off");
       return true;
     }
     started_ns = now_ns;
@@ -249,20 +141,13 @@ public:
   // True when this message is the selected source and should be forwarded.
   template<typename Msg>
   bool lane(
-    const std::string & source, const Msg & m, std::int64_t now_ns, bool allow_length_exit = true)
+    const std::string & source, const Msg & m, std::int64_t now_ns)
   {
     auto last = last_input_ns.find(source);
     if (last == last_input_ns.end()) {return false;}
     const auto stamp = stamp_ns(m);
     const double age = (now_ns - stamp) / 1e9;
     const bool fresh = (validation_mode && source == "IR" && !transitioning()) || (0 <= age && age <= max_age);
-    if (allow_length_exit && source == "IR" && state == "INSIDE" &&
-      ir_length_exit.observe(m, now_ns, max_age, rules))
-    {
-      if (event("exit", now_ns, now_ns, true)) {
-        ir_exit_latched_at = now_ns;
-      }
-    }
     if (stamp <= last->second || !fresh) {return false;}
     last->second = stamp;
     if (transitioning() && source == requested) {
@@ -275,20 +160,18 @@ public:
   bool validation_mode;
   double max_age;
   PathRules rules;
-  IrLengthExit ir_length_exit;
   std::string state{"OUTSIDE"}, selected{"RGB"}, requested{"RGB"}, reason{"steady"};
   std::string last_handover;  // JSON text for the log
   std::int64_t last_event_ns{0};
   std::map<std::string, std::int64_t> last_input_ns{{"RGB", 0}, {"IR", 0}};
-  std::optional<std::int64_t> started_ns, ir_exit_latched_at;
+  std::optional<std::int64_t> started_ns;
 
 private:
-  void finish(std::int64_t now_ns, const std::string & why, const char * trigger = nullptr)
+  void finish(std::int64_t now_ns, const std::string & why)
   {
     const double total_ms = started_ns ? (now_ns - *started_ns) / 1e6 : 0.;
     std::ostringstream out;
     out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": " << total_ms;
-    if (trigger) {out << ", \"trigger\": \"" << trigger << "\"";}
     out << "}";
     last_handover = out.str();
     selected = requested;
