@@ -64,6 +64,21 @@ TEST(tunnel_override_requires_fresh_standstill_and_manual_handover) {
   CHECK(r.loop->tunnel_override_allowed(r.t));
 }
 
+TEST(camera_reset_requires_standstill_and_manual_mode) {
+  Rig r(DriveMode::Drive);
+  CHECK(!r.loop->camera_reset_allowed(r.t, true));
+  r.step();
+  CHECK(r.loop->camera_reset_allowed(r.t, true));
+  r.step(.3);
+  CHECK(!r.loop->camera_reset_allowed(r.t, false));  // Honor feedback from an external bridge too.
+  for (int i = 0; i < 15; ++i) r.step();
+  CHECK(r.loop->request_start(r.t).first);
+  CHECK(!r.loop->camera_reset_allowed(r.t, true));   // Arming also prevents restart.
+  ControlLoop bench(DriveMode::Detect, r.rc);
+  CHECK(bench.camera_reset_allowed(r.t, false));
+  CHECK(!bench.camera_reset_allowed(r.t, true));
+}
+
 TEST(drive_flow_start_to_commands) {
   Rig r(DriveMode::Drive);
   r.step();

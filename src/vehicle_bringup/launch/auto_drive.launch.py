@@ -12,15 +12,25 @@ vesc/*는 safety_node만 발행한다 (MANUAL로 시작, [주행 시작] 승인 
 import json
 import math
 import os
+from tempfile import TemporaryDirectory
 
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+    LogInfo,
+    OpaqueFunction,
+    RegisterEventHandler,
+    TimerAction,
+)
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import LoadComposableNodes, Node
+from launch_ros.actions import ComposableNodeContainer, LoadComposableNodes, Node
 from launch_ros.descriptions import ComposableNode
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -146,7 +156,7 @@ def _tunnel_validation_mode(context, drive_tuning):
     return bool(value)
 
 
-def _setup(context, *, bev_config, line_detactor_config, bev_launch):
+def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_session=None, resumed=False):
     bev = _merged_parameters(bev_config, LaunchConfiguration("bev_params_file").perform(context), "bev_processor")
     detector = _merged_parameters(line_detactor_config, LaunchConfiguration("line_detactor_params_file").perform(context),
                                   "line_detactor")
@@ -160,6 +170,12 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
             raise RuntimeError(f"{argument} 파일이 없습니다: {path}{hint}")
     drive_path = os.path.expanduser(LaunchConfiguration("drive_params_file").perform(context))
     drive_tuning = _ros_parameters(drive_path, "auto_drive")
+    if reset_session is None:
+        reset_session = TemporaryDirectory(prefix="auto-drive-camera-")
+    reset_request = os.path.join(reset_session.name, "request.yaml")
+    reset_settings = os.path.join(reset_session.name, "active.yaml")
+    if resumed:
+        drive_tuning.update(_ros_parameters(reset_settings, "auto_drive"))
     detector_path = os.path.abspath(os.path.expanduser(
         LaunchConfiguration("line_detactor_params_file").perform(context)))
     detector_custom = (_ros_parameters(detector_path, "line_detactor")
@@ -173,7 +189,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
     if mode not in ("drive", "detect"):
         raise RuntimeError("mode must be drive or detect")
     tunnel = _bool_arg(context, "tunnel_enabled")
-    validation_mode = _tunnel_validation_mode(context, drive_tuning)
+    validation_mode = bool(drive_tuning["tunnel.validation_mode"]) if resumed else _tunnel_validation_mode(context, drive_tuning)
     context.launch_configurations["tunnel_validation_mode"] = str(validation_mode).lower()
     preview = _bool_arg(context, "preview_enabled")
     namespace = LaunchConfiguration("vehicle_namespace").perform(context).strip("/")
@@ -257,6 +273,8 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         "camera.fixed_view_zoom": float(camera.get("fixed_view_zoom", 1.25)),
         "tunnel.enabled": tunnel,
         "tunnel.validation_mode": float(validation_mode),
+        "camera_reset_path": reset_request,
+        "camera_reset_vesc_required": _bool_arg(context, "vesc_enabled"),
         **tunnel_overrides,
         "web.port": int(LaunchConfiguration("web_port").perform(context)),
         "topics.lane_result": lane_topic,
@@ -271,9 +289,10 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         key: value for key, value in _lane_web_overrides(detector_custom, detector).items()
         if key not in drive_tuning
     })
-    drive_overrides.update(_lane_web_overrides(detector_cli, detector))
+    if not resumed:
+        drive_overrides.update(_lane_web_overrides(detector_cli, detector))
     speed = LaunchConfiguration("speed_mps").perform(context)
-    if speed != "inherit":
+    if not resumed and speed != "inherit":
         speed = float(speed)
         if not math.isfinite(speed) or speed <= 0:
             raise RuntimeError("speed_mps must be a positive number or inherit")
@@ -282,9 +301,31 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
     # → 실행하자마자 브라우저가 열리고 점검 영역에서 카메라 자세 측정 진행을 볼 수 있다
     context.launch_configurations["first_composable_nodes_json"] = json.dumps([{
         "package": "auto_control", "plugin": "auto_control::AutoDriveNode", "name": "auto_drive",
-        "parameters": [drive_path, drive_overrides],
+        "parameters": [drive_path, *([reset_settings] if resumed else []), drive_overrides],
     }])
 
+    perception = GroupAction(actions=[bev_launch(), LoadComposableNodes(
+        target_container="/bev_processor_container",
+        composable_node_descriptions=nodes,
+    )])
+    if resumed:
+        return [perception]
+
+    def restart_container(event, launch_context):
+        if launch_context.is_shutdown or not os.path.isfile(reset_request):
+            return []
+        os.replace(reset_request, reset_settings)
+        return [LogInfo(msg="Restarting camera and BEV startup calibration"),
+                TimerAction(period=0.5, actions=[OpaqueFunction(function=_setup, kwargs={
+                    "bev_config": bev_config, "line_detactor_config": line_detactor_config,
+                    "bev_launch": bev_launch, "reset_session": reset_session, "resumed": True,
+                })])]
+
+    restart_handler = RegisterEventHandler(OnProcessExit(
+        target_action=lambda action: isinstance(action, ComposableNodeContainer)
+        and action.node_name.lstrip("/") == "bev_processor_container",
+        on_exit=restart_container,
+    ))
     safety = Node(
         package="auto_control", executable="safety_node", name="auto_drive_safety", namespace=namespace, output="screen",
         parameters=[os.path.join(get_package_share_directory("auto_control"), "config", "safety.yaml"), {
@@ -317,10 +358,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         " | drive_yaml=" + LaunchConfiguration("drive_params_file").perform(context) +
         " | detector_yaml=" + LaunchConfiguration("line_detactor_params_file").perform(context) +
         " | perception_yaml=" + LaunchConfiguration("perception_params_file").perform(context)
-    )), safety, joy, *tunnel_actions, bev_launch, LoadComposableNodes(
-        target_container="/bev_processor_container",
-        composable_node_descriptions=nodes,
-    )]
+    )), restart_handler, safety, joy, *tunnel_actions, perception]
 
 
 def generate_launch_description():
@@ -333,27 +371,29 @@ def generate_launch_description():
     vesc_config = os.path.join(get_package_share_directory("vehicle_bringup"), "config", "vesc_config.yaml")
 
     # 카메라·BEV: 시작 측정 → camera_driver(깊이 CAM_A 정렬, 장착값 공유). 점검 창은 띄우지 않는다 (브라우저 점검 영역)
-    bev_launch = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(bev_share, "launch", "bev_processor.launch.py")),
-        launch_arguments={
-            "startup_inspection_enabled": "false",
-            "startup_preview_image_enabled": "false",
-            "depthai_library_dir": LaunchConfiguration("depthai_library_dir"),
-            "bev_params_file": LaunchConfiguration("bev_params_file"),
-            "camera_params_file": LaunchConfiguration("camera_params_file"),
-            "obstacles_enabled": "true",
-            "perception_params_file": LaunchConfiguration("perception_params_file"),
-            "tunnel_enabled": LaunchConfiguration("tunnel_enabled"),
-            "tunnel_validation_mode": LaunchConfiguration("tunnel_validation_mode"),
-            "tunnel_ir_imu_enabled": LaunchConfiguration("tunnel_ir_imu_enabled"),
-            "measured_erpm_topic": _VESC["measured_erpm_topic"],
-            "vehicle_acceleration_topic": "/vehicle/dynamics/acceleration",
-            "preview_enabled": "false",
-            "publish_enabled": "false",
-            "direct_output_enabled": "true",
-            "direct_host_copy_enabled": LaunchConfiguration("direct_host_copy_enabled"),
-        }.items(),
-    )
+    def bev_launch():
+        return IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(os.path.join(bev_share, "launch", "bev_processor.launch.py")),
+            launch_arguments={
+                "startup_inspection_enabled": "false",
+                "startup_preview_image_enabled": "false",
+                "depthai_library_dir": LaunchConfiguration("depthai_library_dir"),
+                "bev_params_file": LaunchConfiguration("bev_params_file"),
+                "camera_params_file": LaunchConfiguration("camera_params_file"),
+                "obstacles_enabled": "true",
+                "perception_params_file": LaunchConfiguration("perception_params_file"),
+                "tunnel_enabled": LaunchConfiguration("tunnel_enabled"),
+                "tunnel_validation_mode": LaunchConfiguration("tunnel_validation_mode"),
+                "tunnel_ir_imu_enabled": LaunchConfiguration("tunnel_ir_imu_enabled"),
+                "measured_erpm_topic": _VESC["measured_erpm_topic"],
+                "vehicle_acceleration_topic": "/vehicle/dynamics/acceleration",
+                "preview_enabled": "false",
+                "publish_enabled": "false",
+                "direct_output_enabled": "true",
+                "direct_host_copy_enabled": LaunchConfiguration("direct_host_copy_enabled"),
+            }.items(),
+        )
+
     vesc_bridge_node = Node(
         package="vesc_bridge", executable="vesc_bridge_node", name="vesc_bridge_node", output="screen",
         condition=IfCondition(LaunchConfiguration("vesc_enabled")),

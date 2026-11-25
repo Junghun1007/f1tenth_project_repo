@@ -270,6 +270,18 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(len(self.calls), 2)
         self.assertFalse(self.node.stream.ready)
 
+    def test_selector_reset_releases_manual_hold_and_restarts_warmup(self):
+        n = self.node
+        n.decoder = EventDecoder(initial_state='outside')
+        n.on_state_override(SimpleNamespace(data='inside'))
+        n.pending = object()
+        n.on_state_override(SimpleNamespace(data='reset_outside'))
+        self.assertIsNone(n.manual_state)
+        self.assertIsNone(n.pending_manual_event)
+        self.assertIsNone(n.pending)
+        self.assertEqual(n.decoder.state, 'outside')
+        self.assertTrue(n.status.startswith('WARMUP'))
+
     def test_missing_frames_are_counted_and_long_gap_holds_events(self):
         for frame in range(80):
             self.frame(frame)

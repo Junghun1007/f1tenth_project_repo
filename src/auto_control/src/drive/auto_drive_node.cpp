@@ -5,6 +5,7 @@
 //   출력: <ns>/auto_drive/auto/{duty,brake_current,servo_position} → safety_node (vesc/*의 유일한 발행자)
 //   웹: http://<jetson-ip>:8765 (SSE 텔레메트리, BEV·카메라 MJPEG, 명령·파라미터)
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/parameter_map.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -25,12 +26,14 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <cctype>
+#include <csignal>
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <iomanip>
+#include <limits>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -149,6 +152,10 @@ public:
     models_.yolo_backend = declare_parameter<std::string>("model.yolo_backend", "TENSORRT");   // CPU: 개발 PC 확인용
     models_.yolo_engine_cache = cache + "/yolo_" + models_.yolo_precision + ".engine";
     params_save_path_ = declare_parameter<std::string>("params_save_path", cache + "/auto_drive_saved.yaml");
+    presets_ = std::make_unique<acd::ParameterPresets>(
+      std::filesystem::path(params_save_path_).parent_path() / "presets");
+    camera_reset_path_ = declare_parameter<std::string>("camera_reset_path", "");
+    camera_reset_vesc_required_ = declare_parameter<bool>("camera_reset_vesc_required", true);
     lane_model_node_ = declare_parameter<std::string>("inspection.lane_model_node", "line_detactor");
     tunnel_enabled_ = declare_parameter<bool>("tunnel.enabled", false);
     publish_tunnel_runtime_settings();
@@ -275,6 +282,7 @@ public:
     // Refit: 정지(주행 중이면 먼저 세움) → 실시간 깊이로 카메라 높이·기울기 다시 측정(bev_processor) → BEV·영상 안정화 기준 갱신,
     // 끝나면 콘·차량 기억을 모두 비운다 (실패해도 이전 보정 유지 + 기억 비움)
     cb.refit = [this] { return loop_->request_refit(acd::now_sec()); };
+    cb.camera_reset = [this] { return request_camera_reset(); };
     cb.mode = [this](const std::string & m) {
       if (m != "drive" && m != "detect") return acd::Reply{false, "mode must be drive or detect"};
       return loop_->request_mode(m == "drive" ? acd::DriveMode::Drive : acd::DriveMode::Detect, acd::now_sec());
@@ -285,6 +293,15 @@ public:
       out << registry_.to_yaml("auto_drive");
       return out ? acd::Reply{true, params_save_path_} : acd::Reply{false, "cannot write " + params_save_path_};
     };
+    cb.presets = [this] { return presets_->list(); };
+    cb.preset_save = [this](const std::string & label, const std::string & timestamp) {
+      try {
+        return acd::Reply{true, presets_->save(timestamp, label, registry_.to_yaml("auto_drive"))};
+      } catch (const std::exception & e) {
+        return acd::Reply{false, e.what()};
+      }
+    };
+    cb.preset_load = [this](const std::string & name) { return load_preset(name); };
     cb.heartbeat = [this](const std::string & id) { loop_->on_heartbeat(id, acd::now_sec()); };
     cb.record_start = [this](const std::string & label) { return record_start(label); };
     cb.record_stop = [this] { return record_stop(); };
@@ -341,6 +358,7 @@ public:
     watchdog_ = create_wall_timer(20ms, [this] {   // 차선 결과가 끊겨도 정지·제동이 이어지게
       if (acd::now_sec() - last_lane_t_.load() > 0.05) publish(loop_->tick(acd::now_sec()));
       drive_refit(acd::now_sec());
+      drive_camera_reset(acd::now_sec());
       bev_wanted_ = web_->stream_wanted("bev", acd::now_sec());
     }, control_group_);
     telemetry_ = create_wall_timer(33ms, [this] { send_telemetry(); }, web_group_);
@@ -430,7 +448,8 @@ private:
   acd::Reply request_force_ir(bool enabled) {
     if (!force_ir_client_) return {false, "터널 기능이 꺼져 있습니다"};
     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
-    if (!command || force_ir_request_pending()) return {false, "터널 전환 요청 처리 중"};
+    if (!command || force_ir_request_pending() || camera_reset_at_.load() > 0.0)
+      return {false, "다른 주행 요청을 처리 중입니다"};
     if (!loop_->tunnel_override_allowed(acd::now_sec())) return {false, "정지 상태에서만 변경할 수 있습니다"};
     if (!force_ir_client_->service_is_ready()) return {false, "터널 차선 선택기가 준비 중입니다"};
     auto request = std::make_shared<ForceIr::Request>();
@@ -449,6 +468,7 @@ private:
   acd::Reply start_drive(double now) {
     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
     if (!command || force_ir_request_pending()) return {false, "터널 전환 요청 처리 중"};
+    if (camera_reset_at_.load() > 0.0) return {false, "카메라 초기화 중입니다"};
     if (force_ir_enabled_.load()) {
       std::lock_guard<std::mutex> l(status_m_);
       if (tunnel_state_ != "INSIDE" || lane_source_ != "IR") return {false, "터널 IR 차선 준비 중"};
@@ -456,6 +476,61 @@ private:
     auto result = loop_->request_start(now);
     if (result.first && !recording()) open_cone_log(log_dir_, "");
     return result;
+  }
+
+  acd::Reply request_camera_reset() {
+    if (camera_reset_path_.empty()) return {false, "이 실행에서는 카메라 초기화를 지원하지 않습니다"};
+    std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
+    if (!command || force_ir_request_pending() || camera_reset_at_.load() > 0.0)
+      return {false, "다른 주행 요청을 처리 중입니다"};
+    if (!loop_->camera_reset_allowed(acd::now_sec(), camera_reset_vesc_required_))
+      return {false, "수동 모드에서 정지가 확인된 뒤 초기화할 수 있습니다"};
+    try {
+      std::lock_guard<std::mutex> l(tuning_m_);
+      acd::write_parameter_yaml(camera_reset_path_, registry_.to_yaml("auto_drive"), true);
+      camera_reset_at_.store(acd::now_sec() + 0.3);   // Return HTTP success before shutting down the container.
+    } catch (const std::exception & e) {
+      return {false, e.what()};
+    }
+    return {true, "카메라 재시작과 시작 보정을 요청했습니다"};
+  }
+
+  void drive_camera_reset(double now) {
+    const auto reset_at = camera_reset_at_.load();
+    if (reset_at <= 0.0 || now < reset_at) return;
+    if (!loop_->camera_reset_allowed(now, camera_reset_vesc_required_)) {
+      std::error_code error;
+      std::filesystem::remove(camera_reset_path_, error);
+      camera_reset_at_.store(0.0);
+      RCLCPP_WARN(get_logger(), "Camera reset cancelled because the vehicle is no longer confirmed stopped");
+      return;
+    }
+    RCLCPP_INFO(get_logger(), "Stopping the perception container for camera reset");
+    camera_reset_at_.store(std::numeric_limits<double>::infinity());
+    std::raise(SIGINT);
+  }
+
+  acd::Reply load_preset(const std::string & name) {
+    try {
+      const auto contents = rclcpp::parameter_map_from_yaml_file(presets_->path(name).string());
+      const auto saved = contents.find("/**/auto_drive");
+      if (saved == contents.end()) return {false, "auto_drive 프리셋 형식이 아닙니다"};
+      std::map<std::string, double> values;
+      for (const auto & p : saved->second) if (registry_.has(p.get_name())) values[p.get_name()] = as_number(p);
+      if (values.empty()) return {false, "불러올 파라미터가 없습니다"};
+      bool restart = false;
+      for (const auto & spec : registry_.list()) {
+        const auto value = values.find(spec.name);
+        restart |= !spec.live && value != values.end() && value->second != spec.value;
+      }
+      const auto result = apply_tuning(values);
+      if (!result.first) return result;
+      if (!restart) return {true, name};
+      return {true, name + (camera_reset_path_.empty() ?
+        " · 재시작 필요 항목은 이 YAML로 실행하면 반영" : " · 재시작 필요 항목은 초기화 후 반영")};
+    } catch (const std::exception & e) {
+      return {false, e.what()};
+    }
   }
 
   void on_joy(const sensor_msgs::msg::Joy & m) {
@@ -711,6 +786,7 @@ private:
   // ------------------------------------------------------------------ 설정·출력
   acd::Reply apply_tuning(const std::map<std::string, double> & changes) {
     std::lock_guard<std::mutex> lock(tuning_m_);
+    if (camera_reset_at_.load() > 0.0) return {false, "카메라 초기화 중입니다"};
     const auto result = registry_.apply(changes);
     if (!result.first) return result;
     bool tcn_changed = false, tunnel_changed = false, drive_changed = false;
@@ -838,6 +914,7 @@ private:
     const double t0 = acd::now_sec();
     std::string j = acd::telemetry_json(f);
     const bool can_force_ir = tunnel_enabled_ && loop_->tunnel_override_allowed(now);
+    const bool can_reset_camera = !camera_reset_path_.empty() && loop_->camera_reset_allowed(now, camera_reset_vesc_required_);
     if (!j.empty() && j.back() == '}') {   // auto_control 추가 항목
       std::ostringstream x;
       const auto tunnel_settings = bev_handoff::tunnelRuntimeSettings();
@@ -858,7 +935,9 @@ private:
         x << ",\"force_ir\":" << (force_ir_enabled_.load() ? "true" : "false")
           << ",\"force_ir_change_allowed\":" << (can_force_ir ? "true" : "false") << "}"
           << ",\"yolo\":{\"fps\":" << detect_->fps() << ",\"signal_score\":" << detect_->last_signal_score() << "}"
-          << ",\"refit_supported\":true";
+          << ",\"refit_supported\":true,\"camera_reset_supported\":" << (!camera_reset_path_.empty() ? "true" : "false")
+          << ",\"camera_reset_allowed\":" << (can_reset_camera ? "true" : "false")
+          << ",\"camera_reset_pending\":" << (camera_reset_at_.load() > 0.0 ? "true" : "false");
       }
       if (tunnel_enabled_) x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_);
       x << ",\"camera_exposure\":" << camera_exposure_json();
@@ -983,6 +1062,10 @@ private:
   acd::ModelConfig models_;
   double camera_yaw_deg_{0}, fixed_view_zoom_{1.25};
   std::string params_save_path_, lane_model_node_;
+  std::unique_ptr<acd::ParameterPresets> presets_;
+  std::string camera_reset_path_;
+  bool camera_reset_vesc_required_{true};
+  std::atomic<double> camera_reset_at_{0.0};
   std::vector<std::string> ir_model_nodes_;
   std::vector<std::string> ir_model_status_;
   bool tunnel_enabled_{false};

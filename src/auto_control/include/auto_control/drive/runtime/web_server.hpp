@@ -21,6 +21,10 @@ namespace auto_control::drive {
 using Reply = std::pair<bool, std::string>;
 struct WebCallbacks {
   std::function<Reply()> start, refit, params_save;
+  std::function<Reply()> camera_reset;
+  std::function<std::vector<std::string>()> presets;
+  std::function<Reply(const std::string &, const std::string &)> preset_save;
+  std::function<Reply(const std::string &)> preset_load;
   std::function<void()> stop;
   std::function<Reply(bool)> force_ir;
   std::function<Reply(const std::string &)> mode;

@@ -110,6 +110,7 @@ public:
   bool cones_nearby() const;
   bool refit_pending() const;
   bool tunnel_override_allowed(double now) const;
+  bool camera_reset_allowed(double now, bool vesc_required) const;
   DriveState state() const;
   double speed() const { return speed_atomic_.load(std::memory_order_relaxed); }   // 락 없음 (IMU 스레드에서 호출)
   std::uint64_t dropped_detections() const { std::lock_guard<std::mutex> l(m_); return dropped_; }

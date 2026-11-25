@@ -2,6 +2,7 @@
 // 실시간 파라미터 레지스트리: 웹 파라미터 창의 목록·일괄 적용(원자적)·YAML 저장
 #pragma once
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -10,6 +11,21 @@
 #include <vector>
 
 namespace auto_control::drive {
+
+// Write completely before publishing the filename. Preset saves never replace an existing file.
+void write_parameter_yaml(const std::filesystem::path & path, const std::string & yaml, bool replace);
+
+class ParameterPresets {
+public:
+  explicit ParameterPresets(std::filesystem::path directory) : directory_(std::move(directory)) {}
+  std::vector<std::string> list() const;
+  std::string save(const std::string & timestamp, const std::string & label, const std::string & yaml);
+  std::filesystem::path path(const std::string & name) const;
+
+private:
+  std::filesystem::path directory_;
+  std::mutex mutex_;
+};
 
 struct ParamSpec {
   std::string name;     // ROS 파라미터 이름 (예: drive.maximum_speed_mps)

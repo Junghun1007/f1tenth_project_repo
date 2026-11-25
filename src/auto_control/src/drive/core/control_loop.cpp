@@ -521,6 +521,15 @@ bool ControlLoop::tunnel_override_allowed(double now) const {
     now >= last_erpm_t_ && now - last_erpm_t_ <= rc_.erpm_timeout_sec &&
     sm_.is_standstill(measured_speed_) && sm_.is_standstill(speed_);
 }
+bool ControlLoop::camera_reset_allowed(double now, bool vesc_required) const {
+  std::lock_guard<std::mutex> l(m_);
+  const auto state = sm_.state();
+  if (state == DriveState::Arming || state == DriveState::Driving || state == DriveState::Stopping || state == DriveState::Refitting ||
+      sm_.safety_mode() != "MANUAL") return false;
+  if (!vesc_required && !vesc_connected_) return true;
+  return vesc_connected_ && now >= last_erpm_t_ && now - last_erpm_t_ <= rc_.erpm_timeout_sec &&
+    sm_.is_standstill(measured_speed_) && sm_.is_standstill(speed_);
+}
 DriveState ControlLoop::state() const { std::lock_guard<std::mutex> l(m_); return sm_.state(); }
 
 bool ControlLoop::cones_nearby() const {

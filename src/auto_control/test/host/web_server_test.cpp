@@ -4,6 +4,8 @@
 #include <httplib.h>
 #include <nlohmann/json.hpp>
 #include <atomic>
+#include <cstdlib>
+#include <fstream>
 #include <thread>
 
 using namespace auto_control::drive;
@@ -83,6 +85,57 @@ TEST(tunnel_override_accepts_only_boolean_requests) {
   CHECK(f.force_ir.load());
   CHECK(post(R"({"enabled":false})")["ok"] == true);
   CHECK(!f.force_ir.load());
+}
+
+TEST(presets_keep_unique_korean_names_and_reject_paths) {
+  struct Directory {
+    std::filesystem::path path;
+    ~Directory() { std::error_code error; std::filesystem::remove_all(path, error); }
+  };
+  auto tmp = (std::filesystem::temp_directory_path() / "auto-control-presets-XXXXXX").string();
+  CHECK(::mkdtemp(tmp.data()) != nullptr);
+  Directory dir{tmp};
+  ParameterPresets store(dir.path / "presets");
+  ParamRegistry params;
+  params.add({"drive.test", "driving", "", "", "", 0, 10, 1});
+  const auto yaml = params.to_yaml("auto_drive");
+  const auto first = store.save("202611251852", "ir개선", yaml);
+  CHECK(first == "202611251852_ir개선.yaml");
+  CHECK(store.save("202611251852", "ir개선", yaml) == "202611251852_ir개선_2.yaml");
+  const auto names = store.list();
+  CHECK(names.size() == 2);
+  std::ifstream file(store.path(first));
+  CHECK(std::string(std::istreambuf_iterator<char>(file), {}) == yaml);
+  std::filesystem::create_symlink(store.path(first), store.path(first).parent_path() / "202611251852_alias.yaml");
+  CHECK(store.list().size() == 2);
+  for (const auto & name : {"../202611251852_x.yaml", "202611251852_alias.yaml"}) {
+    bool rejected = false;
+    try { store.path(name); } catch (const std::invalid_argument &) { rejected = true; }
+    CHECK(rejected);
+  }
+}
+
+TEST(preset_and_reset_endpoints_dispatch_valid_bodies_only) {
+  ParamRegistry params;
+  WebCallbacks cb;
+  cb.presets = [] { return std::vector<std::string>{"202611251852_ir개선.yaml"}; };
+  cb.preset_save = [](const std::string & label, const std::string & time) { return Reply{true, time + "_" + label + ".yaml"}; };
+  cb.preset_load = [](const std::string & name) { return Reply{true, name}; };
+  cb.camera_reset = [] { return Reply{false, "vehicle moving"}; };
+  WebServer server(CDT_WEB, "127.0.0.1", 0, params, cb);
+  server.start();
+  httplib::Client client("127.0.0.1", server.port());
+  CHECK(nlohmann::json::parse(client.Get("/api/presets")->body)["presets"][0] == "202611251852_ir개선.yaml");
+  const auto post = [&client](const char * path, const char * body) {
+    const auto response = client.Post(path, body, "application/json");
+    CHECK(response && response->status == 200);
+    return nlohmann::json::parse(response->body);
+  };
+  CHECK(post("/api/presets/save", R"({"name":"ir개선","timestamp":"202611251852"})")["reason"] == "202611251852_ir개선.yaml");
+  CHECK(post("/api/presets/save", R"({"name":"ir개선"})")["ok"] == false);
+  CHECK(post("/api/presets/load", R"({"name":"202611251852_ir개선.yaml"})")["ok"] == true);
+  CHECK(post("/api/presets/load", R"({"name":4})")["ok"] == false);
+  CHECK(post("/api/camera/reset", "{}")["reason"] == "vehicle moving");
 }
 
 TEST(heartbeat_tracks_clients_and_preview_flag) {

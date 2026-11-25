@@ -92,6 +92,9 @@ th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); 
   display: flex; flex-direction: column; box-shadow: -8px 0 24px rgba(0,0,0,.4); z-index: 10; }
 .drawer-head, .drawer-foot { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
 .drawer-head .tabs { min-width: 0; }
+.preset-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+.preset-field { display: grid; gap: 3px; flex: 1 1 150px; min-width: 0; color: var(--dim); font-size: 12px; }
+.preset-field input, .preset-field select { width: 100%; min-width: 0; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; }
 .drawer-foot { border-top: 1px solid var(--line); border-bottom: 0; flex-wrap: wrap; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
 .drawer-foot span { flex: 1 1 120px; min-width: 0; color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }

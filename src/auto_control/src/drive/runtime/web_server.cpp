@@ -94,6 +94,31 @@ void WebServer::routes() {
     send(res, cb_.force_ir ? cb_.force_ir(enabled->b) : Reply{false, "unavailable"});
   });
   s.Post("/api/refit", [this](const httplib::Request &, httplib::Response & res) { send(res, cb_.refit ? cb_.refit() : Reply{false, "unavailable"}); });
+  s.Post("/api/camera/reset", [this](const httplib::Request &, httplib::Response & res) {
+    send(res, cb_.camera_reset ? cb_.camera_reset() : Reply{false, "unavailable"});
+  });
+  s.Get("/api/presets", [this](const httplib::Request &, httplib::Response & res) {
+    JsonWriter w;
+    w.begin_object().key("presets").begin_array();
+    if (cb_.presets) for (const auto & name : cb_.presets()) w.value(name);
+    w.end_array().end_object();
+    res.set_header("Cache-Control", "no-store");
+    res.set_content(w.str(), "application/json");
+  });
+  s.Post("/api/presets/save", [this, body](const httplib::Request & req, httplib::Response & res) {
+    const auto j = body(req);
+    const auto * name = j ? j->get("name") : nullptr;
+    const auto * stamp = j ? j->get("timestamp") : nullptr;
+    if (!name || name->kind != JsonValue::String || !stamp || stamp->kind != JsonValue::String)
+      return send(res, {false, "name and timestamp are required"});
+    send(res, cb_.preset_save ? cb_.preset_save(name->str, stamp->str) : Reply{false, "unavailable"});
+  });
+  s.Post("/api/presets/load", [this, body](const httplib::Request & req, httplib::Response & res) {
+    const auto j = body(req);
+    const auto * name = j ? j->get("name") : nullptr;
+    if (!name || name->kind != JsonValue::String) return send(res, {false, "name is required"});
+    send(res, cb_.preset_load ? cb_.preset_load(name->str) : Reply{false, "unavailable"});
+  });
   s.Post("/api/record/start", [this, body](const httplib::Request & req, httplib::Response & res) {
     const auto j = body(req);
     const auto * l = j ? j->get("label") : nullptr;

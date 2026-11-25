@@ -65,7 +65,7 @@ public:
         [this](LaneResult::ConstSharedPtr message) {on_lane("RGB", message);});
     ir_sub_ = create_subscription<LaneResult>("/ir_bev_line_detection/result", sensor,
         [this](LaneResult::ConstSharedPtr message) {on_lane("IR", message);});
-    set_tcn_override("auto");
+    set_tcn_override("reset_outside");
     publish_status();
     publish_force_ir();
   }

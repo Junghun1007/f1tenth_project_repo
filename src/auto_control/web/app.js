@@ -31,6 +31,9 @@ const PLAN_LABEL = { center: "중앙선 추종", lane: "차선 안 회피", "lan
 
 let latest = null;
 let forceIrRequest = false;
+let cameraResetRequest = false;
+let cameraResetReconnect = false;
+let cameraResetPending = false;
 let connected = false;
 let params = [];
 let edits = {};
@@ -64,9 +67,23 @@ function connect() {
 }
 
 function setLink(ok) {
+  if (!ok && cameraResetRequest) cameraResetReconnect = true;
+  if (ok && cameraResetReconnect) {
+    cameraResetRequest = cameraResetReconnect = cameraResetPending = false;
+    $("cameraResetStatus").textContent = "카메라 시작 보정 중";
+    post("/api/view", { preview: $("togPreview").checked, bev: $("togBev").checked, camera: $("togCam").checked });
+    for (const [toggle, img] of [["togBev", "bevImg"], ["togCam", "camImg"]]) {
+      if ($(toggle).checked) {
+        $(img).removeAttribute("src");
+        $(toggle).dispatchEvent(new Event("change"));
+      }
+    }
+    if (!$("drawer").hidden) loadParams();
+  }
   connected = ok;
   if (!ok) {
     $("btnForceIr").disabled = true;
+    $("btnCameraReset").disabled = true;
     $("tcnStatus").textContent = "연결 끊김";
   }
   const el = $("link");
@@ -78,6 +95,25 @@ async function loadParams() {
   const url = DEMO ? "demo/params.json" : "/api/params";
   try { params = (await (await fetch(url, { cache: "no-store" })).json()).params; } catch (e) { params = []; }
   renderParams();
+}
+
+async function loadPresets(selected = $("presetSelect").value) {
+  if (DEMO) return;
+  try {
+    const response = await fetch("/api/presets", { cache: "no-store" });
+    const { presets } = await response.json();
+    $("presetSelect").replaceChildren(new Option("선택", ""), ...presets.map((name) => new Option(name, name)));
+    $("presetSelect").value = presets.includes(selected) ? selected : "";
+    $("btnLoadPreset").disabled = !$("presetSelect").value;
+  } catch (e) {
+    $("pmsg").textContent = "프리셋 목록을 읽을 수 없습니다";
+  }
+}
+
+function presetTimestamp() {
+  const now = new Date();
+  return [now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes()]
+    .map((value) => String(value).padStart(2, "0")).join("");
 }
 
 // ---------- BEV 캔버스 ----------
@@ -422,11 +458,21 @@ function render() {
     b.classList.toggle("on", b.dataset.mode === f.mode);
     b.disabled = !stopped;
   });
-  $("btnStart").disabled = forceIrRequest || irPreparing ||
+  $("btnStart").disabled = forceIrRequest || irPreparing || cameraResetRequest || f.camera_reset_pending ||
     !(f.mode === "drive" && stopped && Object.values(f.readiness).every(Boolean));
   $("btnStop").disabled = !["DRIVING", "STOPPING"].includes(f.state);
   $("btnRefit").disabled = !["READY", "MANUAL", "DRIVING"].includes(f.state);
   $("btnRefit").hidden = f.refit_supported === false;   // auto_control: 카메라 자세는 시작할 때 bev_processor가 측정
+  $("btnCameraReset").hidden = !f.camera_reset_supported;
+  $("btnCameraReset").disabled = !connected || !f.camera_reset_allowed || cameraResetRequest || f.camera_reset_pending;
+  if (cameraResetRequest && cameraResetPending && !f.camera_reset_pending) {
+    cameraResetRequest = false;
+    $("cameraResetStatus").textContent = "카메라 초기화 취소됨";
+  }
+  cameraResetPending = Boolean(f.camera_reset_pending);
+  if (f.inspection?.attitude?.status === "PASS" && $("cameraResetStatus").textContent === "카메라 시작 보정 중") {
+    $("cameraResetStatus").textContent = "카메라 시작 보정 완료";
+  }
   if (f.record) {
     $("btnRec").disabled = f.record.active; $("btnRecStop").disabled = !f.record.active; $("recLabel").disabled = f.record.active;
     if (f.record.active) $("recStatus").textContent = `● 녹화 중 ${f.record.seconds.toFixed(0)} s · ${f.record.frames} 프레임`;
@@ -595,7 +641,10 @@ function renderParams() {
 
 function openDrawer(open) {
   $("drawer").hidden = !open;
-  if (open) loadParams();
+  if (open) {
+    loadParams();
+    loadPresets();
+  }
 }
 
 // ---------- 이벤트 ----------
@@ -629,6 +678,15 @@ function bind() {
   $("btnRefit").addEventListener("click", async () => {
     if (!confirm("Refit: 주행 중이면 먼저 멈춘 뒤, 카메라 높이·기울기를 다시 측정하고 콘·차량 기억을 모두 지웁니다.\n평평한 바닥에 세우고 몇 초간 움직이지 마세요.")) return;
     const r = await post("/api/refit"); if (!r.ok) $("reason").textContent = r.reason;
+  });
+  $("btnCameraReset").addEventListener("click", async () => {
+    cameraResetRequest = true;
+    $("btnCameraReset").disabled = true;
+    $("cameraResetStatus").textContent = "카메라 재시작 요청 중";
+    const r = await post("/api/camera/reset");
+    if (cameraResetReconnect || !cameraResetRequest) return;
+    if (!r.ok) cameraResetRequest = false;
+    $("cameraResetStatus").textContent = r.ok ? "카메라 재시작 중" : r.reason;
   });
   $("togBev").addEventListener("change", () => {
     const on = $("togBev").checked;
@@ -667,7 +725,22 @@ function bind() {
     if (r.ok) { edits = {}; await loadParams(); }
   });
   $("btnSave").addEventListener("click", async () => {
-    const r = await post("/api/params/save"); $("pmsg").textContent = r.ok ? "저장됨: " + (r.reason || "") : "저장 실패: " + r.reason;
+    const name = $("presetName").value.trim();
+    if (!name) { $("pmsg").textContent = "프리셋 이름을 입력하세요"; return; }
+    if (Object.keys(edits).length) { $("pmsg").textContent = "변경값을 적용한 뒤 저장하세요"; return; }
+    const r = await post("/api/presets/save", { name, timestamp: presetTimestamp() });
+    $("pmsg").textContent = r.ok ? "저장됨 · " + r.reason : "저장 실패 · " + r.reason;
+    if (r.ok) await loadPresets(r.reason);
+  });
+  $("presetSelect").addEventListener("change", () => {
+    $("btnLoadPreset").disabled = !$("presetSelect").value;
+  });
+  $("btnLoadPreset").addEventListener("click", async () => {
+    const name = $("presetSelect").value;
+    if (!name) return;
+    const r = await post("/api/presets/load", { name });
+    $("pmsg").textContent = r.ok ? "불러옴 · " + r.reason : "불러오기 실패 · " + r.reason;
+    if (r.ok) { edits = {}; await loadParams(); }
   });
 }
 

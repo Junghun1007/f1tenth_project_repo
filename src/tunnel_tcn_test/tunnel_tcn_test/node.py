@@ -112,6 +112,11 @@ class TunnelNode(Node):
 
     def on_state_override(self, message):
         command = message.data
+        if command == 'reset_outside':
+            self.manual_state = self.pending_manual_event = None
+            self.rearm_on_next_score = False
+            self.reset_drive_history()
+            return
         if command == 'auto':
             self.rearm_on_next_score = self.manual_state is not None
             self.manual_state = self.pending_manual_event = None
@@ -166,11 +171,16 @@ class TunnelNode(Node):
             response.success = False
             response.message = 'Tunnel state is held by the lane selector'
             return response
-        self.accept_frames_after_ns = self.get_clock().now().nanoseconds
-        self.pending = None
-        self.clear_history(new_drive=True)
+        self.reset_drive_history()
         response.success = True
         return response
+
+    def reset_drive_history(self):
+        self.accept_frames_after_ns = self.get_clock().now().nanoseconds
+        self.pending = self.last_received = None
+        self.measured_fps = 0.
+        self.dropped = 0
+        self.clear_history(new_drive=True)
 
     def process(self):
         if self.pending is None:
