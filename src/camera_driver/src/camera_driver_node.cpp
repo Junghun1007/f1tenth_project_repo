@@ -1361,6 +1361,7 @@ private:
     }
 
     dai::Node::Output * ir_gate_output=nullptr;
+    std::array<dai::Node::Output *,2> stereo_exposure_outputs{};
     if (tunnel_enabled_) {
       if (!tunnel_cameras_.left) {
         tunnel_cameras_.left=pipeline_->create<dai::node::Camera>()->build(
@@ -1377,12 +1378,10 @@ private:
       const std::array cameras{tunnel_cameras_.left,tunnel_cameras_.right};
       for (std::size_t i=0;i<cameras.size();++i) {
         if (!cameras[i]) {continue;}
-        auto * output=cameras[i]->requestOutput({160U,96U},dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,5.0F,false);
-        stereo_exposure_queues_[i]=output->createOutputQueue(1,false);
-        const auto bridge=output->getXLinkBridge();
-        if (!bridge || !bridge->xLinkOut) {throw std::runtime_error("Missing stereo exposure XLink bridge");}
-        bridge->xLinkOut->input.setMaxSize(1);
-        bridge->xLinkOut->input.setBlocking(false);
+        auto * diagnostic_output=cameras[i]->requestOutput(
+          {160U,96U},dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,5.0F,false);
+        stereo_exposure_outputs[i]=diagnostic_output;
+        stereo_exposure_queues_[i]=diagnostic_output->createOutputQueue(1,false);
       }
       // 왜곡 보정은 장치(warp 엔진, RGB 보정과 공유)에서 하지 않고 IR BEV LUT에 합친다 (호스트 추가 비용 0).
       // 원근(Perspective) 모델이 아니면 예전처럼 장치에서 보정한다.
@@ -1546,6 +1545,18 @@ while True:
       if (!bridge || !bridge->xLinkOut) {throw std::runtime_error("Missing depth XLink bridge");}
       bridge->xLinkOut->input.setMaxSize(1);
       bridge->xLinkOut->input.setBlocking(false);
+    }
+    for (std::size_t i=0;i<stereo_exposure_outputs.size();++i) {
+      auto * diagnostic_output=stereo_exposure_outputs[i];
+      if (!diagnostic_output) {continue;}
+      const auto bridge=diagnostic_output->getXLinkBridge();
+      if (!bridge || !bridge->xLinkOut) {
+        RCLCPP_WARN(node_.get_logger(),"CAM_%c exposure XLink bridge unavailable",i==0 ? 'B' : 'C');
+        continue;
+      }
+      bridge->xLinkOut->input.setMaxSize(1);
+      bridge->xLinkOut->input.setBlocking(false);
+      bridge->xLinkOut->setMetadataOnly(true);
     }
     pipeline_->start();
     if (depth_enabled_) {
