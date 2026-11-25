@@ -42,7 +42,7 @@
 </header>
 
 <div class="off" id="offNote" hidden>
-  <b>프리뷰 꺼짐</b> — Jetson은 오버레이 좌표·단계 통계·영상을 만들지 않고, 상태만 초당 2회 보냅니다.
+  <b>프리뷰 꺼짐</b> — Jetson은 오버레이 좌표·단계 통계·영상을 만들지 않으며, 화면 상태는 초당 2회 갱신됩니다.
   시작·정지·Refit과 연결 감시는 그대로 동작합니다.
   <div class="mini" id="mini"></div>
 </div>
@@ -85,6 +85,23 @@
       <div class="stopbar"><div class="stopbar-track" id="stopTrack"><div class="stopbar-zone" id="stopZone"></div><div class="stopbar-car" id="stopCar"></div></div>
         <div class="stopbar-label" id="stopLabel">정지선 없음</div></div>
     </div>
+    <section class="panel tcn-panel" id="tcnPanel" aria-labelledby="tcnTitle" hidden>
+     <div class="tcn-head">
+       <h2 id="tcnTitle">터널 TCN <small>최근 12초</small></h2>
+       <span id="tcnStatus">결과 대기</span>
+     </div>
+     <div class="tcn-values">
+       <span class="tcn-entry">진입 <b id="tcnEntry">—</b></span>
+       <span class="tcn-exit">이탈 <b id="tcnExit">—</b></span>
+       <span>임계값 <b id="tcnThreshold">—</b></span>
+       <span id="tcnDecision">TCN 판정 —</span>
+     </div>
+     <canvas id="tcnChart" role="img" aria-label="최근 12초의 TCN 터널 진입·이탈 점수와 차선 입력 전환"></canvas>
+     <div class="tcn-foot">
+       <div class="tcn-key"><span><i class="tcn-diamond"></i>TCN 이벤트</span><span><i class="tcn-switch"></i>제어 입력 전환</span></div>
+       <strong id="tcnLane">제어 입력 —</strong>
+     </div>
+    </section>
     <div class="panel">
       <h2>차량</h2>
       <div class="kv" id="vehicle"></div>
@@ -93,7 +110,6 @@
       <h2>회피</h2>
       <div class="kv" id="avoid"></div>
     </div>
-   </div>
    </div>
    <div class="col">
     <div class="panel">
@@ -109,6 +125,7 @@
       <h2>시스템</h2>
       <div id="usage"></div>
     </div>
+   </div>
   </section>
 </main>
 
@@ -119,6 +136,7 @@
       <button data-group="driving">주행</button>
       <button data-group="lane">차선</button>
       <button data-group="traffic">신호등</button>
+      <button data-group="tunnel">터널</button>
     </div>
     <button class="btn" id="btnSave" title="지금 값을 YAML 파일로 저장">YAML 저장</button>
     <button class="btn" id="btnClose">닫기</button>

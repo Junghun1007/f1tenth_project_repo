@@ -43,3 +43,22 @@ TEST(status_only_json_is_small) {
   CHECK(!j.contains("vehicle") && !j.contains("lane") && !j.contains("stages"));
   CHECK(s.size() < 600);
 }
+
+TEST(tunnel_tcn_preserves_events_across_status_updates_and_expires_old_scores) {
+  TunnelTcnTelemetry tcn;
+  CHECK(nlohmann::json::parse(tcn.json(1.0))["status"] == "WAITING");
+  tcn.update(R"({"scores":{"entry":0.91,"exit":0.05},"state":"inside","status":"LIVE","threshold":0.55,"event":{"type":"entry"}})", 1.0);
+  tcn.update(R"({"scores":{"entry":0.10,"exit":0.07},"state":"inside","status":"LIVE","threshold":0.55,"event":null})", 1.2);
+  tcn.update(R"({"scores":{"entry":null,"exit":0.05},"status":"LIVE"})", 1.3);
+
+  const auto live = nlohmann::json::parse(tcn.json(1.5));
+  CHECK(live["status"] == "LIVE");
+  CHECK(live["state"] == "inside");
+  CHECK(live["threshold"] == 0.55);
+  CHECK(live["samples"].size() == 2);
+  CHECK(live["samples"][0][3] == "entry");
+  CHECK(live["samples"][1].size() == 3);
+  const auto stale = nlohmann::json::parse(tcn.json(3.0));
+  CHECK(stale["status"] == "STALE");
+  CHECK(stale["samples"].empty());
+}

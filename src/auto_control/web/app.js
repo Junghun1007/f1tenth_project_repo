@@ -65,7 +65,10 @@ function connect() {
 
 function setLink(ok) {
   connected = ok;
-  if (!ok) $("btnForceIr").disabled = true;
+  if (!ok) {
+    $("btnForceIr").disabled = true;
+    $("tcnStatus").textContent = "연결 끊김";
+  }
   const el = $("link");
   el.textContent = ok ? "연결됨" : "연결 끊김";
   el.className = "link" + (ok ? " ok" : "");
@@ -207,11 +210,146 @@ function usageRow(name, value) {
   return `<div class="bar-row"><span>${name}</span><div class="track"><div class="fill ${pct > 85 ? "hot" : ""}" style="width:${pct}%"></div></div><span>${ok ? value.toFixed(0) + " %" : "--"}</span></div>`;
 }
 
+// ---------- 터널 TCN ----------
+const tunnelChart = $("tcnChart");
+const tcnCtx = tunnelChart.getContext("2d");
+const chartStyle = getComputedStyle($("tcnPanel"));
+const tcnColors = ["--tcn-entry", "--tcn-exit", "--tcn-switch", "--dim", "--line"]
+  .map((name) => chartStyle.getPropertyValue(name).trim());
+const tcnWindow = 12;
+let tcnTime = 0;
+let tcnSamples = [];
+let laneSwitches = [];
+
+function drawTunnelChart(threshold) {
+  const width = tunnelChart.clientWidth, height = tunnelChart.clientHeight;
+  if (!width || !height) return;
+  const ratio = window.devicePixelRatio || 1;
+  const pixelWidth = Math.round(width * ratio), pixelHeight = Math.round(height * ratio);
+  if (tunnelChart.width !== pixelWidth || tunnelChart.height !== pixelHeight) {
+    tunnelChart.width = pixelWidth;
+    tunnelChart.height = pixelHeight;
+  }
+  const c = tcnCtx;
+  c.setTransform(ratio, 0, 0, ratio, 0, 0);
+  c.clearRect(0, 0, width, height);
+  const left = 33, right = width - 18, top = 13, bottom = height - 23;
+  const start = tcnTime - tcnWindow;
+  const x = (t) => left + (t - start) / tcnWindow * (right - left);
+  const y = (score) => bottom - score * (bottom - top);
+  const [entryColor, exitColor, switchColor, labelColor, gridColor] = tcnColors;
+  const line = (x1, y1, x2, y2) => {
+    c.beginPath(); c.moveTo(x1, y1); c.lineTo(x2, y2); c.stroke();
+  };
+
+  c.lineWidth = 1;
+  c.strokeStyle = gridColor;
+  c.fillStyle = labelColor;
+  c.font = "11px system-ui";
+  c.textAlign = "right";
+  c.textBaseline = "middle";
+  for (const score of [0, 0.5, 1]) {
+    line(left, y(score), right, y(score));
+    c.fillText(score.toFixed(1), left - 7, y(score));
+  }
+  c.textAlign = "center";
+  for (const offset of [12, 9, 6, 3, 0]) {
+    const pos = x(tcnTime - offset);
+    line(pos, top, pos, bottom);
+    c.fillText(offset ? `−${offset}s` : "현재", pos, bottom + 12);
+  }
+  if (Number.isFinite(threshold)) {
+    c.strokeStyle = labelColor;
+    c.setLineDash([3, 4]);
+    line(left, y(threshold), right, y(threshold));
+    c.setLineDash([]);
+  }
+
+  c.save();
+  c.beginPath();
+  c.rect(left, top - 5, right - left, bottom - top + 10);
+  c.clip();
+  for (const [index, color] of [[1, entryColor], [2, exitColor]]) {
+    c.strokeStyle = color;
+    c.lineWidth = 1.7;
+    c.beginPath();
+    let lastTime = -Infinity;
+    for (const sample of tcnSamples) {
+      const [t] = sample;
+      if (t - lastTime > 0.5) c.moveTo(x(t), y(sample[index]));
+      else c.lineTo(x(t), y(sample[index]));
+      lastTime = t;
+    }
+    c.stroke();
+  }
+  for (const [t, entry, exit, event] of tcnSamples) {
+    if (!event) continue;
+    const isEntry = event === "entry";
+    c.fillStyle = isEntry ? entryColor : exitColor;
+    c.save();
+    c.translate(x(t), y(isEntry ? entry : exit));
+    c.rotate(Math.PI / 4);
+    c.fillRect(-3.6, -3.6, 7.2, 7.2);
+    c.restore();
+  }
+  c.setLineDash([4, 4]);
+  c.lineWidth = 1.5;
+  c.strokeStyle = c.fillStyle = switchColor;
+  for (const [t, source] of laneSwitches) {
+    const pos = x(t);
+    line(pos, top + 11, pos, bottom);
+    c.textAlign = pos > right - 34 ? "right" : "left";
+    c.fillText(source, pos + (c.textAlign === "left" ? 4 : -4), top + 4);
+  }
+  c.restore();
+}
+
+function renderTunnel(tunnel, chart, laneFresh) {
+  $("tcnPanel").hidden = !tunnel.enabled;
+  if (!tunnel.enabled) return;
+  if (chart) {
+    if (chart.now < tcnTime) { tcnSamples = []; laneSwitches = []; }
+    tcnTime = chart.now;
+    for (const sample of chart.samples) {
+      if (!tcnSamples.length || sample[0] > tcnSamples.at(-1)[0]) tcnSamples.push(sample);
+    }
+    if (Number.isFinite(tunnel.source_changed_s) &&
+        (!laneSwitches.length || tunnel.source_changed_s > laneSwitches.at(-1)[0])) {
+      laneSwitches.push([tunnel.source_changed_s, tunnel.source]);
+    }
+    const cutoff = tcnTime - tcnWindow;
+    tcnSamples = tcnSamples.filter(([t]) => t >= cutoff - 0.5);
+    laneSwitches = laneSwitches.filter(([t]) => t >= cutoff);
+  }
+  const status = chart?.status || "WAITING";
+  const last = tcnSamples.at(-1);
+  const fresh = last && tcnTime - last[0] <= 0.5;
+  $("tcnStatus").textContent = !connected ? "연결 끊김" : { WAITING: "결과 대기", STALE: "결과 수신 끊김" }[status] || status;
+  $("tcnEntry").textContent = fresh ? last[1].toFixed(2) : "—";
+  $("tcnExit").textContent = fresh ? last[2].toFixed(2) : "—";
+  $("tcnThreshold").textContent = Number.isFinite(chart?.threshold) ? chart.threshold.toFixed(2) : "—";
+  $("tcnDecision").textContent = "TCN 판정 " + (fresh ? ({ inside: "터널 안", outside: "터널 밖" }[chart?.state] || "—") : "—");
+
+  const source = tunnel.source || "RGB";
+  const waiting = tunnel.state === "ENTERING" && source !== "IR";
+  const lane = $("tcnLane");
+  const irStatus = source === "IR" ? tunnel.ir_lane : null;
+  const detail = waiting ? "유효 IR 경로 대기" : ({
+    stale: "IR 결과 수신 끊김", invalid: "IR 중앙선 무효", valid: laneFresh ? "IR 중앙선 유효" : "유효 제어 경로 없음",
+  }[irStatus] || "");
+  lane.dataset.pending = waiting || (irStatus && (irStatus !== "valid" || !laneFresh)) || false;
+  lane.textContent = [tunnel.state || "—", `제어 입력 ${source}`, detail].filter(Boolean).join(" · ");
+  drawTunnelChart(chart?.threshold);
+}
+
 function render() {
   const f = latest;
   if (!f) return;
   const previewOn = $("togPreview").checked;
-  $("main").hidden = !previewOn; $("offNote").hidden = previewOn;
+  const tunnel = f.tunnel || {};
+  $("main").hidden = !previewOn && !tunnel.enabled;
+  $("main").classList.toggle("preview-off", !previewOn);
+  $("offNote").hidden = previewOn;
   $("togBev").disabled = $("togCam").disabled = !previewOn;
   const st = $("stateBadge");
   st.textContent = f.state; st.className = "state " + f.state;
@@ -226,7 +364,6 @@ function render() {
     const h = $("handoverChip"); h.className = "chipx " + f.handover;
     h.textContent = "전환 " + ({ AUTO: "AUTO", STOPPING: "제동 중", MANUAL: "MANUAL" }[f.handover] || f.handover);
   }
-  const tunnel = f.tunnel || {};
   const src = tunnel.source || "RGB";
   const forceIr = $("btnForceIr");
   const stopped = ["READY", "MANUAL"].includes(f.state);
@@ -239,6 +376,8 @@ function render() {
     tunnel.force_ir ? "터널 IR 강제 ON" : "터널 IR 강제 OFF";
   $("sourceChip").className = "chipx " + src;
   $("sourceChip").textContent = src === "IR" ? "IR 터널" : "RGB";
+  renderTunnel(tunnel, f.tcn, f.readiness.lane_fresh);
+  renderTunnelMode(tunnel);
   document.querySelectorAll("#modeSeg button").forEach((b) => {
     b.classList.toggle("on", b.dataset.mode === f.mode);
     b.disabled = !stopped;
@@ -334,6 +473,13 @@ function renderTraffic(f) {
 }
 
 // ---------- 파라미터 창 ----------
+function renderTunnelMode(tunnel) {
+  const el = $("tunnelModeNow");
+  if (!el) return;
+  el.textContent = tunnel?.enabled && typeof tunnel.validation_mode === "boolean"
+    ? `현재 실행 중 ${tunnel.validation_mode}` : tunnel?.enabled === false ? "터널 기능 꺼짐" : "실행 상태 확인 중";
+}
+
 function renderParams() {
   const panel = $("plist");
   const previouslyOpen = new Set([...panel.querySelectorAll("details[open]")].map((el) => el.dataset.section));
@@ -353,12 +499,21 @@ function renderParams() {
   };
   panel.innerHTML = [...sections].map(([section, list]) => {
     const rows = list.map(parameterRow).join("");
+    if (list.some((p) => p.name === "tunnel.validation_mode")) {
+      return `<h3>${section}</h3>${rows}<div class="param-help">
+        <strong id="tunnelModeNow"></strong>
+        <p><b>true</b> · 독립 IR 테스트 기준. 새 IR 프레임을 바로 처리합니다.</p>
+        <p><b>false</b> · 노출 변경 후 150 ms를 기다린 뒤, 실제 노출이 ±500 µs, ISO가 ±5% 범위 안인 프레임을 사용합니다.</p>
+        <p>YAML 저장 후 저장된 파일을 <code>drive_params_file</code>로 지정해 재실행합니다. 실행 인자에서 <code>tunnel_validation_mode</code>를 <code>true</code> 또는 <code>false</code>로 지정하면 그 값이 우선합니다.</p>
+      </div>`;
+    }
     if (group !== "lane") return `<h3>${section}</h3>${rows}`;
     const open = previouslyOpen.has(section) || (!previouslyOpen.size && section === "RGB · 검출");
     const weight = list.find((p) => p.name.endsWith(".corner_outer_weight"));
     const preset = weight ? `<button type="button" class="btn lane-preset" data-lane-preset="${weight.name.split(".")[0]}">곡률 반영 강화</button>` : "";
     return `<details class="lane-param-section" data-section="${section}"${open ? " open" : ""}><summary>${section}</summary>${rows}${preset}</details>`;
   }).join("");
+  renderTunnelMode(latest?.tunnel);
   panel.querySelectorAll("[data-name]").forEach((inp) => inp.addEventListener("input", () => {
     const p = params.find((q) => q.name === inp.dataset.name);
     const x = Number(inp.value);
@@ -444,8 +599,14 @@ function bind() {
   }));
   $("btnReset").addEventListener("click", () => { edits = {}; $("pmsg").textContent = ""; renderParams(); });
   $("btnApply").addEventListener("click", async () => {
+    const changed = params.filter((p) => p.name in edits);
     const r = await post("/api/params", { changes: edits });
-    $("pmsg").textContent = r.ok ? "적용됨" : "거부: " + r.reason;
+    let message = "적용됨";
+    if (changed.some((p) => !p.live)) message = "변경 저장 대기 · YAML 저장 후 재실행";
+    else if (changed.some((p) => p.name.startsWith("tcn."))) {
+      message = latest?.tunnel?.enabled ? "TCN 설정 전송됨" : "TCN 설정 변경됨 · YAML 저장 후 터널 실행";
+    }
+    $("pmsg").textContent = r.ok ? message : "거부: " + r.reason;
     if (r.ok) { edits = {}; await loadParams(); }
   });
   $("btnSave").addEventListener("click", async () => {
@@ -476,7 +637,7 @@ async function demo() {
     g.handover = qs.get("handover") || (g.state === "DRIVING" || g.state === "STOPPING" ? "AUTO" : g.state === "MANUAL" ? "MANUAL" : "AUTO");
     g.joystick = !qs.has("nojoy");
     g.drive_s = g.t;
-    g.tunnel = { enabled: true, source: "RGB", state: "OUTSIDE" };
+    g.tunnel = { enabled: true, source: "RGB", state: "OUTSIDE", validation_mode: true };
     g.readiness.handover_ready = true;
     g.lon = { mode: 2, requested: 2, phase: g.vehicle.brake > 0 ? "제동" : g.vehicle.duty > 0 ? "구동" : "관성" };
     g.stabilization = "camera_driver";
@@ -501,10 +662,20 @@ async function demo() {
       g.lead = { active: true, seen: true, gap: 0.68, speed: 0.55, cap: 0.52, holding: false };
       g.vehicle.speed = 0.57; g.vehicle.target = 0.52;
     } else if (scene === "tunnel") {
-      g.tunnel = { enabled: true, source: "IR", state: "INSIDE" }; g.detections = []; g.memory = [];
+      const tick = 50 + Math.floor(i / 2), now = tick / 10;
+      const state = tick < 62 ? "OUTSIDE" : tick < 67 ? "ENTERING" : tick < 91 ? "INSIDE" : tick < 96 ? "EXITING" : "OUTSIDE";
+      g.tunnel = { enabled: true, source: tick >= 67 && tick < 96 ? "IR" : "RGB", state, ir_lane: "valid", validation_mode: true,
+        source_changed_s: tick >= 96 ? 9.6 : tick >= 67 ? 6.7 : null };
+      const peak = (j, center, width) => Math.exp(-0.5 * ((j - center) / width) ** 2);
+      const samples = Array.from({ length: tick + 1 }, (_, j) => [
+        j / 10, 0.06 + 0.87 * peak(j, 63, 1.6), 0.04 + 0.83 * peak(j, 92, 1.5),
+        j === 62 ? "entry" : j === 91 ? "exit" : null,
+      ]);
+      g.tcn = { now, samples, threshold: 0.5, status: "LIVE", state: tick >= 62 && tick < 91 ? "inside" : "outside" };
+      g.detections = []; g.memory = [];
       g.plan = { path: [], mode: "center", rollout_ok: true }; g.traffic.enabled = false;
       g.stages = g.stages.filter((x) => !x.name.startsWith("yolo") && x.name !== "box_depth");
-      g.inspection.models.push({ name: "IR 차선 (TCN)", status: "READY", stage: "ready", elapsed_s: 4.2, message: "" });
+      g.inspection.models.push({ name: "IR 차선", status: "READY", stage: "ready", elapsed_s: 4.2, message: "" });
       g.readiness.ir_model_ready = true;
     }
     return g;
@@ -515,6 +686,7 @@ async function demo() {
 }
 
 bind();
+new ResizeObserver(() => drawTunnelChart(latest?.tcn?.threshold)).observe(tunnelChart);
 $("bevImg").addEventListener("load", () => render());   // 첫 영상이 늦게 와도 배경을 바로 그림
 try { if (localStorage.getItem("cdt_preview") === "0" || qs.get("preview") === "0") $("togPreview").checked = false; } catch (e) { /* 저장소 없음 */ }
 if (qs.get("bev") === "1") { $("togBev").checked = true; $("togBev").dispatchEvent(new Event("change")); }

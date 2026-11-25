@@ -1,7 +1,9 @@
 // Copied from src/cone_drive_test/src/core/telemetry.cpp (1113ML) — auto_control로 옮김
 #include "auto_control/drive/core/telemetry.hpp"
 #include "auto_control/drive/core/json_writer.hpp"
+#include "auto_control/drive/core/mini_json.hpp"
 #include <cmath>
+#include <utility>
 
 namespace auto_control::drive {
 
@@ -88,6 +90,48 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
     w.key("params_version").value((long long)f.params_version);
   }
   w.end_object();
+  return w.str();
+}
+
+void TunnelTcnTelemetry::update(const std::string & report, double received_sec) {
+  const auto parsed = parse_json(report);
+  if (!parsed || parsed->kind != JsonValue::Object) return;
+  const auto string_at = [](const JsonValue * object, const char * key) -> std::string {
+    const auto * value = object ? object->get(key) : nullptr;
+    return value && value->kind == JsonValue::String ? value->str : "";
+  };
+  const auto probability_at = [](const JsonValue * object, const char * key) -> std::optional<double> {
+    const auto * value = object ? object->get(key) : nullptr;
+    if (value && value->kind == JsonValue::Number && 0 <= value->num && value->num <= 1) return value->num;
+    return std::nullopt;
+  };
+  const auto * scores = parsed->get("scores");
+  const auto entry = probability_at(scores, "entry"), exit = probability_at(scores, "exit");
+  if (!entry || !exit) return;
+  auto event = string_at(parsed->get("event"), "type");
+  if (event != "entry" && event != "exit") event.clear();
+  samples_.push_back({received_sec, *entry, *exit, std::move(event)});
+  // A short overlap preserves 10 Hz reports when the SSE stream coalesces updates.
+  if (samples_.size() > 16) samples_.pop_front();
+  state_ = string_at(&*parsed, "state");
+  status_ = string_at(&*parsed, "status");
+  threshold_ = probability_at(&*parsed, "threshold");
+}
+
+std::string TunnelTcnTelemetry::json(double now_sec) const {
+  JsonWriter w;
+  const char * status = samples_.empty() ? "WAITING" : "STALE";
+  if (!samples_.empty() && now_sec - samples_.back().t <= 0.5) status = status_.c_str();
+  w.begin_object().key("now").value(now_sec, 3).key("state").value(state_).key("status").value(status).key("threshold");
+  if (threshold_) w.value(*threshold_); else w.null();
+  w.key("samples").begin_array();
+  for (const auto & s : samples_) {
+    if (now_sec - s.t > 1.5) continue;
+    w.begin_array().value(s.t, 3).value(s.entry).value(s.exit);
+    if (!s.event.empty()) w.value(s.event);
+    w.end_array();
+  }
+  w.end_array().end_object();
   return w.str();
 }
 

@@ -5,6 +5,7 @@
 /**/auto_drive:
   ros__parameters:
     # ---- 재시작해야 바뀌는 값 ----
+    tunnel.validation_mode: true        # false: IR 노출 변경 대기 및 촬영 프레임 검사
     camera.yaw_deg: 0.0
     vehicle.wheelbase_m: 0.33
     vehicle.maximum_steering_deg: 30.0

@@ -35,8 +35,10 @@
 #include <regex>
 #include <sstream>
 #include "auto_control/drive/core/control_loop.hpp"
+#include "auto_control/drive/core/json_writer.hpp"
 #include "auto_control/drive/core/lane_input.hpp"
 #include "auto_control/drive/core/system_monitor.hpp"
+#include "auto_control/drive/core/telemetry.hpp"
 #include "auto_control/drive/runtime/detector.hpp"
 #include "auto_control/drive/runtime/web_server.hpp"
 
@@ -53,6 +55,7 @@ std::string json_escape(const std::string & s) {
   for (char c : s) { if (c == '"' || c == '\\') o += '\\'; if (static_cast<unsigned char>(c) >= 0x20) o += c; }
   return o;
 }
+bool is_tcn_param(const std::string & name) { return name.rfind("tcn.", 0) == 0; }
 }  // namespace
 
 class AutoDriveNode : public rclcpp::Node {
@@ -111,6 +114,7 @@ public:
     params_save_path_ = declare_parameter<std::string>("params_save_path", cache + "/auto_drive_saved.yaml");
     lane_model_node_ = declare_parameter<std::string>("inspection.lane_model_node", "line_detactor");
     tunnel_enabled_ = declare_parameter<bool>("tunnel.enabled", false);
+    tunnel_validation_mode_ = registry_.get("tunnel.validation_mode") == 1;
     ir_model_nodes_ = declare_parameter<std::vector<std::string>>("inspection.ir_model_nodes",
                                                                    std::vector<std::string>{"ir_line_detactor", "tunnel_tcn_test"});
 
@@ -195,6 +199,14 @@ public:
         [this](line_detactor_msgs::msg::LaneResult::ConstSharedPtr m) { on_lane(*m, acd::LaneSource::IR); }, control);
       tunnel_sub_ = create_subscription<std_msgs::msg::String>(declare_parameter<std::string>("topics.tunnel_state", "/tunnel/state"), state_qos,
         [this](std_msgs::msg::String::ConstSharedPtr m) { on_tunnel_state(m->data); }, status_latched);
+      auto tcn_options = in(web_group_);
+      tcn_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+      tcn_sub_ = create_subscription<std_msgs::msg::String>("/tunnel_tcn/result", rclcpp::QoS(10).reliable(),
+        [this](std_msgs::msg::String::ConstSharedPtr m) { tcn_telemetry_.update(m->data, acd::now_sec() - t_start_); }, tcn_options);
+      rclcpp::PublisherOptions tcn_publisher_options;
+      tcn_publisher_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
+      tcn_tuning_pub_ = create_publisher<std_msgs::msg::String>("/tunnel/tcn_tuning", state_qos, tcn_publisher_options);
+      publish_tcn_tuning();
       force_ir_sub_ = create_subscription<std_msgs::msg::Bool>("/tunnel/force_ir_enabled", state_qos,
         [this](std_msgs::msg::Bool::ConstSharedPtr m) { force_ir_enabled_.store(m->data); }, status_latched);
       force_ir_client_ = create_client<ForceIr>("/tunnel/set_force_ir");
@@ -230,11 +242,7 @@ public:
       if (m != "drive" && m != "detect") return acd::Reply{false, "mode must be drive or detect"};
       return loop_->request_mode(m == "drive" ? acd::DriveMode::Drive : acd::DriveMode::Detect, acd::now_sec());
     };
-    cb.params = [this](const std::map<std::string, double> & c) {
-      auto r = registry_.apply(c);
-      if (r.first) apply_settings();
-      return r;
-    };
+    cb.params = [this](const std::map<std::string, double> & c) { return apply_tuning(c); };
     cb.params_save = [this] {
       std::ofstream out(params_save_path_);
       out << registry_.to_yaml("auto_drive");
@@ -287,10 +295,9 @@ public:
       rcl_interfaces::msg::SetParametersResult res;
       res.successful = true;
       if (c.empty()) return res;
-      const auto r = registry_.apply(c);
+      const auto r = apply_tuning(c);
       res.successful = r.first;
       res.reason = r.second;
-      if (r.first) apply_settings();
       return res;
     });
 
@@ -333,14 +340,6 @@ private:
   void on_lane(const line_detactor_msgs::msg::LaneResult & m, acd::LaneSource source) {
     const double t_in = acd::now_sec();
     const double capture = steady_from_stamp(m.header.stamp);
-    const char * source_name = source == acd::LaneSource::IR ? "IR" : "RGB";
-    {
-      std::lock_guard<std::mutex> l(status_m_);
-      if (lane_source_ != source_name) {
-        lane_source_ = source_name;
-        RCLCPP_INFO(get_logger(), "lane source: %s", source_name);
-      }
-    }
     acd::LanePixels px;
     px.source_width = int(m.source_width);
     px.padding_left = int(m.padding_left);
@@ -357,6 +356,20 @@ private:
     copy(m.left_points, px.left);
     copy(m.right_points, px.right);
     const auto lane = acd::lane_from_pixels(px, capture);
+    const bool is_ir = source == acd::LaneSource::IR;
+    const char * source_name = is_ir ? "IR" : "RGB";
+    {
+      std::lock_guard<std::mutex> l(status_m_);
+      if (lane_source_ != source_name) {
+        lane_source_ = source_name;
+        lane_source_changed_s_ = t_in - t_start_;
+        RCLCPP_INFO(get_logger(), "lane source: %s", source_name);
+      }
+      if (is_ir) {
+        last_ir_lane_t_ = t_in;
+        last_ir_lane_valid_ = lane.valid;
+      }
+    }
     auto & stats = loop_->stats();
     stats.record("lane_latency", capture, t_in);
     stats.record("lane_pre", t_in, t_in + m.h2d_preprocess_nanoseconds * 1e-9);
@@ -659,6 +672,35 @@ private:
   }
 
   // ------------------------------------------------------------------ 설정·출력
+  acd::Reply apply_tuning(const std::map<std::string, double> & changes) {
+    std::lock_guard<std::mutex> lock(tuning_m_);
+    const auto result = registry_.apply(changes);
+    if (!result.first) return result;
+    bool tcn_changed = false, drive_changed = false;
+    for (const auto & change : changes) {
+      if (is_tcn_param(change.first)) tcn_changed = true;
+      else if (change.first != "tunnel.validation_mode") drive_changed = true;
+    }
+    if (drive_changed) apply_settings();
+    if (tcn_changed) publish_tcn_tuning();
+    return result;
+  }
+
+  void publish_tcn_tuning() {
+    if (!tcn_tuning_pub_) return;
+    acd::JsonWriter w;
+    w.begin_object();
+    for (const auto & p : registry_.list()) {
+      if (!is_tcn_param(p.name)) continue;
+      const auto name = p.name.substr(4);
+      w.key(name.c_str()).value(p.value, 9);
+    }
+    w.end_object();
+    std_msgs::msg::String message;
+    message.data = w.str();
+    tcn_tuning_pub_->publish(message);
+  }
+
   void apply_settings() {
     std::lock_guard<std::mutex> settings_lock(apply_settings_m_);
     auto s = acd::settings_from(registry_);
@@ -749,12 +791,22 @@ private:
         std::lock_guard<std::mutex> l(status_m_);
         x << ",\"handover\":\"" << json_escape(handover_mode_) << "\",\"joystick\":" << (now - last_joy_t_.load() < 1.0 ? "true" : "false")
           << ",\"tunnel\":{\"enabled\":" << (tunnel_enabled_ ? "true" : "false") << ",\"source\":\"" << lane_source_
-          << "\",\"state\":\"" << json_escape(tunnel_state_) << "\""
+          << "\",\"state\":\"" << json_escape(tunnel_state_) << "\"";
+        if (lane_source_changed_s_) {
+          x << ",\"source_changed_s\":" << std::fixed << std::setprecision(3) << *lane_source_changed_s_
+            << std::defaultfloat << std::setprecision(6);
+        }
+        if (lane_source_ == "IR") {
+          const char * ir = now - last_ir_lane_t_ > 0.5 ? "stale" : last_ir_lane_valid_ ? "valid" : "invalid";
+          x << ",\"ir_lane\":\"" << ir << "\"";
+        }
+        x << ",\"validation_mode\":" << (tunnel_validation_mode_ ? "true" : "false")
           << ",\"force_ir\":" << (force_ir_enabled_.load() ? "true" : "false")
           << ",\"force_ir_change_allowed\":" << (can_force_ir ? "true" : "false") << "}"
           << ",\"yolo\":{\"fps\":" << detect_->fps() << ",\"signal_score\":" << detect_->last_signal_score() << "}"
           << ",\"refit_supported\":true";
       }
+      if (tunnel_enabled_) x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_);
       if (drive_t0_ > 0 && f.state == "DRIVING") x << ",\"drive_s\":" << (now - drive_t0_);
       x << ",\"record\":" << record_status_json() << "}";
       j.pop_back();
@@ -878,17 +930,19 @@ private:
   std::string params_save_path_, lane_model_node_;
   std::vector<std::string> ir_model_nodes_;
   std::vector<std::string> ir_model_status_;
-  bool tunnel_enabled_{false};
+  bool tunnel_enabled_{false}, tunnel_validation_mode_{true};
   std::unique_ptr<acd::ControlLoop> loop_;
   std::unique_ptr<acd::DetectWorker> detect_;
   std::unique_ptr<acd::WebServer> web_;
   acd::SystemMonitor sysmon_;
   acd::SystemUsage usage_;
+  acd::TunnelTcnTelemetry tcn_telemetry_;   // web_group_에서만 갱신·조회
   double last_usage_t_{0}, last_status_t_{0}, drive_t0_{0};
   const double t_start_{acd::now_sec()};
   // 점검·상태 (status_m_)
   std::mutex status_m_;
   std::mutex apply_settings_m_;
+  std::mutex tuning_m_;
   std::mutex drive_command_m_;
   std::optional<rclcpp::Client<ForceIr>::FutureAndRequestId> force_ir_request_;
   bool force_ir_requested_value_{false};
@@ -897,6 +951,9 @@ private:
   std::shared_ptr<const bev_handoff::ObstacleReference> reference_;
   bool yolo_ready_{false}, inspection_done_{false}, tunnel_inside_{false};
   std::string handover_mode_{"-"}, lane_source_{"RGB"}, tunnel_state_{"OUTSIDE"};
+  std::optional<double> lane_source_changed_s_;
+  double last_ir_lane_t_{-1e9};
+  bool last_ir_lane_valid_{false};
   bev_handoff::LaneControlHints hint_base_;
   std::atomic<unsigned> hint_version_{0};
   std::mutex hint_m_;   // last_hint_*
@@ -932,14 +989,14 @@ private:
   std::unique_ptr<std::ofstream> cone_log_;
   // ROS
   rclcpp::Publisher<std_msgs::msg::Float32>::SharedPtr duty_pub_, brake_pub_, servo_pub_;
-  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr request_pub_, refit_pub_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr request_pub_, refit_pub_, tcn_tuning_pub_;
   std::atomic<bool> refit_sent_{false};   // 제어 스레드(watchdog)가 쓰고 상태 스레드가 읽음
   double refit_t0_{0};
   std::string refit_failure_;   // status_m_
   rclcpp::Subscription<std_msgs::msg::Int32>::SharedPtr erpm_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr connected_sub_, force_ir_sub_;
   rclcpp::Client<ForceIr>::SharedPtr force_ir_client_;
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_, startup_sub_, lane_model_sub_, tunnel_sub_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr mode_sub_, startup_sub_, lane_model_sub_, tunnel_sub_, tcn_sub_;
   std::vector<rclcpp::Subscription<std_msgs::msg::String>::SharedPtr> ir_model_subs_;
   rclcpp::Subscription<sensor_msgs::msg::Joy>::SharedPtr joy_sub_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr imu_sub_;

@@ -758,6 +758,12 @@
 "max": 10,
 "value": 3,
 "live": true
-}
+},
+{"name":"tcn.threshold","group":"tunnel","section":"RGB TCN","label":"진입·이탈 판정 임계값","unit":"","min":0,"max":1,"value":0.5,"live":true},
+{"name":"tcn.cooldown_seconds","group":"tunnel","section":"RGB TCN","label":"같은 이벤트 재검출 간격","unit":"s","min":0,"max":86400,"value":1,"live":true},
+{"name":"tcn.warmup_seconds","group":"tunnel","section":"RGB TCN","label":"워밍업 시간","unit":"s","min":0,"max":86400,"value":2.5,"live":true},
+{"name":"tcn.max_gap_seconds","group":"tunnel","section":"RGB TCN","label":"프레임 간 최대 간격","unit":"s","min":0.000001,"max":86400,"value":0.5,"live":true},
+{"name":"tcn.max_image_age_seconds","group":"tunnel","section":"RGB TCN","label":"RGB 프레임 최대 지연","unit":"s","min":0,"max":86400,"value":0.25,"live":true},
+{"name":"tunnel.validation_mode","group":"tunnel","section":"IR 입력 검증","label":"터널 검증 모드","unit":"","min":0,"max":1,"value":1,"live":false,"options":[{"value":1,"label":"true · 독립 IR 테스트 기준"},{"value":0,"label":"false · 노출 적용 확인"}]}
 ]
 }

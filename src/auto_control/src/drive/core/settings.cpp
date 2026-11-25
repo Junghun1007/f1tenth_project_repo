@@ -114,6 +114,14 @@ void register_params(ParamRegistry & r) {
   auto t = [&](const char * sec, const char * name, const char * label, const char * unit, double lo, double hi, double v, bool live = true) {
     r.add({name, "traffic", sec, label, unit, lo, hi, v, live});   // 웹 파라미터 창 [신호등] 탭
   };
+  constexpr double max_tcn_seconds = 86400;
+  r.add({"tcn.threshold", "tunnel", "RGB TCN", "진입·이탈 판정 임계값", "", 0, 1, 0.5});
+  r.add({"tcn.cooldown_seconds", "tunnel", "RGB TCN", "같은 이벤트 재검출 간격", "s", 0, max_tcn_seconds, 1.0});
+  r.add({"tcn.warmup_seconds", "tunnel", "RGB TCN", "워밍업 시간", "s", 0, max_tcn_seconds, 2.5});
+  r.add({"tcn.max_gap_seconds", "tunnel", "RGB TCN", "프레임 간 최대 간격", "s", 0.000001, max_tcn_seconds, 0.5});
+  r.add({"tcn.max_image_age_seconds", "tunnel", "RGB TCN", "RGB 프레임 최대 지연", "s", 0, max_tcn_seconds, 0.25});
+  r.add({"tunnel.validation_mode", "tunnel", "IR 입력 검증", "터널 검증 모드", "", 0, 1, 1, false,
+    {{1, "true · 독립 IR 테스트 기준"}, {0, "false · 노출 적용 확인"}}});
   o("YOLO 검출", "yolo.con_threshold", "콘 임계값", "", 0, 1, 0.83);
   o("YOLO 검출", "yolo.truck_threshold", "트럭 임계값", "", 0, 1, 0.70);
   o("YOLO 검출", "yolo.sedan_threshold", "세단 임계값", "", 0, 1, 0.70);

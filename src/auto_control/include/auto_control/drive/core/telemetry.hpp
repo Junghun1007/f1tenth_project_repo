@@ -4,6 +4,8 @@
 #include "auto_control/drive/core/lead_follower.hpp"
 #include "auto_control/drive/core/traffic_stop.hpp"
 #include <cstdint>
+#include <deque>
+#include <optional>
 #include <string>
 #include <vector>
 #include "auto_control/drive/core/drive_state.hpp"
@@ -50,5 +52,20 @@ struct TelemetryFrame {
 };
 
 std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points = 40);
+
+class TunnelTcnTelemetry {
+public:
+  void update(const std::string & report, double received_sec);
+  std::string json(double now_sec) const;
+
+private:
+  struct Sample {
+    double t, entry, exit;
+    std::string event;
+  };
+  std::deque<Sample> samples_;
+  std::string state_, status_;
+  std::optional<double> threshold_;
+};
 
 }  // namespace auto_control::drive

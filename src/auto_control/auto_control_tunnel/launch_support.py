@@ -8,6 +8,9 @@ from ament_index_python.packages import get_package_share_directory
 from launch_ros.actions import Node
 from launch_ros.descriptions import ComposableNode
 
+TCN_DEFAULTS = dict(threshold=0.5, cooldown_seconds=1.0, warmup_seconds=2.5,
+                    max_gap_seconds=0.5, max_image_age_seconds=0.25)
+
 
 def integrated_nodes(rgb_detector, controller, context):
     validation_text = str(context.launch_configurations.get('tunnel_validation_mode', 'true')).lower()
@@ -79,12 +82,16 @@ def integrated_nodes(rgb_detector, controller, context):
         ComposableNode(package='auto_control', plugin='auto_control::TunnelLaneSelector',
                        name='tunnel_lane_selector', parameters=[selector_parameters],
                        extra_arguments=[{'use_intra_process_comms': True}])]
+    tcn_file = shares['tunnel_tcn_test'] / 'config/tunnel_tcn.yaml'
+    tcn_defaults = {**TCN_DEFAULTS, **yaml.safe_load(tcn_file.read_text())['tunnel_tcn_test']['ros__parameters']}
+    tcn_tuning = {name: float(controller.get('tcn.' + name, tcn_defaults[name])) for name in TCN_DEFAULTS}
     processes = [
         Node(package='tunnel_tcn_test', executable='tunnel_tcn_node', name='tunnel_tcn_test',
-             output='screen', parameters=[str(shares['tunnel_tcn_test'] / 'config/tunnel_tcn.yaml'),
-                                          {'stats_topic': '/tunnel/rgb_stats', 'initial_state': 'outside',
+             output='screen', parameters=[str(tcn_file),
+                                          {**tcn_tuning, 'stats_topic': '/tunnel/rgb_stats', 'initial_state': 'outside',
+                                           'tuning_topic': '/tunnel/tcn_tuning',
                                            'preview_enabled': False}])]
-    return components, processes
+    return components, processes, {'tcn.' + name: value for name, value in tcn_tuning.items()}
 
 
 def model_check_node(tunnel_enabled, traffic_enabled):

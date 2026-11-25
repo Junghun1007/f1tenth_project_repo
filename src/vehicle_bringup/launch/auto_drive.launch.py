@@ -137,6 +137,14 @@ def _lane_padding(value):
         raise RuntimeError("lane result_padding_px must be -1 or a whole number from 0 to 300")
     return int(value)
 
+def _tunnel_validation_mode(context, drive_tuning):
+    if LaunchConfiguration("tunnel_validation_mode").perform(context).lower() != "inherit":
+        return _bool_arg(context, "tunnel_validation_mode")
+    value = drive_tuning.get("tunnel.validation_mode", True)
+    if value not in (0, 1):
+        raise RuntimeError("tunnel.validation_mode must be true/false or 1/0")
+    return bool(value)
+
 
 def _setup(context, *, bev_config, line_detactor_config, bev_launch):
     bev = _merged_parameters(bev_config, LaunchConfiguration("bev_params_file").perform(context), "bev_processor")
@@ -165,6 +173,8 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
     if mode not in ("drive", "detect"):
         raise RuntimeError("mode must be drive or detect")
     tunnel = _bool_arg(context, "tunnel_enabled")
+    validation_mode = _tunnel_validation_mode(context, drive_tuning)
+    context.launch_configurations["tunnel_validation_mode"] = str(validation_mode).lower()
     preview = _bool_arg(context, "preview_enabled")
     namespace = LaunchConfiguration("vehicle_namespace").perform(context).strip("/")
     prefix = f"/{namespace}" if namespace else ""
@@ -221,12 +231,14 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         extra_arguments=[{"use_intra_process_comms": True}],
     )]
     tunnel_actions = []
+    tcn_overrides = {}
     if tunnel:
         if not (width == 120 and height == 300 and math.isclose(x_max, 3.0) and math.isclose(y_max, .6)
                 and math.isclose(mpp, .01) and bev["output_frame_id"] == "front_axle_bev"):
             raise RuntimeError("Tunnel IR model requires 120x300 front-axle BEV at 1cm/pixel")
         from auto_control_tunnel.launch_support import integrated_nodes
-        components, tunnel_actions = integrated_nodes(detector, {
+        components, tunnel_actions, tcn_overrides = integrated_nodes(detector, {
+            **{key: value for key, value in drive_tuning.items() if key.startswith("tcn.")},
             "ir_lane.engine_precision": drive_tuning.get("ir_lane.engine_precision", 0),
             "ir_lane.result_padding_px": ir_padding,
         }, context)
@@ -244,6 +256,8 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         # BEV용 가상 확대 배율: auto_drive가 공유 fx·fy를 원본 영상 기준으로 되돌리는 데 씀
         "camera.fixed_view_zoom": float(camera.get("fixed_view_zoom", 1.25)),
         "tunnel.enabled": tunnel,
+        "tunnel.validation_mode": float(validation_mode),
+        **tcn_overrides,
         "web.port": int(LaunchConfiguration("web_port").perform(context)),
         "topics.lane_result": lane_topic,
         "topics.measured_erpm": _VESC["measured_erpm_topic"],
@@ -392,8 +406,8 @@ def generate_launch_description():
         DeclareLaunchArgument("tunnel_ir_length_exit_minimum_reference_m", default_value="0.5"),
         DeclareLaunchArgument("tunnel_ir_imu_enabled", default_value="true",
                               description="Apply capture-time IMU tilt to tunnel IR BEV; false uses fixed measured ground pose."),
-        DeclareLaunchArgument("tunnel_validation_mode", default_value="true",
-                              description="Use standalone IR publication timing and bypass integration-only input gates."),
+        DeclareLaunchArgument("tunnel_validation_mode", default_value="inherit",
+                              description="inherit = drive YAML (default true); false verifies IR exposure before using frames."),
         DeclareLaunchArgument("depthai_library_dir", default_value="",
                               description="Optional DepthAI runtime library directory; default uses build SDK."),
         DeclareLaunchArgument("bev_params_file", default_value=bev_config),

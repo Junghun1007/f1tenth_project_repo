@@ -3,6 +3,7 @@ from .loading_status import LoadingStatus
 from collections import deque
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -94,9 +95,38 @@ class TunnelNode(Node):
         self.status = 'WAITING FOR CAMERA'
         self.infer_ms = self.total_ms = 0.
         self.measured_fps = 0.
+        tuning_topic = parameter('tuning_topic', '')
+        if tuning_topic:
+            self.tuning_sub = self.create_subscription(String, tuning_topic, self.on_tuning, QoSProfile(
+                depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
     def on_image(self, message):
         self.pending = message
+
+    def on_tuning(self, message):
+        try:
+            tuning = json.loads(message.data)
+            threshold = tuning['threshold']
+            cooldown = tuning['cooldown_seconds']
+            warmup = tuning['warmup_seconds']
+            max_gap = tuning['max_gap_seconds']
+            max_age = tuning['max_image_age_seconds']
+            values = (threshold, cooldown, warmup, max_gap, max_age)
+            if not all(type(value) in (int, float) and math.isfinite(value) for value in values):
+                raise ValueError('expected finite numbers')
+            if not (0 <= threshold <= 1 and cooldown >= 0 and warmup >= 0 and max_gap > 0 and max_age >= 0):
+                raise ValueError('parameter out of range')
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            self.get_logger().warning(f'Ignoring tunnel TCN tuning: {error}')
+            return
+        if threshold != self.decoder.threshold and self.status.startswith('LIVE'):
+            # Use the last scores as the crossing baseline and keep the tunnel state and cooldown history.
+            self.decoder.active = self.probabilities >= threshold
+        self.decoder.threshold = threshold
+        self.decoder.cooldown = cooldown
+        self.stream.warmup_seconds = warmup
+        self.stream.max_gap_seconds = max_gap
+        self.max_age = max_age
 
     def clear_history(self, new_drive=False):
         self.stream.reset()
@@ -178,7 +208,7 @@ class TunnelNode(Node):
         self.total_ms = (time.perf_counter() - started) * 1000
         report = {'source_stamp_ns': stamp, 'scores': dict(zip(('entry', 'exit'), self.probabilities.tolist())),
                   'model_id': self.model_id,
-                  'state': self.decoder.state, 'status': self.status, 'event': event,
+                  'state': self.decoder.state, 'status': self.status, 'event': event, 'threshold': self.decoder.threshold,
                   'inference_time_s': grid_time, 'source_fps': self.measured_fps, 'estimated_missed_frames': self.dropped,
                   'inference_wall_ms': self.infer_ms, 'processing_ms': self.total_ms,
                   'source_age_at_receive_ms': age * 1000}

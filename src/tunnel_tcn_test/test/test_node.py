@@ -167,6 +167,29 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(self.node.decoder.state, 'inside')
         self.assertEqual(self.calls[-1].shape, (1, 17, 32))
 
+    def test_live_tuning_keeps_tunnel_state_and_updates_reported_threshold(self):
+        for frame in range(80):
+            self.frame(frame)
+        n = self.node
+        before = n.decoder.last.copy()
+        tuning = dict(threshold=.6, cooldown_seconds=.7, warmup_seconds=1.,
+                      max_gap_seconds=.8, max_image_age_seconds=.3)
+        n.on_tuning(SimpleNamespace(data=json.dumps(tuning)))
+        self.assertEqual(n.decoder.state, 'inside')
+        np.testing.assert_array_equal(n.decoder.last, before)
+        self.assertEqual(n.decoder.cooldown, .7)
+        self.assertEqual(n.stream.warmup_seconds, 1.)
+        self.assertEqual(n.stream.max_gap_seconds, .8)
+        self.assertEqual(n.max_age, .3)
+        for frame in range(80, 86):
+            self.frame(frame)
+        self.assertEqual(self.outputs[-1]['threshold'], .6)
+        self.assertIsNone(self.outputs[-1]['event'])
+
+        n.on_tuning(SimpleNamespace(data=json.dumps(dict(tuning, threshold=.9, max_gap_seconds=0))))
+        self.assertEqual(n.decoder.threshold, .6)
+        self.assertEqual(n.stream.max_gap_seconds, .8)
+
     def test_history_reset_preserves_state_unless_new_drive(self):
         n = self.node
         for frame in range(80):

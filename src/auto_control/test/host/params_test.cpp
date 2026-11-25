@@ -71,6 +71,20 @@ TEST(params_json_lists_specs) {
   CHECK(j.find("\"live\":true") != std::string::npos);
 }
 
+TEST(tunnel_tuning_validates_and_saves_detector_and_restart_settings) {
+  ParamRegistry r;
+  register_params(r);
+  CHECK(r.get("tcn.threshold") == 0.5);
+  CHECK(r.get("tunnel.validation_mode") == 1);
+  CHECK(!r.apply({{"tcn.threshold", 0.65}, {"tcn.max_gap_seconds", 0}}).first);
+  CHECK(r.get("tcn.threshold") == 0.5);
+  CHECK(!r.apply({{"tunnel.validation_mode", 0.5}}).first);
+  CHECK(r.apply({{"tcn.threshold", 0.65}, {"tunnel.validation_mode", 0}}).first);
+  const auto yaml = r.to_yaml("auto_drive");
+  CHECK(yaml.find("tcn.threshold: 0.65") != std::string::npos);
+  CHECK(yaml.find("tunnel.validation_mode: 0.0") != std::string::npos);
+}
+
 TEST(tunnel_ir_resolution_uses_supported_choices) {
   ParamRegistry r;
   register_params(r);
