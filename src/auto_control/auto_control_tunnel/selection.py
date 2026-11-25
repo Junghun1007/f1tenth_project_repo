@@ -1,4 +1,4 @@
-"""Prepare the target source while routing the current source, then switch once."""
+"""Select IR immediately on TCN entry. Wait for a usable RGB path on exit."""
 import math
 from .path_validation import PathRules, metric_path, stamp_ns
 from .ir_length_exit import IrLengthExit
@@ -63,9 +63,12 @@ class LaneSelector:
         if target == self.selected:
             self._finish(now_ns, 'reversed_request')
             return True
+        if target == 'IR':
+            self._finish(now_ns, 'tcn_entry')
+            return True
         self.started_ns = now_ns
         self.reason = 'waiting_target_path'
-        self.state = 'ENTERING' if target == 'IR' else 'EXITING'
+        self.state = 'EXITING'
         return True
 
     def _finish(self, now_ns, reason):

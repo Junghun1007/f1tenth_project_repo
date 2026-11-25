@@ -118,7 +118,7 @@ class LengthExitTests(unittest.TestCase):
         self.assertTrue(s.observe_tcn_state('outside',trigger+ns(.04),trigger+ns(.05)))
         self.assertTrue(s.event('entry',trigger+ns(.1),trigger+ns(.11)))
         self.assertEqual(s.ir_length_exit.reference,0.)
-        self.assertEqual(s.state,'ENTERING')
+        self.assertEqual(s.state,'INSIDE')
 
     def test_invalid_parameters(self):
         for values in (dict(ratio=0),dict(ratio=1),dict(ratio=float('nan')),

@@ -183,7 +183,7 @@ private:
   std::optional<std::int64_t> last_stamp_;
 };
 
-// Prepare the target source while routing the current source, then switch once.
+// TCN entry selects IR immediately. Other requests can wait for a usable path.
 class LaneSelector
 {
 public:
@@ -220,7 +220,10 @@ public:
     }
     if (kind == "entry" && ir_exit_latched_at) {return false;}
     last_event_ns = stamp;
-    return request_source(kind == "entry" ? "IR" : "RGB", now_ns);
+    const bool entry = kind == "entry";
+    if (!request_source(entry ? "IR" : "RGB", now_ns)) {return false;}
+    if (entry && transitioning()) {finish(now_ns, "tcn_entry");}
+    return true;
   }
 
   bool request_source(std::string target, std::int64_t now_ns)

@@ -80,38 +80,40 @@ class CallbackTests(unittest.TestCase):
         self.node.on_lane('RGB', self.message)
         self.assertEqual(self.outputs, [self.message])
         self.report(status='WARMUP 2.5s')
-        # Validation accepts an old LIVE event, then prepares a new target path.
+        # Validation accepts an old LIVE event and selects IR immediately.
         self.report(state='inside', source_stamp_ns=9_000_000_000)
-        self.assertEqual(self.node.policy.state, 'ENTERING')
+        self.assertEqual(self.node.policy.state, 'INSIDE')
         self.node.tcn_live = False
+        first_ir = lane(10, valid=False)
         with patch.object(self.module.time, 'monotonic', return_value=100000.):
-            self.node.on_lane('IR', self.message)
-        self.assertEqual(self.outputs, [self.message])
+            self.node.on_lane('IR', first_ir)
+        self.assertEqual(self.outputs, [self.message, first_ir])
         valid_ir = lane(10.02)
         self.node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=ns(10.025)))
         self.node.on_lane('IR', valid_ir)
         self.assertEqual(self.node.policy.selected, 'IR')
-        self.assertEqual(self.outputs, [self.message, valid_ir])
+        self.assertEqual(self.outputs, [self.message, first_ir, valid_ir])
         # Does not fabricate a new result or repeat one already delivered.
         self.node.on_lane('IR', valid_ir)
-        self.assertEqual(len(self.outputs), 2)
+        self.assertEqual(len(self.outputs), 3)
 
     def test_real_tcn_event_schema_requests_entry(self):
         self.report(state='inside', event=dict(type='entry', score=.9, time_s=3.))
-        self.assertEqual(self.node.policy.state, 'ENTERING')
-        self.assertEqual(self.node.policy.selected, 'RGB')
-        self.assertEqual(self.node.policy.compute, 'BOTH')
+        self.assertEqual(self.node.policy.state, 'INSIDE')
+        self.assertEqual(self.node.policy.selected, 'IR')
+        self.assertEqual(self.node.policy.compute, 'IR')
 
-    def test_callbacks_keep_rgb_until_first_valid_ir_and_publish_original_immediately(self):
+    def test_callbacks_forward_first_ir_even_if_invalid_and_drop_subsequent_rgb(self):
         self.node.policy = LaneSelector(validation_mode=True)
         rgb = lane(10.)
         self.node.on_lane('RGB', rgb)
         self.report(state='inside')
         self.node.get_clock = lambda: NS(now=lambda: NS(nanoseconds=ns(10.04)))
-        self.node.on_lane('IR', lane(10.02, valid=False))
+        first_ir = lane(10.02, valid=False)
+        self.node.on_lane('IR', first_ir)
         rgb_next = lane(10.03)
         self.node.on_lane('RGB', rgb_next)
-        self.assertEqual(self.outputs, [rgb, rgb_next])
+        self.assertEqual(self.outputs, [rgb, first_ir])
         target = lane(10.035, lateral=.1)
         self.node.on_lane('IR', target)
         self.assertIs(self.outputs[-1], target)
@@ -121,7 +123,7 @@ class CallbackTests(unittest.TestCase):
 
     def test_retained_tcn_state_recovers_lost_event_without_repeating_switch(self):
         self.report(state='inside')
-        self.assertEqual(self.node.policy.state, 'ENTERING')
+        self.assertEqual(self.node.policy.state, 'INSIDE')
         event_stamp = self.node.policy.last_event_ns
         self.report(state='inside', source_stamp_ns=10_005_000_000)
         self.assertEqual(self.node.policy.last_event_ns, event_stamp)

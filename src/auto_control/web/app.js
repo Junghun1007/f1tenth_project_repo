@@ -347,6 +347,7 @@ function renderTunnel(tunnel, chart, laneFresh) {
 
   const source = tunnel.source || "RGB";
   const waiting = tunnel.state === "ENTERING" && source !== "IR" ? "유효 IR 경로 대기"
+    : tunnel.state === "INSIDE" && source !== "IR" ? "IR 선택 · 첫 결과 수신 대기"
     : tunnel.state === "EXITING" && source !== "RGB" ? "유효 RGB 경로 대기" : "";
   const lane = $("tcnLane");
   const irStatus = source === "IR" ? tunnel.ir_lane : null;
@@ -702,9 +703,9 @@ async function demo() {
       g.vehicle.speed = 0.57; g.vehicle.target = 0.52;
     } else if (scene === "tunnel") {
       const tick = 50 + Math.floor(i / 2), now = tick / 10;
-      const state = tick < 62 ? "OUTSIDE" : tick < 67 ? "ENTERING" : tick < 91 ? "INSIDE" : tick < 96 ? "EXITING" : "OUTSIDE";
-      g.tunnel = { enabled: true, source: tick >= 67 && tick < 96 ? "IR" : "RGB", state, ir_lane: "valid", validation_mode: true,
-        source_changed_s: tick >= 96 ? 9.6 : tick >= 67 ? 6.7 : null };
+      const state = tick < 62 ? "OUTSIDE" : tick < 91 ? "INSIDE" : tick < 96 ? "EXITING" : "OUTSIDE";
+      g.tunnel = { enabled: true, source: tick >= 63 && tick < 96 ? "IR" : "RGB", state, ir_lane: "valid", validation_mode: true,
+        source_changed_s: tick >= 96 ? 9.6 : tick >= 63 ? 6.3 : null };
       const peak = (j, center, width) => Math.exp(-0.5 * ((j - center) / width) ** 2);
       const samples = Array.from({ length: tick + 1 }, (_, j) => [
         j / 10, 0.06 + 0.87 * peak(j, 63, 1.6), 0.04 + 0.83 * peak(j, 92, 1.5),
