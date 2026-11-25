@@ -62,9 +62,10 @@ private:
   struct Sample {
     double t, entry, exit;
     std::string event;
+    bool forced;
   };
   std::deque<Sample> samples_;
-  std::string state_, status_;
+  std::string state_, status_, state_override_;
   std::optional<double> threshold_;
 };
 

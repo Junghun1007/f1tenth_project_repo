@@ -5,6 +5,8 @@ namespace bev_handoff
 {
 namespace
 {
+std::shared_ptr<const TunnelRuntimeSettings> runtime_settings;
+
 std::shared_ptr<const IrCameraSettings> & slot()
 {
   static std::shared_ptr<const IrCameraSettings> settings;
@@ -31,5 +33,14 @@ std::shared_ptr<const IrCameraSettings> irCameraSettings()
 std::uint64_t irCameraSettingsRevision()
 {
   return revision().load(std::memory_order_acquire);
+}
+void publishTunnelRuntimeSettings(std::shared_ptr<const TunnelRuntimeSettings> settings)
+{
+  std::atomic_store(&runtime_settings, std::move(settings));
+}
+
+std::shared_ptr<const TunnelRuntimeSettings> tunnelRuntimeSettings()
+{
+  return std::atomic_load(&runtime_settings);
 }
 }  // namespace bev_handoff

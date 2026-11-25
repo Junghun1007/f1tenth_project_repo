@@ -56,6 +56,35 @@ std::string json_escape(const std::string & s) {
   return o;
 }
 bool is_tcn_param(const std::string & name) { return name.rfind("tcn.", 0) == 0; }
+
+std::string camera_exposure_json() {
+  acd::JsonWriter w;
+  const auto now = std::chrono::steady_clock::now();
+  auto exposure = [&](const std::shared_ptr<const bev_handoff::CameraExposureObservation> & obs) {
+    w.key("ms");
+    if (obs && obs->exposure_us > 0) w.value(obs->exposure_us / 1000.0, 3); else w.null();
+    w.key("stale").value(obs && (now < obs->captured_at || now - obs->captured_at > 750ms));
+  };
+  auto stereo = [&](const char * key, const auto & obs) {
+    w.key(key).begin_object();
+    exposure(obs);
+    w.key("iso");
+    if (obs && obs->iso > 0) w.value(static_cast<long long>(obs->iso)); else w.null();
+    w.end_object();
+  };
+  const auto rgb_mode = bev_handoff::latestRgbExposureControl();
+  const char * mode = rgb_mode == bev_handoff::RgbExposureControl::restoring ? "manual" :
+    rgb_mode == bev_handoff::RgbExposureControl::auto_pending ? "auto_pending" : "auto";
+  w.begin_object().key("rgb").begin_object().key("mode").value(mode);
+  exposure(bev_handoff::latestCameraExposure(false));
+  w.end_object();
+  stereo("ir_left", bev_handoff::latestCameraExposure(true));
+  stereo("ir_right", bev_handoff::latestRightIrExposure());
+  w.key("ir_flood");
+  if (const auto intensity = bev_handoff::latestIrFloodIntensity()) w.value(*intensity, 2); else w.null();
+  w.end_object();
+  return w.str();
+}
 }  // namespace
 
 class AutoDriveNode : public rclcpp::Node {
@@ -114,7 +143,7 @@ public:
     params_save_path_ = declare_parameter<std::string>("params_save_path", cache + "/auto_drive_saved.yaml");
     lane_model_node_ = declare_parameter<std::string>("inspection.lane_model_node", "line_detactor");
     tunnel_enabled_ = declare_parameter<bool>("tunnel.enabled", false);
-    tunnel_validation_mode_ = registry_.get("tunnel.validation_mode") == 1;
+    publish_tunnel_runtime_settings();
     ir_model_nodes_ = declare_parameter<std::vector<std::string>>("inspection.ir_model_nodes",
                                                                    std::vector<std::string>{"ir_line_detactor", "tunnel_tcn_test"});
 
@@ -676,14 +705,27 @@ private:
     std::lock_guard<std::mutex> lock(tuning_m_);
     const auto result = registry_.apply(changes);
     if (!result.first) return result;
-    bool tcn_changed = false, drive_changed = false;
+    bool tcn_changed = false, tunnel_changed = false, drive_changed = false;
     for (const auto & change : changes) {
       if (is_tcn_param(change.first)) tcn_changed = true;
-      else if (change.first != "tunnel.validation_mode") drive_changed = true;
+      else if (change.first.rfind("tunnel.", 0) == 0) tunnel_changed = true;
+      else drive_changed = true;
     }
     if (drive_changed) apply_settings();
     if (tcn_changed) publish_tcn_tuning();
+    if (tunnel_changed) publish_tunnel_runtime_settings();
     return result;
+  }
+
+  void publish_tunnel_runtime_settings() {
+    if (!tunnel_enabled_) return;
+    auto settings = std::make_shared<bev_handoff::TunnelRuntimeSettings>();
+    settings->validation_mode = registry_.get("tunnel.validation_mode") == 1;
+    settings->ir_length_exit_enabled = registry_.get("tunnel.ir_length_exit_enabled") == 1;
+    settings->ir_length_exit_ratio = registry_.get("tunnel.ir_length_exit_ratio");
+    settings->ir_length_exit_confirm_frames = static_cast<int>(registry_.get("tunnel.ir_length_exit_confirm_frames"));
+    settings->ir_length_exit_minimum_reference_m = registry_.get("tunnel.ir_length_exit_minimum_reference_m");
+    bev_handoff::publishTunnelRuntimeSettings(std::move(settings));
   }
 
   void publish_tcn_tuning() {
@@ -787,6 +829,7 @@ private:
     const bool can_force_ir = tunnel_enabled_ && loop_->tunnel_override_allowed(now);
     if (!j.empty() && j.back() == '}') {   // auto_control 추가 항목
       std::ostringstream x;
+      const auto tunnel_settings = bev_handoff::tunnelRuntimeSettings();
       {
         std::lock_guard<std::mutex> l(status_m_);
         x << ",\"handover\":\"" << json_escape(handover_mode_) << "\",\"joystick\":" << (now - last_joy_t_.load() < 1.0 ? "true" : "false")
@@ -800,13 +843,15 @@ private:
           const char * ir = now - last_ir_lane_t_ > 0.5 ? "stale" : last_ir_lane_valid_ ? "valid" : "invalid";
           x << ",\"ir_lane\":\"" << ir << "\"";
         }
-        x << ",\"validation_mode\":" << (tunnel_validation_mode_ ? "true" : "false")
-          << ",\"force_ir\":" << (force_ir_enabled_.load() ? "true" : "false")
+        if (tunnel_settings) x << ",\"validation_mode\":" << (tunnel_settings->validation_mode ? "true" : "false");
+        x << ",\"force_ir\":" << (force_ir_enabled_.load() ? "true" : "false")
           << ",\"force_ir_change_allowed\":" << (can_force_ir ? "true" : "false") << "}"
           << ",\"yolo\":{\"fps\":" << detect_->fps() << ",\"signal_score\":" << detect_->last_signal_score() << "}"
           << ",\"refit_supported\":true";
       }
-      if (tunnel_enabled_) x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_);
+      if (tunnel_enabled_) {
+        x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_) << ",\"camera_exposure\":" << camera_exposure_json();
+      }
       if (drive_t0_ > 0 && f.state == "DRIVING") x << ",\"drive_s\":" << (now - drive_t0_);
       x << ",\"record\":" << record_status_json() << "}";
       j.pop_back();
@@ -930,7 +975,7 @@ private:
   std::string params_save_path_, lane_model_node_;
   std::vector<std::string> ir_model_nodes_;
   std::vector<std::string> ir_model_status_;
-  bool tunnel_enabled_{false}, tunnel_validation_mode_{true};
+  bool tunnel_enabled_{false};
   std::unique_ptr<acd::ControlLoop> loop_;
   std::unique_ptr<acd::DetectWorker> detect_;
   std::unique_ptr<acd::WebServer> web_;

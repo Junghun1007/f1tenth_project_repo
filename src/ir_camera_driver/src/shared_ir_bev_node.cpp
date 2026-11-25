@@ -11,6 +11,7 @@
 #include <std_msgs/msg/string.hpp>
 #include <opencv2/imgproc.hpp>
 #include "bev_handoff/direct_obstacle_handoff.hpp"
+#include "bev_handoff/ir_camera_settings.hpp"
 #include "ir_camera_driver/ir_bev_projector.hpp"
 #include "ir_camera_driver/ir_frame_rate_gate.hpp"
 
@@ -73,8 +74,13 @@ private:
     const auto reference=bev_handoff::obstacleReference();
     if (!frame) {wait_reason_="waiting_camera_frame"; return;}
     if (!reference) {wait_reason_="waiting_bev_reference"; return;}
-    if (!validation_ && now-frame->captured_at>std::chrono::milliseconds(250)) {wait_reason_="camera_frame_stale"; return;}
-    if (!validation_ && inside_ && !frame->tunnel_profile) {wait_reason_="waiting_tunnel_exposure"; return;}
+    const auto runtime=bev_handoff::tunnelRuntimeSettings();
+    const bool validation=runtime ? runtime->validation_mode : validation_;
+    if (!validation && now-frame->captured_at>std::chrono::milliseconds(250)) {wait_reason_="camera_frame_stale"; return;}
+    if (!validation && (!frame->passed_input_guards || (inside_ && !frame->tunnel_profile))) {
+      wait_reason_="waiting_tunnel_exposure";
+      return;
+    }
     if (frame->captured_at<=last_) {return;}
     try {
       if (!projector_ || frame->mono.size()!=projector_input_size_) {
@@ -92,15 +98,18 @@ private:
         projector_input_size_=frame->mono.size();
       }
       if (!inside_ && standby_==0.0) {return;}
-      if (!rate_gate_.accept(std::chrono::duration<double>(frame->captured_at.time_since_epoch()).count(),
-          inside_ ? active_ : standby_)) {return;}
-      const auto image=projector_->project(frame->mono,frame->current_rgb_to_reference);
-      auto message=std::make_unique<sensor_msgs::msg::Image>();
       // The working standalone driver defaults use_sensor_timestamps=false.
       // Set one BEV publication stamp for both mono and model input; retain
       // capture time in DirectIrFrame and diagnostics for measuring latency.
       auto header=frame->header;
-      if (validation_) {header.stamp=get_clock()->now();}
+      if (validation) {header.stamp=get_clock()->now();}
+      const auto stamp_ns=rclcpp::Time(header.stamp).nanoseconds();
+      // Switching to capture timestamps can briefly put new captures behind the last published stamp.
+      if (stamp_ns<=last_output_stamp_ns_) {wait_reason_="waiting_monotonic_stamp"; return;}
+      if (!rate_gate_.accept(std::chrono::duration<double>(frame->captured_at.time_since_epoch()).count(),
+          inside_ ? active_ : standby_)) {return;}
+      const auto image=projector_->project(frame->mono,frame->current_rgb_to_reference);
+      auto message=std::make_unique<sensor_msgs::msg::Image>();
       message->header=header; message->encoding="mono8";
       message->width=image.cols; message->height=image.rows; message->step=image.cols;
       message->data.assign(image.datastart,image.dataend);
@@ -115,6 +124,7 @@ private:
       model_input->data.assign(bgr.datastart,bgr.dataend);
       bgr_publisher_->publish(std::move(model_input));
       last_=frame->captured_at;
+      last_output_stamp_ns_=stamp_ns;
       ++output_count_; wait_reason_="streaming";
     } catch (const std::exception & e) {
       projector_.reset();
@@ -126,6 +136,7 @@ private:
   double standby_,active_;
   bool inside_{false},validation_{false};
   Clock::time_point last_{},retry_at_{},diagnostic_started_{};
+  std::int64_t last_output_stamp_ns_{0};
   IrFrameRateGate rate_gate_;
   std::uint64_t output_count_{0};
   std::string wait_reason_{"waiting_camera_frame"};

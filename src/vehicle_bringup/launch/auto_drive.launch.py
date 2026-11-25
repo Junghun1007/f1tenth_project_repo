@@ -231,14 +231,14 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         extra_arguments=[{"use_intra_process_comms": True}],
     )]
     tunnel_actions = []
-    tcn_overrides = {}
+    tunnel_overrides = {}
     if tunnel:
         if not (width == 120 and height == 300 and math.isclose(x_max, 3.0) and math.isclose(y_max, .6)
                 and math.isclose(mpp, .01) and bev["output_frame_id"] == "front_axle_bev"):
             raise RuntimeError("Tunnel IR model requires 120x300 front-axle BEV at 1cm/pixel")
         from auto_control_tunnel.launch_support import integrated_nodes
-        components, tunnel_actions, tcn_overrides = integrated_nodes(detector, {
-            **{key: value for key, value in drive_tuning.items() if key.startswith("tcn.")},
+        components, tunnel_actions, tunnel_overrides = integrated_nodes(detector, {
+            **{key: value for key, value in drive_tuning.items() if key.startswith(("tcn.", "tunnel."))},
             "ir_lane.engine_precision": drive_tuning.get("ir_lane.engine_precision", 0),
             "ir_lane.result_padding_px": ir_padding,
         }, context)
@@ -257,7 +257,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch):
         "camera.fixed_view_zoom": float(camera.get("fixed_view_zoom", 1.25)),
         "tunnel.enabled": tunnel,
         "tunnel.validation_mode": float(validation_mode),
-        **tcn_overrides,
+        **tunnel_overrides,
         "web.port": int(LaunchConfiguration("web_port").perform(context)),
         "topics.lane_result": lane_topic,
         "topics.measured_erpm": _VESC["measured_erpm_topic"],
@@ -399,11 +399,11 @@ def generate_launch_description():
         DeclareLaunchArgument("slcan_bitrate", default_value="500000"),
         DeclareLaunchArgument("can_controller_id", default_value="0"),
         DeclareLaunchArgument("tunnel_enabled", default_value="false"),
-        DeclareLaunchArgument("tunnel_ir_length_exit_enabled", default_value="false",
-                              description="Experimental IR observed-length exit trigger."),
-        DeclareLaunchArgument("tunnel_ir_length_exit_ratio", default_value="0.15"),
-        DeclareLaunchArgument("tunnel_ir_length_exit_confirm_frames", default_value="3"),
-        DeclareLaunchArgument("tunnel_ir_length_exit_minimum_reference_m", default_value="0.5"),
+        DeclareLaunchArgument("tunnel_ir_length_exit_enabled", default_value="inherit",
+                              description="IR observed-length exit trigger. inherit = drive YAML (default false)."),
+        DeclareLaunchArgument("tunnel_ir_length_exit_ratio", default_value="inherit"),
+        DeclareLaunchArgument("tunnel_ir_length_exit_confirm_frames", default_value="inherit"),
+        DeclareLaunchArgument("tunnel_ir_length_exit_minimum_reference_m", default_value="inherit"),
         DeclareLaunchArgument("tunnel_ir_imu_enabled", default_value="true",
                               description="Apply capture-time IMU tilt to tunnel IR BEV; false uses fixed measured ground pose."),
         DeclareLaunchArgument("tunnel_validation_mode", default_value="inherit",

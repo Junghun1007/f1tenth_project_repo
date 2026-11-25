@@ -5,20 +5,19 @@
 #include <chrono>
 #include <cstdio>
 #include <functional>
-#include <future>
 #include <optional>
 #include <vector>
 #include <memory>
 #include <string>
 
 #include "auto_control/tunnel_selection.hpp"
+#include "bev_handoff/ir_camera_settings.hpp"
 #include "line_detactor_msgs/msg/lane_result.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_components/register_node_macro.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/set_bool.hpp"
-#include "std_srvs/srv/trigger.hpp"
 
 namespace auto_control
 {
@@ -26,7 +25,6 @@ namespace auto_control
 using line_detactor_msgs::msg::LaneResult;
 using std_msgs::msg::String;
 using ForceIr = std_srvs::srv::SetBool;
-using ResetTcn = std_srvs::srv::Trigger;
 using namespace std::chrono_literals;
 
 class TunnelLaneSelector : public rclcpp::Node
@@ -52,15 +50,12 @@ public:
     }
     preview_pub_ = create_publisher<String>("/tunnel/preview_status", latched, latched_options);
     force_ir_pub_ = create_publisher<std_msgs::msg::Bool>("/tunnel/force_ir_enabled", latched, latched_options);
-    reset_tcn_ = create_client<ResetTcn>("/tunnel_tcn/reset_outside");
+    tcn_state_override_pub_ = create_publisher<String>("/tunnel_tcn/state_override", latched, latched_options);
     force_ir_service_ = create_service<ForceIr>("/tunnel/set_force_ir",
       [this](std::shared_ptr<rmw_request_id_t> id, std::shared_ptr<ForceIr::Request> request) {
         set_force_ir(*id, request->data);
       });
-    preview_timer_ = create_wall_timer(200ms, [this]() {
-      finish_tcn_reset();
-      publish_preview();
-    });
+    preview_timer_ = create_wall_timer(200ms, [this]() {publish_preview();});
 
     rclcpp::SubscriptionOptions inter_process;
     inter_process.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
@@ -70,18 +65,12 @@ public:
         [this](LaneResult::ConstSharedPtr message) {on_lane("RGB", message);});
     ir_sub_ = create_subscription<LaneResult>("/ir_bev_line_detection/result", sensor,
         [this](LaneResult::ConstSharedPtr message) {on_lane("IR", message);});
+    set_tcn_override("auto");
     publish_status();
     publish_force_ir();
   }
 
 private:
-  struct PendingReset
-  {
-    rmw_request_id_t response_id;
-    rclcpp::Client<ResetTcn>::FutureAndRequestId request;
-    std::chrono::steady_clock::time_point deadline;
-  };
-
   void publish_force_ir()
   {
     std_msgs::msg::Bool message;
@@ -89,81 +78,61 @@ private:
     force_ir_pub_->publish(message);
   }
 
-  void reply_force_ir(rmw_request_id_t id, bool ok, const std::string & reason)
+  void set_tcn_override(const char * state)
   {
-    ForceIr::Response response;
-    response.success = ok;
-    response.message = reason;
-    force_ir_service_->send_response(id, response);
+    String message;
+    message.data = state;
+    tcn_state_override_pub_->publish(message);
   }
 
   void set_force_ir(rmw_request_id_t id, bool enable)
   {
-    if (pending_reset_) {
-      reply_force_ir(id, false, "TCN reset in progress");
-      return;
-    }
-    if (enable == force_ir_) {
-      reply_force_ir(id, true, "");
-      return;
-    }
-    if (!enable) {
-      force_ir_ = false;
-      resume_tcn_ = true;
+    if (enable != force_ir_) {
       const auto now_ns = now().nanoseconds();
-      if (tcn_live_ && last_tcn_state_ && last_tcn_received_ &&
-        monotonic() - *last_tcn_received_ <= .5 &&
-        0 <= now_ns - last_tcn_state_->stamp && now_ns - last_tcn_state_->stamp <= 250000000)
-      {
-        resume_tcn_ = false;
-        apply_tcn_state(last_tcn_state_->state, last_tcn_state_->stamp, now_ns);
+      force_ir_ = enable;
+      policy_.ir_exit_latched_at.reset();
+      policy_.ir_length_exit.reset();
+      policy_.request_source(enable ? "IR" : "RGB", now_ns);
+      forced_exit_ = !enable && policy_.transitioning();
+      if (enable) {
+        set_tcn_override("inside");
+      } else if (forced_exit_) {
+        set_tcn_override("outside");
       } else {
-        policy_.request_source(policy_.selected, now_ns);
+        resume_tcn_outside(now_ns);
       }
       publish_status();
       publish_force_ir();
-      reply_force_ir(id, true, "");
-      return;
     }
-    if (!reset_tcn_->service_is_ready()) {
-      reply_force_ir(id, false, "TCN reset service unavailable");
-      return;
-    }
-    pending_reset_.emplace(PendingReset{id, reset_tcn_->async_send_request(
-      std::make_shared<ResetTcn::Request>()), std::chrono::steady_clock::now() + 1s});
+    ForceIr::Response response;
+    response.success = true;
+    force_ir_service_->send_response(id, response);
   }
 
-  void finish_tcn_reset()
+  void resume_tcn_outside(std::int64_t now_ns)
   {
-    if (!pending_reset_) {return;}
-    auto & pending = *pending_reset_;
-    const auto id = pending.response_id;
-    if (pending.request.wait_for(0s) != std::future_status::ready) {
-      if (std::chrono::steady_clock::now() >= pending.deadline) {
-        reset_tcn_->remove_pending_request(pending.request.request_id);
-        pending_reset_.reset();
-        reply_force_ir(id, false, "TCN reset timed out");
-      }
-      return;
-    }
-    const auto response = pending.request.get();
-    pending_reset_.reset();
-    if (!response->success) {
-      reply_force_ir(id, false, response->message);
-      return;
-    }
-    const auto now_ns = now().nanoseconds();
+    forced_exit_ = false;
     tcn_report_after_ns_ = now_ns;
-    last_tcn_state_.reset();
-    tcn_live_ = false;
-    resume_tcn_ = false;
-    force_ir_ = true;
-    policy_.ir_exit_latched_at.reset();
-    policy_.ir_length_exit.reset();
-    policy_.request_source("IR", now_ns);
-    publish_status();
-    publish_force_ir();
-    reply_force_ir(id, true, "");
+    set_tcn_override("resume_outside");
+  }
+
+  void refresh_runtime_settings()
+  {
+    const auto settings = bev_handoff::tunnelRuntimeSettings();
+    if (!settings || settings == runtime_settings_) {return;}
+    runtime_settings_ = settings;
+    policy_.validation_mode = settings->validation_mode;
+    auto & length = policy_.ir_length_exit;
+    if (length.enabled() != settings->ir_length_exit_enabled ||
+      length.threshold() != settings->ir_length_exit_ratio ||
+      length.confirm_frames() != settings->ir_length_exit_confirm_frames ||
+      length.minimum_reference() != settings->ir_length_exit_minimum_reference_m)
+    {
+      length = tunnel::IrLengthExit(settings->ir_length_exit_enabled, settings->ir_length_exit_ratio,
+        settings->ir_length_exit_confirm_frames, settings->ir_length_exit_minimum_reference_m);
+      if (!length.enabled()) {policy_.ir_exit_latched_at.reset();}
+      last_ir_length_log_ = 0.0;
+    }
   }
 
   bool apply_tcn_state(const std::string & state, std::int64_t stamp, std::int64_t now_ns)
@@ -229,6 +198,7 @@ private:
   void on_event(const String::ConstSharedPtr message)
   {
     try {
+      refresh_runtime_settings();
       const auto report = tunnel::json_object(message->data);
       const auto stamp = tunnel::json_int(report, "source_stamp_ns");
       const std::int64_t now_ns = now().nanoseconds();
@@ -247,10 +217,7 @@ private:
         const auto type = tunnel::json_string(tunnel::json_object(event->second), "type");
         if (type && *type != kind) {return;}
       }
-      last_tcn_state_ = TcnState{state, *stamp};
-      if (force_ir_ || pending_reset_) {return;}
-      if (resume_tcn_ && !(0 <= age && age <= .25)) {return;}
-      resume_tcn_ = false;
+      if (force_ir_ || forced_exit_) {return;}
       // Later LIVE reports retain the state if an event packet was lost.
       if (apply_tcn_state(state, *stamp, now_ns)) {publish_status();}
     } catch (const std::exception &) {
@@ -260,15 +227,18 @@ private:
 
   void on_lane(const std::string & source, const LaneResult::ConstSharedPtr & message)
   {
+    refresh_runtime_settings();
     // Validation follows the last selected source independently of TCN health. TCN only switches.
-    const bool follow_auto = !force_ir_ && !resume_tcn_ && !pending_reset_;
+    const bool follow_auto = !force_ir_ && !forced_exit_;
     if (follow_auto && !policy_.validation_mode &&
       (!tcn_live_ || !last_tcn_received_ || monotonic() - *last_tcn_received_ > .5))
     {
       return;
     }
     const bool previous_latch = policy_.ir_exit_latched_at.has_value();
-    const bool forward = policy_.lane(source, *message, now().nanoseconds(), follow_auto);
+    const auto now_ns = now().nanoseconds();
+    const bool forward = policy_.lane(source, *message, now_ns, follow_auto);
+    if (forced_exit_ && policy_.state == "OUTSIDE") {resume_tcn_outside(now_ns);}
     const auto & monitor = policy_.ir_length_exit;
     const bool triggered = !previous_latch && policy_.ir_exit_latched_at.has_value();
     if (follow_auto && monitor.enabled() && source == "IR" &&
@@ -298,17 +268,14 @@ private:
   tunnel::PreviewTelemetry preview_;
   std::optional<std::array<std::string, 4>> published_;
   std::optional<double> last_tcn_received_;
-  struct TcnState {std::string state; std::int64_t stamp;};
-  std::optional<TcnState> last_tcn_state_;
+  std::shared_ptr<const bev_handoff::TunnelRuntimeSettings> runtime_settings_;
   std::optional<std::int64_t> tcn_report_after_ns_;
-  std::optional<PendingReset> pending_reset_;
-  bool force_ir_{false}, resume_tcn_{false}, tcn_live_{false};
+  bool force_ir_{false}, forced_exit_{false}, tcn_live_{false};
   double last_ir_length_log_{0.};
   rclcpp::Publisher<LaneResult>::SharedPtr rgb_output_, ir_output_;
   std::vector<rclcpp::Publisher<String>::SharedPtr> status_;
-  rclcpp::Publisher<String>::SharedPtr preview_pub_;
+  rclcpp::Publisher<String>::SharedPtr preview_pub_, tcn_state_override_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr force_ir_pub_;
-  rclcpp::Client<ResetTcn>::SharedPtr reset_tcn_;
   rclcpp::Service<ForceIr>::SharedPtr force_ir_service_;
   rclcpp::TimerBase::SharedPtr preview_timer_;
   rclcpp::Subscription<String>::SharedPtr tcn_sub_;

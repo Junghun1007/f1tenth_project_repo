@@ -108,13 +108,16 @@ void TunnelTcnTelemetry::update(const std::string & report, double received_sec)
   const auto * scores = parsed->get("scores");
   const auto entry = probability_at(scores, "entry"), exit = probability_at(scores, "exit");
   if (!entry || !exit) return;
-  auto event = string_at(parsed->get("event"), "type");
+  const auto * event_info = parsed->get("event");
+  auto event = string_at(event_info, "type");
   if (event != "entry" && event != "exit") event.clear();
-  samples_.push_back({received_sec, *entry, *exit, std::move(event)});
+  const auto * forced = event_info ? event_info->get("forced") : nullptr;
+  samples_.push_back({received_sec, *entry, *exit, std::move(event), forced && forced->kind == JsonValue::Bool && forced->b});
   // A short overlap preserves 10 Hz reports when the SSE stream coalesces updates.
   if (samples_.size() > 16) samples_.pop_front();
   state_ = string_at(&*parsed, "state");
   status_ = string_at(&*parsed, "status");
+  state_override_ = string_at(&*parsed, "state_override");
   threshold_ = probability_at(&*parsed, "threshold");
 }
 
@@ -122,13 +125,17 @@ std::string TunnelTcnTelemetry::json(double now_sec) const {
   JsonWriter w;
   const char * status = samples_.empty() ? "WAITING" : "STALE";
   if (!samples_.empty() && now_sec - samples_.back().t <= 0.5) status = status_.c_str();
-  w.begin_object().key("now").value(now_sec, 3).key("state").value(state_).key("status").value(status).key("threshold");
+  w.begin_object().key("now").value(now_sec, 3).key("state").value(state_).key("status").value(status)
+    .key("state_override").value(state_override_).key("threshold");
   if (threshold_) w.value(*threshold_); else w.null();
   w.key("samples").begin_array();
   for (const auto & s : samples_) {
     if (now_sec - s.t > 1.5) continue;
     w.begin_array().value(s.t, 3).value(s.entry).value(s.exit);
-    if (!s.event.empty()) w.value(s.event);
+    if (!s.event.empty()) {
+      w.value(s.event);
+      if (s.forced) w.value(true);
+    }
     w.end_array();
   }
   w.end_array().end_object();

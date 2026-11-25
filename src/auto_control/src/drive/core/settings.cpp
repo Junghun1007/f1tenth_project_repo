@@ -120,8 +120,21 @@ void register_params(ParamRegistry & r) {
   r.add({"tcn.warmup_seconds", "tunnel", "RGB TCN", "워밍업 시간", "s", 0, max_tcn_seconds, 2.5});
   r.add({"tcn.max_gap_seconds", "tunnel", "RGB TCN", "프레임 간 최대 간격", "s", 0.000001, max_tcn_seconds, 0.5});
   r.add({"tcn.max_image_age_seconds", "tunnel", "RGB TCN", "RGB 프레임 최대 지연", "s", 0, max_tcn_seconds, 0.25});
-  r.add({"tunnel.validation_mode", "tunnel", "IR 입력 검증", "터널 검증 모드", "", 0, 1, 1, false,
+  r.add({"tunnel.validation_mode", "tunnel", "IR 입력 검증", "터널 검증 모드", "", 0, 1, 1, true,
     {{1, "true · 독립 IR 테스트 기준"}, {0, "false · 노출 적용 확인"}}});
+  r.add({"tunnel.ir_length_exit_enabled", "tunnel", "IR 차선 길이 기반 이탈", "길이 기반 자동 이탈", "", 0, 1, 0, true,
+    {{0, "끔"}, {1, "켬"}}});
+  r.add({"tunnel.ir_length_exit_ratio", "tunnel", "IR 차선 길이 기반 이탈", "기준 대비 남은 길이 비율", "", 0, 1, 0.15});
+  r.add({"tunnel.ir_length_exit_confirm_frames", "tunnel", "IR 차선 길이 기반 이탈", "연속 확인 프레임", "장", 1, 300, 3});
+  r.add({"tunnel.ir_length_exit_minimum_reference_m", "tunnel", "IR 차선 길이 기반 이탈", "최소 기준 길이", "m", 0, 300, 0.5});
+  r.add_validator([](const ParamRegistry::ValueLookup & get) -> std::string {
+    const double ratio = get("tunnel.ir_length_exit_ratio");
+    if (!(0 < ratio && ratio < 1)) return "tunnel.ir_length_exit_ratio must be between 0 and 1";
+    const double frames = get("tunnel.ir_length_exit_confirm_frames");
+    if (frames != std::trunc(frames)) return "tunnel.ir_length_exit_confirm_frames must be a whole number";
+    if (get("tunnel.ir_length_exit_minimum_reference_m") <= 0) return "tunnel.ir_length_exit_minimum_reference_m must be positive";
+    return "";
+  });
   o("YOLO 검출", "yolo.con_threshold", "콘 임계값", "", 0, 1, 0.83);
   o("YOLO 검출", "yolo.truck_threshold", "트럭 임계값", "", 0, 1, 0.70);
   o("YOLO 검출", "yolo.sedan_threshold", "세단 임계값", "", 0, 1, 0.70);

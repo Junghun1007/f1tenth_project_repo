@@ -27,6 +27,7 @@ struct DirectIrFrame
   cv::Vec3d view_center_rgb_m{0, 0, 0};
   cv::Matx33d current_rgb_to_reference{cv::Matx33d::eye()};
   bool tunnel_profile{false};
+  bool passed_input_guards{false};
 };
 void publishDirectIr(std::shared_ptr<const DirectIrFrame> frame);
 std::shared_ptr<const DirectIrFrame> latestDirectIr();

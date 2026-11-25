@@ -25,6 +25,9 @@ WINDOW = 'Tunnel TCN - RGB FP32'
 
 class TunnelNode(Node):
     stats_input = False   # True: camera_driver 프레임 통계(stats_topic)를 받음
+    manual_state = None
+    pending_manual_event = None
+    rearm_on_next_score = False
     def __init__(self):
         super().__init__('tunnel_tcn_test')
         cv2.setNumThreads(1)
@@ -99,9 +102,28 @@ class TunnelNode(Node):
         if tuning_topic:
             self.tuning_sub = self.create_subscription(String, tuning_topic, self.on_tuning, QoSProfile(
                 depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        if self.stats_input:
+            self.state_override_sub = self.create_subscription(
+                String, '/tunnel_tcn/state_override', self.on_state_override, QoSProfile(
+                    depth=1, reliability=ReliabilityPolicy.RELIABLE, durability=DurabilityPolicy.TRANSIENT_LOCAL))
 
     def on_image(self, message):
         self.pending = message
+
+    def on_state_override(self, message):
+        command = message.data
+        if command == 'auto':
+            self.rearm_on_next_score = self.manual_state is not None
+            self.manual_state = self.pending_manual_event = None
+            return
+        if command not in ('inside', 'outside', 'resume_outside'):
+            return
+        state = 'inside' if command == 'inside' else 'outside'
+        if command != 'resume_outside' or self.decoder.state != 'outside':
+            self.pending_manual_event = 'entry' if state == 'inside' else 'exit'
+        self.decoder.state = state
+        self.manual_state = state if command != 'resume_outside' else None
+        self.rearm_on_next_score = self.manual_state is None
 
     def on_tuning(self, message):
         try:
@@ -140,6 +162,10 @@ class TunnelNode(Node):
             self.last_event = None
 
     def reset_outside(self, _request, response):
+        if self.manual_state is not None:
+            response.success = False
+            response.message = 'Tunnel state is held by the lane selector'
+            return response
         self.accept_frames_after_ns = self.get_clock().now().nanoseconds
         self.pending = None
         self.clear_history(new_drive=True)
@@ -198,17 +224,28 @@ class TunnelNode(Node):
         event = None
         if grid_time-self.stream.started >= self.stream.warmup_seconds-1e-7:
             self.status = 'LIVE' if self.measured_fps >= 27 else 'LIVE / LOW SOURCE FPS'
-            event = self.decoder.step(self.probabilities, grid_time)
+            if self.manual_state is None:
+                if self.rearm_on_next_score:
+                    self.decoder.active = self.probabilities >= self.decoder.threshold
+                    self.rearm_on_next_score = False
+                event = self.decoder.step(self.probabilities, grid_time)
         else:
             remaining = max(0, self.stream.warmup_seconds - (timestamp - self.stream.started))
             self.status = f'WARMUP {remaining:.1f}s (events held)'
+        if self.pending_manual_event:
+            kind = self.pending_manual_event
+            self.pending_manual_event = None
+            event = {'type': kind, 'score': float(self.probabilities[0 if kind == 'entry' else 1]),
+                     'time_s': grid_time, 'forced': True}
         if event:
             self.last_event = (event, time.monotonic())
-            self.get_logger().info(f"{event['type'].upper()} score={event['score']:.3f}")
+            marker = ' (manual)' if event.get('forced') else ''
+            self.get_logger().info(f"{event['type'].upper()}{marker} score={event['score']:.3f}")
         self.total_ms = (time.perf_counter() - started) * 1000
         report = {'source_stamp_ns': stamp, 'scores': dict(zip(('entry', 'exit'), self.probabilities.tolist())),
                   'model_id': self.model_id,
                   'state': self.decoder.state, 'status': self.status, 'event': event, 'threshold': self.decoder.threshold,
+                  'state_override': self.manual_state,
                   'inference_time_s': grid_time, 'source_fps': self.measured_fps, 'estimated_missed_frames': self.dropped,
                   'inference_wall_ms': self.infer_ms, 'processing_ms': self.total_ms,
                   'source_age_at_receive_ms': age * 1000}

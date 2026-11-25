@@ -15,6 +15,7 @@
 #include "point_cloud/depth_source.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -1365,6 +1366,24 @@ private:
         tunnel_cameras_.left=pipeline_->create<dai::node::Camera>()->build(
           dai::CameraBoardSocket::CAM_B,tunnel_ir_size_,30.0F);
       }
+      if (!tunnel_cameras_.right) {
+        const auto sockets=device->getConnectedCameras();
+        if (std::find(sockets.begin(),sockets.end(),dai::CameraBoardSocket::CAM_C)!=sockets.end()) {
+          tunnel_cameras_.right=pipeline_->create<dai::node::Camera>()->build(
+            dai::CameraBoardSocket::CAM_C,tunnel_ir_size_,30.0F);
+        }
+      }
+      // Low-rate metadata taps remain available during OUTSIDE and while depth is gated.
+      const std::array cameras{tunnel_cameras_.left,tunnel_cameras_.right};
+      for (std::size_t i=0;i<cameras.size();++i) {
+        if (!cameras[i]) {continue;}
+        auto * output=cameras[i]->requestOutput({160U,96U},dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,5.0F,false);
+        stereo_exposure_queues_[i]=output->createOutputQueue(1,false);
+        const auto bridge=output->getXLinkBridge();
+        if (!bridge || !bridge->xLinkOut) {throw std::runtime_error("Missing stereo exposure XLink bridge");}
+        bridge->xLinkOut->input.setMaxSize(1);
+        bridge->xLinkOut->input.setBlocking(false);
+      }
       // 왜곡 보정은 장치(warp 엔진, RGB 보정과 공유)에서 하지 않고 IR BEV LUT에 합친다 (호스트 추가 비용 0).
       // 원근(Perspective) 모델이 아니면 예전처럼 장치에서 보정한다.
       ir_distortion_.clear();
@@ -1533,7 +1552,7 @@ while True:
       if (!device->setIrLaserDotProjectorIntensity(static_cast<float>(depth_config_.dot_intensity)) && depth_config_.dot_intensity>0) {
         throw std::runtime_error("IR dot unavailable: set obstacles.depth.ir_dot_projector_intensity to 0.0");
       }
-      if (!device->setIrFloodLightIntensity(static_cast<float>(depth_config_.flood_intensity)) && depth_config_.flood_intensity>0) {
+      if (!set_ir_flood_intensity(depth_config_.flood_intensity) && depth_config_.flood_intensity>0) {
         throw std::runtime_error("IR flood unavailable: set obstacles.depth.ir_flood_light_intensity to 0.0");
       }
       RCLCPP_INFO(node_.get_logger(),"Shared RGB/depth device=%s, stereo=%s @ %.1f requested FPS",
@@ -1728,6 +1747,13 @@ while True:
     return {0,800,depth_config_.dot_intensity,depth_config_.flood_intensity};
   }
 
+  bool set_ir_flood_intensity(double flood)
+  {
+    const bool accepted=tunnel_device_ && tunnel_device_->setIrFloodLightIntensity(static_cast<float>(flood));
+    bev_handoff::publishIrFloodIntensity(accepted ? std::optional<double>(flood) : std::nullopt);
+    return accepted;
+  }
+
   void apply_ir_profile(const bev_handoff::IrCameraProfile & p, bool inside)
   {
     const bool manual=p.exposure_us>0;
@@ -1741,11 +1767,23 @@ while True:
     // 깊이가 꺼져 있으면 터널 밖 조명은 켜지 않는다 (예전 동작)
     const double dot=std::clamp(depth_enabled_ || inside ? p.dot_intensity : 0.0,0.0,1.0);
     const double flood=std::clamp(depth_enabled_ || inside ? p.flood_intensity : 0.0,0.0,1.0);
-    if (tunnel_device_ && (!tunnel_device_->setIrLaserDotProjectorIntensity(static_cast<float>(dot)) ||
-      !tunnel_device_->setIrFloodLightIntensity(static_cast<float>(flood))))
-    {
-      if (dot>0 || flood>0) {throw std::runtime_error("IR lighting command failed");}
+    if (tunnel_device_) {
+      const bool dot_ok=tunnel_device_->setIrLaserDotProjectorIntensity(static_cast<float>(dot));
+      const bool flood_ok=set_ir_flood_intensity(flood);
+      if ((!dot_ok || !flood_ok) && (dot>0 || flood>0)) {throw std::runtime_error("IR lighting command failed");}
     }
+  }
+
+  void observe_stereo_exposure(const dai::ImgFrame & frame, bool right)
+  {
+    const auto stamp=frame.getTimestamp(dai::CameraExposureOffset::MIDDLE);
+    const auto previous=right ? bev_handoff::latestRightIrExposure() : bev_handoff::latestCameraExposure(true);
+    if (previous && stamp<=previous->captured_at) {return;}
+    auto observation=std::make_shared<bev_handoff::CameraExposureObservation>(
+      bev_handoff::CameraExposureObservation{static_cast<long>(frame.getExposureTime().count()),
+        static_cast<int>(frame.getSensitivity()),stamp});
+    if (right) {bev_handoff::publishRightIrExposure(std::move(observation));}
+    else {bev_handoff::publishCameraExposure(true,std::move(observation));}
   }
 
   void ir_loop()
@@ -1767,8 +1805,7 @@ while True:
     auto changed_at=std::chrono::steady_clock::time_point{};
     auto last=std::chrono::steady_clock::time_point{};
     auto retry_at=last;
-    RCLCPP_INFO(node_.get_logger(),"Tunnel IR input mode=%s",
-      tunnel_validation_mode_ ? "standalone validation (no settle/age/exposure gate)" : "guarded");
+    std::optional<bool> validation_mode;
     RCLCPP_INFO(node_.get_logger(),"Tunnel IR IMU=%s; max bracket sample age=%.0fms, pending wait=%.0fms",
       tunnel_ir_imu_enabled_ ? "ON (capture-time synchronized)" : "OFF (fixed startup ground pose)",
       tunnel_ir_imu_max_age_sec_*1000.,tunnel_ir_imu_wait_sec_*1000.);
@@ -1779,6 +1816,19 @@ while True:
     long last_exposure_us=0; int last_iso=0;
     while (!stop_requested_.load()) {
       try {
+        const auto runtime=bev_handoff::tunnelRuntimeSettings();
+        const bool validation=runtime ? runtime->validation_mode : tunnel_validation_mode_;
+        if (validation_mode!=validation) {
+          validation_mode=validation;
+          pending.clear();
+          bev_handoff::publishDirectIr(nullptr);
+          RCLCPP_INFO(node_.get_logger(),"Tunnel IR input mode=%s",validation ? "standalone validation" : "guarded");
+        }
+        for (std::size_t i=0;i<stereo_exposure_queues_.size();++i) {
+          if (const auto & queue=stereo_exposure_queues_[i]) {
+            if (auto sample=queue->tryGet<dai::ImgFrame>()) {observe_stereo_exposure(*sample,i==1);}
+          }
+        }
         const bool requested=tunnel_requested_.load();
         const auto phase=rgb_tunnel_phase_.load();
         // OUTSIDE: no lane IR. INSIDE: no obstacle stereo, RGB ~30 FPS for TCN.
@@ -1864,11 +1914,9 @@ while True:
           }
           ++received;
           last_exposure_us=packet->getExposureTime().count(); last_iso=packet->getSensitivity();
-          bev_handoff::publishCameraExposure(true,std::make_shared<bev_handoff::CameraExposureObservation>(
-            bev_handoff::CameraExposureObservation{last_exposure_us,last_iso,
-              captured}));
+          observe_stereo_exposure(*packet,false);
           if (dirty) {continue;}
-          const auto rejection=tunnelIrRejection(tunnel_validation_mode_,applied,
+          const auto rejection=tunnelIrRejection(validation,applied,
             captured,last,now,changed_at,last_exposure_us,last_iso,
             applied_profile.exposure_us,applied_profile.iso);
           if (rejection==TunnelIrRejection::time) {++time_rejected; continue;}
@@ -1907,6 +1955,7 @@ while True:
         frame->current_rgb_to_reference=tilt;
         frame->captured_at=captured; frame->header.stamp=ros_timestamp_for(captured);
         frame->header.frame_id="front_axle_bev"; frame->tunnel_profile=applied;
+        frame->passed_input_guards=!validation;
         bev_handoff::publishDirectIr(std::move(frame));
         ++published;
       } catch (const std::exception & e) {
@@ -3509,6 +3558,8 @@ while True:
     rgb_controls_.reset();
     bev_handoff::publishCameraExposure(false,nullptr);
     bev_handoff::publishCameraExposure(true,nullptr);
+    bev_handoff::publishRightIrExposure(nullptr);
+    bev_handoff::publishIrFloodIntensity(std::nullopt);
     if (tunnel_enabled_) {bev_handoff::publishDirectIr(nullptr);}
     if (depth_enabled_) {bev_handoff::publishDirectDepth(nullptr);}
 
@@ -3639,6 +3690,7 @@ while True:
   point_cloud::StereoCameras tunnel_cameras_;
   std::shared_ptr<dai::Device> tunnel_device_;
   std::shared_ptr<dai::MessageQueue> ir_queue_;
+  std::array<std::shared_ptr<dai::MessageQueue>,2> stereo_exposure_queues_;
   std::vector<double> ir_distortion_;   // 비어 있으면 장치가 이미 왜곡 보정한 IR 영상
   std::vector<std::shared_ptr<dai::InputQueue>> ir_controls_;
   std::uint64_t ir_settings_revision_{0};                 // 마지막으로 적용한 웹 IR 카메라 값 (ir_loop 또는 depth_loop 한 곳만 씀)

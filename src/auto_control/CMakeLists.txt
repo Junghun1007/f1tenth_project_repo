@@ -36,7 +36,7 @@ ament_python_install_package(auto_control_safety)
 # ---- 터널 차선 선택기 (검출 컨테이너, intra-process LaneResult) ----
 add_library(auto_tunnel_selector_component SHARED src/tunnel_lane_selector.cpp)
 target_include_directories(auto_tunnel_selector_component PRIVATE include)
-ament_target_dependencies(auto_tunnel_selector_component rclcpp rclcpp_components std_msgs std_srvs line_detactor_msgs)
+ament_target_dependencies(auto_tunnel_selector_component rclcpp rclcpp_components std_msgs std_srvs line_detactor_msgs bev_handoff)
 rclcpp_components_register_nodes(auto_tunnel_selector_component "auto_control::TunnelLaneSelector")
 install(TARGETS auto_tunnel_selector_component LIBRARY DESTINATION lib)
 

@@ -30,4 +30,16 @@ struct IrCameraSettings
 void publishIrCameraSettings(std::shared_ptr<const IrCameraSettings> settings);
 std::shared_ptr<const IrCameraSettings> irCameraSettings();   // 없으면 nullptr
 std::uint64_t irCameraSettingsRevision();                     // 바뀔 때마다 +1
+// Runtime settings shared by the controller, camera, IR BEV and selector in one container.
+struct TunnelRuntimeSettings
+{
+  bool validation_mode{true};
+  bool ir_length_exit_enabled{false};
+  double ir_length_exit_ratio{0.15};
+  int ir_length_exit_confirm_frames{3};
+  double ir_length_exit_minimum_reference_m{0.5};
+};
+
+void publishTunnelRuntimeSettings(std::shared_ptr<const TunnelRuntimeSettings> settings);
+std::shared_ptr<const TunnelRuntimeSettings> tunnelRuntimeSettings();
 }  // namespace bev_handoff

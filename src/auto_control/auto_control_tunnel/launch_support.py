@@ -18,13 +18,22 @@ def integrated_nodes(rgb_detector, controller, context):
         raise ValueError('tunnel_validation_mode must be true or false')
     validation = validation_text == 'true'
     cfg = context.launch_configurations
-    length_text = str(cfg.get('tunnel_ir_length_exit_enabled', 'false')).lower()
-    if length_text not in ('true', 'false'):
-        raise ValueError('tunnel_ir_length_exit_enabled must be true or false')
-    length = IrLengthExit(length_text == 'true',
-        float(cfg.get('tunnel_ir_length_exit_ratio', '.15')),
-        int(cfg.get('tunnel_ir_length_exit_confirm_frames', '3')),
-        float(cfg.get('tunnel_ir_length_exit_minimum_reference_m', '.5')))
+
+    def length_setting(name, default):
+        value = str(cfg.get('tunnel_' + name, 'inherit')).lower()
+        return controller.get('tunnel.' + name, default) if value == 'inherit' else value
+
+    enabled = length_setting('ir_length_exit_enabled', False)
+    if isinstance(enabled, str):
+        enabled = enabled.lower()
+    if enabled not in (True, False) and enabled not in ('true', 'false'):
+        raise ValueError('tunnel_ir_length_exit_enabled must be true, false or inherit')
+    frames = float(length_setting('ir_length_exit_confirm_frames', 3))
+    if not frames.is_integer():
+        raise ValueError('tunnel_ir_length_exit_confirm_frames must be a whole number')
+    length = IrLengthExit(enabled in (True, 'true'),
+        float(length_setting('ir_length_exit_ratio', .15)), int(frames),
+        float(length_setting('ir_length_exit_minimum_reference_m', .5)))
     shares = {p: Path(get_package_share_directory(p)) for p in (
         'ir_camera_driver', 'line_detactor', 'auto_control', 'tunnel_tcn_test')}
     # Perception assets are shared by production and standalone tests. The
@@ -91,7 +100,12 @@ def integrated_nodes(rgb_detector, controller, context):
                                           {**tcn_tuning, 'stats_topic': '/tunnel/rgb_stats', 'initial_state': 'outside',
                                            'tuning_topic': '/tunnel/tcn_tuning',
                                            'preview_enabled': False}])]
-    return components, processes, {'tcn.' + name: value for name, value in tcn_tuning.items()}
+    controller_overrides = {'tcn.' + name: value for name, value in tcn_tuning.items()}
+    controller_overrides.update({
+        'tunnel.' + name: value for name, value in selector_parameters.items()
+        if name.startswith('ir_length_exit_')
+    })
+    return components, processes, controller_overrides
 
 
 def model_check_node(tunnel_enabled, traffic_enabled):

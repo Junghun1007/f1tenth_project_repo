@@ -190,6 +190,41 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(n.decoder.threshold, .6)
         self.assertEqual(n.stream.max_gap_seconds, .8)
 
+    def test_manual_inside_and_outside_hold_then_require_a_new_entry_crossing(self):
+        n = self.node
+        n.stream.warmup_seconds = 0
+        n.decoder.state = 'outside'
+        n.on_state_override(SimpleNamespace(data='inside'))
+        n.backend.infer = lambda _: np.array([[-10., 10.]], np.float32)
+        for frame in range(6):
+            self.frame(frame)
+        self.assertEqual(self.outputs[0]['event']['type'], 'entry')
+        self.assertTrue(self.outputs[0]['event']['forced'])
+        self.assertEqual(self.outputs[-1]['state_override'], 'inside')
+        self.assertIsNone(self.outputs[-1]['event'])
+
+        n.on_state_override(SimpleNamespace(data='outside'))
+        n.backend.infer = lambda _: np.array([[10., -10.]], np.float32)
+        for frame in range(6, 12):
+            self.frame(frame)
+        self.assertEqual(self.outputs[-2]['event']['type'], 'exit')
+        self.assertTrue(self.outputs[-2]['event']['forced'])
+        self.assertEqual(self.outputs[-1]['state_override'], 'outside')
+        self.assertIsNone(self.outputs[-1]['event'])
+
+        n.on_state_override(SimpleNamespace(data='resume_outside'))
+        for frame in range(12, 18):
+            self.frame(frame)
+        self.assertIsNone(self.outputs[-1]['state_override'])
+        self.assertEqual(self.outputs[-1]['state'], 'outside')
+        n.backend.infer = lambda _: np.array([[-10., -10.]], np.float32)
+        for frame in range(18, 21):
+            self.frame(frame)
+        n.backend.infer = lambda _: np.array([[10., -10.]], np.float32)
+        self.frame(21)
+        self.assertEqual(self.outputs[-1]['event']['type'], 'entry')
+        self.assertNotIn('forced', self.outputs[-1]['event'])
+
     def test_history_reset_preserves_state_unless_new_drive(self):
         n = self.node
         for frame in range(80):

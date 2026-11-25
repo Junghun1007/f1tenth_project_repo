@@ -69,6 +69,11 @@ th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); 
 .tcn-diamond { width: 6px; height: 6px; transform: rotate(45deg); background: var(--dim); }
 .tcn-switch { height: 10px; border-left: 2px dashed var(--tcn-switch); vertical-align: middle; }
 #tcnLane[data-pending="true"] { color: var(--warn); }
+.camera-exposure { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 8px 12px;
+  margin: 9px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; }
+.camera-exposure dt { color: var(--dim); }
+.camera-exposure dd { margin: 2px 0 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.camera-exposure dd.stale { color: var(--warn); }
 .kv { display: grid; grid-template-columns: auto 1fr auto 1fr; gap: 3px 10px; font-variant-numeric: tabular-nums; }
 .kv .k { color: var(--dim); } .kv .v { text-align: right; font-weight: 700; }
 .checks { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }

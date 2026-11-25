@@ -18,10 +18,9 @@
 보내고, YAML 저장을 누르면 주행 파라미터 파일에 기록한다. GUI의 터널 TCN 그래프에서는
 최근 진입·이탈 점수, 실제 검출 이벤트, 제어에 들어온 RGB·IR 전환을 함께 볼 수 있다.
 
-같은 탭의 **터널 검증 모드**는 현재 실행값도 표시한다. 변경하려면 적용 후 YAML을 저장하고
-그 파일을 `drive_params_file:=<저장된 경로>`로 지정해 재실행한다.
-`tunnel_validation_mode:=inherit`는 저장된 값을 사용하며, 명시한 `true`·`false`가 있으면
-해당 실행 인자가 우선한다.
+같은 탭의 **터널 검증 모드**는 카메라·IR BEV·차선 선택기에 실행 중 반영된다.
+다음 실행에서도 쓰려면 YAML을 저장하고 그 파일을 `drive_params_file:=<저장된 경로>`로 지정한다.
+`tunnel_validation_mode:=inherit`는 저장된 값을 사용하며, 명시한 `true`·`false`는 시작값으로 우선한다.
 
 | 항목 | 기본 검증 모드 `true` | 기존 조건 `false` |
 |---|---|---|
@@ -130,6 +129,10 @@ RGB의 `RESTORE`는 임시 수동 복원 요청, `AE PENDING`은 AE 명령 재�
 `AE`는 자동노출 명령 모드를 의미한다. 센서가 AE 상태를 확인했다는 별도 응답은 아니다.
 입력이 없으면 `--`, 촬영 시각이 0.5초 넘게 갱신되지 않으면 마지막 값에 `STALE`을 붙인다.
 
+웹 터널 패널에도 RGB 노출 시간과 자동·수동 명령 상태, 스테레오 CAM_B/C 각각의 실제 노출 시간과
+ISO가 표시된다. 좌우 센서에는 노출 진단용 저해상도 5 FPS 출력을 요청한다.
+IR 플러드 수치는 두 카메라가 공유하는 장치에 마지막으로 수락된 명령값이다.
+
 ## 처리 빈도와 카메라 설정
 
 | 상태 | RGB 차선 | IR BEV·차선 | 제어 경로 |
@@ -214,7 +217,10 @@ ENTERING/EXITING 중 외부 장애물·신호등 제어는 중지하고 OUTSIDE�
 `false` 모드는 TCN이 WARMUP 중이거나 0.5초 넘게 보고가 없으면 차선 전달을 보류한다.
 TCN 이벤트 한 개가 유실되어도 이후 보고에 유지되는 inside/outside 상태로 요청을 복구한다.
 
-웹의 `터널 IR 강제 전환`은 VESC가 연결되어 있고 최신 ERPM으로 정지가 확인된 대기/수동 상태에서만 켜고 끌 수 있다. 켜면 TCN 인식을 `OUTSIDE`부터 다시 시작하고, 새 유효한 IR 경로가 준비되면 IR 차선으로 넘어간다. 켜져 있는 동안에는 TCN과 IR 경로 길이의 출구 판단으로 차선 소스가 바뀌지 않는다. 끄면 최신 TCN 보고에 따라 자동 전환을 재개한다. 유효한 보고가 아직 없으면 현재 차선을 유지하고 다음 LIVE 보고를 기다린다.
+웹의 `터널 IR 강제 전환`은 VESC가 연결되어 있고 최신 ERPM으로 정지가 확인된 대기/수동 상태에서 켜고 끌 수 있다.
+ON은 TCN 상태를 `inside`로 고정하고 첫 유효 IR 경로로 넘어간다. OFF는 TCN 상태를 `outside`로
+전환하고 첫 유효 RGB 경로를 받을 때까지 해당 상태를 유지한다. RGB 복귀 후 TCN 자동 판정을 재개한다.
+그래프에서 빈 마름모는 버튼이 만든 진입·이탈 이벤트를 표시한다.
 
 혼합 전용 `tunnel_handover.yaml`과 해당 파라미터를 제거했다. 별도 전환 설정 없이
 기존 제어 YAML/CLI의 경로 기하 조건과 최신성 기준을 선택기에 전달한다.
@@ -249,10 +255,9 @@ ros2 launch vehicle_bringup auto_drive.launch.py \
   tunnel_ir_length_exit_minimum_reference_m:=0.5
 ```
 
-ON/OFF와 파라미터는 실행 시작 시 적용하며, 비교할 때 기존 프로세스를 종료하고 재실행한다.
-선택기 노드의 ROS 파라미터 이름은 위 이름에서 `tunnel_`을 뺀
-`ir_length_exit_enabled`, `ir_length_exit_ratio`, `ir_length_exit_confirm_frames`,
-`ir_length_exit_minimum_reference_m`이다. 실행 중 `ros2 param set` 적용은 지원하지 않는다.
+웹 **파라미터 → 터널**에서 ON/OFF, 기준 대비 비율, 연속 프레임 수, 최소 기준 길이를 실행 중 적용할 수 있다.
+길이 설정을 변경하면 기준 길이와 연속 확인을 다시 계산한다. YAML의 `tunnel.ir_length_exit_*` 값은
+실행 인자가 `inherit`일 때 시작값으로 사용된다. 선택기의 독립 실행에서는 `ir_length_exit_*` ROS 시작값을 사용한다.
 
 관측 길이는 각 프레임의 `observed_paths`에서 차량 가까이 시작하는 실제 모델 지지 차선 조각의
 호 길이를 미터로 계산하고, 좌/우 중 가장 긴 값을 쓴다. 기준 시작 거리에는 기존

@@ -98,9 +98,15 @@
      </div>
      <canvas id="tcnChart" role="img" aria-label="최근 12초의 TCN 터널 진입·이탈 점수와 차선 입력 전환"></canvas>
      <div class="tcn-foot">
-       <div class="tcn-key"><span><i class="tcn-diamond"></i>TCN 이벤트</span><span><i class="tcn-switch"></i>제어 입력 전환</span></div>
+       <div class="tcn-key"><span><i class="tcn-diamond"></i>TCN 이벤트 (빈 표시=강제)</span><span><i class="tcn-switch"></i>제어 입력 전환</span></div>
        <strong id="tcnLane">제어 입력 —</strong>
      </div>
+     <dl class="camera-exposure" aria-label="카메라 노출">
+       <div><dt>RGB · CAM_A</dt><dd id="exposureRgb">—</dd></div>
+       <div><dt>IR 왼쪽 · CAM_B</dt><dd id="exposureIrLeft">—</dd></div>
+       <div><dt>IR 오른쪽 · CAM_C</dt><dd id="exposureIrRight">—</dd></div>
+       <div><dt>IR 공용 플러드</dt><dd id="exposureIrFlood">—</dd></div>
+     </dl>
     </section>
     <div class="panel">
       <h2>차량</h2>

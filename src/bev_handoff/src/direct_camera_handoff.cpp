@@ -10,7 +10,8 @@ namespace bev_handoff
 {
 namespace
 {
-std::shared_ptr<const CameraExposureObservation> rgb_exposure, ir_exposure;
+std::shared_ptr<const CameraExposureObservation> rgb_exposure, ir_exposure, right_ir_exposure;
+std::atomic<double> ir_flood_intensity{-1.0};
 std::atomic<RgbExposureControl> rgb_exposure_control{RgbExposureControl::automatic};
 struct State
 {
@@ -39,6 +40,17 @@ void publishCameraExposure(bool infrared, std::shared_ptr<const CameraExposureOb
 {std::atomic_store(infrared ? &ir_exposure : &rgb_exposure, std::move(value));}
 std::shared_ptr<const CameraExposureObservation> latestCameraExposure(bool infrared)
 {return std::atomic_load(infrared ? &ir_exposure : &rgb_exposure);}
+void publishRightIrExposure(std::shared_ptr<const CameraExposureObservation> observation)
+{std::atomic_store(&right_ir_exposure, std::move(observation));}
+std::shared_ptr<const CameraExposureObservation> latestRightIrExposure()
+{return std::atomic_load(&right_ir_exposure);}
+void publishIrFloodIntensity(std::optional<double> intensity)
+{ir_flood_intensity.store(intensity.value_or(-1.0));}
+std::optional<double> latestIrFloodIntensity()
+{
+  const double value = ir_flood_intensity.load();
+  return value < 0 ? std::nullopt : std::optional<double>(value);
+}
 void publishRgbExposureControl(RgbExposureControl mode) {rgb_exposure_control.store(mode);}
 RgbExposureControl latestRgbExposureControl() {return rgb_exposure_control.load();}
 void publishTrafficInferenceFps(

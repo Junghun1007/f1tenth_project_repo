@@ -62,3 +62,13 @@ TEST(tunnel_tcn_preserves_events_across_status_updates_and_expires_old_scores) {
   CHECK(stale["status"] == "STALE");
   CHECK(stale["samples"].empty());
 }
+
+TEST(tunnel_tcn_marks_manual_transitions) {
+  TunnelTcnTelemetry tcn;
+  tcn.update(R"({"scores":{"entry":0.07,"exit":0.05},"state":"outside","status":"LIVE","state_override":"outside","event":{"type":"exit","forced":true}})", 1.0);
+  const auto j = nlohmann::json::parse(tcn.json(1.1));
+  CHECK(j["state"] == "outside");
+  CHECK(j["state_override"] == "outside");
+  CHECK(j["samples"][0][3] == "exit");
+  CHECK(j["samples"][0][4] == true);
+}

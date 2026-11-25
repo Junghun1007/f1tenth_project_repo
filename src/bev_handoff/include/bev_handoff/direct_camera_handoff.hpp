@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <std_msgs/msg/header.hpp>
 
 namespace bev_handoff
@@ -19,6 +20,11 @@ struct CameraExposureObservation
 // Actual sensor metadata, published before IMU/BEV validity filtering.
 void publishCameraExposure(bool infrared, std::shared_ptr<const CameraExposureObservation> observation);
 std::shared_ptr<const CameraExposureObservation> latestCameraExposure(bool infrared);
+void publishRightIrExposure(std::shared_ptr<const CameraExposureObservation> observation);
+std::shared_ptr<const CameraExposureObservation> latestRightIrExposure();
+// Most recent flood command accepted by the device. The emitter is shared.
+void publishIrFloodIntensity(std::optional<double> intensity);
+std::optional<double> latestIrFloodIntensity();
 enum class RgbExposureControl {automatic, restoring, auto_pending};
 // Requested control mode; sensor metadata above independently shows actual values.
 void publishRgbExposureControl(RgbExposureControl mode);

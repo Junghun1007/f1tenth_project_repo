@@ -282,14 +282,15 @@ function drawTunnelChart(threshold) {
     }
     c.stroke();
   }
-  for (const [t, entry, exit, event] of tcnSamples) {
+  for (const [t, entry, exit, event, forced] of tcnSamples) {
     if (!event) continue;
     const isEntry = event === "entry";
-    c.fillStyle = isEntry ? entryColor : exitColor;
+    c.strokeStyle = c.fillStyle = isEntry ? entryColor : exitColor;
     c.save();
     c.translate(x(t), y(isEntry ? entry : exit));
     c.rotate(Math.PI / 4);
-    c.fillRect(-3.6, -3.6, 7.2, 7.2);
+    if (forced) c.strokeRect(-3.6, -3.6, 7.2, 7.2);
+    else c.fillRect(-3.6, -3.6, 7.2, 7.2);
     c.restore();
   }
   c.setLineDash([4, 4]);
@@ -328,18 +329,36 @@ function renderTunnel(tunnel, chart, laneFresh) {
   $("tcnEntry").textContent = fresh ? last[1].toFixed(2) : "—";
   $("tcnExit").textContent = fresh ? last[2].toFixed(2) : "—";
   $("tcnThreshold").textContent = Number.isFinite(chart?.threshold) ? chart.threshold.toFixed(2) : "—";
-  $("tcnDecision").textContent = "TCN 판정 " + (fresh ? ({ inside: "터널 안", outside: "터널 밖" }[chart?.state] || "—") : "—");
+  const decision = fresh ? ({ inside: "터널 안", outside: "터널 밖" }[chart?.state] || "—") : "—";
+  $("tcnDecision").textContent = "TCN 판정 " + decision + (fresh && chart?.state_override ? " (강제)" : "");
 
   const source = tunnel.source || "RGB";
-  const waiting = tunnel.state === "ENTERING" && source !== "IR";
+  const waiting = tunnel.state === "ENTERING" && source !== "IR" ? "유효 IR 경로 대기"
+    : tunnel.state === "EXITING" && source !== "RGB" ? "유효 RGB 경로 대기" : "";
   const lane = $("tcnLane");
   const irStatus = source === "IR" ? tunnel.ir_lane : null;
-  const detail = waiting ? "유효 IR 경로 대기" : ({
+  const detail = waiting || ({
     stale: "IR 결과 수신 끊김", invalid: "IR 중앙선 무효", valid: laneFresh ? "IR 중앙선 유효" : "유효 제어 경로 없음",
   }[irStatus] || "");
-  lane.dataset.pending = waiting || (irStatus && (irStatus !== "valid" || !laneFresh)) || false;
+  lane.dataset.pending = Boolean(waiting || (irStatus && (irStatus !== "valid" || !laneFresh)));
   lane.textContent = [tunnel.state || "—", `제어 입력 ${source}`, detail].filter(Boolean).join(" · ");
   drawTunnelChart(chart?.threshold);
+}
+
+function renderCameraExposure(values) {
+  const rgbModes = { auto: "자동", manual: "수동", auto_pending: "자동 복귀 중" };
+  for (const [id, reading, infrared] of [
+    ["exposureRgb", values?.rgb, false],
+    ["exposureIrLeft", values?.ir_left, true],
+    ["exposureIrRight", values?.ir_right, true],
+  ]) {
+    const el = $(id);
+    const ms = Number.isFinite(reading?.ms) ? `${reading.ms.toFixed(2)} ms` : "—";
+    const detail = infrared ? (Number.isFinite(reading?.iso) ? `ISO ${reading.iso}` : "") : rgbModes[reading?.mode];
+    el.textContent = [ms, detail, reading?.stale ? "갱신 없음" : ""].filter(Boolean).join(" · ");
+    el.classList.toggle("stale", Boolean(reading?.stale));
+  }
+  $("exposureIrFlood").textContent = Number.isFinite(values?.ir_flood) ? `${values.ir_flood.toFixed(2)} · 명령값` : "—";
 }
 
 function render() {
@@ -377,6 +396,7 @@ function render() {
   $("sourceChip").className = "chipx " + src;
   $("sourceChip").textContent = src === "IR" ? "IR 터널" : "RGB";
   renderTunnel(tunnel, f.tcn, f.readiness.lane_fresh);
+  renderCameraExposure(f.camera_exposure);
   renderTunnelMode(tunnel);
   document.querySelectorAll("#modeSeg button").forEach((b) => {
     b.classList.toggle("on", b.dataset.mode === f.mode);
@@ -504,7 +524,13 @@ function renderParams() {
         <strong id="tunnelModeNow"></strong>
         <p><b>true</b> · 독립 IR 테스트 기준. 새 IR 프레임을 바로 처리합니다.</p>
         <p><b>false</b> · 노출 변경 후 150 ms를 기다린 뒤, 실제 노출이 ±500 µs, ISO가 ±5% 범위 안인 프레임을 사용합니다.</p>
-        <p>YAML 저장 후 저장된 파일을 <code>drive_params_file</code>로 지정해 재실행합니다. 실행 인자에서 <code>tunnel_validation_mode</code>를 <code>true</code> 또는 <code>false</code>로 지정하면 그 값이 우선합니다.</p>
+        <p>적용을 누르면 실행 중에 반영됩니다. 다음 실행에서도 쓰려면 YAML을 저장하고 <code>drive_params_file</code>로 지정합니다.</p>
+      </div>`;
+    }
+    if (list.some((p) => p.name === "tunnel.ir_length_exit_enabled")) {
+      return `<h3>${section}</h3>${rows}<div class="param-help">
+        <p>터널 안에서 IR 관측 길이가 기준 대비 설정 비율 이하로 연속 유지되면 RGB 복귀를 시작합니다.</p>
+        <p>이 항목을 바꾸면 기준 길이와 연속 횟수를 다시 측정합니다.</p>
       </div>`;
     }
     if (group !== "lane") return `<h3>${section}</h3>${rows}`;
@@ -672,6 +698,8 @@ async function demo() {
         j === 62 ? "entry" : j === 91 ? "exit" : null,
       ]);
       g.tcn = { now, samples, threshold: 0.5, status: "LIVE", state: tick >= 62 && tick < 91 ? "inside" : "outside" };
+      g.camera_exposure = { rgb: { ms: 8.2, mode: "auto" },
+        ir_left: { ms: 19.98, iso: 500 }, ir_right: { ms: 20, iso: 500 }, ir_flood: 1 };
       g.detections = []; g.memory = [];
       g.plan = { path: [], mode: "center", rollout_ok: true }; g.traffic.enabled = false;
       g.stages = g.stages.filter((x) => !x.name.startsWith("yolo") && x.name !== "box_depth");
