@@ -359,20 +359,25 @@ function renderTunnel(tunnel, chart, laneFresh) {
   drawTunnelChart(chart?.threshold);
 }
 
-function renderCameraExposure(values) {
-  const rgbModes = { auto: "자동", manual: "수동", restoring: "출구 노출 복원 중", auto_pending: "자동 복귀 중" };
+function renderCameraExposure(values, tunnelEnabled) {
+  const rgbModes = { auto: "자동", manual: "수동", fixed_iso: "노출 자동 · ISO 고정",
+    restoring: "출구 노출 복원 중", auto_pending: "자동 복귀 중" };
   for (const [id, reading, infrared] of [
     ["exposureRgb", values?.rgb, false],
+    ["exposureRgbStartup", values?.rgb_startup, false],
     ["exposureIrLeft", values?.ir_left, true],
     ["exposureIrRight", values?.ir_right, true],
   ]) {
     const el = $(id);
     const ms = Number.isFinite(reading?.ms) ? `${reading.ms.toFixed(2)} ms` : "—";
-    const detail = infrared ? (Number.isFinite(reading?.iso) ? `ISO ${reading.iso}` : "") : rgbModes[reading?.mode];
-    el.textContent = [ms, detail, reading?.stale ? "갱신 없음" : ""].filter(Boolean).join(" · ");
+    const showIso = infrared || id === "exposureRgbStartup" || reading?.mode === "fixed_iso";
+    const iso = showIso && Number.isFinite(reading?.iso) ? `ISO ${reading.iso}` : "";
+    el.parentElement.hidden = infrared && !tunnelEnabled;
+    el.textContent = [ms, iso, rgbModes[reading?.mode], reading?.stale ? "갱신 없음" : ""].filter(Boolean).join(" · ");
     el.classList.toggle("stale", Boolean(reading?.stale));
   }
   $("exposureIrFlood").textContent = Number.isFinite(values?.ir_flood) ? `${values.ir_flood.toFixed(2)} · 명령값` : "—";
+  $("exposureIrFlood").parentElement.hidden = !tunnelEnabled;
 }
 
 function render() {
@@ -380,7 +385,7 @@ function render() {
   if (!f) return;
   const previewOn = $("togPreview").checked;
   const tunnel = f.tunnel || {};
-  $("main").hidden = !previewOn && !tunnel.enabled;
+  $("main").hidden = !previewOn && !tunnel.enabled && !f.camera_exposure;
   $("main").classList.toggle("preview-off", !previewOn);
   $("offNote").hidden = previewOn;
   $("togBev").disabled = $("togCam").disabled = !previewOn;
@@ -410,7 +415,8 @@ function render() {
   $("sourceChip").className = "chipx " + src;
   $("sourceChip").textContent = src === "IR" ? "IR 터널" : "RGB";
   renderTunnel(tunnel, f.tcn, f.readiness.lane_fresh);
-  renderCameraExposure(f.camera_exposure);
+  $("cameraExposurePanel").hidden = !f.camera_exposure;
+  renderCameraExposure(f.camera_exposure, tunnel.enabled);
   renderTunnelMode(tunnel);
   document.querySelectorAll("#modeSeg button").forEach((b) => {
     b.classList.toggle("on", b.dataset.mode === f.mode);
@@ -554,6 +560,17 @@ function renderParams() {
     return `<details class="lane-param-section" data-section="${section}"${open ? " open" : ""}><summary>${section}</summary>${rows}${preset}</details>`;
   }).join("");
   renderTunnelMode(latest?.tunnel);
+  const rgbMode = panel.querySelector('[data-name="rgb_cam.auto_exposure"]');
+  if (rgbMode) {
+    const exposure = panel.querySelector('[data-name="rgb_cam.exposure_us"]');
+    const iso = panel.querySelector('[data-name="rgb_cam.iso"]');
+    const updateRgbInputs = () => {
+      exposure.disabled = rgbMode.value !== "0";
+      iso.disabled = rgbMode.value === "1";
+    };
+    updateRgbInputs();
+    rgbMode.addEventListener("input", updateRgbInputs);
+  }
   panel.querySelectorAll("[data-name]").forEach((inp) => inp.addEventListener("input", () => {
     const p = params.find((q) => q.name === inp.dataset.name);
     const x = Number(inp.value);
@@ -712,7 +729,7 @@ async function demo() {
         j === 62 ? "entry" : j === 91 ? "exit" : null,
       ]);
       g.tcn = { now, samples, threshold: 0.5, status: "LIVE", state: tick >= 62 && tick < 91 ? "inside" : "outside" };
-      g.camera_exposure = { rgb: { ms: 8.2, mode: "auto" },
+      g.camera_exposure = { rgb: { ms: 8.2, mode: "auto" }, rgb_startup: { ms: 6.1, iso: 260 },
         ir_left: { ms: 19.98, iso: 500 }, ir_right: { ms: 20, iso: 500 }, ir_flood: 1 };
       g.detections = []; g.memory = [];
       g.plan = { path: [], mode: "center", rollout_ok: true }; g.traffic.enabled = false;

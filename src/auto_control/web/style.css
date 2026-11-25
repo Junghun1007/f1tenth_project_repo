@@ -53,7 +53,7 @@ th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); 
 .col { display: flex; flex-direction: column; gap: 10px; }
 .main.preview-off { max-width: 760px; margin: 0 auto; }
 .main.preview-off .side { display: block; }
-.main.preview-off .panel:not(.tcn-panel) { display: none; }
+.main.preview-off .panel:not(.tcn-panel):not(.camera-exposure-panel) { display: none; }
 .tcn-panel { min-width: 0; --tcn-entry: #5edcc8; --tcn-exit: #ffbd70; --tcn-switch: #c4a7ff; }
 .tcn-head, .tcn-foot { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 12px; }
 .tcn-head h2 { color: var(--text); margin: 0; }

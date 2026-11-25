@@ -12,6 +12,7 @@ namespace bev_handoff
 namespace
 {
 std::shared_ptr<const CameraExposureObservation> rgb_exposure, ir_exposure, right_ir_exposure;
+std::shared_ptr<const CameraExposureObservation> rgb_startup_exposure;
 std::shared_ptr<const RgbCameraSettings> rgb_camera_settings;
 std::atomic<double> ir_flood_intensity{-1.0};
 std::atomic<RgbExposureControl> rgb_exposure_control{RgbExposureControl::automatic};
@@ -46,6 +47,10 @@ void publishCameraExposure(bool infrared, std::shared_ptr<const CameraExposureOb
 {std::atomic_store(infrared ? &ir_exposure : &rgb_exposure, std::move(value));}
 std::shared_ptr<const CameraExposureObservation> latestCameraExposure(bool infrared)
 {return std::atomic_load(infrared ? &ir_exposure : &rgb_exposure);}
+void publishRgbStartupExposure(std::shared_ptr<const CameraExposureObservation> observation)
+{std::atomic_store(&rgb_startup_exposure, std::move(observation));}
+std::shared_ptr<const CameraExposureObservation> rgbStartupExposure()
+{return std::atomic_load(&rgb_startup_exposure);}
 void publishRightIrExposure(std::shared_ptr<const CameraExposureObservation> observation)
 {std::atomic_store(&right_ir_exposure, std::move(observation));}
 std::shared_ptr<const CameraExposureObservation> latestRightIrExposure()

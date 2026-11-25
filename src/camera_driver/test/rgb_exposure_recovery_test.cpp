@@ -160,11 +160,15 @@ void test_manual_mode()
   require(send(p, Phase::exiting, 3015).command == Command::none, "AE does not reopen the same exit");
 
   Policy retry(.20, false);
-  require(retry.step(Phase::outside, at(1000), {}, fixed).command == Command::manual,
-    "manual works immediately when exit recovery is disabled");
+  measure(retry);
+  require(retry.step(Phase::outside, at(1500), {}, fixed).command == Command::manual,
+    "manual works after startup measurement when exit recovery is disabled");
   retry.commandFailed();
-  require(send(retry, Phase::outside, 1001, {}, fixed).command == Command::manual,
+  require(send(retry, Phase::outside, 1501, {}, fixed).command == Command::manual,
     "failed manual requests are retried while still selected");
+  require(send(retry, Phase::outside, 1510).command == Command::automatic, "manual returns to auto");
+  require(send(retry, Phase::exiting, 2000, sample(1990, 12000, 800)).command == Command::none,
+    "the startup measurement is available with exit recovery disabled");
 
   Policy timeout;
   send(timeout, Phase::outside, 1000, {}, fixed);
@@ -181,12 +185,47 @@ void test_manual_mode()
     "cancelled restore timeout does not clear fixed ISO");
 }
 
+void test_automatic_shutter_fixed_iso()
+{
+  Policy p;
+  measure(p);
+  const Policy::Exposure fixed{0, 400};
+  const auto seed = send(p, Phase::outside, 1500, sample(1490), fixed);
+  require(seed.command == Command::fixed_iso && seed.iso == 400 && seed.exposure_us == 1000,
+    "fixed ISO uses camera metadata to seed the shutter");
+  auto early = Policy::Sample{at(1550), 1000, 400, .10};
+  require(send(p, Phase::outside, 1555, early, fixed).command == Command::none,
+    "wait for shutter feedback after the sensor settles");
+  auto dark = Policy::Sample{at(1630), 1000, 400, .10};
+  const auto longer = send(p, Phase::outside, 1640, dark, fixed);
+  require(longer.command == Command::fixed_iso && longer.exposure_us > 1000 && longer.iso == 400,
+    "increase shutter time in darkness with ISO fixed");
+  require(send(p, Phase::outside, 1770, dark, fixed).command == Command::none,
+    "duplicate samples do not drive feedback");
+  auto bright = Policy::Sample{at(1780), longer.exposure_us, 400, .80};
+  const auto shorter = send(p, Phase::exiting, 1790, bright, fixed);
+  require(shorter.command == Command::fixed_iso && shorter.exposure_us < longer.exposure_us && shorter.iso == 400,
+    "reduce shutter time and retain fixed ISO at tunnel exit");
+  require(p.saved()->iso == 200, "fixed ISO never overwrites the startup measurement");
+  require(send(p, Phase::exiting, 1800).command == Command::automatic, "switch back to sensor auto");
+
+  std::vector<std::uint8_t> plane(32 * 16, 235);
+  for (int row = 0; row < 16; ++row) {
+    std::fill_n(plane.begin() + row * 32, 24, 16);
+  }
+  require(camera_driver::rgbMeteredLuma(plane.data(), plane.size(), 24, 16, 32) == 0.,
+    "luma metering ignores row padding");
+  require(!camera_driver::rgbMeteredLuma(plane.data(), 24, 24, 16, 32),
+    "luma metering rejects truncated frames");
+}
+
 int main()
 {
   test_exit_restore();
   test_restore_returns_to_auto();
   test_missing_reference();
   test_manual_mode();
+  test_automatic_shutter_fixed_iso();
   for (double value : {0., -.1, .51, std::numeric_limits<double>::quiet_NaN()}) {
     bool invalid = false;
     try {Policy invalid_policy(value);} catch (const std::invalid_argument &) {invalid = true;}

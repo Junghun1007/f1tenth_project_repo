@@ -93,10 +93,11 @@ TEST(tunnel_tuning_validates_and_saves_detector_and_live_tunnel_settings) {
 }
 
 TEST(rgb_camera_parameters_are_live_and_independent_of_ir) {
+  using Mode = bev_handoff::RgbExposureMode;
   ParamRegistry r;
   register_params(r);
   const auto defaults = settings_from(r);
-  CHECK(defaults.rgb_camera.auto_exposure);
+  CHECK(defaults.rgb_camera.mode == Mode::automatic);
   CHECK(defaults.rgb_camera.exposure_us == 8000);
   CHECK(defaults.rgb_camera.iso == 400);
   CHECK(!r.apply({{"rgb_cam.auto_exposure", .5}}).first);
@@ -104,13 +105,15 @@ TEST(rgb_camera_parameters_are_live_and_independent_of_ir) {
   CHECK(!r.apply({{"rgb_cam.iso", 1700}}).first);
   CHECK(r.apply({{"rgb_cam.auto_exposure", 0}, {"rgb_cam.exposure_us", 6000}, {"rgb_cam.iso", 600}}).first);
   const auto updated = settings_from(r);
-  CHECK(!updated.rgb_camera.auto_exposure);
+  CHECK(updated.rgb_camera.mode == Mode::manual);
   CHECK(updated.rgb_camera.exposure_us == 6000);
   CHECK(updated.rgb_camera.iso == 600);
   CHECK(updated.ir_camera.inside.iso == defaults.ir_camera.inside.iso);
   CHECK(r.to_yaml("auto_drive").find("rgb_cam.iso: 600.0") != std::string::npos);
+  CHECK(r.apply({{"rgb_cam.auto_exposure", 2}}).first);
+  CHECK(settings_from(r).rgb_camera.mode == Mode::fixed_iso);
   CHECK(r.apply({{"rgb_cam.auto_exposure", 1}}).first);
-  CHECK(settings_from(r).rgb_camera.auto_exposure);
+  CHECK(settings_from(r).rgb_camera.mode == Mode::automatic);
 }
 
 TEST(tunnel_ir_resolution_uses_supported_choices) {

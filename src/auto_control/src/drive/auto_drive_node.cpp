@@ -60,16 +60,16 @@ bool is_tcn_param(const std::string & name) { return name.rfind("tcn.", 0) == 0;
 std::string camera_exposure_json() {
   acd::JsonWriter w;
   const auto now = std::chrono::steady_clock::now();
-  auto exposure = [&](const std::shared_ptr<const bev_handoff::CameraExposureObservation> & obs) {
+  auto reading = [&](const std::shared_ptr<const bev_handoff::CameraExposureObservation> & obs, bool live) {
     w.key("ms");
     if (obs && obs->exposure_us > 0) w.value(obs->exposure_us / 1000.0, 3); else w.null();
-    w.key("stale").value(obs && (now < obs->captured_at || now - obs->captured_at > 750ms));
+    w.key("iso");
+    if (obs && obs->iso > 0) w.value(static_cast<long long>(obs->iso)); else w.null();
+    if (live) w.key("stale").value(obs && (now < obs->captured_at || now - obs->captured_at > 750ms));
   };
   auto stereo = [&](const char * key, const auto & obs) {
     w.key(key).begin_object();
-    exposure(obs);
-    w.key("iso");
-    if (obs && obs->iso > 0) w.value(static_cast<long long>(obs->iso)); else w.null();
+    reading(obs, true);
     w.end_object();
   };
   const auto rgb_mode = bev_handoff::latestRgbExposureControl();
@@ -79,9 +79,12 @@ std::string camera_exposure_json() {
     case bev_handoff::RgbExposureControl::manual: mode = "manual"; break;
     case bev_handoff::RgbExposureControl::restoring: mode = "restoring"; break;
     case bev_handoff::RgbExposureControl::auto_pending: mode = "auto_pending"; break;
+    case bev_handoff::RgbExposureControl::fixed_iso: mode = "fixed_iso"; break;
   }
   w.begin_object().key("rgb").begin_object().key("mode").value(mode);
-  exposure(bev_handoff::latestCameraExposure(false));
+  reading(bev_handoff::latestCameraExposure(false), true);
+  w.end_object().key("rgb_startup").begin_object();
+  reading(bev_handoff::rgbStartupExposure(), false);
   w.end_object();
   stereo("ir_left", bev_handoff::latestCameraExposure(true));
   stereo("ir_right", bev_handoff::latestRightIrExposure());
@@ -857,9 +860,8 @@ private:
           << ",\"yolo\":{\"fps\":" << detect_->fps() << ",\"signal_score\":" << detect_->last_signal_score() << "}"
           << ",\"refit_supported\":true";
       }
-      if (tunnel_enabled_) {
-        x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_) << ",\"camera_exposure\":" << camera_exposure_json();
-      }
+      if (tunnel_enabled_) x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_);
+      x << ",\"camera_exposure\":" << camera_exposure_json();
       if (drive_t0_ > 0 && f.state == "DRIVING") x << ",\"drive_s\":" << (now - drive_t0_);
       x << ",\"record\":" << record_status_json() << "}";
       j.pop_back();

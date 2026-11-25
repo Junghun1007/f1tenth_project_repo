@@ -16,16 +16,19 @@ struct CameraExposureObservation
   long exposure_us{0};
   int iso{0};
   std::chrono::steady_clock::time_point captured_at;
+  std::optional<double> luma{};
 };
 // Actual sensor metadata, published before IMU/BEV validity filtering.
 void publishCameraExposure(bool infrared, std::shared_ptr<const CameraExposureObservation> observation);
 std::shared_ptr<const CameraExposureObservation> latestCameraExposure(bool infrared);
+void publishRgbStartupExposure(std::shared_ptr<const CameraExposureObservation> observation);
+std::shared_ptr<const CameraExposureObservation> rgbStartupExposure();
 void publishRightIrExposure(std::shared_ptr<const CameraExposureObservation> observation);
 std::shared_ptr<const CameraExposureObservation> latestRightIrExposure();
 // Most recent flood command accepted by the device. The emitter is shared.
 void publishIrFloodIntensity(std::optional<double> intensity);
 std::optional<double> latestIrFloodIntensity();
-enum class RgbExposureControl {automatic, restoring, auto_pending, manual};
+enum class RgbExposureControl {automatic, restoring, auto_pending, manual, fixed_iso};
 // Requested control mode; sensor metadata above independently shows actual values.
 void publishRgbExposureControl(RgbExposureControl mode);
 RgbExposureControl latestRgbExposureControl();

@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <optional>
 #include <stdexcept>
@@ -11,19 +13,38 @@ namespace camera_driver
 {
 enum class RgbTunnelPhase {outside, entering, inside, exiting};
 
+// Meter the road ahead on a sparse grid of the original NV12 luma plane.
+inline std::optional<double> rgbMeteredLuma(const std::uint8_t * data, std::size_t size,
+  std::size_t width, std::size_t height, std::size_t stride)
+{
+  if (!data || width == 0 || height == 0 || stride < width || height > size / stride) {return {};}
+  constexpr std::size_t rows = 12, cols = 16;
+  unsigned sum = 0;
+  for (std::size_t row = 0; row < rows; ++row) {
+    const auto * line = data + stride * (height * (3 * rows + 4 * row + 2) / (8 * rows));
+    for (std::size_t col = 0; col < cols; ++col) {
+      sum += line[width * (cols + 2 * col + 1) / (4 * cols)];
+    }
+  }
+  const double mean = static_cast<double>(sum) / (rows * cols);
+  return std::clamp((mean - 16.0) / 219.0, 0.0, 1.0);
+}
+
 // One worker owns normal RGB exposure and the temporary tunnel exit restore.
 class RgbExposureRecovery
 {
 public:
   using Clock = std::chrono::steady_clock;
-  struct Sample {Clock::time_point captured; long exposure_us; int iso;};
-  struct Exposure {long exposure_us; int iso;};
-  enum class Command {none, manual, restore, automatic};
+  struct Sample {Clock::time_point captured; long exposure_us; int iso; std::optional<double> luma{};};
+  struct Exposure {long exposure_us; int iso;};  // Zero time requests host AE with fixed ISO.
+  enum class Command {none, manual, restore, automatic, fixed_iso};
   struct Action {Command command{Command::none}; long exposure_us{0}; int iso{0};};
 
-  explicit RgbExposureRecovery(double max_hold_sec = .20, bool recover_on_exit = true)
+  explicit RgbExposureRecovery(double max_hold_sec = .20, bool recover_on_exit = true,
+    long max_exposure_us = 14000)
   : max_hold_(std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(
-      checkedHold(max_hold_sec)))), startup_finished_(!recover_on_exit) {}
+      checkedHold(max_hold_sec)))), recover_on_exit_(recover_on_exit),
+    max_exposure_us_(std::max(20L, max_exposure_us)) {}
 
   Action step(RgbTunnelPhase phase, Clock::time_point now, std::optional<Sample> sample,
     std::optional<Exposure> manual = std::nullopt)
@@ -38,6 +59,7 @@ public:
     if (!startup_finished_) {measureStartup(now, new_sample ? sample : std::nullopt);}
 
     if (manual && startup_finished_) {
+      if (manual->exposure_us == 0) {return adjustFixedIso(now, new_sample ? sample : std::nullopt, manual->iso);}
       if (applied_ && applied_->command == Command::manual &&
         applied_->exposure_us == manual->exposure_us && applied_->iso == manual->iso)
       {
@@ -45,7 +67,9 @@ public:
       }
       return {Command::manual, manual->exposure_us, manual->iso};
     }
-    if (!applied_ || applied_->command == Command::manual) {return {Command::automatic};}
+    if (!applied_ || applied_->command == Command::manual || applied_->command == Command::fixed_iso) {
+      return {Command::automatic};
+    }
     if (applied_->command == Command::restore) {
       if (phase != RgbTunnelPhase::exiting || now - restore_at_ >= max_hold_) {return {Command::automatic};}
       if (new_sample && sample->captured > restore_at_) {
@@ -55,7 +79,7 @@ public:
       }
       return matched_ >= 2 ? Action{Command::automatic} : Action{};
     }
-    if (changed && phase == RgbTunnelPhase::exiting && saved_ && latest_ &&
+    if (recover_on_exit_ && changed && phase == RgbTunnelPhase::exiting && saved_ && latest_ &&
       now - latest_->captured <= 250ms &&
       (latest_->exposure_us != saved_->exposure_us || latest_->iso != saved_->iso))
     {
@@ -76,6 +100,37 @@ public:
   std::optional<Sample> saved() const {return saved_;}
 
 private:
+  Action adjustFixedIso(Clock::time_point now, const std::optional<Sample> & sample, int iso)
+  {
+    using namespace std::chrono_literals;
+    double requested;
+    if (!applied_ || applied_->command != Command::fixed_iso || applied_->iso != iso) {
+      if (!latest_) {return {};}
+      // Preserve brightness approximately when changing sensitivity.
+      requested = static_cast<double>(latest_->exposure_us) * latest_->iso / iso;
+    } else {
+      // Wait for feedback from a frame captured after the previous change has settled.
+      if (!sample || !sample->luma || !std::isfinite(*sample->luma) ||
+        sample->captured < fixed_iso_at_ + 120ms ||
+        std::abs(sample->iso - iso) > std::max(10, iso / 10))
+      {
+        return {};
+      }
+      constexpr double target = 0.40;
+      if (std::abs(*sample->luma - target) <= 0.04) {return {};}
+      const double gain = std::clamp(std::sqrt(target / std::max(.02, *sample->luma)), .75, 1.33);
+      requested = sample->exposure_us * gain;
+    }
+    const long exposure = std::lround(std::clamp(requested, 20., static_cast<double>(max_exposure_us_)));
+    if (applied_ && applied_->command == Command::fixed_iso && applied_->iso == iso &&
+      std::abs(exposure - applied_->exposure_us) <= std::max(10L, applied_->exposure_us / 50))
+    {
+      return {};
+    }
+    fixed_iso_at_ = now;
+    return {Command::fixed_iso, exposure, iso};
+  }
+
   static double checkedHold(double value)
   {
     if (!std::isfinite(value) || value <= 0. || value > .5) {
@@ -121,12 +176,14 @@ private:
 
   RgbTunnelPhase phase_{RgbTunnelPhase::outside};
   Clock::duration max_hold_;
-  Clock::time_point restore_at_{};
+  const bool recover_on_exit_;
+  const long max_exposure_us_;
+  Clock::time_point restore_at_{}, fixed_iso_at_{};
   std::optional<Clock::time_point> startup_at_;
   std::deque<Sample> history_;
   std::optional<Sample> latest_, saved_;
   std::optional<Action> applied_{Action{Command::automatic}};
-  bool startup_finished_;
+  bool startup_finished_{false};
   unsigned matched_{0};
 };
 }  // namespace camera_driver

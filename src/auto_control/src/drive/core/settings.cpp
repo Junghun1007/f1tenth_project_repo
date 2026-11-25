@@ -217,8 +217,8 @@ void register_params(ParamRegistry & r) {
   register_lane_tuning(r, false);
   register_lane_tuning(r, true);
   const bev_handoff::RgbCameraSettings rgb_defaults;
-  r.add({"rgb_cam.auto_exposure", "lane", "RGB · 카메라", "노출·ISO 모드", "", 0, 1,
-    static_cast<double>(rgb_defaults.auto_exposure), true, {{1, "자동"}, {0, "수동"}}});
+  r.add({"rgb_cam.auto_exposure", "lane", "RGB · 카메라", "노출·ISO 모드", "", 0, 2,
+    static_cast<double>(rgb_defaults.mode), true, {{1, "노출·ISO 자동"}, {2, "노출 자동 · ISO 고정"}, {0, "노출·ISO 수동"}}});
   r.add({"rgb_cam.exposure_us", "lane", "RGB · 카메라", "수동 노출 시간", "µs",
     rgb_defaults.min_exposure_us, rgb_defaults.max_exposure_us, static_cast<double>(rgb_defaults.exposure_us)});
   r.add({"rgb_cam.iso", "lane", "RGB · 카메라", "수동 ISO", "",
@@ -410,7 +410,7 @@ Settings settings_from(const ParamRegistry & r) {
   s.link_loss_stop_sec = g("web.link_loss_stop_sec");
   s.lane_timeout_sec = g("drive.lane_timeout_sec");
   s.lane_check_mode = static_cast<int>(g("lane.check_mode"));
-  s.rgb_camera = {g("rgb_cam.auto_exposure") == 1, int(std::lround(g("rgb_cam.exposure_us"))),
+  s.rgb_camera = {static_cast<bev_handoff::RgbExposureMode>(int(g("rgb_cam.auto_exposure"))), int(std::lround(g("rgb_cam.exposure_us"))),
                   int(std::lround(g("rgb_cam.iso")))};
   s.ir_camera.inside = {int(std::lround(g("ir_cam.inside_exposure_us"))), int(std::lround(g("ir_cam.inside_iso"))),
                         g("ir_cam.inside_dot"), g("ir_cam.inside_flood")};

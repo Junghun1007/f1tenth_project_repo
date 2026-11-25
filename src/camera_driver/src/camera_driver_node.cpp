@@ -407,6 +407,7 @@ public:
       if (tunnel_enabled_) {ir_thread_=std::thread(&Impl::ir_loop,this);}
       if (tunnel_enabled_) {tcn_thread_=std::thread(&Impl::tcn_stats_loop,this);}
       if (rgb_controls_) {
+        bev_handoff::publishRgbStartupExposure(nullptr);
         rgb_exposure_thread_=std::thread(&Impl::rgb_exposure_loop,this);
       }
       if (imu_stream_enabled_) {
@@ -1694,29 +1695,37 @@ while True:
     using Command = RgbExposureRecovery::Command;
     using Control = bev_handoff::RgbExposureControl;
     using Settings = bev_handoff::RgbCameraSettings;
-    RgbExposureRecovery recovery(rgb_exposure_max_hold_sec_, tunnel_enabled_ && rgb_exposure_recovery_enabled_);
+    using Mode = bev_handoff::RgbExposureMode;
     const int max_exposure_us = static_cast<int>(std::clamp(1.0e6 / sensor_fps_,
       double(Settings::min_exposure_us), double(Settings::max_exposure_us)));
+    RgbExposureRecovery recovery(rgb_exposure_max_hold_sec_,
+      tunnel_enabled_ && rgb_exposure_recovery_enabled_, max_exposure_us);
+    Command previous_command = Command::automatic;
     while (!stop_requested_.load()) {
       try {
         std::optional<RgbExposureRecovery::Exposure> manual;
-        if (const auto settings = bev_handoff::rgbCameraSettings(); settings && !settings->auto_exposure) {
+        const auto settings = bev_handoff::rgbCameraSettings();
+        const auto mode = settings ? settings->mode : Mode::automatic;
+        rgb_metering_enabled_.store(mode == Mode::fixed_iso, std::memory_order_relaxed);
+        if (mode != Mode::automatic) {
           manual = RgbExposureRecovery::Exposure{
-            std::clamp(settings->exposure_us, Settings::min_exposure_us, max_exposure_us),
+            mode == Mode::fixed_iso ? 0 : std::clamp(settings->exposure_us, Settings::min_exposure_us, max_exposure_us),
             std::clamp(settings->iso, Settings::min_iso, Settings::max_iso)};
         }
         std::optional<RgbExposureRecovery::Sample> sample;
         if (const auto observed = bev_handoff::latestCameraExposure(false)) {
-          sample = RgbExposureRecovery::Sample{observed->captured_at, observed->exposure_us, observed->iso};
+          sample = RgbExposureRecovery::Sample{observed->captured_at, observed->exposure_us, observed->iso, observed->luma};
         }
         const bool measuring = !recovery.startupFinished();
         const auto action = recovery.step(
           rgb_tunnel_phase_.load(), std::chrono::steady_clock::now(), sample, manual);
         if (measuring && recovery.startupFinished()) {
           if (const auto saved = recovery.saved()) {
+            bev_handoff::publishRgbStartupExposure(std::make_shared<bev_handoff::CameraExposureObservation>(
+              bev_handoff::CameraExposureObservation{saved->exposure_us, saved->iso, saved->captured}));
             RCLCPP_INFO(node_.get_logger(), "[RGB EXPOSURE] startup AE reference %ldus ISO%d", saved->exposure_us, saved->iso);
           } else {
-            RCLCPP_WARN(node_.get_logger(), "[RGB EXPOSURE] no stable startup AE reference for tunnel exit");
+            RCLCPP_WARN(node_.get_logger(), "[RGB EXPOSURE] no stable startup AE reference");
           }
         }
         if (action.command != Command::none) {
@@ -1728,15 +1737,20 @@ while True:
             control->setManualExposure(static_cast<std::uint32_t>(action.exposure_us), static_cast<std::uint32_t>(action.iso));
           }
           rgb_controls_->send(control);
+          const bool mode_changed = previous_command != action.command;
+          previous_command = action.command;
           recovery.commandSent(action);
           if (action.command == Command::automatic) {
             bev_handoff::publishRgbExposureControl(Control::automatic);
             RCLCPP_INFO(node_.get_logger(), "[RGB EXPOSURE] automatic exposure enabled");
           } else {
             const bool restore = action.command == Command::restore;
-            bev_handoff::publishRgbExposureControl(restore ? Control::restoring : Control::manual);
-            RCLCPP_INFO(node_.get_logger(), "[RGB EXPOSURE] %s: %ldus ISO%d",
-              restore ? "EXITING restore" : "manual", action.exposure_us, action.iso);
+            const bool fixed = action.command == Command::fixed_iso;
+            bev_handoff::publishRgbExposureControl(restore ? Control::restoring : fixed ? Control::fixed_iso : Control::manual);
+            if (mode_changed || !fixed) {
+              RCLCPP_INFO(node_.get_logger(), "[RGB EXPOSURE] %s: %ldus ISO%d",
+                restore ? "EXITING restore" : fixed ? "auto exposure with fixed ISO" : "manual", action.exposure_us, action.iso);
+            }
           }
         }
       } catch (const std::exception & e) {
@@ -2107,8 +2121,16 @@ while True:
         // host arrival time or the beginning/end of exposure.
         const auto sensor_timestamp = packet->getTimestamp(
           dai::CameraExposureOffset::MIDDLE);
+        std::optional<double> luma;
+        if (rgb_metering_enabled_.load(std::memory_order_relaxed) && packet->getType() == dai::ImgFrame::Type::NV12) {
+          const auto & data = packet->getData();
+          const auto width = packet->getWidth();
+          const auto stride = packet->getStride() ? packet->getStride() : width;
+          luma = rgbMeteredLuma(data.data(), data.size(), width, packet->getHeight(), stride);
+        }
         bev_handoff::publishCameraExposure(false,std::make_shared<bev_handoff::CameraExposureObservation>(
-          bev_handoff::CameraExposureObservation{static_cast<long>(packet->getExposureTime().count()),static_cast<int>(packet->getSensitivity()),sensor_timestamp}));
+          bev_handoff::CameraExposureObservation{static_cast<long>(packet->getExposureTime().count()),
+            static_cast<int>(packet->getSensitivity()), sensor_timestamp, luma}));
         // INSIDE: 호스트에서 ~30 FPS로 솎는다 (예전 장치 Script 게이트와 같은 역할). 이후 처리는 건너뜀
         const bool tcn_decimated=rgb_decimated_.load();
         if (tcn_decimated) {
@@ -3566,6 +3588,7 @@ while True:
     tcn_condition_.notify_all();
     join_thread(tcn_thread_);
     join_thread(rgb_exposure_thread_);
+    if (rgb_controls_) {bev_handoff::publishRgbStartupExposure(nullptr);}
     rgb_controls_.reset();
     bev_handoff::publishCameraExposure(false,nullptr);
     bev_handoff::publishCameraExposure(true,nullptr);
@@ -3687,6 +3710,7 @@ while True:
   double rgb_exposure_max_hold_sec_{.20};
   std::atomic<RgbTunnelPhase> rgb_tunnel_phase_{RgbTunnelPhase::outside};
   std::shared_ptr<dai::InputQueue> rgb_controls_;
+  std::atomic<bool> rgb_metering_enabled_{false};
   std::thread rgb_exposure_thread_;
   double tunnel_ir_imu_max_age_sec_{0.05},tunnel_ir_imu_wait_sec_{0.10};
   std::atomic<bool> tunnel_requested_{false};
