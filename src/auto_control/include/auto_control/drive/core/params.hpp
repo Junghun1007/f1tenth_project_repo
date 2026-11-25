@@ -51,10 +51,14 @@ public:
   // 하나라도 잘못되면 아무것도 바꾸지 않는다. 실패 메시지에 항목 이름 포함
   std::pair<bool, std::string> apply(const std::map<std::string, double> & changes);
   std::string to_yaml(const std::string & node_name) const;
+  // Validate changes and return the resulting YAML without applying it to the running registry.
+  std::pair<bool, std::string> yaml_with_changes(const std::string & node_name,
+    const std::map<std::string, double> & changes) const;
   std::string to_json() const;
   std::uint64_t version() const;
 
 private:
+  std::string validate_changes(const std::map<std::string, double> & changes, std::vector<ParamSpec> & next) const;
   mutable std::mutex mutex_;
   std::vector<ParamSpec> specs_;
   std::map<std::string, std::size_t> index_;

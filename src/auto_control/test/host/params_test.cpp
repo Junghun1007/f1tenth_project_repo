@@ -92,6 +92,25 @@ TEST(tunnel_tuning_validates_and_saves_detector_and_live_tunnel_settings) {
   CHECK(yaml.find("tunnel.ir_length_exit_confirm_frames: 4.0") != std::string::npos);
 }
 
+TEST(restart_yaml_validates_preset_without_changing_running_parameters) {
+  ParamRegistry r;
+  register_params(r);
+  const auto active = r.to_yaml("auto_drive");
+  const auto version = r.version();
+  const auto [ok, yaml] = r.yaml_with_changes("auto_drive",
+    {{"rgb_cam.iso", 500}, {"ir_lane.result_padding_px", 25}});
+  CHECK(ok);
+  CHECK(yaml.find("rgb_cam.iso: 500.0") != std::string::npos);
+  CHECK(yaml.find("ir_lane.result_padding_px: 25.0") != std::string::npos);
+  CHECK(r.to_yaml("auto_drive") == active);
+  CHECK(r.version() == version);
+  const auto [invalid, reason] = r.yaml_with_changes("auto_drive",
+    {{"rgb_cam.iso", 500}, {"ir_lane.result_padding_px", 25.5}});
+  CHECK(!invalid);
+  CHECK(reason.find("ir_lane.result_padding_px") != std::string::npos);
+  CHECK(r.to_yaml("auto_drive") == active);
+}
+
 TEST(rgb_camera_parameters_are_live_and_independent_of_ir) {
   using Mode = bev_handoff::RgbExposureMode;
   ParamRegistry r;

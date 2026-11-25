@@ -57,6 +57,19 @@ async function post(path, body) {
   }
 }
 
+async function restartCamera(path, body) {
+  if (cameraResetRequest) return { ok: false, reason: "카메라 초기화 중입니다" };
+  cameraResetRequest = true;
+  $("btnCameraReset").disabled = true;
+  $("cameraResetStatus").textContent = "카메라 재시작 요청 중";
+  const result = await post(path, body);
+  if (!cameraResetReconnect && cameraResetRequest) {
+    if (!result.ok) cameraResetRequest = false;
+    $("cameraResetStatus").textContent = result.ok ? "카메라 재시작 중" : result.reason;
+  }
+  return result;
+}
+
 function connect() {
   const es = new EventSource("/api/events");
   es.onmessage = (ev) => { latest = JSON.parse(ev.data); setLink(true); render(); };
@@ -679,15 +692,7 @@ function bind() {
     if (!confirm("Refit: 주행 중이면 먼저 멈춘 뒤, 카메라 높이·기울기를 다시 측정하고 콘·차량 기억을 모두 지웁니다.\n평평한 바닥에 세우고 몇 초간 움직이지 마세요.")) return;
     const r = await post("/api/refit"); if (!r.ok) $("reason").textContent = r.reason;
   });
-  $("btnCameraReset").addEventListener("click", async () => {
-    cameraResetRequest = true;
-    $("btnCameraReset").disabled = true;
-    $("cameraResetStatus").textContent = "카메라 재시작 요청 중";
-    const r = await post("/api/camera/reset");
-    if (cameraResetReconnect || !cameraResetRequest) return;
-    if (!r.ok) cameraResetRequest = false;
-    $("cameraResetStatus").textContent = r.ok ? "카메라 재시작 중" : r.reason;
-  });
+  $("btnCameraReset").addEventListener("click", () => restartCamera("/api/camera/reset"));
   $("togBev").addEventListener("change", () => {
     const on = $("togBev").checked;
     const img = $("bevImg");
@@ -738,9 +743,9 @@ function bind() {
   $("btnLoadPreset").addEventListener("click", async () => {
     const name = $("presetSelect").value;
     if (!name) return;
-    const r = await post("/api/presets/load", { name });
-    $("pmsg").textContent = r.ok ? "불러옴 · " + r.reason : "불러오기 실패 · " + r.reason;
-    if (r.ok) { edits = {}; await loadParams(); }
+    const r = await restartCamera("/api/presets/load", { name });
+    $("pmsg").textContent = r.ok ? name + " · 카메라 재시작 요청됨" : "불러오기 실패 · " + r.reason;
+    if (r.ok) { edits = {}; renderParams(); }
   });
 }
 

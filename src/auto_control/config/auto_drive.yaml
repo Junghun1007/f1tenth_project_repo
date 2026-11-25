@@ -1,11 +1,10 @@
 # auto_control 주행 컴포넌트(auto_drive) 기본 파라미터. 브라우저 파라미터 창의 [YAML 저장]도 같은 형식으로 저장한다.
 # vehicle_bringup auto_drive.launch.py drive_params_file:=<경로>로 바꿔 실행.
-# 값의 출처: cone_drive_test.yaml (콘 기억·회피·신호등·추종·duty-only를 실차에서 맞춘 값)
+# 주행 및 카메라 튜닝 기본값은 202611251743_ver3.yaml을 사용한다.
 # 카메라 위치·내부 파라미터·장착 각도는 bev_processor 시작 측정값을 그대로 쓴다 (여기서 정하지 않음)
 /**/auto_drive:
   ros__parameters:
     # ---- 재시작해야 바뀌는 값 ----
-    tunnel.validation_mode: true        # false: IR 노출 변경 대기 및 촬영 프레임 검사
     camera.yaw_deg: 0.0
     vehicle.wheelbase_m: 0.33
     vehicle.maximum_steering_deg: 30.0
@@ -27,6 +26,17 @@
     web.bind: 0.0.0.0
     web.port: 8765
     # ---- 브라우저 파라미터 창에서 실시간으로 바꿀 수 있는 값 ----
+    # 터널 판정과 IR 이탈
+    tcn.threshold: 0.5
+    tcn.cooldown_seconds: 1.0
+    tcn.warmup_seconds: 2.5
+    tcn.max_gap_seconds: 0.5
+    tcn.max_image_age_seconds: 0.25
+    tunnel.validation_mode: true        # false: IR 노출 변경 대기 및 촬영 프레임 검사
+    tunnel.ir_length_exit_enabled: 0.0
+    tunnel.ir_length_exit_ratio: 0.15
+    tunnel.ir_length_exit_confirm_frames: 3.0
+    tunnel.ir_length_exit_minimum_reference_m: 0.5
     # YOLO 검출
     yolo.con_threshold: 0.83            # 콘 임계값
     yolo.truck_threshold: 0.70          # 트럭 임계값
@@ -92,9 +102,9 @@
     drive.minimum_speed_mps: 1.1        # 최소 속도(코너) (m/s)
     drive.obstacle_speed_mps: 1.0       # 장애물 구간 속도 (m/s)
     drive.rollout_fail_speed_mps: 0.8   # 롤아웃 실패 시 속도 (m/s)
-    drive.maximum_lateral_accel: 1.6    # 최대 횡가속 (m/s²)
-    drive.planning_decel: 0.5           # 계획 감속도 (m/s²)
-    drive.obstacle_decel: 0.4           # 장애물 감속도 (m/s²)
+    drive.maximum_lateral_accel: 1.4    # 최대 횡가속 (m/s²)
+    drive.planning_decel: 0.45           # 계획 감속도 (m/s²)
+    drive.obstacle_decel: 0.45           # 장애물 감속도 (m/s²)
     drive.obstacle_accel: 0.4           # 장애물 해제 가속도 (m/s²)
     # 조향 (Stanley)
     drive.stanley_gain: 1.3             # Stanley gain
@@ -102,24 +112,159 @@
     drive.heading_lookahead_m: 0.08     # heading lookahead (m)
     drive.steering_current_weight: 0.5  # 조향 필터 현재 비중
     drive.steering_rate_deg_s: 260      # 조향 변화율 한계 (°/s)
-    # 차선
-    lane.check_mode: 1.0               # 0=추가 검사 끔, 1=기존 검사, 2=회피 방향별 차선 복귀
-    lane.side_tracking: 0             # 차선 좌우 판정 고정 (0=끔, 1=켬): 모델 라벨 대신 직전 프레임·차선 폭으로 좌우 재판정
+    # RGB 차선
+    lane.check_mode: 0.0               # 0=추가 검사 끔, 1=기존 검사, 2=회피 방향별 차선 복귀
+    lane.engine_precision: 0.0
     lane.left_mask_threshold: 0.8
     lane.right_mask_threshold: 0.8
     lane.stop_line_mask_threshold: 0.8
     lane.overlay_alpha: 0.75
-    lane.connection_min_component_area_px: 30.0
-    lane.connection_max_gap_px: 90.0
+    lane.stop_line_min_present_pixels: 1.0
+    lane.side_tracking: 0             # 차선 좌우 판정 고정 (0=끔, 1=켬): 모델 라벨 대신 직전 프레임·차선 폭으로 좌우 재판정
+    lane.side_track_match_gate_m: 0.15
+    lane.side_track_max_age_sec: 0.1
     lane.bridge_centerline: 1.0
+    lane.result_padding_px: -1.0
+    lane.connection_enabled: 1.0
+    lane.connection_min_component_area_px: 30.0
+    lane.connection_skeleton_downsample_factor: 2.0
+    lane.connection_border_endpoint_distance_px: 6.0
+    lane.connection_min_fragment_length_px: 8.0
+    lane.connection_max_fragments: 24.0
+    lane.connection_tangent_window_px: 8.0
+    lane.connection_max_gap_px: 90.0
+    lane.connection_corridor_half_width_px: 4.0
+    lane.connection_direction_tolerance_deg: 20.0
+    lane.connection_max_turn_deg: 180.0
+    lane.connection_max_curvature_per_px: 0.12
+    lane.connection_max_arc_ratio: 1.8
+    lane.connection_line_width_px: 2.0
+    lane.centerline_enabled: 1.0
+    lane.lane_width_m: 0.65
+    lane.sample_spacing_m: 0.035
+    lane.output_spacing_m: 0.02
+    lane.clearance_check_spacing_m: 0.025
+    lane.min_fragment_length_m: 0.08
+    lane.tangent_window_m: 0.06
+    lane.width_tolerance_m: 0.12
+    lane.pair_along_tolerance_m: 0.055
+    lane.pair_heading_tolerance_deg: 40.0
+    lane.max_gap_m: 0.12
+    lane.max_start_distance_m: 0.65
+    lane.min_clearance_m: 0.16
+    lane.outside_margin_m: 0.12
+    lane.max_samples: 2000.0
+    lane.centerline_line_width_px: 2.0
     lane.corner_outer_enabled: 1.0
     lane.corner_outer_weight: 0.85
     lane.corner_outer_min_turn_deg: 8.0
     lane.corner_outer_full_turn_deg: 25.0
-    lane.corner_outward_offset_m: 0.0   # 코너 바깥 이동 (m)
-    lane.stop_line_min_pixels: 30.0
+    lane.corner_outer_window_m: 0.6
+    lane.corner_outer_tangent_window_m: 0.15
+    lane.corner_outer_min_length_m: 0.3
+    lane.corner_outward_offset_m: 0.05   # 코너 바깥 이동 (m)
     lane.corner_entry_distance_m: 2.2   # 코너 진입 거리 (m)
     lane.corner_entry_full_offset_m: 0.6 # 최대 이동 시작 거리 (m)
+    lane.smoothing_enabled: 1.0
+    lane.smoothing_strength: 0.8
+    lane.smoothing_sigma_m: 0.04
+    lane.smoothing_window_m: 0.65
+    lane.smoothing_max_shift_m: 0.03
+    lane.straight_turn_deg: 12.0
+    lane.corner_turn_deg: 35.0
+    lane.turn_window_m: 0.3
+    lane.stop_line_distance_enabled: 1.0
+    lane.stop_line_min_pixels: 30.0
+    lane.stop_line_max_fit_samples: 256.0
+    lane.stop_line_support_trim_quantile: 0.02
+    lane.stop_line_support_margin_px: 5.0
+    lane.stop_line_near_edge_quantile: 0.05
+    lane.stop_line_min_crossing_alignment: 0.5
+    lane.stop_line_fit_distance_tolerance_px: 0.01
+    lane.stop_line_fit_angle_tolerance_rad: 0.01
+    # IR 차선
+    ir_lane.engine_precision: 0.0
+    ir_lane.mask_threshold: 0.5
+    ir_lane.left_mask_threshold: -1.0
+    ir_lane.right_mask_threshold: -1.0
+    ir_lane.stop_line_mask_threshold: 1.0
+    ir_lane.overlay_alpha: 0.75
+    ir_lane.stop_line_min_present_pixels: 1.0
+    ir_lane.side_tracking: 0.0
+    ir_lane.side_track_match_gate_m: 0.15
+    ir_lane.side_track_max_age_sec: 0.1
+    ir_lane.bridge_centerline: 1.0
+    ir_lane.result_padding_px: -1.0
+    ir_lane.connection_enabled: 1.0
+    ir_lane.connection_min_component_area_px: 8.0
+    ir_lane.connection_skeleton_downsample_factor: 2.0
+    ir_lane.connection_border_endpoint_distance_px: 6.0
+    ir_lane.connection_min_fragment_length_px: 8.0
+    ir_lane.connection_max_fragments: 24.0
+    ir_lane.connection_tangent_window_px: 8.0
+    ir_lane.connection_max_gap_px: 80.0
+    ir_lane.connection_corridor_half_width_px: 4.0
+    ir_lane.connection_direction_tolerance_deg: 20.0
+    ir_lane.connection_max_turn_deg: 180.0
+    ir_lane.connection_max_curvature_per_px: 0.12
+    ir_lane.connection_max_arc_ratio: 1.8
+    ir_lane.connection_line_width_px: 2.0
+    ir_lane.centerline_enabled: 1.0
+    ir_lane.lane_width_m: 0.65
+    ir_lane.sample_spacing_m: 0.035
+    ir_lane.output_spacing_m: 0.02
+    ir_lane.clearance_check_spacing_m: 0.025
+    ir_lane.min_fragment_length_m: 0.08
+    ir_lane.tangent_window_m: 0.06
+    ir_lane.width_tolerance_m: 0.12
+    ir_lane.pair_along_tolerance_m: 0.055
+    ir_lane.pair_heading_tolerance_deg: 40.0
+    ir_lane.max_gap_m: 0.09
+    ir_lane.max_start_distance_m: 0.65
+    ir_lane.min_clearance_m: 0.16
+    ir_lane.outside_margin_m: 0.12
+    ir_lane.max_samples: 2000.0
+    ir_lane.centerline_line_width_px: 2.0
+    ir_lane.corner_outer_enabled: 1.0
+    ir_lane.corner_outer_weight: 1.0
+    ir_lane.corner_outer_min_turn_deg: 8.0
+    ir_lane.corner_outer_full_turn_deg: 25.0
+    ir_lane.corner_outer_window_m: 0.6
+    ir_lane.corner_outer_tangent_window_m: 0.15
+    ir_lane.corner_outer_min_length_m: 0.3
+    ir_lane.corner_outward_offset_m: 0.08
+    ir_lane.corner_entry_distance_m: 2.2
+    ir_lane.corner_entry_full_offset_m: 0.6
+    ir_lane.smoothing_enabled: 1.0
+    ir_lane.smoothing_strength: 0.8
+    ir_lane.smoothing_sigma_m: 0.04
+    ir_lane.smoothing_window_m: 0.65
+    ir_lane.smoothing_max_shift_m: 0.03
+    ir_lane.straight_turn_deg: 12.0
+    ir_lane.corner_turn_deg: 35.0
+    ir_lane.turn_window_m: 0.3
+    ir_lane.stop_line_distance_enabled: 0.0
+    ir_lane.stop_line_min_pixels: 6.0
+    ir_lane.stop_line_max_fit_samples: 256.0
+    ir_lane.stop_line_support_trim_quantile: 0.02
+    ir_lane.stop_line_support_margin_px: 5.0
+    ir_lane.stop_line_near_edge_quantile: 0.05
+    ir_lane.stop_line_min_crossing_alignment: 0.5
+    ir_lane.stop_line_fit_distance_tolerance_px: 0.01
+    ir_lane.stop_line_fit_angle_tolerance_rad: 0.01
+    # RGB 및 스테레오 카메라
+    ir_cam.outside_exposure_us: 0.0
+    ir_cam.outside_iso: 400.0
+    ir_cam.outside_dot: 0.5
+    ir_cam.outside_flood: 0.0
+    rgb_cam.auto_exposure: 2.0
+    rgb_cam.exposure_us: 8000.0
+    rgb_cam.iso: 500.0
+    ir_cam.inside_resolution: 0.0
+    ir_cam.inside_exposure_us: 20000.0
+    ir_cam.inside_iso: 500.0
+    ir_cam.inside_dot: 0.0
+    ir_cam.inside_flood: 1.0
     # 출력
     drive.maximum_duty: 0.12            # 최대 duty
     drive.start_duty: 0.05              # 정지 출발 duty
@@ -134,8 +279,8 @@
     duty_only.start_duty: 0.05 
     duty_only.duty_rise_rate: 0.04            # duty 상승률 (/s)
     duty_only.duty_fall_rate: 0.06            # duty 하강률 (/s): 클수록 회생 감속이 셈
-    duty_only.planning_decel: 0.40            # 코너·앞차 감속 계획 (m/s²)
-    duty_only.obstacle_decel: 0.35            # 장애물 감속 (m/s²)
+    duty_only.planning_decel: 0.45            # 코너·앞차 감속 계획 (m/s²)
+    duty_only.obstacle_decel: 0.45            # 장애물 감속 (m/s²)
     duty_only.response_sec: 0.10              # duty 명령 → 감속 시작 지연 (s)
     duty_only.coast_decel: 0.50               # 모터를 풀었을 때 감속도 (m/s²): 실측으로 맞출 것
     duty_only.coast_release_speed: 0.35       # 이 속도까지 줄인 뒤 모터를 풀고 굴러서 정지 (m/s)
@@ -172,5 +317,9 @@
     traffic.line_confirm_frames: 3.0
     traffic.color_min_saturation: 80.0
     traffic.color_min_value: 60.0
+    traffic.signal_confirm_frames: 3.0
+    traffic.red_memory_m: 4.0
+    traffic.max_decel_mps2: 1.0
+    traffic.pass_tolerance_m: 0.05
     web.link_loss_stop_sec: 1.0         # 연결 끊김 정지 시간 (s)
     drive.lane_timeout_sec: 20.0        # 차선 끊김 허용 시간 (s). 0 = 제한 없음 (끊긴 동안 직전 경로로 주행). 넘으면 'lane input stale'로 정지

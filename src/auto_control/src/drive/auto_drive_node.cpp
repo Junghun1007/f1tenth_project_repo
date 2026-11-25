@@ -478,7 +478,7 @@ private:
     return result;
   }
 
-  acd::Reply request_camera_reset() {
+  acd::Reply request_camera_reset(const std::map<std::string, double> & changes = {}) {
     if (camera_reset_path_.empty()) return {false, "이 실행에서는 카메라 초기화를 지원하지 않습니다"};
     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
     if (!command || force_ir_request_pending() || camera_reset_at_.load() > 0.0)
@@ -487,7 +487,9 @@ private:
       return {false, "수동 모드에서 정지가 확인된 뒤 초기화할 수 있습니다"};
     try {
       std::lock_guard<std::mutex> l(tuning_m_);
-      acd::write_parameter_yaml(camera_reset_path_, registry_.to_yaml("auto_drive"), true);
+      const auto [valid, yaml] = registry_.yaml_with_changes("auto_drive", changes);
+      if (!valid) return {false, yaml};
+      acd::write_parameter_yaml(camera_reset_path_, yaml, true);
       camera_reset_at_.store(acd::now_sec() + 0.3);   // Return HTTP success before shutting down the container.
     } catch (const std::exception & e) {
       return {false, e.what()};
@@ -518,16 +520,7 @@ private:
       std::map<std::string, double> values;
       for (const auto & p : saved->second) if (registry_.has(p.get_name())) values[p.get_name()] = as_number(p);
       if (values.empty()) return {false, "불러올 파라미터가 없습니다"};
-      bool restart = false;
-      for (const auto & spec : registry_.list()) {
-        const auto value = values.find(spec.name);
-        restart |= !spec.live && value != values.end() && value->second != spec.value;
-      }
-      const auto result = apply_tuning(values);
-      if (!result.first) return result;
-      if (!restart) return {true, name};
-      return {true, name + (camera_reset_path_.empty() ?
-        " · 재시작 필요 항목은 이 YAML로 실행하면 반영" : " · 재시작 필요 항목은 초기화 후 반영")};
+      return request_camera_reset(values);
     } catch (const std::exception & e) {
       return {false, e.what()};
     }

@@ -118,46 +118,52 @@ bool ParamRegistry::has(const std::string & name) const { std::lock_guard<std::m
 
 std::uint64_t ParamRegistry::version() const { std::lock_guard<std::mutex> lock(mutex_); return version_; }
 
-std::pair<bool, std::string> ParamRegistry::apply(const std::map<std::string, double> & changes) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  auto next = specs_;
+std::string ParamRegistry::validate_changes(const std::map<std::string, double> & changes,
+    std::vector<ParamSpec> & next) const {
   for (const auto & [name, v] : changes) {
     const auto it = index_.find(name);
-    if (it == index_.end()) return {false, name + ": unknown parameter"};
+    if (it == index_.end()) return name + ": unknown parameter";
     const auto & s = specs_[it->second];
-    if (!std::isfinite(v)) return {false, name + ": not a number"};
+    if (!std::isfinite(v)) return name + ": not a number";
     if (v < s.min || v > s.max) {
       char buf[96];
       std::snprintf(buf, sizeof(buf), ": %g outside [%g, %g]", v, s.min, s.max);
-      return {false, name + buf};
+      return name + buf;
     }
     if (!s.options.empty() && std::none_of(s.options.begin(), s.options.end(),
         [value = v](const auto & option) { return option.first == value; })) {
-      return {false, name + ": unsupported option"};
+      return name + ": unsupported option";
     }
     next[it->second].value = v;
   }
   for (const auto & [lo, hi] : order_) {
     const auto a = index_.find(lo), b = index_.find(hi);
     if (a == index_.end() || b == index_.end()) continue;
-    if (next[a->second].value >= next[b->second].value) return {false, lo + " must be below " + hi};
+    if (next[a->second].value >= next[b->second].value) return lo + " must be below " + hi;
   }
   const ValueLookup value = [&](const std::string & name) { return next[index_.at(name)].value; };
   for (const auto & validate : validators_) {
     auto error = validate(value);
-    if (!error.empty()) return {false, std::move(error)};
+    if (!error.empty()) return error;
   }
+  return {};
+}
+
+std::pair<bool, std::string> ParamRegistry::apply(const std::map<std::string, double> & changes) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto next = specs_;
+  if (auto error = validate_changes(changes, next); !error.empty()) return {false, std::move(error)};
   if (changes.empty()) return {true, ""};
   specs_.swap(next);
   ++version_;
   return {true, ""};
 }
 
-std::string ParamRegistry::to_yaml(const std::string & node) const {
-  std::lock_guard<std::mutex> lock(mutex_);
+namespace {
+std::string render_yaml(const std::string & node, const std::vector<ParamSpec> & specs) {
   // namespace(vehicle_namespace) 아래 노드에도 맞도록 /**/ 접두 (ROS 2 YAML 와일드카드)
   std::string out = "/**/" + node + ":\n  ros__parameters:\n";
-  for (const auto & s : specs_) {
+  for (const auto & s : specs) {
     char buf[64];
     std::snprintf(buf, sizeof(buf), "%.10g", s.value);
     std::string v = buf;
@@ -165,6 +171,20 @@ std::string ParamRegistry::to_yaml(const std::string & node) const {
     out += "    " + s.name + ": " + v + "\n";
   }
   return out;
+}
+}  // namespace
+
+std::string ParamRegistry::to_yaml(const std::string & node) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return render_yaml(node, specs_);
+}
+
+std::pair<bool, std::string> ParamRegistry::yaml_with_changes(const std::string & node,
+    const std::map<std::string, double> & changes) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto next = specs_;
+  if (auto error = validate_changes(changes, next); !error.empty()) return {false, std::move(error)};
+  return {true, render_yaml(node, next)};
 }
 
 std::string ParamRegistry::to_json() const {
