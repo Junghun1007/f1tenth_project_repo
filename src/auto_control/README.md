@@ -74,14 +74,13 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 | 자동 명령 끊김 | 0.3 s 안 오면 safety_node가 제동 |
 
 ## 화면
-- **파라미터 → YAML 저장**에서 현재 적용값을 이름 있는 프리셋으로 저장한다.
-  예를 들어 `ir개선`은 브라우저의 날짜·분을 붙여 `202611251852_ir개선.yaml`로 저장한다.
-  파일은 Jetson의 기본 `~/.cache/auto_control/presets/`에 있으며, 저장된 프리셋을 선택해
-  **불러오기**를 누르면 설정을 검증한 뒤 카메라·BEV 초기화와 함께 새 컨테이너에서 적용한다.
-  같은 분에 같은 이름으로 저장하면 숫자 접미사가 붙는다. 기본 설정 파일은 `202611251743_ver3.yaml`의 튜닝값을 사용한다.
+- **파라미터 → YAML 저장**은 현재 적용값을 `~/.cache/auto_control/auto_drive_saved.yaml` 한 파일에 덮어쓴다.
+  다음 실행에서 `drive_params_file:=~/.cache/auto_control/auto_drive_saved.yaml`로 불러온다.
+  이름 있는 프리셋 저장·불러오기 기능은 제거했다. 기본 설정 파일(`config/auto_drive.yaml`)은
+  `202611251743_ver31.yaml`의 튜닝값에 `tunnel.validation_mode: false`를 반영한 값이다.
 - Refit 옆 **초기화**는 수동 모드의 정차 상태에서 인식 컨테이너를 재시작한다.
-  카메라를 닫고 다시 열면서 시작 자세 보정을 수행한다. 초기화 버튼은 현재 설정을,
-  프리셋 불러오기는 지정한 YAML 값을 새 인식 컨테이너에 넘긴다. VESC·조이스틱·안전 노드는 계속 실행된다.
+  카메라를 닫고 다시 열면서 시작 자세 보정을 수행하고, 현재 설정을 새 인식 컨테이너에 넘긴다.
+  VESC·조이스틱·안전 노드는 계속 실행된다.
 - **파라미터 → 차선 → RGB · 카메라**에서 전체 자동, 자동 노출·고정 ISO 또는 전체 수동을 선택한다.
   고정 ISO 모드는 `rgb_cam.iso`를 그대로 쓰고 RGB 밝기에 따라 호스트가 노출 시간만 조절한다.
   설정은 실행 중에 적용되고 YAML로 저장할 수 있다. **카메라 노출** 패널에는 현재값과 RGB 시작 측정값이 표시된다.

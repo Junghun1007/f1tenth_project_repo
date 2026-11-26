@@ -110,25 +110,6 @@ async function loadParams() {
   renderParams();
 }
 
-async function loadPresets(selected = $("presetSelect").value) {
-  if (DEMO) return;
-  try {
-    const response = await fetch("/api/presets", { cache: "no-store" });
-    const { presets } = await response.json();
-    $("presetSelect").replaceChildren(new Option("선택", ""), ...presets.map((name) => new Option(name, name)));
-    $("presetSelect").value = presets.includes(selected) ? selected : "";
-    $("btnLoadPreset").disabled = !$("presetSelect").value;
-  } catch (e) {
-    $("pmsg").textContent = "프리셋 목록을 읽을 수 없습니다";
-  }
-}
-
-function presetTimestamp() {
-  const now = new Date();
-  return [now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes()]
-    .map((value) => String(value).padStart(2, "0")).join("");
-}
-
 // ---------- BEV 캔버스 ----------
 const cv = $("bev");
 const ctx = cv.getContext("2d");
@@ -657,7 +638,6 @@ function openDrawer(open) {
   $("drawer").hidden = !open;
   if (open) {
     loadParams();
-    loadPresets();
   }
 }
 
@@ -731,22 +711,9 @@ function bind() {
     if (r.ok) { edits = {}; await loadParams(); }
   });
   $("btnSave").addEventListener("click", async () => {
-    const name = $("presetName").value.trim();
-    if (!name) { $("pmsg").textContent = "프리셋 이름을 입력하세요"; return; }
     if (Object.keys(edits).length) { $("pmsg").textContent = "변경값을 적용한 뒤 저장하세요"; return; }
-    const r = await post("/api/presets/save", { name, timestamp: presetTimestamp() });
+    const r = await post("/api/params/save", {});
     $("pmsg").textContent = r.ok ? "저장됨 · " + r.reason : "저장 실패 · " + r.reason;
-    if (r.ok) await loadPresets(r.reason);
-  });
-  $("presetSelect").addEventListener("change", () => {
-    $("btnLoadPreset").disabled = !$("presetSelect").value;
-  });
-  $("btnLoadPreset").addEventListener("click", async () => {
-    const name = $("presetSelect").value;
-    if (!name) return;
-    const r = await restartCamera("/api/presets/load", { name });
-    $("pmsg").textContent = r.ok ? name + " · 카메라 재시작 요청됨" : "불러오기 실패 · " + r.reason;
-    if (r.ok) { edits = {}; renderParams(); }
   });
 }
 

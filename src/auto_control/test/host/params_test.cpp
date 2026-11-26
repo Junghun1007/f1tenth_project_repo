@@ -85,7 +85,7 @@ TEST(tunnel_tuning_validates_and_saves_detector_and_live_tunnel_settings) {
   CHECK(yaml.find("tunnel.validation_mode: 0.0") != std::string::npos);
 }
 
-TEST(restart_yaml_validates_preset_without_changing_running_parameters) {
+TEST(restart_yaml_validates_changes_without_changing_running_parameters) {
   ParamRegistry r;
   register_params(r);
   const auto active = r.to_yaml("auto_drive");

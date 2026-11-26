@@ -87,55 +87,47 @@ TEST(tunnel_override_accepts_only_boolean_requests) {
   CHECK(!f.force_ir.load());
 }
 
-TEST(presets_keep_unique_korean_names_and_reject_paths) {
+TEST(write_parameter_yaml_replaces_only_when_asked) {   // 카메라 초기화가 새 컨테이너에 넘기는 YAML
   struct Directory {
     std::filesystem::path path;
     ~Directory() { std::error_code error; std::filesystem::remove_all(path, error); }
   };
-  auto tmp = (std::filesystem::temp_directory_path() / "auto-control-presets-XXXXXX").string();
+  auto tmp = (std::filesystem::temp_directory_path() / "auto-control-yaml-XXXXXX").string();
   CHECK(::mkdtemp(tmp.data()) != nullptr);
   Directory dir{tmp};
-  ParameterPresets store(dir.path / "presets");
-  ParamRegistry params;
-  params.add({"drive.test", "driving", "", "", "", 0, 10, 1});
-  const auto yaml = params.to_yaml("auto_drive");
-  const auto first = store.save("202611251852", "ir개선", yaml);
-  CHECK(first == "202611251852_ir개선.yaml");
-  CHECK(store.save("202611251852", "ir개선", yaml) == "202611251852_ir개선_2.yaml");
-  const auto names = store.list();
-  CHECK(names.size() == 2);
-  std::ifstream file(store.path(first));
-  CHECK(std::string(std::istreambuf_iterator<char>(file), {}) == yaml);
-  std::filesystem::create_symlink(store.path(first), store.path(first).parent_path() / "202611251852_alias.yaml");
-  CHECK(store.list().size() == 2);
-  for (const auto & name : {"../202611251852_x.yaml", "202611251852_alias.yaml"}) {
-    bool rejected = false;
-    try { store.path(name); } catch (const std::invalid_argument &) { rejected = true; }
-    CHECK(rejected);
-  }
+  const auto file = dir.path / "reset.yaml";
+  const auto read = [&file] { std::ifstream in(file); return std::string(std::istreambuf_iterator<char>(in), {}); };
+  write_parameter_yaml(file, "a: 1\n", false);
+  CHECK(read() == "a: 1\n");
+  bool kept = false;
+  try { write_parameter_yaml(file, "a: 2\n", false); } catch (const std::filesystem::filesystem_error &) { kept = true; }
+  CHECK(kept && read() == "a: 1\n");
+  write_parameter_yaml(file, "a: 3\n", true);
+  CHECK(read() == "a: 3\n");
+  std::size_t entries = 0;
+  for (const auto & entry : std::filesystem::directory_iterator(dir.path)) { (void)entry; ++entries; }
+  CHECK(entries == 1);   // 임시 파일이 남지 않음
 }
 
-TEST(preset_and_reset_endpoints_dispatch_valid_bodies_only) {
+TEST(reset_and_save_endpoints_dispatch_and_presets_are_gone) {
   ParamRegistry params;
   WebCallbacks cb;
-  cb.presets = [] { return std::vector<std::string>{"202611251852_ir개선.yaml"}; };
-  cb.preset_save = [](const std::string & label, const std::string & time) { return Reply{true, time + "_" + label + ".yaml"}; };
-  cb.preset_load = [](const std::string & name) { return Reply{true, name}; };
   cb.camera_reset = [] { return Reply{false, "vehicle moving"}; };
+  cb.params_save = [] { return Reply{true, "/tmp/auto_drive_saved.yaml"}; };
   WebServer server(CDT_WEB, "127.0.0.1", 0, params, cb);
   server.start();
   httplib::Client client("127.0.0.1", server.port());
-  CHECK(nlohmann::json::parse(client.Get("/api/presets")->body)["presets"][0] == "202611251852_ir개선.yaml");
   const auto post = [&client](const char * path, const char * body) {
     const auto response = client.Post(path, body, "application/json");
     CHECK(response && response->status == 200);
     return nlohmann::json::parse(response->body);
   };
-  CHECK(post("/api/presets/save", R"({"name":"ir개선","timestamp":"202611251852"})")["reason"] == "202611251852_ir개선.yaml");
-  CHECK(post("/api/presets/save", R"({"name":"ir개선"})")["ok"] == false);
-  CHECK(post("/api/presets/load", R"({"name":"202611251852_ir개선.yaml"})")["ok"] == true);
-  CHECK(post("/api/presets/load", R"({"name":4})")["ok"] == false);
   CHECK(post("/api/camera/reset", "{}")["reason"] == "vehicle moving");
+  CHECK(post("/api/params/save", "{}")["reason"] == "/tmp/auto_drive_saved.yaml");
+  const auto list = client.Get("/api/presets");
+  CHECK(!list || list->status == 404);
+  const auto load = client.Post("/api/presets/load", R"({"name":"x.yaml"})", "application/json");
+  CHECK(!load || load->status == 404);
 }
 
 TEST(heartbeat_tracks_clients_and_preview_flag) {

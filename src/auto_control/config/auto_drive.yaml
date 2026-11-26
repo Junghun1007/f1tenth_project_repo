@@ -32,7 +32,7 @@
     tcn.warmup_seconds: 2.5
     tcn.max_gap_seconds: 0.5
     tcn.max_image_age_seconds: 0.25
-    tunnel.validation_mode: true        # false: IR 노출 변경 대기 및 촬영 프레임 검사
+    tunnel.validation_mode: false       # false: IR 노출 변경 대기 및 촬영 프레임 검사 (true는 검사 없이 모든 IR 프레임 사용, 시험용)
     # YOLO 검출
     yolo.con_threshold: 0.83            # 콘 임계값
     yolo.truck_threshold: 0.70          # 트럭 임계값

@@ -13,24 +13,6 @@
 namespace auto_control::drive {
 namespace {
 namespace fs = std::filesystem;
-
-bool preset_timestamp(const std::string & text) {
-  return text.size() == 12 && std::all_of(text.begin(), text.end(), [](char ch) {
-    return ch >= '0' && ch <= '9';
-  });
-}
-
-bool preset_label(const std::string & text) {
-  return !text.empty() && text.size() <= 104 && std::all_of(text.begin(), text.end(), [](unsigned char ch) {
-    return ch >= 0x80 || (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') ||
-      (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '-' || ch == ' ';
-  });
-}
-
-bool preset_filename(const std::string & name) {
-  return name.size() > 18 && name.compare(name.size() - 5, 5, ".yaml") == 0 &&
-    name[12] == '_' && preset_timestamp(name.substr(0, 12)) && preset_label(name.substr(13, name.size() - 18));
-}
 }  // namespace
 
 void write_parameter_yaml(const fs::path & path, const std::string & yaml, bool replace) {
@@ -52,42 +34,6 @@ void write_parameter_yaml(const fs::path & path, const std::string & yaml, bool 
   }
   std::error_code ignored;
   fs::remove(tmp, ignored);
-}
-
-std::vector<std::string> ParameterPresets::list() const {
-  std::vector<std::string> names;
-  if (!fs::is_directory(directory_)) return names;
-  for (const auto & entry : fs::directory_iterator(directory_)) {
-    const auto name = entry.path().filename().string();
-    if (preset_filename(name) && fs::is_regular_file(entry.symlink_status())) names.push_back(name);
-  }
-  std::sort(names.rbegin(), names.rend());
-  return names;
-}
-
-std::string ParameterPresets::save(const std::string & timestamp, const std::string & label, const std::string & yaml) {
-  if (!preset_timestamp(timestamp) || label.size() > 96 || !preset_label(label) ||
-    label.find_first_not_of(' ') == std::string::npos)
-    throw std::invalid_argument("이름에 글자, 숫자, 공백, 하이픈, 밑줄을 사용할 수 있습니다");
-  std::lock_guard<std::mutex> lock(mutex_);
-  fs::create_directories(directory_);
-  const auto stem = timestamp + "_" + label;
-  for (int suffix = 1; ; ++suffix) {
-    const auto name = (suffix == 1 ? stem : stem + "_" + std::to_string(suffix)) + ".yaml";
-    try {
-      write_parameter_yaml(directory_ / name, yaml, false);
-      return name;
-    } catch (const fs::filesystem_error & e) {
-      if (e.code() != std::errc::file_exists) throw;
-    }
-  }
-}
-
-fs::path ParameterPresets::path(const std::string & name) const {
-  if (!preset_filename(name)) throw std::invalid_argument("프리셋 파일 이름이 올바르지 않습니다");
-  const auto file = directory_ / name;
-  if (!fs::is_regular_file(fs::symlink_status(file))) throw std::invalid_argument("프리셋 파일이 없습니다");
-  return file;
 }
 
 void ParamRegistry::add(const ParamSpec & spec) {

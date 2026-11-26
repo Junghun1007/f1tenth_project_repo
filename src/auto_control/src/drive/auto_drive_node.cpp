@@ -5,7 +5,6 @@
 //   출력: <ns>/auto_drive/auto/{duty,brake_current,servo_position} → safety_node (vesc/*의 유일한 발행자)
 //   웹: http://<jetson-ip>:8765 (SSE 텔레메트리, BEV·카메라 MJPEG, 명령·파라미터)
 #include <rclcpp/rclcpp.hpp>
-#include <rclcpp/parameter_map.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -152,8 +151,6 @@ public:
     models_.yolo_backend = declare_parameter<std::string>("model.yolo_backend", "TENSORRT");   // CPU: 개발 PC 확인용
     models_.yolo_engine_cache = cache + "/yolo_" + models_.yolo_precision + ".engine";
     params_save_path_ = declare_parameter<std::string>("params_save_path", cache + "/auto_drive_saved.yaml");
-    presets_ = std::make_unique<acd::ParameterPresets>(
-      std::filesystem::path(params_save_path_).parent_path() / "presets");
     camera_reset_path_ = declare_parameter<std::string>("camera_reset_path", "");
     camera_reset_vesc_required_ = declare_parameter<bool>("camera_reset_vesc_required", true);
     lane_model_node_ = declare_parameter<std::string>("inspection.lane_model_node", "line_detactor");
@@ -298,15 +295,6 @@ public:
       out << registry_.to_yaml("auto_drive");
       return out ? acd::Reply{true, params_save_path_} : acd::Reply{false, "cannot write " + params_save_path_};
     };
-    cb.presets = [this] { return presets_->list(); };
-    cb.preset_save = [this](const std::string & label, const std::string & timestamp) {
-      try {
-        return acd::Reply{true, presets_->save(timestamp, label, registry_.to_yaml("auto_drive"))};
-      } catch (const std::exception & e) {
-        return acd::Reply{false, e.what()};
-      }
-    };
-    cb.preset_load = [this](const std::string & name) { return load_preset(name); };
     cb.heartbeat = [this](const std::string & id) { loop_->on_heartbeat(id, acd::now_sec()); };
     cb.record_start = [this](const std::string & label) { return record_start(label); };
     cb.record_stop = [this] { return record_stop(); };
@@ -483,7 +471,7 @@ private:
     return result;
   }
 
-  acd::Reply request_camera_reset(const std::map<std::string, double> & changes = {}) {
+  acd::Reply request_camera_reset() {
     if (camera_reset_path_.empty()) return {false, "이 실행에서는 카메라 초기화를 지원하지 않습니다"};
     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
     if (!command || force_ir_request_pending() || camera_reset_at_.load() > 0.0)
@@ -492,7 +480,7 @@ private:
       return {false, "수동 모드에서 정지가 확인된 뒤 초기화할 수 있습니다"};
     try {
       std::lock_guard<std::mutex> l(tuning_m_);
-      const auto [valid, yaml] = registry_.yaml_with_changes("auto_drive", changes);
+      const auto [valid, yaml] = registry_.yaml_with_changes("auto_drive", {});
       if (!valid) return {false, yaml};
       acd::write_parameter_yaml(camera_reset_path_, yaml, true);
       camera_reset_at_.store(acd::now_sec() + 0.3);   // Return HTTP success before shutting down the container.
@@ -515,20 +503,6 @@ private:
     RCLCPP_INFO(get_logger(), "Stopping the perception container for camera reset");
     camera_reset_at_.store(std::numeric_limits<double>::infinity());
     std::raise(SIGINT);
-  }
-
-  acd::Reply load_preset(const std::string & name) {
-    try {
-      const auto contents = rclcpp::parameter_map_from_yaml_file(presets_->path(name).string());
-      const auto saved = contents.find("/**/auto_drive");
-      if (saved == contents.end()) return {false, "auto_drive 프리셋 형식이 아닙니다"};
-      std::map<std::string, double> values;
-      for (const auto & p : saved->second) if (registry_.has(p.get_name())) values[p.get_name()] = as_number(p);
-      if (values.empty()) return {false, "불러올 파라미터가 없습니다"};
-      return request_camera_reset(values);
-    } catch (const std::exception & e) {
-      return {false, e.what()};
-    }
   }
 
   void on_joy(const sensor_msgs::msg::Joy & m) {
@@ -1068,7 +1042,6 @@ private:
   double camera_yaw_deg_{0}, fixed_view_zoom_{1.25};
   std::string params_save_path_, lane_model_node_;
   std::string lane_v5_model_path_, lane_baseline_model_path_, lane_baseline_precision_;
-  std::unique_ptr<acd::ParameterPresets> presets_;
   std::string camera_reset_path_;
   bool camera_reset_vesc_required_{true};
   std::atomic<double> camera_reset_at_{0.0};
