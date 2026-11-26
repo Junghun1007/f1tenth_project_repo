@@ -19,6 +19,14 @@
 - 터널 밖(route 0)에서 IR 프레임을 꺼내 버리던 것을 전환 명령만 기다리도록 변경 (장치 CPU 절약)
 - route 2(400p 보조 출력)의 2 ms 반복 확인 제거, 보조 출력이 없으면 시작 해상도 출력 사용
 
+`1113ML_compute_opt.patch` — auto_control 연산 최적화 (결과는 그대로)
+
+- 회피 계획 `frenet_dp`: 도달 불가능한 이전 칸·기울기 한계 밖 쌍을 순회하지 않음, 뒷차축 적분을 판정 뒤로
+  (무작위 장면 1500개에서 원본과 경로·모드 비트 단위 동일, 콘이 있을 때 약 1.6~3배 빠름)
+- 롤아웃 `rollout_ok`: 10 ms 스텝마다 경로를 새로 할당·복사하지 않고 재사용, `from_frenet`의 쓰지 않는 벡터 4개 제거
+- 수동 주행 녹화 데이터(`RecordFrame`)는 녹화 중에만 만듦 (예전엔 매 차선 프레임마다 만들고 버림)
+- 웹 카메라 보기: Y·UV 평면을 먼저 640x400으로 줄인 뒤 변환 (변환+축소 단일 스레드 1.4 ms → 0.3 ms)
+
 적용 (git 저장소가 아니어도 됨, 1113ML 워크스페이스 루트에서, 순서대로):
 
 ```bash
@@ -28,5 +36,7 @@ patch -p1 --dry-run < tools/patches/1113ML_params_no_presets.patch
 patch -p1 < tools/patches/1113ML_params_no_presets.patch
 patch -p1 --dry-run < tools/patches/1113ML_ir_gate_idle.patch
 patch -p1 < tools/patches/1113ML_ir_gate_idle.patch
+patch -p1 --dry-run < tools/patches/1113ML_compute_opt.patch
+patch -p1 < tools/patches/1113ML_compute_opt.patch
 colcon build --packages-select camera_driver auto_control --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```

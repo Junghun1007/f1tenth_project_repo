@@ -1,0 +1,228 @@
+diff --git a/src/auto_control/include/auto_control/drive/core/control_loop.hpp b/src/auto_control/include/auto_control/drive/core/control_loop.hpp
+index 17ac396..281c8d7 100644
+--- a/src/auto_control/include/auto_control/drive/core/control_loop.hpp
++++ b/src/auto_control/include/auto_control/drive/core/control_loop.hpp
+@@ -118,8 +118,10 @@ public:
+   StageStats & stats() { return stats_; }
+   // 콘 관측 기록 (검출이 계획에 반영될 때마다, 제어 스레드에서 호출). 비워 두면 기록 안 함
+   std::function<void(const std::vector<ConeLogRow> &)> on_cone_log;
+-  // 수동 주행 녹화 (차선 결과마다, 제어 스레드에서). 비워 두면 기록 안 함
++  // 수동 주행 녹화 (차선 결과마다, 제어 스레드에서). set_recording(true)인 동안에만 RecordFrame을 만들어 넘긴다
++  // (녹화하지 않을 때 매 프레임 차선·경로·콘 벡터를 복사하지 않게)
+   std::function<void(const RecordFrame &)> on_record;
++  void set_recording(bool on) { recording_.store(on, std::memory_order_relaxed); }
+   double gyro_bias() const { return gyro_bias_.load(std::memory_order_relaxed); }
+ 
+ private:
+@@ -170,7 +172,8 @@ private:
+   double speed_{0}, measured_speed_{0};
+   double odom_speed_{0};
+   std::atomic<double> speed_atomic_{0.0};
+-  std::vector<Vec2> rec_cones_;   // 녹화용: 이번 계획에 쓴 콘
++  std::vector<Vec2> rec_cones_;   // 녹화용: 이번 계획에 쓴 콘 (녹화 중일 때만 채움)
++  std::atomic<bool> recording_{false};
+   // 자이로 영점: 정지 중(속도 ≈ 0, ERPM 신선) 요레이트 평균. 오도메트리에서 뺀다 (안 빼면 약 0.15°/s씩 방향이 돈다)
+   std::atomic<double> gyro_bias_{0.0}, last_erpm_atomic_{-1e9}, last_yaw_rate_{0.0};
+   bool gyro_bias_init_{false};
+diff --git a/src/auto_control/src/drive/auto_drive_node.cpp b/src/auto_control/src/drive/auto_drive_node.cpp
+index 4d18309..f78ca15 100644
+--- a/src/auto_control/src/drive/auto_drive_node.cpp
++++ b/src/auto_control/src/drive/auto_drive_node.cpp
+@@ -955,6 +955,7 @@ private:
+       rec_dir_ = dir;
+       rec_t0_ = acd::now_sec();
+       rec_frames_ = 0;
++      loop_->set_recording(true);
+     }
+     double camera_x = 0;
+     { std::lock_guard<std::mutex> l(status_m_); if (reference_) camera_x = reference_->position_vehicle_m[0]; }
+@@ -978,6 +979,7 @@ private:
+     {
+       std::lock_guard<std::mutex> l(rec_m_);
+       if (!rec_) return {false, "녹화 중이 아님"};
++      loop_->set_recording(false);
+       rec_->flush();
+       rec_.reset();
+       dir = rec_dir_;
+diff --git a/src/auto_control/src/drive/core/control_loop.cpp b/src/auto_control/src/drive/core/control_loop.cpp
+index 99ce9ed..b068bf6 100644
+--- a/src/auto_control/src/drive/core/control_loop.cpp
++++ b/src/auto_control/src/drive/core/control_loop.cpp
+@@ -345,6 +345,7 @@ void ControlLoop::remember_vehicles(const DetectionFrame & det, std::optional<do
+ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSource source) {
+   std::lock_guard<std::mutex> l(m_);
+   const double t0 = now_sec();
++  const bool recording = on_record && recording_.load(std::memory_order_relaxed);
+   if (s_.memory_mode == 0) integrate_detections();
+   const bool source_changed = lane_source_ != source;
+   lane_source_ = source;
+@@ -383,7 +384,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
+     std::vector<Vec2> blind;
+     double blind_end = -1;
+     const auto cones = s_.memory_mode >= 1 ? lane_memory_cones(pose_lane, commit ? &blind : nullptr, &blind_end) : memory_.confirmed_world();
+-    rec_cones_ = cones;
++    if (recording) rec_cones_ = cones;
+     if (commit) lock_.refresh(blind_end);
+     plan_ = planner_.plan(lane_, cones, pose_lane, speed_, steer_.angle(), commit ? lock_.pin() : nullptr, commit ? &blind : nullptr);
+     if (commit && lane_f_valid_) {   // 다음 고정에 쓸 이번 경로 (s, l)
+@@ -412,7 +413,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
+     have_path = control_path_.size() >= 2;
+   }
+   stats_.record("memory_plan", t0, now_sec());
+-  if (on_record && lane.valid && (!check_departure || observation_pose)) {
++  if (recording && lane.valid && (!check_departure || observation_pose)) {
+     RecordFrame r;
+     r.t = lane.capture_time;
+     r.pose = observation_pose.value_or(plan_pose_);
+diff --git a/src/auto_control/src/drive/core/frenet_planner.cpp b/src/auto_control/src/drive/core/frenet_planner.cpp
+index 11c04b2..bf2cc85 100644
+--- a/src/auto_control/src/drive/core/frenet_planner.cpp
++++ b/src/auto_control/src/drive/core/frenet_planner.cpp
+@@ -35,6 +35,7 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
+   const double cur_excess = std::max(0.0, std::max(std::abs(l0), std::abs(rear_sl.y)) + hw - p.lane_half);
+   const double w_lin = lane_hard ? p.w_lane_linear : p.w_lane_linear_free;
+   const int n_sub = 4;
++  const int win = int(std::ceil(1.2 * ds / dl)) + 1;   // |new_l - prev_l| ≤ 1.2·ds 인 격자 칸 수 (+1 여유, 판정은 아래 조건이 그대로 함)
+   const bool pinned = pin && pin->s.size() >= 2 && pin->end_s > 0;
+   const double pin_off0 = pinned ? std::abs(l0 - interp(0.0, pin->s, pin->l)) : 0.0;   // 지금 고정 경로에서 벗어난 만큼은 0.5 m에 걸쳐 허용
+ 
+@@ -54,21 +55,22 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
+     const double pin_l = pin_here ? interp(ss[i], pin->s, pin->l) : 0.0;
+     const double pin_tol = pin_here ? pin->tol + pin_off0 * std::max(0.0, 1.0 - ss[i] / 0.5) : 0.0;
+     for (int a = 0; a < nl; ++a) {   // pred
++      if (cost[a] >= kInf) continue;   // 도달 불가능한 이전 노드: 아래 최소 탐색에서도 건너뜀
+       const double prev_l = L[a];
+       const double pprev = i >= 2 ? L[back[std::size_t(i - 1) * nl + a]] : l0 + hist_slope * (-ds);
+-      for (int b = 0; b < nl; ++b) {  // new
++      for (int b = std::max(0, a - win); b <= std::min(nl - 1, a + win); ++b) {  // new: 기울기 한계 안쪽만
+         const double new_l = L[b];
+-        // 뒷차축을 앞차축에 끌려가는 곡선(tractrix)으로 적분
++        const std::size_t idx = std::size_t(a) * nl + b;
++        if (pin_here && std::abs(new_l - pin_l) > pin_tol) { node[idx] = kInf; continue; }
++        // 결과가 어차피 무한 비용인 쌍은 계산 생략 (기울기 한계 초과, 도달 불가능한 이전 노드). 최적 경로는 그대로
++        if (cost[a] >= kInf || std::abs(new_l - prev_l) > 1.2 * ds) { node[idx] = kInf; continue; }
++        // 뒷차축을 앞차축에 끌려가는 곡선(tractrix)으로 적분 (유한 비용 쌍만 필요)
+         double r = rear[std::size_t(i - 1) * nl + a];
+         for (int m = 1; m <= n_sub; ++m) {
+           const double lf = prev_l + (new_l - prev_l) * (double(m) / n_sub);
+           r = r + (lf - r) * (ds / n_sub) / p.wheelbase;
+         }
+-        const std::size_t idx = std::size_t(a) * nl + b;
+         lr[idx] = r;
+-        if (pin_here && std::abs(new_l - pin_l) > pin_tol) { node[idx] = kInf; continue; }
+-        // 결과가 어차피 무한 비용인 쌍은 계산 생략 (기울기 한계 초과, 도달 불가능한 이전 노드). 최적 경로는 그대로
+-        if (cost[a] >= kInf || std::abs(new_l - prev_l) > 1.2 * ds) { node[idx] = kInf; continue; }
+         const double curv = (new_l - 2 * prev_l + pprev) / (ds * ds);
+         const double yaw = std::atan2(new_l - r, p.wheelbase);
+         const double cs = std::cos(yaw), sn = std::sin(yaw);
+@@ -106,8 +108,9 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
+     }
+     for (int b = 0; b < nl; ++b) {
+       int best = 0;
+-      double bv = cost[0] + node[b];
+-      for (int a = 1; a < nl; ++a) {
++      double bv = 2 * kInf;   // 유한한 후보가 없으면 도달 불가 (값만 kInf 이상이면 됨)
++      for (int a = std::max(0, b - win); a <= std::min(nl - 1, b + win); ++a) {
++        if (cost[a] >= kInf) continue;
+         const double v = cost[a] + node[std::size_t(a) * nl + b];
+         if (v < bv) { bv = v; best = a; }
+       }
+@@ -163,16 +166,15 @@ RolloutResult rollout_ok(const PlannerParams & p, const ControlParams & c, const
+   const int n_lat = int(c.latency / dt);
+   const int steps = int(p.rollout_sec / dt);
+   double best = 1e9;
+-  std::vector<Vec2> local(base.points.size());
++  SimPath moved(base.points, base.arc, c.geometry_window);   // 매 스텝 점만 덮어써서 재사용 (할당·복사 없음)
+   for (int k = 0; k < steps; ++k) {
+     if (k >= n_lat) {
+       const double fx = rx + p.wheelbase * std::cos(psi), fy = ry + p.wheelbase * std::sin(psi);
+       const double cps = std::cos(psi), sps = std::sin(psi);
+       for (std::size_t m = 0; m < base.points.size(); ++m) {
+         const double dx = base.points[m].x - fx, dy = base.points[m].y - fy;
+-        local[m] = {cps * dx + sps * dy, -sps * dx + cps * dy};
++        moved.points[m] = {cps * dx + sps * dy, -sps * dx + cps * dy};
+       }
+-      const SimPath moved(local, base.arc, c.geometry_window);
+       const double raw = sim_stanley(moved, v, c, p.max_steer_rad);
+       cmd = c.steering_current_weight * raw + (1 - c.steering_current_weight) * cmd;
+     }
+diff --git a/src/auto_control/src/drive/core/path_utils.cpp b/src/auto_control/src/drive/core/path_utils.cpp
+index 50d568f..267cd89 100644
+--- a/src/auto_control/src/drive/core/path_utils.cpp
++++ b/src/auto_control/src/drive/core/path_utils.cpp
+@@ -164,7 +164,6 @@ Vec2 from_frenet(double s, double l, const FrenetFrame & f) {
+     x = f.center.back().x + (s - a.back()) * f.tang.back().x; y = f.center.back().y + (s - a.back()) * f.tang.back().y;
+     tx = f.tang.back().x; ty = f.tang.back().y;
+   } else {
+-    std::vector<double> cx(f.center.size()), cy(f.center.size()), txs(f.center.size()), tys(f.center.size());
+     // 같은 arc 위의 선형 보간 (np.interp)
+     const auto it = std::upper_bound(a.begin(), a.end(), s);
+     std::size_t i = std::size_t(it - a.begin());
+diff --git a/src/auto_control/src/drive/runtime/detector.cpp b/src/auto_control/src/drive/runtime/detector.cpp
+index 897ef44..c12ce3a 100644
+--- a/src/auto_control/src/drive/runtime/detector.cpp
++++ b/src/auto_control/src/drive/runtime/detector.cpp
+@@ -281,20 +281,26 @@ void DetectWorker::jpeg_loop_() {
+     }
+     if (!v) continue;
+     const auto & f = *v->frame;
+-    const cv::Mat nv12(f.height * 3 / 2, f.width, CV_8UC1, const_cast<std::uint8_t *>(f.nv12), f.stride);
+-    cv::Mat bgr;
+-    cv::cvtColor(nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+-    const int w = f.width;
+-    v->frame.reset();   // BGR로 바꿨으면 카메라 버퍼는 바로 돌려준다
+-    cv::line(bgr, {0, v->roi_y}, {w, v->roi_y}, {0, 220, 255}, 2);
++    // 원본(1280x800)을 통째로 BGR로 바꾼 뒤 줄이지 않고, Y·UV 평면을 먼저 640x400·320x200으로 줄여 작은 영상만 변환한다
++    // (단일 스레드 1.4 ms → 0.3 ms, 화질 차이 PSNR 약 37 dB). 박스·ROI 선은 줄인 좌표로 그린다
++    constexpr int kViewW = 640, kViewH = 400;
++    const cv::Mat y(f.height, f.width, CV_8UC1, const_cast<std::uint8_t *>(f.nv12), f.stride);
++    const cv::Mat uv(f.height / 2, f.width / 2, CV_8UC2, const_cast<std::uint8_t *>(f.nv12) + f.height * f.stride, f.stride);
++    cv::Mat y_small, uv_small, small;
++    cv::resize(y, y_small, {kViewW, kViewH}, 0, 0, cv::INTER_AREA);
++    cv::resize(uv, uv_small, {kViewW / 2, kViewH / 2}, 0, 0, cv::INTER_NEAREST);   // 2채널 AREA 축소는 느림, 색은 저해상도라 차이 작음
++    const double sx = double(kViewW) / f.width, sy = double(kViewH) / f.height;
++    v->frame.reset();   // 줄인 복사본을 만들었으면 카메라 버퍼는 바로 돌려준다
++    cv::cvtColorTwoPlane(y_small, uv_small, small, cv::COLOR_YUV2BGR_NV12);
++    const int roi_y = int(std::lround(v->roi_y * sy));
++    cv::line(small, {0, roi_y}, {kViewW, roi_y}, {0, 220, 255}, 1);
+     for (const auto & det : v->detections) {
+-      cv::rectangle(bgr, det.box, {60, 60, 255}, 2);
++      const cv::Rect2f box(det.box.x * float(sx), det.box.y * float(sy), det.box.width * float(sx), det.box.height * float(sy));
++      cv::rectangle(small, box, {60, 60, 255}, 1);
+       char label[48];
+       std::snprintf(label, sizeof(label), "%s %.2f", kClassNames[std::clamp(det.class_id, 0, 3)], det.score);
+-      cv::putText(bgr, label, det.box.tl() + cv::Point2f(0, -4), cv::FONT_HERSHEY_SIMPLEX, 0.6, {255, 255, 255}, 2);
++      cv::putText(small, label, box.tl() + cv::Point2f(0, -3), cv::FONT_HERSHEY_SIMPLEX, 0.4, {255, 255, 255}, 1);
+     }
+-    cv::Mat small;
+-    cv::resize(bgr, small, {640, 400}, 0, 0, cv::INTER_AREA);
+     std::vector<std::uint8_t> jpeg;
+     if (cv::imencode(".jpg", small, jpeg, {cv::IMWRITE_JPEG_QUALITY, 70}) && publish_camera_jpeg) publish_camera_jpeg(std::move(jpeg));
+   }
+diff --git a/src/auto_control/test/host/control_loop_test.cpp b/src/auto_control/test/host/control_loop_test.cpp
+index 5edce85..db92ef7 100644
+--- a/src/auto_control/test/host/control_loop_test.cpp
++++ b/src/auto_control/test/host/control_loop_test.cpp
+@@ -38,6 +38,22 @@ struct Rig {
+   }
+ };
+ 
++TEST(record_frames_are_built_only_while_recording) {   // 녹화하지 않을 때는 RecordFrame을 만들지 않는다
++  Rig r(DriveMode::Detect);
++  int frames = 0;
++  std::size_t left_points = 0;
++  r.loop->on_record = [&](const RecordFrame & f) { ++frames; left_points = f.left.size(); };
++  for (int k = 0; k < 5; ++k) r.step();
++  CHECK(frames == 0);
++  r.loop->set_recording(true);
++  for (int k = 0; k < 5; ++k) r.step();
++  CHECK(frames == 5);
++  CHECK(left_points > 0);
++  r.loop->set_recording(false);
++  for (int k = 0; k < 5; ++k) r.step();
++  CHECK(frames == 5);
++}
++
+ TEST(detect_mode_never_publishes) {
+   Rig r(DriveMode::Detect);
+   for (int k = 0; k < 10; ++k) CHECK(!r.step().publish);
