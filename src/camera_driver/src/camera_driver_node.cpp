@@ -1406,24 +1406,22 @@ private:
         tunnel_ir_size_,dai::ImgFrame::Type::GRAY8,dai::ImgResizeMode::CROP,30.0F,ir_device_undistort);
       // Send only the selected CAM_B output over USB. The sensor mode and
       // StereoDepth inputs are fixed when the pipeline is built.
+      // route 0(터널 밖)에서는 IR 프레임을 꺼내지 않고 전환 명령만 기다린다. 예전에는 매 프레임을 꺼내
+      // 버렸고(route 2는 2 ms마다 확인), 그만큼 XLink 전송도 맡는 장치 CPU(LeonCSS)를 써서 RGB가 밀렸다.
+      // 입력 큐는 최신 1장·non-blocking이라 꺼내지 않아도 카메라 출력이 막히지 않는다.
       auto ir_gate=pipeline_->create<dai::node::Script>();
-      ir_gate->setScript(R"PY(
-import time
+      ir_gate->setScript(std::string("HAS_LOW = ")+(tunnel_ir_size_!=kLowIrOutputSize ? "True" : "False")+R"PY(
 
+# route: 0=off (outside), 1=startup resolution, 2=400p low output
 route = 0
 while True:
-    control = node.io['control'].tryGet()
+    control = node.io['control'].get() if route == 0 else node.io['control'].tryGet()
     if control is not None:
         route = control.getData()[0]
-    if route == 2:
-        frame = node.io['low'].tryGet()
-        if frame is None:
-            time.sleep(0.002)
-            continue
-    else:
-        frame = node.io['image'].get()
-    if route != 0:
-        node.io['out'].send(frame)
+    if route == 0:
+        continue
+    source = 'low' if route == 2 and HAS_LOW else 'image'
+    node.io['out'].send(node.io[source].get())
 )PY");
       ir_camera_output->link(ir_gate->inputs["image"]);
       if (tunnel_ir_size_!=kLowIrOutputSize) {
