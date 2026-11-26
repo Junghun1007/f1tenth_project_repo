@@ -1,0 +1,78 @@
+diff --git a/src/auto_control/README.md b/src/auto_control/README.md
+index 10735b0..7d9a64c 100644
+--- a/src/auto_control/README.md
++++ b/src/auto_control/README.md
+@@ -87,7 +87,7 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
+ - 파라미터 "IR 카메라 · 터널 안 (차선)" / "IR 카메라 · 터널 밖 (장애물 깊이)": 스테레오 흑백 카메라 노출(µs, 밖은 0=자동노출)·ISO·점 투사기·플러드 조명.
+   바꾸면 camera_driver가 바로 다시 적용한다 (터널 안 IR 프레임 노출 검사 기준도 같이 바뀜)
+ - **주행 → IR 카메라 · 터널 안 (차선)**에서 IR 영상 해상도를 시작값(기본 800p)과 400p 사이에 바꿀 수 있다. **적용**을 누르면 OAK가 전송하는 CAM_B 영상이 전환되며, 카메라 화면에 실제 해상도·노출·ISO가 표시된다.
+-  터널 안 기본값은 노출 20,000 µs, ISO 500, 점 투사기 0, 플러드 조명 1이다.
++  터널 안 기본값은 노출 20,000 µs, ISO 500, 점 투사기 0, 플러드 조명 0.7이다 (1.0은 과열로 조명이 꺼지는 현상이 있었음).
+   센서 구동 해상도까지 낮추려면 camera YAML의 `tunnel.ir_resolution`을 `400p`로 바꾸고 다시 시작한다.
+ - 조이스틱 버튼 (8BitDo): **A** 주행 시작, **B** Refit, **X** 정지 (X는 safety_node에서도 제동 → MANUAL). `joy.start_button`/`joy.refit_button`/`joy.stop_button`
+ - 차량 추종: 앞차가 `acc.lost_timeout_sec`(0.3 s) 넘게 안 보이면 크루즈를 끝내고 정상 주행
+diff --git a/src/auto_control/config/auto_drive.yaml b/src/auto_control/config/auto_drive.yaml
+index 8928b37..9544d15 100644
+--- a/src/auto_control/config/auto_drive.yaml
++++ b/src/auto_control/config/auto_drive.yaml
+@@ -260,7 +260,7 @@
+     ir_cam.inside_exposure_us: 20000.0
+     ir_cam.inside_iso: 500.0
+     ir_cam.inside_dot: 0.0
+-    ir_cam.inside_flood: 1.0
++    ir_cam.inside_flood: 0.7           # 1.0은 노출 20 ms·30 FPS에서 과열로 조명이 꺼지는 현상이 있어 낮춤
+     # 출력
+     drive.maximum_duty: 0.12            # 최대 duty
+     drive.start_duty: 0.05              # 정지 출발 duty
+diff --git a/src/auto_control/include/auto_control/drive/core/settings.hpp b/src/auto_control/include/auto_control/drive/core/settings.hpp
+index b994125..5a3a5fb 100644
+--- a/src/auto_control/include/auto_control/drive/core/settings.hpp
++++ b/src/auto_control/include/auto_control/drive/core/settings.hpp
+@@ -41,7 +41,7 @@ struct Settings {
+   bev_handoff::RgbCameraSettings rgb_camera;
+   struct IrCameraProfile { int exposure_us{0}, iso{800}; double dot{0}, flood{0}; };   // 노출 0 = 자동
+   struct IrCamera {   // 스테레오 흑백 카메라: 터널 안(차선) / 밖(장애물 깊이)
+-    IrCameraProfile inside{20000, 500, 0.0, 1.0}, outside{0, 400, 0.5, 0.0};
++    IrCameraProfile inside{20000, 500, 0.0, 0.7}, outside{0, 400, 0.5, 0.0};
+     bool use_400p_ir_output{false};
+   } ir_camera;
+   bool avoid_vehicles{true};       // 트럭·세단도 회피 장애물로 (차량 추종이 켜져 있으면 회피 대신 추종)
+diff --git a/src/auto_control/test/host/params_test.cpp b/src/auto_control/test/host/params_test.cpp
+index f68472a..887908d 100644
+--- a/src/auto_control/test/host/params_test.cpp
++++ b/src/auto_control/test/host/params_test.cpp
+@@ -136,7 +136,7 @@ TEST(tunnel_ir_resolution_uses_supported_choices) {
+   CHECK(defaults.inside.exposure_us == 20000);
+   CHECK(defaults.inside.iso == 500);
+   CHECK(defaults.inside.dot == 0.0);
+-  CHECK(defaults.inside.flood == 1.0);
++  CHECK(defaults.inside.flood == 0.7);
+   CHECK(r.to_json().find("\"options\":[{\"value\":0") != std::string::npos);
+ 
+   CHECK(!r.apply({{"ir_cam.inside_resolution", 200}, {"ir_cam.inside_iso", 600}}).first);
+diff --git a/src/auto_control/web/demo/params.json b/src/auto_control/web/demo/params.json
+index 41470b0..dc370f8 100644
+--- a/src/auto_control/web/demo/params.json
++++ b/src/auto_control/web/demo/params.json
+@@ -637,7 +637,7 @@
+ {"name":"ir_cam.inside_exposure_us","group":"lane","section":"IR (터널) · 카메라","label":"노출 시간","unit":"µs","min":1000.0,"max":33000.0,"value":20000.0,"live":true},
+ {"name":"ir_cam.inside_iso","group":"lane","section":"IR (터널) · 카메라","label":"ISO","unit":"","min":100.0,"max":1600.0,"value":500.0,"live":true},
+ {"name":"ir_cam.inside_dot","group":"lane","section":"IR (터널) · 카메라","label":"점 투사기 세기","unit":"","min":0.0,"max":1.0,"value":0.0,"live":true},
+-{"name":"ir_cam.inside_flood","group":"lane","section":"IR (터널) · 카메라","label":"IR 플러드 조명 세기","unit":"","min":0.0,"max":1.0,"value":1.0,"live":true},
++{"name":"ir_cam.inside_flood","group":"lane","section":"IR (터널) · 카메라","label":"IR 플러드 조명 세기","unit":"","min":0.0,"max":1.0,"value":0.7,"live":true},
+ {
+ "group": "traffic",
+ "section": "신호등",
+diff --git a/src/bev_handoff/include/bev_handoff/ir_camera_settings.hpp b/src/bev_handoff/include/bev_handoff/ir_camera_settings.hpp
+index dafdd46..719dabf 100644
+--- a/src/bev_handoff/include/bev_handoff/ir_camera_settings.hpp
++++ b/src/bev_handoff/include/bev_handoff/ir_camera_settings.hpp
+@@ -22,7 +22,7 @@ struct IrCameraProfile
+ 
+ struct IrCameraSettings
+ {
+-  IrCameraProfile inside{20000, 500, 0.0, 1.0};   // 터널 안: IR 차선
++  IrCameraProfile inside{20000, 500, 0.0, 0.7};   // 터널 안: IR 차선 (플러드 1.0은 과열로 꺼짐)
+   IrCameraProfile outside{0, 400, 0.5, 0.0};      // 터널 밖: 장애물 스테레오 깊이
+   bool use_400p_ir_output{false};                 // false: camera_driver의 시작 해상도
+ };

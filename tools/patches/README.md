@@ -46,6 +46,10 @@
 - 선택기는 선택된 출처의 결과만 넘김 (TCN이 끊겨도 차선 결과를 막지 않음). 같은 출처에서 시각이 되돌아간 결과만 버림
 - camera_driver의 IR 프레임 입력 검사(노출 확인·150 ms 대기)는 그대로 (`tunnel.validation_mode`로 켜고 끔)
 
+`1113ML_ir_flood_07.patch` — 터널 안 IR 플러드 기본값 1.0 → 0.7 (auto_control, bev_handoff)
+
+- 노출 20 ms·30 FPS에 플러드 1.0이면 과열로 조명이 꺼져 IR 영상이 어두워지는 현상이 있어 낮춤
+
 적용 (git 저장소가 아니어도 됨, 1113ML 워크스페이스 루트에서, 순서대로):
 
 ```bash
@@ -63,5 +67,7 @@ patch -p1 --dry-run < tools/patches/1113ML_stage_panel.patch
 patch -p1 < tools/patches/1113ML_stage_panel.patch
 patch -p1 --dry-run < tools/patches/1113ML_tunnel_follow_tcn.patch
 patch -p1 < tools/patches/1113ML_tunnel_follow_tcn.patch
-colcon build --packages-select camera_driver auto_control line_detactor ir_camera_driver vehicle_bringup --cmake-args -DCMAKE_BUILD_TYPE=Release
+patch -p1 --dry-run < tools/patches/1113ML_ir_flood_07.patch
+patch -p1 < tools/patches/1113ML_ir_flood_07.patch
+colcon build --packages-select bev_handoff camera_driver auto_control line_detactor ir_camera_driver vehicle_bringup --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
