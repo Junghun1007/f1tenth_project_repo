@@ -56,6 +56,8 @@ struct Config {
   bool lr_check{true};
   bool median3{true};
   bool imu{true};
+  int imu_gyro_hz{400}, imu_accel_hz{400};   // camera_driver: 둘 다 400 Hz
+  int imu_batch_threshold{1}, imu_max_batch{5};
   bool chunk_zero{true};         // camera_driver: setXLinkChunkSize(0)
   int rgb_exposure_us{0};        // 0 = 자동노출
   int ir_exposure_us{0};
@@ -75,14 +77,20 @@ std::vector<Config> make_configs() {
   { Config c = prod(); c.name = "prod_rgb_meta"; c.why = "실제 구성, RGB 픽셀 전송만 끔 (장치 연산은 동일)"; c.rgb_metadata_only = true; v.push_back(c); }
   { Config c = prod(); c.name = "prod_noundist"; c.why = "실제 구성, RGB 왜곡 보정 끔"; c.undistort = false; v.push_back(c); }
   { Config c = prod(); c.name = "prod_noalign"; c.why = "실제 구성, 깊이 RGB 정렬 끔"; c.align_rgb = false; v.push_back(c); }
-  { Config c = prod(); c.name = "prod_light_stereo"; c.why = "실제 구성, LR check·median 끔"; c.lr_check = false; c.median3 = false; v.push_back(c); }
+  { Config c = prod(); c.name = "prod_nomedian"; c.why = "실제 구성, median 끔 (RGB 정렬은 LR check 필수라 유지)"; c.median3 = false; v.push_back(c); }
   { Config c = prod(); c.name = "prod_noimu"; c.why = "실제 구성, IMU 끔"; c.imu = false; v.push_back(c); }
+  { Config c = prod(); c.name = "prod_imu_batch4"; c.why = "실제 구성, IMU 묶음 전송 4개(약 10 ms)"; c.imu_batch_threshold = 4; c.imu_max_batch = 10; v.push_back(c); }
+  { Config c = prod(); c.name = "prod_imu_batch2"; c.why = "실제 구성, IMU 묶음 전송 2개(약 5 ms)"; c.imu_batch_threshold = 2; c.imu_max_batch = 10; v.push_back(c); }
+  { Config c = prod(); c.name = "prod_imu_200"; c.why = "실제 구성, IMU 200 Hz"; c.imu_gyro_hz = 200; c.imu_accel_hz = 200; v.push_back(c); }
+  { Config c = prod(); c.name = "prod_imu_g400_a100"; c.why = "실제 구성, 자이로 400 / 가속도 100 Hz"; c.imu_accel_hz = 100; v.push_back(c); }
   { Config c = prod(); c.name = "prod_chunkdefault"; c.why = "실제 구성, XLink chunk 기본값"; c.chunk_zero = false; v.push_back(c); }
   { Config c = prod(); c.name = "prod_fixed_exp"; c.why = "실제 구성, RGB·IR 수동 노출 3 ms"; c.rgb_exposure_us = 3000; c.ir_exposure_us = 3000; v.push_back(c); }
   { Config c = prod(); c.name = "ratio_60_30"; c.why = "RGB 60 / 깊이 30 (정수배)"; c.rgb_fps = 60.F; v.push_back(c); }
   { Config c = prod(); c.name = "ratio_70_35"; c.why = "RGB 70 / 깊이 35 (정수배)"; c.depth_fps = 35.F; v.push_back(c); }
   { Config c = prod(); c.name = "tunnel800_outside"; c.why = "tunnel_enabled, IR 800p, 터널 밖 상태 (스크립트 2개)"; c.tunnel = true; c.tunnel_800p = true; v.push_back(c); }
   { Config c = prod(); c.name = "tunnel400_outside"; c.why = "tunnel_enabled, IR 400p, 터널 밖 상태"; c.tunnel = true; c.tunnel_800p = false; v.push_back(c); }
+  { Config c = prod(); c.name = "tunnel800_imu_batch4"; c.why = "tunnel_enabled, IR 800p, IMU 묶음 4개"; c.tunnel = true; c.imu_batch_threshold = 4; c.imu_max_batch = 10; v.push_back(c); }
+  { Config c = prod(); c.name = "tunnel400_imu_batch4"; c.why = "tunnel_enabled, IR 400p, IMU 묶음 4개"; c.tunnel = true; c.tunnel_800p = false; c.imu_batch_threshold = 4; c.imu_max_batch = 10; v.push_back(c); }
   return v;
 }
 
@@ -256,7 +264,7 @@ struct Result {
   double sync_offset_p50{NAN}, sync_offset_p95{NAN};
   double css{NAN}, mss{NAN}, ddr{NAN}, cmx{NAN}, temp{NAN};
   double host_proc_cpu{NAN}, host_sys_cpu{NAN};
-  double imu_hz{NAN};
+  double imu_hz{NAN}, imu_age_p50{NAN}, imu_age_p95{NAN}, imu_age_max{NAN};
 };
 
 // ---------------------------------------------------------------- 한 설정 실행
@@ -369,9 +377,10 @@ Result run(const Config & c, double warmup_s, double measure_s, bool verbose_onc
     for (auto * o : meta_outputs) meta_q.push_back(o->createOutputQueue(1, false));
     if (c.imu) {
       auto imu = pipeline->create<dai::node::IMU>();
-      imu->enableIMUSensor({dai::IMUSensor::ACCELEROMETER_CALIBRATED, dai::IMUSensor::GYROSCOPE_CALIBRATED}, 400);
-      imu->setBatchReportThreshold(1);
-      imu->setMaxBatchReports(5);
+      imu->enableIMUSensor(dai::IMUSensor::ACCELEROMETER_CALIBRATED, std::uint32_t(c.imu_accel_hz));
+      imu->enableIMUSensor(dai::IMUSensor::GYROSCOPE_CALIBRATED, std::uint32_t(c.imu_gyro_hz));
+      imu->setBatchReportThreshold(c.imu_batch_threshold);
+      imu->setMaxBatchReports(c.imu_max_batch);
       imu_q = imu->out.createOutputQueue(80, false);
     }
     auto sys = pipeline->create<dai::node::SystemLogger>();
@@ -395,6 +404,8 @@ Result run(const Config & c, double warmup_s, double measure_s, bool verbose_onc
     std::atomic<bool> stop{false};
     std::atomic<std::uint64_t> imu_packets{0};
     std::atomic<bool> imu_measuring{false};
+    std::mutex imu_m;
+    std::vector<double> imu_age_ms;   // 자이로 측정 → 호스트 수신 (영상 안정화는 5 ms 대기·12 ms 나이 한계)
     std::mutex sync_m;
     std::deque<Clock::time_point> recent_rgb;
     std::vector<double> sync_offsets;
@@ -429,7 +440,11 @@ Result run(const Config & c, double warmup_s, double measure_s, bool verbose_onc
       while (!stop) {
         auto d = imu_q->tryGet<dai::IMUData>();
         if (!d) { std::this_thread::sleep_for(200us); continue; }
-        if (imu_measuring) imu_packets += d->packets.size();
+        if (!imu_measuring) continue;
+        const auto rx = Clock::now();
+        imu_packets += d->packets.size();
+        std::lock_guard<std::mutex> l(imu_m);
+        for (const auto & p : d->packets) imu_age_ms.push_back(std::chrono::duration<double, std::milli>(rx - p.gyroscope.getTimestamp()).count());
       }
     });
     if (ir_q || !meta_q.empty()) threads.emplace_back([&] {   // 터널 출력 비우기 (camera_driver처럼 꺼내 감)
@@ -475,6 +490,8 @@ Result run(const Config & c, double warmup_s, double measure_s, bool verbose_onc
     r.host_proc_cpu = 100.0 * double(h1.proc_ticks - h0.proc_ticks) / tick / wall;   // 100 = 코어 1개
     if (h1.total > h0.total) r.host_sys_cpu = 100.0 * double(h1.busy - h0.busy) / double(h1.total - h0.total);
     r.imu_hz = double(imu_packets.load()) / measure_s;
+    { std::lock_guard<std::mutex> l(imu_m); r.imu_age_p50 = pct(imu_age_ms, 50); r.imu_age_p95 = pct(imu_age_ms, 95);
+      r.imu_age_max = imu_age_ms.empty() ? NAN : *std::max_element(imu_age_ms.begin(), imu_age_ms.end()); }
     auto fill = [&](StreamStats & s, double & rx, double & sensor, std::uint64_t & gaps, std::uint64_t & count, double & avg, double & p50,
                     double & p95, double & mx, double & end50, double & exp, double & int95) {
       std::lock_guard<std::mutex> l(s.m);
@@ -519,9 +536,12 @@ void print_result(const Result & r, std::FILE * out) {
   const auto & c = r.c;
   std::fprintf(out, "\n=== %s : %s\n", c.name.c_str(), c.why.c_str());
   if (!r.error.empty()) { std::fprintf(out, "  ERROR: %s\n", r.error.c_str()); return; }
-  std::fprintf(out, "  usb=%s  device CPU css=%s%% mss=%s%%  ddr=%sMB cmx=%sKB temp=%sC  host proc=%s%%(1core=100) sys=%s%%  imu=%sHz\n",
+  std::fprintf(out, "  usb=%s  device CPU css=%s%% mss=%s%%  ddr=%sMB cmx=%sKB temp=%sC  host proc=%s%%(1core=100) sys=%s%%\n",
                r.usb.c_str(), f1(r.css).c_str(), f1(r.mss).c_str(), f1(r.ddr).c_str(), f1(r.cmx, 0).c_str(), f1(r.temp).c_str(),
-               f1(r.host_proc_cpu).c_str(), f1(r.host_sys_cpu).c_str(), f1(r.imu_hz, 0).c_str());
+               f1(r.host_proc_cpu).c_str(), f1(r.host_sys_cpu).c_str());
+  if (c.imu)
+    std::fprintf(out, "  IMU   gyro=%dHz accel=%dHz batch=%d  rx=%s packets/s  age p50/p95/max=%s/%s/%s ms\n", c.imu_gyro_hz, c.imu_accel_hz,
+                 c.imu_batch_threshold, f1(r.imu_hz, 0).c_str(), f1(r.imu_age_p50, 2).c_str(), f1(r.imu_age_p95, 2).c_str(), f1(r.imu_age_max, 2).c_str());
   if (c.rgb)
     std::fprintf(out, "  RGB   req=%s sensor=%s rx=%s fps  gaps=%llu/%llu  lat avg/p50/p95/max=%s/%s/%s/%s ms  lat_end_p50=%s ms  exp=%s ms iso=%s  rx_int_p95=%s ms%s\n",
                  f1(c.rgb_fps).c_str(), f1(r.rgb_sensor_fps).c_str(), f1(r.rgb_rx_fps).c_str(), (unsigned long long)r.rgb_gaps,
@@ -575,7 +595,7 @@ int main(int argc, char ** argv) {
   std::ofstream csv(csv_path);
   csv << "name,usb,rgb_req,rgb_sensor,rgb_rx,rgb_gaps,rgb_lat_avg,rgb_lat_p50,rgb_lat_p95,rgb_lat_max,rgb_lat_end_p50,rgb_exp_ms,rgb_iso,"
          "depth_req,depth_sensor,depth_rx,depth_gaps,depth_lat_avg,depth_lat_p50,depth_lat_p95,depth_lat_max,depth_lat_end_p50,depth_exp_ms,"
-         "sync_p50,sync_p95,css,mss,ddr_mb,cmx_kb,temp,host_proc_cpu,host_sys_cpu,imu_hz,error\n";
+         "sync_p50,sync_p95,css,mss,ddr_mb,cmx_kb,temp,host_proc_cpu,host_sys_cpu,imu_hz,imu_age_p50,imu_age_p95,imu_age_max,error\n";
   for (const auto & r : results)
     csv << r.c.name << ',' << r.usb << ',' << r.c.rgb_fps << ',' << f1(r.rgb_sensor_fps) << ',' << f1(r.rgb_rx_fps) << ',' << r.rgb_gaps << ','
         << f1(r.rgb_lat_avg) << ',' << f1(r.rgb_lat_p50) << ',' << f1(r.rgb_lat_p95) << ',' << f1(r.rgb_lat_max) << ',' << f1(r.rgb_lat_end_p50) << ','
@@ -583,7 +603,8 @@ int main(int argc, char ** argv) {
         << r.depth_gaps << ',' << f1(r.depth_lat_avg) << ',' << f1(r.depth_lat_p50) << ',' << f1(r.depth_lat_p95) << ',' << f1(r.depth_lat_max) << ','
         << f1(r.depth_lat_end_p50) << ',' << f1(r.depth_exp, 2) << ',' << f1(r.sync_offset_p50, 2) << ',' << f1(r.sync_offset_p95, 2) << ','
         << f1(r.css) << ',' << f1(r.mss) << ',' << f1(r.ddr) << ',' << f1(r.cmx, 0) << ',' << f1(r.temp) << ',' << f1(r.host_proc_cpu) << ','
-        << f1(r.host_sys_cpu) << ',' << f1(r.imu_hz, 0) << ",\"" << r.error << "\"\n";
+        << f1(r.host_sys_cpu) << ',' << f1(r.imu_hz, 0) << ',' << f1(r.imu_age_p50, 2) << ',' << f1(r.imu_age_p95, 2) << ','
+        << f1(r.imu_age_max, 2) << ",\"" << r.error << "\"\n";
   std::printf("\n[bench] done. csv=%s\n", csv_path.c_str());
   return 0;
 }

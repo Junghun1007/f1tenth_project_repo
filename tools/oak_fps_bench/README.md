@@ -34,11 +34,12 @@ bash tools/oak_fps_bench/run_all.sh --ros --ros-tunnel --ws <워크스페이스 
 | depth_only | 깊이만 | 깊이 혼자서 30이 나오는지 |
 | prod | 실제 구성 (터널 꺼짐) | 기준선 |
 | prod_rgb_meta | RGB 픽셀 전송만 끔 | 회복되면 전송(USB·호스트 수신), 그대로면 장치 연산 |
-| prod_noundist / prod_noalign / prod_light_stereo | 왜곡 보정 / 깊이 정렬 / LR·median 끔 | 장치 연산 중 무엇이 무거운지 |
+| prod_noundist / prod_noalign / prod_nomedian | 왜곡 보정 / 깊이 정렬 / median 끔 | 장치 연산 중 무엇이 무거운지 |
 | prod_noimu / prod_chunkdefault | IMU 끔 / XLink chunk 기본값 | IMU 패킷·전송 방식 영향 |
+| prod_imu_batch4 / batch2 / imu_200 / imu_g400_a100 | IMU 묶음 전송·주기 | IMU 부하를 줄이면서 영상 안정화에 필요한 IMU 지연(age)이 유지되는지 |
 | prod_fixed_exp | RGB·IR 수동 노출 3 ms | 노출이 FPS·지연에 주는 영향 |
 | ratio_60_30 / ratio_70_35 | 정수배 FPS | 센서 동기 문제 여부 |
-| tunnel800_outside / tunnel400_outside | tunnel_enabled 구성 (스크립트 2개, IR 출력) | 터널 기능의 장치 부하 |
+| tunnel800_outside / tunnel400_outside (+ _imu_batch4) | tunnel_enabled 구성 (스크립트 2개, IR 출력) | 터널 기능의 장치 부하, IMU 조정과 합친 효과 |
 
 ## 지표
 
