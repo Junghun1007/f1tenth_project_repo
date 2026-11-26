@@ -33,6 +33,12 @@
   (터널 밖 70 → 실제 약 40 FPS로 떨어지던 문제, 터널 안 5 FPS 제한). 터널 안 RGB는 camera_driver가 약 30 FPS로 솎음
 - shared_ir_bev: 터널 밖에서 1 ms(초당 1000회) 확인 타이머를 50 ms로, 터널 안은 1 ms 그대로
 
+`1113ML_stage_panel.patch` — 웹 단계별 연산 표 (auto_control, vehicle_bringup 런치)
+
+- 측정하는 모든 단계를 테마별(카메라 수신 / 차선 RGB / 차선 IR / 장애물 / 판단·제어 / TCN / 웹)로 늘 표시, 없으면 "미사용 (이유)"
+- 목표 FPS 열(카메라 설정·YOLO 상한·터널 안 30 등)과 달성 색, 부하 열(ms × FPS)과 그룹별 부하 합
+- 새 측정: RGB·IMU 수신, IR 차선 분리, TCN 입력 FPS·입력 지연·처리·추론, 깊이 짝 대기, 검출 1회 전체, 박스 수, 회피 경로 탐색
+
 적용 (git 저장소가 아니어도 됨, 1113ML 워크스페이스 루트에서, 순서대로):
 
 ```bash
@@ -46,5 +52,7 @@ patch -p1 --dry-run < tools/patches/1113ML_compute_opt.patch
 patch -p1 < tools/patches/1113ML_compute_opt.patch
 patch -p1 --dry-run < tools/patches/1113ML_tunnel_rates.patch
 patch -p1 < tools/patches/1113ML_tunnel_rates.patch
-colcon build --packages-select camera_driver auto_control line_detactor ir_camera_driver --cmake-args -DCMAKE_BUILD_TYPE=Release
+patch -p1 --dry-run < tools/patches/1113ML_stage_panel.patch
+patch -p1 < tools/patches/1113ML_stage_panel.patch
+colcon build --packages-select camera_driver auto_control line_detactor ir_camera_driver vehicle_bringup --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
