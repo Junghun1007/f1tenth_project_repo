@@ -65,6 +65,7 @@ struct Config {
   bool tunnel{false};            // camera_driver tunnel_enabled:=true (터널 밖 상태) 재현
   bool tunnel_800p{true};        // tunnel.ir_resolution 800p / 400p
   float dot{0.5F};
+  bool ir_gate_idle{false};      // 1113ML_ir_gate_idle.patch의 IR 게이트 (터널 밖에서 IR 프레임을 꺼내지 않음)
 };
 
 std::vector<Config> make_configs() {
@@ -91,6 +92,13 @@ std::vector<Config> make_configs() {
   { Config c = prod(); c.name = "tunnel400_outside"; c.why = "tunnel_enabled, IR 400p, 터널 밖 상태"; c.tunnel = true; c.tunnel_800p = false; v.push_back(c); }
   { Config c = prod(); c.name = "tunnel800_imu_batch4"; c.why = "tunnel_enabled, IR 800p, IMU 묶음 4개"; c.tunnel = true; c.imu_batch_threshold = 4; c.imu_max_batch = 10; v.push_back(c); }
   { Config c = prod(); c.name = "tunnel400_imu_batch4"; c.why = "tunnel_enabled, IR 400p, IMU 묶음 4개"; c.tunnel = true; c.tunnel_800p = false; c.imu_batch_threshold = 4; c.imu_max_batch = 10; v.push_back(c); }
+  // ---- 패치 적용 후 조합 (--only new): RGB 60 + IMU 200 Hz + 터널 IR 400p
+  auto patched = [] { Config c; c.rgb_fps = 60.F; c.imu_gyro_hz = 200; c.imu_accel_hz = 200; return c; };
+  { Config c = patched(); c.name = "new_prod"; c.why = "패치 후 터널 꺼짐: RGB60+깊이30+IMU200"; v.push_back(c); }
+  { Config c = patched(); c.name = "new_prod_rgb70"; c.why = "비교: RGB70+깊이30+IMU200"; c.rgb_fps = 70.F; v.push_back(c); }
+  { Config c = patched(); c.name = "new_tunnel400"; c.why = "패치 후 터널 켬(밖): IR 400p, 예전 IR 게이트"; c.tunnel = true; c.tunnel_800p = false; v.push_back(c); }
+  { Config c = patched(); c.name = "new_tunnel400_gateidle"; c.why = "패치 후 터널 켬(밖): IR 400p, 새 IR 게이트"; c.tunnel = true; c.tunnel_800p = false; c.ir_gate_idle = true; v.push_back(c); }
+  { Config c = patched(); c.name = "new_tunnel400_gateidle_rgb70"; c.why = "비교: 위와 같고 RGB70"; c.rgb_fps = 70.F; c.tunnel = true; c.tunnel_800p = false; c.ir_gate_idle = true; v.push_back(c); }
   return v;
 }
 
@@ -199,6 +207,21 @@ while True:
             node.io['right_out'].send(right)
         left = None
         right = None
+)PY";
+
+// camera_driver 1113ML_ir_gate_idle.patch와 같은 내용 (HAS_LOW는 앞에 붙임)
+const char * kIrGateIdleScript = R"PY(
+
+# route: 0=off (outside), 1=startup resolution, 2=400p low output
+route = 0
+while True:
+    control = node.io['control'].get() if route == 0 else node.io['control'].tryGet()
+    if control is not None:
+        route = control.getData()[0]
+    if route == 0:
+        continue
+    source = 'low' if route == 2 and HAS_LOW else 'image'
+    node.io['out'].send(node.io[source].get())
 )PY";
 
 const char * kIrGateScript = R"PY(
@@ -347,7 +370,8 @@ Result run(const Config & c, double warmup_s, double measure_s, bool verbose_onc
         const std::pair<std::uint32_t, std::uint32_t> ir_size = c.tunnel_800p ? std::make_pair(1280U, 800U) : depth_size;
         auto * ir = left->requestOutput(ir_size, dai::ImgFrame::Type::GRAY8, dai::ImgResizeMode::CROP, 30.0F, false);
         auto gate = pipeline->create<dai::node::Script>();
-        gate->setScript(kIrGateScript);
+        if (c.ir_gate_idle) gate->setScript(std::string("HAS_LOW = ") + (c.tunnel_800p ? "True" : "False") + kIrGateIdleScript);
+        else gate->setScript(kIrGateScript);
         ir->link(gate->inputs["image"]);
         if (c.tunnel_800p) {
           auto * low = left->requestOutput(depth_size, dai::ImgFrame::Type::GRAY8, dai::ImgResizeMode::CROP, 30.0F, false);
@@ -580,7 +604,8 @@ int main(int argc, char ** argv) {
     std::vector<Config> keep;
     std::stringstream ss(only); std::string n;
     while (std::getline(ss, n, ','))
-      for (const auto & c : configs) if (c.name == n) keep.push_back(c);
+      for (const auto & c : configs)
+        if (c.name == n || (n == "new" && c.name.rfind("new_", 0) == 0)) keep.push_back(c);   // new = 패치 후 조합 전체
     configs = keep;
   }
   std::printf("[bench] depthai=%s configs=%zu warmup=%.1fs measure=%.1fs\n", OAKBENCH_DEPTHAI_VERSION, configs.size(), warmup, measure);

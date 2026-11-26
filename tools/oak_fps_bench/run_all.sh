@@ -152,6 +152,28 @@ EOF
   fi
   wait "$probe"
   tail -n +"$mark" "$log" | grep -E "\[PERF\]\[CAMERA\]|dropped=|Depth input|capture_fps" | tail -n 40 > "$OUT/ros_camera_$tag.txt"
+  # 영상 안정화가 IMU를 제때 못 받은 비율 (misses·predicted는 누적값이라 처음과 끝의 차이로 초당 값 계산)
+  python3 - "$OUT/ros_camera_$tag.txt" > "$OUT/ros_stabilizer_$tag.txt" <<'PYEOF'
+import re, sys, statistics
+lines = [l for l in open(sys.argv[1], encoding="utf-8", errors="replace") if "[PERF][CAMERA]" in l]
+def num(key, line):
+    m = re.search(key + r"=([0-9.]+)", line)
+    return float(m.group(1)) if m else None
+rows = [(num("capture_fps", l), num("misses", l), num("predicted", l), num("depthai_to_host_avg/max", l) or
+         num(r"latency_ms\(depthai_to_host_avg/max", l), num("dropped", l)) for l in lines]
+rows = [r for r in rows if r[0] is not None and r[1] is not None]
+if len(rows) < 2:
+    print("stabilizer: [PERF][CAMERA] 줄이 부족함"); sys.exit()
+seconds = len(rows) - 1   # status_log_interval_sec=1
+fps = statistics.mean(r[0] for r in rows)
+miss = (rows[-1][1] - rows[0][1]) / seconds
+pred = (rows[-1][2] - rows[0][2]) / seconds
+lat = [r[3] for r in rows if r[3] is not None]
+drop = sum(r[4] or 0 for r in rows[1:])
+print(f"stabilizer over {seconds}s: capture_fps avg={fps:.1f}  misses={miss:.1f}/s ({100*miss/max(fps,1e-9):.0f}% of frames)  "
+      f"predicted={pred:.1f}/s  depthai_to_host avg={statistics.mean(lat):.1f} ms  dropped={drop:.0f}" if lat else
+      f"stabilizer over {seconds}s: capture_fps avg={fps:.1f}  misses={miss:.1f}/s  predicted={pred:.1f}/s  dropped={drop:.0f}")
+PYEOF
   grep -E "OAK: full sensor|USB=|Shared RGB/depth|Tunnel IR undistort|Depth input: first|First frame|Options:" "$log" | head -n 20 >> "$OUT/ros_camera_$tag.txt"
   grep -iE "error|exception|fail" "$log" | grep -v "errors(capture" | tail -n 20 > "$OUT/ros_errors_$tag.txt"
   kill -INT -- -"$lpid" 2>/dev/null
@@ -172,7 +194,7 @@ cleanup
   echo
   if [ -f "$OUT/bench.txt" ]; then grep -vE "^\[bench\] running" "$OUT/bench.txt"
   elif [ -f "$OUT/build.log" ]; then echo "----- 벤치마크 빌드 실패 (build.log 끝부분)"; tail -n 40 "$OUT/build.log"; fi
-  for f in "$OUT"/ros_camera_*.txt "$OUT"/ros_web_*.txt "$OUT"/ros_threads_*.txt "$OUT"/ros_errors_*.txt; do
+  for f in "$OUT"/ros_stabilizer_*.txt "$OUT"/ros_camera_*.txt "$OUT"/ros_web_*.txt "$OUT"/ros_threads_*.txt "$OUT"/ros_errors_*.txt; do
     [ -f "$f" ] || continue
     echo; echo "----- $(basename "$f")"; cat "$f"
   done

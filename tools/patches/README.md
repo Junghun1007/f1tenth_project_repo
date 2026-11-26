@@ -14,6 +14,11 @@
 - 웹 "YAML 저장"은 `~/.cache/auto_control/auto_drive_saved.yaml` 한 파일 저장으로 되돌림
 - 카메라 초기화(현재 설정으로 인식 컨테이너 재시작)는 그대로
 
+`1113ML_ir_gate_idle.patch` — 터널 IR 게이트 스크립트 (camera_driver만 변경)
+
+- 터널 밖(route 0)에서 IR 프레임을 꺼내 버리던 것을 전환 명령만 기다리도록 변경 (장치 CPU 절약)
+- route 2(400p 보조 출력)의 2 ms 반복 확인 제거, 보조 출력이 없으면 시작 해상도 출력 사용
+
 적용 (git 저장소가 아니어도 됨, 1113ML 워크스페이스 루트에서, 순서대로):
 
 ```bash
@@ -21,5 +26,7 @@ patch -p1 --dry-run < tools/patches/1113ML_camera_rates.patch        # 먼저 �
 patch -p1 < tools/patches/1113ML_camera_rates.patch
 patch -p1 --dry-run < tools/patches/1113ML_params_no_presets.patch
 patch -p1 < tools/patches/1113ML_params_no_presets.patch
+patch -p1 --dry-run < tools/patches/1113ML_ir_gate_idle.patch
+patch -p1 < tools/patches/1113ML_ir_gate_idle.patch
 colcon build --packages-select camera_driver auto_control --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```

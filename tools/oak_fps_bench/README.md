@@ -24,6 +24,14 @@ bash tools/oak_fps_bench/run_all.sh --ros --ros-tunnel --ws <워크스페이스 
 - `--ros`는 `mode:=detect`로 띄우므로 자동 명령은 나가지 않는다
 - `sudo` 비밀번호가 필요한 항목(jetson_clocks --show, dmesg 등)은 건너뛴다. 먼저 `sudo -v`를 해 두면 같이 수집된다
 
+패치 후 조합만 빠르게 (약 2분 + launch 측정):
+
+```bash
+bash tools/oak_fps_bench/run_all.sh --only new --ros --ros-tunnel
+```
+
+`--ros` 결과의 `ros_stabilizer_*.txt`에는 영상 안정화가 IMU를 제때 못 받은 프레임 비율(misses/s)이 나온다.
+
 결과는 `~/oak_fps_bench_<시각>/summary.txt` 한 파일에 모인다. 전체 로그 묶음은 같은 이름의 `.tar.gz`다.
 
 ## 카메라 단독 측정 설정
@@ -40,6 +48,7 @@ bash tools/oak_fps_bench/run_all.sh --ros --ros-tunnel --ws <워크스페이스 
 | prod_fixed_exp | RGB·IR 수동 노출 3 ms | 노출이 FPS·지연에 주는 영향 |
 | ratio_60_30 / ratio_70_35 | 정수배 FPS | 센서 동기 문제 여부 |
 | tunnel800_outside / tunnel400_outside (+ _imu_batch4) | tunnel_enabled 구성 (스크립트 2개, IR 출력) | 터널 기능의 장치 부하, IMU 조정과 합친 효과 |
+| new_* (`--only new`) | 패치 후 조합: RGB 60(비교 70) + IMU 200 + 터널 IR 400p, 예전/새 IR 게이트 | 패치 효과 확인 |
 
 ## 지표
 
