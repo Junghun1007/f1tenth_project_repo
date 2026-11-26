@@ -138,6 +138,10 @@ public:
     rc_.steering.servo_right = declare_parameter<double>("vehicle.servo_right", 0.0);
     rc_.steering.inverted = declare_parameter<bool>("vehicle.steering_servo_inverted", true);
     camera_yaw_deg_ = declare_parameter<double>("camera.yaw_deg", 0.0);
+    // 웹 단계별 연산의 목표 FPS (launch가 camera_config.yaml·perception.yaml 값을 넘김)
+    target_rgb_fps_ = declare_parameter<double>("camera.sensor_fps", 60.0);
+    target_imu_hz_ = declare_parameter<double>("camera.imu_rate_hz", 200.0);
+    target_depth_fps_ = declare_parameter<double>("camera.depth_fps", 30.0);
     // camera_driver의 1.25배 확대는 BEV에서만 쓰는 가상 확대다. bev_processor가 공유하는 fx·fy는 확대 영상 기준이고
     // YOLO가 받는 원본 NV12는 확대 전이므로 fx·fy를 이 값으로 나눠 쓴다 (cx·cy는 확대 중심이라 그대로, cone_drive_test와 같음)
     fixed_view_zoom_ = declare_parameter<double>("camera.fixed_view_zoom", 1.25);
@@ -248,7 +252,15 @@ public:
       auto tcn_options = in(web_group_);
       tcn_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
       tcn_sub_ = create_subscription<std_msgs::msg::String>("/tunnel_tcn/result", rclcpp::QoS(10).reliable(),
-        [this](std_msgs::msg::String::ConstSharedPtr m) { tcn_telemetry_.update(m->data, acd::now_sec() - t_start_); }, tcn_options);
+        [this](std_msgs::msg::String::ConstSharedPtr m) {
+          const double t = acd::now_sec();
+          const auto timing = tcn_telemetry_.update(m->data, t - t_start_);
+          auto & stats = loop_->stats();   // TCN 보고는 추론마다 한 번 (10 Hz)
+          if (timing.infer_ms) stats.record("tcn_infer", t, t + *timing.infer_ms * 1e-3);
+          if (timing.processing_ms) stats.record("tcn_proc", t, t + *timing.processing_ms * 1e-3);
+          if (timing.source_age_ms) stats.record("tcn_age", t - *timing.source_age_ms * 1e-3, t);
+          if (timing.source_fps) { tcn_source_fps_ = *timing.source_fps; tcn_source_t_ = t; }
+        }, tcn_options);
       rclcpp::PublisherOptions tcn_publisher_options;
       tcn_publisher_options.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
       tcn_tuning_pub_ = create_publisher<std_msgs::msg::String>("/tunnel/tcn_tuning", state_qos, tcn_publisher_options);
@@ -314,6 +326,7 @@ public:
       frame->nv12 = f->nv12; frame->size = f->size; frame->stride = f->stride;
       frame->width = f->width; frame->height = f->height; frame->t = steady_sec(f->captured_at);
       frame->owner = f;   // 카메라 버퍼를 붙잡는다 (최신 1장만)
+      loop_->stats().record("cam_rgb", frame->t, acd::now_sec());   // 촬영 → 주행 노드 도착, 도착 FPS
       detect_->push_frame(std::move(frame));
     });
     // camera_driver 공유 업로드(gpu_shared_upload_enabled)가 켜져 있으면 GPU 원본으로 추론 (업로드 1회, BEV와 공유)
@@ -418,11 +431,12 @@ private:
         last_ir_lane_valid_ = lane.valid;
       }
     }
-    auto & stats = loop_->stats();
-    stats.record("lane_latency", capture, t_in);
-    stats.record("lane_pre", t_in, t_in + m.h2d_preprocess_nanoseconds * 1e-9);
-    stats.record("lane_infer", t_in, t_in + m.pure_inference_nanoseconds * 1e-9);
-    stats.record("lane_geom", t_in, t_in + m.lane_geometry_nanoseconds * 1e-9);
+    auto & stats = loop_->stats();   // RGB와 IR(터널) 차선은 따로 집계
+    const std::string p = is_ir ? "ir_" : "";
+    stats.record(p + "lane_latency", capture, t_in);
+    stats.record(p + "lane_pre", t_in, t_in + m.h2d_preprocess_nanoseconds * 1e-9);
+    stats.record(p + "lane_infer", t_in, t_in + m.pure_inference_nanoseconds * 1e-9);
+    stats.record(p + "lane_geom", t_in, t_in + m.lane_geometry_nanoseconds * 1e-9);
     last_lane_t_ = acd::now_sec();
     publish(loop_->on_lane(lane, acd::now_sec(), source));
     publish_hints();   // 다음 프레임의 기준 중앙선 요청 (콘이 근처일 때만)
@@ -529,6 +543,7 @@ private:
   }
 
   void on_imu(const sensor_msgs::msg::Imu & m) {
+    loop_->stats().record("imu", steady_from_stamp(m.header.stamp), acd::now_sec());   // IMU 측정 → 도착, 수신 Hz
     std::shared_ptr<const bev_handoff::ObstacleReference> ref;
     { std::lock_guard<std::mutex> l(status_m_); ref = reference_; }
     if (!ref) return;
@@ -920,6 +935,13 @@ private:
       }
       if (tunnel_enabled_) x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_);
       x << ",\"camera_exposure\":" << camera_exposure_json();
+      {   // 단계별 연산의 목표 FPS와 TCN 입력 FPS (TCN 노드가 잰 값, 1초 넘게 보고가 없으면 null)
+        const double yolo = std::min(registry_.get("yolo.max_fps"), target_rgb_fps_);
+        x << ",\"stage_targets\":{\"rgb\":" << target_rgb_fps_ << ",\"rgb_inside\":30,\"depth\":" << target_depth_fps_
+          << ",\"imu\":" << target_imu_hz_ << ",\"yolo\":" << yolo << ",\"tcn_input\":30,\"tcn_infer\":10,\"ir\":30,\"web\":30}"
+          << ",\"tcn_source_fps\":";
+        if (tunnel_enabled_ && now - tcn_source_t_ <= 1.0) x << tcn_source_fps_; else x << "null";
+      }
       if (drive_t0_ > 0 && f.state == "DRIVING") x << ",\"drive_s\":" << (now - drive_t0_);
       x << ",\"record\":" << record_status_json() << "}";
       j.pop_back();
@@ -1056,6 +1078,8 @@ private:
   acd::SystemMonitor sysmon_;
   acd::SystemUsage usage_;
   acd::TunnelTcnTelemetry tcn_telemetry_;   // web_group_에서만 갱신·조회
+  double tcn_source_fps_{0}, tcn_source_t_{-1e9};   // web_group_에서만 (TCN 구독·텔레메트리 모두 web_group_)
+  double target_rgb_fps_{60}, target_imu_hz_{200}, target_depth_fps_{30};
   double last_usage_t_{0}, last_status_t_{0}, drive_t0_{0};
   const double t_start_{acd::now_sec()};
   // 점검·상태 (status_m_)

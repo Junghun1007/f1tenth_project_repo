@@ -294,10 +294,15 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         lane_topic = "/tunnel/lane_result"   # 선택기가 /rgb, /ir로 나눠 낸다
 
     camera = _ros_parameters(os.path.expanduser(LaunchConfiguration("camera_params_file").perform(context)), "camera_driver")
+    perception = _ros_parameters(os.path.expanduser(LaunchConfiguration("perception_params_file").perform(context)), "camera_driver")
     drive_overrides = {
         "mode": mode,
         # BEV용 가상 확대 배율: auto_drive가 공유 fx·fy를 원본 영상 기준으로 되돌리는 데 씀
         "camera.fixed_view_zoom": float(camera.get("fixed_view_zoom", 1.25)),
+        # 웹 단계별 연산의 목표 FPS (터널 켬이면 camera_driver가 스테레오를 30 FPS로 고정)
+        "camera.sensor_fps": float(camera.get("sensor_fps", 60.0)),
+        "camera.imu_rate_hz": float(camera.get("imu_rate_hz", 200.0)),
+        "camera.depth_fps": 30.0 if tunnel else float(perception.get("obstacles.camera.fps", 30.0)),
         "tunnel.enabled": tunnel,
         "tunnel.validation_mode": float(validation_mode),
         **lane_model_overrides,

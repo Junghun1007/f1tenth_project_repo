@@ -1,4 +1,5 @@
 #include "check.hpp"
+#include <cmath>
 #include "auto_control/drive/core/telemetry.hpp"
 #include <nlohmann/json.hpp>
 
@@ -71,4 +72,17 @@ TEST(tunnel_tcn_marks_manual_transitions) {
   CHECK(j["state_override"] == "outside");
   CHECK(j["samples"][0][3] == "exit");
   CHECK(j["samples"][0][4] == true);
+}
+
+TEST(tunnel_tcn_reports_inference_timing) {   // 웹 단계별 연산의 TCN 행 (추론·처리 ms, 입력 FPS, 입력 지연)
+  TunnelTcnTelemetry tcn;
+  const auto t = tcn.update(R"({"scores":{"entry":0.1,"exit":0.2},"state":"outside","status":"LIVE",)"
+                            R"("inference_wall_ms":1.9,"processing_ms":3.4,"source_fps":29.8,"source_age_at_receive_ms":21.0})", 1.0);
+  CHECK(t.infer_ms && std::abs(*t.infer_ms - 1.9) < 1e-9);
+  CHECK(t.processing_ms && std::abs(*t.processing_ms - 3.4) < 1e-9);
+  CHECK(t.source_fps && std::abs(*t.source_fps - 29.8) < 1e-9);
+  CHECK(t.source_age_ms && std::abs(*t.source_age_ms - 21.0) < 1e-9);
+  const auto waiting = tcn.update(R"({"scores":{"entry":null,"exit":null},"status":"WARMUP","processing_ms":0.4})", 1.1);
+  CHECK(!waiting.infer_ms && waiting.processing_ms);   // 점수가 없어도 있는 값은 읽는다
+  CHECK(!tcn.update("not json", 1.2).processing_ms);
 }

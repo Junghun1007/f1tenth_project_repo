@@ -222,6 +222,10 @@ void DetectWorker::loop_() {
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
       depth = nearest_depth(frame->t, depth_sync_s_);
     }
+    const double t_loc = now_sec();
+    stats.record("depth_wait", t1, t_loc);   // 깊이 짝을 기다린 시간 (대부분 0, 깊이가 늦으면 최대 depth_wait)
+    // 장애물 박스 수 (개/프레임): ms 칸에 개수를 담는다. 박스가 많을수록 위치 계산 연산이 늘어난다
+    stats.record("yolo_boxes", t1, t1 + double(obstacles.size()) * 1e-3);
     out.depth_valid = depth != nullptr && mount_ok;
     if (!depth && !obstacles.empty()) stats.record("depth_miss", t1, t1);   // 진단: 박스는 있는데 깊이 짝이 없음 (회/s)
     if (depth && mount_ok) {
@@ -254,7 +258,8 @@ void DetectWorker::loop_() {
         }
       }
     }
-    stats.record("box_depth", t1, now_sec());
+    stats.record("box_depth", t_loc, now_sec());   // 박스 안 깊이로 위치 계산 (깊이 대기 제외)
+    stats.record("yolo_total", t0, now_sec());     // 검출 1회 전체 (추론·신호등 색·깊이 대기·위치 계산)
     ctl_.on_detections(out);
     if (data && camera_wanted && camera_wanted() && t0 - last_jpeg_t_ >= 0.1) {   // 검출 확인용 카메라 보기 (켰을 때만, 10 fps)
       auto view = std::make_unique<CameraView>();   // 프레임 포인터와 박스만 넘기고 바로 다음 검출로

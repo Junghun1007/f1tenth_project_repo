@@ -387,6 +387,10 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
     if (recording) rec_cones_ = cones;
     if (commit) lock_.refresh(blind_end);
     plan_ = planner_.plan(lane_, cones, pose_lane, speed_, steer_.angle(), commit ? lock_.pin() : nullptr, commit ? &blind : nullptr);
+    {   // 회피 경로 탐색(Frenet DP·롤아웃)만의 시간. 콘이 없으면 중앙선 추종이라 거의 0
+      const double t_plan = now_sec();
+      stats_.record("plan", t_plan, t_plan + plan_.compute_ms * 1e-3);
+    }
     if (commit && lane_f_valid_) {   // 다음 고정에 쓸 이번 경로 (s, l)
       std::vector<Vec2> sl;
       sl.reserve(plan_.path_local.size());

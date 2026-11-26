@@ -8,16 +8,6 @@ const DEMO = qs.has("demo");
 const $ = (id) => document.getElementById(id);
 // 표시 범위 (m): BEV 영상은 x 0~3 m, y ±0.6 m (120×300, 1 px = 1 cm). 아래 0.5 m는 차량 표시용 여백
 const BEV = { xMax: 3.0, xMin: -0.5, yHalf: 0.6, imageXMin: 0.0, pxPerM: 200 };
-const STAGE_LABEL = {
-  cam_rgb: "카메라 RGB 수신", cam_depth: "카메라 Depth 수신",
-  receive: "영상 지연(촬영→처리)", stabilize_bev: "안정화+BEV", lane_infer: "차선 추론", lane_post: "중앙선",
-  lane_pre: "차선 전처리(H2D)", lane_geom: "차선 형상(경계·중앙선)", lane_latency: "차선 지연(촬영→제어)",
-  yolo_pre: "YOLO 전처리", yolo_infer: "YOLO 추론", yolo_post: "YOLO 후처리", box_depth: "Depth 정합",
-  memory_plan: "기억+회피계획", control: "제어", web: "웹 전송",
-  lane_side_fix: "⚠ 차선 좌우 교정(회/s)", lane_side_drop: "⚠ 차선 조각 제외(회/s)",
-  lane_reject: "차선 검사 모드 2 · 입력 보류(회/s)",
-  depth_miss: "⚠ 깊이 짝 없음(회/s)", loc_fail: "⚠ 위치 계산 실패(회/s)", ground_reject: "⚠ 지면 거리 불일치로 버림(회/s)",
-};
 const READY_LABEL = {
   attitude_ok: "카메라 자세", lane_model_ready: "차선 모델", yolo_model_ready: "YOLO 모델",
   vesc_connected: "VESC", erpm_fresh: "ERPM", lane_fresh: "차선 입력", client_alive: "브라우저",
@@ -506,8 +496,7 @@ function render() {
     ["신호", f.traffic && f.traffic.enabled ? ["-", "빨강", "초록"][f.traffic.signal] + (f.traffic.committed ? (f.traffic.holding ? " · 정지 유지" : " · 정지 중") : "") : "꺼짐"],
     ["정지선", f.traffic && f.traffic.line > -90 ? f.traffic.line.toFixed(2) + " m" : "-"],
     ["추종 상한", f.lead && f.lead.active && f.lead.cap >= 0 ? (f.lead.holding ? "정지 유지" : f.lead.cap.toFixed(2) + " m/s") : "-"]]);
-  $("stages").querySelector("tbody").innerHTML = f.stages.map((s) =>
-    `<tr><td>${STAGE_LABEL[s.name] || s.name}</td><td>${s.ms.toFixed(1)}</td><td>${s.fps.toFixed(0)}</td></tr>`).join("");
+  $("stages").querySelector("tbody").innerHTML = stageRowsHtml(f);
   const u = f.usage;
   $("usage").innerHTML = usageRow("CPU 전체", u.cpu) + usageRow("이 프로세스", u.proc_cpu) + usageRow("GPU", u.gpu) + usageRow("메모리", u.mem);
   let detectionRows = f.detections.map((d) =>
@@ -519,6 +508,110 @@ function render() {
   }
   $("detTable").querySelector("tbody").innerHTML = detectionRows;
   drawBev(f);
+}
+
+// ---------- 단계별 연산 표 ----------
+// 측정하는 모든 단계를 테마별로 늘 표시한다. 최근 1초에 측정값이 없으면 "미사용" (이유를 알면 함께).
+// kind: work = 연산 (ms·FPS·부하), latency = 촬영→도착 지연 (ms가 지연, FPS는 도착 빈도),
+//       count = 경고 횟수 (회/s, 목표 0), boxes = 프레임당 개수 (ms 칸에 평균 개수)
+// target: stage_targets의 키 (터널 안이면 rgb → rgb_inside), lane = 지금 쓰는 차선 입력 주기
+// noSum: 다른 행의 합계이거나 다른 행에 포함된 단계 (그룹의 "연산 부하 합"에서 빼서 두 번 세지 않음)
+const STAGE_GROUPS = [
+  { title: "카메라 수신", rows: [
+    { name: "cam_rgb", label: "RGB 영상 (촬영→도착)", kind: "latency", target: "rgb" },
+    { name: "cam_depth", label: "Depth (촬영→도착)", kind: "latency", target: "depth", off: "inside" },
+    { name: "imu", label: "IMU (측정→도착)", kind: "latency", target: "imu" },
+  ] },
+  { title: "차선 주행 · RGB", rows: [
+    { name: "lane_latency", label: "차선 지연 (촬영→제어)", kind: "latency", target: "rgb" },
+    { name: "lane_pre", label: "전처리 (H2D)", kind: "work", target: "rgb" },
+    { name: "lane_infer", label: "차선 추론", kind: "work", target: "rgb" },
+    { name: "lane_geom", label: "차선 형상 (경계·중앙선)", kind: "work", target: "rgb" },
+    { name: "lane_reject", label: "검사 모드 2 · 입력 보류", kind: "count" },
+  ] },
+  { title: "차선 주행 · IR (터널 안)", tunnel: true, off: "outside", rows: [
+    { name: "ir_lane_latency", label: "IR 차선 지연 (촬영→제어)", kind: "latency", target: "ir" },
+    { name: "ir_lane_pre", label: "IR 전처리 (H2D)", kind: "work", target: "ir" },
+    { name: "ir_lane_infer", label: "IR 차선 추론", kind: "work", target: "ir" },
+    { name: "ir_lane_geom", label: "IR 차선 형상", kind: "work", target: "ir" },
+  ] },
+  { title: "장애물 인식 (YOLO·깊이)", off: "inside", rows: [
+    { name: "yolo_pre", label: "YOLO 전처리", kind: "work", target: "yolo" },
+    { name: "yolo_infer", label: "YOLO 추론", kind: "work", target: "yolo" },
+    { name: "yolo_post", label: "YOLO 후처리", kind: "work", target: "yolo" },
+    { name: "depth_wait", label: "깊이 짝 대기", kind: "work", target: "yolo" },
+    { name: "box_depth", label: "박스 위치 계산 (깊이)", kind: "work", target: "yolo" },
+    { name: "yolo_total", label: "검출 1회 전체 (위 단계 합 + 신호등 색)", kind: "work", target: "yolo", noSum: true },
+    { name: "yolo_boxes", label: "장애물 박스 (개/프레임)", kind: "boxes" },
+    { name: "depth_miss", label: "⚠ 깊이 짝 없음", kind: "count" },
+    { name: "loc_fail", label: "⚠ 위치 계산 실패", kind: "count" },
+    { name: "ground_reject", label: "⚠ 지면 거리 불일치로 버림", kind: "count" },
+  ] },
+  { title: "판단 · 제어", rows: [
+    { name: "memory_plan", label: "기억+회피 계획 전체", kind: "work", target: "lane" },
+    { name: "plan", label: "└ 회피 경로 탐색 (DP·롤아웃)", kind: "work", target: "lane", noSum: true },
+    { name: "control", label: "제어 (조향·속도)", kind: "work", target: "lane" },
+  ] },
+  { title: "터널 판정 (TCN)", tunnel: true, rows: [
+    { name: "tcn_input", label: "TCN 입력 (RGB 통계)", kind: "rate", target: "tcn_input" },
+    { name: "tcn_age", label: "TCN 입력 지연 (촬영→수신)", kind: "latency", target: "tcn_infer" },
+    { name: "tcn_proc", label: "TCN 처리 전체 (특징+추론)", kind: "work", target: "tcn_infer" },
+    { name: "tcn_infer", label: "└ TCN 추론", kind: "work", target: "tcn_infer", noSum: true },
+  ] },
+  { title: "웹", rows: [
+    { name: "web", label: "웹 전송 (텔레메트리)", kind: "work", target: "web" },
+  ] },
+];
+
+function stageTarget(key, f, ctx) {
+  const t = f.stage_targets || {};
+  if (key === "rgb") return ctx.inside ? t.rgb_inside : t.rgb;
+  if (key === "lane") return ctx.source === "IR" ? t.ir : ctx.inside ? t.rgb_inside : t.rgb;
+  return t[key];
+}
+
+function stageRowsHtml(f) {
+  const tunnel = f.tunnel || {};
+  const ctx = { enabled: !!tunnel.enabled, inside: !!tunnel.enabled && tunnel.state && tunnel.state !== "OUTSIDE", source: tunnel.source };
+  const byName = new Map(f.stages.map((s) => [s.name, s]));
+  const fmt = (v, d) => (v === undefined || v === null || !isFinite(v) ? "-" : v.toFixed(d));
+  const offReason = (off) => {
+    if (off === "inside" && ctx.inside) return "미사용 (터널 안)";
+    if (off === "outside" && !ctx.inside) return ctx.enabled ? "미사용 (터널 밖)" : "미사용 (터널 꺼짐)";
+    return null;
+  };
+  const cls = (fps, target) => {
+    if (!target || !isFinite(fps)) return "";
+    const r = fps / target;
+    return r >= 0.95 ? "ok" : r >= 0.8 ? "warn" : "bad";
+  };
+  const groups = STAGE_GROUPS.map((g) => ({ ...g, rows: [...g.rows] }));
+  const known = new Set(groups.flatMap((g) => g.rows.map((r) => r.name)));
+  const extra = f.stages.filter((s) => !known.has(s.name)).map((s) => ({ name: s.name, label: s.name, kind: "work" }));
+  if (extra.length) groups.push({ title: "기타", rows: extra });
+  return groups.map((g) => {
+    const groupOff = g.tunnel && !ctx.enabled ? "미사용 (터널 꺼짐)" : offReason(g.off);
+    let load = 0;
+    const rows = g.rows.map((r) => {
+      const s = r.name === "tcn_input" ? (f.tcn_source_fps ? { ms: NaN, fps: f.tcn_source_fps } : undefined) : byName.get(r.name);
+      const unused = groupOff || offReason(r.off);
+      const target = r.target ? stageTarget(r.target, f, ctx) : undefined;
+      const targetText = r.kind === "count" ? "0" : target ? fmt(target, 0) : "-";
+      if (r.kind === "count") {   // 경고 횟수: 없으면 0
+        const n = s ? s.fps : 0;
+        return `<tr${unused ? ' class="unused"' : ""}><td>${r.label}</td><td>-</td><td class="${n > 0 && !unused ? "warn" : ""}">${unused ? "-" : fmt(n, 0)}</td><td>${targetText}</td><td>-</td></tr>`;
+      }
+      if (unused || !s) {
+        return `<tr class="unused"><td>${r.label}</td><td colspan="2">${unused || "미사용"}</td><td>${targetText}</td><td>-</td></tr>`;
+      }
+      const msText = r.kind === "boxes" ? fmt(s.ms, 1) + " 개" : fmt(s.ms, 1);
+      let loadText = "-";
+      if (r.kind === "work") { const l = s.ms * s.fps / 10; if (!r.noSum) load += l; loadText = fmt(l, 1) + "%"; }
+      return `<tr><td>${r.label}</td><td>${msText}</td><td class="${cls(s.fps, target)}">${fmt(s.fps, 0)}</td><td>${targetText}</td><td>${loadText}</td></tr>`;
+    }).join("");
+    const sum = load > 0 ? `<span>연산 부하 합 ${load.toFixed(0)}%</span>` : "";
+    return `<tr class="grp"><th colspan="5">${g.title}${groupOff ? ` <em>${groupOff}</em>` : ""}${sum}</th></tr>${rows}`;
+  }).join("");
 }
 
 // ---------- 주행 상태 · 신호등 ----------
@@ -746,10 +839,16 @@ async function demo() {
     g.stabilization = "camera_driver";
     g.refit_supported = false;
     g.stages = [
-      { name: "lane_latency", ms: 9.8, fps: 70 }, { name: "lane_pre", ms: 0.9, fps: 70 }, { name: "lane_infer", ms: 3.2, fps: 70 },
-      { name: "lane_geom", ms: 1.6, fps: 70 }, { name: "yolo_pre", ms: 0.5, fps: 40 }, { name: "yolo_infer", ms: 7.0, fps: 40 },
-      { name: "yolo_post", ms: 0.3, fps: 40 }, { name: "box_depth", ms: 0.8, fps: 40 }, { name: "memory_plan", ms: 0.7, fps: 70 },
-      { name: "control", ms: 0.1, fps: 70 }, { name: "web", ms: 0.4, fps: 20 }];
+      { name: "cam_rgb", ms: 26.1, fps: 60 }, { name: "cam_depth", ms: 28.0, fps: 30 }, { name: "imu", ms: 9.4, fps: 199 },
+      { name: "lane_latency", ms: 42.2, fps: 60 }, { name: "lane_pre", ms: 0.3, fps: 60 }, { name: "lane_infer", ms: 5.8, fps: 60 },
+      { name: "lane_geom", ms: 6.5, fps: 60 }, { name: "yolo_pre", ms: 0.7, fps: 40 }, { name: "yolo_infer", ms: 9.0, fps: 40 },
+      { name: "yolo_post", ms: 0.1, fps: 40 }, { name: "depth_wait", ms: 1.2, fps: 40 }, { name: "box_depth", ms: 0.4, fps: 40 },
+      { name: "yolo_total", ms: 12.1, fps: 40 }, { name: "yolo_boxes", ms: 2.3, fps: 40 }, { name: "loc_fail", ms: 0, fps: 3 },
+      { name: "memory_plan", ms: 0.6, fps: 60 }, { name: "plan", ms: 0.4, fps: 60 }, { name: "control", ms: 0.04, fps: 60 },
+      { name: "tcn_age", ms: 21.0, fps: 10 }, { name: "tcn_infer", ms: 1.9, fps: 10 }, { name: "tcn_proc", ms: 3.4, fps: 10 },
+      { name: "web", ms: 0.3, fps: 30 }];
+    g.stage_targets = { rgb: 60, rgb_inside: 30, depth: 30, imu: 200, yolo: 40, tcn_input: 30, tcn_infer: 10, ir: 30, web: 30 };
+    g.tcn_source_fps = 29.8;
     g.traffic = { enabled: true, signal: 0, committed: false, holding: false, line: -99, cap: -1, stop_range: 0.25 };
     g.yolo = { fps: 40, signal_score: 0 };
     if (scene === "red" || scene === "green") {
@@ -779,7 +878,11 @@ async function demo() {
         ir_left: { ms: 19.98, iso: 500 }, ir_right: { ms: 20, iso: 500 }, ir_flood: 1 };
       g.detections = []; g.memory = [];
       g.plan = { path: [], mode: "center", rollout_ok: true }; g.traffic.enabled = false;
-      g.stages = g.stages.filter((x) => !x.name.startsWith("yolo") && x.name !== "box_depth");
+      // 터널 안: YOLO·깊이는 쉬고, RGB 차선은 30 FPS, IR 차선이 제어 입력
+      g.stages = g.stages.filter((x) => !x.name.startsWith("yolo") && !["box_depth", "depth_wait", "cam_depth", "loc_fail"].includes(x.name))
+        .map((x) => (["cam_rgb", "lane_latency", "lane_pre", "lane_infer", "lane_geom"].includes(x.name) ? { ...x, fps: 30 } : x))
+        .concat(state === "INSIDE" ? [{ name: "ir_lane_latency", ms: 48.0, fps: 30 }, { name: "ir_lane_pre", ms: 0.2, fps: 30 },
+          { name: "ir_lane_infer", ms: 3.1, fps: 30 }, { name: "ir_lane_geom", ms: 4.0, fps: 26 }] : []);
       g.inspection.models.push({ name: "IR 차선", status: "READY", stage: "ready", elapsed_s: 4.2, message: "" });
       g.readiness.ir_model_ready = true;
     }

@@ -53,9 +53,14 @@ struct TelemetryFrame {
 
 std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points = 40);
 
+// TCN 결과 한 건의 연산 시간 (tunnel_tcn_test 보고: inference_wall_ms, processing_ms, source_fps, source_age_at_receive_ms)
+struct TcnTiming {
+  std::optional<double> infer_ms, processing_ms, source_fps, source_age_ms;
+};
+
 class TunnelTcnTelemetry {
 public:
-  void update(const std::string & report, double received_sec);
+  TcnTiming update(const std::string & report, double received_sec);
   std::string json(double now_sec) const;
 
 private:

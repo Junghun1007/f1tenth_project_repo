@@ -93,9 +93,16 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
   return w.str();
 }
 
-void TunnelTcnTelemetry::update(const std::string & report, double received_sec) {
+TcnTiming TunnelTcnTelemetry::update(const std::string & report, double received_sec) {
+  TcnTiming timing;
   const auto parsed = parse_json(report);
-  if (!parsed || parsed->kind != JsonValue::Object) return;
+  if (!parsed || parsed->kind != JsonValue::Object) return timing;
+  const auto number_at = [&parsed](const char * key) -> std::optional<double> {
+    const auto * value = parsed->get(key);
+    if (value && value->kind == JsonValue::Number && std::isfinite(value->num) && value->num >= 0) return value->num;
+    return std::nullopt;
+  };
+  timing = {number_at("inference_wall_ms"), number_at("processing_ms"), number_at("source_fps"), number_at("source_age_at_receive_ms")};
   const auto string_at = [](const JsonValue * object, const char * key) -> std::string {
     const auto * value = object ? object->get(key) : nullptr;
     return value && value->kind == JsonValue::String ? value->str : "";
@@ -107,7 +114,7 @@ void TunnelTcnTelemetry::update(const std::string & report, double received_sec)
   };
   const auto * scores = parsed->get("scores");
   const auto entry = probability_at(scores, "entry"), exit = probability_at(scores, "exit");
-  if (!entry || !exit) return;
+  if (!entry || !exit) return timing;
   const auto * event_info = parsed->get("event");
   auto event = string_at(event_info, "type");
   if (event != "entry" && event != "exit") event.clear();
@@ -119,6 +126,7 @@ void TunnelTcnTelemetry::update(const std::string & report, double received_sec)
   status_ = string_at(&*parsed, "status");
   state_override_ = string_at(&*parsed, "state_override");
   threshold_ = probability_at(&*parsed, "threshold");
+  return timing;
 }
 
 std::string TunnelTcnTelemetry::json(double now_sec) const {

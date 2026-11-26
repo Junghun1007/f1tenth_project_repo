@@ -48,6 +48,12 @@ button { font: inherit; color: inherit; }
 table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 th, td { text-align: right; padding: 2px 4px; } th:first-child, td:first-child { text-align: left; }
 th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line); }
+.stages tr.grp th { text-align: left; color: var(--accent); font-weight: 600; padding-top: 8px; border-bottom: 1px solid var(--line); }
+.stages tr.grp th em { color: var(--dim); font-style: normal; font-weight: 400; margin-left: 6px; }
+.stages tr.grp th span { float: right; color: var(--dim); font-weight: 400; }
+.stages tr.unused td { color: var(--dim); }
+.stages tr.unused td[colspan] { text-align: center; }
+.stages td.ok { color: #9ee6b8; } .stages td.warn { color: var(--warn); } .stages td.bad { color: #f5b5b0; }
 .dets { margin-top: 8px; }
 .side { flex: 1; min-width: min(320px, 100%); display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 10px; align-items: start; }
 .col { display: flex; flex-direction: column; gap: 10px; }
