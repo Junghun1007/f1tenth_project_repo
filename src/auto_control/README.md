@@ -77,7 +77,7 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 - **파라미터 → YAML 저장**은 현재 적용값을 `~/.cache/auto_control/auto_drive_saved.yaml` 한 파일에 덮어쓴다.
   다음 실행에서 `drive_params_file:=~/.cache/auto_control/auto_drive_saved.yaml`로 불러온다.
   이름 있는 프리셋 저장·불러오기 기능은 제거했다. 기본 설정 파일(`config/auto_drive.yaml`)은
-  `202611251743_ver31.yaml`의 튜닝값에 `tunnel.validation_mode: false`를 반영한 값이다.
+  `202611251743_ver31.yaml`의 튜닝값을 쓴다 (`tunnel.validation_mode`는 노드 기본값과 같은 true).
 - Refit 옆 **초기화**는 수동 모드의 정차 상태에서 인식 컨테이너를 재시작한다.
   카메라를 닫고 다시 열면서 시작 자세 보정을 수행하고, 현재 설정을 새 인식 컨테이너에 넘긴다.
   VESC·조이스틱·안전 노드는 계속 실행된다.
