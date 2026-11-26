@@ -38,6 +38,22 @@ struct Rig {
   }
 };
 
+TEST(record_frames_are_built_only_while_recording) {   // 녹화하지 않을 때는 RecordFrame을 만들지 않는다
+  Rig r(DriveMode::Detect);
+  int frames = 0;
+  std::size_t left_points = 0;
+  r.loop->on_record = [&](const RecordFrame & f) { ++frames; left_points = f.left.size(); };
+  for (int k = 0; k < 5; ++k) r.step();
+  CHECK(frames == 0);
+  r.loop->set_recording(true);
+  for (int k = 0; k < 5; ++k) r.step();
+  CHECK(frames == 5);
+  CHECK(left_points > 0);
+  r.loop->set_recording(false);
+  for (int k = 0; k < 5; ++k) r.step();
+  CHECK(frames == 5);
+}
+
 TEST(detect_mode_never_publishes) {
   Rig r(DriveMode::Detect);
   for (int k = 0; k < 10; ++k) CHECK(!r.step().publish);

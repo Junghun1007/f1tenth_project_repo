@@ -35,6 +35,7 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
   const double cur_excess = std::max(0.0, std::max(std::abs(l0), std::abs(rear_sl.y)) + hw - p.lane_half);
   const double w_lin = lane_hard ? p.w_lane_linear : p.w_lane_linear_free;
   const int n_sub = 4;
+  const int win = int(std::ceil(1.2 * ds / dl)) + 1;   // |new_l - prev_l| ≤ 1.2·ds 인 격자 칸 수 (+1 여유, 판정은 아래 조건이 그대로 함)
   const bool pinned = pin && pin->s.size() >= 2 && pin->end_s > 0;
   const double pin_off0 = pinned ? std::abs(l0 - interp(0.0, pin->s, pin->l)) : 0.0;   // 지금 고정 경로에서 벗어난 만큼은 0.5 m에 걸쳐 허용
 
@@ -54,21 +55,22 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
     const double pin_l = pin_here ? interp(ss[i], pin->s, pin->l) : 0.0;
     const double pin_tol = pin_here ? pin->tol + pin_off0 * std::max(0.0, 1.0 - ss[i] / 0.5) : 0.0;
     for (int a = 0; a < nl; ++a) {   // pred
+      if (cost[a] >= kInf) continue;   // 도달 불가능한 이전 노드: 아래 최소 탐색에서도 건너뜀
       const double prev_l = L[a];
       const double pprev = i >= 2 ? L[back[std::size_t(i - 1) * nl + a]] : l0 + hist_slope * (-ds);
-      for (int b = 0; b < nl; ++b) {  // new
+      for (int b = std::max(0, a - win); b <= std::min(nl - 1, a + win); ++b) {  // new: 기울기 한계 안쪽만
         const double new_l = L[b];
-        // 뒷차축을 앞차축에 끌려가는 곡선(tractrix)으로 적분
+        const std::size_t idx = std::size_t(a) * nl + b;
+        if (pin_here && std::abs(new_l - pin_l) > pin_tol) { node[idx] = kInf; continue; }
+        // 결과가 어차피 무한 비용인 쌍은 계산 생략 (기울기 한계 초과, 도달 불가능한 이전 노드). 최적 경로는 그대로
+        if (cost[a] >= kInf || std::abs(new_l - prev_l) > 1.2 * ds) { node[idx] = kInf; continue; }
+        // 뒷차축을 앞차축에 끌려가는 곡선(tractrix)으로 적분 (유한 비용 쌍만 필요)
         double r = rear[std::size_t(i - 1) * nl + a];
         for (int m = 1; m <= n_sub; ++m) {
           const double lf = prev_l + (new_l - prev_l) * (double(m) / n_sub);
           r = r + (lf - r) * (ds / n_sub) / p.wheelbase;
         }
-        const std::size_t idx = std::size_t(a) * nl + b;
         lr[idx] = r;
-        if (pin_here && std::abs(new_l - pin_l) > pin_tol) { node[idx] = kInf; continue; }
-        // 결과가 어차피 무한 비용인 쌍은 계산 생략 (기울기 한계 초과, 도달 불가능한 이전 노드). 최적 경로는 그대로
-        if (cost[a] >= kInf || std::abs(new_l - prev_l) > 1.2 * ds) { node[idx] = kInf; continue; }
         const double curv = (new_l - 2 * prev_l + pprev) / (ds * ds);
         const double yaw = std::atan2(new_l - r, p.wheelbase);
         const double cs = std::cos(yaw), sn = std::sin(yaw);
@@ -106,8 +108,9 @@ std::optional<FrenetPath> frenet_dp(const PlannerParams & p, double l0, Vec2 rea
     }
     for (int b = 0; b < nl; ++b) {
       int best = 0;
-      double bv = cost[0] + node[b];
-      for (int a = 1; a < nl; ++a) {
+      double bv = 2 * kInf;   // 유한한 후보가 없으면 도달 불가 (값만 kInf 이상이면 됨)
+      for (int a = std::max(0, b - win); a <= std::min(nl - 1, b + win); ++a) {
+        if (cost[a] >= kInf) continue;
         const double v = cost[a] + node[std::size_t(a) * nl + b];
         if (v < bv) { bv = v; best = a; }
       }
@@ -163,16 +166,15 @@ RolloutResult rollout_ok(const PlannerParams & p, const ControlParams & c, const
   const int n_lat = int(c.latency / dt);
   const int steps = int(p.rollout_sec / dt);
   double best = 1e9;
-  std::vector<Vec2> local(base.points.size());
+  SimPath moved(base.points, base.arc, c.geometry_window);   // 매 스텝 점만 덮어써서 재사용 (할당·복사 없음)
   for (int k = 0; k < steps; ++k) {
     if (k >= n_lat) {
       const double fx = rx + p.wheelbase * std::cos(psi), fy = ry + p.wheelbase * std::sin(psi);
       const double cps = std::cos(psi), sps = std::sin(psi);
       for (std::size_t m = 0; m < base.points.size(); ++m) {
         const double dx = base.points[m].x - fx, dy = base.points[m].y - fy;
-        local[m] = {cps * dx + sps * dy, -sps * dx + cps * dy};
+        moved.points[m] = {cps * dx + sps * dy, -sps * dx + cps * dy};
       }
-      const SimPath moved(local, base.arc, c.geometry_window);
       const double raw = sim_stanley(moved, v, c, p.max_steer_rad);
       cmd = c.steering_current_weight * raw + (1 - c.steering_current_weight) * cmd;
     }

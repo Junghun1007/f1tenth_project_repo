@@ -971,6 +971,7 @@ private:
       rec_dir_ = dir;
       rec_t0_ = acd::now_sec();
       rec_frames_ = 0;
+      loop_->set_recording(true);
     }
     double camera_x = 0;
     { std::lock_guard<std::mutex> l(status_m_); if (reference_) camera_x = reference_->position_vehicle_m[0]; }
@@ -994,6 +995,7 @@ private:
     {
       std::lock_guard<std::mutex> l(rec_m_);
       if (!rec_) return {false, "녹화 중이 아님"};
+      loop_->set_recording(false);
       rec_->flush();
       rec_.reset();
       dir = rec_dir_;

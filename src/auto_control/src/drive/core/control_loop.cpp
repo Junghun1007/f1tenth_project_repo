@@ -345,6 +345,7 @@ void ControlLoop::remember_vehicles(const DetectionFrame & det, std::optional<do
 StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSource source) {
   std::lock_guard<std::mutex> l(m_);
   const double t0 = now_sec();
+  const bool recording = on_record && recording_.load(std::memory_order_relaxed);
   if (s_.memory_mode == 0) integrate_detections();
   const bool source_changed = lane_source_ != source;
   lane_source_ = source;
@@ -383,7 +384,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
     std::vector<Vec2> blind;
     double blind_end = -1;
     const auto cones = s_.memory_mode >= 1 ? lane_memory_cones(pose_lane, commit ? &blind : nullptr, &blind_end) : memory_.confirmed_world();
-    rec_cones_ = cones;
+    if (recording) rec_cones_ = cones;
     if (commit) lock_.refresh(blind_end);
     plan_ = planner_.plan(lane_, cones, pose_lane, speed_, steer_.angle(), commit ? lock_.pin() : nullptr, commit ? &blind : nullptr);
     if (commit && lane_f_valid_) {   // 다음 고정에 쓸 이번 경로 (s, l)
@@ -412,7 +413,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
     have_path = control_path_.size() >= 2;
   }
   stats_.record("memory_plan", t0, now_sec());
-  if (on_record && lane.valid && (!check_departure || observation_pose)) {
+  if (recording && lane.valid && (!check_departure || observation_pose)) {
     RecordFrame r;
     r.t = lane.capture_time;
     r.pose = observation_pose.value_or(plan_pose_);

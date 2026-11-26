@@ -164,7 +164,6 @@ Vec2 from_frenet(double s, double l, const FrenetFrame & f) {
     x = f.center.back().x + (s - a.back()) * f.tang.back().x; y = f.center.back().y + (s - a.back()) * f.tang.back().y;
     tx = f.tang.back().x; ty = f.tang.back().y;
   } else {
-    std::vector<double> cx(f.center.size()), cy(f.center.size()), txs(f.center.size()), tys(f.center.size());
     // 같은 arc 위의 선형 보간 (np.interp)
     const auto it = std::upper_bound(a.begin(), a.end(), s);
     std::size_t i = std::size_t(it - a.begin());

@@ -118,8 +118,10 @@ public:
   StageStats & stats() { return stats_; }
   // 콘 관측 기록 (검출이 계획에 반영될 때마다, 제어 스레드에서 호출). 비워 두면 기록 안 함
   std::function<void(const std::vector<ConeLogRow> &)> on_cone_log;
-  // 수동 주행 녹화 (차선 결과마다, 제어 스레드에서). 비워 두면 기록 안 함
+  // 수동 주행 녹화 (차선 결과마다, 제어 스레드에서). set_recording(true)인 동안에만 RecordFrame을 만들어 넘긴다
+  // (녹화하지 않을 때 매 프레임 차선·경로·콘 벡터를 복사하지 않게)
   std::function<void(const RecordFrame &)> on_record;
+  void set_recording(bool on) { recording_.store(on, std::memory_order_relaxed); }
   double gyro_bias() const { return gyro_bias_.load(std::memory_order_relaxed); }
 
 private:
@@ -170,7 +172,8 @@ private:
   double speed_{0}, measured_speed_{0};
   double odom_speed_{0};
   std::atomic<double> speed_atomic_{0.0};
-  std::vector<Vec2> rec_cones_;   // 녹화용: 이번 계획에 쓴 콘
+  std::vector<Vec2> rec_cones_;   // 녹화용: 이번 계획에 쓴 콘 (녹화 중일 때만 채움)
+  std::atomic<bool> recording_{false};
   // 자이로 영점: 정지 중(속도 ≈ 0, ERPM 신선) 요레이트 평균. 오도메트리에서 뺀다 (안 빼면 약 0.15°/s씩 방향이 돈다)
   std::atomic<double> gyro_bias_{0.0}, last_erpm_atomic_{-1e9}, last_yaw_rate_{0.0};
   bool gyro_bias_init_{false};
