@@ -27,6 +27,12 @@
 - 수동 주행 녹화 데이터(`RecordFrame`)는 녹화 중에만 만듦 (예전엔 매 차선 프레임마다 만들고 버림)
 - 웹 카메라 보기: Y·UV 평면을 먼저 640x400으로 줄인 뒤 변환 (변환+축소 단일 스레드 1.4 ms → 0.3 ms)
 
+`1113ML_tunnel_rates.patch` — tunnel_enabled에서의 차선 처리율 (line_detactor, auto_control 런치, ir_camera_driver)
+
+- RGB 차선 검출기가 터널 상태로 추론 FPS를 바꾸던 호스트 도착 시각 게이트 제거
+  (터널 밖 70 → 실제 약 40 FPS로 떨어지던 문제, 터널 안 5 FPS 제한). 터널 안 RGB는 camera_driver가 약 30 FPS로 솎음
+- shared_ir_bev: 터널 밖에서 1 ms(초당 1000회) 확인 타이머를 50 ms로, 터널 안은 1 ms 그대로
+
 적용 (git 저장소가 아니어도 됨, 1113ML 워크스페이스 루트에서, 순서대로):
 
 ```bash
@@ -38,5 +44,7 @@ patch -p1 --dry-run < tools/patches/1113ML_ir_gate_idle.patch
 patch -p1 < tools/patches/1113ML_ir_gate_idle.patch
 patch -p1 --dry-run < tools/patches/1113ML_compute_opt.patch
 patch -p1 < tools/patches/1113ML_compute_opt.patch
-colcon build --packages-select camera_driver auto_control --cmake-args -DCMAKE_BUILD_TYPE=Release
+patch -p1 --dry-run < tools/patches/1113ML_tunnel_rates.patch
+patch -p1 < tools/patches/1113ML_tunnel_rates.patch
+colcon build --packages-select camera_driver auto_control line_detactor ir_camera_driver --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```

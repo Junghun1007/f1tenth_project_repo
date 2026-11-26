@@ -1,0 +1,77 @@
+diff --git a/src/auto_control/auto_control_tunnel/launch_support.py b/src/auto_control/auto_control_tunnel/launch_support.py
+index b775d0b..1b9dcb4 100644
+--- a/src/auto_control/auto_control_tunnel/launch_support.py
++++ b/src/auto_control/auto_control_tunnel/launch_support.py
+@@ -42,7 +42,8 @@ def integrated_nodes(rgb_detector, controller, context):
+               preview_enabled=False, bev_theme_enable=False,
+               shared_ir_preview_output_enabled=rgb_detector['preview_enabled'],
+               preview_result_only_enabled=rgb_detector.get('preview_result_only_enabled', True))
+-    rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 70.0})
++    # RGB도 호스트 도착 시각 게이트를 두지 않는다 (터널 안 30 FPS 솎기는 camera_driver가 촬영 시각으로)
++    rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 0.0})
+     age = controller.get('path_capture_maximum_age_sec', .2)
+     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)
+     selector_parameters = dict(validation_mode=validation, max_age_sec=min(.25, float(rule_age)),
+diff --git a/src/ir_camera_driver/src/shared_ir_bev_node.cpp b/src/ir_camera_driver/src/shared_ir_bev_node.cpp
+index fefde1d..71042c6 100644
+--- a/src/ir_camera_driver/src/shared_ir_bev_node.cpp
++++ b/src/ir_camera_driver/src/shared_ir_bev_node.cpp
+@@ -46,6 +46,7 @@ public:
+         if (message->data!="IR" && message->data!="RGB" && message->data!="BOTH") {return;}
+         inside_=message->data!="RGB";
+         retry_at_=Clock::time_point{};
++        schedule();
+       },mode_options);
+     diagnostic_started_=Clock::now();
+     diagnostic_timer_=create_wall_timer(std::chrono::seconds(2),[this]() {
+@@ -57,10 +58,21 @@ public:
+         output_count_/std::chrono::duration<double>(now-diagnostic_started_).count(),age,wait_reason_.c_str());
+       output_count_=0; diagnostic_started_=now;
+     });
+-    timer_=create_wall_timer(std::chrono::milliseconds(1),[this]() {process();});
++    schedule();
+   }
+ private:
+   using Clock=std::chrono::steady_clock;
++  // 새 IR 프레임 확인 주기. 터널 안(또는 대기 추론)에서는 1 ms, 밖에서는 변환표를 한 번 만들고 바로 돌아오므로 50 ms.
++  // 예전에는 밖에서도 1 ms(초당 1000회) 콜백이 컨테이너 실행 스레드를 계속 깨웠다. 콜백 그룹이 같아 process()와 겹치지 않는다
++  void schedule()
++  {
++    const auto period=(inside_ || standby_>0.0) ? std::chrono::milliseconds(1) : std::chrono::milliseconds(50);
++    if (timer_ && period==timer_period_) {return;}
++    if (timer_) {timer_->cancel();}
++    timer_period_=period;
++    timer_=create_wall_timer(period,[this]() {process();});
++  }
++  std::chrono::milliseconds timer_period_{0};
+   void process()
+   {
+     // Keep the camera session/model resident, but do not project/infer images
+diff --git a/src/line_detactor/src/line_detactor_node.cpp b/src/line_detactor/src/line_detactor_node.cpp
+index b4a588b..5e520e0 100644
+--- a/src/line_detactor/src/line_detactor_node.cpp
++++ b/src/line_detactor/src/line_detactor_node.cpp
+@@ -231,12 +231,9 @@ public:
+     if (tunnel_enabled_) {
+       rclcpp::SubscriptionOptions tunnel_options;
+       tunnel_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
+-      tunnel_compute_sub_=node_.create_subscription<std_msgs::msg::String>(
+-        "/tunnel/compute_source",rclcpp::QoS(1).reliable().transient_local(),
+-        [this](std_msgs::msg::String::ConstSharedPtr message) {
+-          if (message->data=="IR") {inference_max_fps_.store(5.0);}
+-          else if (message->data=="RGB" || message->data=="BOTH") {inference_max_fps_.store(70.0);}
+-        },tunnel_options);
++      // 터널 상태로 RGB 추론 FPS를 바꾸지 않는다. 예전에는 밖 70 / 안 5 FPS로 호스트 도착 시각 게이트를 걸어
++      // 밖에서는 도착 흔들림 때문에 60 FPS 입력이 약 40 FPS로, 안에서는 5 FPS로 줄었다.
++      // 터널 안 RGB는 camera_driver가 촬영 시각 기준 약 30 FPS로 솎아 보낸다 (IR 검출기도 같은 이유로 게이트 0)
+       if (preview_enabled_) {
+         tunnel_selected_sub_=node_.create_subscription<std_msgs::msg::String>(
+           "/tunnel/selected_source",rclcpp::QoS(1).reliable().transient_local(),
+@@ -1773,7 +1770,6 @@ private:
+     "Tunnel: WAITING","TCN avg --FPS","TCN: waiting"};
+   SteadyClock::time_point tunnel_hud_received_at_{};
+   std::atomic<double> inference_max_fps_{0.0};
+-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_compute_sub_;
+   std::condition_variable frame_condition_;
+   std::shared_ptr<const InputFrame> latest_message_;
+   SteadyClock::time_point latest_input_received_at_{};
