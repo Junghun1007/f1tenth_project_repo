@@ -46,6 +46,7 @@ public:
         if (message->data!="IR" && message->data!="RGB" && message->data!="BOTH") {return;}
         inside_=message->data!="RGB";
         retry_at_=Clock::time_point{};
+        schedule();
       },mode_options);
     diagnostic_started_=Clock::now();
     diagnostic_timer_=create_wall_timer(std::chrono::seconds(2),[this]() {
@@ -57,10 +58,21 @@ public:
         output_count_/std::chrono::duration<double>(now-diagnostic_started_).count(),age,wait_reason_.c_str());
       output_count_=0; diagnostic_started_=now;
     });
-    timer_=create_wall_timer(std::chrono::milliseconds(1),[this]() {process();});
+    schedule();
   }
 private:
   using Clock=std::chrono::steady_clock;
+  // 새 IR 프레임 확인 주기. 터널 안(또는 대기 추론)에서는 1 ms, 밖에서는 변환표를 한 번 만들고 바로 돌아오므로 50 ms.
+  // 예전에는 밖에서도 1 ms(초당 1000회) 콜백이 컨테이너 실행 스레드를 계속 깨웠다. 콜백 그룹이 같아 process()와 겹치지 않는다
+  void schedule()
+  {
+    const auto period=(inside_ || standby_>0.0) ? std::chrono::milliseconds(1) : std::chrono::milliseconds(50);
+    if (timer_ && period==timer_period_) {return;}
+    if (timer_) {timer_->cancel();}
+    timer_period_=period;
+    timer_=create_wall_timer(period,[this]() {process();});
+  }
+  std::chrono::milliseconds timer_period_{0};
   void process()
   {
     // Keep the camera session/model resident, but do not project/infer images

@@ -42,7 +42,8 @@ def integrated_nodes(rgb_detector, controller, context):
               preview_enabled=False, bev_theme_enable=False,
               shared_ir_preview_output_enabled=rgb_detector['preview_enabled'],
               preview_result_only_enabled=rgb_detector.get('preview_result_only_enabled', True))
-    rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 70.0})
+    # RGB도 호스트 도착 시각 게이트를 두지 않는다 (터널 안 30 FPS 솎기는 camera_driver가 촬영 시각으로)
+    rgb_detector.update({'tunnel.enabled': True, 'inference_max_fps': 0.0})
     age = controller.get('path_capture_maximum_age_sec', .2)
     rule_age = context.launch_configurations.get('path_capture_maximum_age_sec', age)
     selector_parameters = dict(validation_mode=validation, max_age_sec=min(.25, float(rule_age)),

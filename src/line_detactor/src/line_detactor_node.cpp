@@ -228,12 +228,9 @@ public:
     if (tunnel_enabled_) {
       rclcpp::SubscriptionOptions tunnel_options;
       tunnel_options.use_intra_process_comm=rclcpp::IntraProcessSetting::Disable;
-      tunnel_compute_sub_=node_.create_subscription<std_msgs::msg::String>(
-        "/tunnel/compute_source",rclcpp::QoS(1).reliable().transient_local(),
-        [this](std_msgs::msg::String::ConstSharedPtr message) {
-          if (message->data=="IR") {inference_max_fps_.store(5.0);}
-          else if (message->data=="RGB" || message->data=="BOTH") {inference_max_fps_.store(70.0);}
-        },tunnel_options);
+      // 터널 상태로 RGB 추론 FPS를 바꾸지 않는다. 예전에는 밖 70 / 안 5 FPS로 호스트 도착 시각 게이트를 걸어
+      // 밖에서는 도착 흔들림 때문에 60 FPS 입력이 약 40 FPS로, 안에서는 5 FPS로 줄었다.
+      // 터널 안 RGB는 camera_driver가 촬영 시각 기준 약 30 FPS로 솎아 보낸다 (IR 검출기도 같은 이유로 게이트 0)
       if (preview_enabled_) {
         tunnel_selected_sub_=node_.create_subscription<std_msgs::msg::String>(
           "/tunnel/selected_source",rclcpp::QoS(1).reliable().transient_local(),
@@ -1853,7 +1850,6 @@ private:
     "Tunnel: WAITING","TCN avg --FPS","TCN: waiting"};
   SteadyClock::time_point tunnel_hud_received_at_{};
   std::atomic<double> inference_max_fps_{0.0};
-  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr tunnel_compute_sub_;
   std::condition_variable frame_condition_;
   std::shared_ptr<const InputFrame> latest_message_;
   SteadyClock::time_point latest_input_received_at_{};
