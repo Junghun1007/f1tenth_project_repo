@@ -457,7 +457,7 @@ private:
     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
     if (!command || force_ir_request_pending() || camera_reset_at_.load() > 0.0)
       return {false, "다른 주행 요청을 처리 중입니다"};
-    if (!loop_->tunnel_override_allowed(acd::now_sec())) return {false, "정지 상태에서만 변경할 수 있습니다"};
+    // 전환 안전 정책 제거: 주행 중에도 강제 IR을 켜고 끌 수 있다 (선택기가 바로 전환)
     if (!force_ir_client_->service_is_ready()) return {false, "터널 차선 선택기가 준비 중입니다"};
     auto request = std::make_shared<ForceIr::Request>();
     request->data = enabled;
@@ -476,10 +476,7 @@ private:
     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
     if (!command || force_ir_request_pending()) return {false, "터널 전환 요청 처리 중"};
     if (camera_reset_at_.load() > 0.0) return {false, "카메라 초기화 중입니다"};
-    if (force_ir_enabled_.load()) {
-      std::lock_guard<std::mutex> l(status_m_);
-      if (tunnel_state_ != "INSIDE" || lane_source_ != "IR") return {false, "터널 IR 차선 준비 중"};
-    }
+    // 전환 안전 정책 제거: 강제 IR 중이어도 IR 차선이 들어왔는지 확인하지 않고 출발한다
     auto result = loop_->request_start(now);
     if (result.first && !recording()) open_cone_log(log_dir_, "");
     return result;
@@ -907,7 +904,7 @@ private:
     }
     const double t0 = acd::now_sec();
     std::string j = acd::telemetry_json(f);
-    const bool can_force_ir = tunnel_enabled_ && loop_->tunnel_override_allowed(now);
+    const bool can_force_ir = tunnel_enabled_;   // 전환 안전 정책 제거: 정지 여부와 무관
     const bool can_reset_camera = !camera_reset_path_.empty() && loop_->camera_reset_allowed(now, camera_reset_vesc_required_);
     if (!j.empty() && j.back() == '}') {   // auto_control 추가 항목
       std::ostringstream x;

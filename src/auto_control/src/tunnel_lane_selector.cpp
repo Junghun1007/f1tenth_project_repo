@@ -174,23 +174,13 @@ private:
       const auto report = tunnel::json_object(message->data);
       const auto stamp = tunnel::json_int(report, "source_stamp_ns");
       const std::int64_t now_ns = now().nanoseconds();
+      // 강제 IR을 끈 뒤에는 그 이전에 만들어진 보고를 따르지 않는다 (끈 순간 RGB로 돌아간 것을 되돌리지 않게)
       if (!stamp || (tcn_report_after_ns_ && *stamp <= *tcn_report_after_ns_)) {return;}
-      const double age = (now_ns - *stamp) / 1e9;
-      if (!policy_.validation_mode && !(0 <= age && age <= .25)) {return;}
       preview_.update(report, monotonic());
-      last_tcn_received_ = monotonic();
+      // TCN 판정(state)을 그대로 따른다. 보고 나이·LIVE 여부·이벤트 종류·차선 유무는 보지 않는다 (전환 정책 제거)
       const std::string state = tunnel::json_string(report, "state").value_or("");
-      const std::string status = tunnel::json_string(report, "status").value_or("");
-      tcn_live_ = status.rfind("LIVE", 0) == 0 && (state == "inside" || state == "outside");
-      if (!tcn_live_) {return;}
-      const std::string kind = state == "inside" ? "entry" : "exit";
-      const auto event = report.find("event");
-      if (event != report.end() && !event->second.empty() && event->second.front() == '{') {
-        const auto type = tunnel::json_string(tunnel::json_object(event->second), "type");
-        if (type && *type != kind) {return;}
-      }
-      if (force_ir_) {return;}
-      // Later LIVE reports retain the state if an event packet was lost.
+      if (state != "inside" && state != "outside") {return;}   // 시작 직후 unknown: 판정 없음
+      if (force_ir_) {return;}   // 강제 IR 중에는 수동 지정이 우선
       if (apply_tcn_state(state, *stamp, now_ns)) {publish_status();}
     } catch (const std::exception &) {
       RCLCPP_WARN(get_logger(), "Ignoring malformed TCN result");
@@ -200,12 +190,7 @@ private:
   void on_lane(const std::string & source, const LaneResult::ConstSharedPtr & message)
   {
     refresh_runtime_settings();
-    // Validation follows the last selected source independently of TCN health. TCN only switches.
-    if (!force_ir_ && !policy_.validation_mode &&
-      (!tcn_live_ || !last_tcn_received_ || monotonic() - *last_tcn_received_ > .5))
-    {
-      return;
-    }
+    // 선택된 출처의 결과만 넘긴다. TCN 상태·결과 신선도로 막지 않는다 (전환 정책 제거)
     const auto now_ns = now().nanoseconds();
     const bool forward = policy_.lane(source, *message, now_ns);
     publish_status();
@@ -219,10 +204,9 @@ private:
   tunnel::LaneSelector policy_;
   tunnel::PreviewTelemetry preview_;
   std::optional<std::array<std::string, 4>> published_;
-  std::optional<double> last_tcn_received_;
   std::shared_ptr<const bev_handoff::TunnelRuntimeSettings> runtime_settings_;
   std::optional<std::int64_t> tcn_report_after_ns_;
-  bool force_ir_{false}, tcn_live_{false};
+  bool force_ir_{false};
   rclcpp::Publisher<LaneResult>::SharedPtr rgb_output_, ir_output_;
   std::vector<rclcpp::Publisher<String>::SharedPtr> status_;
   rclcpp::Publisher<String>::SharedPtr preview_pub_, tcn_state_override_pub_;

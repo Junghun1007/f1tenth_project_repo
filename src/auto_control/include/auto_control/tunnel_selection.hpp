@@ -91,7 +91,9 @@ bool metric_path_ready(const Msg & m, const PathRules & rules)
   return static_cast<int>(points.size()) >= rules.minimum_points && span >= rules.minimum_span;
 }
 
-// Automatic events select their source immediately. Forced IR entry can wait for a usable path.
+// 차선 입력 선택: TCN 판정(또는 강제 IR)이 오면 그 자리에서 바로 전환한다.
+// 전환 안전 정책은 두지 않는다 (차선 유무·경로 유효성·결과 신선도·보고 나이를 보지 않음, 재설계 예정).
+// 남은 것은 같은 출처에서 시각이 되돌아간(순서가 뒤바뀐) 결과를 버리는 것뿐이다.
 class LaneSelector
 {
 public:
@@ -102,58 +104,39 @@ public:
     this->rules.validate();
   }
 
-  bool transitioning() const {return started_ns.has_value();}
-  std::string compute() const {return transitioning() ? "BOTH" : selected;}
-  std::string camera() const {return transitioning() ? "IR" : selected;}
+  bool transitioning() const {return false;}
+  std::string compute() const {return selected;}
+  std::string camera() const {return selected;}
 
+  // TCN 판정: entry → IR, exit → RGB. 이전 보고보다 시각이 늦기만 하면 바로 따른다
   bool event(const std::string & kind, std::int64_t stamp, std::int64_t now_ns)
   {
-    const double age = (now_ns - stamp) / 1e9;
-    if ((kind != "entry" && kind != "exit") || stamp <= last_event_ns ||
-      (!validation_mode && !(0 <= age && age <= max_age)))
-    {
-      return false;
-    }
+    if ((kind != "entry" && kind != "exit") || stamp <= last_event_ns) {return false;}
     last_event_ns = stamp;
     const bool entry = kind == "entry";
     return request_source(entry ? "IR" : "RGB", now_ns, entry ? "tcn_entry" : "tcn_exit");
   }
 
+  // 강제 IR 켬/끔도 바로 전환
   bool request_source(std::string target, std::int64_t now_ns,
     const char * immediate_reason = nullptr)
   {
-    if (target == requested) {return false;}
+    if (target == requested && target == selected) {return false;}
     requested = target;
-    if (target == selected) {
-      finish(now_ns, "reversed_request");
-      return true;
-    }
-    if (immediate_reason || target == "RGB") {
-      finish(now_ns, immediate_reason ? immediate_reason : "force_ir_off");
-      return true;
-    }
-    started_ns = now_ns;
-    reason = "waiting_target_path";
-    state = "ENTERING";
+    finish(now_ns, immediate_reason ? immediate_reason : (target == "IR" ? "force_ir_on" : "force_ir_off"));
     return true;
   }
 
   // True when this message is the selected source and should be forwarded.
   template<typename Msg>
   bool lane(
-    const std::string & source, const Msg & m, std::int64_t now_ns)
+    const std::string & source, const Msg & m, std::int64_t /*now_ns*/)
   {
     auto last = last_input_ns.find(source);
     if (last == last_input_ns.end()) {return false;}
     const auto stamp = stamp_ns(m);
-    const double age = (now_ns - stamp) / 1e9;
-    const bool fresh = (validation_mode && source == "IR" && !transitioning()) || (0 <= age && age <= max_age);
-    if (stamp <= last->second || !fresh) {return false;}
+    if (stamp <= last->second) {return false;}
     last->second = stamp;
-    if (transitioning() && source == requested) {
-      if (!metric_path_ready(m, rules)) {return false;}  // An unready target must not clear the current path.
-      finish(now_ns, "first_valid_target");
-    }
     return source == selected;
   }
 
@@ -164,19 +147,15 @@ public:
   std::string last_handover;  // JSON text for the log
   std::int64_t last_event_ns{0};
   std::map<std::string, std::int64_t> last_input_ns{{"RGB", 0}, {"IR", 0}};
-  std::optional<std::int64_t> started_ns;
 
 private:
-  void finish(std::int64_t now_ns, const std::string & why)
+  void finish(std::int64_t, const std::string & why)
   {
-    const double total_ms = started_ns ? (now_ns - *started_ns) / 1e6 : 0.;
     std::ostringstream out;
-    out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": " << total_ms;
-    out << "}";
+    out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": 0}";
     last_handover = out.str();
     selected = requested;
     state = selected == "IR" ? "INSIDE" : "OUTSIDE";
-    started_ns.reset();
     reason = why;
   }
 };

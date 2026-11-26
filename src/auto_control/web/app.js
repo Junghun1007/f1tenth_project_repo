@@ -428,16 +428,14 @@ function render() {
     const h = $("handoverChip"); h.className = "chipx " + f.handover;
     h.textContent = "전환 " + ({ AUTO: "AUTO", STOPPING: "제동 중", MANUAL: "MANUAL" }[f.handover] || f.handover);
   }
-  const src = tunnel.source || "RGB";
   const forceIr = $("btnForceIr");
   const stopped = ["READY", "MANUAL"].includes(f.state);
-  const irPreparing = tunnel.force_ir && (src !== "IR" || tunnel.state !== "INSIDE");
+  // 전환 안전 정책 제거: 강제 IR은 주행 중에도 바꿀 수 있고, IR 차선을 기다리지 않는다
   forceIr.hidden = $("forceIrStatus").hidden = !tunnel.enabled;
-  forceIr.disabled = !connected || !stopped || forceIrRequest || !tunnel.force_ir_change_allowed;
+  forceIr.disabled = !connected || forceIrRequest || !tunnel.force_ir_change_allowed;
   forceIr.setAttribute("aria-pressed", Boolean(tunnel.force_ir));
   forceIr.classList.toggle("go", Boolean(tunnel.force_ir));
-  forceIr.textContent = forceIrRequest ? "터널 IR 요청 중" : irPreparing ? "터널 IR 준비 중" :
-    tunnel.force_ir ? "터널 IR 강제 ON" : "터널 IR 강제 OFF";
+  forceIr.textContent = forceIrRequest ? "터널 IR 요청 중" : tunnel.force_ir ? "터널 IR 강제 ON" : "터널 IR 강제 OFF";
   const selected = selectedLaneSource(tunnel);
   $("sourceChip").className = "chipx " + selected;
   $("sourceChip").textContent = selected === "IR" ? "IR 터널" : "RGB";
@@ -449,7 +447,7 @@ function render() {
     b.classList.toggle("on", b.dataset.mode === f.mode);
     b.disabled = !stopped;
   });
-  $("btnStart").disabled = forceIrRequest || irPreparing || cameraResetRequest || f.camera_reset_pending ||
+  $("btnStart").disabled = forceIrRequest || cameraResetRequest || f.camera_reset_pending ||
     !(f.mode === "drive" && stopped && Object.values(f.readiness).every(Boolean));
   $("btnStop").disabled = !["DRIVING", "STOPPING"].includes(f.state);
   $("btnRefit").disabled = !["READY", "MANUAL", "DRIVING"].includes(f.state);

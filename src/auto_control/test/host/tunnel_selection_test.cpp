@@ -58,7 +58,8 @@ TEST(tcn_exit_selects_rgb_before_any_lane_result) {
     CHECK(selector.selected == "RGB" && selector.compute() == "RGB" && selector.camera() == "RGB");
     CHECK(!selector.transitioning());
     CHECK(!selector.lane("IR", lane_at(2 * kEntry + 1, 9), 2 * kEntry + 2));
-    CHECK(!selector.lane("RGB", lane_at(kEntry + 1, 9), 2 * kEntry + 2));
+    CHECK(selector.lane("RGB", lane_at(kEntry + 1, 9), 2 * kEntry + 2));   // 오래된 결과도 넘김 (신선도 정책 없음)
+    CHECK(!selector.lane("RGB", lane_at(kEntry + 1, 9), 2 * kEntry + 2));  // 같은 시각을 두 번 넘기지는 않음
     CHECK(selector.selected == "RGB");
     auto invalid = lane_at(2 * kEntry + 3, 0);
     invalid.centerline_valid = false;
@@ -68,14 +69,24 @@ TEST(tcn_exit_selects_rgb_before_any_lane_result) {
   }
 }
 
-TEST(manual_ir_request_waits_for_a_valid_path_but_release_is_immediate) {
-  LaneSelector selector(.2, true, PathRules{});
+TEST(manual_ir_request_switches_immediately_without_a_lane) {   // 전환 정책 제거: 경로를 기다리지 않음
+  LaneSelector selector(.2, false, PathRules{});
   CHECK(selector.request_source("IR", kEntry));
-  CHECK(selector.state == "ENTERING" && selector.selected == "RGB");
-  CHECK(!selector.lane("IR", lane_at(kEntry + 1, 5), kEntry + 2));
-  CHECK(selector.lane("IR", lane_at(kEntry + 3, 9), kEntry + 4));
-  CHECK(selector.state == "INSIDE" && selector.reason == "first_valid_target");
+  CHECK(selector.state == "INSIDE" && selector.selected == "IR" && selector.reason == "force_ir_on");
+  CHECK(selector.camera() == "IR" && selector.compute() == "IR" && !selector.transitioning());
+  CHECK(selector.lane("IR", lane_at(kEntry + 1, 0), kEntry + 2));       // 점이 없는 결과도 그대로 넘김
+  CHECK(!selector.lane("RGB", lane_at(kEntry + 1, 9), kEntry + 2));
+  CHECK(!selector.request_source("IR", kEntry + 3));                     // 이미 IR
   CHECK(selector.request_source("RGB", kEntry + 5));
   CHECK(selector.state == "OUTSIDE" && selector.reason == "force_ir_off");
-  CHECK(!selector.transitioning());
+}
+
+TEST(tcn_reports_are_followed_immediately_and_out_of_order_reports_are_ignored) {
+  LaneSelector selector(.2, false, PathRules{});
+  CHECK(selector.event("entry", 5 * kEntry, 50 * kEntry));   // 45초 지난 보고여도 따른다 (나이 정책 없음)
+  CHECK(selector.selected == "IR");
+  CHECK(!selector.event("exit", 4 * kEntry, 50 * kEntry));   // 더 이전 시각의 보고는 무시
+  CHECK(selector.selected == "IR");
+  CHECK(selector.event("exit", 6 * kEntry, 50 * kEntry));
+  CHECK(selector.selected == "RGB" && selector.state == "OUTSIDE");
 }
