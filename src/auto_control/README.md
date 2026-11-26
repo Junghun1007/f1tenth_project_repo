@@ -107,6 +107,20 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 - 파라미터 창 [장애물] [주행] [차선] [신호등]에서 변경을 한 번에 적용하고 YAML로 저장할 수 있다. 다음 실행에서 `drive_params_file:=~/.cache/auto_control/auto_drive_saved.yaml`을 지정하면 저장한 값을 불러온다.
 - 실차 없이 화면 보기: `web/index.html?demo&still` (`&scene=red|green|lead|tunnel`, `&cam=1`, `&params=1`)
 
+## 차선 모델 선택 (`lane.model`)
+
+웹 파라미터 창 "RGB · 검출"의 **차선 모델**에서 고르며, 재시작 없이 바뀐다.
+
+- `1` (기본) v5 개선판 `models/fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx` (INT8 Q/DQ 고정).
+  차선 없는 장면 오검출 45.7% → 2.2%, 어두운·과노출 장면 F1이 크게 오름 (PC ONNX Runtime 기준).
+- `0` 기존 모델 (stop_0910). `lane.engine_precision`이 정한 파일·방식을 그대로 쓴다.
+
+바꾸면 line_detactor가 지금 모델로 계속 추론하면서 뒤에서 TensorRT 엔진을 만들고, 준비되면 다음 프레임부터 교체한다.
+그동안 점검 화면 차선 모델 칸에 `ready · 교체 LOADING ...`이 보이고 주행 준비 상태는 READY로 유지된다.
+처음 고르는 모델은 INT8 엔진 빌드에 수 분 걸릴 수 있고 (이후는 엔진 캐시 재사용), 빌드 중 GPU를 같이 쓰므로
+주행 중보다 정차 상태에서 바꾸는 것이 좋다. 실패하면 기존 모델을 그대로 쓰고 `swap=FAILED <이유>`를 표시한다.
+시작 모델은 저장된 `lane.model` 값을 따른다.
+
 ## 신호등 정지 (`traffic.*`)
 
 | 상황 | 동작 |

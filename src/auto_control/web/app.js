@@ -507,7 +507,7 @@ function render() {
   $("models").innerHTML =
     `<div><span>카메라 자세</span><b class="${a.status === "PASS" ? "READY" : a.status === "FAIL" ? "FAILED" : "LOADING"}">${a.status}</b>` +
     `<span>${a.status === "PASS" ? `높이 ${a.height_m.toFixed(3)} m · roll ${a.roll_deg.toFixed(1)}° · pitch ${a.pitch_down_deg.toFixed(1)}°` : a.message}</span></div>` +
-    f.inspection.models.map((m) => `<div><span>${m.name}</span><b class="${m.status}">${m.status}</b><span>${m.status === "READY" ? m.elapsed_s.toFixed(1) + " s" : m.stage + " · " + m.elapsed_s.toFixed(0) + " s"}</span></div>`).join("") +
+    f.inspection.models.map((m) => `<div><span>${m.name}</span><b class="${m.status}">${m.status}</b><span>${m.status === "READY" ? (m.stage && m.stage !== "ready" ? m.stage : m.elapsed_s.toFixed(1) + " s") : m.stage + " · " + m.elapsed_s.toFixed(0) + " s"}</span></div>`).join("") +
     (f.stabilization === "camera_driver" ? "" :
     `<div><span>IMU 영상 안정화</span><b class="${(f.stabilization || "").startsWith("적용") ? "READY" : "LOADING"}">${(f.stabilization || "").startsWith("적용") ? "ON" : "…"}</b><span>${f.stabilization || "-"}</span></div>`);
 

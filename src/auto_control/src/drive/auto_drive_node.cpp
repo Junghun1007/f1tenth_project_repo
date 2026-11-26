@@ -157,6 +157,11 @@ public:
     camera_reset_path_ = declare_parameter<std::string>("camera_reset_path", "");
     camera_reset_vesc_required_ = declare_parameter<bool>("camera_reset_vesc_required", true);
     lane_model_node_ = declare_parameter<std::string>("inspection.lane_model_node", "line_detactor");
+    // 웹 lane.model: 1 = v5, 0 = 실행 때 고른 기존 모델 (launch가 lane.engine_precision으로 정한 경로·방식)
+    lane_v5_model_path_ = declare_parameter<std::string>("model.lane_v5_path",
+      share + "/models/fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx");
+    lane_baseline_model_path_ = declare_parameter<std::string>("model.lane_baseline_path", "");
+    lane_baseline_precision_ = declare_parameter<std::string>("model.lane_baseline_precision", "");
     tunnel_enabled_ = declare_parameter<bool>("tunnel.enabled", false);
     publish_tunnel_runtime_settings();
     ir_model_nodes_ = declare_parameter<std::vector<std::string>>("inspection.ir_model_nodes",
@@ -709,7 +714,15 @@ private:
     const std::string head = s.substr(0, bar);
     std::string rest = bar == std::string::npos ? "" : s.substr(bar + 3);
     rest = rest.substr(0, rest.find(" | "));
-    if (head == "READY") return {name, "READY", "ready", "", elapsed};
+    if (head == "READY") {   // 실행 중 모델 교체: "READY | model=... | swap=LOADING <파일> | <단계>"
+      const auto swap = s.find(" | swap=");
+      std::string stage = "ready";
+      if (swap != std::string::npos) {
+        const auto end = s.find(" | elapsed=", swap);
+        stage = "ready · 교체 " + s.substr(swap + 8, end == std::string::npos ? std::string::npos : end - swap - 8);
+      }
+      return {name, "READY", stage, "", elapsed};
+    }
     if (head == "FAILED") return {name, "FAILED", "", rest, elapsed};
     return {name, "LOADING", rest, "", elapsed};
   }
@@ -834,6 +847,9 @@ private:
       hint_base_.ir = s.ir_lane;
       hint_base_.rgb.side_tracking = s.lane_check_mode != 0 && s.rgb_lane.side_tracking;
       hint_base_.ir.side_tracking = s.lane_check_mode != 0 && s.ir_lane.side_tracking;
+      const bool v5 = registry_.get("lane.model") == 1;
+      hint_base_.rgb_model_path = v5 ? lane_v5_model_path_ : lane_baseline_model_path_;
+      hint_base_.rgb_engine_precision = v5 ? "int8" : lane_baseline_precision_;
       update_mount();   // ROI 비율이 바뀌었을 수 있음
     }
     hint_version_++;
@@ -1051,6 +1067,7 @@ private:
   acd::ModelConfig models_;
   double camera_yaw_deg_{0}, fixed_view_zoom_{1.25};
   std::string params_save_path_, lane_model_node_;
+  std::string lane_v5_model_path_, lane_baseline_model_path_, lane_baseline_precision_;
   std::unique_ptr<acd::ParameterPresets> presets_;
   std::string camera_reset_path_;
   bool camera_reset_vesc_required_{true};

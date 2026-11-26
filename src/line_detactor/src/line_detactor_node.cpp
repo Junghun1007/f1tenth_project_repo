@@ -160,13 +160,10 @@ public:
       if (!std::filesystem::is_regular_file(model_path_)) {
         throw std::runtime_error("Three-channel ONNX model not found: " + model_path_);
       }
-      backend_ = std::make_unique<TensorRtLaneBackend>(
-        model_path_, engine_cache_path_, engine_precision_, model_input_width_, model_input_height_,
-        static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
-        mask_threshold_, overlay_alpha_, connection_.enabled, stop_line_mask_threshold_,
+      backend_ = make_backend(model_path_, engine_cache_path_, engine_precision_,
         [this](const std::string & stage) {model_load_status_->update("LOADING | " + stage);});
       model_load_status_->update("LOADING | Trial inference / CUDA warmup");
-      warm_up();
+      warm_up(*backend_);
       model_load_status_->update("READY | model=" + model_path_ + " | engine=" +
         backend_->engine_cache_path() + " | trial inference=PASS");
     } catch (const std::exception & e) {
@@ -770,7 +767,80 @@ private:
     RCLCPP_INFO(node_.get_logger(), "[MODEL CHECK] %s", status.c_str());
   }
 
-  void warm_up()
+  std::unique_ptr<TensorRtLaneBackend> make_backend(
+    const std::string & model_path, const std::string & engine_cache_path,
+    const std::string & engine_precision, std::function<void(const std::string &)> on_stage)
+  {
+    return std::make_unique<TensorRtLaneBackend>(
+      model_path, engine_cache_path, engine_precision, model_input_width_, model_input_height_,
+      static_cast<std::size_t>(tensorrt_workspace_size_mb_) * 1024U * 1024U,
+      mask_threshold_, overlay_alpha_, connection_.enabled, stop_line_mask_threshold_,
+      std::move(on_stage));
+  }
+
+  static std::string model_key(const std::string & path, const std::string & precision)
+  {
+    return std::filesystem::path(path).lexically_normal().string() + "|" + precision;
+  }
+
+  // 주행 컴포넌트가 다른 RGB 모델을 고르면 뒤에서 엔진을 만들고 (첫 INT8 빌드는 몇 분 걸릴 수 있음),
+  // 준비되면 다음 프레임부터 교체한다. 그동안은 지금 모델로 계속 추론하고 상태는 READY로 둔다.
+  // worker 스레드에서만 부른다 (backend_는 worker만 쓴다).
+  void update_model_swap(const bev_handoff::LaneControlHints * hints)
+  {
+    {
+      std::lock_guard<std::mutex> lock(swap_mutex_);
+      if (swap_ready_backend_) {
+        backend_ = std::move(swap_ready_backend_);
+        model_path_ = swap_ready_path_;
+        engine_precision_ = swap_ready_precision_;
+        model_load_status_->update("READY | model=" + model_path_ + " | engine=" +
+          backend_->engine_cache_path() + " | trial inference=PASS | swapped");
+        RCLCPP_INFO(node_.get_logger(), "[MODEL SWAP] now using %s (%s)",
+          model_path_.c_str(), engine_precision_.c_str());
+      }
+    }
+    if (ir_hints_ || !hints || hints->rgb_model_path.empty() || swap_loading_.load()) {return;}
+    const auto & path = hints->rgb_model_path;
+    const auto & precision = hints->rgb_engine_precision.empty() ? engine_precision_ :
+      hints->rgb_engine_precision;
+    const auto requested = model_key(path, precision);
+    if (requested == swap_attempted_key_) {return;}
+    swap_attempted_key_ = requested;
+    if (requested == model_key(model_path_, engine_precision_)) {return;}
+    if (swap_thread_.joinable()) {swap_thread_.join();}
+    const auto active = model_path_;
+    model_load_status_->update("READY | model=" + active + " | swap=LOADING " +
+      std::filesystem::path(path).filename().string());
+    RCLCPP_INFO(node_.get_logger(), "[MODEL SWAP] loading %s (%s) in background",
+      path.c_str(), precision.c_str());
+    swap_loading_.store(true);
+    swap_thread_ = std::thread([this, path, precision, active] {
+      try {
+        if (precision != "fp32" && precision != "fp16" && precision != "int8") {
+          throw std::invalid_argument("engine_precision must be fp32, fp16 or int8");
+        }
+        if (!std::filesystem::is_regular_file(path)) {
+          throw std::runtime_error("Three-channel ONNX model not found: " + path);
+        }
+        const auto name = std::filesystem::path(path).filename().string();
+        auto next = make_backend(path, "", precision, [this, active, name](const std::string & stage) {
+          model_load_status_->update("READY | model=" + active + " | swap=LOADING " + name + " | " + stage);
+        });
+        warm_up(*next);
+        std::lock_guard<std::mutex> lock(swap_mutex_);
+        swap_ready_backend_ = std::move(next);
+        swap_ready_path_ = path;
+        swap_ready_precision_ = precision;
+      } catch (const std::exception & e) {
+        model_load_status_->update("READY | model=" + active + " | swap=FAILED " + e.what());
+        RCLCPP_ERROR(node_.get_logger(), "[MODEL SWAP] FAIL, keeping %s: %s", active.c_str(), e.what());
+      }
+      swap_loading_.store(false);
+    });
+  }
+
+  void warm_up(TensorRtLaneBackend & backend)
   {
     const auto bytes =
       static_cast<std::size_t>(model_input_width_) *
@@ -778,7 +848,7 @@ private:
     std::vector<std::uint8_t> black(bytes, 0U);
     const auto stride = static_cast<std::size_t>(model_input_width_) * 3U;
     for (int iteration = 0; iteration < std::max(1, warmup_iterations_); ++iteration) {
-      static_cast<void>(backend_->infer_bgr(black.data(), bytes, stride));
+      static_cast<void>(backend.infer_bgr(black.data(), bytes, stride));
     }
     RCLCPP_INFO(
       node_.get_logger(), "TensorRT warmup completed: %d iterations",
@@ -1239,6 +1309,7 @@ private:
           display_gate.accept(std::chrono::duration<double>(SteadyClock::now().time_since_epoch()).count(),display_fps);
         const auto hints = bev_handoff::laneControlHints();
         const auto lane = frame_lane_settings(hints.get());
+        update_model_swap(hints.get());
         try {
           validate_image(*message);
           backend_->set_postprocess(lane.left_threshold, lane.right_threshold, lane.stop_threshold,
@@ -1691,6 +1762,9 @@ private:
     if (preview_worker_.joinable() && preview_worker_.get_id() != std::this_thread::get_id()) {
       preview_worker_.join();
     }
+    if (swap_thread_.joinable() && swap_thread_.get_id() != std::this_thread::get_id()) {
+      swap_thread_.join();
+    }
     if (shared_ir_preview_output_enabled_) {bev_handoff::publishIrLanePreview(nullptr);}
     if (profile_writer_) {
       profile_writer_->close();
@@ -1755,6 +1829,12 @@ private:
   SteadyClock::time_point profile_started_at_{};
   std::unique_ptr<ProcessingProfileWriter> profile_writer_;
   std::unique_ptr<TensorRtLaneBackend> backend_;
+  // 실행 중 모델 교체 (update_model_swap)
+  std::mutex swap_mutex_;
+  std::unique_ptr<TensorRtLaneBackend> swap_ready_backend_;
+  std::string swap_ready_path_, swap_ready_precision_, swap_attempted_key_;
+  std::atomic<bool> swap_loading_{false};
+  std::thread swap_thread_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr model_status_pub_;
   std::unique_ptr<bev_handoff::ModelLoadStatus> model_load_status_;
   rclcpp::Subscription<Image>::SharedPtr subscription_;

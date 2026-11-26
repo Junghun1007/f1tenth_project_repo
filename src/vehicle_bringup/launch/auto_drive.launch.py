@@ -142,6 +142,32 @@ def _select_rgb_lane_engine(detector, choice):
         )
 
 
+_LANE_V5_MODEL = "fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx"
+
+
+def _select_rgb_lane_model(detector, choice):
+    """lane.model: 0 = 기존 (lane.engine_precision 결과), 1 = v5 INT8. 웹에서 바꾸면 재시작 없이 교체된다.
+
+    auto_drive에 기존 모델의 절대 경로·방식과 v5 경로를 넘겨 실행 중 교체에 쓴다.
+    """
+    if choice not in (0, 1):
+        raise RuntimeError("lane.model must be 0 or 1")
+    baseline = str(detector["model_path"])
+    if not os.path.dirname(baseline):
+        baseline = os.path.join(get_package_share_directory("line_detactor"), "models", baseline)
+    v5 = os.path.join(get_package_share_directory("auto_control"), "models", _LANE_V5_MODEL)
+    if not os.path.isfile(v5):
+        raise RuntimeError(f"v5 lane model not found: {v5}")
+    overrides = {
+        "model.lane_baseline_path": baseline,
+        "model.lane_baseline_precision": str(detector["engine_precision"]),
+        "model.lane_v5_path": v5,
+    }
+    if choice == 1:
+        detector.update(model_path=v5, engine_precision="int8", engine_cache_path="")
+    return overrides
+
+
 def _lane_padding(value):
     if not isinstance(value, (int, float)) or not math.isfinite(value) or value != int(value) or not -1 <= value <= 300:
         raise RuntimeError("lane result_padding_px must be -1 or a whole number from 0 to 300")
@@ -181,6 +207,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
     detector_custom = (_ros_parameters(detector_path, "line_detactor")
                        if detector_path != os.path.abspath(line_detactor_config) else {})
     _select_rgb_lane_engine(detector, drive_tuning.get("lane.engine_precision", 0))
+    lane_model_overrides = _select_rgb_lane_model(detector, drive_tuning.get("lane.model", 1))
     rgb_padding = _lane_padding(drive_tuning.get("lane.result_padding_px", -1))
     ir_padding = _lane_padding(drive_tuning.get("ir_lane.result_padding_px", -1))
     if rgb_padding >= 0:
@@ -273,6 +300,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         "camera.fixed_view_zoom": float(camera.get("fixed_view_zoom", 1.25)),
         "tunnel.enabled": tunnel,
         "tunnel.validation_mode": float(validation_mode),
+        **lane_model_overrides,
         "camera_reset_path": reset_request,
         "camera_reset_vesc_required": _bool_arg(context, "vesc_enabled"),
         **tunnel_overrides,

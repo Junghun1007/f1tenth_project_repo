@@ -70,6 +70,11 @@ void register_lane_tuning(ParamRegistry & registry, bool ir) {
   if (!ir) precision.emplace_back(3, "INT8 Q/DQ");
   registry.add({prefix + "engine_precision", "lane", section, "추론 방식 · YAML 저장 후 재시작", "",
     0, ir ? 2.0 : 3.0, 0, false, std::move(precision)});
+  if (!ir) {
+    // 실행 중 교체: line_detactor가 뒤에서 새 엔진을 만든 뒤 바꾼다 (재시작 없음). v5는 INT8 Q/DQ만 지원
+    registry.add({"lane.model", "lane", section, "차선 모델 · 바로 교체 (처음 고르면 엔진 빌드에 수 분)", "",
+      0, 1, 1, true, {{0, "기존 (stop_0910 · 위 추론 방식)"}, {1, "v5 개선판 (INT8 Q/DQ)"}}});
+  }
   const auto add = [&](const char * key, const char * label, const char * unit,
                        double low, double high, double value, bool toggle) {
     const std::string name(key);

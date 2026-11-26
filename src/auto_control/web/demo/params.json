@@ -497,6 +497,7 @@
 },
 {"name":"lane.check_mode","group":"lane","section":"공통","label":"차선 검사 모드","unit":"","min":0.0,"max":2.0,"value":1.0,"live":true,"options":[{"value":0.0,"label":"0 · 추가 검사 끔"},{"value":1.0,"label":"1 · 기존 검사"},{"value":2.0,"label":"2 · 회피 방향별 차선 복귀"}]},
 {"name":"lane.engine_precision","group":"lane","section":"RGB · 검출","label":"추론 방식 · YAML 저장 후 재시작","unit":"","min":0.0,"max":3.0,"value":0.0,"live":false,"options":[{"value":0.0,"label":"기본값 (INT8 Q/DQ)"},{"value":1.0,"label":"FP32"},{"value":2.0,"label":"FP16"},{"value":3.0,"label":"INT8 Q/DQ"}]},
+{"name":"lane.model","group":"lane","section":"RGB · 검출","label":"차선 모델 · 바로 교체 (처음 고르면 엔진 빌드에 수 분)","unit":"","min":0.0,"max":1.0,"value":1.0,"live":true,"options":[{"value":0.0,"label":"기존 (stop_0910 · 위 추론 방식)"},{"value":1.0,"label":"v5 개선판 (INT8 Q/DQ)"}]},
 {"name":"lane.left_mask_threshold","group":"lane","section":"RGB · 검출","label":"좌측 차선 임계값","unit":"","min":0.0,"max":1.0,"value":0.8,"live":true},
 {"name":"lane.right_mask_threshold","group":"lane","section":"RGB · 검출","label":"우측 차선 임계값","unit":"","min":0.0,"max":1.0,"value":0.8,"live":true},
 {"name":"lane.stop_line_mask_threshold","group":"lane","section":"RGB · 검출","label":"정지선 임계값","unit":"","min":0.0,"max":1.0,"value":0.8,"live":true},
