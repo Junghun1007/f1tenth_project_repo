@@ -34,7 +34,7 @@ class CallbackTests(unittest.TestCase):
         n = self.node
         n.preview = self.module.TunnelPreviewTelemetry()
         self.message = lane(10, valid=False)
-        n.policy = LaneSelector()
+        n.policy = LaneSelector(validation_mode=False)
         n.last_tcn_received, n.tcn_live = None, False
         n.get_clock = lambda: NS(now=lambda: NS(nanoseconds=10_010_000_000))
         n.get_logger = lambda: NS(warning=lambda _: None, info=lambda _: None)

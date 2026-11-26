@@ -15,7 +15,7 @@ class TunnelLaneSelector(Node):
     def __init__(self):
         super().__init__('tunnel_lane_selector')
         param = lambda key, default: self.declare_parameter(key, default).value
-        self.policy = LaneSelector(param('max_age_sec', .2), param('validation_mode', False))
+        self.policy = LaneSelector(param('max_age_sec', .2), param('validation_mode', True))
         sensor = QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT)
         status = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                             durability=DurabilityPolicy.TRANSIENT_LOCAL)

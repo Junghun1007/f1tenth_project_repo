@@ -23,7 +23,7 @@ public:
   explicit SharedIrBevNode(const rclcpp::NodeOptions & options)
   : Node("shared_ir_bev", options)
   {
-    validation_=declare_parameter<bool>("validation_mode",false);
+    validation_=declare_parameter<bool>("validation_mode",true);
     RCLCPP_INFO(get_logger(),"IR BEV mode=%s",
       validation_ ? "standalone validation; stamp=BEV publication" : "guarded; stamp=camera capture");
     standby_=declare_parameter<double>("standby_fps",0.0);

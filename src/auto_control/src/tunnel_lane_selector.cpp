@@ -134,7 +134,7 @@ private:
     rules.mpp = declare_parameter<double>("bev_meter_per_pixel", .01);
     rgb_topic_ = declare_parameter<std::string>("rgb_result_topic", "/line_detactor/result");
     return tunnel::LaneSelector(declare_parameter<double>("max_age_sec", .2),
-      declare_parameter<bool>("validation_mode", false), rules);
+      declare_parameter<bool>("validation_mode", true), rules);
   }
 
   static double monotonic()

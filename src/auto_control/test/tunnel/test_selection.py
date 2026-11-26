@@ -123,7 +123,7 @@ class HandoffTests(unittest.TestCase):
         self.assertEqual(self.selector.selected, 'IR')
 
     def test_guarded_event_age_checks_remain(self):
-        selector = LaneSelector()
+        selector = LaneSelector(validation_mode=False)
         self.assertFalse(selector.event('entry', ns(1), ns(2)))
         self.assertFalse(selector.event('entry', ns(3), ns(2)))
         self.assertTrue(selector.event('entry', ns(2), ns(2)))

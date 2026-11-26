@@ -1293,7 +1293,7 @@ private:
     tunnel_enabled_=node_.declare_parameter<bool>("tunnel.enabled",false);
     // true: 원본 NV12를 GPU에 한 번 올려 BEV(bev_processor)·YOLO(auto_control)가 함께 쓴다 (호스트 크롭 복사·이중 업로드 없음)
     gpu_shared_upload_enabled_=node_.declare_parameter<bool>("gpu_shared_upload_enabled",false,descriptor);
-    tunnel_validation_mode_=node_.declare_parameter<bool>("tunnel.validation_mode",false);
+    tunnel_validation_mode_=node_.declare_parameter<bool>("tunnel.validation_mode",true);
     tunnel_ir_imu_enabled_=node_.declare_parameter<bool>("tunnel.ir_imu_enabled",true);
     // 터널 IR 차선 입력 해상도. 왼쪽 흑백 센서를 장애물 깊이와 같이 쓰므로 800p면 터널 밖에서도 센서가 800p로 돈다
     tunnel_ir_size_=point_cloud::resolutionSize(node_.declare_parameter<std::string>("tunnel.ir_resolution","800p"));
@@ -3705,7 +3705,7 @@ while True:
   dai::ImgResizeMode resize_mode_{dai::ImgResizeMode::CROP};
 
   std::unique_ptr<dai::Pipeline> pipeline_;
-  bool tunnel_enabled_{false},tunnel_validation_mode_{false},tunnel_ir_imu_enabled_{true};
+  bool tunnel_enabled_{false},tunnel_validation_mode_{true},tunnel_ir_imu_enabled_{true};
   bool rgb_exposure_recovery_enabled_{true};
   double rgb_exposure_max_hold_sec_{.20};
   std::atomic<RgbTunnelPhase> rgb_tunnel_phase_{RgbTunnelPhase::outside};

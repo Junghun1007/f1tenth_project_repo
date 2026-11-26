@@ -4,7 +4,7 @@ from .path_validation import stamp_ns
 
 
 class LaneSelector:
-    def __init__(self, max_age=.2, validation_mode=False):
+    def __init__(self, max_age=.2, validation_mode=True):
         if not math.isfinite(max_age) or max_age <= 0:
             raise ValueError('Invalid lane freshness setting')
         self.validation_mode, self.max_age = validation_mode, max_age
