@@ -67,6 +67,9 @@ constexpr std::uint32_t kFullSensorHeight = 800U;
 constexpr std::pair<std::uint32_t, std::uint32_t> kLowIrOutputSize{640U, 400U};
 // Host RGB rate while the tunnel state is INSIDE (sensor rate is unchanged).
 constexpr int kTunnelRgbInsideFps = 30;
+// RGB 60 FPS puts every other frame exactly on the 33.3 ms TCN grid; without a
+// tolerance, sub-ms timestamp jitter alternates 17/33/50 ms sample intervals.
+constexpr std::chrono::nanoseconds kTcnGridToleranceNs{4000000};
 constexpr double kTwoPi =
   2.0 * 3.141592653589793238462643383279502884;
 
@@ -1332,11 +1335,14 @@ private:
           else if (message->data=="INSIDE") {rgb_tunnel_phase_.store(RgbTunnelPhase::inside);}
           else if (message->data=="EXITING") {rgb_tunnel_phase_.store(RgbTunnelPhase::exiting);}
         },tunnel_options);
-      // RGB remains 70 FPS. Stereo/IR use 30 FPS so the verified 30ms
-      // tunnel exposure fits within a sensor frame without rebuilding OAK.
+      // Stereo/IR use 30 FPS so the verified tunnel exposure (20 ms) fits within a
+      // sensor frame without rebuilding OAK. RGB follows sensor_fps (camera_config.yaml);
+      // it must allow the ~30 FPS RGB stream used for TCN and INSIDE decimation.
       depth_config_.fps=30.0;
-      sensor_fps_=70.0;
-      publish_fps_=70.0;
+      if (sensor_fps_<kTunnelRgbInsideFps) {
+        throw std::invalid_argument("tunnel.enabled requires sensor_fps >= 30");
+      }
+      publish_fps_=std::min(publish_fps_.load(),sensor_fps_);
     }
     const auto shared_device_id=(depth_enabled_ || tunnel_enabled_) ? bev_handoff::obstacleDeviceId() : std::string{};
     if ((depth_enabled_ || tunnel_enabled_) && shared_device_id.empty()) {
@@ -2140,7 +2146,8 @@ while True:
         } else {rgb_keep_at_={};}
         if (tunnel_enabled_ && packet->getType()==dai::ImgFrame::Type::NV12 &&
           (last_tcn_frame_==std::chrono::steady_clock::time_point{} ||
-          (tcn_decimated ? sensor_timestamp>=last_tcn_frame_+25ms : sensor_timestamp>=last_tcn_frame_+33333333ns))) {
+          (tcn_decimated ? sensor_timestamp>=last_tcn_frame_+25ms :
+          sensor_timestamp>=last_tcn_frame_+33333333ns-kTcnGridToleranceNs))) {
           // About 30Hz of raw, unstabilized luminance for the TCN feature history. The statistics
           // (resize + histograms) run on tcn_thread_; capture only hands over the packet pointer.
           {

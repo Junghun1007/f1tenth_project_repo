@@ -6,7 +6,9 @@ camera_driver:
 
     # CAM_A는 RGB NV12, 스테레오 CAM_B/C는 native GRAY8로 전송한다.
     # GRAY8은 호스트에서 neutral UV를 붙여 기존 NV12 ROS/BEV API에 맞춘다.
-    sensor_fps: 70.0
+    # 60: RGB+스테레오 깊이+IMU를 함께 받을 때 OAK 장치 CPU(LeonCSS)가 70에서는 포화되어 프레임이 버려진다
+    # (oak_fps_bench: 70 요청 → 실제 약 66 fps, 누락 5%; 60 요청 → 60 fps, 누락 0). tunnel_enabled에서도 이 값을 쓴다
+    sensor_fps: 60.0
     width: 1280
     height: 800
 
@@ -30,7 +32,9 @@ camera_driver:
     imu_topic: "/camera/imu"
     imu_frame_id: "camera_optical_frame"
     # BNO086 calibrated accelerometer+gyroscope output.
-    imu_rate_hz: 400.0
+    # 200 Hz: 영상 안정화(샘플 간격 5 ms < 프레임 IMU 나이 한계 12 ms)·요레이트에 충분하고,
+    # 400 Hz 대비 OAK 장치 CPU 부하가 줄어 RGB 누락이 43 → 12로 감소 (oak_fps_bench)
+    imu_rate_hz: 200.0
     imu_queue_size: 80
     imu_max_batch_reports: 5
     maximum_accel_gyro_timestamp_skew_sec: 0.003
@@ -118,7 +122,8 @@ camera_driver:
     tunnel.ir_imu_wait_sec: 0.10     # Hold new IR captures <=100ms for delayed IMU arrival.
     # 터널 IR 차선 입력 해상도 (800p | 400p). 왼쪽 흑백 센서를 장애물 깊이(400p)와 같이 써서
     # 800p면 터널 밖에서도 스테레오 센서 2개가 800p로 돈다 (OAK 부하↑ → RGB FPS↓). 400p는 부하가 가장 낮다
-    tunnel.ir_resolution: "800p"
+    # (oak_fps_bench 터널 밖: 800p RGB 55.8 fps·깊이 지연 68 ms → 400p 60.8 fps·39 ms)
+    tunnel.ir_resolution: "400p"
     # EXITING only: temporarily lower RGB exposure/gain, then return to AE.
     tunnel.rgb_exit_exposure_recovery_enabled: true
     tunnel.rgb_exit_exposure_max_hold_sec: 0.20
@@ -138,7 +143,7 @@ camera_driver:
 
     # Disabled by default while measuring direct camera performance.
     publish_enabled: false
-    publish_fps: 70.0
+    publish_fps: 60.0
 
     # 통합 BEV launch에서만 켠다. 전체 영상을 CPU warp하지 않고, 원본
     # rectified NV12의 아래쪽만 보정 행렬과 함께 CUDA BEV 단계로 전달한다.
