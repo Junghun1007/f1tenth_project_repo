@@ -1,0 +1,454 @@
+diff --git a/src/auto_control/README.md b/src/auto_control/README.md
+index 94bd541..10735b0 100644
+--- a/src/auto_control/README.md
++++ b/src/auto_control/README.md
+@@ -74,14 +74,13 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
+ | 자동 명령 끊김 | 0.3 s 안 오면 safety_node가 제동 |
+ 
+ ## 화면
+-- **파라미터 → YAML 저장**에서 현재 적용값을 이름 있는 프리셋으로 저장한다.
+-  예를 들어 `ir개선`은 브라우저의 날짜·분을 붙여 `202611251852_ir개선.yaml`로 저장한다.
+-  파일은 Jetson의 기본 `~/.cache/auto_control/presets/`에 있으며, 저장된 프리셋을 선택해
+-  **불러오기**를 누르면 설정을 검증한 뒤 카메라·BEV 초기화와 함께 새 컨테이너에서 적용한다.
+-  같은 분에 같은 이름으로 저장하면 숫자 접미사가 붙는다. 기본 설정 파일은 `202611251743_ver3.yaml`의 튜닝값을 사용한다.
++- **파라미터 → YAML 저장**은 현재 적용값을 `~/.cache/auto_control/auto_drive_saved.yaml` 한 파일에 덮어쓴다.
++  다음 실행에서 `drive_params_file:=~/.cache/auto_control/auto_drive_saved.yaml`로 불러온다.
++  이름 있는 프리셋 저장·불러오기 기능은 제거했다. 기본 설정 파일(`config/auto_drive.yaml`)은
++  `202611251743_ver31.yaml`의 튜닝값에 `tunnel.validation_mode: false`를 반영한 값이다.
+ - Refit 옆 **초기화**는 수동 모드의 정차 상태에서 인식 컨테이너를 재시작한다.
+-  카메라를 닫고 다시 열면서 시작 자세 보정을 수행한다. 초기화 버튼은 현재 설정을,
+-  프리셋 불러오기는 지정한 YAML 값을 새 인식 컨테이너에 넘긴다. VESC·조이스틱·안전 노드는 계속 실행된다.
++  카메라를 닫고 다시 열면서 시작 자세 보정을 수행하고, 현재 설정을 새 인식 컨테이너에 넘긴다.
++  VESC·조이스틱·안전 노드는 계속 실행된다.
+ - **파라미터 → 차선 → RGB · 카메라**에서 전체 자동, 자동 노출·고정 ISO 또는 전체 수동을 선택한다.
+   고정 ISO 모드는 `rgb_cam.iso`를 그대로 쓰고 RGB 밝기에 따라 호스트가 노출 시간만 조절한다.
+   설정은 실행 중에 적용되고 YAML로 저장할 수 있다. **카메라 노출** 패널에는 현재값과 RGB 시작 측정값이 표시된다.
+diff --git a/src/auto_control/config/auto_drive.yaml b/src/auto_control/config/auto_drive.yaml
+index d065038..8928b37 100644
+--- a/src/auto_control/config/auto_drive.yaml
++++ b/src/auto_control/config/auto_drive.yaml
+@@ -32,7 +32,7 @@
+     tcn.warmup_seconds: 2.5
+     tcn.max_gap_seconds: 0.5
+     tcn.max_image_age_seconds: 0.25
+-    tunnel.validation_mode: true        # false: IR 노출 변경 대기 및 촬영 프레임 검사
++    tunnel.validation_mode: false       # false: IR 노출 변경 대기 및 촬영 프레임 검사 (true는 검사 없이 모든 IR 프레임 사용, 시험용)
+     # YOLO 검출
+     yolo.con_threshold: 0.83            # 콘 임계값
+     yolo.truck_threshold: 0.70          # 트럭 임계값
+diff --git a/src/auto_control/include/auto_control/drive/core/params.hpp b/src/auto_control/include/auto_control/drive/core/params.hpp
+index 0a520c9..0e5942a 100644
+--- a/src/auto_control/include/auto_control/drive/core/params.hpp
++++ b/src/auto_control/include/auto_control/drive/core/params.hpp
+@@ -12,21 +12,9 @@
+ 
+ namespace auto_control::drive {
+ 
+-// Write completely before publishing the filename. Preset saves never replace an existing file.
++// Write completely before publishing the filename. replace=false never overwrites an existing file.
+ void write_parameter_yaml(const std::filesystem::path & path, const std::string & yaml, bool replace);
+ 
+-class ParameterPresets {
+-public:
+-  explicit ParameterPresets(std::filesystem::path directory) : directory_(std::move(directory)) {}
+-  std::vector<std::string> list() const;
+-  std::string save(const std::string & timestamp, const std::string & label, const std::string & yaml);
+-  std::filesystem::path path(const std::string & name) const;
+-
+-private:
+-  std::filesystem::path directory_;
+-  std::mutex mutex_;
+-};
+-
+ struct ParamSpec {
+   std::string name;     // ROS 파라미터 이름 (예: drive.maximum_speed_mps)
+   std::string group;    // "obstacle" | "driving"
+diff --git a/src/auto_control/include/auto_control/drive/runtime/web_server.hpp b/src/auto_control/include/auto_control/drive/runtime/web_server.hpp
+index c5b1637..57b16a4 100644
+--- a/src/auto_control/include/auto_control/drive/runtime/web_server.hpp
++++ b/src/auto_control/include/auto_control/drive/runtime/web_server.hpp
+@@ -22,9 +22,6 @@ using Reply = std::pair<bool, std::string>;
+ struct WebCallbacks {
+   std::function<Reply()> start, refit, params_save;
+   std::function<Reply()> camera_reset;
+-  std::function<std::vector<std::string>()> presets;
+-  std::function<Reply(const std::string &, const std::string &)> preset_save;
+-  std::function<Reply(const std::string &)> preset_load;
+   std::function<void()> stop;
+   std::function<Reply(bool)> force_ir;
+   std::function<Reply(const std::string &)> mode;
+diff --git a/src/auto_control/src/drive/auto_drive_node.cpp b/src/auto_control/src/drive/auto_drive_node.cpp
+index c6c2e21..4d18309 100644
+--- a/src/auto_control/src/drive/auto_drive_node.cpp
++++ b/src/auto_control/src/drive/auto_drive_node.cpp
+@@ -5,7 +5,6 @@
+ //   출력: <ns>/auto_drive/auto/{duty,brake_current,servo_position} → safety_node (vesc/*의 유일한 발행자)
+ //   웹: http://<jetson-ip>:8765 (SSE 텔레메트리, BEV·카메라 MJPEG, 명령·파라미터)
+ #include <rclcpp/rclcpp.hpp>
+-#include <rclcpp/parameter_map.hpp>
+ #include <rclcpp_components/register_node_macro.hpp>
+ #include <sensor_msgs/msg/image.hpp>
+ #include <sensor_msgs/msg/imu.hpp>
+@@ -152,8 +151,6 @@ public:
+     models_.yolo_backend = declare_parameter<std::string>("model.yolo_backend", "TENSORRT");   // CPU: 개발 PC 확인용
+     models_.yolo_engine_cache = cache + "/yolo_" + models_.yolo_precision + ".engine";
+     params_save_path_ = declare_parameter<std::string>("params_save_path", cache + "/auto_drive_saved.yaml");
+-    presets_ = std::make_unique<acd::ParameterPresets>(
+-      std::filesystem::path(params_save_path_).parent_path() / "presets");
+     camera_reset_path_ = declare_parameter<std::string>("camera_reset_path", "");
+     camera_reset_vesc_required_ = declare_parameter<bool>("camera_reset_vesc_required", true);
+     lane_model_node_ = declare_parameter<std::string>("inspection.lane_model_node", "line_detactor");
+@@ -293,15 +290,6 @@ public:
+       out << registry_.to_yaml("auto_drive");
+       return out ? acd::Reply{true, params_save_path_} : acd::Reply{false, "cannot write " + params_save_path_};
+     };
+-    cb.presets = [this] { return presets_->list(); };
+-    cb.preset_save = [this](const std::string & label, const std::string & timestamp) {
+-      try {
+-        return acd::Reply{true, presets_->save(timestamp, label, registry_.to_yaml("auto_drive"))};
+-      } catch (const std::exception & e) {
+-        return acd::Reply{false, e.what()};
+-      }
+-    };
+-    cb.preset_load = [this](const std::string & name) { return load_preset(name); };
+     cb.heartbeat = [this](const std::string & id) { loop_->on_heartbeat(id, acd::now_sec()); };
+     cb.record_start = [this](const std::string & label) { return record_start(label); };
+     cb.record_stop = [this] { return record_stop(); };
+@@ -478,7 +466,7 @@ private:
+     return result;
+   }
+ 
+-  acd::Reply request_camera_reset(const std::map<std::string, double> & changes = {}) {
++  acd::Reply request_camera_reset() {
+     if (camera_reset_path_.empty()) return {false, "이 실행에서는 카메라 초기화를 지원하지 않습니다"};
+     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
+     if (!command || force_ir_request_pending() || camera_reset_at_.load() > 0.0)
+@@ -487,7 +475,7 @@ private:
+       return {false, "수동 모드에서 정지가 확인된 뒤 초기화할 수 있습니다"};
+     try {
+       std::lock_guard<std::mutex> l(tuning_m_);
+-      const auto [valid, yaml] = registry_.yaml_with_changes("auto_drive", changes);
++      const auto [valid, yaml] = registry_.yaml_with_changes("auto_drive", {});
+       if (!valid) return {false, yaml};
+       acd::write_parameter_yaml(camera_reset_path_, yaml, true);
+       camera_reset_at_.store(acd::now_sec() + 0.3);   // Return HTTP success before shutting down the container.
+@@ -512,20 +500,6 @@ private:
+     std::raise(SIGINT);
+   }
+ 
+-  acd::Reply load_preset(const std::string & name) {
+-    try {
+-      const auto contents = rclcpp::parameter_map_from_yaml_file(presets_->path(name).string());
+-      const auto saved = contents.find("/**/auto_drive");
+-      if (saved == contents.end()) return {false, "auto_drive 프리셋 형식이 아닙니다"};
+-      std::map<std::string, double> values;
+-      for (const auto & p : saved->second) if (registry_.has(p.get_name())) values[p.get_name()] = as_number(p);
+-      if (values.empty()) return {false, "불러올 파라미터가 없습니다"};
+-      return request_camera_reset(values);
+-    } catch (const std::exception & e) {
+-      return {false, e.what()};
+-    }
+-  }
+-
+   void on_joy(const sensor_msgs::msg::Joy & m) {
+     const double now = acd::now_sec();
+     last_joy_t_ = now;
+@@ -1051,7 +1025,6 @@ private:
+   acd::ModelConfig models_;
+   double camera_yaw_deg_{0}, fixed_view_zoom_{1.25};
+   std::string params_save_path_, lane_model_node_;
+-  std::unique_ptr<acd::ParameterPresets> presets_;
+   std::string camera_reset_path_;
+   bool camera_reset_vesc_required_{true};
+   std::atomic<double> camera_reset_at_{0.0};
+diff --git a/src/auto_control/src/drive/core/params.cpp b/src/auto_control/src/drive/core/params.cpp
+index 41cc29d..418faee 100644
+--- a/src/auto_control/src/drive/core/params.cpp
++++ b/src/auto_control/src/drive/core/params.cpp
+@@ -13,24 +13,6 @@
+ namespace auto_control::drive {
+ namespace {
+ namespace fs = std::filesystem;
+-
+-bool preset_timestamp(const std::string & text) {
+-  return text.size() == 12 && std::all_of(text.begin(), text.end(), [](char ch) {
+-    return ch >= '0' && ch <= '9';
+-  });
+-}
+-
+-bool preset_label(const std::string & text) {
+-  return !text.empty() && text.size() <= 104 && std::all_of(text.begin(), text.end(), [](unsigned char ch) {
+-    return ch >= 0x80 || (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'z') ||
+-      (ch >= 'A' && ch <= 'Z') || ch == '_' || ch == '-' || ch == ' ';
+-  });
+-}
+-
+-bool preset_filename(const std::string & name) {
+-  return name.size() > 18 && name.compare(name.size() - 5, 5, ".yaml") == 0 &&
+-    name[12] == '_' && preset_timestamp(name.substr(0, 12)) && preset_label(name.substr(13, name.size() - 18));
+-}
+ }  // namespace
+ 
+ void write_parameter_yaml(const fs::path & path, const std::string & yaml, bool replace) {
+@@ -54,42 +36,6 @@ void write_parameter_yaml(const fs::path & path, const std::string & yaml, bool
+   fs::remove(tmp, ignored);
+ }
+ 
+-std::vector<std::string> ParameterPresets::list() const {
+-  std::vector<std::string> names;
+-  if (!fs::is_directory(directory_)) return names;
+-  for (const auto & entry : fs::directory_iterator(directory_)) {
+-    const auto name = entry.path().filename().string();
+-    if (preset_filename(name) && fs::is_regular_file(entry.symlink_status())) names.push_back(name);
+-  }
+-  std::sort(names.rbegin(), names.rend());
+-  return names;
+-}
+-
+-std::string ParameterPresets::save(const std::string & timestamp, const std::string & label, const std::string & yaml) {
+-  if (!preset_timestamp(timestamp) || label.size() > 96 || !preset_label(label) ||
+-    label.find_first_not_of(' ') == std::string::npos)
+-    throw std::invalid_argument("이름에 글자, 숫자, 공백, 하이픈, 밑줄을 사용할 수 있습니다");
+-  std::lock_guard<std::mutex> lock(mutex_);
+-  fs::create_directories(directory_);
+-  const auto stem = timestamp + "_" + label;
+-  for (int suffix = 1; ; ++suffix) {
+-    const auto name = (suffix == 1 ? stem : stem + "_" + std::to_string(suffix)) + ".yaml";
+-    try {
+-      write_parameter_yaml(directory_ / name, yaml, false);
+-      return name;
+-    } catch (const fs::filesystem_error & e) {
+-      if (e.code() != std::errc::file_exists) throw;
+-    }
+-  }
+-}
+-
+-fs::path ParameterPresets::path(const std::string & name) const {
+-  if (!preset_filename(name)) throw std::invalid_argument("프리셋 파일 이름이 올바르지 않습니다");
+-  const auto file = directory_ / name;
+-  if (!fs::is_regular_file(fs::symlink_status(file))) throw std::invalid_argument("프리셋 파일이 없습니다");
+-  return file;
+-}
+-
+ void ParamRegistry::add(const ParamSpec & spec) {
+   std::lock_guard<std::mutex> lock(mutex_);
+   if (index_.count(spec.name)) throw std::invalid_argument("duplicate parameter " + spec.name);
+diff --git a/src/auto_control/src/drive/runtime/web_server.cpp b/src/auto_control/src/drive/runtime/web_server.cpp
+index e8113f5..108afeb 100644
+--- a/src/auto_control/src/drive/runtime/web_server.cpp
++++ b/src/auto_control/src/drive/runtime/web_server.cpp
+@@ -97,28 +97,6 @@ void WebServer::routes() {
+   s.Post("/api/camera/reset", [this](const httplib::Request &, httplib::Response & res) {
+     send(res, cb_.camera_reset ? cb_.camera_reset() : Reply{false, "unavailable"});
+   });
+-  s.Get("/api/presets", [this](const httplib::Request &, httplib::Response & res) {
+-    JsonWriter w;
+-    w.begin_object().key("presets").begin_array();
+-    if (cb_.presets) for (const auto & name : cb_.presets()) w.value(name);
+-    w.end_array().end_object();
+-    res.set_header("Cache-Control", "no-store");
+-    res.set_content(w.str(), "application/json");
+-  });
+-  s.Post("/api/presets/save", [this, body](const httplib::Request & req, httplib::Response & res) {
+-    const auto j = body(req);
+-    const auto * name = j ? j->get("name") : nullptr;
+-    const auto * stamp = j ? j->get("timestamp") : nullptr;
+-    if (!name || name->kind != JsonValue::String || !stamp || stamp->kind != JsonValue::String)
+-      return send(res, {false, "name and timestamp are required"});
+-    send(res, cb_.preset_save ? cb_.preset_save(name->str, stamp->str) : Reply{false, "unavailable"});
+-  });
+-  s.Post("/api/presets/load", [this, body](const httplib::Request & req, httplib::Response & res) {
+-    const auto j = body(req);
+-    const auto * name = j ? j->get("name") : nullptr;
+-    if (!name || name->kind != JsonValue::String) return send(res, {false, "name is required"});
+-    send(res, cb_.preset_load ? cb_.preset_load(name->str) : Reply{false, "unavailable"});
+-  });
+   s.Post("/api/record/start", [this, body](const httplib::Request & req, httplib::Response & res) {
+     const auto j = body(req);
+     const auto * l = j ? j->get("label") : nullptr;
+diff --git a/src/auto_control/test/host/params_test.cpp b/src/auto_control/test/host/params_test.cpp
+index 2298ee4..f68472a 100644
+--- a/src/auto_control/test/host/params_test.cpp
++++ b/src/auto_control/test/host/params_test.cpp
+@@ -85,7 +85,7 @@ TEST(tunnel_tuning_validates_and_saves_detector_and_live_tunnel_settings) {
+   CHECK(yaml.find("tunnel.validation_mode: 0.0") != std::string::npos);
+ }
+ 
+-TEST(restart_yaml_validates_preset_without_changing_running_parameters) {
++TEST(restart_yaml_validates_changes_without_changing_running_parameters) {
+   ParamRegistry r;
+   register_params(r);
+   const auto active = r.to_yaml("auto_drive");
+diff --git a/src/auto_control/test/host/web_server_test.cpp b/src/auto_control/test/host/web_server_test.cpp
+index 3e4b98d..39a1e29 100644
+--- a/src/auto_control/test/host/web_server_test.cpp
++++ b/src/auto_control/test/host/web_server_test.cpp
+@@ -87,55 +87,47 @@ TEST(tunnel_override_accepts_only_boolean_requests) {
+   CHECK(!f.force_ir.load());
+ }
+ 
+-TEST(presets_keep_unique_korean_names_and_reject_paths) {
++TEST(write_parameter_yaml_replaces_only_when_asked) {   // 카메라 초기화가 새 컨테이너에 넘기는 YAML
+   struct Directory {
+     std::filesystem::path path;
+     ~Directory() { std::error_code error; std::filesystem::remove_all(path, error); }
+   };
+-  auto tmp = (std::filesystem::temp_directory_path() / "auto-control-presets-XXXXXX").string();
++  auto tmp = (std::filesystem::temp_directory_path() / "auto-control-yaml-XXXXXX").string();
+   CHECK(::mkdtemp(tmp.data()) != nullptr);
+   Directory dir{tmp};
+-  ParameterPresets store(dir.path / "presets");
+-  ParamRegistry params;
+-  params.add({"drive.test", "driving", "", "", "", 0, 10, 1});
+-  const auto yaml = params.to_yaml("auto_drive");
+-  const auto first = store.save("202611251852", "ir개선", yaml);
+-  CHECK(first == "202611251852_ir개선.yaml");
+-  CHECK(store.save("202611251852", "ir개선", yaml) == "202611251852_ir개선_2.yaml");
+-  const auto names = store.list();
+-  CHECK(names.size() == 2);
+-  std::ifstream file(store.path(first));
+-  CHECK(std::string(std::istreambuf_iterator<char>(file), {}) == yaml);
+-  std::filesystem::create_symlink(store.path(first), store.path(first).parent_path() / "202611251852_alias.yaml");
+-  CHECK(store.list().size() == 2);
+-  for (const auto & name : {"../202611251852_x.yaml", "202611251852_alias.yaml"}) {
+-    bool rejected = false;
+-    try { store.path(name); } catch (const std::invalid_argument &) { rejected = true; }
+-    CHECK(rejected);
+-  }
++  const auto file = dir.path / "reset.yaml";
++  const auto read = [&file] { std::ifstream in(file); return std::string(std::istreambuf_iterator<char>(in), {}); };
++  write_parameter_yaml(file, "a: 1\n", false);
++  CHECK(read() == "a: 1\n");
++  bool kept = false;
++  try { write_parameter_yaml(file, "a: 2\n", false); } catch (const std::filesystem::filesystem_error &) { kept = true; }
++  CHECK(kept && read() == "a: 1\n");
++  write_parameter_yaml(file, "a: 3\n", true);
++  CHECK(read() == "a: 3\n");
++  std::size_t entries = 0;
++  for (const auto & entry : std::filesystem::directory_iterator(dir.path)) { (void)entry; ++entries; }
++  CHECK(entries == 1);   // 임시 파일이 남지 않음
+ }
+ 
+-TEST(preset_and_reset_endpoints_dispatch_valid_bodies_only) {
++TEST(reset_and_save_endpoints_dispatch_and_presets_are_gone) {
+   ParamRegistry params;
+   WebCallbacks cb;
+-  cb.presets = [] { return std::vector<std::string>{"202611251852_ir개선.yaml"}; };
+-  cb.preset_save = [](const std::string & label, const std::string & time) { return Reply{true, time + "_" + label + ".yaml"}; };
+-  cb.preset_load = [](const std::string & name) { return Reply{true, name}; };
+   cb.camera_reset = [] { return Reply{false, "vehicle moving"}; };
++  cb.params_save = [] { return Reply{true, "/tmp/auto_drive_saved.yaml"}; };
+   WebServer server(CDT_WEB, "127.0.0.1", 0, params, cb);
+   server.start();
+   httplib::Client client("127.0.0.1", server.port());
+-  CHECK(nlohmann::json::parse(client.Get("/api/presets")->body)["presets"][0] == "202611251852_ir개선.yaml");
+   const auto post = [&client](const char * path, const char * body) {
+     const auto response = client.Post(path, body, "application/json");
+     CHECK(response && response->status == 200);
+     return nlohmann::json::parse(response->body);
+   };
+-  CHECK(post("/api/presets/save", R"({"name":"ir개선","timestamp":"202611251852"})")["reason"] == "202611251852_ir개선.yaml");
+-  CHECK(post("/api/presets/save", R"({"name":"ir개선"})")["ok"] == false);
+-  CHECK(post("/api/presets/load", R"({"name":"202611251852_ir개선.yaml"})")["ok"] == true);
+-  CHECK(post("/api/presets/load", R"({"name":4})")["ok"] == false);
+   CHECK(post("/api/camera/reset", "{}")["reason"] == "vehicle moving");
++  CHECK(post("/api/params/save", "{}")["reason"] == "/tmp/auto_drive_saved.yaml");
++  const auto list = client.Get("/api/presets");
++  CHECK(!list || list->status == 404);
++  const auto load = client.Post("/api/presets/load", R"({"name":"x.yaml"})", "application/json");
++  CHECK(!load || load->status == 404);
+ }
+ 
+ TEST(heartbeat_tracks_clients_and_preview_flag) {
+diff --git a/src/auto_control/web/app.js b/src/auto_control/web/app.js
+index 9e64677..549a2be 100644
+--- a/src/auto_control/web/app.js
++++ b/src/auto_control/web/app.js
+@@ -110,25 +110,6 @@ async function loadParams() {
+   renderParams();
+ }
+ 
+-async function loadPresets(selected = $("presetSelect").value) {
+-  if (DEMO) return;
+-  try {
+-    const response = await fetch("/api/presets", { cache: "no-store" });
+-    const { presets } = await response.json();
+-    $("presetSelect").replaceChildren(new Option("선택", ""), ...presets.map((name) => new Option(name, name)));
+-    $("presetSelect").value = presets.includes(selected) ? selected : "";
+-    $("btnLoadPreset").disabled = !$("presetSelect").value;
+-  } catch (e) {
+-    $("pmsg").textContent = "프리셋 목록을 읽을 수 없습니다";
+-  }
+-}
+-
+-function presetTimestamp() {
+-  const now = new Date();
+-  return [now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes()]
+-    .map((value) => String(value).padStart(2, "0")).join("");
+-}
+-
+ // ---------- BEV 캔버스 ----------
+ const cv = $("bev");
+ const ctx = cv.getContext("2d");
+@@ -657,7 +638,6 @@ function openDrawer(open) {
+   $("drawer").hidden = !open;
+   if (open) {
+     loadParams();
+-    loadPresets();
+   }
+ }
+ 
+@@ -731,22 +711,9 @@ function bind() {
+     if (r.ok) { edits = {}; await loadParams(); }
+   });
+   $("btnSave").addEventListener("click", async () => {
+-    const name = $("presetName").value.trim();
+-    if (!name) { $("pmsg").textContent = "프리셋 이름을 입력하세요"; return; }
+     if (Object.keys(edits).length) { $("pmsg").textContent = "변경값을 적용한 뒤 저장하세요"; return; }
+-    const r = await post("/api/presets/save", { name, timestamp: presetTimestamp() });
++    const r = await post("/api/params/save", {});
+     $("pmsg").textContent = r.ok ? "저장됨 · " + r.reason : "저장 실패 · " + r.reason;
+-    if (r.ok) await loadPresets(r.reason);
+-  });
+-  $("presetSelect").addEventListener("change", () => {
+-    $("btnLoadPreset").disabled = !$("presetSelect").value;
+-  });
+-  $("btnLoadPreset").addEventListener("click", async () => {
+-    const name = $("presetSelect").value;
+-    if (!name) return;
+-    const r = await restartCamera("/api/presets/load", { name });
+-    $("pmsg").textContent = r.ok ? name + " · 카메라 재시작 요청됨" : "불러오기 실패 · " + r.reason;
+-    if (r.ok) { edits = {}; renderParams(); }
+   });
+ }
+ 
+diff --git a/src/auto_control/web/index.html b/src/auto_control/web/index.html
+index a6fbf65..4a68cff 100644
+--- a/src/auto_control/web/index.html
++++ b/src/auto_control/web/index.html
+@@ -153,10 +153,8 @@
+     <button class="btn" id="btnClose">닫기</button>
+   </div>
+   <div class="preset-controls">
+-    <label class="preset-field">프리셋 이름 <input id="presetName" maxlength="32" placeholder="예: ir개선"></label>
+     <button class="btn" id="btnSave" type="button">YAML 저장</button>
+-    <label class="preset-field">저장된 프리셋 <select id="presetSelect"><option value="">선택</option></select></label>
+-    <button class="btn" id="btnLoadPreset" type="button" disabled>불러오기</button>
++    <span class="save-hint">현재 적용값을 ~/.cache/auto_control/auto_drive_saved.yaml에 저장</span>
+   </div>
+   <div class="plist" id="plist"></div>
+   <div class="drawer-foot">
+diff --git a/src/auto_control/web/style.css b/src/auto_control/web/style.css
+index 187ee07..6fb4abb 100644
+--- a/src/auto_control/web/style.css
++++ b/src/auto_control/web/style.css
+@@ -93,8 +93,7 @@ th { color: var(--dim); font-weight: 400; border-bottom: 1px solid var(--line);
+ .drawer-head, .drawer-foot { display: flex; align-items: center; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+ .drawer-head .tabs { min-width: 0; }
+ .preset-controls { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+-.preset-field { display: grid; gap: 3px; flex: 1 1 150px; min-width: 0; color: var(--dim); font-size: 12px; }
+-.preset-field input, .preset-field select { width: 100%; min-width: 0; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 5px 6px; }
++.save-hint { color: var(--dim); font-size: 12px; align-self: center; }
+ .drawer-foot { border-top: 1px solid var(--line); border-bottom: 0; flex-wrap: wrap; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+ .drawer-foot span { flex: 1 1 120px; min-width: 0; color: var(--dim); font-size: 12px; overflow-wrap: anywhere; }
+ .tabs { display: flex; flex-wrap: wrap; gap: 4px; flex: 1; }
