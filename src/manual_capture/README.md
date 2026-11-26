@@ -30,6 +30,7 @@ ros2 launch manual_capture manual_capture.launch.py \
 | `capture_joy_topic` | `/<vehicle_namespace>/joy` | A 버튼을 읽을 토픽 |
 | `manual_drive_enabled` | `true` | `false`면 캡처 GUI만 실행 |
 | `params_file` | `config/manual_capture.yaml` | 카메라/BEV/캡처 기본값 |
+| `auto_control_bev_params_file` | `bev_processor/config/bev_config.yaml` | auto_control BEV와 같은 카메라 장착 자세(`camera_x_m`=-0.09 등)를 `params_file` 위에 덮어씀. 빈 값이면 `params_file`만 사용 |
 | 나머지 | — | `manual_drive_with_dynamics.launch.py`로 그대로 전달 |
 
 시작하면 차량을 평지에 정지시킨 상태에서 지면 측정(약 5~10초)을 먼저 한다.

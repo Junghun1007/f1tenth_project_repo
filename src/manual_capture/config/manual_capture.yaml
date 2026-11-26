@@ -28,7 +28,11 @@ manual_capture:
     dot_projector_intensity: 1.0
 
     # --- BEV (shared vehicle grid; color and left-lens BEVs are pixel aligned) ---
-    bev.camera_x_m: -0.16
+    # Vehicle frame: origin = front-axle ground center, +X forward, +Y left.
+    # Mount pose matches auto_control (bev_processor/config/bev_config.yaml):
+    # the camera optical center is 9 cm behind the front axle. The launch file
+    # copies camera_x/y/yaw from that file when bev_processor is installed.
+    bev.camera_x_m: -0.09
     bev.camera_y_m: 0.0
     bev.camera_yaw_deg: 0.0
     bev.x_min_m: 0.0

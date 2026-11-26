@@ -12,7 +12,7 @@ namespace manual_capture
 // and the left-lens BEV are pixel aligned and centered on the vehicle (y=0).
 struct BevGridConfig
 {
-  double camera_x_m{-0.16};
+  double camera_x_m{-0.09};  // same as bev_processor camera_x_m
   double camera_y_m{0.0};
   double camera_yaw_deg{0.0};
   double x_min_m{0.0};
