@@ -1,0 +1,277 @@
+diff --git a/src/auto_control/include/auto_control/tunnel_selection.hpp b/src/auto_control/include/auto_control/tunnel_selection.hpp
+index 616938a..9950869 100644
+--- a/src/auto_control/include/auto_control/tunnel_selection.hpp
++++ b/src/auto_control/include/auto_control/tunnel_selection.hpp
+@@ -91,7 +91,9 @@ bool metric_path_ready(const Msg & m, const PathRules & rules)
+   return static_cast<int>(points.size()) >= rules.minimum_points && span >= rules.minimum_span;
+ }
+ 
+-// Automatic events select their source immediately. Forced IR entry can wait for a usable path.
++// 차선 입력 선택: TCN 판정(또는 강제 IR)이 오면 그 자리에서 바로 전환한다.
++// 전환 안전 정책은 두지 않는다 (차선 유무·경로 유효성·결과 신선도·보고 나이를 보지 않음, 재설계 예정).
++// 남은 것은 같은 출처에서 시각이 되돌아간(순서가 뒤바뀐) 결과를 버리는 것뿐이다.
+ class LaneSelector
+ {
+ public:
+@@ -102,58 +104,39 @@ public:
+     this->rules.validate();
+   }
+ 
+-  bool transitioning() const {return started_ns.has_value();}
+-  std::string compute() const {return transitioning() ? "BOTH" : selected;}
+-  std::string camera() const {return transitioning() ? "IR" : selected;}
++  bool transitioning() const {return false;}
++  std::string compute() const {return selected;}
++  std::string camera() const {return selected;}
+ 
++  // TCN 판정: entry → IR, exit → RGB. 이전 보고보다 시각이 늦기만 하면 바로 따른다
+   bool event(const std::string & kind, std::int64_t stamp, std::int64_t now_ns)
+   {
+-    const double age = (now_ns - stamp) / 1e9;
+-    if ((kind != "entry" && kind != "exit") || stamp <= last_event_ns ||
+-      (!validation_mode && !(0 <= age && age <= max_age)))
+-    {
+-      return false;
+-    }
++    if ((kind != "entry" && kind != "exit") || stamp <= last_event_ns) {return false;}
+     last_event_ns = stamp;
+     const bool entry = kind == "entry";
+     return request_source(entry ? "IR" : "RGB", now_ns, entry ? "tcn_entry" : "tcn_exit");
+   }
+ 
++  // 강제 IR 켬/끔도 바로 전환
+   bool request_source(std::string target, std::int64_t now_ns,
+     const char * immediate_reason = nullptr)
+   {
+-    if (target == requested) {return false;}
++    if (target == requested && target == selected) {return false;}
+     requested = target;
+-    if (target == selected) {
+-      finish(now_ns, "reversed_request");
+-      return true;
+-    }
+-    if (immediate_reason || target == "RGB") {
+-      finish(now_ns, immediate_reason ? immediate_reason : "force_ir_off");
+-      return true;
+-    }
+-    started_ns = now_ns;
+-    reason = "waiting_target_path";
+-    state = "ENTERING";
++    finish(now_ns, immediate_reason ? immediate_reason : (target == "IR" ? "force_ir_on" : "force_ir_off"));
+     return true;
+   }
+ 
+   // True when this message is the selected source and should be forwarded.
+   template<typename Msg>
+   bool lane(
+-    const std::string & source, const Msg & m, std::int64_t now_ns)
++    const std::string & source, const Msg & m, std::int64_t /*now_ns*/)
+   {
+     auto last = last_input_ns.find(source);
+     if (last == last_input_ns.end()) {return false;}
+     const auto stamp = stamp_ns(m);
+-    const double age = (now_ns - stamp) / 1e9;
+-    const bool fresh = (validation_mode && source == "IR" && !transitioning()) || (0 <= age && age <= max_age);
+-    if (stamp <= last->second || !fresh) {return false;}
++    if (stamp <= last->second) {return false;}
+     last->second = stamp;
+-    if (transitioning() && source == requested) {
+-      if (!metric_path_ready(m, rules)) {return false;}  // An unready target must not clear the current path.
+-      finish(now_ns, "first_valid_target");
+-    }
+     return source == selected;
+   }
+ 
+@@ -164,19 +147,15 @@ public:
+   std::string last_handover;  // JSON text for the log
+   std::int64_t last_event_ns{0};
+   std::map<std::string, std::int64_t> last_input_ns{{"RGB", 0}, {"IR", 0}};
+-  std::optional<std::int64_t> started_ns;
+ 
+ private:
+-  void finish(std::int64_t now_ns, const std::string & why)
++  void finish(std::int64_t, const std::string & why)
+   {
+-    const double total_ms = started_ns ? (now_ns - *started_ns) / 1e6 : 0.;
+     std::ostringstream out;
+-    out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": " << total_ms;
+-    out << "}";
++    out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": 0}";
+     last_handover = out.str();
+     selected = requested;
+     state = selected == "IR" ? "INSIDE" : "OUTSIDE";
+-    started_ns.reset();
+     reason = why;
+   }
+ };
+diff --git a/src/auto_control/src/drive/auto_drive_node.cpp b/src/auto_control/src/drive/auto_drive_node.cpp
+index b121518..18698b3 100644
+--- a/src/auto_control/src/drive/auto_drive_node.cpp
++++ b/src/auto_control/src/drive/auto_drive_node.cpp
+@@ -452,7 +452,7 @@ private:
+     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
+     if (!command || force_ir_request_pending() || camera_reset_at_.load() > 0.0)
+       return {false, "다른 주행 요청을 처리 중입니다"};
+-    if (!loop_->tunnel_override_allowed(acd::now_sec())) return {false, "정지 상태에서만 변경할 수 있습니다"};
++    // 전환 안전 정책 제거: 주행 중에도 강제 IR을 켜고 끌 수 있다 (선택기가 바로 전환)
+     if (!force_ir_client_->service_is_ready()) return {false, "터널 차선 선택기가 준비 중입니다"};
+     auto request = std::make_shared<ForceIr::Request>();
+     request->data = enabled;
+@@ -471,10 +471,7 @@ private:
+     std::unique_lock<std::mutex> command(drive_command_m_, std::try_to_lock);
+     if (!command || force_ir_request_pending()) return {false, "터널 전환 요청 처리 중"};
+     if (camera_reset_at_.load() > 0.0) return {false, "카메라 초기화 중입니다"};
+-    if (force_ir_enabled_.load()) {
+-      std::lock_guard<std::mutex> l(status_m_);
+-      if (tunnel_state_ != "INSIDE" || lane_source_ != "IR") return {false, "터널 IR 차선 준비 중"};
+-    }
++    // 전환 안전 정책 제거: 강제 IR 중이어도 IR 차선이 들어왔는지 확인하지 않고 출발한다
+     auto result = loop_->request_start(now);
+     if (result.first && !recording()) open_cone_log(log_dir_, "");
+     return result;
+@@ -891,7 +888,7 @@ private:
+     }
+     const double t0 = acd::now_sec();
+     std::string j = acd::telemetry_json(f);
+-    const bool can_force_ir = tunnel_enabled_ && loop_->tunnel_override_allowed(now);
++    const bool can_force_ir = tunnel_enabled_;   // 전환 안전 정책 제거: 정지 여부와 무관
+     const bool can_reset_camera = !camera_reset_path_.empty() && loop_->camera_reset_allowed(now, camera_reset_vesc_required_);
+     if (!j.empty() && j.back() == '}') {   // auto_control 추가 항목
+       std::ostringstream x;
+diff --git a/src/auto_control/src/tunnel_lane_selector.cpp b/src/auto_control/src/tunnel_lane_selector.cpp
+index 439bc98..b566a19 100644
+--- a/src/auto_control/src/tunnel_lane_selector.cpp
++++ b/src/auto_control/src/tunnel_lane_selector.cpp
+@@ -174,23 +174,13 @@ private:
+       const auto report = tunnel::json_object(message->data);
+       const auto stamp = tunnel::json_int(report, "source_stamp_ns");
+       const std::int64_t now_ns = now().nanoseconds();
++      // 강제 IR을 끈 뒤에는 그 이전에 만들어진 보고를 따르지 않는다 (끈 순간 RGB로 돌아간 것을 되돌리지 않게)
+       if (!stamp || (tcn_report_after_ns_ && *stamp <= *tcn_report_after_ns_)) {return;}
+-      const double age = (now_ns - *stamp) / 1e9;
+-      if (!policy_.validation_mode && !(0 <= age && age <= .25)) {return;}
+       preview_.update(report, monotonic());
+-      last_tcn_received_ = monotonic();
++      // TCN 판정(state)을 그대로 따른다. 보고 나이·LIVE 여부·이벤트 종류·차선 유무는 보지 않는다 (전환 정책 제거)
+       const std::string state = tunnel::json_string(report, "state").value_or("");
+-      const std::string status = tunnel::json_string(report, "status").value_or("");
+-      tcn_live_ = status.rfind("LIVE", 0) == 0 && (state == "inside" || state == "outside");
+-      if (!tcn_live_) {return;}
+-      const std::string kind = state == "inside" ? "entry" : "exit";
+-      const auto event = report.find("event");
+-      if (event != report.end() && !event->second.empty() && event->second.front() == '{') {
+-        const auto type = tunnel::json_string(tunnel::json_object(event->second), "type");
+-        if (type && *type != kind) {return;}
+-      }
+-      if (force_ir_) {return;}
+-      // Later LIVE reports retain the state if an event packet was lost.
++      if (state != "inside" && state != "outside") {return;}   // 시작 직후 unknown: 판정 없음
++      if (force_ir_) {return;}   // 강제 IR 중에는 수동 지정이 우선
+       if (apply_tcn_state(state, *stamp, now_ns)) {publish_status();}
+     } catch (const std::exception &) {
+       RCLCPP_WARN(get_logger(), "Ignoring malformed TCN result");
+@@ -200,12 +190,7 @@ private:
+   void on_lane(const std::string & source, const LaneResult::ConstSharedPtr & message)
+   {
+     refresh_runtime_settings();
+-    // Validation follows the last selected source independently of TCN health. TCN only switches.
+-    if (!force_ir_ && !policy_.validation_mode &&
+-      (!tcn_live_ || !last_tcn_received_ || monotonic() - *last_tcn_received_ > .5))
+-    {
+-      return;
+-    }
++    // 선택된 출처의 결과만 넘긴다. TCN 상태·결과 신선도로 막지 않는다 (전환 정책 제거)
+     const auto now_ns = now().nanoseconds();
+     const bool forward = policy_.lane(source, *message, now_ns);
+     publish_status();
+@@ -219,10 +204,9 @@ private:
+   tunnel::LaneSelector policy_;
+   tunnel::PreviewTelemetry preview_;
+   std::optional<std::array<std::string, 4>> published_;
+-  std::optional<double> last_tcn_received_;
+   std::shared_ptr<const bev_handoff::TunnelRuntimeSettings> runtime_settings_;
+   std::optional<std::int64_t> tcn_report_after_ns_;
+-  bool force_ir_{false}, tcn_live_{false};
++  bool force_ir_{false};
+   rclcpp::Publisher<LaneResult>::SharedPtr rgb_output_, ir_output_;
+   std::vector<rclcpp::Publisher<String>::SharedPtr> status_;
+   rclcpp::Publisher<String>::SharedPtr preview_pub_, tcn_state_override_pub_;
+diff --git a/src/auto_control/test/host/tunnel_selection_test.cpp b/src/auto_control/test/host/tunnel_selection_test.cpp
+index 5a4cf6b..be1c44d 100644
+--- a/src/auto_control/test/host/tunnel_selection_test.cpp
++++ b/src/auto_control/test/host/tunnel_selection_test.cpp
+@@ -58,7 +58,8 @@ TEST(tcn_exit_selects_rgb_before_any_lane_result) {
+     CHECK(selector.selected == "RGB" && selector.compute() == "RGB" && selector.camera() == "RGB");
+     CHECK(!selector.transitioning());
+     CHECK(!selector.lane("IR", lane_at(2 * kEntry + 1, 9), 2 * kEntry + 2));
+-    CHECK(!selector.lane("RGB", lane_at(kEntry + 1, 9), 2 * kEntry + 2));
++    CHECK(selector.lane("RGB", lane_at(kEntry + 1, 9), 2 * kEntry + 2));   // 오래된 결과도 넘김 (신선도 정책 없음)
++    CHECK(!selector.lane("RGB", lane_at(kEntry + 1, 9), 2 * kEntry + 2));  // 같은 시각을 두 번 넘기지는 않음
+     CHECK(selector.selected == "RGB");
+     auto invalid = lane_at(2 * kEntry + 3, 0);
+     invalid.centerline_valid = false;
+@@ -68,14 +69,24 @@ TEST(tcn_exit_selects_rgb_before_any_lane_result) {
+   }
+ }
+ 
+-TEST(manual_ir_request_waits_for_a_valid_path_but_release_is_immediate) {
+-  LaneSelector selector(.2, true, PathRules{});
++TEST(manual_ir_request_switches_immediately_without_a_lane) {   // 전환 정책 제거: 경로를 기다리지 않음
++  LaneSelector selector(.2, false, PathRules{});
+   CHECK(selector.request_source("IR", kEntry));
+-  CHECK(selector.state == "ENTERING" && selector.selected == "RGB");
+-  CHECK(!selector.lane("IR", lane_at(kEntry + 1, 5), kEntry + 2));
+-  CHECK(selector.lane("IR", lane_at(kEntry + 3, 9), kEntry + 4));
+-  CHECK(selector.state == "INSIDE" && selector.reason == "first_valid_target");
++  CHECK(selector.state == "INSIDE" && selector.selected == "IR" && selector.reason == "force_ir_on");
++  CHECK(selector.camera() == "IR" && selector.compute() == "IR" && !selector.transitioning());
++  CHECK(selector.lane("IR", lane_at(kEntry + 1, 0), kEntry + 2));       // 점이 없는 결과도 그대로 넘김
++  CHECK(!selector.lane("RGB", lane_at(kEntry + 1, 9), kEntry + 2));
++  CHECK(!selector.request_source("IR", kEntry + 3));                     // 이미 IR
+   CHECK(selector.request_source("RGB", kEntry + 5));
+   CHECK(selector.state == "OUTSIDE" && selector.reason == "force_ir_off");
+-  CHECK(!selector.transitioning());
++}
++
++TEST(tcn_reports_are_followed_immediately_and_out_of_order_reports_are_ignored) {
++  LaneSelector selector(.2, false, PathRules{});
++  CHECK(selector.event("entry", 5 * kEntry, 50 * kEntry));   // 45초 지난 보고여도 따른다 (나이 정책 없음)
++  CHECK(selector.selected == "IR");
++  CHECK(!selector.event("exit", 4 * kEntry, 50 * kEntry));   // 더 이전 시각의 보고는 무시
++  CHECK(selector.selected == "IR");
++  CHECK(selector.event("exit", 6 * kEntry, 50 * kEntry));
++  CHECK(selector.selected == "RGB" && selector.state == "OUTSIDE");
+ }
+diff --git a/src/auto_control/web/app.js b/src/auto_control/web/app.js
+index b558f5f..e106a2e 100644
+--- a/src/auto_control/web/app.js
++++ b/src/auto_control/web/app.js
+@@ -428,16 +428,14 @@ function render() {
+     const h = $("handoverChip"); h.className = "chipx " + f.handover;
+     h.textContent = "전환 " + ({ AUTO: "AUTO", STOPPING: "제동 중", MANUAL: "MANUAL" }[f.handover] || f.handover);
+   }
+-  const src = tunnel.source || "RGB";
+   const forceIr = $("btnForceIr");
+   const stopped = ["READY", "MANUAL"].includes(f.state);
+-  const irPreparing = tunnel.force_ir && (src !== "IR" || tunnel.state !== "INSIDE");
++  // 전환 안전 정책 제거: 강제 IR은 주행 중에도 바꿀 수 있고, IR 차선을 기다리지 않는다
+   forceIr.hidden = $("forceIrStatus").hidden = !tunnel.enabled;
+-  forceIr.disabled = !connected || !stopped || forceIrRequest || !tunnel.force_ir_change_allowed;
++  forceIr.disabled = !connected || forceIrRequest || !tunnel.force_ir_change_allowed;
+   forceIr.setAttribute("aria-pressed", Boolean(tunnel.force_ir));
+   forceIr.classList.toggle("go", Boolean(tunnel.force_ir));
+-  forceIr.textContent = forceIrRequest ? "터널 IR 요청 중" : irPreparing ? "터널 IR 준비 중" :
+-    tunnel.force_ir ? "터널 IR 강제 ON" : "터널 IR 강제 OFF";
++  forceIr.textContent = forceIrRequest ? "터널 IR 요청 중" : tunnel.force_ir ? "터널 IR 강제 ON" : "터널 IR 강제 OFF";
+   const selected = selectedLaneSource(tunnel);
+   $("sourceChip").className = "chipx " + selected;
+   $("sourceChip").textContent = selected === "IR" ? "IR 터널" : "RGB";
+@@ -449,7 +447,7 @@ function render() {
+     b.classList.toggle("on", b.dataset.mode === f.mode);
+     b.disabled = !stopped;
+   });
+-  $("btnStart").disabled = forceIrRequest || irPreparing || cameraResetRequest || f.camera_reset_pending ||
++  $("btnStart").disabled = forceIrRequest || cameraResetRequest || f.camera_reset_pending ||
+     !(f.mode === "drive" && stopped && Object.values(f.readiness).every(Boolean));
+   $("btnStop").disabled = !["DRIVING", "STOPPING"].includes(f.state);
+   $("btnRefit").disabled = !["READY", "MANUAL", "DRIVING"].includes(f.state);

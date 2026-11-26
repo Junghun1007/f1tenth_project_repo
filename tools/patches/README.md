@@ -39,6 +39,13 @@
 - 목표 FPS 열(카메라 설정·YOLO 상한·터널 안 30 등)과 달성 색, 부하 열(ms × FPS)과 그룹별 부하 합
 - 새 측정: RGB·IMU 수신, IR 차선 분리, TCN 입력 FPS·입력 지연·처리·추론, 깊이 짝 대기, 검출 1회 전체, 박스 수, 회피 경로 탐색
 
+`1113ML_tunnel_follow_tcn.patch` — 터널 차선 전환 정책 제거 (auto_control)
+
+- TCN 판정(state inside/outside)이 오면 그 자리에서 RGB↔IR 전환. 차선 유무·경로 유효성·결과 신선도·보고 나이·LIVE 여부를 보지 않음
+- 강제 IR도 바로 전환 (유효 IR 경로 대기 ENTERING 제거), 주행 중에도 켜고 끌 수 있음, 출발 시 IR 차선 도착 확인 제거
+- 선택기는 선택된 출처의 결과만 넘김 (TCN이 끊겨도 차선 결과를 막지 않음). 같은 출처에서 시각이 되돌아간 결과만 버림
+- camera_driver의 IR 프레임 입력 검사(노출 확인·150 ms 대기)는 그대로 (`tunnel.validation_mode`로 켜고 끔)
+
 적용 (git 저장소가 아니어도 됨, 1113ML 워크스페이스 루트에서, 순서대로):
 
 ```bash
@@ -54,5 +61,7 @@ patch -p1 --dry-run < tools/patches/1113ML_tunnel_rates.patch
 patch -p1 < tools/patches/1113ML_tunnel_rates.patch
 patch -p1 --dry-run < tools/patches/1113ML_stage_panel.patch
 patch -p1 < tools/patches/1113ML_stage_panel.patch
+patch -p1 --dry-run < tools/patches/1113ML_tunnel_follow_tcn.patch
+patch -p1 < tools/patches/1113ML_tunnel_follow_tcn.patch
 colcon build --packages-select camera_driver auto_control line_detactor ir_camera_driver vehicle_bringup --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
