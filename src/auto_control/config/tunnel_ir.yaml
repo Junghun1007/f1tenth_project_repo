@@ -3,7 +3,10 @@ line_detactor:
   ros__parameters:
     input_topic: /ir_bev_line_detection/image_bgr
     direct_bev_input_enabled: false
+    # Packaged IR model precision (lane.model 0/1). lane.model 2/3 use the joint C3 model instead.
     engine_precision: fp32
+    # Start-up left/right threshold until the web "IR (터널)" lane settings arrive.
+    mask_threshold: 0.8
     # One preview window is owned by the RGB detector, including selected IR.
     preview_enabled: false
     bev_theme_enable: false

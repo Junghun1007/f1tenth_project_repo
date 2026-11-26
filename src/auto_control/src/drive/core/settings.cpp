@@ -65,16 +65,6 @@ void register_lane_tuning(ParamRegistry & registry, bool ir) {
   const std::string prefix = ir ? "ir_lane." : "lane.";
   const std::string sensor = ir ? "IR (터널) · " : "RGB · ";
   std::string section = sensor + "검출";
-  std::vector<std::pair<double, std::string>> precision{
-    {0, ir ? "기본값 (FP32)" : "기본값 (INT8 Q/DQ)"}, {1, "FP32"}, {2, "FP16"}};
-  if (!ir) precision.emplace_back(3, "INT8 Q/DQ");
-  registry.add({prefix + "engine_precision", "lane", section, "추론 방식 · YAML 저장 후 재시작", "",
-    0, ir ? 2.0 : 3.0, 0, false, std::move(precision)});
-  if (!ir) {
-    // 실행 중 교체: line_detactor가 뒤에서 새 엔진을 만든 뒤 바꾼다 (재시작 없음). v5는 INT8 Q/DQ만 지원
-    registry.add({"lane.model", "lane", section, "차선 모델 · 바로 교체 (처음 고르면 엔진 빌드에 수 분)", "",
-      0, 1, 1, true, {{0, "기존 (stop_0910 · 위 추론 방식)"}, {1, "v5 개선판 (INT8 Q/DQ)"}}});
-  }
   const auto add = [&](const char * key, const char * label, const char * unit,
                        double low, double high, double value, bool toggle) {
     const std::string name(key);
@@ -87,7 +77,7 @@ void register_lane_tuning(ParamRegistry & registry, bool ir) {
     if (toggle) spec.options = {{0, "끔"}, {1, "켬"}};
     registry.add(spec);
   };
-  if (ir) registry.add({prefix + "mask_threshold", "lane", section, "좌·우 차선 공통 임계값", "", .05, .95, .5, true});
+  if (ir) registry.add({prefix + "mask_threshold", "lane", section, "좌·우 차선 공통 임계값", "", .05, .95, .8, true});
 #define REGISTER_SETTING(type, key, member, label, unit, lo, hi, rgb_default, ir_default) \
   add(#key, label, unit, lo, hi, ir ? ir_default : rgb_default, std::is_same_v<type, bool>);
   BEV_LANE_DETECTION_SETTINGS(REGISTER_SETTING)
@@ -206,6 +196,11 @@ void register_params(ParamRegistry & r) {
   d("조향 (Stanley)", "drive.steering_rate_deg_s", "조향 변화율 한계", "°/s", 10, 1000, 260);
   r.add({"lane.check_mode", "lane", "공통", "차선 검사 모드", "", 0, 2, 1, true,
     {{0, "0 · 추가 검사 끔"}, {1, "1 · 기존 검사"}, {2, "2 · 회피 방향별 차선 복귀"}}});
+  // RGB·IR 검출기 모델을 한 번에 고른다. 실행 중 교체: 각 검출기가 뒤에서 새 엔진을 만든 뒤 바꾼다 (재시작 없음).
+  // 파일·정밀도 표는 auto_control_tunnel/launch_support.py LANE_MODELS (같은 번호)
+  r.add({"lane.model", "lane", "차선 모델 (RGB·IR 공통)", "모델 · 바로 교체 (처음 고르면 엔진 빌드에 수 분)", "",
+    0, 3, 1, true, {{0, "0 · 기존 (RGB stop_0910 INT8 + IR 기존 FP32)"}, {1, "1 · v5 (RGB v5 INT8 + IR 기존 FP32)"},
+                    {2, "2 · 통합 C3 INT8 (RGB·IR)"}, {3, "3 · 통합 C3 FP32 (RGB·IR)"}}});
   register_lane_tuning(r, false);
   register_lane_tuning(r, true);
   const bev_handoff::RgbCameraSettings rgb_defaults;

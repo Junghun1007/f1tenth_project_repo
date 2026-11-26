@@ -108,17 +108,27 @@ ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true
 
 ## 차선 모델 선택 (`lane.model`)
 
-웹 파라미터 창 "RGB · 검출"의 **차선 모델**에서 고르며, 재시작 없이 바뀐다.
+웹 파라미터 창 [차선] 맨 위 **차선 모델 (RGB·IR 공통)** 하나로 RGB·IR 검출기 모델을 같이 고르며, 재시작 없이 바뀐다.
+통합 모델을 골라도 검출기는 두 개 그대로이고(RGB 검출기 ← RGB 영상, IR 검출기 ← IR 영상), 같은 ONNX로 각자 엔진을 띄운다.
+IR 엔진 캐시는 `<모델>.ir_line_detactor.<방식>.engine`으로 따로 써서 두 검출기가 한 파일을 동시에 만들지 않는다.
 
-- `1` (기본) v5 개선판 `models/fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx` (INT8 Q/DQ 고정).
-  차선 없는 장면 오검출 45.7% → 2.2%, 어두운·과노출 장면 F1이 크게 오름 (PC ONNX Runtime 기준).
-- `0` 기존 모델 (stop_0910). `lane.engine_precision`이 정한 파일·방식을 그대로 쓴다.
+| 값 | RGB 검출기 | IR 검출기 (터널) |
+|---|---|---|
+| `0` 기존 | stop_0910 INT8 (`line_detactor.yaml`) | `ir_stereo_bev_120x300.onnx` FP32 |
+| `1` (기본) v5 | `models/fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx` | 기존 IR FP32 |
+| `2` 통합 C3 INT8 | `models/lane_c3_120x300.int8.qdq.onnx` | 같은 파일 (정지선 미사용) |
+| `3` 통합 C3 FP32 | `models/lane_c3_120x300.onnx` | 같은 파일 (정지선 미사용) |
 
-바꾸면 line_detactor가 지금 모델로 계속 추론하면서 뒤에서 TensorRT 엔진을 만들고, 준비되면 다음 프레임부터 교체한다.
+- v5: 차선 없는 장면 오검출 45.7% → 2.2%, 어두운·과노출 장면 F1이 크게 오름 (PC ONNX Runtime 기준).
+- C3: v5에서 시작해 RGB + IR(연구실·체육관 터널)을 같이 학습한 모델. RGB 성능은 v5와 같은 수준(차선 F1 0.850, 빈 화면 오검출 1.1%),
+  체육관 터널 IR test F1 0.60 → 0.76 (기존 IR 대비). INT8은 FP32 대비 하락 0.002 이하 (`models/lane_c3_*.json`에 평가값).
+- 좌·우 차선 임계값 기본값은 RGB·IR 모두 0.8이다 (위 평가는 0.5 기준).
+
+바꾸면 각 검출기가 지금 모델로 계속 추론하면서 뒤에서 TensorRT 엔진을 만들고, 준비되면 다음 프레임부터 교체한다.
 그동안 점검 화면 차선 모델 칸에 `ready · 교체 LOADING ...`이 보이고 주행 준비 상태는 READY로 유지된다.
 처음 고르는 모델은 INT8 엔진 빌드에 수 분 걸릴 수 있고 (이후는 엔진 캐시 재사용), 빌드 중 GPU를 같이 쓰므로
 주행 중보다 정차 상태에서 바꾸는 것이 좋다. 실패하면 기존 모델을 그대로 쓰고 `swap=FAILED <이유>`를 표시한다.
-시작 모델은 저장된 `lane.model` 값을 따른다.
+시작 모델은 저장된 `lane.model` 값을 따른다. 예전 `lane.engine_precision`·`ir_lane.engine_precision` 값은 더 이상 쓰지 않는다.
 
 ## 신호등 정지 (`traffic.*`)
 

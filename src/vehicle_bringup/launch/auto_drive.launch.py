@@ -129,42 +129,28 @@ def _lane_web_overrides(explicit, detector):
     return overrides
 
 
-def _select_rgb_lane_engine(detector, choice):
-    precision = {0: None, 1: "fp32", 2: "fp16", 3: "int8"}
-    if choice not in precision:
-        raise RuntimeError("lane.engine_precision must be 0, 1, 2 or 3")
-    if precision[choice] is not None:
-        detector.update(
-            engine_precision=precision[choice],
-            model_path=("fast_scnn_stop_line_120x300_batch_1.int8.qdq.onnx" if choice == 3
-                        else "fast_scnn_stop_line_120x300_batch_1.onnx"),
-            engine_cache_path="",
-        )
-
-
-_LANE_V5_MODEL = "fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx"
-
-
 def _select_rgb_lane_model(detector, choice):
-    """lane.model: 0 = 기존 (lane.engine_precision 결과), 1 = v5 INT8. 웹에서 바꾸면 재시작 없이 교체된다.
+    """lane.model (웹 "차선 모델 (RGB·IR 공통)"): RGB 검출기의 시작 모델을 정하고, 실행 중 교체에 쓸 경로를 auto_drive에 넘긴다.
 
-    auto_drive에 기존 모델의 절대 경로·방식과 v5 경로를 넘겨 실행 중 교체에 쓴다.
+    번호표는 auto_control_tunnel/launch_support.py LANE_MODELS (IR 검출기는 integrated_nodes가 같은 표로 정한다).
     """
-    if choice not in (0, 1):
-        raise RuntimeError("lane.model must be 0 or 1")
+    from auto_control_tunnel.launch_support import LANE_MODELS, bundled_model
     baseline = str(detector["model_path"])
     if not os.path.dirname(baseline):
         baseline = os.path.join(get_package_share_directory("line_detactor"), "models", baseline)
-    v5 = os.path.join(get_package_share_directory("auto_control"), "models", _LANE_V5_MODEL)
-    if not os.path.isfile(v5):
-        raise RuntimeError(f"v5 lane model not found: {v5}")
+    models = os.path.join(get_package_share_directory("auto_control"), "models")
+    path = {name: str(bundled_model(os.path.join(models, name)))
+            for name in {m[0] for m, _ in LANE_MODELS.values() if m != "baseline"}}
     overrides = {
         "model.lane_baseline_path": baseline,
         "model.lane_baseline_precision": str(detector["engine_precision"]),
-        "model.lane_v5_path": v5,
+        "model.lane_v5_path": path[LANE_MODELS[1][0][0]],
+        "model.lane_c3_int8_path": path[LANE_MODELS[2][0][0]],
+        "model.lane_c3_fp32_path": path[LANE_MODELS[3][0][0]],
     }
-    if choice == 1:
-        detector.update(model_path=v5, engine_precision="int8", engine_cache_path="")
+    rgb = LANE_MODELS[choice][0]
+    if rgb != "baseline":
+        detector.update(model_path=path[rgb[0]], engine_precision=rgb[1], engine_cache_path="")
     return overrides
 
 
@@ -206,8 +192,9 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         LaunchConfiguration("line_detactor_params_file").perform(context)))
     detector_custom = (_ros_parameters(detector_path, "line_detactor")
                        if detector_path != os.path.abspath(line_detactor_config) else {})
-    _select_rgb_lane_engine(detector, drive_tuning.get("lane.engine_precision", 0))
-    lane_model_overrides = _select_rgb_lane_model(detector, drive_tuning.get("lane.model", 1))
+    from auto_control_tunnel.launch_support import lane_model
+    lane_model_choice = lane_model(drive_tuning)
+    lane_model_overrides = _select_rgb_lane_model(detector, lane_model_choice)
     rgb_padding = _lane_padding(drive_tuning.get("lane.result_padding_px", -1))
     ir_padding = _lane_padding(drive_tuning.get("ir_lane.result_padding_px", -1))
     if rgb_padding >= 0:
@@ -282,7 +269,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         from auto_control_tunnel.launch_support import integrated_nodes
         components, tunnel_actions, tunnel_overrides = integrated_nodes(detector, {
             **{key: value for key, value in drive_tuning.items() if key.startswith(("tcn.", "tunnel."))},
-            "ir_lane.engine_precision": drive_tuning.get("ir_lane.engine_precision", 0),
+            "lane.model": lane_model_choice,
             "ir_lane.result_padding_px": ir_padding,
         }, context)
         # RGB 검출기 설명을 다시 만든다 (ComposableNode는 파라미터를 복사해 둔다)

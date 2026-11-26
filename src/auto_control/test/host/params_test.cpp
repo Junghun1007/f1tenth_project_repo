@@ -171,11 +171,18 @@ TEST(lane_tuning_uses_independent_rgb_and_ir_profiles) {
   CHECK(defaults.rgb_lane.corner_outward_offset_m == 0.);
   CHECK(defaults.rgb_lane.stop_line_min_pixels == 30);
   CHECK(!defaults.ir_lane.stop_line_distance_enabled);
-  CHECK_NEAR(defaults.ir_lane.left_mask_threshold, .5, 1e-12);
+  CHECK_NEAR(defaults.ir_lane.left_mask_threshold, .8, 1e-12);
+  CHECK_NEAR(defaults.ir_lane.right_mask_threshold, .8, 1e-12);
+  CHECK(r.get("lane.model") == 1.);
+  CHECK(!r.apply({{"lane.model", 4.}}).first);
+  CHECK(!r.apply({{"lane.model", 2.5}}).first);
   CHECK(!r.apply({{"lane.corner_outer_full_turn_deg", 7.}, {"ir_lane.mask_threshold", .6}}).first);
   CHECK(!r.apply({{"ir_lane.left_mask_threshold", -.5}}).first);
   CHECK(!r.apply({{"lane.result_padding_px", 2.5}}).first);
-  CHECK(!r.apply({{"ir_lane.engine_precision", 3.}}).first);
+  CHECK(!r.apply({{"ir_lane.engine_precision", 1.}}).first);   // replaced by the shared lane.model
+  CHECK(!r.apply({{"lane.engine_precision", 1.}}).first);
+  CHECK(r.apply({{"lane.model", 2.}}).first);
+  CHECK(r.get("lane.model") == 2.);
   CHECK(r.apply({{"ir_lane.mask_threshold", .6}, {"ir_lane.right_mask_threshold", .72},
     {"ir_lane.bridge_centerline", 0.}, {"lane.left_mask_threshold", .75}}).first);
   const auto tuned = settings_from(r);

@@ -780,7 +780,7 @@ private:
     return std::filesystem::path(path).lexically_normal().string() + "|" + precision;
   }
 
-  // 주행 컴포넌트가 다른 RGB 모델을 고르면 뒤에서 엔진을 만들고 (첫 INT8 빌드는 몇 분 걸릴 수 있음),
+  // 주행 컴포넌트가 다른 모델을 고르면 (RGB·IR 검출기 각자) 뒤에서 엔진을 만들고 (첫 INT8 빌드는 몇 분 걸릴 수 있음),
   // 준비되면 다음 프레임부터 교체한다. 그동안은 지금 모델로 계속 추론하고 상태는 READY로 둔다.
   // worker 스레드에서만 부른다 (backend_는 worker만 쓴다).
   void update_model_swap(const bev_handoff::LaneControlHints * hints)
@@ -797,10 +797,11 @@ private:
           model_path_.c_str(), engine_precision_.c_str());
       }
     }
-    if (ir_hints_ || !hints || hints->rgb_model_path.empty() || swap_loading_.load()) {return;}
-    const auto & path = hints->rgb_model_path;
-    const auto & precision = hints->rgb_engine_precision.empty() ? engine_precision_ :
-      hints->rgb_engine_precision;
+    if (!hints || swap_loading_.load()) {return;}
+    const auto & path = ir_hints_ ? hints->ir_model_path : hints->rgb_model_path;
+    const auto & wanted = ir_hints_ ? hints->ir_engine_precision : hints->rgb_engine_precision;
+    if (path.empty()) {return;}
+    const auto precision = wanted.empty() ? engine_precision_ : wanted;
     const auto requested = model_key(path, precision);
     if (requested == swap_attempted_key_) {return;}
     swap_attempted_key_ = requested;
@@ -821,7 +822,9 @@ private:
           throw std::runtime_error("Three-channel ONNX model not found: " + path);
         }
         const auto name = std::filesystem::path(path).filename().string();
-        auto next = make_backend(path, "", precision, [this, active, name](const std::string & stage) {
+        // RGB·IR이 같은 ONNX·방식을 고를 수 있으므로 IR은 엔진 캐시 파일을 따로 쓴다 (launch_support.py와 같은 이름)
+        const auto cache = ir_hints_ ? path + ".ir_line_detactor." + precision + ".engine" : std::string();
+        auto next = make_backend(path, cache, precision, [this, active, name](const std::string & stage) {
           model_load_status_->update("READY | model=" + active + " | swap=LOADING " + name + " | " + stage);
         });
         warm_up(*next);

@@ -28,6 +28,8 @@
 #include <csignal>
 #include <cstdlib>
 #include <ctime>
+#include <array>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -158,11 +160,22 @@ public:
     camera_reset_path_ = declare_parameter<std::string>("camera_reset_path", "");
     camera_reset_vesc_required_ = declare_parameter<bool>("camera_reset_vesc_required", true);
     lane_model_node_ = declare_parameter<std::string>("inspection.lane_model_node", "line_detactor");
-    // 웹 lane.model: 1 = v5, 0 = 실행 때 고른 기존 모델 (launch가 lane.engine_precision으로 정한 경로·방식)
-    lane_v5_model_path_ = declare_parameter<std::string>("model.lane_v5_path",
+    // 웹 lane.model (RGB·IR 공통) 번호별 {RGB 모델, IR 모델}. 기존 모델 경로·방식은 launch가 넘긴다.
+    // 경로가 비면 그 검출기는 실행 때 모델을 유지한다 (터널 끔이면 IR 검출기가 없다).
+    const auto rgb_baseline = declare_parameter<std::string>("model.lane_baseline_path", "");
+    const auto rgb_baseline_precision = declare_parameter<std::string>("model.lane_baseline_precision", "");
+    const auto v5 = declare_parameter<std::string>("model.lane_v5_path",
       share + "/models/fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx");
-    lane_baseline_model_path_ = declare_parameter<std::string>("model.lane_baseline_path", "");
-    lane_baseline_precision_ = declare_parameter<std::string>("model.lane_baseline_precision", "");
+    const auto c3_int8 = declare_parameter<std::string>("model.lane_c3_int8_path",
+      share + "/models/lane_c3_120x300.int8.qdq.onnx");
+    const auto c3_fp32 = declare_parameter<std::string>("model.lane_c3_fp32_path", share + "/models/lane_c3_120x300.onnx");
+    const auto ir_baseline = declare_parameter<std::string>("model.ir_lane_baseline_path", "");
+    const auto ir_baseline_precision = declare_parameter<std::string>("model.ir_lane_baseline_precision", "");
+    lane_models_ = {{
+      {rgb_baseline, rgb_baseline_precision, ir_baseline, ir_baseline_precision},
+      {v5, "int8", ir_baseline, ir_baseline_precision},
+      {c3_int8, "int8", c3_int8, "int8"},
+      {c3_fp32, "fp32", c3_fp32, "fp32"}}};
     tunnel_enabled_ = declare_parameter<bool>("tunnel.enabled", false);
     publish_tunnel_runtime_settings();
     ir_model_nodes_ = declare_parameter<std::vector<std::string>>("inspection.ir_model_nodes",
@@ -833,9 +846,11 @@ private:
       hint_base_.ir = s.ir_lane;
       hint_base_.rgb.side_tracking = s.lane_check_mode != 0 && s.rgb_lane.side_tracking;
       hint_base_.ir.side_tracking = s.lane_check_mode != 0 && s.ir_lane.side_tracking;
-      const bool v5 = registry_.get("lane.model") == 1;
-      hint_base_.rgb_model_path = v5 ? lane_v5_model_path_ : lane_baseline_model_path_;
-      hint_base_.rgb_engine_precision = v5 ? "int8" : lane_baseline_precision_;
+      const auto & lane_model = lane_models_.at(std::size_t(std::lround(registry_.get("lane.model"))));
+      hint_base_.rgb_model_path = lane_model.rgb_path;
+      hint_base_.rgb_engine_precision = lane_model.rgb_precision;
+      hint_base_.ir_model_path = lane_model.ir_path;
+      hint_base_.ir_engine_precision = lane_model.ir_precision;
       update_mount();   // ROI 비율이 바뀌었을 수 있음
     }
     hint_version_++;
@@ -1062,7 +1077,8 @@ private:
   acd::ModelConfig models_;
   double camera_yaw_deg_{0}, fixed_view_zoom_{1.25};
   std::string params_save_path_, lane_model_node_;
-  std::string lane_v5_model_path_, lane_baseline_model_path_, lane_baseline_precision_;
+  struct LaneModelChoice { std::string rgb_path, rgb_precision, ir_path, ir_precision; };
+  std::array<LaneModelChoice, 4> lane_models_;   // lane.model 0..3 (settings.cpp 옵션과 같은 순서)
   std::string camera_reset_path_;
   bool camera_reset_vesc_required_{true};
   std::atomic<double> camera_reset_at_{0.0};

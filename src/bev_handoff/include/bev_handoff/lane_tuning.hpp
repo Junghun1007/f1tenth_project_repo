@@ -3,8 +3,8 @@
 // One schema for the web registry and the detector's live RGB/IR settings.
 // Arguments: type, parameter key, detector member, label, unit, min, max, RGB default, IR default.
 #define BEV_LANE_DETECTION_SETTINGS(X) \
-  X(double, left_mask_threshold, left_mask_threshold, "좌측 차선 임계값", "", 0, 1, .80, .50) \
-  X(double, right_mask_threshold, right_mask_threshold, "우측 차선 임계값", "", 0, 1, .80, .50) \
+  X(double, left_mask_threshold, left_mask_threshold, "좌측 차선 임계값", "", 0, 1, .80, .80) \
+  X(double, right_mask_threshold, right_mask_threshold, "우측 차선 임계값", "", 0, 1, .80, .80) \
   X(double, stop_line_mask_threshold, stop_line_mask_threshold, "정지선 임계값", "", 0, 1, .80, 1.) \
   X(double, overlay_alpha, overlay_alpha, "오버레이 불투명도", "", 0, 1, .75, .75) \
   X(int, stop_line_min_present_pixels, stop_line_min_present_pixels, "정지선 검출 최소 픽셀", "px", 1, 1000, 1, 1) \
