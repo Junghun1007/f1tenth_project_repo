@@ -41,7 +41,7 @@ struct Settings {
   bev_handoff::RgbCameraSettings rgb_camera;
   struct IrCameraProfile { int exposure_us{0}, iso{800}; double dot{0}, flood{0}; };   // 노출 0 = 자동
   struct IrCamera {   // 스테레오 흑백 카메라: 터널 안(차선) / 밖(장애물 깊이)
-    IrCameraProfile inside{20000, 500, 0.0, 1.0}, outside{0, 400, 0.5, 0.0};
+    IrCameraProfile inside{20000, 500, 0.0, 0.7}, outside{0, 400, 0.5, 0.0};
     bool use_400p_ir_output{false};
   } ir_camera;
   bool avoid_vehicles{true};       // 트럭·세단도 회피 장애물로 (차량 추종이 켜져 있으면 회피 대신 추종)

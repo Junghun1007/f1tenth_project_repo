@@ -22,7 +22,7 @@ struct IrCameraProfile
 
 struct IrCameraSettings
 {
-  IrCameraProfile inside{20000, 500, 0.0, 1.0};   // 터널 안: IR 차선
+  IrCameraProfile inside{20000, 500, 0.0, 0.7};   // 터널 안: IR 차선 (플러드 1.0은 과열로 꺼짐)
   IrCameraProfile outside{0, 400, 0.5, 0.0};      // 터널 밖: 장애물 스테레오 깊이
   bool use_400p_ir_output{false};                 // false: camera_driver의 시작 해상도
 };

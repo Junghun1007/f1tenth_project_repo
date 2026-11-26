@@ -261,7 +261,7 @@
     ir_cam.inside_exposure_us: 20000.0
     ir_cam.inside_iso: 500.0
     ir_cam.inside_dot: 0.0
-    ir_cam.inside_flood: 1.0
+    ir_cam.inside_flood: 0.7           # 1.0은 노출 20 ms·30 FPS에서 과열로 조명이 꺼지는 현상이 있어 낮춤
     # 출력
     drive.maximum_duty: 0.12            # 최대 duty
     drive.start_duty: 0.05              # 정지 출발 duty

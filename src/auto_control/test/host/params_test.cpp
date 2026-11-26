@@ -136,7 +136,7 @@ TEST(tunnel_ir_resolution_uses_supported_choices) {
   CHECK(defaults.inside.exposure_us == 20000);
   CHECK(defaults.inside.iso == 500);
   CHECK(defaults.inside.dot == 0.0);
-  CHECK(defaults.inside.flood == 1.0);
+  CHECK(defaults.inside.flood == 0.7);
   CHECK(r.to_json().find("\"options\":[{\"value\":0") != std::string::npos);
 
   CHECK(!r.apply({{"ir_cam.inside_resolution", 200}, {"ir_cam.inside_iso", 600}}).first);

@@ -638,7 +638,7 @@
 {"name":"ir_cam.inside_exposure_us","group":"lane","section":"IR (터널) · 카메라","label":"노출 시간","unit":"µs","min":1000.0,"max":33000.0,"value":20000.0,"live":true},
 {"name":"ir_cam.inside_iso","group":"lane","section":"IR (터널) · 카메라","label":"ISO","unit":"","min":100.0,"max":1600.0,"value":500.0,"live":true},
 {"name":"ir_cam.inside_dot","group":"lane","section":"IR (터널) · 카메라","label":"점 투사기 세기","unit":"","min":0.0,"max":1.0,"value":0.0,"live":true},
-{"name":"ir_cam.inside_flood","group":"lane","section":"IR (터널) · 카메라","label":"IR 플러드 조명 세기","unit":"","min":0.0,"max":1.0,"value":1.0,"live":true},
+{"name":"ir_cam.inside_flood","group":"lane","section":"IR (터널) · 카메라","label":"IR 플러드 조명 세기","unit":"","min":0.0,"max":1.0,"value":0.7,"live":true},
 {
 "group": "traffic",
 "section": "신호등",
