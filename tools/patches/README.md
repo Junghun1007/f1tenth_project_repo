@@ -1,5 +1,18 @@
 # 1113ML 적용 패치
 
+## 한 번에 적용 (권장): `1113ML_all_on_277d953.mbox`
+
+원격 `1113ML` 최신(`277d953`, v5 차선 모델) 위에 아래 패치 1~8을 충돌 해결까지 마쳐 9개 커밋으로 만든 것.
+`tunnel.validation_mode`는 `11a19c6`(노드 기본값 true)에 맞춰 yaml도 true로 둔다.
+
+```bash
+cd <1113ML 저장소>
+git checkout 1113ML && git pull origin 1113ML     # 277d953까지 받기
+git am <이 파일>                                    # 커밋 9개가 그대로 붙음
+```
+
+## 개별 패치 (예전 1113ML 기준, 참고용)
+
 `1113ML_camera_rates.patch` — oak_fps_bench 측정 결과 반영 (camera_driver만 변경)
 
 - `sensor_fps` / `publish_fps` 70 → 60 (tunnel_enabled에서 70으로 강제하던 코드 제거, 30 미만이면 시작 시 오류)
