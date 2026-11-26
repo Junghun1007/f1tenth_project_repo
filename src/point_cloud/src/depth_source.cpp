@@ -108,15 +108,22 @@ std::shared_ptr<dai::node::StereoDepth> addStereoDepth(
   if (gate_control) {
     // The two queues can drop different frames under load. Keep the newer
     // frame while catching up the other side so StereoDepth gets matched pairs.
+    // 깊이를 끈 동안(터널 안)은 좌우 프레임을 꺼내 버리지 않고 켜기 명령만 기다린다.
+    // 이 스크립트는 XLink 전송도 맡는 장치 CPU(LeonCSS)에서 돌아 초당 60장을 꺼내던 부하가 RGB 전송을 밀었다.
+    // 입력 큐는 최신 1장·non-blocking이라 꺼내지 않아도 카메라 출력이 막히지 않는다.
     auto gate = pipeline.create<dai::node::Script>();
     gate->setScript(R"PY(
 active = True
 left = None
 right = None
 while True:
-    control = node.io['control'].tryGet()
+    control = node.io['control'].tryGet() if active else node.io['control'].get()
     if control is not None:
         active = bool(control.getData()[0])
+        left = None   # do not pair frames held across an on/off switch
+        right = None
+    if not active:
+        continue
     if left is None:
         left = node.io['left'].get()
     if right is None:
