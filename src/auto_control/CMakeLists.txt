@@ -81,7 +81,7 @@ target_link_libraries(auto_drive_component auto_drive_gpu)
 rclcpp_components_register_nodes(auto_drive_component "auto_control::AutoDriveNode")
 install(TARGETS auto_drive_component LIBRARY DESTINATION lib)
 
-install(PROGRAMS scripts/tunnel_lane_selector scripts/safety_node DESTINATION lib/${PROJECT_NAME})
+install(PROGRAMS scripts/tunnel_lane_selector scripts/safety_node scripts/web_ready_notice DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY config models DESTINATION share/${PROJECT_NAME})
 install(DIRECTORY web/ DESTINATION share/${PROJECT_NAME}/web PATTERN "demo" EXCLUDE)

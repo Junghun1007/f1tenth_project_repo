@@ -369,6 +369,12 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
             "auto_enable_topic": "/auto_drive/auto_enabled",
         }],
     )
+    # 웹 화면이 열리면 Jetson 바탕화면(NoMachine)에 접속 주소 알림창
+    web_notice = Node(
+        package="auto_control", executable="web_ready_notice", name="web_ready_notice", output="screen",
+        arguments=[LaunchConfiguration("web_port").perform(context)],
+        condition=IfCondition(LaunchConfiguration("web_notice")),
+    )
     joy = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("joy_initializer"), "launch", "joy.launch.py")),
         condition=IfCondition(LaunchConfiguration("joy_enabled")),
@@ -384,7 +390,7 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         " | drive_yaml=" + LaunchConfiguration("drive_params_file").perform(context) +
         " | detector_yaml=" + LaunchConfiguration("line_detactor_params_file").perform(context) +
         " | perception_yaml=" + LaunchConfiguration("perception_params_file").perform(context)
-    )), restart_handler, safety, joy, *tunnel_actions, perception]
+    )), restart_handler, safety, joy, *tunnel_actions, perception, web_notice]
 
 
 def generate_launch_description():
@@ -453,6 +459,8 @@ def generate_launch_description():
         DeclareLaunchArgument("corner_plan", default_value="inherit",
                               description="코너 경로 계획 (실험): true=새 계획, false=기존 코너 오프셋, inherit=auto_drive.yaml"),
         DeclareLaunchArgument("web_port", default_value="8765"),
+        DeclareLaunchArgument("web_notice", default_value="true",
+                              description="웹 화면이 열리면 바탕화면에 접속 주소 알림창 (false=끔)"),
         DeclareLaunchArgument("preview_enabled", default_value="false",
                               description="Jetson 화면에 line_detactor 차선 창도 띄움 (브라우저 화면은 항상 있음)"),
         DeclareLaunchArgument("vehicle_namespace", default_value="autopilot03"),

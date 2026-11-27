@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""auto_drive 웹 화면이 열리면 Jetson 바탕화면(NoMachine)에 알림창으로 접속 주소를 띄운다.
+
+  web_ready_notice <port> [--timeout 초]
+
+포트가 열릴 때까지 1초마다 확인한다. 열리면 이 기기의 IP마다 http://IP:port 를 보여 주고,
+제한 시간 안에 안 열리면 "launch 로그 확인" 경고를 띄운다. 화면이 없으면 터미널 출력만 한다.
+"""
+import argparse
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+
+def port_open(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def local_addresses():
+    addresses = []
+    try:
+        out = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=2).stdout
+        addresses = [a for a in out.split() if "." in a and not a.startswith(("127.", "172.17."))]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if not addresses:   # hostname -I 가 없으면 기본 경로 인터페이스 주소 (패킷은 보내지 않음)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("192.0.2.1", 9))
+                addresses = [s.getsockname()[0]]
+        except OSError:
+            pass
+    # 192.168.x 같은 사설 LAN 주소를 먼저
+    return sorted(set(addresses), key=lambda a: (not a.startswith("192.168."), a))
+
+
+def show(title, text, warning=False):
+    print(f"[web_ready_notice] {title}\n" + text.replace("<b>", "").replace("</b>", ""), flush=True)
+    env = dict(os.environ)
+    env.setdefault("DISPLAY", ":0")
+    if shutil.which("zenity"):
+        subprocess.Popen(["zenity", "--warning" if warning else "--info", "--no-wrap", "--title", title, "--text", text],
+                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    if shutil.which("notify-send"):
+        subprocess.Popen(["notify-send", "-u", "critical" if warning else "normal", title, text.replace("<b>", "").replace("</b>", "")],
+                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("port", type=int)
+    ap.add_argument("--timeout", type=float, default=300.0)
+    a, _ = ap.parse_known_args()   # launch_ros가 붙이는 --ros-args 무시
+    started = time.monotonic()
+    while time.monotonic() - started < a.timeout:
+        if port_open(a.port):
+            urls = [f"http://{ip}:{a.port}" for ip in local_addresses()] or [f"http://<jetson-ip>:{a.port}"]
+            waited = time.monotonic() - started
+            show("auto_drive 웹 화면 열림",
+                 f"맥북 브라우저에서 접속:\n\n<b>{urls[0]}</b>" +
+                 ("".join(f"\n{u}" for u in urls[1:]) if len(urls) > 1 else "") +
+                 f"\n\n(포트 {a.port}, 시작 후 {waited:.0f}초)")
+            return 0
+        time.sleep(1.0)
+    show("auto_drive 웹 화면이 안 열림",
+         f"{a.timeout:.0f}초 동안 포트 {a.port}이 열리지 않았습니다.\nlaunch 터미널의 [ERROR] / process has died 줄을 확인하세요.",
+         warning=True)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
