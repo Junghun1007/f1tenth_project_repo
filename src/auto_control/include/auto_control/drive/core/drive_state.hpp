@@ -20,6 +20,9 @@ struct Readiness {
   bool client_alive{false};   // 상태기계가 heartbeat로 직접 계산해 덮어씀
   bool ir_model_ready{true};  // 터널(IR) 차선 모델: 터널을 켠 경우에만 검사 (auto_control)
   bool ir_model_used{false};
+  // IMU 영상 안정화 보정 (camera_driver): 시작·Refit 뒤 정지 상태로 끝나야 함. 안정화를 쓸 때만 검사
+  bool imu_calibrated{true};
+  bool imu_used{false};
 };
 
 class DriveStateMachine {

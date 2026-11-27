@@ -98,3 +98,11 @@ TEST(tunnel_tcn_reports_inference_timing) {   // 웹 단계별 연산의 TCN 행
   CHECK(!waiting.infer_ms && waiting.processing_ms);   // 점수가 없어도 있는 값은 읽는다
   CHECK(!tcn.update("not json", 1.2).processing_ms);
 }
+
+TEST(telemetry_reports_imu_calibration_only_when_used) {
+  auto f = sample();
+  CHECK(!nlohmann::json::parse(telemetry_json(f))["readiness"].contains("imu_calibrated"));
+  f.readiness.imu_used = true;
+  f.readiness.imu_calibrated = false;
+  CHECK(nlohmann::json::parse(telemetry_json(f))["readiness"]["imu_calibrated"] == false);
+}

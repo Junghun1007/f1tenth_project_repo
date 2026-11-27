@@ -472,3 +472,20 @@ TEST(gyro_bias_learned_while_stopped_and_cone_log_written) {   // 정지 중 자
   CHECK_NEAR(rows.back().t_pose, rows.back().t_depth + 0.015, 1e-9);   // 깊이 시각 + object.time_offset_ms (기본 15 ms)
   CHECK_NEAR(rows.back().world_x, 0.6, 0.02);
 }
+
+TEST(start_is_blocked_until_imu_calibration_finishes) {   // Refit 뒤 IMU 보정 중 출발 → 터널 IR 입력이 모두 버려짐
+  Rig r(DriveMode::Drive);
+  r.loop->set_imu_calibration(true, false);
+  r.step();
+  const auto refused = r.loop->request_start(r.t);
+  CHECK(!refused.first);
+  CHECK(refused.second.find("IMU calibration") != std::string::npos);
+  CHECK(!r.loop->telemetry(false, r.t).readiness.imu_calibrated);
+  r.loop->set_imu_calibration(true, true);
+  r.step();
+  CHECK(r.loop->request_start(r.t).first);
+  Rig unused(DriveMode::Drive);   // 안정화를 안 쓰면 (disabled/unknown) 검사하지 않음
+  unused.loop->set_imu_calibration(false, false);
+  unused.step();
+  CHECK(unused.loop->request_start(unused.t).first);
+}

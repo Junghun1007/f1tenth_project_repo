@@ -30,6 +30,7 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
    .key("yolo_model_ready").value(r.yolo_model_ready).key("vesc_connected").value(r.vesc_connected)
    .key("erpm_fresh").value(r.erpm_fresh).key("lane_fresh").value(r.lane_fresh).key("client_alive").value(r.client_alive);
   if (r.ir_model_used) w.key("ir_model_ready").value(r.ir_model_ready);
+  if (r.imu_used) w.key("imu_calibrated").value(r.imu_calibrated);
   w.end_object();
   const auto & a = f.inspection;
   w.key("inspection").begin_object().key("attitude").begin_object()

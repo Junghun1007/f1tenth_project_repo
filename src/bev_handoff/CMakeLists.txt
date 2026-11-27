@@ -23,6 +23,7 @@ add_library(bev_handoff SHARED
   src/lane_control_hints.cpp
   src/device_frame_handoff.cpp
   src/ir_camera_settings.cpp
+  src/imu_calibration_status.cpp
 )
 target_include_directories(bev_handoff
   PUBLIC

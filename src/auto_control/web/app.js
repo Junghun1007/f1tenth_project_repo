@@ -11,7 +11,7 @@ const BEV = { xMax: 3.0, xMin: -0.5, yHalf: 0.6, imageXMin: 0.0, pxPerM: 200 };
 const READY_LABEL = {
   attitude_ok: "카메라 자세", lane_model_ready: "차선 모델", yolo_model_ready: "YOLO 모델",
   vesc_connected: "VESC", erpm_fresh: "ERPM", lane_fresh: "차선 입력", client_alive: "브라우저",
-  ir_model_ready: "IR 차선 모델", handover_ready: "안전 전환",
+  ir_model_ready: "IR 차선 모델", handover_ready: "안전 전환", imu_calibrated: "IMU 보정",
 };
 const STATE_LABEL = { BOOT: "시작 중", INSPECTING: "출발 전 점검", READY: "출발 대기", DRIVING: "자동 주행", STOPPING: "정지 중",
   MANUAL: "수동 (조이스틱)", REFITTING: "카메라 재측정" };

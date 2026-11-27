@@ -184,3 +184,17 @@ TEST(stray_auto_is_handed_back_to_manual) {   // I3: 출발 승인 없이 안전
   CHECK(sm.wants_manual_handover());
   CHECK(!sm.auto_output_allowed());
 }
+
+TEST(start_waits_for_imu_calibration_only_when_used) {   // Refit 뒤 보정 중 출발 → 터널 IR 입력이 모두 버려짐
+  DriveStateMachine sm(DriveMode::Drive, 1.0);
+  sm.on_inspection_done(true, 0.0);
+  sm.on_heartbeat("a", 0.0);
+  Readiness r = all_ok();
+  r.imu_used = true;
+  r.imu_calibrated = false;
+  const auto refused = sm.request_start(r, 0.0);
+  CHECK(!refused.first);
+  CHECK(refused.second.find("IMU calibration") != std::string::npos);
+  r.imu_calibrated = true;
+  CHECK(sm.request_start(r, 0.0).first);
+}

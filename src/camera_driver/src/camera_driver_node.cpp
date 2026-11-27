@@ -2,6 +2,7 @@
 #include "camera_driver/camera_driver_node.hpp"
 #include "camera_driver/imu_image_stabilizer.hpp"
 #include "camera_driver/tunnel_ir_input_policy.hpp"
+#include "bev_handoff/imu_calibration_status.hpp"
 #include "bev_handoff/ir_camera_settings.hpp"
 #include "bev_handoff/rgb_camera_settings.hpp"
 #include "camera_driver/ir_imu_synchronizer.hpp"
@@ -510,6 +511,9 @@ private:
       "maximum_timestamp_domain_delta_sec", 1.0);
     imu_stabilization_enabled_ =
       node_.declare_parameter<bool>("imu_stabilization_enabled", true);
+    // 출발 전 점검(auto_control): 보정이 끝날 때까지 calibrating
+    bev_handoff::publishImuCalibrationState(imu_stabilization_enabled_ ?
+      bev_handoff::ImuCalibrationState::calibrating : bev_handoff::ImuCalibrationState::disabled);
     high_frequency_only_ = node_.declare_parameter<bool>(
       "imu_stabilization_high_frequency_only", false);
     high_frequency_vibration_cutoff_hz_ = node_.declare_parameter<double>(
@@ -1518,6 +1522,7 @@ while True:
         imu_stream_enabled_ = false;
         imu_stabilizer_.reset();
         imu_queue_.reset();
+        bev_handoff::publishImuCalibrationState(bev_handoff::ImuCalibrationState::disabled);
         RCLCPP_ERROR(
           node_.get_logger(),
           "OAK IMU stream and image stabilization disabled: %s",
@@ -2665,6 +2670,11 @@ while True:
           newest_gyroscope_timestamp_sec = std::max(
             newest_gyroscope_timestamp_sec,
             timestampSeconds(packet.gyroscope.getTimestamp()));
+        }
+        if (imu_stabilization_enabled_ && imu_stabilizer_) {
+          // 시작·[Refit] 뒤 보정이 끝나기 전에는 터널 IR 입력이 모두 버려진다 → auto_control이 출발을 막는다
+          bev_handoff::publishImuCalibrationState(imu_stabilizer_->initialized() ?
+            bev_handoff::ImuCalibrationState::ready : bev_handoff::ImuCalibrationState::calibrating);
         }
 
         for (const auto & packet : data->packets) {

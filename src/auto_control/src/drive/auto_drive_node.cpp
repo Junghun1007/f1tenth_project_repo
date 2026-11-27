@@ -21,6 +21,7 @@
 #include <bev_handoff/direct_camera_handoff.hpp>
 #include <bev_handoff/device_frame_handoff.hpp>
 #include <bev_handoff/direct_obstacle_handoff.hpp>
+#include <bev_handoff/imu_calibration_status.hpp>
 #include <bev_handoff/ir_camera_settings.hpp>
 #include <bev_handoff/lane_control_hints.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -425,6 +426,7 @@ public:
       if (acd::now_sec() - last_lane_t_.load() > 0.05) publish(loop_->tick(acd::now_sec()));
       drive_refit(acd::now_sec());
       drive_camera_reset(acd::now_sec());
+      update_imu_calibration();
       bev_wanted_ = web_->stream_wanted("bev", acd::now_sec());
     }, control_group_);
     telemetry_ = create_wall_timer(33ms, [this] { send_telemetry(); }, web_group_);
@@ -840,6 +842,19 @@ private:
   }
 
   // ------------------------------------------------------------------ 터널
+  // camera_driver IMU 안정화 보정 → 출발 전 점검. Refit 뒤 보정 중에 출발하면 터널 IR 입력이 모두 버려져 터널에서 멈춘다
+  void update_imu_calibration() {
+    using State = bev_handoff::ImuCalibrationState;
+    const auto state = bev_handoff::imuCalibrationState();
+    if (last_imu_state_ && *last_imu_state_ == state) return;
+    const bool used = state == State::calibrating || state == State::ready;
+    loop_->set_imu_calibration(used, state == State::ready);
+    if (last_imu_state_ && used) {
+      RCLCPP_INFO(get_logger(), "IMU stabilization %s", state == State::ready ? "calibrated" : "calibrating: keep the vehicle still");
+    }
+    last_imu_state_ = state;
+  }
+
   void on_tunnel_state(const std::string & s) {
     if (s != "OUTSIDE" && s != "ENTERING" && s != "INSIDE" && s != "EXITING") return;
     const bool inside = s != "OUTSIDE";
@@ -1214,6 +1229,7 @@ private:
   bool camera_reset_vesc_required_{true};
   std::atomic<double> camera_reset_at_{0.0};
   std::vector<std::string> ir_model_nodes_;
+  std::optional<bev_handoff::ImuCalibrationState> last_imu_state_;   // 제어 스레드(watchdog)만
   std::vector<std::string> ir_model_status_;
   bool tunnel_enabled_{false};
   std::unique_ptr<acd::ControlLoop> loop_;

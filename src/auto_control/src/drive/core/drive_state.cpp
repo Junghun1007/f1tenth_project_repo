@@ -33,6 +33,7 @@ void DriveStateMachine::on_heartbeat(const std::string & client, double now) { c
 
 std::string DriveStateMachine::readiness_problem(const Readiness & r, double now) const {
   if (!r.attitude_ok) return "camera attitude not measured";
+  if (!r.imu_calibrated) return "IMU calibration in progress (keep the vehicle still)";
   if (!r.lane_model_ready) return "lane model not ready";
   if (!r.yolo_model_ready) return "yolo model not ready";
   if (!r.ir_model_ready) return "tunnel IR lane model not ready";

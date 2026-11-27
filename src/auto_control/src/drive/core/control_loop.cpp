@@ -239,6 +239,12 @@ void ControlLoop::set_attitude(const AttitudeInfo & a) { std::lock_guard<std::mu
 
 void ControlLoop::set_camera_geometry(const CameraGeometry & g) { std::lock_guard<std::mutex> l(m_); rc_.camera = g; }
 
+void ControlLoop::set_imu_calibration(bool used, bool calibrated) {
+  std::lock_guard<std::mutex> l(m_);
+  imu_used_ = used;
+  imu_calibrated_ = !used || calibrated;
+}
+
 void ControlLoop::set_model_status(int i, const InspectionModel & m) { std::lock_guard<std::mutex> l(m_); if (i >= 0 && i <= 2) models_[i] = m; }
 
 void ControlLoop::on_inspection_done(bool ok, const std::string & reason, double t) { std::lock_guard<std::mutex> l(m_); sm_.on_inspection_done(ok, t, reason); }
@@ -276,6 +282,8 @@ void ControlLoop::clear_memories() {
 Readiness ControlLoop::readiness(double now) const {
   Readiness r;
   r.attitude_ok = attitude_.ok;
+  r.imu_used = imu_used_;
+  r.imu_calibrated = imu_calibrated_;
   r.lane_model_ready = models_[0].status == "READY";
   r.yolo_model_ready = models_[1].status == "READY";
   r.ir_model_used = !models_[2].name.empty();
