@@ -5,6 +5,7 @@
 //   출력: <ns>/auto_drive/auto/{duty,brake_current,servo_position} → safety_node (vesc/*의 유일한 발행자)
 //   웹: http://<jetson-ip>:8765 (SSE 텔레메트리, BEV·카메라 MJPEG, 명령·파라미터)
 #include <rclcpp/rclcpp.hpp>
+#include <rcl_interfaces/msg/parameter_event.hpp>
 #include <rclcpp_components/register_node_macro.hpp>
 #include <sensor_msgs/msg/image.hpp>
 #include <sensor_msgs/msg/imu.hpp>
@@ -62,6 +63,47 @@ std::string json_escape(const std::string & s) {
   return o;
 }
 bool is_tcn_param(const std::string & name) { return name.rfind("tcn.", 0) == 0; }
+
+// ROS 파라미터 값 → YAML 스칼라/목록 (녹화 폴더의 ros_params.yaml·param_changes.csv용)
+std::string param_yaml(const rclcpp::ParameterValue & v) {
+  using T = rclcpp::ParameterType;
+  const auto str = [](const std::string & x) { return "\"" + json_escape(x) + "\""; };
+  const auto num = [](double d) {
+    if (std::isnan(d)) return std::string(".nan");
+    if (std::isinf(d)) return std::string(d > 0 ? ".inf" : "-.inf");
+    std::ostringstream o;
+    o << std::setprecision(17) << d;
+    auto t = o.str();
+    if (t.find_first_of(".e") == std::string::npos) t += ".0";   // 정수처럼 보여도 실수로 다시 읽히게
+    return t;
+  };
+  const auto list = [](const auto & xs, const auto & one) {
+    std::string o = "[";
+    for (std::size_t i = 0; i < xs.size(); ++i) o += (i ? ", " : "") + one(xs[i]);
+    return o + "]";
+  };
+  switch (v.get_type()) {
+    case T::PARAMETER_BOOL: return v.get<bool>() ? "true" : "false";
+    case T::PARAMETER_INTEGER: return std::to_string(v.get<std::int64_t>());
+    case T::PARAMETER_DOUBLE: return num(v.get<double>());
+    case T::PARAMETER_STRING: return str(v.get<std::string>());
+    case T::PARAMETER_BYTE_ARRAY: return list(v.get<std::vector<std::uint8_t>>(), [](std::uint8_t b) { return std::to_string(b); });
+    case T::PARAMETER_BOOL_ARRAY: return list(v.get<std::vector<bool>>(), [](bool b) { return std::string(b ? "true" : "false"); });
+    case T::PARAMETER_INTEGER_ARRAY: return list(v.get<std::vector<std::int64_t>>(), [](std::int64_t i) { return std::to_string(i); });
+    case T::PARAMETER_DOUBLE_ARRAY: return list(v.get<std::vector<double>>(), num);
+    case T::PARAMETER_STRING_ARRAY: return list(v.get<std::vector<std::string>>(), str);
+    default: return "~";
+  }
+}
+
+std::string csv_field(const std::string & s) {   // 쉼표·따옴표가 있어도 한 칸으로
+  if (s.find_first_of(",\"\n") == std::string::npos) return s;
+  std::string o = "\"";
+  for (char c : s) { if (c == '"') o += '"'; o += c; }
+  return o + "\"";
+}
+
+std::string number_text(double d) { std::ostringstream o; o << std::setprecision(10) << d; return o.str(); }
 
 std::string camera_exposure_json() {
   acd::JsonWriter w;
@@ -375,6 +417,9 @@ public:
       res.reason = r.second;
       return res;
     });
+    // 녹화 중 다른 노드(bev_processor, line_detactor, 카메라 등)의 파라미터 변경도 기록. 이 노드 것은 apply_tuning에서 기록
+    param_events_sub_ = create_subscription<rcl_interfaces::msg::ParameterEvent>("/parameter_events", rclcpp::ParameterEventsQoS(),
+      [this](rcl_interfaces::msg::ParameterEvent::ConstSharedPtr e) { on_parameter_event(*e); }, in(status_group_));
 
     watchdog_ = create_wall_timer(20ms, [this] {   // 차선 결과가 끊겨도 정지·제동이 이어지게
       if (acd::now_sec() - last_lane_t_.load() > 0.05) publish(loop_->tick(acd::now_sec()));
@@ -397,6 +442,7 @@ public:
     bev_handoff::publishLaneControlHints(nullptr);
     bev_cv_.notify_all();
     if (inspect_thread_.joinable()) inspect_thread_.join();
+    if (param_dump_thread_.joinable()) param_dump_thread_.join();
     if (depth_thread_.joinable()) depth_thread_.join();
     if (bev_thread_.joinable()) bev_thread_.join();
     detect_->stop();
@@ -815,8 +861,14 @@ private:
   acd::Reply apply_tuning(const std::map<std::string, double> & changes) {
     std::lock_guard<std::mutex> lock(tuning_m_);
     if (camera_reset_at_.load() > 0.0) return {false, "카메라 초기화 중입니다"};
+    std::map<std::string, double> before;
+    for (const auto & change : changes) if (registry_.has(change.first)) before[change.first] = registry_.get(change.first);
     const auto result = registry_.apply(changes);
     if (!result.first) return result;
+    for (const auto & [name, old_value] : before) {
+      const double now_value = registry_.get(name);
+      if (now_value != old_value) log_param_change(get_fully_qualified_name(), name, number_text(old_value), number_text(now_value));
+    }
     bool tcn_changed = false, tunnel_changed = false, drive_changed = false;
     for (const auto & change : changes) {
       if (is_tcn_param(change.first)) tcn_changed = true;
@@ -1010,7 +1062,9 @@ private:
 
   bool recording() { std::lock_guard<std::mutex> l(rec_m_); return bool(rec_); }
 
-  acd::Reply record_start(std::string label) {   // <log.dir>/manual/<시각>_<상황>/ meta.json, params.yaml, frames.csv, cone_obs.csv
+  // <log.dir>/manual/<시각>_<상황>/ meta.json, params.yaml(auto_control), ros_params.yaml(모든 노드), param_changes.csv(녹화 중 변경),
+  //   frames.csv, cone_obs.csv
+  acd::Reply record_start(std::string label) {
     for (auto & ch : label) if (!std::isalnum(static_cast<unsigned char>(ch)) && ch != '-' && ch != '_') ch = '_';
     if (label.empty()) label = "run";
     std::string dir;
@@ -1027,6 +1081,8 @@ private:
       rec_dir_ = dir;
       rec_t0_ = acd::now_sec();
       rec_frames_ = 0;
+      param_log_ = std::make_unique<std::ofstream>(dir + "/param_changes.csv");
+      *param_log_ << "t,node,name,old,new\n";
       loop_->set_recording(true);
     }
     double camera_x = 0;
@@ -1041,6 +1097,8 @@ private:
         << ",\"cone_size\":" << registry_.get("object.cone_size_m") << ",\"memory_mode\":" << registry_.get("memory.mode") << "}\n";
     }
     open_cone_log(dir, "cone_obs.csv");
+    if (param_dump_thread_.joinable()) param_dump_thread_.join();   // 직전 녹화의 덤프가 아직 돌고 있으면 끝날 때까지
+    param_dump_thread_ = std::thread([this, dir] { dump_all_params(dir + "/ros_params.yaml"); });
     RCLCPP_INFO(get_logger(), "manual recording start: %s", dir.c_str());
     return {true, dir};
   }
@@ -1054,6 +1112,7 @@ private:
       loop_->set_recording(false);
       rec_->flush();
       rec_.reset();
+      param_log_.reset();
       dir = rec_dir_;
       frames = rec_frames_;
       rec_last_ = dir;
@@ -1082,6 +1141,55 @@ private:
     put_pts(o, f.cones_world, 60); o << ',';
     put_pts(o, f.center, 40); o << '\n';
     if (++rec_frames_ % 30 == 0) o.flush();
+  }
+
+  void log_param_change(const std::string & node, const std::string & name, const std::string & old_value, const std::string & new_value) {
+    std::lock_guard<std::mutex> l(rec_m_);
+    if (!param_log_) return;
+    *param_log_ << std::fixed << std::setprecision(3) << acd::now_sec() - rec_t0_ << std::defaultfloat << ',' << csv_field(node) << ','
+                << csv_field(name) << ',' << csv_field(old_value) << ',' << csv_field(new_value) << '\n';
+    param_log_->flush();
+  }
+
+  void on_parameter_event(const rcl_interfaces::msg::ParameterEvent & e) {
+    if (e.node == get_fully_qualified_name()) return;   // 이 노드는 apply_tuning에서 이전 값과 함께 기록
+    if (!recording()) return;
+    for (const auto & p : e.new_parameters) log_param_change(e.node, p.name, "", param_yaml(rclcpp::ParameterValue(p.value)));
+    for (const auto & p : e.changed_parameters) log_param_change(e.node, p.name, "", param_yaml(rclcpp::ParameterValue(p.value)));
+    for (const auto & p : e.deleted_parameters) log_param_change(e.node, p.name, "", "(deleted)");
+  }
+
+  // 녹화 시작 시점 ROS 그래프의 모든 노드 파라미터를 ros2 param dump 형식으로 저장 (별도 스레드, 응답은 MT 실행기가 처리)
+  void dump_all_params(const std::string & path) {
+    auto nodes = get_node_names();
+    std::sort(nodes.begin(), nodes.end());
+    nodes.erase(std::unique(nodes.begin(), nodes.end()), nodes.end());
+    std::ostringstream y;
+    y << "# 녹화 시작 시점의 모든 노드 파라미터. 응답이 없던 노드는 주석으로 남김\n";
+    int ok = 0, failed = 0;
+    for (const auto & node : nodes) {
+      if (stopping_) return;
+      if (node.rfind("/_ros2cli", 0) == 0) continue;
+      auto client = std::make_shared<rclcpp::AsyncParametersClient>(this, node);
+      if (!client->wait_for_service(500ms)) { y << "# " << node << ": 파라미터 서비스 없음\n"; ++failed; continue; }
+      auto listed = client->list_parameters({}, rcl_interfaces::srv::ListParameters::Request::DEPTH_RECURSIVE);
+      if (listed.wait_for(2s) != std::future_status::ready) { y << "# " << node << ": 목록 응답 없음\n"; ++failed; continue; }
+      auto names = listed.get().names;
+      std::sort(names.begin(), names.end());
+      std::vector<rclcpp::Parameter> values;
+      if (!names.empty()) {
+        auto got = client->get_parameters(names);
+        if (got.wait_for(2s) != std::future_status::ready) { y << "# " << node << ": 값 응답 없음\n"; ++failed; continue; }
+        values = got.get();
+      }
+      y << node << ":\n  ros__parameters:" << (values.empty() ? " {}" : "") << '\n';
+      for (const auto & p : values) y << "    " << p.get_name() << ": " << param_yaml(p.get_parameter_value()) << '\n';
+      ++ok;
+    }
+    std::ofstream out(path);
+    out << y.str();
+    if (out) RCLCPP_INFO(get_logger(), "recording params: %s (%d nodes, %d no reply)", path.c_str(), ok, failed);
+    else RCLCPP_WARN(get_logger(), "recording params: cannot write %s", path.c_str());
   }
 
   std::string record_status_json() {
@@ -1155,10 +1263,12 @@ private:
   std::chrono::steady_clock::time_point last_ir_camera_at_{};
   rclcpp::Subscription<sensor_msgs::msg::Image>::SharedPtr ir_bev_sub_;
   rclcpp::TimerBase::SharedPtr ir_camera_timer_;
-  std::thread inspect_thread_, depth_thread_, bev_thread_;
+  std::thread inspect_thread_, depth_thread_, bev_thread_, param_dump_thread_;
   // 기록
   std::mutex rec_m_;
   std::unique_ptr<std::ofstream> rec_;
+  std::unique_ptr<std::ofstream> param_log_;   // 녹화 중 파라미터 변경 (rec_m_)
+  rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr param_events_sub_;
   std::string rec_dir_, rec_last_;
   double rec_t0_{0};
   int rec_frames_{0};
