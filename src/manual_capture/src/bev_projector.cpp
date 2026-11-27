@@ -1,6 +1,9 @@
 #include "manual_capture/bev_projector.hpp"
 
+#include <opencv2/imgproc.hpp>
+
 #include <cmath>
+#include <cstdint>
 #include <stdexcept>
 
 namespace manual_capture
@@ -89,7 +92,7 @@ void BevProjector::rebuild()
   lut_ = generateRemap(camera, bev);
 }
 
-cv::Mat BevProjector::project(const cv::Mat & image) const
+void BevProjector::checkInput(const cv::Mat & image) const
 {
   if (!ready()) {
     throw std::runtime_error("BEV projector is not configured");
@@ -99,7 +102,53 @@ cv::Mat BevProjector::project(const cv::Mat & image) const
   {
     throw std::invalid_argument("BEV input image does not match the lens calibration");
   }
+}
+
+cv::Mat BevProjector::project(const cv::Mat & image) const
+{
+  checkInput(image);
   return convertToBev(image, lut_);
+}
+
+cv::Mat BevProjector::project(
+  const cv::Mat & image, const cv::Matx33d & rgb_camera_to_reference_tilt) const
+{
+  checkInput(image);
+  if (!cv::checkRange(cv::Mat(rgb_camera_to_reference_tilt))) {
+    throw std::invalid_argument("invalid IMU tilt");
+  }
+  // The LUT samples the reference (mount pose) view. A ray d in the current
+  // CAM_A frame is R*d in the reference frame; for this lens (CAM_A <- view = Q)
+  // the same body rotation is Q^T R Q. Source pixel = K (Q^T R Q)^T K^-1 * LUT pixel.
+  // The lens offset from CAM_A is a few cm, so the translation part is ignored.
+  const cv::Matx33d & q = lens_.rotation_rgb_from_view;
+  const cv::Matx33d view_rotation = q.t() * rgb_camera_to_reference_tilt * q;
+  const cv::Matx33d k(lens_.fx, 0.0, lens_.cx, 0.0, lens_.fy, lens_.cy, 0.0, 0.0, 1.0);
+  const cv::Matx33d reference_to_source = k * view_rotation.t() * k.inv();
+
+  cv::Mat map_x(lut_.map_x.size(), CV_32FC1, cv::Scalar(-1.0F));
+  cv::Mat map_y(lut_.map_y.size(), CV_32FC1, cv::Scalar(-1.0F));
+  for (int row = 0; row < map_x.rows; ++row) {
+    const auto * valid = lut_.valid_mask.ptr<std::uint8_t>(row);
+    const auto * x = lut_.map_x.ptr<float>(row);
+    const auto * y = lut_.map_y.ptr<float>(row);
+    auto * out_x = map_x.ptr<float>(row);
+    auto * out_y = map_y.ptr<float>(row);
+    for (int column = 0; column < map_x.cols; ++column) {
+      if (valid[column] == 0U) {
+        continue;
+      }
+      const cv::Vec3d source = reference_to_source * cv::Vec3d(x[column], y[column], 1.0);
+      if (source[2] <= 1.0e-9) {
+        continue;
+      }
+      out_x[column] = static_cast<float>(source[0] / source[2]);
+      out_y[column] = static_cast<float>(source[1] / source[2]);
+    }
+  }
+  cv::Mat bev;
+  cv::remap(image, bev, map_x, map_y, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+  return bev;
 }
 
 }  // namespace manual_capture

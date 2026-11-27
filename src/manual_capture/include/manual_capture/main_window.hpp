@@ -21,6 +21,7 @@
 #include "manual_capture/camera_engine.hpp"
 #include "manual_capture/capture_logic.hpp"
 #include "manual_capture/capture_writer.hpp"
+#include "manual_capture/imu_tilt_tracker.hpp"
 #include "manual_capture/oak_startup_measurement.hpp"
 
 class QCheckBox;
@@ -49,6 +50,7 @@ struct AppParams
   MountPose default_pose;
   bool startup_measurement_enabled{true};
   OakStartupMeasurementConfig measurement;
+  ImuTiltTrackerConfig imu;
   std::string capture_root;
   int jpeg_quality{95};
   int writer_queue_events{64};
@@ -112,7 +114,11 @@ class MainWindow : public QMainWindow
   Q_OBJECT
 
 public:
-  MainWindow(AppParams params, std::shared_ptr<VehicleTelemetry> telemetry);
+  // imu: BEV pitch/roll correction (ERPM / CAN acceleration are fed by the ROS thread).
+  // imu_observer: optional, receives every IMU sample (e.g. the /camera/imu bridge).
+  MainWindow(
+    AppParams params, std::shared_ptr<VehicleTelemetry> telemetry,
+    std::shared_ptr<ImuTiltTracker> imu, ImuObserver imu_observer = {});
   ~MainWindow() override;
 
   // Called on the GUI thread for each controller A rising edge.
@@ -156,6 +162,7 @@ private:
   void refreshPanes();
   void updateDotProjector();
   void ensureBevProjectors();
+  void refreshImuStatus();
 
   // Capture
   enum class Trigger {SINGLE, AUTO, VIEW};
@@ -188,6 +195,7 @@ private:
 
   AppParams params_;
   std::shared_ptr<VehicleTelemetry> telemetry_;
+  std::shared_ptr<ImuTiltTracker> imu_;
   CameraEngine engine_;
   CameraConfig applied_config_;
   ViewSelection selection_;
@@ -267,6 +275,9 @@ private:
   QLabel * pose_roll_{nullptr};
   QLabel * pose_source_{nullptr};
   QPushButton * refit_button_{nullptr};
+  QCheckBox * imu_apply_{nullptr};
+  QLabel * imu_state_{nullptr};
+  QLabel * imu_detail_{nullptr};
   QLabel * refit_message_{nullptr};
 
   // Save tab

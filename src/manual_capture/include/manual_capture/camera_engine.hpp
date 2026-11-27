@@ -6,12 +6,14 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 
 #include "manual_capture/bev_projector.hpp"
 #include "manual_capture/capture_logic.hpp"
+#include "manual_capture/imu_tilt_tracker.hpp"
 #include "opencv2/core.hpp"
 
 namespace manual_capture
@@ -64,6 +66,7 @@ struct RgbFrame
   double timestamp_sec{0.0};
   int exposure_us{0};
   int iso{0};
+  FrameTilt tilt;  // IMU tilt at this frame's mid-exposure time
 };
 
 struct StereoFrame
@@ -77,7 +80,11 @@ struct StereoFrame
   int left_iso{0};
   int right_exposure_us{0};
   int right_iso{0};
+  FrameTilt tilt;  // IMU tilt at the left frame's mid-exposure time
 };
+
+// Called on the IMU thread for every calibrated sample (CAM_A optical frame).
+using ImuObserver = std::function<void(const ImuSample &)>;
 
 class CameraEngine
 {
@@ -87,6 +94,11 @@ public:
 
   CameraEngine(const CameraEngine &) = delete;
   CameraEngine & operator=(const CameraEngine &) = delete;
+
+  // Set before start(). The tracker outlives restarts so its calibration is kept.
+  void setImu(std::shared_ptr<ImuTiltTracker> tracker, ImuObserver observer);
+  // Empty while the IMU streams; otherwise why it is not available.
+  std::string imuError() const;
 
   // Blocking. Throws on failure, leaving the engine stopped.
   void start(const CameraConfig & config, const LiveControls & controls);

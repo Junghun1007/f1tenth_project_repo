@@ -217,6 +217,14 @@ struct CameraEngine::Impl
   std::thread rgb_thread;
   std::thread stereo_thread;
 
+  // IMU (pitch/roll correction of the BEV, same estimator as camera_driver).
+  std::shared_ptr<ImuTiltTracker> imu_tracker;
+  ImuObserver imu_observer;
+  std::shared_ptr<dai::MessageQueue> imu_queue;
+  std::thread imu_thread;
+  cv::Matx33d imu_output_to_camera{cv::Matx33d::eye()};
+  std::string imu_error{"IMU not started"};
+
   mutable std::mutex mutex;  // frames, calibrations, controls, error
   std::shared_ptr<const RgbFrame> latest_rgb;
   std::shared_ptr<const StereoFrame> latest_stereo;
@@ -252,6 +260,7 @@ struct CameraEngine::Impl
         output->timestamp_sec = seconds(frame->getTimestamp(dai::CameraExposureOffset::MIDDLE));
         output->exposure_us = static_cast<int>(frame->getExposureTime().count());
         output->iso = frame->getSensitivity();
+        if (imu_tracker) {output->tilt = imu_tracker->tiltAt(output->timestamp_sec);}
         rgb_rate.tick(output->timestamp_sec);
         std::optional<LensCalibration> lens;
         {
@@ -324,6 +333,7 @@ struct CameraEngine::Impl
         output->timestamp_sec = seconds(left->getTimestamp(dai::CameraExposureOffset::MIDDLE));
         output->left_exposure_us = static_cast<int>(left->getExposureTime().count());
         output->left_iso = left->getSensitivity();
+        if (imu_tracker) {output->tilt = imu_tracker->tiltAt(output->timestamp_sec);}
         stereo_rate.tick(output->timestamp_sec);
         std::optional<LensCalibration> lens;
         if (!both) {
@@ -339,6 +349,82 @@ struct CameraEngine::Impl
         setError(std::string("Stereo: ") + exception.what());
         std::this_thread::sleep_for(5ms);
       }
+    }
+  }
+
+  void imuLoop()
+  {
+    std::vector<ImuSample> samples;
+    while (!stop_requested.load()) {
+      try {
+        auto data = imu_queue->tryGet<dai::IMUData>();
+        if (!data) {
+          std::this_thread::sleep_for(200us);
+          continue;
+        }
+        const double received = seconds(std::chrono::steady_clock::now());
+        samples.clear();
+        for (const auto & packet : data->packets) {
+          const auto & a = packet.acceleroMeter;
+          const auto & g = packet.gyroscope;
+          ImuSample sample;
+          sample.acceleration_camera_mps2 = imu_output_to_camera * cv::Vec3d(a.x, a.y, a.z);
+          sample.angular_velocity_camera_radps = imu_output_to_camera * cv::Vec3d(g.x, g.y, g.z);
+          sample.acceleration_timestamp_sec = seconds(a.getTimestamp());
+          sample.gyroscope_timestamp_sec = seconds(g.getTimestamp());
+          samples.push_back(sample);
+        }
+        if (imu_tracker) {
+          imu_tracker->processBatch(samples, received);
+        }
+        if (imu_observer) {
+          for (const auto & sample : samples) {
+            imu_observer(sample);
+          }
+        }
+      } catch (const std::exception & exception) {
+        setError(std::string("IMU: ") + exception.what());
+        std::this_thread::sleep_for(5ms);
+      }
+    }
+  }
+
+  // Same frame conversion as camera_driver: CALIBRATED reports already contain the
+  // EEPROM IMU output rotation, so apply only the rest of the IMU -> CAM_A rotation.
+  void buildImu()
+  {
+    const bool wanted = (imu_tracker && imu_tracker->config().enabled) || imu_observer;
+    if (!wanted) {
+      std::lock_guard<std::mutex> lock(mutex);
+      imu_error = "IMU stabilization disabled";
+      return;
+    }
+    try {
+      if (device->getConnectedIMU().empty()) {
+        throw std::runtime_error("the OAK device reported no connected IMU");
+      }
+      const auto imu_to_camera = rotationFrom(
+        calibration->getImuToCameraExtrinsics(dai::CameraBoardSocket::CAM_A, false),
+        "IMU-to-CAM_A");
+      const auto imu_to_output = rotationFrom(
+        calibration->getEepromData().imuExtrinsics.rotationMatrix, "calibrated IMU output");
+      imu_output_to_camera = imu_to_camera * imu_to_output.t();
+      const auto & imu_config = imu_tracker ? imu_tracker->config() : ImuTiltTrackerConfig{};
+      auto imu = pipeline->create<dai::node::IMU>();
+      imu->enableIMUSensor(
+        {dai::IMUSensor::ACCELEROMETER_CALIBRATED, dai::IMUSensor::GYROSCOPE_CALIBRATED},
+        static_cast<int>(std::lround(imu_config.imu_rate_hz)));
+      imu->setBatchReportThreshold(1);
+      imu->setMaxBatchReports(imu_config.imu_max_batch_reports);
+      imu_queue = imu->out.createOutputQueue(
+        static_cast<unsigned int>(imu_config.imu_queue_size), false);
+      std::lock_guard<std::mutex> lock(mutex);
+      imu_error.clear();
+    } catch (const std::exception & exception) {
+      // Capture keeps working with the fixed mount pose.
+      imu_queue.reset();
+      std::lock_guard<std::mutex> lock(mutex);
+      imu_error = exception.what();
     }
   }
 
@@ -432,6 +518,7 @@ struct CameraEngine::Impl
 
     rgb_queue = rgb_output->createOutputQueue(1U, false);
     stereo_queue = stereo_output->createOutputQueue(1U, false);
+    buildImu();
     pipeline->build();
     limitBridge(rgb_output);
     limitBridge(stereo_output);
@@ -458,6 +545,8 @@ struct CameraEngine::Impl
     stop_requested.store(true);
     if (rgb_thread.joinable()) {rgb_thread.join();}
     if (stereo_thread.joinable()) {stereo_thread.join();}
+    if (imu_thread.joinable()) {imu_thread.join();}
+    if (imu_tracker) {imu_tracker->setImuStreaming(false);}
     if (device) {
       try {
         device->setIrLaserDotProjectorIntensity(0.0F);
@@ -467,6 +556,7 @@ struct CameraEngine::Impl
     }
     rgb_queue.reset();
     stereo_queue.reset();
+    imu_queue.reset();
     stereo_metadata_queues = {};
     rgb_control.reset();
     left_control.reset();
@@ -537,6 +627,25 @@ void CameraEngine::start(const CameraConfig & config, const LiveControls & contr
   impl.generation.fetch_add(1U);
   impl.rgb_thread = std::thread(&Impl::rgbLoop, &impl);
   impl.stereo_thread = std::thread(&Impl::stereoLoop, &impl);
+  if (impl.imu_queue) {
+    if (impl.imu_tracker) {impl.imu_tracker->setImuStreaming(true);}
+    impl.imu_thread = std::thread(&Impl::imuLoop, &impl);
+  }
+}
+
+void CameraEngine::setImu(std::shared_ptr<ImuTiltTracker> tracker, ImuObserver observer)
+{
+  if (impl_->running.load()) {
+    throw std::logic_error("setImu must be called before start");
+  }
+  impl_->imu_tracker = std::move(tracker);
+  impl_->imu_observer = std::move(observer);
+}
+
+std::string CameraEngine::imuError() const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->imu_error;
 }
 
 void CameraEngine::stop()

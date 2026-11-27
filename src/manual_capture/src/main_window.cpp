@@ -115,6 +115,33 @@ QString lockReason(const View view)
 
 bool isBev(const View view) {return view == View::RGB_BEV || view == View::LEFT_BEV;}
 
+QString tiltText(const FrameTilt & tilt)
+{
+  switch (tilt.kind) {
+    case FrameTiltKind::APPLIED:
+      return QStringLiteral("IMU 보정 roll %1° pitch %2°")
+             .arg(tilt.roll_deg, 0, 'f', 2).arg(tilt.pitch_deg, 0, 'f', 2);
+    case FrameTiltKind::CALIBRATING: return QStringLiteral("IMU 보정 준비 중 (고정 자세)");
+    case FrameTiltKind::REJECTED:
+      return QStringLiteral("IMU 보정 제외 (%1° 초과)").arg(tilt.angle_deg, 0, 'f', 1);
+    case FrameTiltKind::MISSING: return QStringLiteral("IMU 표본 없음 (고정 자세)");
+    case FrameTiltKind::OFF: break;
+  }
+  return QStringLiteral("IMU 보정 OFF (고정 자세)");
+}
+
+void writeTilt(std::ostringstream & row, const FrameTilt * tilt)
+{
+  row << ',' << (tilt ? frameTiltName(tilt->kind) : "") << ',';
+  if (tilt && tilt->kind != FrameTiltKind::OFF && tilt->kind != FrameTiltKind::CALIBRATING &&
+    tilt->kind != FrameTiltKind::MISSING)
+  {
+    row << std::fixed << std::setprecision(3) << tilt->roll_deg << ',' << tilt->pitch_deg;
+  } else {
+    row << ',';
+  }
+}
+
 QLabel * styled(const QString & text, const char * name)
 {
   auto * label = new QLabel(text);
@@ -316,9 +343,12 @@ void ViewPane::showImage(const cv::Mat & image, const bool draw_center_line)
 
 // ---------------------------------------------------------------- MainWindow
 
-MainWindow::MainWindow(AppParams params, std::shared_ptr<VehicleTelemetry> telemetry)
+MainWindow::MainWindow(
+  AppParams params, std::shared_ptr<VehicleTelemetry> telemetry,
+  std::shared_ptr<ImuTiltTracker> imu, ImuObserver imu_observer)
 : params_(std::move(params)),
   telemetry_(std::move(telemetry)),
+  imu_(std::move(imu)),
   applied_config_(params_.camera),
   selection_(params_.camera.stereo_mode),
   rgb_bev_(params_.grid),
@@ -328,6 +358,7 @@ MainWindow::MainWindow(AppParams params, std::shared_ptr<VehicleTelemetry> telem
 {
   setWindowTitle(QStringLiteral("Manual Capture"));
   setStyleSheet(kStyle);
+  engine_.setImu(imu_, std::move(imu_observer));
   // Initial launch: only the color preview, IR fully off.
   params_.controls.flood = 0.0;
   params_.controls.dot = 0.0;
@@ -357,7 +388,8 @@ MainWindow::MainWindow(AppParams params, std::shared_ptr<VehicleTelemetry> telem
   writer_ = std::make_unique<CaptureWriter>(
     "event,unix_time_ns,local_time,trigger,views,stereo_mode,rgb_size,rgb_format,"
     "stereo_size,rgb_exposure_us,rgb_iso,left_exposure_us,left_iso,right_exposure_us,"
-    "right_iso,flood,dot,erpm,servo,bev_height_m,bev_roll_deg,bev_pitch_down_deg,bev_pose",
+    "right_iso,flood,dot,erpm,servo,bev_height_m,bev_roll_deg,bev_pitch_down_deg,bev_pose,"
+    "rgb_imu,rgb_imu_roll_deg,rgb_imu_pitch_deg,left_imu,left_imu_roll_deg,left_imu_pitch_deg",
     static_cast<std::size_t>(params_.writer_queue_events));
   writer_->setJpegQuality(jpeg_quality_->value());
 
@@ -751,7 +783,7 @@ QWidget * MainWindow::buildBevTab()
       "오른쪽 렌즈·중앙정렬은 잠김."), "dim"));
   layout->addWidget(mode);
 
-  auto * pose = new QGroupBox(QStringLiteral("지면 자세 (고정)"));
+  auto * pose = new QGroupBox(QStringLiteral("지면 자세 (측정 기준)"));
   auto * pose_form = new QFormLayout(pose);
   pose_height_ = styled(QString(), "ok");
   pose_pitch_ = styled(QString(), "ok");
@@ -762,6 +794,24 @@ QWidget * MainWindow::buildBevTab()
   pose_form->addRow(QStringLiteral("Roll"), pose_roll_);
   pose_form->addRow(QStringLiteral("측정"), pose_source_);
   layout->addWidget(pose);
+
+  auto * imu = new QGroupBox(QStringLiteral("IMU 자세 보정 (auto_control과 동일)"));
+  auto * imu_layout = new QVBoxLayout(imu);
+  imu_apply_ = new QCheckBox(QStringLiteral("BEV에 IMU pitch/roll 보정 적용"));
+  imu_apply_->setChecked(imu_ && imu_->apply());
+  imu_apply_->setEnabled(imu_ && imu_->config().enabled);
+  imu_layout->addWidget(imu_apply_);
+  imu_state_ = styled(QString(), "dim");
+  imu_state_->setWordWrap(true);
+  imu_layout->addWidget(imu_state_);
+  imu_detail_ = styled(QString(), "dim");
+  imu_detail_->setWordWrap(true);
+  imu_layout->addWidget(imu_detail_);
+  imu_layout->addWidget(styled(
+      QStringLiteral("• 측정 자세가 기준, 주행 중 기울기만 프레임마다 보정\n"
+      "• 시작·Refit 뒤 약 5초 정지 보정 (그동안 고정 자세)\n"
+      "• 원본 영상은 보정하지 않음 (BEV만)"), "dim"));
+  layout->addWidget(imu);
 
   auto * refit = new QGroupBox(QStringLiteral("지면 재추정"));
   auto * refit_layout = new QVBoxLayout(refit);
@@ -796,6 +846,10 @@ QWidget * MainWindow::buildBevTab()
       requestRestart(config);
     });
   connect(refit_button_, &QPushButton::clicked, this, [this]() {requestRefit();});
+  connect(imu_apply_, &QCheckBox::toggled, this, [this](bool on) {
+      if (imu_) {imu_->setApply(on);}
+      refreshImuStatus();
+    });
   return tab;
 }
 
@@ -886,12 +940,21 @@ MainWindow::JobResult MainWindow::measureAndStart(const CameraConfig & config, c
       const auto measured = measureOakStartupExtrinsics(measurement_config);
       start_config.device_id = measured.device_id;
       result.pose = MountPose{measured.height_m, measured.roll_deg, measured.pitch_down_deg};
+      // IMU reference = measured ground normal (Refit restarts the IMU calibration).
+      if (imu_ && imu_->config().enabled &&
+        !imu_->setGroundReference(attitudeUpVector(measured.roll_deg, measured.pitch_down_deg)))
+      {
+        result.message = QStringLiteral("IMU 기준 설정 실패 · ");
+      }
       result.pose_label = QStringLiteral("%1 측정 · 잔차 %2 mm")
         .arg(QString::fromStdString(localTimeString(std::time(nullptr))))
         .arg(measured.plane_residual_mad_m * 1000.0, 0, 'f', 1);
-      result.message = QStringLiteral("지면 측정 완료: 높이 %1 m, pitch %2°, roll %3°")
+      result.message += QStringLiteral("지면 측정 완료: 높이 %1 m, pitch %2°, roll %3°")
         .arg(measured.height_m, 0, 'f', 3).arg(measured.pitch_down_deg, 0, 'f', 2)
         .arg(measured.roll_deg, 0, 'f', 2);
+      if (imu_ && imu_->config().enabled) {
+        result.message += QStringLiteral(" · IMU 보정 준비 약 5초 (움직이지 마세요)");
+      }
     } catch (const std::exception & exception) {
       result.ok = false;
       result.message = QStringLiteral("지면 측정 실패 (이전 자세 유지): %1").arg(exception.what());
@@ -998,6 +1061,57 @@ void MainWindow::finishJob()
 
 // ---------------------------------------------------------------- periodic
 
+void MainWindow::refreshImuStatus()
+{
+  if (!imu_state_) {
+    return;
+  }
+  QString text;
+  QString style = "dim";
+  QString detail;
+  if (!imu_ || !imu_->config().enabled) {
+    text = QStringLiteral("● OFF (imu_stabilization.enabled=false)");
+  } else {
+    const auto status = imu_->status();
+    const auto error = engine_.imuError();
+    if (!status.imu_streaming) {
+      text = engine_.running() && !error.empty() ?
+        QStringLiteral("● IMU 없음: %1").arg(QString::fromStdString(error)) :
+        QStringLiteral("● 카메라 대기 중");
+      style = engine_.running() ? "err" : "warn";
+    } else if (!status.calibrated) {
+      const auto & p = status.progress;
+      text = p.discarding_startup_samples ?
+        QStringLiteral("● 보정 준비 %1/%2 s · 차를 움직이지 마세요")
+        .arg(p.discard_elapsed_sec, 0, 'f', 1).arg(p.discard_target_sec, 0, 'f', 1) :
+        QStringLiteral("● 정지 보정 %1/%2 s · 차를 움직이지 마세요")
+        .arg(p.calibration_elapsed_sec, 0, 'f', 1).arg(p.calibration_target_sec, 0, 'f', 1);
+      if (!p.last_rejection_reason.empty()) {
+        text += QStringLiteral("\n  (%1)").arg(QString::fromStdString(p.last_rejection_reason));
+      }
+      style = "warn";
+    } else if (!status.apply) {
+      text = QStringLiteral("● 보정 완료 · 적용 OFF (고정 자세)");
+    } else {
+      text = QStringLiteral("● 적용 중 · roll %1° pitch %2°")
+        .arg(status.roll_deg, 0, 'f', 2).arg(status.pitch_deg, 0, 'f', 2);
+      style = "ok";
+    }
+    if (status.imu_streaming) {
+      detail = QStringLiteral("기준: %1 · 정지(ERPM): %2 · CAN 가속 보상 %3 / 누락 %4")
+        .arg(status.reference_from_ground ? QStringLiteral("측정 지면") :
+        QStringLiteral("IMU 시작 중력 (지면 측정 실패)"))
+        .arg(status.vehicle_stationary ? QStringLiteral("예") : QStringLiteral("아니오"))
+        .arg(status.motion_compensated).arg(status.motion_misses);
+    }
+  }
+  imu_state_->setText(text);
+  imu_state_->setObjectName(style);
+  imu_state_->style()->unpolish(imu_state_);
+  imu_state_->style()->polish(imu_state_);
+  imu_detail_->setText(detail);
+}
+
 void MainWindow::ensureBevProjectors()
 {
   if (!engine_.running() || bev_generation_ == engine_.generation()) {
@@ -1048,11 +1162,17 @@ std::map<View, cv::Mat> MainWindow::computeViews(
           }
           break;
         case View::RGB_BEV:
-          if (rgb && rgb_bev_.ready()) {output[view] = rgb_bev_.project(rgb->bgr);}
+          if (rgb && rgb_bev_.ready()) {
+            output[view] = rgb->tilt.applied() ?
+              rgb_bev_.project(rgb->bgr, rgb->tilt.camera_to_reference_tilt) :
+              rgb_bev_.project(rgb->bgr);
+          }
           break;
         case View::LEFT_BEV:
           if (stereo && left_bev_.ready() && stereo->right.empty()) {
-            output[view] = left_bev_.project(stereo->left);
+            output[view] = stereo->tilt.applied() ?
+              left_bev_.project(stereo->left, stereo->tilt.camera_to_reference_tilt) :
+              left_bev_.project(stereo->left);
           }
           break;
       }
@@ -1116,6 +1236,9 @@ void MainWindow::tick()
       footer += QStringLiteral(" GRAY · 센서 %1fps").arg(engine_.measuredStereoFps(), 0, 'f', 1);
     } else {
       footer += QStringLiteral(" · %1 cm/px · 차량 중심 정렬").arg(params_.grid.meter_per_pixel * 100.0);
+      const FrameTilt * tilt = view == View::RGB_BEV ? (rgb ? &rgb->tilt : nullptr) :
+        (stereo ? &stereo->tilt : nullptr);
+      if (tilt) {footer += QStringLiteral(" · ") + tiltText(*tilt);}
     }
     footer += QStringLiteral(" · 프리뷰 %1fps").arg(pane->previewFps());
     pane->setFooter(footer);
@@ -1150,6 +1273,7 @@ void MainWindow::statusTick()
   refit_button_->setEnabled(!job_running_ && !moving);  // also recovers a failed start
   refit_button_->setText(moving ? QStringLiteral("⟲  Refit — 주행 중 불가") :
     QStringLiteral("⟲  Refit (지면 재추정)"));
+  refreshImuStatus();
 
   // Capture counters
   std::uint64_t total = 0U;
@@ -1460,6 +1584,10 @@ bool MainWindow::createSession(
              << ", y_min_m: " << params_.grid.y_min_m << ", y_max_m: " << params_.grid.y_max_m
              << ", meter_per_pixel: " << params_.grid.meter_per_pixel
              << ", camera_x_m: " << params_.grid.camera_x_m << "}\n"
+             << "imu_stabilization: {enabled: " << (params_.imu.enabled ? "true" : "false")
+             << ", applied_at_session_start: " << (imu_ && imu_->apply() ? "true" : "false")
+             << ", lever_arm_m: " << params_.imu.lever_arm_m
+             << ", maximum_correction_deg: " << params_.imu.stabilizer.maximum_correction_deg << "}\n"
              << "folders: [rgb, stereo_center, stereo_left, stereo_right, rgb_bev, stereo_left_bev]\n";
     settings.close();
     session.directory = std::move(directory);
@@ -1500,6 +1628,8 @@ std::string MainWindow::metaRow(
   row << ',' << std::fixed << std::setprecision(4) << pose_.height_m
       << ',' << std::setprecision(3) << pose_.roll_deg << ',' << pose_.pitch_down_deg
       << ",\"" << pose_label_.toStdString() << '"';
+  writeTilt(row, rgb ? &rgb->tilt : nullptr);
+  writeTilt(row, stereo ? &stereo->tilt : nullptr);
   return row.str();
 }
 

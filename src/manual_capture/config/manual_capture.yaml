@@ -73,7 +73,55 @@ manual_capture:
 
     # --- vehicle ---
     capture_button_index: 0     # A (SDL GameController)
-    measured_erpm_topic: "/vesc/measured_erpm"
-    servo_position_topic: "/vesc/servo_position"
+    # measured_erpm_topic / servo_position_topic / vehicle_acceleration_topic are set
+    # by the launch file from vehicle_namespace (/<ns>/vesc/..., /<ns>/vehicle/dynamics/...).
     refit_maximum_abs_erpm: 100
     erpm_timeout_sec: 1.0
+
+    # --- IMU pitch/roll correction of the BEVs (same estimator/values as auto_control) ---
+    # The measured ground pose (startup/Refit) is the reference; per frame the BEV is
+    # corrected by the IMU tilt relative to it. After startup/Refit the vehicle must
+    # stay still ~5 s (1 s discard + 4 s calibration); until then the fixed pose is used.
+    # Raw color/stereo images are never warped.
+    imu_stabilization.enabled: true
+    imu_stabilization.imu_rate_hz: 200.0
+    imu_stabilization.imu_queue_size: 80
+    imu_stabilization.imu_max_batch_reports: 5
+    imu_stabilization.maximum_accel_gyro_timestamp_skew_sec: 0.003
+    imu_stabilization.startup_discard_duration_sec: 1.0
+    imu_stabilization.reference_calibration_duration_sec: 4.0
+    imu_stabilization.calibration_maximum_angular_speed_degps: 0.5
+    # Standstill from measured ERPM (filtered entry, raw exit).
+    imu_stabilization.stationary_erpm_enter_threshold: 100
+    imu_stabilization.stationary_erpm_exit_threshold: 500
+    imu_stabilization.stationary_erpm_filter_time_constant_sec: 0.15
+    imu_stabilization.stationary_erpm_enter_duration_sec: 1.0
+    imu_stabilization.measured_erpm_timeout_sec: 1.0
+    # Vehicle acceleration from vehicle_dynamics_monitor removed from the accelerometer.
+    imu_stabilization.vehicle_motion_compensation_enabled: true
+    imu_stabilization.can_acceleration_timeout_sec: 0.10
+    imu_stabilization.can_longitudinal_compensation_gain: 1.0
+    imu_stabilization.can_lateral_compensation_gain: 1.0
+    # Camera ahead of the rotation center (rear axle): wheelbase 0.33 + camera x -0.09.
+    imu_stabilization.lever_arm_m: 0.24
+    imu_stabilization.accelerometer_time_constant_sec: 1.5
+    imu_stabilization.accelerometer_direction_gate_deg: 4.3
+    imu_stabilization.roll_accelerometer_time_constant_sec: 2.0
+    imu_stabilization.roll_accelerometer_direction_gate_deg: 4.3
+    imu_stabilization.accelerometer_stationary_only: false
+    imu_stabilization.moving_accelerometer_nudge_enabled: true
+    imu_stabilization.moving_accelerometer_nudge_strength: 0.15
+    imu_stabilization.moving_gravity_anchor_maximum_correction_rate_degps: 0.50
+    imu_stabilization.reference_tilt_leak_time_constant_sec: 4.0
+    imu_stabilization.pitch_correction_enabled: true
+    imu_stabilization.roll_correction_enabled: true
+    imu_stabilization.gyroscope_correction_gain: 1.0
+    imu_stabilization.maximum_correction_deg: 3.0
+    imu_stabilization.maximum_frame_imu_wait_sec: 0.005
+    imu_stabilization.maximum_frame_imu_age_sec: 0.012
+    imu_stabilization.maximum_prediction_sec: 0.015
+    # /camera/imu (camera_optical_frame) for vehicle_dynamics_monitor's yaw rate, as
+    # camera_driver publishes it in auto_control. The OAK is owned by this node.
+    imu_bridge_enabled: true
+    imu_topic: "/camera/imu"
+    imu_frame_id: "camera_optical_frame"

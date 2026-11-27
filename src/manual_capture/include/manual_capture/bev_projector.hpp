@@ -58,9 +58,15 @@ public:
 
   // GRAY8 or BGR8 image of exactly the configured lens size.
   cv::Mat project(const cv::Mat & image) const;
+  // Same, for a frame whose CAM_A attitude differs from the mount pose by the
+  // IMU tilt (camera_to_reference rotation in CAM_A optical coordinates, as
+  // camera_driver's stabilizer reports it). The fixed LUT is pulled back
+  // through the per-frame rotation homography of this lens.
+  cv::Mat project(const cv::Mat & image, const cv::Matx33d & rgb_camera_to_reference_tilt) const;
 
 private:
   void rebuild();
+  void checkInput(const cv::Mat & image) const;
 
   BevGridConfig grid_;
   LensCalibration lens_{};

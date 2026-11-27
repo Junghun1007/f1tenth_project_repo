@@ -5,8 +5,8 @@
   <version>0.1.0</version>
   <description>
     Standalone OAK-D Pro W capture GUI for labeling datasets: color, stereo
-    left/right, center-aligned view and vehicle-aligned BEVs, launched together
-    with manual driving.
+    left/right, center-aligned view and vehicle-aligned BEVs (with the same IMU
+    pitch/roll correction as auto_control), launched together with manual driving.
   </description>
 
   <maintainer email="ohslo@example.com">ohslo</maintainer>
@@ -14,6 +14,7 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <depend>geometry_msgs</depend>
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>

@@ -74,10 +74,24 @@ def _capture_node(context):
     capture_root = LaunchConfiguration("capture_root").perform(context).strip()
     if not capture_root:
         capture_root = str(_workspace_root(package_share) / "captures")
-    joy_topic = LaunchConfiguration("capture_joy_topic").perform(context).strip()
-    if not joy_topic:
-        namespace = LaunchConfiguration("vehicle_namespace").perform(context).strip("/")
-        joy_topic = f"/{namespace}/joy" if namespace else "/joy"
+    namespace = LaunchConfiguration("vehicle_namespace").perform(context).strip("/")
+    prefix = f"/{namespace}" if namespace else ""
+    joy_topic = LaunchConfiguration("capture_joy_topic").perform(context).strip() or f"{prefix}/joy"
+    # vesc_bridge and vehicle_dynamics_monitor run in the vehicle namespace.
+    vehicle_topics = {
+        "measured_erpm_topic": (
+            LaunchConfiguration("measured_erpm_topic").perform(context).strip()
+            or f"{prefix}/vesc/measured_erpm"
+        ),
+        "servo_position_topic": (
+            LaunchConfiguration("servo_position_topic").perform(context).strip()
+            or f"{prefix}/vesc/servo_position"
+        ),
+        "vehicle_acceleration_topic": (
+            LaunchConfiguration("vehicle_acceleration_topic").perform(context).strip()
+            or f"{prefix}/vehicle/dynamics/acceleration"
+        ),
+    }
 
     pose = _auto_control_pose_overrides(
         LaunchConfiguration("auto_control_bev_params_file").perform(context).strip()
@@ -103,6 +117,7 @@ def _capture_node(context):
                 LaunchConfiguration("params_file"),
                 pose,
                 {"capture_root": os.path.abspath(capture_root), "capture_joy_topic": joy_topic},
+                vehicle_topics,
             ],
         )
     ]
@@ -149,6 +164,15 @@ def generate_launch_description():
                 "capture_joy_topic",
                 default_value="",
                 description="Empty: /<vehicle_namespace>/joy.",
+            ),
+            DeclareLaunchArgument("measured_erpm_topic", default_value="",
+                                  description="Empty: /<vehicle_namespace>/vesc/measured_erpm."),
+            DeclareLaunchArgument("servo_position_topic", default_value="",
+                                  description="Empty: /<vehicle_namespace>/vesc/servo_position."),
+            DeclareLaunchArgument(
+                "vehicle_acceleration_topic",
+                default_value="",
+                description="Empty: /<vehicle_namespace>/vehicle/dynamics/acceleration (IMU correction).",
             ),
             DeclareLaunchArgument("manual_drive_enabled", default_value="true"),
             DeclareLaunchArgument("depthai_library_dir", default_value=default_library_dir),

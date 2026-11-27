@@ -4,7 +4,7 @@ OAK-D Pro W 한 대로 **라벨링용 이미지**를 모으는 독립 캡처 GUI
 수동주행(`vehicle_bringup/manual_drive_with_dynamics.launch.py`)을 같은 launch에서 함께 띄운다.
 
 - 독립 패키지: BEV 기하(`bev_processor`), 지면 측정(`oak_startup`), CUDA 중앙 재투영
-  (`ir_camera_driver`) 코드를 이 패키지 안에 복사해 쓴다. 이 패키지를 지워도 다른 패키지에는
+  (`ir_camera_driver`), IMU 영상 안정화(`camera_driver`) 코드를 이 패키지 안에 복사해 쓴다. 이 패키지를 지워도 다른 패키지에는
   영향이 없다. (실행 시 수동주행 launch만 `vehicle_bringup`을 참조한다.)
 - OAK는 한 프로세스만 열 수 있으므로 `bev_processor`, `camera_driver`, `ir_camera_driver`와
   동시에 실행하지 않는다.
@@ -31,6 +31,9 @@ ros2 launch manual_capture manual_capture.launch.py \
 | `manual_drive_enabled` | `true` | `false`면 캡처 GUI만 실행 |
 | `params_file` | `config/manual_capture.yaml` | 카메라/BEV/캡처 기본값 |
 | `auto_control_bev_params_file` | `bev_processor/config/bev_config.yaml` | auto_control BEV와 같은 카메라 장착 자세(`camera_x_m`=-0.09 등)를 `params_file` 위에 덮어씀. 빈 값이면 `params_file`만 사용 |
+| `measured_erpm_topic` | `/<vehicle_namespace>/vesc/measured_erpm` | Refit 거부·IMU 정지 판정 |
+| `servo_position_topic` | `/<vehicle_namespace>/vesc/servo_position` | meta.csv 서보 값 |
+| `vehicle_acceleration_topic` | `/<vehicle_namespace>/vehicle/dynamics/acceleration` | IMU 보정의 차량 가속도 제거 (`vehicle_dynamics_monitor`) |
 | 나머지 | — | `manual_drive_with_dynamics.launch.py`로 그대로 전달 |
 
 시작하면 차량을 평지에 정지시킨 상태에서 지면 측정(약 5~10초)을 먼저 한다.
@@ -83,11 +86,30 @@ ros2 launch manual_capture manual_capture.launch.py \
   차량 중심(y=0)이 BEV 가로 중앙이며 프리뷰에만 점선으로 표시한다(저장 이미지에는 없음).
 - **왼쪽 렌즈 BEV 모드**: 왼쪽 렌즈만 단독 동작하고, CAM_A→CAM_B 캘리브레이션과 측정 자세로
   차량 중심에 정렬된 BEV를 만든다. 오른쪽 렌즈와 중앙정렬 화면은 잠긴다.
-- 지면 자세는 고정이다(주행 중 IMU 보정 없음). BEV가 틀어지면 **Refit**:
+- 측정한 지면 자세가 기준이고, 주행 중 기울기는 아래 **IMU 자세 보정**이 프레임마다 보정한다.
+  기준 자체가 틀어지면 **Refit**:
   - ERPM이 기준(100) 이상이면 거부 (ERPM 미수신이면 정지로 보고 진행)
   - 카메라를 닫고 R 렌즈 + 도트를 임시로 켜서 측정한 뒤 원래 설정으로 재시작
   - 자동 캡처 중이었다면 끝난 뒤 다시 이어서 캡처
   - 실패하면 이전 자세 유지
+  - 성공하면 새 지면을 기준으로 IMU 보정을 다시 한다 (약 5초 정지)
+
+## IMU 자세 보정 (auto_control과 동일)
+
+auto_control의 `camera_driver` 영상 안정화와 같은 추정기·기본값을 쓴다
+(`imu_image_stabilizer`를 복사, 파라미터는 `config/manual_capture.yaml`의 `imu_stabilization.*`).
+
+- 기준: 시작/Refit 지면 측정의 법선. 측정이 실패했으면 IMU 시작 중력 방향을 기준으로 한다.
+- 시작·Refit 뒤 1초 폐기 + 4초 정지 보정이 끝날 때까지는 고정 자세 BEV (BEV / Refit 탭에 진행 표시).
+- 주행 중에는 gyro로 기준 대비 pitch/roll을 추적하고, `vehicle_dynamics_monitor`의 차량 가속도와
+  카메라 앞쪽 거리 항(`lever_arm_m` 0.24 m)을 가속도계에서 빼서 중력 기준으로 천천히 당긴다.
+  정지 판정은 measured ERPM.
+- 프레임마다 그 촬영 시각의 보정 회전으로 BEV LUT를 다시 투영한다 (컬러 BEV, 왼쪽 렌즈 BEV).
+  원본 컬러/스테레오 영상은 보정하지 않는다.
+- 3°(`maximum_correction_deg`)를 넘거나 IMU 표본이 없으면 그 프레임은 고정 자세로 만든다.
+- BEV / Refit 탭의 체크박스로 적용을 실시간으로 끌 수 있다 (추정은 계속 돈다).
+- OAK를 이 노드가 쓰므로 `/camera/imu`(camera_optical_frame)를 대신 발행한다.
+  `vehicle_dynamics_monitor`가 이 요레이트로 횡가속도를 계산한다 (`imu_bridge_enabled`).
 
 ## 저장 구조
 
@@ -110,7 +132,8 @@ captures/
 - 한 번의 캡처는 모든 화면에서 같은 파일 번호를 쓴다. 번호는 세션별로 시작하고, 이 화면만 캡처도 새 번호를 받는다.
 - 모든 이미지는 JPEG(품질 기본 95, 저장 탭에서 변경)이며 오버레이 없는 원본이다.
 - `meta.csv`: event, 시각, 트리거(single/auto/view), 저장 화면, 모드, 해상도·포맷,
-  실제 노출·ISO(컬러/L/R), flood·dot, ERPM, 서보, BEV 높이·roll·pitch, 자세 출처.
+  실제 노출·ISO(컬러/L/R), flood·dot, ERPM, 서보, BEV 높이·roll·pitch, 자세 출처,
+  IMU 보정 상태(`applied`/`calibrating`/`rejected`/`missing`/`off`)와 roll·pitch 보정량(컬러/왼쪽 프레임별).
 - 저장은 별도 스레드에서 하며 큐가 차면 그 이벤트를 버리고 드롭 수를 표시한다.
 
 ## 테스트
@@ -121,4 +144,5 @@ colcon test --packages-select manual_capture && colcon test-result --verbose
 ```
 
 카메라 없이 도는 테스트: 화면 선택·잠금 규칙, 단일/자동 캡처 규칙, A 버튼 엣지, Refit 거부 조건,
-자동 캡처 스케줄러, JPEG/메타 저장, BEV 투영(컬러·흑백 동일 grid).
+자동 캡처 스케줄러, JPEG/메타 저장, BEV 투영(컬러·흑백 동일 grid), IMU 보정 BEV(회전한 카메라와 일치),
+ERPM 정지 판정·Refit 재보정·CAN 가속도 제거, camera_driver와 같은 안정화기 테스트.

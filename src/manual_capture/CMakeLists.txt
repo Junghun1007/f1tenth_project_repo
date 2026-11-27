@@ -1,9 +1,9 @@
 cmake_minimum_required(VERSION 3.18)
 project(manual_capture LANGUAGES CXX CUDA)
 
-# Self-contained: the BEV geometry, ground-plane measurement and CUDA center
-# reprojection are copied into this package so removing it (or the packages
-# they came from) affects nothing else.
+# Self-contained: the BEV geometry, ground-plane measurement, CUDA center
+# reprojection and the IMU image stabilizer (camera_driver) are copied into
+# this package so removing it (or the packages they came from) affects nothing else.
 
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 17)
@@ -25,6 +25,7 @@ find_package(ament_cmake REQUIRED)
 find_package(CUDAToolkit REQUIRED)
 find_package(OpenCV 4 REQUIRED COMPONENTS core highgui imgcodecs imgproc)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
+find_package(geometry_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -43,6 +44,17 @@ set_target_properties(manual_capture_core PROPERTIES POSITION_INDEPENDENT_CODE O
 target_include_directories(manual_capture_core PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
 target_link_libraries(manual_capture_core PUBLIC ${OpenCV_LIBS} Threads::Threads)
+
+# Copy of camera_driver's IMU pitch/roll stabilizer + the vehicle-motion wrapper
+# auto_control uses (ERPM standstill, CAN acceleration, lever arm).
+add_library(manual_capture_imu STATIC
+  src/imu_image_stabilizer.cpp
+  src/imu_tilt_tracker.cpp
+)
+set_target_properties(manual_capture_imu PROPERTIES POSITION_INDEPENDENT_CODE ON)
+target_include_directories(manual_capture_imu PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(manual_capture_imu PUBLIC ${OpenCV_LIBS} Threads::Threads)
 
 # Copy of oak_startup: stationary IMU + stereo ground-plane measurement.
 add_library(manual_capture_ground STATIC
@@ -71,9 +83,10 @@ add_executable(manual_capture_node
   include/manual_capture/main_window.hpp
 )
 set_target_properties(manual_capture_node PROPERTIES AUTOMOC ON)
-ament_target_dependencies(manual_capture_node rclcpp sensor_msgs std_msgs)
+ament_target_dependencies(manual_capture_node geometry_msgs rclcpp sensor_msgs std_msgs)
 target_link_libraries(manual_capture_node
   manual_capture_core
+  manual_capture_imu
   manual_capture_ground
   manual_capture_reprojector
   depthai::core
@@ -91,8 +104,13 @@ if(BUILD_TESTING)
   ament_add_gtest(manual_capture_test
     test/capture_logic_test.cpp
     test/bev_projector_test.cpp
+    test/imu_tilt_tracker_test.cpp
   )
-  target_link_libraries(manual_capture_test manual_capture_core)
+  target_link_libraries(manual_capture_test manual_capture_core manual_capture_imu)
+  # Same standalone test as camera_driver (own main), run on the copy.
+  add_executable(manual_capture_imu_stabilizer_test test/imu_image_stabilizer_test.cpp)
+  target_link_libraries(manual_capture_imu_stabilizer_test manual_capture_imu)
+  add_test(NAME manual_capture_imu_stabilizer_test COMMAND manual_capture_imu_stabilizer_test)
 endif()
 
 ament_package()
