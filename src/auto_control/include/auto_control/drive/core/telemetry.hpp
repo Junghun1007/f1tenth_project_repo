@@ -31,9 +31,10 @@ struct TelemetryFrame {
   std::string state, mode, reason;
   Readiness readiness;
   InspectionInfo inspection;
-  std::string stabilization{"측정 전"};   // IMU 영상 안정화 적용률 (프리뷰 꺼짐에서도 보냄)
+  std::string stabilization;   // IMU 영상 안정화 적용률 (비어 있으면 보내지 않음: auto_control은 camera_driver가 안정화)
   VehicleInfo vehicle;
-  std::vector<Vec2> lane_left, lane_right, lane_center, lane_path, plan_path;
+  std::vector<Vec2> lane_left, lane_right, lane_path, plan_path;
+  double lane_age_s{-1};   // 마지막으로 받아들인 차선 뒤 경과 시간 (s). <0 = 차선 없음
   std::string plan_mode{"center"};
   bool rollout_ok{true};
   std::vector<DetectionInfo> detections;
@@ -48,7 +49,6 @@ struct TelemetryFrame {
   std::string lon_phase;   // 모드 2: 남은 경로 고정 거리 (m)
   std::vector<StageStats::Row> stages;
   SystemUsage usage;
-  std::uint64_t params_version{0};
 };
 
 std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points = 40);

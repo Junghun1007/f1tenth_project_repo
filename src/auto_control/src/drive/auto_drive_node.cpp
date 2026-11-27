@@ -934,11 +934,9 @@ private:
     if (!full && now - last_status_t_ < 0.5) return;   // 프리뷰 꺼짐: 상태만 초당 2회
     last_status_t_ = now;
     auto f = loop_->telemetry(full, now);
-    f.stabilization = "camera_driver";
     if (full) {
       if (now - last_usage_t_ >= 1.0) { usage_ = sysmon_.sample(now); last_usage_t_ = now; }
       f.usage = usage_;
-      f.params_version = registry_.version();
     }
     const double t0 = acd::now_sec();
     std::string j = acd::telemetry_json(f);

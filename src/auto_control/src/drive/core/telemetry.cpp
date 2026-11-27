@@ -40,7 +40,7 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
     w.begin_object().key("name").value(m.name).key("status").value(m.status).key("stage").value(m.stage)
      .key("elapsed_s").value(m.elapsed_s, 1).key("message").value(m.message).end_object();
   w.end_array().end_object();
-  w.key("stabilization").value(f.stabilization);
+  if (!f.stabilization.empty()) w.key("stabilization").value(f.stabilization);
   if (f.full) {
     const auto & v = f.vehicle;
     w.key("vehicle").begin_object().key("speed").value(v.speed, 3).key("target").value(v.target, 3)
@@ -49,8 +49,8 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
     w.key("lane").begin_object();
     points(w, "left", f.lane_left, max_points);
     points(w, "right", f.lane_right, max_points);
-    points(w, "center", f.lane_center, max_points);
     points(w, "path", f.lane_path, max_points);
+    if (f.lane_age_s >= 0) w.key("age_s").value(f.lane_age_s, 2);
     w.end_object();
     w.key("plan").begin_object();
     points(w, "path", f.plan_path, max_points);
@@ -78,7 +78,7 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
     w.end_object();
     w.key("memory").begin_array();
     for (const auto & m : f.memory)
-      w.begin_object().key("x").value(m.x, 3).key("y").value(m.y, 3).key("confirmed").value(m.confirmed).key("id").value((long long)m.id).end_object();
+      w.begin_array().value(m.x, 3).value(m.y, 3).end_array();   // [x, y] (화면은 위치만 씀)
     w.end_array();
     w.key("stages").begin_array();
     for (const auto & s : f.stages) w.begin_object().key("name").value(s.stage).key("ms").value(s.avg_ms, 2).key("fps").value(s.fps, 1).end_object();
@@ -87,7 +87,6 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
      .key("mem").value(f.usage.mem_percent, 1).key("gpu");
     if (f.usage.gpu_percent) w.value(*f.usage.gpu_percent, 1); else w.null();
     w.end_object();
-    w.key("params_version").value((long long)f.params_version);
   }
   w.end_object();
   return w.str();

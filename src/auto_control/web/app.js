@@ -17,6 +17,7 @@ const STATE_LABEL = { BOOT: "시작 중", INSPECTING: "출발 전 점검", READY
   MANUAL: "수동 (조이스틱)", REFITTING: "카메라 재측정" };
 const SIGNAL_NAME = ["UNKNOWN", "RED", "GREEN"];
 const SIGNAL_KO = ["없음", "빨강", "초록"];
+const LANE_STALE_S = 0.3;   // 이보다 오래 새 차선이 없으면 직전 차선을 흐리게 그림
 const PLAN_LABEL = { center: "중앙선 추종", lane: "차선 안 회피", "lane-tight": "차선 안(여유 0)", free: "차선 밖 회피", fallback: "대체 경로" };
 
 let latest = null;
@@ -123,17 +124,23 @@ function polyline(pts, color, width, dash) {
   ctx.stroke(); ctx.restore();
 }
 
+// 검출 경계점마다 차선 방향(이웃 점 사이)으로 짧은 대시를 그림 → 점보다 잘 보이고 점 위치는 그대로
 function lanePoints(points, color) {
   if (!points?.length) return;
-  const radius = 2;
-  ctx.fillStyle = color;
+  const half = 7;   // 대시 반길이 (px)
+  const px = points.map(([x, y]) => P(x, y));
+  ctx.save();
+  ctx.strokeStyle = color; ctx.lineWidth = 3; ctx.lineCap = "round";
   ctx.beginPath();
-  for (const [x, y] of points) {
-    const [u, v] = P(x, y);
-    ctx.moveTo(u + radius, v);
-    ctx.arc(u, v, radius, 0, 2 * Math.PI);
-  }
-  ctx.fill();
+  px.forEach(([u, v], i) => {
+    const [ua, va] = px[Math.max(0, i - 1)], [ub, vb] = px[Math.min(px.length - 1, i + 1)];
+    let du = ub - ua, dv = vb - va;
+    const n = Math.hypot(du, dv);
+    if (n < 1e-6) { du = 0; dv = 1; } else { du /= n; dv /= n; }   // 점 하나뿐이면 세로(진행 방향)
+    ctx.moveTo(u - du * half, v - dv * half);
+    ctx.lineTo(u + du * half, v + dv * half);
+  });
+  ctx.stroke(); ctx.restore();
 }
 
 function box(x, y, len, wid, yaw, fill, stroke, dash) {
@@ -170,16 +177,24 @@ function drawBev(f) {
   if (!f) return;
   const lanePrefix = f.tunnel?.source === "IR" ? "ir_lane." : "lane.";
   const laneOpacity = params.find((p) => p.name === lanePrefix + "overlay_alpha")?.value ?? 0.75;
+  // 차선을 놓치면 제어는 직전 차선·경로를 lane_timeout 동안 유지한다 → 화면에서는 흐리게 + 경과 시간 표시
+  const laneAge = f.lane.age_s ?? 0;
+  const laneStale = laneAge > LANE_STALE_S;
   ctx.save();
-  ctx.globalAlpha = laneOpacity;
+  ctx.globalAlpha = laneOpacity * (laneStale ? 0.3 : 1);
   lanePoints(f.lane.left, "#3b82f6");
   lanePoints(f.lane.right, "#ef4444");
+  polyline(f.lane.path, "#facc15", 2.5, [16, 6]);
   ctx.restore();
-  polyline(f.lane.path, "#facc15", 2, [8, 6]);
-  for (const m of f.memory) box(m.x, m.y, 0.13, 0.13, 0, null, "#f472b6", [4, 3]);
+  if (laneStale) {
+    ctx.save(); ctx.fillStyle = "#fbbf24"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`차선 미검출 · 직전 차선 ${laneAge.toFixed(1)} s 유지`, 6, 16); ctx.restore();
+  }
+  const memory = f.memory.map((m) => Array.isArray(m) ? { x: m[0], y: m[1] } : m);   // 서버는 [x, y]
+  for (const m of memory) box(m.x, m.y, 0.13, 0.13, 0, null, "#f472b6", [4, 3]);
   // 화면 밖 기억 콘: 가장자리에 화살표 + 거리 (계획이 왜 켜졌는지 보이게)
   let off = 0;
-  for (const m of f.memory) {
+  for (const m of memory) {
     const inside = m.x >= BEV.xMin && m.x <= BEV.xMax && Math.abs(m.y) <= BEV.yHalf;
     if (inside) continue;
     off++;
@@ -514,7 +529,7 @@ function render() {
     `<div><span>카메라 자세</span><b class="${a.status === "PASS" ? "READY" : a.status === "FAIL" ? "FAILED" : "LOADING"}">${a.status}</b>` +
     `<span>${a.status === "PASS" ? `높이 ${a.height_m.toFixed(3)} m · roll ${a.roll_deg.toFixed(1)}° · pitch ${a.pitch_down_deg.toFixed(1)}°` : a.message}</span></div>` +
     f.inspection.models.map((m) => `<div><span>${m.name}</span><b class="${m.status}">${m.status}</b><span>${m.status === "READY" ? (m.stage && m.stage !== "ready" ? m.stage : m.elapsed_s.toFixed(1) + " s") : m.stage + " · " + m.elapsed_s.toFixed(0) + " s"}</span></div>`).join("") +
-    (f.stabilization === "camera_driver" ? "" :
+    (!f.stabilization || f.stabilization === "camera_driver" ? "" :
     `<div><span>IMU 영상 안정화</span><b class="${(f.stabilization || "").startsWith("적용") ? "READY" : "LOADING"}">${(f.stabilization || "").startsWith("적용") ? "ON" : "…"}</b><span>${f.stabilization || "-"}</span></div>`);
 
   renderDriveState(f);

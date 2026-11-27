@@ -578,8 +578,8 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   };
   f.lane_left = display_lane(lane_.left);
   f.lane_right = display_lane(lane_.right);
-  f.lane_center = display_lane(lane_.center);
   f.lane_path = display_lane(lane_.path);
+  if (lane_.valid) f.lane_age_s = std::max(0.0, now - last_lane_t_);   // 차선을 놓쳐도 직전 차선을 유지하므로 화면에 경과 시간을 알림
   f.plan_path = plan_.mode == PlanMode::Center ? std::vector<Vec2>{} : control_path_;
   f.plan_mode = plan_mode_name(plan_.mode);
   f.rollout_ok = plan_.rollout_ok;

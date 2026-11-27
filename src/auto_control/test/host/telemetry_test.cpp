@@ -1,6 +1,7 @@
 #include "check.hpp"
 #include <cmath>
 #include "auto_control/drive/core/telemetry.hpp"
+#include <cmath>
 #include <nlohmann/json.hpp>
 
 using namespace auto_control::drive;
@@ -24,8 +25,12 @@ static TelemetryFrame sample() {
 
 TEST(telemetry_has_fields_and_decimates) {
   const auto j = nlohmann::json::parse(telemetry_json(sample()));
-  for (const char * k : {"t", "state", "mode", "reason", "readiness", "inspection", "vehicle", "lane", "plan", "detections", "memory", "stages", "usage", "params_version"})
+  for (const char * k : {"t", "state", "mode", "reason", "readiness", "inspection", "vehicle", "lane", "plan", "detections", "memory", "stages", "usage"})
     CHECK(j.contains(k));
+  CHECK(!j.contains("params_version") && !j.contains("stabilization"));   // 화면이 쓰지 않는 항목은 보내지 않음
+  CHECK(!j["lane"].contains("center"));
+  CHECK(!j["lane"].contains("age_s"));   // 차선 없음(-1)이면 생략
+  CHECK(j["memory"][0].is_array() && j["memory"][0].size() == 2);
   CHECK(j["reason"] == "say \"hi\"\n");
   CHECK(j["lane"]["left"].size() <= 40);
   CHECK(j["lane"]["left"].back()[0].get<double>() > 2.9);   // 끝점 유지
@@ -33,6 +38,13 @@ TEST(telemetry_has_fields_and_decimates) {
   CHECK(j["readiness"]["lane_fresh"] == true);
   CHECK(j["inspection"]["models"][0]["status"] == "READY");
   CHECK(j["detections"][0]["cls"] == "con");
+}
+
+TEST(telemetry_reports_lane_age) {
+  auto f = sample();
+  f.lane_age_s = 1.234;
+  const auto j = nlohmann::json::parse(telemetry_json(f));
+  CHECK(std::abs(j["lane"]["age_s"].get<double>() - 1.23) < 1e-9);
 }
 
 TEST(status_only_json_is_small) {
