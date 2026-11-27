@@ -239,10 +239,11 @@ void ControlLoop::set_attitude(const AttitudeInfo & a) { std::lock_guard<std::mu
 
 void ControlLoop::set_camera_geometry(const CameraGeometry & g) { std::lock_guard<std::mutex> l(m_); rc_.camera = g; }
 
-void ControlLoop::set_imu_calibration(bool used, bool calibrated) {
+void ControlLoop::set_imu_calibration(bool used, bool calibrated, const std::string & message) {
   std::lock_guard<std::mutex> l(m_);
   imu_used_ = used;
   imu_calibrated_ = !used || calibrated;
+  imu_message_ = message;
 }
 
 void ControlLoop::set_model_status(int i, const InspectionModel & m) { std::lock_guard<std::mutex> l(m_); if (i >= 0 && i <= 2) models_[i] = m; }
@@ -574,6 +575,10 @@ TelemetryFrame ControlLoop::telemetry(bool full, double now) const {
   f.inspection.roll_deg = attitude_.roll_deg;
   f.inspection.pitch_down_deg = attitude_.pitch_down_deg;
   f.inspection.models = {models_[0], models_[1]};
+  if (imu_used_) {
+    f.inspection.imu_status = imu_calibrated_ ? "PASS" : "CALIBRATING";
+    f.inspection.imu_message = imu_message_;
+  }
   if (!models_[2].name.empty()) f.inspection.models.push_back(models_[2]);
   if (!full) return f;
   f.vehicle = {speed_, target_, steer_.angle() * kRad2Deg, cte_, last_out_.duty, last_out_.brake_current};

@@ -11,7 +11,7 @@ const BEV = { xMax: 3.0, xMin: -0.5, yHalf: 0.6, imageXMin: 0.0, pxPerM: 200 };
 const READY_LABEL = {
   attitude_ok: "카메라 자세", lane_model_ready: "차선 모델", yolo_model_ready: "YOLO 모델",
   vesc_connected: "VESC", erpm_fresh: "ERPM", lane_fresh: "차선 입력", client_alive: "브라우저",
-  ir_model_ready: "IR 차선 모델", handover_ready: "안전 전환", imu_calibrated: "IMU 보정",
+  ir_model_ready: "IR 차선 모델", handover_ready: "안전 전환", imu_calibrated: "IMU 안정화 보정",
 };
 const STATE_LABEL = { BOOT: "시작 중", INSPECTING: "출발 전 점검", READY: "출발 대기", DRIVING: "자동 주행", STOPPING: "정지 중",
   MANUAL: "수동 (조이스틱)", REFITTING: "카메라 재측정" };
@@ -528,6 +528,8 @@ function render() {
   $("models").innerHTML =
     `<div><span>카메라 자세</span><b class="${a.status === "PASS" ? "READY" : a.status === "FAIL" ? "FAILED" : "LOADING"}">${a.status}</b>` +
     `<span>${a.status === "PASS" ? `높이 ${a.height_m.toFixed(3)} m · roll ${a.roll_deg.toFixed(1)}° · pitch ${a.pitch_down_deg.toFixed(1)}°` : a.message}</span></div>` +
+    (f.inspection.imu ? `<div><span>IMU 안정화 보정</span><b class="${f.inspection.imu.status === "PASS" ? "READY" : "LOADING"}">` +
+      `${f.inspection.imu.status === "PASS" ? "PASS" : "보정 중"}</b><span>${f.inspection.imu.message || ""}</span></div>` : "") +
     f.inspection.models.map((m) => `<div><span>${m.name}</span><b class="${m.status}">${m.status}</b><span>${m.status === "READY" ? (m.stage && m.stage !== "ready" ? m.stage : m.elapsed_s.toFixed(1) + " s") : m.stage + " · " + m.elapsed_s.toFixed(0) + " s"}</span></div>`).join("") +
     (!f.stabilization || f.stabilization === "camera_driver" ? "" :
     `<div><span>IMU 영상 안정화</span><b class="${(f.stabilization || "").startsWith("적용") ? "READY" : "LOADING"}">${(f.stabilization || "").startsWith("적용") ? "ON" : "…"}</b><span>${f.stabilization || "-"}</span></div>`);

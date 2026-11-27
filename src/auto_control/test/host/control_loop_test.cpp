@@ -489,3 +489,16 @@ TEST(start_is_blocked_until_imu_calibration_finishes) {   // Refit 뒤 IMU 보�
   unused.step();
   CHECK(unused.loop->request_start(unused.t).first);
 }
+
+TEST(imu_calibration_row_follows_camera_state) {
+  Rig r(DriveMode::Drive);
+  CHECK(r.loop->telemetry(false, r.t).inspection.imu_status.empty());   // 안정화 안 씀 → 행 없음
+  r.loop->set_imu_calibration(true, false, "Refit 뒤 IMU 재보정 확인 중");
+  auto f = r.loop->telemetry(false, r.t);
+  CHECK(f.inspection.imu_status == "CALIBRATING");
+  CHECK(f.inspection.imu_message == "Refit 뒤 IMU 재보정 확인 중");
+  CHECK(!f.readiness.imu_calibrated);
+  r.loop->set_imu_calibration(true, true, "보정 완료");
+  f = r.loop->telemetry(false, r.t);
+  CHECK(f.inspection.imu_status == "PASS" && f.readiness.imu_calibrated);
+}

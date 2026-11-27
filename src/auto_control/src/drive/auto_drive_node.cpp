@@ -717,6 +717,11 @@ private:
       if (auto ref = bev_handoff::obstacleReference()) reference_ = ref;   // Refit이면 카메라 회전이 바뀜
       update_mount();
       if (refit_sent_ && loop_->refit_pending()) {   // Refit 끝 (실패면 이전 보정을 다시 알린 것): 콘 기억도 여기서 비워짐
+        if (refit_failure_.empty() && bev_handoff::imuCalibrationState() != bev_handoff::ImuCalibrationState::disabled) {
+          // 카메라 IMU 재보정 시작 확인 전 출발 금지: READY가 되기 전에 점검값부터 내려 둔다 (watchdog 다음 주기 기다리지 않음)
+          imu_refit_hold_until_.store(acd::now_sec() + 1.0);
+          loop_->set_imu_calibration(true, false, "Refit 뒤 IMU 재보정 확인 중 · 차를 움직이지 마세요");
+        }
         loop_->on_refit_done(refit_failure_.empty(), refit_failure_, acd::now_sec());
         RCLCPP_INFO(get_logger(), "Refit %s: height %.3f m, roll %.2f deg, pitch %.2f deg%s", refit_failure_.empty() ? "done" : "failed",
                     pose_->height, pose_->roll, pose_->pitch, refit_failure_.empty() ? "" : (" (" + refit_failure_ + ")").c_str());
@@ -843,16 +848,45 @@ private:
 
   // ------------------------------------------------------------------ 터널
   // camera_driver IMU 안정화 보정 → 출발 전 점검. Refit 뒤 보정 중에 출발하면 터널 IR 입력이 모두 버려져 터널에서 멈춘다
-  void update_imu_calibration() {
+  void update_imu_calibration() {   // 제어 스레드(watchdog, 20 ms)
     using State = bev_handoff::ImuCalibrationState;
     const auto state = bev_handoff::imuCalibrationState();
-    if (last_imu_state_ && *last_imu_state_ == state) return;
-    const bool used = state == State::calibrating || state == State::ready;
-    loop_->set_imu_calibration(used, state == State::ready);
-    if (last_imu_state_ && used) {
-      RCLCPP_INFO(get_logger(), "IMU stabilization %s", state == State::ready ? "calibrated" : "calibrating: keep the vehicle still");
+    const double now = acd::now_sec();
+    // Refit 성공 직후: 카메라가 새 지면 기준으로 보정을 다시 시작했다고 알리기 전(수십 ms)에 출발하지 않게 잠깐 붙잡는다.
+    // 기준이 같아 다시 보정하지 않으면 1 s 뒤 풀린다
+    const double hold_until = imu_refit_hold_until_.load();
+    if (hold_until > 0.0 && (state == State::calibrating || now >= hold_until)) imu_refit_hold_until_.store(0.0);
+    const bool holding = imu_refit_hold_until_.load() > 0.0;
+    // 터널을 켜면 camera_driver가 IMU 안정화를 반드시 쓴다 → 상태를 아직 못 받았으면(시작·카메라 초기화 직후) 기다린다
+    const bool waiting = state == State::unknown && tunnel_enabled_;
+    const bool used = waiting || holding || state == State::calibrating || state == State::ready;
+    const bool calibrated = state == State::ready && !holding;
+    std::string message;
+    if (waiting) {
+      message = "카메라 IMU 상태 대기";
+    } else if (holding) {
+      message = "Refit 뒤 IMU 재보정 확인 중 · 차를 움직이지 마세요";
+    } else if (state == State::calibrating) {
+      std::ostringstream m;
+      m << std::fixed << std::setprecision(1);
+      if (const auto p = bev_handoff::imuCalibrationProgress()) {
+        m << (p->discarding ? "시작 표본 버리는 중 " : "보정 ") << p->elapsed_sec << '/' << p->target_sec << " s · ";
+        if (!p->reason.empty()) m << "다시 시작(" << p->reason << ") · ";
+      }
+      m << "차를 움직이지 마세요";
+      message = m.str();
+    } else if (state == State::ready) {
+      message = "보정 완료";
     }
-    last_imu_state_ = state;
+    if (used != last_imu_used_ || calibrated != last_imu_calibrated_ || message != last_imu_message_) {
+      loop_->set_imu_calibration(used, calibrated, message);
+      if (calibrated != last_imu_calibrated_ && used) {
+        RCLCPP_INFO(get_logger(), "IMU stabilization %s", calibrated ? "calibrated" : "not calibrated: keep the vehicle still");
+      }
+      last_imu_used_ = used;
+      last_imu_calibrated_ = calibrated;
+      last_imu_message_ = message;
+    }
   }
 
   void on_tunnel_state(const std::string & s) {
@@ -1229,7 +1263,9 @@ private:
   bool camera_reset_vesc_required_{true};
   std::atomic<double> camera_reset_at_{0.0};
   std::vector<std::string> ir_model_nodes_;
-  std::optional<bev_handoff::ImuCalibrationState> last_imu_state_;   // 제어 스레드(watchdog)만
+  bool last_imu_used_{false}, last_imu_calibrated_{true};   // 제어 스레드(watchdog)만
+  std::string last_imu_message_;
+  std::atomic<double> imu_refit_hold_until_{0.0};   // Refit 성공 직후 IMU 재보정 확인 (상태 스레드가 씀)
   std::vector<std::string> ir_model_status_;
   bool tunnel_enabled_{false};
   std::unique_ptr<acd::ControlLoop> loop_;

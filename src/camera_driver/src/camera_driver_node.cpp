@@ -2673,8 +2673,24 @@ while True:
         }
         if (imu_stabilization_enabled_ && imu_stabilizer_) {
           // 시작·[Refit] 뒤 보정이 끝나기 전에는 터널 IR 입력이 모두 버려진다 → auto_control이 출발을 막는다
-          bev_handoff::publishImuCalibrationState(imu_stabilizer_->initialized() ?
+          const bool calibrated = imu_stabilizer_->initialized();
+          bev_handoff::publishImuCalibrationState(calibrated ?
             bev_handoff::ImuCalibrationState::ready : bev_handoff::ImuCalibrationState::calibrating);
+          // 점검표 진행 표시 (약 5 Hz, 보정 중에만)
+          const auto steady_now = std::chrono::steady_clock::now();
+          if (calibrated) {
+            if (imu_progress_published_) {bev_handoff::publishImuCalibrationProgress(nullptr); imu_progress_published_ = false;}
+          } else if (steady_now - imu_progress_at_ >= std::chrono::milliseconds(200)) {
+            imu_progress_at_ = steady_now;
+            const auto progress = imu_stabilizer_->calibrationProgress();
+            auto shared = std::make_shared<bev_handoff::ImuCalibrationProgress>();
+            shared->discarding = progress.discarding_startup_samples;
+            shared->elapsed_sec = shared->discarding ? progress.discard_elapsed_sec : progress.calibration_elapsed_sec;
+            shared->target_sec = shared->discarding ? progress.discard_target_sec : progress.calibration_target_sec;
+            shared->reason = progress.last_rejection_reason;
+            bev_handoff::publishImuCalibrationProgress(std::move(shared));
+            imu_progress_published_ = true;
+          }
         }
 
         for (const auto & packet : data->packets) {
@@ -3671,6 +3687,8 @@ while True:
   double high_frequency_vibration_cutoff_hz_{3.0};
   ImuImageStabilizerConfig imu_stabilizer_config_{};
   double imu_lever_arm_m_{0.0};
+  std::chrono::steady_clock::time_point imu_progress_at_{};   // IMU 스레드만 (점검표 진행 표시 주기)
+  bool imu_progress_published_{false};
   std::optional<cv::Vec3d> accepted_ground_reference_;   // 마지막으로 받은 지면 방향 (Refit 판별용)
   double lever_yaw_{0.0}, lever_yaw_rate_{0.0}, lever_yaw_t_{-1.0};   // IMU 스레드 전용
   std::string startup_ground_reference_topic_;

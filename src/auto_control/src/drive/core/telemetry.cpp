@@ -40,7 +40,10 @@ std::string telemetry_json(const TelemetryFrame & f, std::size_t max_points) {
   for (const auto & m : a.models)
     w.begin_object().key("name").value(m.name).key("status").value(m.status).key("stage").value(m.stage)
      .key("elapsed_s").value(m.elapsed_s, 1).key("message").value(m.message).end_object();
-  w.end_array().end_object();
+  w.end_array();
+  if (!a.imu_status.empty())
+    w.key("imu").begin_object().key("status").value(a.imu_status).key("message").value(a.imu_message).end_object();
+  w.end_object();
   if (!f.stabilization.empty()) w.key("stabilization").value(f.stabilization);
   if (f.full) {
     const auto & v = f.vehicle;

@@ -20,6 +20,7 @@ struct InspectionInfo {
   std::string attitude_status{"WAITING"}, attitude_message;
   double height_m{0}, roll_deg{0}, pitch_down_deg{0};
   std::vector<InspectionModel> models;
+  std::string imu_status, imu_message;   // IMU 영상 안정화 보정: "PASS"/"CALIBRATING", 안정화를 안 쓰면 빈 문자열
 };
 struct VehicleInfo { double speed{0}, target{0}, steer_deg{0}, cte{0}, duty{0}, brake{0}; };
 struct DetectionInfo { std::string cls; float score{0}; double x{0}, y{0}, length{0}, width{0}, yaw{0}; };

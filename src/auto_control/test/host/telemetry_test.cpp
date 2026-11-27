@@ -106,3 +106,15 @@ TEST(telemetry_reports_imu_calibration_only_when_used) {
   f.readiness.imu_calibrated = false;
   CHECK(nlohmann::json::parse(telemetry_json(f))["readiness"]["imu_calibrated"] == false);
 }
+
+TEST(inspection_shows_imu_calibration_row_only_when_used) {
+  auto f = sample();
+  CHECK(!nlohmann::json::parse(telemetry_json(f))["inspection"].contains("imu"));
+  f.inspection.imu_status = "CALIBRATING";
+  f.inspection.imu_message = "보정 2.1/4.0 s · 차를 움직이지 마세요";
+  f.full = false;   // 프리뷰 꺼짐(상태만)에서도 점검표는 보냄
+  const auto j = nlohmann::json::parse(telemetry_json(f));
+  CHECK(j["inspection"]["imu"]["status"] == "CALIBRATING");
+  CHECK(j["inspection"]["imu"]["message"] == "보정 2.1/4.0 s · 차를 움직이지 마세요");
+  CHECK(j["inspection"]["models"].size() == 1);
+}

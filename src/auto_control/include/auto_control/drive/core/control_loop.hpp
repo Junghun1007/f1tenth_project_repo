@@ -94,7 +94,8 @@ public:
   void set_attitude(const AttitudeInfo & a);
   void set_camera_geometry(const CameraGeometry & g);
   CameraGeometry camera_geometry() const { std::lock_guard<std::mutex> l(m_); return rc_.camera; }   // 측정한 높이·pitch를 '보여야 할 콘' 판정에 반영
-  void set_imu_calibration(bool used, bool calibrated);   // camera_driver IMU 안정화 보정 상태 (출발 전 점검)
+  // camera_driver IMU 안정화 보정 상태 (출발 전 점검). message: 점검표에 보일 진행·안내
+  void set_imu_calibration(bool used, bool calibrated, const std::string & message = "");
   void set_model_status(int index, const InspectionModel & m);   // 0=차선, 1=YOLO, 2=터널 IR 차선
   void on_inspection_done(bool ok, const std::string & reason, double t);
   void on_refit_done(bool ok, const std::string & reason, double t);
@@ -167,6 +168,7 @@ private:
   StageStats stats_;
   AttitudeInfo attitude_;
   bool imu_used_{false}, imu_calibrated_{true};
+  std::string imu_message_;
   bool obstacles_suspended_{false};
   InspectionModel models_[3];   // 0=차선, 1=YOLO, 2=터널 IR 차선 (이름이 비면 안 씀)
   bool vesc_connected_{false};
