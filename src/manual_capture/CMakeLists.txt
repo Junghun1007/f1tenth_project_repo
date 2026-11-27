@@ -50,6 +50,7 @@ target_link_libraries(manual_capture_core PUBLIC ${OpenCV_LIBS} Threads::Threads
 add_library(manual_capture_imu STATIC
   src/imu_image_stabilizer.cpp
   src/imu_tilt_tracker.cpp
+  src/startup_attitude.cpp  # OpenCV only; also used by the ground measurement
 )
 set_target_properties(manual_capture_imu PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(manual_capture_imu PUBLIC
@@ -59,13 +60,13 @@ target_link_libraries(manual_capture_imu PUBLIC ${OpenCV_LIBS} Threads::Threads)
 # Copy of oak_startup: stationary IMU + stereo ground-plane measurement.
 add_library(manual_capture_ground STATIC
   src/ground_plane_estimator.cpp
-  src/startup_attitude.cpp
   src/oak_startup_measurement.cpp
 )
 set_target_properties(manual_capture_ground PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(manual_capture_ground PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/include ${OpenCV_INCLUDE_DIRS})
-target_link_libraries(manual_capture_ground PUBLIC depthai::core ${OpenCV_LIBS} Threads::Threads)
+target_link_libraries(manual_capture_ground PUBLIC
+  manual_capture_imu depthai::core ${OpenCV_LIBS} Threads::Threads)
 
 # Copy of the IR center-view CUDA reprojector.
 add_library(manual_capture_reprojector STATIC src/cuda_center_reprojector.cu)
