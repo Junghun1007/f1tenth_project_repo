@@ -28,6 +28,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <ctime>
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -41,6 +42,7 @@
 #include "auto_control/drive/core/control_loop.hpp"
 #include "auto_control/drive/core/json_writer.hpp"
 #include "auto_control/drive/core/lane_input.hpp"
+#include "auto_control/drive/core/lane_model_status.hpp"
 #include "auto_control/drive/core/system_monitor.hpp"
 #include "auto_control/drive/core/telemetry.hpp"
 #include "auto_control/drive/runtime/detector.hpp"
@@ -443,6 +445,9 @@ private:
         last_ir_lane_t_ = t_in;
         last_ir_lane_valid_ = lane.valid;
       }
+      // 상태 문자열에 정밀도가 없을 때(예전 검출기)는 결과에 실린 값을 쓴다
+      auto & live = lane_live_[is_ir ? 1 : 0];
+      if (live.precision.empty()) live.precision = m.engine_precision;
     }
     auto & stats = loop_->stats();   // RGB와 IR(터널) 차선은 따로 집계
     const std::string p = is_ir ? "ir_" : "";
@@ -729,12 +734,14 @@ private:
   void on_model_status(int index, const std::string & name, const std::string & s) {
     loop_->set_model_status(index, parse_model(name, s, acd::now_sec() - t_start_));
     std::lock_guard<std::mutex> l(status_m_);
+    if (index == 0) acd::apply_model_status(lane_live_[0], s);
     check_inspection();
   }
 
   void on_ir_model_status(std::size_t i, const std::string & s) {
     std::lock_guard<std::mutex> l(status_m_);
     ir_model_status_[i] = s.substr(0, s.find(" | "));
+    if (ir_model_nodes_[i].find("line_detactor") != std::string::npos) acd::apply_model_status(lane_live_[1], s);
     std::string worst = "READY", detail;
     for (std::size_t k = 0; k < ir_model_status_.size(); ++k) {
       if (ir_model_status_[k] == "READY") continue;
@@ -744,6 +751,22 @@ private:
     loop_->set_model_status(2, {"터널 IR 차선", worst, worst == "READY" ? "ready" : detail, worst == "FAILED" ? detail : "",
                                 acd::now_sec() - t_start_});
     check_inspection();
+  }
+
+  // 웹 "차선 모델" 패널: 고른 번호와 RGB·IR 검출기가 지금 쓰는 모델·정밀도 (터널 끔이면 IR 없음)
+  std::string lane_models_json() {
+    const auto selected = std::size_t(std::clamp(std::lround(registry_.get("lane.model")), 0L, long(lane_models_.size()) - 1));
+    const auto & want = lane_models_[selected];
+    acd::JsonWriter w;
+    std::lock_guard<std::mutex> l(status_m_);
+    w.begin_object().key("selected").value((long long)selected).key("rgb");
+    acd::write_lane_model_json(w, lane_live_[0], want.rgb_path, want.rgb_precision);
+    if (tunnel_enabled_) {
+      w.key("ir");
+      acd::write_lane_model_json(w, lane_live_[1], want.ir_path, want.ir_precision);
+    }
+    w.end_object();
+    return w.str();
   }
 
   void check_inspection() {   // status_m_ 잡은 채로. 자세·YOLO가 준비되면 점검 단계 끝 (차선·VESC 등은 출발 때 상태기계가 확인)
@@ -945,6 +968,7 @@ private:
           << ",\"camera_reset_allowed\":" << (can_reset_camera ? "true" : "false")
           << ",\"camera_reset_pending\":" << (camera_reset_at_.load() > 0.0 ? "true" : "false");
       }
+      x << ",\"lane_models\":" << lane_models_json();
       if (tunnel_enabled_) x << ",\"tcn\":" << tcn_telemetry_.json(now - t_start_);
       x << ",\"camera_exposure\":" << camera_exposure_json();
       {   // 단계별 연산의 목표 FPS와 TCN 입력 FPS (TCN 노드가 잰 값, 1초 넘게 보고가 없으면 null)
@@ -1079,6 +1103,7 @@ private:
   std::string params_save_path_, lane_model_node_;
   struct LaneModelChoice { std::string rgb_path, rgb_precision, ir_path, ir_precision; };
   std::array<LaneModelChoice, 4> lane_models_;   // lane.model 0..3 (settings.cpp 옵션과 같은 순서)
+  std::array<acd::LaneModelLive, 2> lane_live_;   // 실제로 쓰는 모델: [0] RGB line_detactor, [1] IR ir_line_detactor (status_m_)
   std::string camera_reset_path_;
   bool camera_reset_vesc_required_{true};
   std::atomic<double> camera_reset_at_{0.0};

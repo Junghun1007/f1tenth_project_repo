@@ -98,6 +98,7 @@ async function loadParams() {
   const url = DEMO ? "demo/params.json" : "/api/params";
   try { params = (await (await fetch(url, { cache: "no-store" })).json()).params; } catch (e) { params = []; }
   renderParams();
+  if (latest) renderLaneModels(latest.lane_models, latest.tunnel?.enabled);   // 차선 모델 이름은 파라미터 목록에서 온다
 }
 
 // ---------- BEV 캔버스 ----------
@@ -406,12 +407,47 @@ function renderCameraExposure(values, tunnelEnabled) {
   $("exposureIrFlood").parentElement.hidden = !tunnelEnabled;
 }
 
+// 차선 모델 패널: RGB·IR 검출기가 지금 실제로 추론에 쓰는 모델·정밀도 (lane_models 텔레메트리)
+function laneModelName(model, precision) {
+  return [model || "—", precision ? precision.toUpperCase() : ""].filter(Boolean).join(" · ");
+}
+
+function renderLaneModels(models, tunnelEnabled) {
+  $("laneModelPanel").hidden = !models;
+  if (!models) return;
+  const option = params.find((p) => p.name === "lane.model")?.options?.find((o) => o.value === models.selected);
+  $("laneModelSelected").textContent = option ? `선택 ${option.label}` : Number.isInteger(models.selected) ? `선택 ${models.selected}` : "";
+  for (const [id, m, show] of [["laneModelRgb", models.rgb, true], ["laneModelIr", models.ir, tunnelEnabled && Boolean(models.ir)]]) {
+    const row = $(id);
+    row.hidden = !show;
+    if (!show) continue;
+    const state = m?.state || "WAITING";
+    row.dataset.state = state;
+    row.dataset.swap = m?.swap || "";
+    const name = state === "READY" || m?.model ? laneModelName(m?.model, m?.precision) : "—";
+    const want = m?.want_model ? laneModelName(m.want_model, m.want_precision) : "";
+    let note;
+    if (state === "WAITING") note = "상태 대기";
+    else if (state === "LOADING") note = ["불러오는 중", m.detail].filter(Boolean).join(" · ");
+    else if (state === "FAILED") note = `불러오기 실패 · ${m.detail || ""}`;
+    else if (m.swap === "LOADING") note = `교체 중 → ${want || m.swap_target}` + (m.detail ? ` · ${m.detail}` : "");
+    else if (m.swap === "FAILED") note = `교체 실패, 지금 모델 유지 · ${m.detail || ""}`;
+    else if (m.want_model && (m.want_model !== m.model || (m.want_precision && m.want_precision !== m.precision)))
+      note = `선택 ${want} · 교체 대기`;
+    else note = `사용 중 · ${m.file || ""}`;
+    row.querySelector("b").textContent = name;
+    const span = row.querySelector("span");
+    span.textContent = note;
+    span.title = m?.file || "";
+  }
+}
+
 function render() {
   const f = latest;
   if (!f) return;
   const previewOn = $("togPreview").checked;
   const tunnel = f.tunnel || {};
-  $("main").hidden = !previewOn && !tunnel.enabled && !f.camera_exposure;
+  $("main").hidden = !previewOn && !tunnel.enabled && !f.camera_exposure && !f.lane_models;
   $("main").classList.toggle("preview-off", !previewOn);
   $("offNote").hidden = previewOn;
   $("togBev").disabled = $("togCam").disabled = !previewOn;
@@ -440,6 +476,7 @@ function render() {
   $("sourceChip").className = "chipx " + selected;
   $("sourceChip").textContent = selected === "IR" ? "IR 터널" : "RGB";
   renderTunnel(tunnel, f.tcn, f.readiness.lane_fresh);
+  renderLaneModels(f.lane_models, tunnel.enabled);
   $("cameraExposurePanel").hidden = !f.camera_exposure;
   renderCameraExposure(f.camera_exposure, tunnel.enabled);
   renderTunnelMode(tunnel);
@@ -847,6 +884,19 @@ async function demo() {
       { name: "web", ms: 0.3, fps: 30 }];
     g.stage_targets = { rgb: 60, rgb_inside: 30, depth: 30, imu: 200, yolo: 40, tcn_input: 30, tcn_infer: 10, ir: 30, web: 30 };
     g.tcn_source_fps = 29.8;
+    const laneModel = (model, file, precision, extra = {}) => ({ state: "READY", model, file, precision, swap: "", swap_target: "",
+      detail: "", want_model: model, want_precision: precision, ...extra });
+    g.lane_models = { selected: 1, rgb: laneModel("v5", "fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx", "int8"),
+      ir: laneModel("IR 기존", "ir_stereo_bev_120x300.onnx", "fp32") };
+    if (qs.get("lane_model") === "swap") {   // C3 FP32로 바꾸는 중: RGB는 엔진 생성, IR은 실패
+      g.lane_models.selected = 3;
+      Object.assign(g.lane_models.rgb, { swap: "LOADING", swap_target: "lane_c3_120x300.onnx (fp32)", detail: "TensorRT engine build",
+        want_model: "C3", want_precision: "fp32" });
+      Object.assign(g.lane_models.ir, { swap: "FAILED", detail: "Three-channel ONNX model not found", want_model: "C3", want_precision: "fp32" });
+    } else if (qs.get("lane_model") === "c3") {
+      g.lane_models = { selected: 2, rgb: laneModel("C3", "lane_c3_120x300.int8.qdq.onnx", "int8"),
+        ir: laneModel("C3", "lane_c3_120x300.int8.qdq.onnx", "int8") };
+    }
     g.traffic = { enabled: true, signal: 0, committed: false, holding: false, line: -99, cap: -1, stop_range: 0.25 };
     g.yolo = { fps: 40, signal_score: 0 };
     if (scene === "red" || scene === "green") {

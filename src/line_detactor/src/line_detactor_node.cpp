@@ -165,7 +165,7 @@ public:
       model_load_status_->update("LOADING | Trial inference / CUDA warmup");
       warm_up(*backend_);
       model_load_status_->update("READY | model=" + model_path_ + " | engine=" +
-        backend_->engine_cache_path() + " | trial inference=PASS");
+        backend_->engine_cache_path() + " | precision=" + engine_precision_ + " | trial inference=PASS");
     } catch (const std::exception & e) {
       model_load_status_->update(std::string("FAILED | ") + e.what());
       RCLCPP_ERROR(node_.get_logger(), "[MODEL CHECK] FAIL: %s", e.what());
@@ -792,7 +792,7 @@ private:
         model_path_ = swap_ready_path_;
         engine_precision_ = swap_ready_precision_;
         model_load_status_->update("READY | model=" + model_path_ + " | engine=" +
-          backend_->engine_cache_path() + " | trial inference=PASS | swapped");
+          backend_->engine_cache_path() + " | precision=" + engine_precision_ + " | trial inference=PASS | swapped");
         RCLCPP_INFO(node_.get_logger(), "[MODEL SWAP] now using %s (%s)",
           model_path_.c_str(), engine_precision_.c_str());
       }
@@ -805,15 +805,22 @@ private:
     const auto requested = model_key(path, precision);
     if (requested == swap_attempted_key_) {return;}
     swap_attempted_key_ = requested;
-    if (requested == model_key(model_path_, engine_precision_)) {return;}
+    if (requested == model_key(model_path_, engine_precision_)) {
+      // 지금 모델로 되돌아옴: 이전 교체 실패 표시를 지운다
+      model_load_status_->update("READY | model=" + model_path_ + " | engine=" +
+        backend_->engine_cache_path() + " | precision=" + engine_precision_ + " | trial inference=PASS");
+      return;
+    }
     if (swap_thread_.joinable()) {swap_thread_.join();}
-    const auto active = model_path_;
+    // 웹 "차선 모델" 패널: 교체 중에도 지금 쓰는 모델·정밀도와 바꿀 모델·정밀도를 함께 보낸다
+    const auto active_path = model_path_;
+    const auto active = active_path + " | precision=" + engine_precision_;
     model_load_status_->update("READY | model=" + active + " | swap=LOADING " +
-      std::filesystem::path(path).filename().string());
+      std::filesystem::path(path).filename().string() + " (" + precision + ")");
     RCLCPP_INFO(node_.get_logger(), "[MODEL SWAP] loading %s (%s) in background",
       path.c_str(), precision.c_str());
     swap_loading_.store(true);
-    swap_thread_ = std::thread([this, path, precision, active] {
+    swap_thread_ = std::thread([this, path, precision, active, active_path] {
       try {
         if (precision != "fp32" && precision != "fp16" && precision != "int8") {
           throw std::invalid_argument("engine_precision must be fp32, fp16 or int8");
@@ -824,8 +831,9 @@ private:
         const auto name = std::filesystem::path(path).filename().string();
         // RGB·IR이 같은 ONNX·방식을 고를 수 있으므로 IR은 엔진 캐시 파일을 따로 쓴다 (launch_support.py와 같은 이름)
         const auto cache = ir_hints_ ? path + ".ir_line_detactor." + precision + ".engine" : std::string();
-        auto next = make_backend(path, cache, precision, [this, active, name](const std::string & stage) {
-          model_load_status_->update("READY | model=" + active + " | swap=LOADING " + name + " | " + stage);
+        auto next = make_backend(path, cache, precision, [this, active, name, precision](const std::string & stage) {
+          model_load_status_->update("READY | model=" + active + " | swap=LOADING " + name + " (" + precision + ") | " +
+            stage);
         });
         warm_up(*next);
         std::lock_guard<std::mutex> lock(swap_mutex_);
@@ -834,7 +842,7 @@ private:
         swap_ready_precision_ = precision;
       } catch (const std::exception & e) {
         model_load_status_->update("READY | model=" + active + " | swap=FAILED " + e.what());
-        RCLCPP_ERROR(node_.get_logger(), "[MODEL SWAP] FAIL, keeping %s: %s", active.c_str(), e.what());
+        RCLCPP_ERROR(node_.get_logger(), "[MODEL SWAP] FAIL, keeping %s: %s", active_path.c_str(), e.what());
       }
       swap_loading_.store(false);
     });
