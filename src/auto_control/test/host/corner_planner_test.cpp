@@ -71,3 +71,19 @@ TEST(short_or_invalid_reference_is_rejected) {
   ref[3].x = std::nan("");
   CHECK(!plan_corner_path(ref, {}, {}, 0.8, CornerPlanParams{}).ok);
 }
+
+TEST(offset_vehicle_starts_on_itself_and_returns_slowly) {   // 코너 뒤 차선 중앙 복귀: 출발은 차량 위치·방향, 복귀는 천천히
+  std::vector<Vec2> ref, left, right;
+  line(ref, {0.25, -0.12}, {2.9, -0.12});      // 차량이 차선 중앙보다 왼쪽으로 12 cm
+  line(left, {0.25, 0.205}, {2.9, 0.205});
+  line(right, {0.25, -0.445}, {2.9, -0.445});
+  const auto r = plan_corner_path(ref, left, right, 0.8, CornerPlanParams{});
+  CHECK(r.ok);
+  CHECK_NEAR(r.path.front().x, 0.0, 0.02);
+  CHECK_NEAR(r.path.front().y, 0.0, 0.02);
+  const double heading = std::atan2(r.path[2].y - r.path[0].y, r.path[2].x - r.path[0].x);
+  CHECK(std::abs(heading) < 2.0 * M_PI / 180.0);   // 출발 방향 = 차량 방향 (차선 중심 쪽으로 꺾어 시작하지 않음)
+  for (const auto & q : r.path) if (q.x < 0.5) CHECK(q.y > -0.03);   // 0.5 m 안에서 중앙으로 급히 가지 않는다
+  CHECK(r.min_radius > 1.5);
+  CHECK(r.path.back().y < r.path.front().y);       // 결국 중앙 쪽으로 돌아간다
+}

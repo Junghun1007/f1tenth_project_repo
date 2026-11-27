@@ -396,6 +396,7 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
     cp.lateral_accel = s_.maximum_lateral_accel;
     cp.deceleration = s_.lon.mode == 2 ? s_.lon.duty_only.planning_deceleration_mps2 : s_.planning_decel;
     cp.acceleration = s_.lon.planning_acceleration_mps2;
+    cp.start_curvature = std::tan(steer_.angle()) / rc_.wheelbase;   // 경로 시작 곡률 = 지금 조향 (조향이 튀지 않게)
     const auto & reference = lane_.center.size() >= 4 ? lane_.center : lane_.path;
     auto planned = plan_corner_path(reference, lane_.left, lane_.right, speed_, cp);
     if (planned.ok && planned.path.size() >= 4) {
@@ -513,10 +514,21 @@ StepOutput ControlLoop::control_step(double now, bool have_path) {
     const auto st = stanley_control(*path, speed_, s_.stanley_gain, s_.stanley_softening, s_.heading_lookahead_m,
                                     rc_.steering.max_steer_rad, rc_.steering.corner_heading_threshold_rad, 0.8);
     cte_ = st.cross_track_error_m;
+    double steering = st.steering_angle_rad;
+    // 코너 경로 계획(실험)을 켜면 곡률 피드포워드: 경로가 휜 만큼은 미리 꺾고 Stanley는 남은 오차만 잡는다
+    // (Stanley만으로는 지연 때문에 코너 뒤 중앙 복귀에서 지나쳤다 돌아오기를 반복한다)
+    if (s_.corner_plan.enabled && lane_source_ == LaneSource::RGB) {
+      std::size_t nearest = 0;
+      for (std::size_t i = 1; i < path->points.size(); ++i)
+        if (std::hypot(path->points[i].x, path->points[i].y) < std::hypot(path->points[nearest].x, path->points[nearest].y)) nearest = i;
+      const double kappa = path->curvature(path->arc_m[nearest]);
+      if (std::isfinite(kappa))
+        steering = std::clamp(steering + std::atan(rc_.wheelbase * kappa), -rc_.steering.max_steer_rad, rc_.steering.max_steer_rad);
+    }
     // 정지 시 조향 유지는 '목표 속도 0'일 때만 걸린다 → 차량 추종·롤아웃 상한까지 반영한 실제 목표를 넘긴다
     // (곡률 계획 속도만 넘기면 앞차 뒤에 서 있어도 목표>0이라 차선 인식 흔들림을 그대로 따라 조향이 떨린다)
     const double cap_now = std::min({plan_.speed_cap, s_.lead.enabled ? lead_.state().cap : plan_.speed_cap, traffic_.state().cap});
-    steer_.update(st.steering_angle_rad, dt, st.heading_error_rad, stop ? 0.0 : std::min(plan_target, cap_now), speed_);
+    steer_.update(steering, dt, st.heading_error_rad, stop ? 0.0 : std::min(plan_target, cap_now), speed_);
   }
   const double cap = std::min({plan_.speed_cap, s_.lead.enabled ? lead_.state().cap : plan_.speed_cap, traffic_.state().cap});   // 차량 추종·신호등 상한
   const auto cmd = lon_.update(dt, path ? plan_target : 0.0, plan_.obstacle_active, cap, stop || !path);

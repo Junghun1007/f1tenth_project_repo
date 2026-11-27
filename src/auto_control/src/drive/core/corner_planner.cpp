@@ -74,7 +74,13 @@ struct Corridor {
 };
 
 Corridor corridor(std::vector<Vec2> base, const std::vector<Vec2> & left, const std::vector<Vec2> & right, double lane_width) {
-  if (norm(base[0]) > 0.03) base.insert(base.begin(), Vec2{0, 0});   // 차량 위치에서 시작
+  // 기준선을 첫 방향 그대로 뒤로 늘려 차량 옆(차량 위치를 기준선에 내린 점)에서 시작한다.
+  // 차량 위치로 바로 꺾어 붙이면 출발 방향이 차선 중심 쪽으로 꺾여 코너 뒤 복귀 때 휘청거린다
+  {
+    const Vec2 t0 = unit(base[std::min<std::size_t>(3, base.size() - 1)] - base[0]);
+    const double e = dot(base[0], t0);
+    if (e > 0.03) base.insert(base.begin(), base[0] - t0 * e);
+  }
   base = resample(base, kStep);
   // 끝점을 고정한 채 평활화 (양 끝을 점대칭으로 늘려서)
   const double s = kRefSigma / kStep;
@@ -198,8 +204,11 @@ std::vector<double> eval(const std::vector<Basis> & B, const std::vector<double>
 }
 
 // 통로 [lo, hi] 안에서 곡률 제곱합이 최소인 횡 이동량 (제어점 패턴 탐색)
+// 출발 조건: 차량의 횡위치 d0, 횡이동 기울기 slope (차량 방향), 곡률 kv. center_w: 점마다 중앙 복귀 비중
+struct Start { double d0{0}, slope{0}, kv{0}; };
 std::vector<double> optimize(const Corridor & C, const std::vector<double> & lo, const std::vector<double> & hi,
-                             const std::vector<Basis> & B, std::vector<double> & ctrl) {
+                             const std::vector<Basis> & B, std::vector<double> & ctrl, const Start & st,
+                             const std::vector<double> & center_w) {
   const std::size_t N = C.R.size();
   std::vector<Vec2> Q(N);
   const auto cost = [&](const std::vector<double> & c) {
@@ -213,9 +222,12 @@ std::vector<double> optimize(const Corridor & C, const std::vector<double> & lo,
     }
     for (std::size_t i = 0; i < N; ++i) {
       const double v = std::max(0.0, lo[i] - d[i]) + std::max(0.0, d[i] - hi[i]);
-      J += 1e5 * v * v + 0.2 * d[i] * d[i] * kStep;
+      J += 1e5 * v * v + center_w[i] * d[i] * d[i] * kStep;
     }
-    return J + 1e5 * (d[0] * d[0] + (d[1] - d[0]) * (d[1] - d[0]));
+    const Vec2 a = Q[1] - Q[0], b = Q[2] - Q[1], e = Q[2] - Q[0];
+    const double k1 = 2 * (a.x * b.y - a.y * b.x) / (norm(a) * norm(b) * norm(e) + 1e-9);
+    const double s0 = d[1] - d[0] - st.slope * kStep;
+    return J + 1e5 * ((d[0] - st.d0) * (d[0] - st.d0) + s0 * s0) + 2.0 * (k1 - st.kv) * (k1 - st.kv);
   };
   double J = cost(ctrl);
   for (double h = 0.08; h > 0.0008; h /= 2) {
@@ -253,6 +265,18 @@ CornerPlanResult plan_corner_path(const std::vector<Vec2> & reference, const std
     B[i] = {m, {(1 - t) * (1 - t) * (1 - t) / 6, (3 * t * t * t - 6 * t * t + 4) / 6,
                 (-3 * t * t * t + 3 * t * t + 3 * t + 1) / 6, t * t * t / 6}};
   }
+  // 차량의 출발 상태 (기준선 좌표): 횡위치·방향·곡률
+  Start st;
+  {
+    const Vec2 t0 = unit(C.R[1] - C.R[0]);
+    st.d0 = dot(Vec2{0, 0} - C.R[0], C.n[0]);
+    st.slope = std::clamp(C.n[0].x / std::max(0.2, t0.x), -1.5, 1.5);   // 차량 전방(+x)의 횡 기울기
+    st.kv = p.start_curvature;
+  }
+  // 중앙 복귀: 복귀 거리 안에서는 중앙으로 당기지 않고(통로 안이면 그대로), 그 뒤로 서서히 당긴다
+  const double return_dist = std::max(p.return_min_distance, std::max(speed, 0.0) * p.return_time);
+  std::vector<double> center_w(N);
+  for (std::size_t i = 0; i < N; ++i) center_w[i] = 0.2 * std::clamp((i * kStep - return_dist) / 0.3, 0.0, 1.0);
   std::vector<double> ctrl(nC, 0.0), exL(N, 0.0), exR(N, 0.0), lo(N), hi(N);
   const int nL = int(std::lround(p.wheelbase / kStep));
   std::vector<Vec2> path = C.R;
@@ -278,8 +302,10 @@ CornerPlanResult plan_corner_path(const std::vector<Vec2> & reference, const std
         lo[i] = hi[i] = std::min(C.dl[i] - p.vehicle_width / 2, std::max(-(C.dr[i] - p.vehicle_width / 2), (lo[i] + hi[i]) / 2));
       }
     }
-    lo[0] = std::min(lo[0], 0.0); hi[0] = std::max(hi[0], 0.0);
-    const auto d = optimize(C, lo, hi, B, ctrl);
+    for (std::size_t i = 0; i < N && i * kStep < 0.3; ++i) {   // 출발 직후는 지금 위치를 허용
+      lo[i] = std::min(lo[i], st.d0); hi[i] = std::max(hi[i], st.d0);
+    }
+    const auto d = optimize(C, lo, hi, B, ctrl, st, center_w);
     for (std::size_t i = 0; i < N; ++i) path[i] = C.R[i] + C.n[i] * d[i];
     T = trace(path, C, speed, p);
     if (loop == 3 || T.min_clear >= kTarget) break;

@@ -18,6 +18,9 @@ struct CornerPlanParams {
   double v0{1.3};                   // 내륜차가 0이 되는 속도 (슬립). 실측으로 맞출 것
   double inner_margin{0.03};        // 회전 안쪽 차선과 차체 사이 여유
   double outer_margin{0.03};
+  double start_curvature{0.0};      // 지금 조향 곡률 tan(δ)/L — 경로 시작 곡률을 맞춰 조향이 튀지 않게
+  double return_time{1.5};          // 차선 중앙 복귀에 쓰는 시간 (s): 복귀 거리 = max(최소, 속도×시간)
+  double return_min_distance{1.2};  // (m)
 };
 
 struct CornerPlanResult {

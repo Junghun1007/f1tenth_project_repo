@@ -52,7 +52,9 @@ function sideDistance(p, t, n, pts, limit) {
 // 기준선(차선 중심) 주위의 통로: 점마다 왼쪽·오른쪽 차선까지 법선 방향 거리
 function corridor(ref, left, right, laneWidth) {
   let base = ref.slice();
-  if (nrm(base[0]) > 0.03) base = [{x: 0, y: 0}].concat(base);     // 차량 위치에서 시작
+  // 기준선을 첫 방향 그대로 뒤로 늘려 차량 옆에서 시작 (차량 위치로 바로 꺾어 붙이면 복귀 때 휘청거림)
+  {const t0 = unit(sub(base[Math.min(3, base.length - 1)], base[0])), e = base[0].x * t0.x + base[0].y * t0.y;
+    if (e > 0.03) base = [sub(base[0], mul(t0, e))].concat(base);}
   base = resample(base, DB);
   // 끝점을 고정한 채 평활화 (양 끝을 점대칭으로 늘려서 가우시안) — 그냥 하면 양 끝이 안쪽으로 줄어든다
   const s = P_SIGMA / DB, r = Math.ceil(3 * s), n0 = base.length;
@@ -127,7 +129,7 @@ function trace(path, C, P) {
 }
 
 function evalD(basis, c) {return basis.map(b => b.w[0] * c[b.m] + b.w[1] * c[b.m + 1] + b.w[2] * c[b.m + 2] + b.w[3] * c[b.m + 3]);}
-function optimize(C, lo, hi, basis, ctrl) {
+function optimize(C, lo, hi, basis, ctrl, st, centerW) {
   const cost = c => {
     const d = evalD(basis, c), Q = C.R.map((p, i) => add(p, mul(C.nL[i], d[i])));
     let J = 0;
@@ -135,8 +137,10 @@ function optimize(C, lo, hi, basis, ctrl) {
       const a = sub(Q[i], Q[i - 1]), b = sub(Q[i + 1], Q[i]), e = sub(Q[i + 1], Q[i - 1]);
       const k = 2 * (a.x * b.y - a.y * b.x) / (nrm(a) * nrm(b) * nrm(e) + 1e-9); J += k * k * DB;
     }
-    for (let i = 0; i < C.N; i++) {const v = Math.max(0, lo[i] - d[i]) + Math.max(0, d[i] - hi[i]); J += 1e5 * v * v + 0.2 * d[i] * d[i] * DB;}
-    return J + 1e5 * (d[0] * d[0] + (d[1] - d[0]) ** 2);
+    for (let i = 0; i < C.N; i++) {const v = Math.max(0, lo[i] - d[i]) + Math.max(0, d[i] - hi[i]); J += 1e5 * v * v + centerW[i] * d[i] * d[i] * DB;}
+    const a = sub(Q[1], Q[0]), b = sub(Q[2], Q[1]), e = sub(Q[2], Q[0]);
+    const k1 = 2 * (a.x * b.y - a.y * b.x) / (nrm(a) * nrm(b) * nrm(e) + 1e-9), s0 = d[1] - d[0] - st.slope * DB;
+    return J + 1e5 * ((d[0] - st.d0) ** 2 + s0 * s0) + 2.0 * (k1 - st.kv) ** 2;
   };
   let J = cost(ctrl);
   for (let h = 0.08; h > 0.0008; h /= 2) for (let sweep = 0; sweep < 40; sweep++) {
@@ -162,6 +166,11 @@ function planFrame(frame, P) {
   const DS = 0.3, nC = Math.ceil((N - 1) * DB / DS) + 3, ctrl = new Array(nC).fill(0);
   const basis = C.R.map((_, i) => {const u = i * DB / DS, m = Math.min(Math.floor(u), nC - 4), t = u - m;
     return {m, w: [(1 - t) ** 3 / 6, (3 * t ** 3 - 6 * t * t + 4) / 6, (-3 * t ** 3 + 3 * t * t + 3 * t + 1) / 6, t ** 3 / 6]};});
+  // 차량 출발 상태 (기준선 좌표)와 중앙 복귀 비중 — corner_planner.cpp와 같음
+  const t0 = unit(sub(C.R[1], C.R[0]));
+  const st = {d0: -(C.R[0].x * C.nL[0].x + C.R[0].y * C.nL[0].y), slope: Math.min(1.5, Math.max(-1.5, C.nL[0].x / Math.max(0.2, t0.x))), kv: P.KV || 0};
+  const returnDist = Math.max(P.RET_MIN || 1.2, Math.max(P.VC, 0) * (P.RET_T || 1.5));
+  const centerW = C.R.map((_, i) => 0.2 * Math.min(1, Math.max(0, (i * DB - returnDist) / 0.3)));
   const exL = new Array(N).fill(0), exR = new Array(N).fill(0), nLw = Math.round(P.L / DB);
   let d = new Array(N).fill(0), path = C.R.slice(), lo = [], hi = [], infeas = false, tr = null;
   for (let loop = 0; loop < 4; loop++) {
@@ -180,8 +189,8 @@ function planFrame(frame, P) {
         lo[i] = hi[i] = m;
       }
     }
-    lo[0] = Math.min(lo[0], 0); hi[0] = Math.max(hi[0], 0);
-    d = optimize(C, lo, hi, basis, ctrl);
+    for (let i = 0; i < N && i * DB < 0.3; i++) {lo[i] = Math.min(lo[i], st.d0); hi[i] = Math.max(hi[i], st.d0);}
+    d = optimize(C, lo, hi, basis, ctrl, st, centerW);
     path = C.R.map((p, i) => add(p, mul(C.nL[i], d[i])));
     tr = trace(path, C, P);
     if (loop === 3 || tr.minClear >= 0.02) break;
