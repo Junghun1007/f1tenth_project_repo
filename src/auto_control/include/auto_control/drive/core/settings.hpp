@@ -9,6 +9,7 @@
 #include "auto_control/drive/core/cone_memory.hpp"
 #include "auto_control/drive/core/lane_memory.hpp"
 #include "auto_control/drive/core/lane_post.hpp"
+#include "auto_control/drive/core/corner_planner.hpp"
 #include "auto_control/drive/core/lead_follower.hpp"
 #include "auto_control/drive/core/traffic_stop.hpp"
 #include "auto_control/drive/core/longitudinal.hpp"
@@ -48,6 +49,7 @@ struct Settings {
   LeadParams lead;                 // 차량 추종 (acc.*)
   TrafficParams traffic;           // 신호등 정지 (traffic.*)
   int traffic_min_saturation{80}, traffic_min_value{60};   // 신호 색 HSV 기준
+  CornerPlanParams corner_plan;    // 코너 경로 계획 (실험, corner_plan.*). 켜면 RGB 차선 경로를 새 계획으로 바꾼다
   double lane_timeout_sec{20.0};   // 차선 결과가 이만큼 안 오면 정지 (0 = 제한 없음). 그동안은 직전 경로를 현재 자세로 옮겨 추종
 };
 

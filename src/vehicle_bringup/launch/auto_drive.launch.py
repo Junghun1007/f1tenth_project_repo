@@ -317,6 +317,12 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         if not math.isfinite(speed) or speed <= 0:
             raise RuntimeError("speed_mps must be a positive number or inherit")
         drive_overrides["drive.maximum_speed_mps"] = speed
+    # 코너 경로 계획 (실험): corner_plan:=true 면 새 계획, false 면 기존 코너 오프셋, inherit 면 YAML 값
+    corner_plan = LaunchConfiguration("corner_plan").perform(context).strip().lower()
+    if not resumed and corner_plan != "inherit":
+        if corner_plan not in ("true", "false", "1", "0"):
+            raise RuntimeError("corner_plan must be true, false or inherit")
+        drive_overrides["corner_plan.enabled"] = 1.0 if corner_plan in ("true", "1") else 0.0
     # 주행 컴포넌트(웹 화면 포함)는 카메라 시작 측정보다 먼저 컨테이너에 올린다
     # → 실행하자마자 브라우저가 열리고 점검 영역에서 카메라 자세 측정 진행을 볼 수 있다
     context.launch_configurations["first_composable_nodes_json"] = json.dumps([{
@@ -444,6 +450,8 @@ def generate_launch_description():
                               description="camera_driver 깊이·IMU, bev_processor 공유 설정"),
         DeclareLaunchArgument("speed_mps", default_value="inherit",
                               description="최대 속도 m/s (drive.maximum_speed_mps). inherit = YAML 값"),
+        DeclareLaunchArgument("corner_plan", default_value="inherit",
+                              description="코너 경로 계획 (실험): true=새 계획, false=기존 코너 오프셋, inherit=auto_drive.yaml"),
         DeclareLaunchArgument("web_port", default_value="8765"),
         DeclareLaunchArgument("preview_enabled", default_value="false",
                               description="Jetson 화면에 line_detactor 차선 창도 띄움 (브라우저 화면은 항상 있음)"),

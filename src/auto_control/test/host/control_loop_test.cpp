@@ -502,3 +502,17 @@ TEST(imu_calibration_row_follows_camera_state) {
   f = r.loop->telemetry(false, r.t);
   CHECK(f.inspection.imu_status == "PASS" && f.readiness.imu_calibrated);
 }
+
+TEST(corner_plan_replaces_rgb_path_only_when_enabled) {   // 코너 경로 계획 (실험): 기본은 꺼짐
+  Rig off(DriveMode::Drive);
+  off.step(0.5);
+  CHECK(!off.loop->corner_plan_status().ok);
+  Rig on(DriveMode::Drive);
+  CHECK(on.params.apply({{"corner_plan.enabled", 1.0}}).first);
+  on.loop->apply_settings(settings_from(on.params));
+  on.step(0.5);
+  const auto st = on.loop->corner_plan_status();
+  CHECK(st.ok);
+  CHECK(st.min_clearance > 0.05);   // 직선 차선: 가운데로 계획
+  CHECK(st.path.empty());           // 진단값에는 경로를 남기지 않는다
+}

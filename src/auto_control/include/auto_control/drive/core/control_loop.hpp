@@ -12,6 +12,7 @@
 #include "auto_control/drive/copied/control_core.hpp"
 #include "auto_control/drive/core/drive_state.hpp"
 #include "auto_control/drive/core/lane_input.hpp"
+#include "auto_control/drive/core/corner_planner.hpp"
 #include "auto_control/drive/core/lane_memory.hpp"
 #include "auto_control/drive/core/path_utils.hpp"
 #include "auto_control/drive/core/odometry.hpp"
@@ -79,6 +80,7 @@ public:
   ControlLoop(DriveMode mode, const RuntimeConfig & rc);
   void apply_settings(const Settings & s);
   Settings settings() const { std::lock_guard<std::mutex> l(m_); return s_; }
+  CornerPlanResult corner_plan_status() const { std::lock_guard<std::mutex> l(m_); return corner_plan_last_; }   // 마지막 코너 경로 계획 진단 (경로 제외)
 
   // 센서
   void on_erpm(int erpm, double t);
@@ -186,6 +188,7 @@ private:
   LaneObservation lane_;
   LaneSource lane_source_{LaneSource::RGB};
   LaneDepartureCheck lane_departure_;
+  CornerPlanResult corner_plan_last_;   // 마지막 코너 경로 계획 진단값 (경로는 비움)
   std::optional<Pose2> accepted_lane_pose_;
   PlanResult plan_;
   Pose2 plan_pose_;

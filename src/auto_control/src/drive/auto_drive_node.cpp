@@ -970,6 +970,8 @@ private:
       hint_base_.ir = s.ir_lane;
       hint_base_.rgb.side_tracking = s.lane_check_mode != 0 && s.rgb_lane.side_tracking;
       hint_base_.ir.side_tracking = s.lane_check_mode != 0 && s.ir_lane.side_tracking;
+      // 새 코너 경로 계획이 켜져 있으면 line_detactor는 코너 바깥 이동 없는 중앙선을 보낸다 (계획의 기준선)
+      if (s.corner_plan.enabled) hint_base_.rgb.corner_outer_enabled = false;
       const auto & lane_model = lane_models_.at(std::size_t(std::lround(registry_.get("lane.model"))));
       hint_base_.rgb_model_path = lane_model.rgb_path;
       hint_base_.rgb_engine_precision = lane_model.rgb_precision;

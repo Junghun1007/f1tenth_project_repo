@@ -177,6 +177,14 @@ ros2 launch vehicle_bringup auto_drive.launch.py mode:=detect
 
 ros2 launch vehicle_bringup auto_drive.launch.py speed_mps:=0.8 tunnel_enabled:=true
 
+코너 경로 계획 (실험, 속도 반영 내륜차 통로 + 최소 곡률 경로). 끄면 기존 코너 오프셋:
+
+ros2 launch vehicle_bringup auto_drive.launch.py corner_plan:=true
+
+처음엔 속도를 낮춰서: ros2 launch vehicle_bringup auto_drive.launch.py corner_plan:=true speed_mps:=0.8
+웹 파라미터 창 [주행] → "코너 경로 계획 (실험)"에서 켜고 끄기·V₀·여유를 바로 바꿀 수 있다.
+오프라인 비교 웹뷰: src/auto_control/tools/lane_path_lab/README_KO.md
+
 자세한 내용: src/auto_control/README.md
 
 

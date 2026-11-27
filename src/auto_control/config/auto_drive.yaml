@@ -100,6 +100,12 @@
     drive.rollout_fail_speed_mps: 0.8   # 롤아웃 실패 시 속도 (m/s)
     drive.maximum_lateral_accel: 1.4    # 최대 횡가속 (m/s²)
     drive.planning_decel: 0.45           # 계획 감속도 (m/s²)
+    # 코너 경로 계획 (실험): 켜면 line_detactor의 코너 바깥 이동을 끄고, 속도 반영 내륜차 통로 + 최소 곡률 경로로 바꾼다
+    # 실행 때 켜기: ros2 launch vehicle_bringup auto_drive.launch.py corner_plan:=true
+    corner_plan.enabled: 0              # 0=기존 코너 오프셋, 1=새 계획
+    corner_plan.v0_mps: 1.3             # 내륜차가 0이 되는 속도 (슬립) — 실측으로 맞출 것 (m/s)
+    corner_plan.inner_margin_m: 0.03    # 회전 안쪽 차선과 차체 여유 (m)
+    corner_plan.outer_margin_m: 0.03    # 회전 바깥 차선과 차체 여유 (m)
     drive.obstacle_decel: 0.45           # 장애물 감속도 (m/s²)
     drive.obstacle_accel: 0.4           # 장애물 해제 가속도 (m/s²)
     # 조향 (Stanley)

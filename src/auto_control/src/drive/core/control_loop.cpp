@@ -386,6 +386,27 @@ StepOutput ControlLoop::on_lane(const LaneObservation & lane, double now, LaneSo
     last_lane_t_ = now;
     accepted_lane_pose_ = observation_pose;
   }
+  // 코너 경로 계획 (실험): 새로 받은 RGB 차선만 다시 계획. 실패하면 받은 중앙선을 그대로 쓴다
+  if (accepted && lane_.valid && s_.corner_plan.enabled && source == LaneSource::RGB) {
+    const double tc = now_sec();
+    auto cp = s_.corner_plan;
+    cp.lane_width = active_lane.lane_width_m;
+    cp.vehicle_width = s_.planner.width;
+    cp.wheelbase = rc_.wheelbase;
+    cp.lateral_accel = s_.maximum_lateral_accel;
+    cp.deceleration = s_.lon.mode == 2 ? s_.lon.duty_only.planning_deceleration_mps2 : s_.planning_decel;
+    cp.acceleration = s_.lon.planning_acceleration_mps2;
+    const auto & reference = lane_.center.size() >= 4 ? lane_.center : lane_.path;
+    auto planned = plan_corner_path(reference, lane_.left, lane_.right, speed_, cp);
+    if (planned.ok && planned.path.size() >= 4) {
+      lane_.path = std::move(planned.path);
+      corner_plan_last_ = planned;
+      corner_plan_last_.path.clear();
+    } else {
+      stats_.record("corner_plan_fail", tc, tc);
+    }
+    stats_.record("corner_plan", tc, now_sec());
+  }
   bool have_path = false;
   if (lane_.valid) {
     const auto pose_lane = accepted_lane_pose_ ? *accepted_lane_pose_ : odom_pose_at(lane_.capture_time).value_or(odom_pose());

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>차선 경로 실험실</title>
+<style>
+:root{--bg:#141414;--panel:#1d1d1d;--line:#2e2e2e;--text:#e8e6df;--muted:#9c9a92;--accent:#5DCAA5;--warn:#EF9F27;--bad:#E24B4A}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:15px;font-weight:500;margin:0 8px 0 0}
+select,button,input[type=number]{background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 8px;font:inherit}
+button{cursor:pointer}button:hover{border-color:#555}
+button.on{border-color:var(--accent);color:var(--accent)}
+main{display:grid;grid-template-columns:auto minmax(320px,1fr) 380px;gap:14px;padding:14px 16px;align-items:start}
+@media (max-width:1250px){main{grid-template-columns:minmax(0,450px) minmax(280px,1fr)}#side{grid-column:1/-1}#params{max-height:none}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.muted{color:var(--muted)}
+#bev{display:block;border-radius:6px;max-width:100%;height:auto}
+.layers{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:8px}
+.layers label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.sw{display:inline-block;width:18px;height:0;border-top:3px solid}
+table.cmp{width:100%;border-collapse:collapse}
+table.cmp th,table.cmp td{padding:5px 6px;text-align:right;border-bottom:1px solid var(--line)}
+table.cmp th:first-child,table.cmp td:first-child{text-align:left;color:var(--muted);font-weight:400}
+table.cmp th{font-weight:500}
+table.cmp td{font-size:15px}
+#rgb{width:100%;border-radius:6px;display:block;margin-top:10px}
+#params{max-height:calc(100vh - 330px);overflow:auto}
+details{border-top:1px solid var(--line);padding:6px 0}
+summary{cursor:pointer;font-weight:500;padding:3px 0}
+.row{display:grid;grid-template-columns:1fr 88px 22px;gap:6px;align-items:center;padding:3px 0}
+.row .lab{font-size:12px}.row .key{font-size:10.5px;color:var(--muted);font-family:ui-monospace,monospace}
+.row input[type=range]{grid-column:1/3;width:100%;accent-color:var(--accent)}
+.row input[type=number]{width:88px;padding:2px 6px}
+.row.changed .lab{color:var(--accent)}
+.rst{background:none;border:0;color:var(--muted);padding:0;font-size:14px;visibility:hidden}
+.row.changed .rst{visibility:visible}
+#timeline{width:100%;height:74px;display:block;cursor:pointer}
+#err{color:var(--bad)}
+#note{color:var(--warn);font-size:12px;margin-top:6px}
+.kbd{font-family:ui-monospace,monospace;font-size:11px;border:1px solid var(--line);border-radius:4px;padding:0 4px}
+textarea{width:100%;height:110px;background:#111;color:var(--text);border:1px solid var(--line);border-radius:6px;font:11px ui-monospace,monospace}
+h3{font-size:13px;font-weight:500;margin:0 0 6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>차선 경로 실험실</h1>
+  <select id="session"></select>
+  <button id="prev" title="이전 (←)">◀</button>
+  <button id="play" title="재생 (Space)">재생</button>
+  <button id="next" title="다음 (→)">▶</button>
+  <input id="frame" type="range" min="0" value="0" style="width:260px">
+  <span id="frameLabel" class="muted"></span>
+  <span class="muted" id="model"></span>
+</header>
+<main>
+  <div class="card">
+    <canvas id="bev"></canvas>
+    <div class="layers" id="layers"></div>
+  </div>
+  <div>
+    <div class="card">
+      <div id="err"></div>
+      <table class="cmp">
+        <tr><th></th><th style="color:#FAC775">기존 경로</th><th style="color:#5DCAA5">새 경로</th></tr>
+        <tr><td>최소 반경 (조향 한계 0.66 m)</td><td id="oR">-</td><td id="nR">-</td></tr>
+        <tr><td>관측 차선까지 최소 여유</td><td id="oC">-</td><td id="nC">-</td></tr>
+        <tr><td>코너 정점 예상 속도</td><td id="oV">-</td><td id="nV">-</td></tr>
+      </table>
+      <div class="muted" id="info" style="margin-top:8px"></div>
+      <div id="note"></div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+        <h3 style="margin:0">전체 프레임</h3><span class="muted" id="batchInfo">계산 중…</span>
+      </div>
+      <canvas id="timeline"></canvas>
+      <div class="muted" style="font-size:11.5px">위 = 기존 경로, 아래 = 새 경로. 높이 = 경로 길이 · <span style="color:var(--bad)">빨강</span> 관측 차선 밟음 · <span style="color:var(--warn)">주황</span> 반경 0.66 m 미만 · 회색 경로 없음. 클릭하면 이동</div>
+    </div>
+    <div class="card" style="margin-top:12px">
+      <img id="rgb" alt="원본 카메라">
+      <div class="muted" style="margin-top:6px;font-size:11.5px">원본 RGB · <span class="kbd">←</span> <span class="kbd">→</span> 프레임, <span class="kbd">Space</span> 재생</div>
+    </div>
+  </div>
+  <div id="side">
+    <div class="card">
+      <h3>새 경로 계획</h3>
+      <div id="planParams"></div>
+      <div class="muted" style="font-size:11.5px;margin-top:4px">축거 0.33 m · 차폭 0.30 m · 최대 조향 30° · 최대 횡가속 1.4 m/s² (auto_drive.yaml)</div>
+    </div>
+    <div class="card" id="params" style="margin-top:12px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+        <h3 style="flex:1;margin:0">차선 검출·중앙선 <span class="muted" id="changed"></span></h3>
+        <button id="resetAll">전부 기본값</button>
+        <button id="copyYaml">바뀐 값 YAML</button>
+      </div>
+      <div class="muted" style="font-size:11.5px;margin-bottom:6px">새 경로의 입력(차선 경계·중심선)을 정하는 값. 기본값 = auto_drive.yaml의 lane.*. 코너·평활화 값은 기존 경로 비교용으로 차량 현재값 고정</div>
+      <textarea id="yamlOut" style="display:none" readonly></textarea>
+      <div id="groups"></div>
+    </div>
+  </div>
+</main>
+<script src="/planner.js"></script>
+<script>
+const $=id=>document.getElementById(id);
+const S=2.5,MPP=0.01,PAD=30,W=180,H=300,BACK=60;
+const CAR={W:0.30,L:0.33,FOH:0.05,ROH:0.12,ALAT:1.4,AACC:1.0,LW:0.65};
+const PLAN=[['VC','현재 속도','m/s',0.3,2.0,0.05,0.8],['AD','최대 감속도','m/s²',0.3,4,0.1,1.5],['V0','V₀ (내륜차 0 속도)','m/s',0.6,2.5,0.05,1.3],['Min','안쪽 여유','m',0,0.1,0.005,0.03],['Mout','바깥 여유','m',0,0.1,0.005,0.03]];
+const LAYERS=[['labels','모델 라벨',true,'#378ADD'],['observed','차선 조각',true,'#e8e6df'],['corridor','통로 (점선=추정)',true,'#5DCAA5'],['reference','차선 중심선',false,'#ffffff'],['old','기존 경로',true,'#FAC775'],['plan','새 경로',true,'#5DCAA5'],['rearNew','새 경로 뒷바퀴',true,'#D85A30'],['rearOld','기존 경로 뒷바퀴',false,'#F0997B'],['grid','거리 눈금',true,'#666']];
+let meta,schema=[],values={},defaults={},plan={},session,frames=[],idx=0,cur=null,res=null,playing=null,batch=null,rows=null,bevImg=new Image(),reqId=0;
+const vis={};LAYERS.forEach(l=>vis[l[0]]=l[2]);PLAN.forEach(p=>plan[p[0]]=p[6]);
+const P=()=>({...CAR,...plan});
+const cxy=v=>[((0.6-v.y)/MPP+PAD-0.5)*S,((3-v.x)/MPP-0.5)*S];
+function qs(vals){return Object.entries(vals).map(([k,v])=>k+'='+v).join('&')}
+async function update(){
+  const my=++reqId;
+  $('frame').value=idx;$('frameLabel').textContent=`${frames[idx]} (${idx+1}/${frames.length})`;
+  bevImg.src=`/img/${session}/rgb_bev/${frames[idx]}.jpg`;
+  if(meta.sessions[session].has_rgb)$('rgb').src=`/img/${session}/rgb/${frames[idx]}.jpg`;
+  const c=await (await fetch(`/api/run?session=${session}&frame=${frames[idx]}&${qs(values)}`)).json();
+  if(my!==reqId)return;cur=c;replan();
+}
+function replan(){res=cur&&!cur.error?Planner.planFrame(cur,P()):null;draw();stats()}
+const fmtR=r=>r==null?'-':r===Infinity||r>20?'직선':r.toFixed(2)+' m';
+function stats(){
+  $('err').textContent=cur&&cur.error?cur.error:'';
+  const cell=(id,t,bad,warn)=>{$(id).textContent=t;$(id).style.color=bad?'var(--bad)':warn?'var(--warn)':''};
+  const o=res&&res.oldTr,n=res&&res.ok?res.tr:null;
+  cell('oR',fmtR(o&&o.rmin),false,o&&o.rmin<0.66);cell('nR',fmtR(n&&n.rmin),false,n&&n.rmin<0.66);
+  const clr=t=>!t?'-':t.minClear===Infinity?'판정 불가':(t.minClear*100).toFixed(1)+' cm';
+  cell('oC',clr(o),o&&o.minClear<0);cell('nC',clr(n),n&&n.minClear<0);
+  cell('oV',o?o.vApex.toFixed(2)+' m/s':'-');cell('nV',n?n.vApex.toFixed(2)+' m/s':'-');
+  const st=['없음','왼쪽만','오른쪽만','양쪽'][cur&&cur.state||0];
+  $('info').textContent=`검출된 차선: ${st}${cur&&cur.bridges_used?' · 보간 사용':''}`+(res&&res.ok?` · 통로 중 한쪽 이상 추정 ${Math.round(res.estimated*100)}%`:'')+(cur&&cur.ms!=null?` · 경로 생성 ${cur.ms.toFixed(1)} ms`:'');
+  const notes=[];
+  if(res&&!res.ok)notes.push(res.reason);
+  if(res&&res.ok&&res.infeas)notes.push('통로가 차폭+여유보다 좁은 구간이 있음 → 감속 필요');
+  if(res&&res.ok&&res.tr.over)notes.push('현재 속도에서 코너 전에 충분히 못 줄임');
+  if(res&&res.ok&&res.estimated>0.5)notes.push('한쪽 차선이 거의 안 보여 통로 대부분을 차선 폭으로 추정함');
+  $('note').textContent=notes.join(' · ');
+}
+const labelCanvas=document.createElement('canvas');labelCanvas.width=W;labelCanvas.height=H;
+function draw(){
+  const cv=$('bev'),g=cv.getContext('2d');cv.width=W*S;cv.height=(H+BACK)*S;
+  g.fillStyle='#0c0c0c';g.fillRect(0,0,cv.width,cv.height);
+  g.imageSmoothingEnabled=false;
+  if(bevImg.complete&&bevImg.naturalWidth)g.drawImage(bevImg,PAD*S,0,120*S,H*S);
+  g.strokeStyle='#333';g.setLineDash([4,4]);g.strokeRect(PAD*S+.5,.5,120*S-1,H*S-1);g.setLineDash([]);
+  g.fillStyle='#666';g.font='11px sans-serif';g.fillText('BEV 시야 밖 (차량 뒤쪽)',PAD*S+6,H*S+16);
+  if(vis.labels&&cur&&cur.labels){
+    const raw=atob(cur.labels),lc=labelCanvas.getContext('2d'),im=lc.createImageData(W,H);
+    const col={1:[55,138,221,190],2:[216,90,48,190],3:[133,183,235,140],4:[240,153,123,140],5:[99,153,34,180]};
+    for(let i=0;i<raw.length;i++){const c=col[raw.charCodeAt(i)];if(c)im.data.set(c,i*4)}
+    lc.putImageData(im,0,0);g.drawImage(labelCanvas,0,0,W*S,H*S);
+  }
+  if(vis.grid){g.fillStyle='#bbb';g.strokeStyle='rgba(255,255,255,0.13)';
+    for(let m=-0.5;m<3;m+=0.5){if(Math.abs(m)<1e-9)continue;const y=cxy({x:m,y:0})[1];g.beginPath();g.moveTo(0,y);g.lineTo(cv.width,y);g.stroke();g.fillText(m.toFixed(1)+' m',4,y-3)}
+    const x0=cxy({x:0,y:0})[0];g.beginPath();g.moveTo(x0,0);g.lineTo(x0,cv.height);g.stroke()}
+  const polyPx=(pts,color,w,dash)=>{if(!pts||pts.length<2)return;g.strokeStyle=color;g.lineWidth=w;g.setLineDash(dash||[]);g.beginPath();pts.forEach((p,i)=>i?g.lineTo(p[0]*S,p[1]*S):g.moveTo(p[0]*S,p[1]*S));g.stroke();g.setLineDash([])};
+  const polyV=(pts,color,w,dash)=>{if(!pts||pts.length<2)return;g.strokeStyle=color;g.lineWidth=w;g.setLineDash(dash||[]);g.beginPath();pts.forEach((p,i)=>{const [x,y]=cxy(p);i?g.lineTo(x,y):g.moveTo(x,y)});g.stroke();g.setLineDash([])};
+  if(cur&&!cur.error){
+    if(vis.observed)(cur.observed||[]).forEach((side,s)=>side.forEach(f=>polyPx(f,s?'#F5C4B3':'#B5D4F4',1.5)));
+    if(vis.reference)polyPx(cur.reference,'#ffffff',1.5,[2,4]);
+  }
+  if(res&&res.ok){
+    if(vis.corridor){const C=res.C;
+      [[res.hiPts,1],[res.loPts,2]].forEach(([pts,side])=>{for(let i=1;i<pts.length;i++){const e=C.est[i]===side||C.est[i]===3;g.strokeStyle=e?'rgba(93,202,165,0.45)':'rgba(93,202,165,0.9)';g.lineWidth=1.5;g.setLineDash(e?[3,4]:[]);g.beginPath();const a=cxy(pts[i-1]),b=cxy(pts[i]);g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke()}});g.setLineDash([])}
+    if(vis.old)polyV(res.old,'#FAC775',2.5,[8,6]);
+    const rearDraw=(t,color)=>{if(!t)return;polyV(t.rear,color,1.5,[2,3]);g.strokeStyle='#E24B4A';g.lineWidth=4;for(let i=1;i<t.rear.length;i++)if(t.touch[i]&&t.touch[i-1]){const a=cxy(t.rear[i-1]),b=cxy(t.rear[i]);g.beginPath();g.moveTo(a[0],a[1]);g.lineTo(b[0],b[1]);g.stroke()}};
+    if(vis.rearOld)rearDraw(res.oldTr,'#F0997B');
+    if(vis.plan)polyV(res.path,'#5DCAA5',3.5);
+    if(vis.rearNew)rearDraw(res.tr,'#D85A30');
+  }
+  const body=[{x:CAR.FOH,y:CAR.W/2},{x:CAR.FOH,y:-CAR.W/2},{x:-CAR.L-CAR.ROH,y:-CAR.W/2},{x:-CAR.L-CAR.ROH,y:CAR.W/2}].map(cxy);
+  g.fillStyle='rgba(232,230,223,0.12)';g.strokeStyle='#bbb';g.lineWidth=1;g.beginPath();body.forEach(([x,y],i)=>i?g.lineTo(x,y):g.moveTo(x,y));g.closePath();g.fill();g.stroke();
+  [[0,CAR.W/2],[0,-CAR.W/2],[-CAR.L,CAR.W/2],[-CAR.L,-CAR.W/2]].forEach(([x,y])=>{const [a,b]=cxy({x,y});g.fillStyle='#ddd';g.fillRect(a-3,b-7,6,14)});
+}
+bevImg.onload=draw;
+function buildLayers(){$('layers').innerHTML=LAYERS.map(l=>`<label><input type="checkbox" data-l="${l[0]}" ${vis[l[0]]?'checked':''}><span class="sw" style="border-color:${l[3]};${['old','reference','rearNew','rearOld','corridor'].includes(l[0])?'border-top-style:dashed':''}"></span>${l[1]}</label>`).join('');
+  $('layers').querySelectorAll('input').forEach(i=>i.onchange=()=>{vis[i.dataset.l]=i.checked;draw()})}
+function rowHtml(key,label,unit,min,max,step){return `<div class="row" data-key="${key}"><div><div class="lab">${label}${unit?' ('+unit+')':''}</div><div class="key">${key}</div></div><input type="number" step="${step}" min="${min}" max="${max}"><button class="rst" title="기본값">↺</button><input type="range" min="${min}" max="${max}" step="${step}"></div>`}
+function wireRow(row,get,set,def,min,max){const nb=row.querySelector('input[type=number]'),rg=row.querySelector('input[type=range]');nb.value=rg.value=get();
+  const mark=()=>row.classList.toggle('changed',Math.abs(get()-def)>1e-9);
+  rg.oninput=()=>{nb.value=rg.value;set(+rg.value);mark()};nb.onchange=()=>{const v=Math.min(max,Math.max(min,+nb.value));nb.value=rg.value=v;set(v);mark()};
+  row.querySelector('.rst').onclick=()=>{nb.value=rg.value=def;set(def);mark()};mark()}
+let deb=null,batchDeb=null,planDeb=null;
+function buildPlan(){$('planParams').innerHTML=PLAN.map(p=>rowHtml(p[0],p[1],p[2],p[3],p[4],p[5])).join('');
+  PLAN.forEach(p=>wireRow(document.querySelector(`#planParams .row[data-key="${p[0]}"]`),()=>plan[p[0]],v=>{plan[p[0]]=v;replan();clearTimeout(planDeb);planDeb=setTimeout(planBatch,250)},p[6],p[3],p[4]))}
+function step(it){if(it.type!=='double')return 1;const r=it.max-it.min;return r<=1?0.005:r<=5?0.01:r<=50?0.1:1}
+function buildParams(){
+  $('groups').innerHTML='';
+  schema.forEach(g=>{
+    const d=document.createElement('details');d.innerHTML=`<summary>${g.title}</summary>`;
+    g.items.forEach(it=>{
+      if(it.type==='bool'){const row=document.createElement('div');row.className='row';row.dataset.key=it.key;
+        row.innerHTML=`<div><div class="lab">${it.label}</div><div class="key">${it.key}</div></div><input type="checkbox" style="justify-self:end"><button class="rst" title="기본값">↺</button>`;
+        const cb=row.querySelector('input');cb.checked=!!values[it.key];const mark=()=>row.classList.toggle('changed',values[it.key]!==defaults[it.key]);
+        cb.onchange=()=>{setVal(it,cb.checked?1:0);mark()};row.querySelector('.rst').onclick=()=>{cb.checked=!!defaults[it.key];setVal(it,defaults[it.key]);mark()};mark();d.appendChild(row);return}
+      const w=document.createElement('div');w.innerHTML=rowHtml(it.key,it.label,it.unit,it.min,it.max,step(it));const row=w.firstChild;d.appendChild(row);
+      wireRow(row,()=>values[it.key],v=>setVal(it,v),defaults[it.key],it.min,it.max)});
+    $('groups').appendChild(d)});
+  refreshChanged();
+}
+function refreshChanged(){const n=Object.keys(values).filter(k=>Math.abs(values[k]-defaults[k])>1e-9).length;$('changed').textContent=n?`· ${n}개 바뀜`:''}
+function setVal(it,v){values[it.key]=it.type==='double'?+(+v).toFixed(4):Math.round(v);refreshChanged();clearTimeout(deb);deb=setTimeout(update,60);clearTimeout(batchDeb);batchDeb=setTimeout(runBatch,500)}
+async function runBatch(){$('batchInfo').textContent='계산 중…';batch=await (await fetch(`/api/batch?session=${session}&${qs(values)}`)).json();planBatch()}
+function planBatch(){if(!batch)return;const p=P();
+  const sum=t=>t?{len:t.rear.length*0.01,touch:t.minClear<0,tight:t.rmin<0.66}:null;
+  rows=batch.map(f=>{if(f.error)return{old:null,neu:null};const r=Planner.planFrame(f,p);return r.ok?{old:sum(r.oldTr),neu:sum(r.tr)}:{old:null,neu:null}});drawTimeline()}
+function drawTimeline(){
+  const cv=$('timeline'),g=cv.getContext('2d'),w=cv.clientWidth,h=74;cv.width=w*devicePixelRatio;cv.height=h*devicePixelRatio;g.scale(devicePixelRatio,devicePixelRatio);
+  g.clearRect(0,0,w,h);if(!rows)return;const n=rows.length,bw=w/n;
+  ['old','neu'].forEach((k,ri)=>{const y0=ri*37+34;rows.forEach((r,i)=>{const f=r[k];const hh=f?Math.max(3,Math.min(30,f.len/3*30)):30;
+    g.fillStyle=!f?'#555':f.touch?'#E24B4A':f.tight?'#EF9F27':(ri?'#5DCAA5':'#FAC775');g.fillRect(i*bw+0.5,y0-hh,Math.max(1,bw-1),hh)})});
+  g.fillStyle='#fff';g.fillRect(idx*bw,0,Math.max(2,bw),h);
+  const c=(k,f)=>rows.filter(r=>r[k]&&r[k][f]).length;
+  $('batchInfo').textContent=`밟음 ${c('old','touch')}→${c('neu','touch')} · 반경 0.66 m 미만 ${c('old','tight')}→${c('neu','tight')} (기존→새, ${n}프레임)`;
+}
+$('timeline').onclick=e=>{const r=$('timeline').getBoundingClientRect();idx=Math.min(frames.length-1,Math.floor((e.clientX-r.left)/r.width*frames.length));update();drawTimeline()};
+function go(d){idx=(idx+d+frames.length)%frames.length;update();drawTimeline()}
+$('prev').onclick=()=>go(-1);$('next').onclick=()=>go(1);
+$('frame').oninput=()=>{idx=+$('frame').value;update();drawTimeline()};
+$('play').onclick=()=>{if(playing){clearInterval(playing);playing=null;$('play').textContent='재생';$('play').classList.remove('on')}else{playing=setInterval(()=>go(1),200);$('play').textContent='정지';$('play').classList.add('on')}};
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'&&e.target.type==='number')return;if(e.key==='ArrowLeft')go(-1);else if(e.key==='ArrowRight')go(1);else if(e.key===' '){e.preventDefault();$('play').click()}});
+$('resetAll').onclick=()=>{values={...defaults};buildParams();update();runBatch()};
+$('copyYaml').onclick=()=>{const lines=Object.keys(values).filter(k=>Math.abs(values[k]-defaults[k])>1e-9).map(k=>`    lane.${k}: ${values[k]}`);
+  const t=$('yamlOut');t.style.display='block';t.value=lines.length?lines.join('\n'):'# 바뀐 값 없음';t.select();navigator.clipboard&&navigator.clipboard.writeText(t.value).catch(()=>{})};
+$('session').onchange=()=>{session=$('session').value;frames=meta.sessions[session].frames;idx=0;$('frame').max=frames.length-1;update();runBatch()};
+window.onresize=drawTimeline;
+(async()=>{
+  meta=await (await fetch('/api/meta')).json();schema=meta.schema;$('model').textContent='모델 '+meta.model;
+  schema.forEach(g=>g.items.forEach(it=>{defaults[it.key]=it.default;values[it.key]=it.default}));
+  $('session').innerHTML=Object.keys(meta.sessions).map(s=>`<option>${s}</option>`).join('');
+  buildLayers();buildPlan();buildParams();$('session').onchange();
+})();
+</script>
+</body>
+</html>

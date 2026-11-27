@@ -189,6 +189,11 @@ void register_params(ParamRegistry & r) {
   d("속도", "drive.planning_decel", "계획 감속도", "m/s²", 0.1, 3, 0.5);
   d("속도", "drive.obstacle_decel", "장애물 감속도", "m/s²", 0.05, 3, 0.4);
   d("속도", "drive.obstacle_accel", "장애물 해제 가속도", "m/s²", 0.05, 3, 0.4);
+  r.add({"corner_plan.enabled", "driving", "코너 경로 계획 (실험)", "새 코너 경로 계획 (켜면 RGB 차선의 코너 바깥 이동을 끄고 새 계획 경로로 주행)", "", 0, 1, 0, true,
+    {{0, "끔 · 기존 코너 오프셋"}, {1, "켬 · 새 계획"}}});
+  d("코너 경로 계획 (실험)", "corner_plan.v0_mps", "내륜차가 0이 되는 속도 V₀ (슬립, 실측으로 맞출 것)", "m/s", 0.3, 4, 1.3);
+  d("코너 경로 계획 (실험)", "corner_plan.inner_margin_m", "회전 안쪽 차선과 차체 여유", "m", 0, 0.15, 0.03);
+  d("코너 경로 계획 (실험)", "corner_plan.outer_margin_m", "회전 바깥 차선과 차체 여유", "m", 0, 0.15, 0.03);
   d("조향 (Stanley)", "drive.stanley_gain", "Stanley gain", "", 0.1, 5, 1.3);
   d("조향 (Stanley)", "drive.stanley_softening", "softening 속도", "m/s", 0, 2, 0.3);
   d("조향 (Stanley)", "drive.heading_lookahead_m", "heading lookahead", "m", 0, 0.5, 0.08);
@@ -344,6 +349,10 @@ Settings settings_from(const ParamRegistry & r) {
   p.s_max = g("plan.s_max");
   p.forward_extension = g("plan.forward_extension_m");
   p.cone_half = s.cone_size_m / 2;
+  s.corner_plan.enabled = g("corner_plan.enabled") > 0.5;
+  s.corner_plan.v0 = g("corner_plan.v0_mps");
+  s.corner_plan.inner_margin = g("corner_plan.inner_margin_m");
+  s.corner_plan.outer_margin = g("corner_plan.outer_margin_m");
   s.maximum_lateral_accel = g("drive.maximum_lateral_accel");
   s.planning_decel = g("drive.planning_decel");
   s.stanley_gain = g("drive.stanley_gain");
