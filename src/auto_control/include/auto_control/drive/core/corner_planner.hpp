@@ -19,8 +19,9 @@ struct CornerPlanParams {
   double inner_margin{0.03};        // 회전 안쪽 차선과 차체 사이 여유
   double outer_margin{0.03};
   double start_curvature{0.0};      // 지금 조향 곡률 tan(δ)/L — 경로 시작 곡률을 맞춰 조향이 튀지 않게
-  double return_time{1.5};          // 차선 중앙 복귀에 쓰는 시간 (s): 복귀 거리 = max(최소, 속도×시간)
-  double return_min_distance{1.2};  // (m)
+  double return_time{1.0};          // 차선 중앙 복귀에 쓰는 시간 (s): 복귀 거리 = max(최소, 속도×시간)
+  double return_min_distance{0.8};  // (m)
+  double return_weight{100.0};      // 복귀 곡선(지금 횡위치 → 중앙, 5차 스무스스텝)을 따르는 세기. 0 = 복귀 안 당김
 };
 
 struct CornerPlanResult {

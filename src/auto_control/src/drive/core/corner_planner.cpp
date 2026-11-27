@@ -208,7 +208,7 @@ std::vector<double> eval(const std::vector<Basis> & B, const std::vector<double>
 struct Start { double d0{0}, slope{0}, kv{0}; };
 std::vector<double> optimize(const Corridor & C, const std::vector<double> & lo, const std::vector<double> & hi,
                              const std::vector<Basis> & B, std::vector<double> & ctrl, const Start & st,
-                             const std::vector<double> & center_w) {
+                             const std::vector<double> & center_w, const std::vector<double> & target) {
   const std::size_t N = C.R.size();
   std::vector<Vec2> Q(N);
   const auto cost = [&](const std::vector<double> & c) {
@@ -222,7 +222,7 @@ std::vector<double> optimize(const Corridor & C, const std::vector<double> & lo,
     }
     for (std::size_t i = 0; i < N; ++i) {
       const double v = std::max(0.0, lo[i] - d[i]) + std::max(0.0, d[i] - hi[i]);
-      J += 1e5 * v * v + center_w[i] * d[i] * d[i] * kStep;
+      J += 1e5 * v * v + center_w[i] * (d[i] - target[i]) * (d[i] - target[i]) * kStep;
     }
     const Vec2 a = Q[1] - Q[0], b = Q[2] - Q[1], e = Q[2] - Q[0];
     const double k1 = 2 * (a.x * b.y - a.y * b.x) / (norm(a) * norm(b) * norm(e) + 1e-9);
@@ -273,10 +273,18 @@ CornerPlanResult plan_corner_path(const std::vector<Vec2> & reference, const std
     st.slope = std::clamp(C.n[0].x / std::max(0.2, t0.x), -1.5, 1.5);   // 차량 전방(+x)의 횡 기울기
     st.kv = p.start_curvature;
   }
-  // 중앙 복귀: 복귀 거리 안에서는 중앙으로 당기지 않고(통로 안이면 그대로), 그 뒤로 서서히 당긴다
+  // 중앙 복귀: 지금 횡위치 d0에서 복귀 거리에 걸쳐 0으로 가는 곡선(5차 스무스스텝)을 따르게 한다.
+  // 출발 방향은 위의 출발 조건이 지키므로 휘청거리지 않고, 복귀 거리 뒤로는 약하게만 중앙으로 당긴다
   const double return_dist = std::max(p.return_min_distance, std::max(speed, 0.0) * p.return_time);
-  std::vector<double> center_w(N);
-  for (std::size_t i = 0; i < N; ++i) center_w[i] = 0.2 * std::clamp((i * kStep - return_dist) / 0.3, 0.0, 1.0);
+  // 복귀 세기는 지금 치우친 만큼만 (5 cm 이상이면 최대): 중앙 근처에서 코너에 들어갈 땐 경로를 묶지 않는다.
+  // 복귀 거리 뒤 0.8 m까지 중앙을 붙잡아 반대편으로 넘어가지 않게 한다
+  const double ret_scale = std::min(1.0, std::abs(st.d0) / 0.05);
+  std::vector<double> center_w(N), target(N);
+  for (std::size_t i = 0; i < N; ++i) {
+    const double u = std::min(1.0, i * kStep / return_dist);
+    target[i] = st.d0 * (1 - u * u * u * (10 - 15 * u + 6 * u * u));
+    center_w[i] = 0.2 + (i * kStep < return_dist + 0.8 ? p.return_weight * ret_scale : 0.0);
+  }
   std::vector<double> ctrl(nC, 0.0), exL(N, 0.0), exR(N, 0.0), lo(N), hi(N);
   const int nL = int(std::lround(p.wheelbase / kStep));
   std::vector<Vec2> path = C.R;
@@ -305,7 +313,7 @@ CornerPlanResult plan_corner_path(const std::vector<Vec2> & reference, const std
     for (std::size_t i = 0; i < N && i * kStep < 0.3; ++i) {   // 출발 직후는 지금 위치를 허용
       lo[i] = std::min(lo[i], st.d0); hi[i] = std::max(hi[i], st.d0);
     }
-    const auto d = optimize(C, lo, hi, B, ctrl, st, center_w);
+    const auto d = optimize(C, lo, hi, B, ctrl, st, center_w, target);
     for (std::size_t i = 0; i < N; ++i) path[i] = C.R[i] + C.n[i] * d[i];
     T = trace(path, C, speed, p);
     if (loop == 3 || T.min_clear >= kTarget) break;

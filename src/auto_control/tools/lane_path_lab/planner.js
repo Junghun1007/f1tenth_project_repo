@@ -129,7 +129,7 @@ function trace(path, C, P) {
 }
 
 function evalD(basis, c) {return basis.map(b => b.w[0] * c[b.m] + b.w[1] * c[b.m + 1] + b.w[2] * c[b.m + 2] + b.w[3] * c[b.m + 3]);}
-function optimize(C, lo, hi, basis, ctrl, st, centerW) {
+function optimize(C, lo, hi, basis, ctrl, st, centerW, target) {
   const cost = c => {
     const d = evalD(basis, c), Q = C.R.map((p, i) => add(p, mul(C.nL[i], d[i])));
     let J = 0;
@@ -137,7 +137,7 @@ function optimize(C, lo, hi, basis, ctrl, st, centerW) {
       const a = sub(Q[i], Q[i - 1]), b = sub(Q[i + 1], Q[i]), e = sub(Q[i + 1], Q[i - 1]);
       const k = 2 * (a.x * b.y - a.y * b.x) / (nrm(a) * nrm(b) * nrm(e) + 1e-9); J += k * k * DB;
     }
-    for (let i = 0; i < C.N; i++) {const v = Math.max(0, lo[i] - d[i]) + Math.max(0, d[i] - hi[i]); J += 1e5 * v * v + centerW[i] * d[i] * d[i] * DB;}
+    for (let i = 0; i < C.N; i++) {const v = Math.max(0, lo[i] - d[i]) + Math.max(0, d[i] - hi[i]); J += 1e5 * v * v + centerW[i] * (d[i] - target[i]) ** 2 * DB;}
     const a = sub(Q[1], Q[0]), b = sub(Q[2], Q[1]), e = sub(Q[2], Q[0]);
     const k1 = 2 * (a.x * b.y - a.y * b.x) / (nrm(a) * nrm(b) * nrm(e) + 1e-9), s0 = d[1] - d[0] - st.slope * DB;
     return J + 1e5 * ((d[0] - st.d0) ** 2 + s0 * s0) + 2.0 * (k1 - st.kv) ** 2;
@@ -169,8 +169,12 @@ function planFrame(frame, P) {
   // 차량 출발 상태 (기준선 좌표)와 중앙 복귀 비중 — corner_planner.cpp와 같음
   const t0 = unit(sub(C.R[1], C.R[0]));
   const st = {d0: -(C.R[0].x * C.nL[0].x + C.R[0].y * C.nL[0].y), slope: Math.min(1.5, Math.max(-1.5, C.nL[0].x / Math.max(0.2, t0.x))), kv: P.KV || 0};
-  const returnDist = Math.max(P.RET_MIN || 1.2, Math.max(P.VC, 0) * (P.RET_T || 1.5));
-  const centerW = C.R.map((_, i) => 0.2 * Math.min(1, Math.max(0, (i * DB - returnDist) / 0.3)));
+  const returnDist = Math.max(P.RET_MIN || 0.8, Math.max(P.VC, 0) * (P.RET_T || 1.0)), retW = P.RET_W == null ? 100 : P.RET_W;
+  const target = C.R.map((_, i) => {const u = Math.min(1, i * DB / returnDist); return st.d0 * (1 - u * u * u * (10 - 15 * u + 6 * u * u));});
+  // 복귀 세기는 지금 치우친 만큼만 (5 cm 이상이면 최대) — 중앙 근처에서 코너에 들어갈 땐 경로를 묶지 않는다.
+  // 복귀 거리 뒤 0.8 m까지 중앙을 붙잡아 반대편으로 넘어가지 않게
+  const retScale = Math.min(1, Math.abs(st.d0) / 0.05);
+  const centerW = C.R.map((_, i) => 0.2 + (i * DB < returnDist + 0.8 ? retW * retScale : 0));
   const exL = new Array(N).fill(0), exR = new Array(N).fill(0), nLw = Math.round(P.L / DB);
   let d = new Array(N).fill(0), path = C.R.slice(), lo = [], hi = [], infeas = false, tr = null;
   for (let loop = 0; loop < 4; loop++) {
@@ -190,7 +194,7 @@ function planFrame(frame, P) {
       }
     }
     for (let i = 0; i < N && i * DB < 0.3; i++) {lo[i] = Math.min(lo[i], st.d0); hi[i] = Math.max(hi[i], st.d0);}
-    d = optimize(C, lo, hi, basis, ctrl, st, centerW);
+    d = optimize(C, lo, hi, basis, ctrl, st, centerW, target);
     path = C.R.map((p, i) => add(p, mul(C.nL[i], d[i])));
     tr = trace(path, C, P);
     if (loop === 3 || tr.minClear >= 0.02) break;

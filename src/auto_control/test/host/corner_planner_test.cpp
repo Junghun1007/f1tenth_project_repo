@@ -83,7 +83,7 @@ TEST(offset_vehicle_starts_on_itself_and_returns_slowly) {   // 코너 뒤 차�
   CHECK_NEAR(r.path.front().y, 0.0, 0.02);
   const double heading = std::atan2(r.path[2].y - r.path[0].y, r.path[2].x - r.path[0].x);
   CHECK(std::abs(heading) < 2.0 * M_PI / 180.0);   // 출발 방향 = 차량 방향 (차선 중심 쪽으로 꺾어 시작하지 않음)
-  for (const auto & q : r.path) if (q.x < 0.5) CHECK(q.y > -0.03);   // 0.5 m 안에서 중앙으로 급히 가지 않는다
+  for (const auto & q : r.path) if (q.x < 0.3) CHECK(q.y > -0.03);   // 출발 직후 중앙으로 급히 꺾지 않는다
   CHECK(r.min_radius > 1.5);
-  CHECK(r.path.back().y < r.path.front().y);       // 결국 중앙 쪽으로 돌아간다
+  for (const auto & q : r.path) if (q.x > 1.6) CHECK_NEAR(q.y, -0.12, 0.04);   // 복귀 거리(0.8 m 이상) 뒤엔 중앙에 와 있다
 }
