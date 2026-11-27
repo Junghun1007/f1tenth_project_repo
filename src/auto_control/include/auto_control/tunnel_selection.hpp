@@ -91,73 +91,168 @@ bool metric_path_ready(const Msg & m, const PathRules & rules)
   return static_cast<int>(points.size()) >= rules.minimum_points && span >= rules.minimum_span;
 }
 
-// 차선 입력 선택: TCN 판정(또는 강제 IR)이 오면 그 자리에서 바로 전환한다.
-// 전환 안전 정책은 두지 않는다 (차선 유무·경로 유효성·결과 신선도·보고 나이를 보지 않음, 재설계 예정).
-// 남은 것은 같은 출처에서 시각이 되돌아간(순서가 뒤바뀐) 결과를 버리는 것뿐이다.
+// 차선 입력 선택: TCN 판정(또는 강제 IR)이 오면 그 자리에서 바로 전환한다 (기본).
+// 실험 기능 두 가지는 실행 인자로만 켠다 (기본 꺼짐 → 기존 동작과 같음):
+//  - 사전 준비(prearm): TCN 점수가 prearm_score를 넘으면 선택은 그대로 두고 상태만 ENTERING/EXITING으로 바꿔
+//    카메라·IR BEV·IR 추론을 미리 켠다 (camera()/compute()). 점수가 prearm_hold 동안 기준 아래면 취소.
+//  - 유효 경로 전환(valid handover): TCN이 전환을 요청해도 새 출처가 유효한 경로(metric_path_ready)를 낼 때까지
+//    지금 출처가 유효한 동안 최대 valid_handover_max 만큼 지금 출처를 계속 넘긴다.
+// 그 밖에는 같은 출처에서 시각이 되돌아간(순서가 뒤바뀐) 결과를 버리는 것뿐이다.
+struct TransitionOptions
+{
+  bool prearm_entry{false}, prearm_exit{false};
+  double prearm_score{.3}, prearm_hold_sec{1.};
+  bool valid_handover{false};
+  double valid_handover_max_sec{.5};
+
+  void validate() const
+  {
+    if (!std::isfinite(prearm_score) || !(0 < prearm_score && prearm_score <= 1) ||
+      !std::isfinite(prearm_hold_sec) || prearm_hold_sec <= 0 ||
+      !std::isfinite(valid_handover_max_sec) || valid_handover_max_sec <= 0)
+    {
+      throw std::invalid_argument("Invalid tunnel transition options");
+    }
+  }
+};
+
 class LaneSelector
 {
 public:
-  LaneSelector(double max_age, bool validation_mode, PathRules rules)
-  : validation_mode(validation_mode), max_age(max_age), rules(std::move(rules))
+  LaneSelector(double max_age, bool validation_mode, PathRules rules, TransitionOptions options = {})
+  : validation_mode(validation_mode), max_age(max_age), rules(std::move(rules)), options(options)
   {
     if (!std::isfinite(max_age) || max_age <= 0) {throw std::invalid_argument("Invalid lane freshness setting");}
     this->rules.validate();
+    this->options.validate();
   }
 
-  bool transitioning() const {return false;}
-  std::string compute() const {return selected;}
-  std::string camera() const {return selected;}
+  // 요청한 출처의 유효 경로를 기다리는 중
+  bool transitioning() const {return requested != selected;}
+  bool prearmed() const {return prearm_since_ns.has_value();}
+  // 카메라(IR 노출·게이트)는 터널 밖(OUTSIDE)만 RGB, 계산은 전환·준비 중이면 둘 다
+  std::string compute() const {return state == "OUTSIDE" ? "RGB" : state == "INSIDE" ? "IR" : "BOTH";}
+  std::string camera() const {return state == "OUTSIDE" ? "RGB" : "IR";}
 
-  // TCN 판정: entry → IR, exit → RGB. 이전 보고보다 시각이 늦기만 하면 바로 따른다
+  // TCN 판정: entry → IR, exit → RGB. 이전 보고보다 시각이 늦기만 하면 따른다
   bool event(const std::string & kind, std::int64_t stamp, std::int64_t now_ns)
   {
     if ((kind != "entry" && kind != "exit") || stamp <= last_event_ns) {return false;}
     last_event_ns = stamp;
     const bool entry = kind == "entry";
-    return request_source(entry ? "IR" : "RGB", now_ns, entry ? "tcn_entry" : "tcn_exit");
+    return request_source(entry ? "IR" : "RGB", now_ns, entry ? "tcn_entry" : "tcn_exit", options.valid_handover);
   }
 
-  // 강제 IR 켬/끔도 바로 전환
+  // 강제 IR 켬/끔은 항상 바로 전환. wait_valid면 새 출처의 유효 경로를 기다린다
   bool request_source(std::string target, std::int64_t now_ns,
-    const char * immediate_reason = nullptr)
+    const char * immediate_reason = nullptr, bool wait_valid = false)
   {
-    if (target == requested && target == selected) {return false;}
+    if (target == requested && target == selected && !prearmed()) {return false;}
+    const std::string why = immediate_reason ? immediate_reason : (target == "IR" ? "force_ir_on" : "force_ir_off");
     requested = target;
-    finish(now_ns, immediate_reason ? immediate_reason : (target == "IR" ? "force_ir_on" : "force_ir_off"));
+    prearm_since_ns.reset();
+    if (target == selected) {   // 기다리던 전환 취소 또는 준비 취소
+      finish(now_ns, transition_since_ns ? "reversed_request" : why);
+      return true;
+    }
+    if (wait_valid && current_valid) {
+      transition_since_ns = now_ns;
+      update_state(std::string("waiting_valid_") + (target == "IR" ? "ir" : "rgb"));
+      return true;
+    }
+    transition_since_ns = now_ns;
+    finish(now_ns, why);
     return true;
+  }
+
+  // TCN 점수(사전 준비). 상태가 바뀌면 true
+  bool scores(std::optional<double> entry, std::optional<double> exit, bool live, std::int64_t now_ns)
+  {
+    if (transitioning()) {return false;}
+    const bool inside = selected == "IR";
+    if (!(inside ? options.prearm_exit : options.prearm_entry)) {return false;}
+    const auto score = inside ? exit : entry;
+    if (live && score && *score >= options.prearm_score) {
+      prearm_high_ns = now_ns;
+      if (prearmed()) {return false;}
+      prearm_since_ns = now_ns;
+      update_state(inside ? "prearm_exit" : "prearm_entry");
+      return true;
+    }
+    return tick(now_ns);
+  }
+
+  // 시간 경과: 유효 경로 대기 상한·사전 준비 취소. 상태가 바뀌면 true
+  bool tick(std::int64_t now_ns)
+  {
+    if (transitioning() && now_ns - *transition_since_ns >= seconds_ns(options.valid_handover_max_sec)) {
+      finish(now_ns, "handover_timeout");
+      return true;
+    }
+    if (prearmed() && now_ns - prearm_high_ns >= seconds_ns(options.prearm_hold_sec)) {
+      prearm_since_ns.reset();
+      update_state("prearm_cancelled");
+      return true;
+    }
+    return false;
   }
 
   // True when this message is the selected source and should be forwarded.
   template<typename Msg>
   bool lane(
-    const std::string & source, const Msg & m, std::int64_t /*now_ns*/)
+    const std::string & source, const Msg & m, std::int64_t now_ns)
   {
     auto last = last_input_ns.find(source);
     if (last == last_input_ns.end()) {return false;}
     const auto stamp = stamp_ns(m);
     if (stamp <= last->second) {return false;}
     last->second = stamp;
+    const bool ready = metric_path_ready(m, rules);
+    if (transitioning()) {
+      if (source == requested && ready) {finish(now_ns, "first_valid_target");}
+      else if (source == selected && !ready) {finish(now_ns, "current_invalid"); return false;}
+      else {tick(now_ns);}
+    }
+    if (source == selected) {current_valid = ready;}   // 전환을 끝낸 결과도 포함
     return source == selected;
   }
 
   bool validation_mode;
   double max_age;
   PathRules rules;
+  TransitionOptions options;
   std::string state{"OUTSIDE"}, selected{"RGB"}, requested{"RGB"}, reason{"steady"};
-  std::string last_handover;  // JSON text for the log
+  std::string last_handover;  // JSON text for the log (선택기가 기록한 뒤 비움)
   std::int64_t last_event_ns{0};
   std::map<std::string, std::int64_t> last_input_ns{{"RGB", 0}, {"IR", 0}};
 
 private:
-  void finish(std::int64_t, const std::string & why)
+  static std::int64_t seconds_ns(double s) {return static_cast<std::int64_t>(s * 1e9);}
+
+  void update_state(const std::string & why)
   {
+    reason = why;
+    if (transitioning()) {state = requested == "IR" ? "ENTERING" : "EXITING";}
+    else if (prearmed()) {state = selected == "RGB" ? "ENTERING" : "EXITING";}
+    else {state = selected == "IR" ? "INSIDE" : "OUTSIDE";}
+  }
+
+  void finish(std::int64_t now_ns, const std::string & why)
+  {
+    const double total_ms = transition_since_ns ? (now_ns - *transition_since_ns) / 1e6 : 0.;
+    if (selected != requested) {current_valid = false;}   // 새 출처의 유효 여부는 다음 결과에서
     std::ostringstream out;
-    out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": 0}";
+    out << "{\"target\": \"" << requested << "\", \"reason\": \"" << why << "\", \"total_ms\": " << total_ms << "}";
     last_handover = out.str();
     selected = requested;
-    state = selected == "IR" ? "INSIDE" : "OUTSIDE";
-    reason = why;
+    transition_since_ns.reset();
+    prearm_since_ns.reset();
+    update_state(why);
   }
+
+  std::optional<std::int64_t> transition_since_ns, prearm_since_ns;
+  std::int64_t prearm_high_ns{0};
+  bool current_valid{false};   // 지금 넘기는 출처의 마지막 결과가 유효 경로였는지
 };
 
 // ---- Minimal JSON reader for the TCN report (flat object with one-level nested objects) ----

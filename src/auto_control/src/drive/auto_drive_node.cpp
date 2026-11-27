@@ -842,7 +842,8 @@ private:
   // ------------------------------------------------------------------ 터널
   void on_tunnel_state(const std::string & s) {
     if (s != "OUTSIDE" && s != "ENTERING" && s != "INSIDE" && s != "EXITING") return;
-    const bool inside = s != "OUTSIDE";
+    // ENTERING(실험 기능: 사전 준비·유효 경로 대기)은 아직 RGB로 달리므로 터널 밖처럼 둔다. EXITING은 아직 IR
+    const bool inside = s == "INSIDE" || s == "EXITING";
     {
       std::lock_guard<std::mutex> l(status_m_);
       tunnel_state_ = s;
