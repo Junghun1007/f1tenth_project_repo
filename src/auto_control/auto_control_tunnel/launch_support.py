@@ -54,24 +54,6 @@ TCN_DEFAULTS = dict(threshold=0.5, cooldown_seconds=1.0, warmup_seconds=2.5,
                     max_gap_seconds=0.5, max_image_age_seconds=0.25)
 
 
-def transition_options(launch_configurations):
-    """Experimental tunnel transition switches (launch arguments only; default off = immediate TCN switch)."""
-    prearm = str(launch_configurations.get('tunnel_prearm', 'off')).lower()
-    if prearm not in ('off', 'entry', 'both'):
-        raise ValueError('tunnel_prearm must be off, entry or both')
-    handover = str(launch_configurations.get('tunnel_valid_handover', 'false')).lower()
-    if handover not in ('true', 'false'):
-        raise ValueError('tunnel_valid_handover must be true or false')
-    score = float(launch_configurations.get('tunnel_prearm_score', 0.3))
-    wait = float(launch_configurations.get('tunnel_valid_handover_max_sec', 0.5))
-    if not 0 < score <= 1:
-        raise ValueError('tunnel_prearm_score must be in (0, 1]')
-    if not 0 < wait <= 5:
-        raise ValueError('tunnel_valid_handover_max_sec must be in (0, 5]')
-    return dict(prearm_entry=prearm != 'off', prearm_exit=prearm == 'both', prearm_score=score,
-                valid_handover=handover == 'true', valid_handover_max_sec=wait)
-
-
 def integrated_nodes(rgb_detector, controller, context):
     validation_text = str(context.launch_configurations.get('tunnel_validation_mode', 'true')).lower()
     if validation_text not in ('true', 'false'):
@@ -111,7 +93,6 @@ def integrated_nodes(rgb_detector, controller, context):
         ('path_minimum_x_m', .05, float), ('path_maximum_x_m', 2.20, float),
         ('path_maximum_gap_m', .15, float)):
         selector_parameters[name] = cast(context.launch_configurations.get(name, controller.get(name, fallback)))
-    selector_parameters.update(transition_options(context.launch_configurations))
     selector_parameters.update(
         lane_result_frame_id=context.launch_configurations.get('ml_lane_frame_id', 'front_axle_bev'),
         bev_x_max_m=float(context.launch_configurations.get('ml_bev_x_max_m', 3.)),

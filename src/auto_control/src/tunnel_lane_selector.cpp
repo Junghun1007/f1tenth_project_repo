@@ -51,12 +51,6 @@ public:
         set_force_ir(*id, request->data);
       });
     preview_timer_ = create_wall_timer(200ms, [this]() {publish_preview();});
-    // 유효 경로 대기 상한·사전 준비 취소 (두 실험 기능이 꺼져 있으면 아무 일도 하지 않음)
-    if (policy_.options.valid_handover || policy_.options.prearm_entry || policy_.options.prearm_exit) {
-      transition_timer_ = create_wall_timer(20ms, [this]() {
-        if (policy_.tick(now().nanoseconds())) {publish_status();}
-      });
-    }
 
     rclcpp::SubscriptionOptions inter_process;
     inter_process.use_intra_process_comm = rclcpp::IntraProcessSetting::Disable;
@@ -139,19 +133,8 @@ private:
     rules.y_max = declare_parameter<double>("bev_y_max_m", .6);
     rules.mpp = declare_parameter<double>("bev_meter_per_pixel", .01);
     rgb_topic_ = declare_parameter<std::string>("rgb_result_topic", "/line_detactor/result");
-    // 실험 기능: launch 인자(tunnel_prearm, tunnel_valid_handover)로만 켠다. 기본은 모두 꺼짐 = 즉시 전환
-    tunnel::TransitionOptions options;
-    options.prearm_entry = declare_parameter<bool>("prearm_entry", false);
-    options.prearm_exit = declare_parameter<bool>("prearm_exit", false);
-    options.prearm_score = declare_parameter<double>("prearm_score", .3);
-    options.prearm_hold_sec = declare_parameter<double>("prearm_hold_sec", 1.);
-    options.valid_handover = declare_parameter<bool>("valid_handover", false);
-    options.valid_handover_max_sec = declare_parameter<double>("valid_handover_max_sec", .5);
-    RCLCPP_INFO(get_logger(), "Tunnel transition: prearm entry=%s exit=%s score>=%.2f hold=%.1fs | valid handover=%s max=%.2fs",
-      options.prearm_entry ? "on" : "off", options.prearm_exit ? "on" : "off", options.prearm_score,
-      options.prearm_hold_sec, options.valid_handover ? "on" : "off", options.valid_handover_max_sec);
     return tunnel::LaneSelector(declare_parameter<double>("max_age_sec", .2),
-      declare_parameter<bool>("validation_mode", true), rules, options);
+      declare_parameter<bool>("validation_mode", true), rules);
   }
 
   static double monotonic()
@@ -173,7 +156,6 @@ private:
       values[0].c_str(), values[2].c_str(), values[3].c_str(), values[1].c_str(), policy_.reason.c_str());
     if (!policy_.last_handover.empty() && !policy_.transitioning()) {
       RCLCPP_INFO(get_logger(), "Tunnel handover %s", policy_.last_handover.c_str());
-      policy_.last_handover.clear();
     }
     publish_preview();
   }
@@ -199,15 +181,7 @@ private:
       const std::string state = tunnel::json_string(report, "state").value_or("");
       if (state != "inside" && state != "outside") {return;}   // 시작 직후 unknown: 판정 없음
       if (force_ir_) {return;}   // 강제 IR 중에는 수동 지정이 우선
-      bool changed = false;
-      const auto scores = report.find("scores");
-      if (scores != report.end() && !scores->second.empty() && scores->second.front() == '{') {   // 사전 준비 (실험)
-        const auto values = tunnel::json_object(scores->second);
-        const bool live = tunnel::json_string(report, "status").value_or("").rfind("LIVE", 0) == 0;
-        changed = policy_.scores(tunnel::json_double(values, "entry"), tunnel::json_double(values, "exit"), live, now_ns);
-      }
-      changed = apply_tcn_state(state, *stamp, now_ns) || changed;
-      if (changed) {publish_status();}
+      if (apply_tcn_state(state, *stamp, now_ns)) {publish_status();}
     } catch (const std::exception &) {
       RCLCPP_WARN(get_logger(), "Ignoring malformed TCN result");
     }
@@ -238,7 +212,7 @@ private:
   rclcpp::Publisher<String>::SharedPtr preview_pub_, tcn_state_override_pub_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr force_ir_pub_;
   rclcpp::Service<ForceIr>::SharedPtr force_ir_service_;
-  rclcpp::TimerBase::SharedPtr preview_timer_, transition_timer_;
+  rclcpp::TimerBase::SharedPtr preview_timer_;
   rclcpp::Subscription<String>::SharedPtr tcn_sub_;
   rclcpp::Subscription<LaneResult>::SharedPtr rgb_sub_, ir_sub_;
 };

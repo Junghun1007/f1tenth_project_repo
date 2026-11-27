@@ -232,32 +232,6 @@ TCN 상태를 `outside`로 전환해 자동 판정을 재개한다.
 X 버튼의 AUTO → STOPPING → MANUAL 전환은 기존 방식 그대로다.
 터널 이벤트는 자동주행 활성화나 수동 전환 해제를 요청하지 않는다.
 
-## 실험 기능: 사전 준비 · 유효 경로 전환 (실행 인자로만)
-
-기본은 위 즉시 전환이다. 아래 두 기능은 시험 단계라 YAML·웹 파라미터가 없고 실행 인자로만 켠다.
-
-```bash
-ros2 launch vehicle_bringup auto_drive.launch.py tunnel_enabled:=true \
-  tunnel_prearm:=entry tunnel_prearm_score:=0.3 \
-  tunnel_valid_handover:=true tunnel_valid_handover_max_sec:=0.5
-```
-
-| 인자 | 기본 | 뜻 |
-|---|---|---|
-| `tunnel_prearm` | `off` | `entry`: 진입 점수가 기준을 넘으면 선택은 RGB로 둔 채 `ENTERING`으로 IR 게이트·터널 노출·IR BEV·IR 추론을 미리 켠다. `both`: 탈출 점수로 `EXITING`(RGB 70 FPS·노출 복원)도 미리 |
-| `tunnel_prearm_score` | `0.3` | 사전 준비 시작 TCN 점수 (LIVE 보고만). 1초 동안 기준 아래면 취소 |
-| `tunnel_valid_handover` | `false` | TCN 전환 뒤 새 출처가 유효 경로(선택기 경로 기하 검사)를 낼 때까지, 지금 출처가 유효한 동안 지금 출처를 유지 |
-| `tunnel_valid_handover_max_sec` | `0.5` | 유효 경로 대기 상한 |
-
-- `ENTERING`은 아직 RGB로 달리므로 auto_drive는 장애물·신호등·앞차 추종을 유지한다. 다만 카메라 목표가 IR이 되어
-  스테레오 깊이 출력은 멈춘다 (YOLO 콘 검출은 계속). `EXITING`은 아직 IR이므로 터널 안처럼 둔다.
-- `both`의 주의: `EXITING`이 되면 카메라가 RGB 노출을 시작 기준값으로 복원한다. 터널 안에서 켜지면 TCN이 보는
-  RGB 밝기가 바뀌어 탈출 판정이 흔들릴 수 있으므로 먼저 `entry`로 시험한다.
-- 강제 IR 버튼은 두 기능과 관계없이 즉시 전환한다.
-- 로그: 시작 시 `Tunnel transition: prearm ...`, 전환마다 `Tunnel handover {target, reason, total_ms}`.
-  reason `prearm_entry`/`prearm_exit`/`prearm_cancelled`(준비), `first_valid_target`(새 출처 유효),
-  `current_invalid`(지금 출처 무효로 바로 전환), `handover_timeout`(상한), `reversed_request`(대기 중 반대 판정).
-
 ## 단일 프리뷰와 터널 HUD
 
 RGB 검출기만 GUI 창을 소유하며, IR 검출기는 별도 창을 열지 않는다. 선택된 경로가
