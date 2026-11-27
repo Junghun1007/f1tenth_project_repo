@@ -15,7 +15,7 @@ import os
 from tempfile import TemporaryDirectory
 
 import yaml
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
@@ -317,6 +317,10 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         if not math.isfinite(speed) or speed <= 0:
             raise RuntimeError("speed_mps must be a positive number or inherit")
         drive_overrides["drive.maximum_speed_mps"] = speed
+        # 최소 속도(코너)는 최대보다 작아야 한다 (같거나 크면 auto_drive가 시작 검사에서 죽고 웹도 안 열린다)
+        minimum = float(drive_tuning.get("drive.minimum_speed_mps", 1.1))
+        if minimum >= speed:
+            drive_overrides["drive.minimum_speed_mps"] = round(max(0.0, speed - 0.1), 3)
     # 코너 경로 계획 (실험): corner_plan:=true 면 새 계획, false 면 기존 코너 오프셋, inherit 면 YAML 값
     corner_plan = LaunchConfiguration("corner_plan").perform(context).strip().lower()
     if not resumed and corner_plan != "inherit":
@@ -370,11 +374,16 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         }],
     )
     # 웹 화면이 열리면 Jetson 바탕화면(NoMachine)에 접속 주소 알림창
-    web_notice = Node(
-        package="auto_control", executable="web_ready_notice", name="web_ready_notice", output="screen",
-        arguments=[LaunchConfiguration("web_port").perform(context)],
-        condition=IfCondition(LaunchConfiguration("web_notice")),
-    )
+    # (설치가 안 돼 있으면 launch 전체가 멈추지 않도록 경고만 하고 건너뛴다)
+    notice_path = os.path.join(get_package_prefix("auto_control"), "lib", "auto_control", "web_ready_notice")
+    if not os.path.isfile(notice_path):
+        web_notice = LogInfo(msg="[auto drive] web_ready_notice 없음 (auto_control 다시 빌드 필요) → 접속 주소 알림창 생략")
+    else:
+        web_notice = Node(
+            package="auto_control", executable="web_ready_notice", name="web_ready_notice", output="screen",
+            arguments=[LaunchConfiguration("web_port").perform(context)],
+            condition=IfCondition(LaunchConfiguration("web_notice")),
+        )
     joy = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(os.path.join(get_package_share_directory("joy_initializer"), "launch", "joy.launch.py")),
         condition=IfCondition(LaunchConfiguration("joy_enabled")),
