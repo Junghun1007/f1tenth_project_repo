@@ -80,6 +80,20 @@ def _ros_parameters(config_path, node_name):
     return {}
 
 
+def _number_override(value, name, low, high):
+    """launch 인자 문자열 → 숫자 (inherit 면 None). 범위 밖이면 실행 전에 멈춘다."""
+    value = value.strip().lower()
+    if value in ("", "inherit"):
+        return None
+    try:
+        number = float(value)
+    except ValueError:
+        raise RuntimeError(f"{name} must be a number or inherit (got {value!r})") from None
+    if not math.isfinite(number) or not low <= number <= high:
+        raise RuntimeError(f"{name} must be within {low}..{high} (got {number})")
+    return number
+
+
 def _merged_parameters(base_path, selected_path, node_name):
     parameters = _ros_parameters(base_path, node_name)
     selected_path = os.path.abspath(os.path.expanduser(selected_path))
@@ -327,6 +341,19 @@ def _setup(context, *, bev_config, line_detactor_config, bev_launch, reset_sessi
         if corner_plan not in ("true", "false", "1", "0"):
             raise RuntimeError("corner_plan must be true, false or inherit")
         drive_overrides["corner_plan.enabled"] = 1.0 if corner_plan in ("true", "1") else 0.0
+    # 실행 명령에서 바로 조절: 코너 여유·V₀, 코너 최소 속도 (inherit = YAML 값)
+    if not resumed:
+        for argument, key, low, high in (("corner_outer_margin", "corner_plan.outer_margin_m", 0.0, 0.15),
+                                          ("corner_inner_margin", "corner_plan.inner_margin_m", 0.0, 0.15),
+                                          ("corner_v0", "corner_plan.v0_mps", 0.3, 4.0),
+                                          ("min_speed_mps", "drive.minimum_speed_mps", 0.0, 2.0)):
+            number = _number_override(LaunchConfiguration(argument).perform(context), argument, low, high)
+            if number is not None:
+                drive_overrides[key] = number
+        maximum = float(drive_overrides.get("drive.maximum_speed_mps", drive_tuning.get("drive.maximum_speed_mps", 1.3)))
+        minimum = float(drive_overrides.get("drive.minimum_speed_mps", drive_tuning.get("drive.minimum_speed_mps", 1.1)))
+        if minimum >= maximum:   # auto_drive 시작 검사에서 죽고 웹도 안 열리므로 실행 전에 알린다
+            raise RuntimeError(f"min_speed_mps ({minimum}) must be below the maximum speed ({maximum})")
     # 주행 컴포넌트(웹 화면 포함)는 카메라 시작 측정보다 먼저 컨테이너에 올린다
     # → 실행하자마자 브라우저가 열리고 점검 영역에서 카메라 자세 측정 진행을 볼 수 있다
     context.launch_configurations["first_composable_nodes_json"] = json.dumps([{
@@ -467,6 +494,14 @@ def generate_launch_description():
                               description="최대 속도 m/s (drive.maximum_speed_mps). inherit = YAML 값"),
         DeclareLaunchArgument("corner_plan", default_value="inherit",
                               description="코너 경로 계획 (실험): true=새 계획, false=기존 코너 오프셋, inherit=auto_drive.yaml"),
+        DeclareLaunchArgument("corner_outer_margin", default_value="inherit",
+                              description="코너 경로 계획: 바깥 차선과 차체 여유 m (corner_plan.outer_margin_m)"),
+        DeclareLaunchArgument("corner_inner_margin", default_value="inherit",
+                              description="코너 경로 계획: 안쪽 차선과 차체 여유 m (corner_plan.inner_margin_m)"),
+        DeclareLaunchArgument("corner_v0", default_value="inherit",
+                              description="코너 경로 계획: 내륜차가 0이 되는 속도 m/s (corner_plan.v0_mps)"),
+        DeclareLaunchArgument("min_speed_mps", default_value="inherit",
+                              description="코너 최소 속도 m/s (drive.minimum_speed_mps). 최대 속도보다 작아야 함"),
         DeclareLaunchArgument("web_port", default_value="8765"),
         DeclareLaunchArgument("web_notice", default_value="true",
                               description="웹 화면이 열리면 바탕화면에 접속 주소 알림창 (false=끔)"),
