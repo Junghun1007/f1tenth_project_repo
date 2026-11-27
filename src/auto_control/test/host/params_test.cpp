@@ -173,7 +173,7 @@ TEST(lane_tuning_uses_independent_rgb_and_ir_profiles) {
   CHECK(!defaults.ir_lane.stop_line_distance_enabled);
   CHECK_NEAR(defaults.ir_lane.left_mask_threshold, .8, 1e-12);
   CHECK_NEAR(defaults.ir_lane.right_mask_threshold, .8, 1e-12);
-  CHECK(r.get("lane.model") == 1.);
+  CHECK(r.get("lane.model") == 2.);
   CHECK(!r.apply({{"lane.model", 4.}}).first);
   CHECK(!r.apply({{"lane.model", 2.5}}).first);
   CHECK(!r.apply({{"lane.corner_outer_full_turn_deg", 7.}, {"ir_lane.mask_threshold", .6}}).first);

@@ -115,8 +115,8 @@ IR 엔진 캐시는 `<모델>.ir_line_detactor.<방식>.engine`으로 따로 써
 | 값 | RGB 검출기 | IR 검출기 (터널) |
 |---|---|---|
 | `0` 기존 | stop_0910 INT8 (`line_detactor.yaml`) | `ir_stereo_bev_120x300.onnx` FP32 |
-| `1` (기본) v5 | `models/fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx` | 기존 IR FP32 |
-| `2` 통합 C3 INT8 | `models/lane_c3_120x300.int8.qdq.onnx` | 같은 파일 (정지선 미사용) |
+| `1` v5 | `models/fast_scnn_stop_line_v5_120x300_batch_1.int8.qdq.onnx` | 기존 IR FP32 |
+| `2` (기본) 통합 C3 INT8 | `models/lane_c3_120x300.int8.qdq.onnx` | 같은 파일 (정지선 미사용) |
 | `3` 통합 C3 FP32 | `models/lane_c3_120x300.onnx` | 같은 파일 (정지선 미사용) |
 
 - v5: 차선 없는 장면 오검출 45.7% → 2.2%, 어두운·과노출 장면 F1이 크게 오름 (PC ONNX Runtime 기준).

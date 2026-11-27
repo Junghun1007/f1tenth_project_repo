@@ -199,7 +199,7 @@ void register_params(ParamRegistry & r) {
   // RGB·IR 검출기 모델을 한 번에 고른다. 실행 중 교체: 각 검출기가 뒤에서 새 엔진을 만든 뒤 바꾼다 (재시작 없음).
   // 파일·정밀도 표는 auto_control_tunnel/launch_support.py LANE_MODELS (같은 번호)
   r.add({"lane.model", "lane", "차선 모델 (RGB·IR 공통)", "모델 · 바로 교체 (처음 고르면 엔진 빌드에 수 분)", "",
-    0, 3, 1, true, {{0, "0 · 기존 (RGB stop_0910 INT8 + IR 기존 FP32)"}, {1, "1 · v5 (RGB v5 INT8 + IR 기존 FP32)"},
+    0, 3, 2, true, {{0, "0 · 기존 (RGB stop_0910 INT8 + IR 기존 FP32)"}, {1, "1 · v5 (RGB v5 INT8 + IR 기존 FP32)"},
                     {2, "2 · 통합 C3 INT8 (RGB·IR)"}, {3, "3 · 통합 C3 FP32 (RGB·IR)"}}});
   register_lane_tuning(r, false);
   register_lane_tuning(r, true);

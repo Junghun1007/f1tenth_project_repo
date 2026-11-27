@@ -21,7 +21,7 @@ IR_BASELINE = 'ir_stereo_bev_120x300.onnx'   # line_detactor/models
 
 def lane_model(drive_tuning):
     """Validated lane.model from the auto_drive YAML (the removed per-sensor engine_precision keys are ignored)."""
-    value = drive_tuning.get('lane.model', 1)
+    value = drive_tuning.get('lane.model', 2)
     if value not in LANE_MODELS:
         raise ValueError(f'lane.model must be one of {sorted(LANE_MODELS)}')
     legacy = [k for k in ('lane.engine_precision', 'ir_lane.engine_precision') if drive_tuning.get(k, 0)]
@@ -68,7 +68,7 @@ def integrated_nodes(rgb_detector, controller, context):
     ir = parameters(shares['line_detactor'] / 'config/line_detactor.yaml')
     ir.update(parameters(shares['auto_control'] / 'config/tunnel_ir.yaml'))
     baseline, baseline_precision = bundled_model(shares['line_detactor'] / 'models' / IR_BASELINE), ir['engine_precision']
-    choice = LANE_MODELS[controller.get('lane.model', 1)][1]
+    choice = LANE_MODELS[controller.get('lane.model', 2)][1]
     model, precision = ((baseline, baseline_precision) if choice == 'baseline' else
                         (bundled_model(shares['auto_control'] / 'models' / choice[0]), choice[1]))
     ir.update(engine_precision=precision, engine_cache_path=ir_engine_cache(model, precision))

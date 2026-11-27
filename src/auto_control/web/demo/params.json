@@ -496,7 +496,7 @@
 "live": true
 },
 {"name":"lane.check_mode","group":"lane","section":"공통","label":"차선 검사 모드","unit":"","min":0.0,"max":2.0,"value":1.0,"live":true,"options":[{"value":0.0,"label":"0 · 추가 검사 끔"},{"value":1.0,"label":"1 · 기존 검사"},{"value":2.0,"label":"2 · 회피 방향별 차선 복귀"}]},
-{"name":"lane.model","group":"lane","section":"차선 모델 (RGB·IR 공통)","label":"모델 · 바로 교체 (처음 고르면 엔진 빌드에 수 분)","unit":"","min":0.0,"max":3.0,"value":1.0,"live":true,"options":[{"value":0.0,"label":"0 · 기존 (RGB stop_0910 INT8 + IR 기존 FP32)"},{"value":1.0,"label":"1 · v5 (RGB v5 INT8 + IR 기존 FP32)"},{"value":2.0,"label":"2 · 통합 C3 INT8 (RGB·IR)"},{"value":3.0,"label":"3 · 통합 C3 FP32 (RGB·IR)"}]},
+{"name":"lane.model","group":"lane","section":"차선 모델 (RGB·IR 공통)","label":"모델 · 바로 교체 (처음 고르면 엔진 빌드에 수 분)","unit":"","min":0.0,"max":3.0,"value":2.0,"live":true,"options":[{"value":0.0,"label":"0 · 기존 (RGB stop_0910 INT8 + IR 기존 FP32)"},{"value":1.0,"label":"1 · v5 (RGB v5 INT8 + IR 기존 FP32)"},{"value":2.0,"label":"2 · 통합 C3 INT8 (RGB·IR)"},{"value":3.0,"label":"3 · 통합 C3 FP32 (RGB·IR)"}]},
 {"name":"lane.left_mask_threshold","group":"lane","section":"RGB · 검출","label":"좌측 차선 임계값","unit":"","min":0.0,"max":1.0,"value":0.8,"live":true},
 {"name":"lane.right_mask_threshold","group":"lane","section":"RGB · 검출","label":"우측 차선 임계값","unit":"","min":0.0,"max":1.0,"value":0.8,"live":true},
 {"name":"lane.stop_line_mask_threshold","group":"lane","section":"RGB · 검출","label":"정지선 임계값","unit":"","min":0.0,"max":1.0,"value":0.8,"live":true},
